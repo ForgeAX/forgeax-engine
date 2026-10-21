@@ -62,7 +62,6 @@ function selectedEnvironment(sourceKey?: string) {
       sourceKey === undefined ? [] : [{ kind: 'image' as const, entityKey: 1, sourceKey }],
     fogs: [],
     suns: [],
-    lane: 'direct',
   }).unwrap();
 }
 
@@ -113,8 +112,6 @@ function temporalResolveFrame(
     },
     postProcessParams: new Map(),
     msaaActive: false,
-    geometryColorResolveView: null,
-    ldrSpriteColorView: null,
   } as unknown as RenderPipelineFrame;
 }
 
@@ -377,7 +374,7 @@ function executeReplayCapture(
       return executeCompiledFrameGraph(
         internals,
         frameState,
-        {} as never,
+        { pipelineState: {} } as never,
         encoder,
         undefined,
         () => {
@@ -419,6 +416,7 @@ describe('renderer successful-submit transaction', () => {
             fragments: [],
             sources: {},
             receipts: [],
+            entryPoints: [],
           }),
         )}`,
       },
@@ -1274,6 +1272,7 @@ describe('renderer successful-submit transaction', () => {
       frameState,
       {
         encoder: device.createCommandEncoder({ label: 'temporal-readiness-probe' }).unwrap(),
+        pipelineState: {},
       } as unknown as RenderPipelineFrame,
       device.createCommandEncoder({ label: 'temporal-readiness-probe-submit' }).unwrap(),
     );
@@ -1293,10 +1292,10 @@ describe('renderer successful-submit transaction', () => {
     const device = (await new RhiNullAdapter().requestDevice()).unwrap();
     const scope = DeviceScope.create(92, 'renderer');
     const environmentLifecycle = new EnvironmentLifecycle(scope);
-    const activeEnvironment = environmentLifecycle.ensure(selectedEnvironment(), 'direct').unwrap();
+    const activeEnvironment = environmentLifecycle.ensure(selectedEnvironment()).unwrap();
     environmentLifecycle.publish(activeEnvironment);
     const environmentFrame = selectedEnvironment('environment:candidate');
-    const environmentGeneration = environmentLifecycle.ensure(environmentFrame, 'direct').unwrap();
+    const environmentGeneration = environmentLifecycle.ensure(environmentFrame).unwrap();
     const discardEnvironment = vi.spyOn(environmentLifecycle, 'discard');
     const publishEnvironment = vi.spyOn(environmentLifecycle, 'publish');
     const lastSuccessfulTemporalView = createTemporalView({
@@ -1408,9 +1407,7 @@ describe('renderer successful-submit transaction', () => {
     expect(frameState.lastSuccessfulTemporalView.sampleTimeSeconds).toBe(1);
     expect(environmentLifecycle.inspect().activeSignature).toBe(activeEnvironment.signature);
     expect(environmentLifecycle.inspect().lkgSignature).toBe(activeEnvironment.signature);
-    frameState.environmentGeneration = environmentLifecycle
-      .ensure(environmentFrame, 'direct')
-      .unwrap();
+    frameState.environmentGeneration = environmentLifecycle.ensure(environmentFrame).unwrap();
     frameState.pendingTemporalCommit = {
       kind: 'taa',
       view: createTemporalView({

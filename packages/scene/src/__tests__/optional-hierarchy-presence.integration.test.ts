@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { type Component, defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,11 +10,11 @@ import {
   sceneEntityAddressKey,
   worldDespawnScene,
   worldGetSceneInstanceState,
-  worldInstantiateScenePayload,
 } from '../index';
+import { instantiateSource } from './managed-scene-fixture';
 
 const SceneInstance = defineComponent('SceneInstance', {
-  source: { type: 'shared<SceneAsset>' },
+  source: { type: 'asset<scene>' },
   mapping: { type: 'array<entity>' },
   state: { type: 'unique<SceneInstanceState>' },
 });
@@ -60,7 +62,8 @@ interface WorldWithMalformedMirror {
 
 describe('optional hierarchy component presence', () => {
   it('preserves breadth-first order and visited/dead-root behavior without absent Children reads', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     register(world);
     const root = world.spawn().unwrap();
     const a = child(world, root);
@@ -87,7 +90,8 @@ describe('optional hierarchy component presence', () => {
   });
 
   it('terminates a malformed mirror cycle using the original visited and queue order', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     register(world);
     const root = world.spawn().unwrap();
     const a = child(world, root);
@@ -109,7 +113,8 @@ describe('optional hierarchy component presence', () => {
   });
 
   it('attaches owned roots to the synthetic root while retaining authored and caller parents', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     register(world);
     const caller = world.spawn().unwrap();
     const source: SceneAsset = {
@@ -125,7 +130,7 @@ describe('optional hierarchy component presence', () => {
     const reads = spyReads(world);
     let root: EntityHandle | undefined;
     try {
-      root = worldInstantiateScenePayload(world, source, caller).unwrap().root;
+      root = instantiateSource(assets, world, source, caller).unwrap().root;
       const absentChildOfReads = missingReads(reads, 'ChildOf');
       const state = worldGetSceneInstanceState(world, root).unwrap();
       const a = state.bindings.get(sceneEntityAddressKey('a'));
@@ -140,25 +145,27 @@ describe('optional hierarchy component presence', () => {
       expect(Array.from(world.get(root, Children).unwrap().entities)).toEqual([a, b]);
       expect(Array.from(world.get(a, Children).unwrap().entities)).toEqual([leaf]);
       expect([...collectSubtree(world, root)]).toEqual([root, a, b, leaf]);
-      expect(world.sharedRefs._liveCount()).toBe(1);
+      expect(runtimeAssets(assets).inspect().assets).toBe(1);
       expect(absentChildOfReads).toBe(0);
     } finally {
       reads.mockRestore();
       if (root !== undefined) worldDespawnScene(world, root).unwrap();
       world.despawn(caller).unwrap();
-      expect(world.sharedRefs._liveCount()).toBe(0);
+      expect(runtimeAssets(assets).inspect().assets).toBe(0);
     }
   });
 
   it('returns the real addComponent error when a caller parent is stale', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     register(world);
     const staleParent = world.spawn().unwrap();
     world.despawn(staleParent).unwrap();
     const additions = vi.spyOn(world, 'addComponent');
     let failedRoot: EntityHandle | undefined;
     try {
-      const result = worldInstantiateScenePayload(
+      const result = instantiateSource(
+        assets,
         world,
         {
           kind: 'scene',
@@ -184,7 +191,7 @@ describe('optional hierarchy component presence', () => {
     } finally {
       additions.mockRestore();
       if (failedRoot !== undefined) worldDespawnScene(world, failedRoot).unwrap();
-      expect(world.sharedRefs._liveCount()).toBe(0);
+      expect(runtimeAssets(assets).inspect().assets).toBe(0);
     }
   });
 });

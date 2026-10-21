@@ -24,15 +24,14 @@ export async function buildTerrainWorld(
 ) {
   const assets = app.assets;
   if (assets === undefined) throw new Error('terrain requires the App-owned AssetRegistry');
-  const asset = (await assets.loadByGuid(rootGuid)).unwrap();
-  if (asset.kind !== 'terrain') throw new Error('Terrain GUID resolved to another kind');
-  const terrainHandle = app.world.sharedRefs.acquire('TerrainAsset', asset);
+  const terrainHandle = (await assets.load(rootGuid, 'terrain')).unwrap();
+  const asset = assets.read(terrainHandle).unwrap();
   const terrainResult = app.world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: Terrain, data: { asset: terrainHandle, lod0Diameter: 0.35 } },
     { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
   );
-  app.world.sharedRefs.release(terrainHandle).unwrap();
+  assets.release(terrainHandle).unwrap();
   const terrain = terrainResult.unwrap();
   const eye: [number, number, number] = [65, 55, 145];
   const camera = app.world
@@ -66,11 +65,8 @@ export async function buildTerrainWorld(
       },
     })
     .unwrap();
-  const mesh = app.world.sharedRefs.acquire('MeshAsset', createSphereGeometry(1, 16, 12).unwrap());
-  const material = app.world.sharedRefs.acquire(
-    'MaterialAsset',
-    Materials.unlit([1, 0.3, 0.025, 1]),
-  );
+  const mesh = assets.create(createSphereGeometry(1, 16, 12).unwrap()).unwrap();
+  const material = assets.create(Materials.unlit([1, 0.3, 0.025, 1])).unwrap();
   const walkerResult = app.world.spawn(
     { component: Transform, data: { pos: [30, (terrainHeight(asset, 30, 62) ?? 0) + 1, 62] } },
     { component: MeshFilter, data: { assetHandle: mesh } },
@@ -78,8 +74,8 @@ export async function buildTerrainWorld(
     { component: RigidBody, data: { type: RigidBodyTypeValue.kinematic } },
     { component: Collider, data: { shape: ColliderShapeValue.sphere, radius: 1 } },
   );
-  app.world.sharedRefs.release(mesh).unwrap();
-  app.world.sharedRefs.release(material).unwrap();
+  assets.release(mesh).unwrap();
+  assets.release(material).unwrap();
   const walker = walkerResult.unwrap();
   app.world.insertResource('TerrainWalker', { entity: walker, speed: 0, updates: 0 });
   return { terrain, camera, walker };

@@ -95,14 +95,57 @@ describe('DDC lifecycle head', () => {
     const lease = await lifecycle.begin(GUID, KEY_A);
     await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({ state: 'cooking' });
     await writeEntry(root, KEY_A);
-    await expect(lifecycle.commit(lease, KEY_A)).resolves.toEqual({
+    await expect(lifecycle.commit(lease, KEY_A)).resolves.toMatchObject({
       result: 'current',
-      key: KEY_A,
+      head: { currentKey: KEY_A, revision: 1, generation: lease.generation },
     });
     await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({
       state: 'current',
       currentKey: KEY_A,
     });
+  });
+
+  it('returns the exact accepted head and LKG after one commit validation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
+    roots.push(root);
+    const lifecycle = new DdcLifecycle(root);
+    const first = await lifecycle.begin(GUID, KEY_A);
+    await writeEntry(root, KEY_A);
+    await lifecycle.commit(first, KEY_A);
+    const lease = await lifecycle.begin(GUID, KEY_B);
+    await writeEntry(root, KEY_B);
+    const read = vi.spyOn(DdcEntryStore.prototype, 'read');
+    const readChecked = vi.spyOn(DdcEntryStore.prototype, 'readChecked');
+    try {
+      const result = await lifecycle.commit(lease, KEY_B);
+      expect(result).toEqual({
+        result: 'current',
+        head: {
+          guid: GUID,
+          desiredKey: KEY_B,
+          state: 'current',
+          currentKey: KEY_B,
+          lastKnownGoodKey: KEY_A,
+          revision: 2,
+          generation: lease.generation,
+        },
+        restoreFence: {
+          attempt: lease.attempt,
+          generation: lease.generation,
+          revision: 2,
+          desiredKey: KEY_B,
+          outcome: 'current',
+          key: KEY_B,
+          currentKey: KEY_B,
+          lastKnownGoodKey: KEY_A,
+        },
+      });
+      expect(read).toHaveBeenCalledExactlyOnceWith(KEY_B);
+      expect(readChecked).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+      readChecked.mockRestore();
+    }
   });
 
   it('reads the accepted entry together with its projected current head', async () => {
@@ -153,6 +196,7 @@ describe('DDC lifecycle head', () => {
     await expect(lifecycle.commit(second, KEY_A)).resolves.toEqual({
       result: 'stale',
       key: KEY_A,
+      revision: 1,
     });
     await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
       state: 'stale',
@@ -402,15 +446,15 @@ describe('DDC lifecycle head', () => {
     const store = new DdcEntryStore(root);
     const firstLease = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
-    await expect(lifecycle.commit(firstLease, KEY_A)).resolves.toEqual({
+    await expect(lifecycle.commit(firstLease, KEY_A)).resolves.toMatchObject({
       result: 'current',
-      key: KEY_A,
+      head: { currentKey: KEY_A },
     });
     const lease = await lifecycle.begin(GUID, KEY_B);
     await writeEntry(root, KEY_B);
-    await expect(lifecycle.commit(lease, KEY_B)).resolves.toEqual({
+    await expect(lifecycle.commit(lease, KEY_B)).resolves.toMatchObject({
       result: 'current',
-      key: KEY_B,
+      head: { currentKey: KEY_B },
     });
 
     const receiptPath = join(root, 'entries', KEY_B, 'receipt.json');
@@ -451,13 +495,13 @@ describe('DDC lifecycle head', () => {
     await writeEntry(root, KEY_A);
     await expect(lifecycle.commit(firstLease, KEY_A)).resolves.toMatchObject({
       result: 'current',
-      key: KEY_A,
+      head: { currentKey: KEY_A },
     });
     const secondLease = await lifecycle.begin(GUID, KEY_B);
     await writeEntry(root, KEY_B);
     await expect(lifecycle.commit(secondLease, KEY_B)).resolves.toMatchObject({
       result: 'current',
-      key: KEY_B,
+      head: { currentKey: KEY_B },
     });
 
     const headPath = join(root, 'heads', `${encodeURIComponent(GUID)}.json`);

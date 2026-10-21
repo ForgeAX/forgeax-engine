@@ -102,6 +102,15 @@ function resourceOpenEntry(snapshot: WorkspaceState | null | undefined, kind: st
   return opens instanceof Map ? opens.get(kind) : opens[kind];
 }
 
+export function resourcePreviewRequestId(snapshot: WorkspaceState | null | undefined, targetId: string) {
+  const opens = snapshot?.resourceOpens;
+  return (opens instanceof Map ? [...opens.values()] : Object.values(opens ?? {})).find(entry => entry.preview?.target.targetId === targetId)?.requestId;
+}
+
+export function selectResourceOpenStatus(snapshot: WorkspaceState | null | undefined, kinds: readonly string[]) {
+  return kinds.map(kind => resourceOpenEntry(snapshot, kind)?.pending).find(entry => entry?.phase === 'opening' || entry?.phase === 'failed');
+}
+
 export function selectWorkspaceFallbackSubject(snapshot: WorkspaceState | null | undefined) {
   if (snapshot?.openRequest?.detailsOnly) return snapshot.openRequest.asset;
   const opens = snapshot?.resourceOpens;
@@ -116,13 +125,18 @@ export function selectWorkspaceFallbackSubject(snapshot: WorkspaceState | null |
  */
 export function selectWorkspaceResourceSubject(snapshot: WorkspaceState | null | undefined, kinds: readonly string[]) {
   const accepted = Array.isArray(kinds) ? kinds : [];
+  const pending = selectResourceOpenStatus(snapshot, accepted);
+  if (pending) {
+    const entry = resourceOpenEntry(snapshot, pending.asset.kind);
+    return entry?.preview ? entry.asset : undefined;
+  }
   if (accepted.length === 0) {
     const asset = selectWorkspaceFallbackSubject(snapshot) ?? snapshot?.openRequest?.asset;
     return typeof asset?.guid === 'string' && asset.guid !== '' ? asset : undefined;
   }
   const extras = extraPreviewEntries(snapshot);
   const candidates = [
-    snapshot?.openRequest?.asset,
+    snapshot?.openRequest?.phase === 'opening' || snapshot?.openRequest?.phase === 'failed' ? undefined : snapshot?.openRequest?.asset,
     snapshot?.openRequest?.preview?.asset,
     ...accepted.flatMap((kind) => [
       resourceOpenEntry(snapshot, kind)?.asset,
@@ -151,7 +165,7 @@ export function selectWorkspaceResourcePreview(snapshot: WorkspaceState | null |
     : Object.values(snapshot?.resourceOpens ?? {}).find(entry => entry?.asset?.guid === guid);
   const requested = request?.preview?.target;
   return live.find(entry => requested && entry.target.targetId === requested.targetId
-    && entry.target.generation === requested.generation) ?? live[0];
+    && entry.target.generation === requested.generation);
 }
 
 function openRequestSequence(request: WorkspaceOpenRequest | null | undefined) {
@@ -170,6 +184,7 @@ export function observeWorkspaceOpenRequests(client: WorkspaceStateClient | unde
   const reader = createWorkspaceStateReader(client);
   let lastSequence = 0;
   let primed = false;
+  const openingRequests = new Map<string, string>();
   const unsubscribe = reader.subscribe(() => {
     const snapshot = reader.getSnapshot();
     if (!snapshot) return;
@@ -187,6 +202,9 @@ export function observeWorkspaceOpenRequests(client: WorkspaceStateClient | unde
     }
     if (!request || sequence <= lastSequence) return;
     lastSequence = sequence;
+    if (request.phase === 'opening') openingRequests.set(request.asset.kind, request.requestId);
+    else if (openingRequests.get(request.asset.kind) === request.requestId) { openingRequests.delete(request.asset.kind); return; }
+    else if (request.phase === 'failed') return;
     logResourceOpen('open-request-observed', {
       requestId: request.requestId,
       sequence: request.sequence,

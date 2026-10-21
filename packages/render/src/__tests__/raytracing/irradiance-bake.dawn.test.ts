@@ -128,7 +128,8 @@ it('bakes the reference integrator into deterministic, cooked irradiance probes'
     })
   ).unwrap();
   expect(failed.status).toBe('recovered');
-  expect(failed.lastKnownGood).toBe(rebaked.draft);
+  expect(failed.draft).toBe(rebaked.draft);
+  expect(failed.generation).toBe(rebaked.generation);
   const invalid = await bakeIrradianceVolume(device, gpu.createShaderModule, {
     ...input,
     settings: { ...input.settings, raysPerProbe: 1 },

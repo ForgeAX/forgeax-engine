@@ -12,6 +12,10 @@ import type { MaterialPass, PassSelector } from '@forgeax/engine-types';
 export const FORWARD_PASS_SELECTOR = Object.freeze({
   LightMode: Object.freeze(['Forward'] as const),
 });
+/** Separate transmission backs read the opaque backdrop before the front copy. */
+export const TRANSMISSION_BACK_PASS_SELECTOR = Object.freeze({
+  LightMode: Object.freeze(['TransmissionBack'] as const),
+});
 export const DEFERRED_PASS_SELECTOR = Object.freeze({
   LightMode: Object.freeze(['Deferred'] as const),
 });

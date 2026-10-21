@@ -166,3 +166,26 @@ describe.each(['runtime', 'assets-runtime'])('image isolation in %s', (owner) =>
     }
   });
 });
+
+it('admits pure runtime texture preparation without admitting disk decoding at that seam', () => {
+  const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'forgeax-image-preparation-'));
+  try {
+    cpSync(resolve(fixturesDir, 'runtime-decoder-stripped'), fixtureRoot, { recursive: true });
+    const file = resolve(fixtureRoot, 'packages/assets-runtime/src/runtime-asset-prepare.ts');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "import { prepareRuntimeTexture } from '@forgeax/engine-image';\n");
+    expect(run(fixtureRoot).status).toBe(0);
+    writeFileSync(
+      file,
+      "import { prepareRuntimeTexture, parseImage } from '@forgeax/engine-image';\n",
+    );
+    expect(run(fixtureRoot).status).toBe(1);
+    writeFileSync(
+      file,
+      "import { prepareRuntimeTexture } from '@forgeax/engine-image/parse-image';\n",
+    );
+    expect(run(fixtureRoot).status).toBe(1);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});

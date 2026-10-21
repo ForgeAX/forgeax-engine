@@ -8,13 +8,13 @@ import { type Component, defineComponent } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { extractSceneEntityHandleGuids } from '../scene-handle-fields';
 
-const T709MeshFilter = defineComponent('T709MeshFilter', { assetHandle: 'shared<MeshAsset>' });
+const T709MeshFilter = defineComponent('T709MeshFilter', { assetHandle: 'asset<mesh>' });
 const T709MeshRenderer = defineComponent('T709MeshRenderer', {
-  materials: 'array<shared<MaterialAsset>>',
+  materials: 'array<asset<material>>',
 });
 const T709SpotLight = defineComponent('T709SpotLight', {
-  iesProfile: 'shared<IesProfileAsset>',
-  cookie: 'shared<TextureAsset>',
+  iesProfile: 'asset<ies-profile>',
+  cookie: 'asset<texture>',
   rollDeg: 'f32',
 });
 const T709Transform = defineComponent('T709Transform', { x: 'f32' });

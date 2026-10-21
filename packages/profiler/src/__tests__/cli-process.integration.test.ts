@@ -84,12 +84,10 @@ describe('profiler CLI public process contract', () => {
     expect(output).toMatchObject({
       query: 'compare',
       left: {
-        summary: { captureId: 'capture-0042' },
-        completeness: { status: 'complete' },
+        summary: { captureId: 'capture-0042', completeness: { status: 'complete' } },
       },
       right: {
-        summary: { captureId: 'capture-0043' },
-        completeness: { status: 'partial' },
+        summary: { captureId: 'capture-0043', completeness: { status: 'partial' } },
       },
       phases: expect.any(Array),
     });

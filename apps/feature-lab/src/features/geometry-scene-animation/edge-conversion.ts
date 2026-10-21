@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import {
   createBoxGeometry,
   createEdgesGeometry,
@@ -18,6 +19,10 @@ export default defineFeature({
   expect:
     'ON: a cyan full wireframe torus (left) and an orange box outline with only its 12 crease edges (right). OFF: the same shapes drawn as solid shaded source meshes.',
   setup({ world, hud }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, {
       eye: [0, 1.2, 5],
       target: [0, 0, 0],
@@ -38,8 +43,7 @@ export default defineFeature({
     hud.status(
       `wireframe ${wire.value.submeshes[0]?.vertexCount ?? 0} vertices, edges ${edges.value.submeshes[0]?.vertexCount ?? 0} vertices`,
     );
-    const alloc = (mesh: MeshAsset) =>
-      world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
+    const alloc = (mesh: MeshAsset) => sceneAssets.create(mesh).unwrap();
     const rotation = lookRotation([0, 0, 0], [0.4, -0.5, -1]);
     const rows = [
       {

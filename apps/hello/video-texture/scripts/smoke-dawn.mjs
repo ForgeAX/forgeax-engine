@@ -124,14 +124,16 @@ const mockCanvas = {
 // --- 3. Drive engine ECS path with video asset -------------------------------
 
 import { readFileSync } from 'node:fs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { VideoPlayer } = await import('@forgeax/engine-graphics-extras');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -167,11 +169,9 @@ if (!videoGuidResult.ok) {
   process.exit(1);
 }
 const videoGuid = videoGuidResult.value;
-assets.catalog(videoGuid, { kind: 'video', url: '/cutscene.webm' });
-
-const videoHandleRes = await assets.loadByGuid(videoGuid);
+const videoHandleRes = assets.create({ kind: 'video', url: '/cutscene.webm' });
 if (!videoHandleRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid video: ${videoHandleRes.error.code}`);
+  console.error(`[smoke] FAIL - create video: ${videoHandleRes.error.code}`);
   process.exit(1);
 }
 console.log('[video-texture] VideoAsset registered and loaded');
@@ -185,7 +185,7 @@ if (!matGuidResult.ok) {
   console.error(`[smoke] FAIL - material GUID parse: ${matGuidResult.error.code}`);
   process.exit(1);
 }
-assets.catalog(matGuidResult.value, {
+const matHandleRes = assets.create({
   kind: 'material',
   passes: [
     {
@@ -196,20 +196,24 @@ assets.catalog(matGuidResult.value, {
   ],
   values: {
     baseColor: [0.2, 0.5, 0.9],
-    baseColorTexture: videoGuid,
+    baseColorTexture: videoHandleRes.value,
   },
 });
 
-const matHandleRes = await assets.loadByGuid(matGuidResult.value);
 if (!matHandleRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid material: ${matHandleRes.error.code}`);
+  console.error(`[smoke] FAIL - create material: ${matHandleRes.error.code}`);
   process.exit(1);
 }
 console.log('[video-texture] video-textured material registered');
 
 // --- 5. Build world: quad + camera + directional light + video player -------
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const frameRequest = {
@@ -248,14 +252,12 @@ world.spawn(
 );
 console.log('[video-texture] light entity spawned');
 
-// Mint handles from the payloads that loadByGuid returned (loadByGuid
-// returns the payload, not a handle — D-17). allocSharedRef maps payload
-// to a per-world column handle for spawn.
-const videoClipHandle = world.allocSharedRef('VideoAsset', videoHandleRes.value);
-const matHandle = world.allocSharedRef('MaterialAsset', matHandleRes.value);
+// Bind the managed video and material handles directly.
+const videoClipHandle = videoHandleRes.value;
+const matHandle = matHandleRes.value;
 
 const videoEnt = world.spawn(
-  { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+  { component: MeshFilter, data: { assetHandle: primitiveQuad } },
   { component: MeshRenderer, data: { materials: [matHandle] } },
   {
     component: VideoPlayer,

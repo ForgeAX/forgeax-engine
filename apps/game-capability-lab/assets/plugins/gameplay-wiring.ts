@@ -13,12 +13,15 @@ import { installGameplayRenderEvidence } from './gameplay-render-evidence';
 import { installFallbackSystems } from './fallback-systems';
 import { installGameplaySystems } from './systems/gameplay';
 import { installPresentationSystems } from './systems/presentation';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import type { GameplaySession } from './gameplay-session';
 import type { GameplayTargetFeatures } from './gameplay-targets';
 import { GAME_DEFAULT_MATERIAL_ELAPSED_ORIGIN, recordGameplayCommand } from './resources/gameplay';
 import { TOP_DOWN_OFFSET_Z, TOP_DOWN_Y } from './camera-controller';
 import { applyAssetLabAction, type AssetLabActionResult } from './asset-lab-actions';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
+
 
 export type GameplayWiringArgs = {
   readonly context: Context;
@@ -32,6 +35,10 @@ export type GameplayWiringArgs = {
 /** Register ECS systems and optional inspection bridges after feature assembly. */
 export function installGameplayWiring(args: GameplayWiringArgs): void {
   const { world, host, targets, session } = args;
+  if (host?.assets === undefined) throw new Error('Gameplay wiring requires the host AssetRegistry');
+  const assets = host.assets;
+  const handleQuad = assets.create(BUILTIN_QUAD).unwrap();
+  args.context.effect(() => () => { assets.release(handleQuad).unwrap(); }, 'game-default/projectile-quad');
   const { cameraController, projectilePresentation } = session;
   const { camera, topQuaternion, settingsState, depthOfField, chromaticAberration, getMode, setMode, applyPanCamera } = cameraController;
   const { projectileMesh, projectileMaterial, customProjectile, spriteAtlasLoop, flashMaterial, getProjectileVisual, setProjectileVisual, materialsForCurrentMesh, triggerFlash, multiMaterial } = projectilePresentation;
@@ -175,7 +182,7 @@ export function installGameplayWiring(args: GameplayWiringArgs): void {
       physics: session.physics,
       projectileMesh,
       projectileMaterial,
-      handleQuad: HANDLE_QUAD,
+      handleQuad,
       setPerspectiveFov: (fov) => world.set(camera, Camera, { fov }),
       applyPanCamera,
     });

@@ -44,6 +44,13 @@ and class instances are rejected before values are read or published. Migration
 then checks its live-state key policy over the admitted JSON tree. A non-zero resource census
 turns a would-be success into `tool-cleanup-failed`.
 
+`ToolJsonSchema` owns the small schema vocabulary consumed by tool admission,
+including array bounds and JSON-content uniqueness. DevKit RHI descriptors and
+thumbnail tools use the same contract as their executable parsers. Object key
+order does not affect `enum`, `const` or `uniqueItems` equality.
+`toolJsonSchema` retains its serialized description as the parser input, so later
+author mutations cannot change validation independently of discovery.
+
 This package has no filesystem, Vite, WebGPU, Editor, or second registry dependency.
 
 ## Fiber-local typed capabilities
@@ -101,7 +108,9 @@ The visible carrier transport is an ephemeral two-process boundary. A host
 publishes a POD offer containing `offerId`, loopback `endpoint`, bearer token,
 `generation`, `descriptorDigest`, `recipeDigest`, and `expiresAt`. The consumer
 must complete `lease -> start -> execute -> exit`; the transport never creates a
-ToolRun, registry, World, or fallback executor.
+ToolRun, registry, World, or fallback executor. The current phase owns the lease
+identity: expiry, fallback, and exit cannot restart a retired lease. Only an
+active leased offer may replace its lease before start.
 
 `createAuthenticatedCarrierTransport` authenticates every request and exposes
 structured failures with stable `code`, `expected`, `hint`, and optional
@@ -163,3 +172,21 @@ manifest admission use that vocabulary. Artifact construction and ToolRun
 terminal validation share one check for supported kinds, nonempty digests,
 optional string metadata and non-negative safe byte lengths. Preview role and
 kind types derive from their role mapping rather than independent lists.
+
+`ServiceAdmissionExpectation` selects workload identity from `ServiceAdmissionRef`;
+DevKit executor options derive the same fields. Admission still validates the
+explicit identity whitelist, correctness evidence and performance thresholds
+before allowing a service; absent or invalid evidence keeps the private executor.
+
+Provider revocation and Tool API disposal share the provider's executor-exit
+completion. Every overlapping caller waits for that completion, including an
+executor that ignores cancellation. A failed provider remains the identity owner
+until its executors exit; registering a replacement before then is rejected.
+
+Provider revocation withdraws admission synchronously. Cancellation and the
+executor-exit snapshot run after the current admission stack, so an executor that
+revokes its own provider before its ToolRun handle is returned is still included
+in the shared retirement completion.
+
+Exclusive phase timing uses the recorded observation to admit each phase once;
+`begin`, `end`, and externally measured `record` share that completion state.

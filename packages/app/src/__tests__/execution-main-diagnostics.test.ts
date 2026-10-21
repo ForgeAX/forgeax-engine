@@ -228,7 +228,7 @@ it.each([
     releaseSurface: () => ({ ok: true, value: undefined }),
     restoreSurface: () => ({ ok: true, value: undefined }),
   };
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   constructRuntimeRendererHost.mockResolvedValue({
     ok: true,
     value: {

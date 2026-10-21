@@ -127,7 +127,7 @@ describe('browser entry isolation (AC-16)', () => {
 
   it('barrel index.ts does not re-export browser transport symbols', () => {
     const barrel = fs.readFileSync(BARREL_SRC, 'utf-8');
-    const leaked = ['captureAndUpload', 'uploadTape'].filter((sym) => barrel.includes(sym));
+    const leaked = ['uploadTape'].filter((sym) => barrel.includes(sym));
     expect(leaked).toEqual([]);
   });
 });

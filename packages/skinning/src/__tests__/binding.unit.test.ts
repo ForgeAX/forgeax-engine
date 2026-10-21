@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 describe('skinning binding contract', () => {
   it('exposes Skin as the optional binding component', () => {
     expect(Skin.name).toBe('Skin');
-    expect(componentSchema(Skin).skeleton).toBe('shared<SkeletonAsset>');
+    expect(componentSchema(Skin).skeleton).toBe('asset<skeleton>');
     expect(componentSchema(Skin).joints).toBe('array<entity>');
   });
 

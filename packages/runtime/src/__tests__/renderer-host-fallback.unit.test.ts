@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { EngineEnvironmentError } from '@forgeax/engine-render/internal/construct-renderer';
 import { RhiError } from '@forgeax/engine-rhi';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +68,7 @@ describe('runtime renderer backend fallback boundary', () => {
     const fallbackPack = { name: 'wgpu' };
     const target = canvas();
     const environmentFailure = environmentError('adapter-unavailable');
+    const assets = new AssetRegistry();
     mocks.loadBackendPack
       .mockResolvedValueOnce({ ok: true, value: firstPack })
       .mockResolvedValueOnce({ ok: true, value: fallbackPack });
@@ -74,7 +76,7 @@ describe('runtime renderer backend fallback boundary', () => {
       .mockResolvedValueOnce({ ok: false, error: environmentFailure })
       .mockImplementationOnce(async (hostCanvas: typeof target, _options, _bundler, pack) => {
         if (pack === fallbackPack) hostCanvas.getContext('webgl2');
-        return { ok: true, value: {} };
+        return { ok: true, value: { assets } };
       });
 
     const result = await constructRuntimeRendererHost(target);
@@ -90,6 +92,7 @@ describe('runtime renderer backend fallback boundary', () => {
       fallbackPack,
     );
     expect(target.getContext).toHaveBeenCalledOnce();
+    assets.dispose();
   });
 
   it('never falls back for an explicitly injected RHI and retains structured detail', async () => {

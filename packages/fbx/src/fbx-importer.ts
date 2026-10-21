@@ -78,7 +78,7 @@ export function applyFbxImportSettingsBounds(
 export const fbxImporter: Importer = {
   key: 'fbx',
 
-  async import(ctx: ImportContext): Promise<ImportResult> {
+  async import(ctx: ImportContext): Promise<ImportResult<unknown>> {
     // ufbx WASM path: read raw FBX bytes via the import context (browser +
     // Node both resolve through readSource), then parse in-memory. No native
     // addon / SDK build step (the WASM module self-loads its .wasm).

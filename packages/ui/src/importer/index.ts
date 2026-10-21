@@ -6,17 +6,14 @@ import {
 } from '@forgeax/engine-types';
 import type { UiAsset } from '../asset.js';
 import { classifyUiAuthoring, validateUiAuthoring } from '../authoring/index.js';
-import { isUiBrowserExtensions, type UiBrowserExtension } from '../browser-extensions.js';
+import { isUiBrowserExtensions } from '../browser-extensions.js';
 import { isUiLocalization, type UiLocalization } from '../localization/resources.js';
 import { uiResourceMimeType, uiResourcePath } from '../resources.js';
 
-export interface UiSource {
-  readonly browserExtensions?: readonly UiBrowserExtension[];
-  readonly guid: string;
-  readonly html: string;
-  readonly css: string;
-  readonly localization?: UiLocalization;
-}
+export type UiSource = Pick<
+  UiAsset,
+  'guid' | 'html' | 'css' | 'browserExtensions' | 'localization'
+>;
 
 function importFailure(reason: string): ImportResult<UiAsset> {
   return {
@@ -119,7 +116,8 @@ export function createUiImporter(): {
                 ok: false as const,
                 path,
                 reason:
-                  'reason' in read.error.detail ? read.error.detail.reason : read.error.message,
+                  ('reason' in read.error.detail ? read.error.detail.reason : undefined) ??
+                  read.error.message,
               };
         },
       });

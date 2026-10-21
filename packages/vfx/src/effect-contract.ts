@@ -1,6 +1,7 @@
 import { err, ok, type Result, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 import type { VfxDataInterfaceRequirement } from './data-interface.js';
 import type { VfxCustomLayout, VfxParticleCoreLayout } from './particle-layout.js';
+import { deriveVfxCustomLayout, VFX_PARTICLE_CORE_LAYOUT } from './particle-layout.js';
 
 export type VfxValue = number | readonly number[];
 export type VfxValueMap = Readonly<Record<string, VfxValue>>;
@@ -82,11 +83,22 @@ function zeroValue(type: VfxValueType): VfxValue {
 
 function valueMatches(type: VfxValueType, value: unknown): boolean {
   const length = WGSL_NUMERIC_LAYOUT[type].size / 4;
-  if (length === 1) return typeof value === 'number' && Number.isFinite(value);
+  if (length === 1)
+    return (
+      typeof value === 'number' &&
+      Number.isFinite(Math.fround(value)) &&
+      (type === 'f32' ||
+        (Number.isInteger(value) &&
+          (type === 'u32'
+            ? value >= 0 && value <= 0xffffffff
+            : value >= -0x80000000 && value <= 0x7fffffff)))
+    );
   return (
     Array.isArray(value) &&
     value.length === length &&
-    value.every((component) => typeof component === 'number' && Number.isFinite(component))
+    value.every(
+      (component) => typeof component === 'number' && Number.isFinite(Math.fround(component)),
+    )
   );
 }
 
@@ -105,47 +117,118 @@ function fail(
   });
 }
 
-function validateReflection(reflection: VfxEffectReflection): Result<true, VfxEffectContractError> {
+/** Validate the executable byte layout before any CPU pack or GPU allocation. */
+export function validateVfxEffectReflection(
+  input: unknown,
+): Result<VfxEffectReflection, VfxEffectContractError> {
+  const invalid = (path: string) =>
+    fail(
+      'vfx-reflection-invalid',
+      path,
+      'a bounded Program v3 layout consistent with its field offsets and types',
+      'recook the effect with the current VFX compiler',
+    );
+  if (input === null || typeof input !== 'object') return invalid('reflection');
+  const reflection = input as VfxEffectReflection;
   if (
     reflection.version !== 3 ||
     typeof reflection.fingerprint !== 'string' ||
     !reflection.fingerprint.startsWith('sha256:')
-  ) {
-    return fail(
-      'vfx-reflection-invalid',
-      'reflection',
-      'a version 3 reflection with a sha256 fingerprint',
-      'recook the effect with the current VFX compiler',
-    );
+  )
+    return invalid('reflection');
+  for (const [name, struct] of [
+    ['VfxParameters', reflection.parameters],
+    ['VfxCustom', reflection.custom],
+  ] as const) {
+    if (
+      struct?.name !== name ||
+      !Array.isArray(struct.fields) ||
+      !Number.isSafeInteger(struct.size) ||
+      struct.size < 0 ||
+      struct.size > 65536 ||
+      ![1, 4, 8, 16].includes(struct.alignment) ||
+      struct.size % struct.alignment !== 0
+    )
+      return invalid(name);
+    const names = new Set<string>();
+    let end = 0;
+    for (const field of struct.fields) {
+      if (
+        field === null ||
+        typeof field !== 'object' ||
+        typeof field.name !== 'string' ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(field.name) ||
+        names.has(field.name) ||
+        !Object.hasOwn(WGSL_NUMERIC_LAYOUT, field.type)
+      )
+        return invalid(name);
+      const { size, alignment } = WGSL_NUMERIC_LAYOUT[field.type as VfxValueType];
+      if (
+        field.size !== size ||
+        field.alignment !== alignment ||
+        !Number.isSafeInteger(field.offset) ||
+        field.offset < end ||
+        field.offset % alignment !== 0 ||
+        field.offset + field.size > struct.size ||
+        alignment > struct.alignment
+      )
+        return invalid(`${name}.${field.name}`);
+      if (field.defaultValue !== undefined && !valueMatches(field.type, field.defaultValue))
+        return invalid(`${name}.${field.name}.defaultValue`);
+      names.add(field.name);
+      end = field.offset + field.size;
+    }
+  }
+  const core = reflection.core,
+    expected = VFX_PARTICLE_CORE_LAYOUT;
+  if (
+    core?.name !== expected.name ||
+    core.stride !== expected.stride ||
+    core.size !== expected.size ||
+    core.alignment !== expected.alignment ||
+    !Array.isArray(core.fields) ||
+    core.fields.length !== expected.fields.length ||
+    core.fields.some((field, index) => {
+      const canonical = expected.fields[index];
+      return (
+        canonical === undefined ||
+        field.name !== canonical.name ||
+        field.type !== canonical.type ||
+        field.offset !== canonical.offset ||
+        field.size !== canonical.size ||
+        field.alignment !== canonical.alignment
+      );
+    })
+  )
+    return invalid('reflection.core');
+  let custom: ReturnType<typeof deriveVfxCustomLayout>;
+  try {
+    custom = deriveVfxCustomLayout(reflection.custom);
+  } catch {
+    return invalid('reflection.customLayout');
   }
   if (
-    reflection.core.name !== 'VfxParticle' ||
-    reflection.core.stride !== 112 ||
-    reflection.core.fields.length === 0 ||
-    reflection.customLayout.name !== 'VfxCustom' ||
-    reflection.customLayout.stride < 0 ||
-    reflection.customLayout.lanes < 0
-  ) {
-    return fail(
-      'vfx-reflection-invalid',
-      'reflection.core',
-      'Program v3 Core and Custom layouts derived from the particle schema',
-      'recook the effect with the current VFX compiler',
-    );
-  }
-  const names = new Set<string>();
-  for (const field of fieldList(reflection)) {
-    if (names.has(field.name)) {
-      return fail(
-        'vfx-reflection-invalid',
-        field.name,
-        'unique field names across parameters and custom data',
-        'rename the duplicate WGSL field and recook',
+    reflection.customLayout?.name !== custom.name ||
+    reflection.customLayout.stride !== custom.stride ||
+    reflection.customLayout.lanes !== custom.lanes ||
+    reflection.customLayout.size !== custom.size ||
+    reflection.customLayout.alignment !== custom.alignment ||
+    !Array.isArray(reflection.customLayout.fields) ||
+    reflection.customLayout.fields.length !== custom.fields.length ||
+    custom.fields.some((field, index) => {
+      const actual = reflection.customLayout.fields[index];
+      return (
+        actual === undefined ||
+        actual.name !== field.name ||
+        actual.type !== field.type ||
+        actual.offset !== field.offset ||
+        actual.size !== field.size ||
+        actual.alignment !== field.alignment
       );
-    }
-    names.add(field.name);
-  }
-  return ok(true);
+    })
+  )
+    return invalid('reflection.customLayout');
+  return ok(reflection);
 }
 
 function defaultsFor<Values extends VfxValueMap>(reflection: VfxEffectReflection): Values {
@@ -206,7 +289,7 @@ function writeValue(view: DataView, offset: number, type: VfxValueType, value: V
 export function createVfxEffectContract<Values extends VfxValueMap = VfxValueMap>(
   reflection: VfxEffectReflection,
 ): VfxEffectContract<Values> {
-  const checked = validateReflection(reflection);
+  const checked = validateVfxEffectReflection(reflection);
   if (!checked.ok) throw new TypeError(checked.error.hint);
   const defaults = defaultsFor<Values>(reflection);
   const customBase = reflection.parameters.size;

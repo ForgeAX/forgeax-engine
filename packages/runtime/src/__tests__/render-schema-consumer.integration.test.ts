@@ -27,6 +27,6 @@ describe('runtime render schema consumer', () => {
     expect(prepared.cameraProjection).toBe(1);
     expect(Camera.fields.projection.default).toBe(0);
     expect(DirectionalLight.fields.direction.type).toBe('array<f32, 3>');
-    expect(MeshFilter.fields.assetHandle.type).toBe('shared<MeshAsset>');
+    expect(MeshFilter.fields.assetHandle.type).toBe('asset<mesh>');
   });
 });

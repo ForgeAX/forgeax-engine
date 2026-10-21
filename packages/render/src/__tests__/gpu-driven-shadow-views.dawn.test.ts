@@ -1,36 +1,46 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { frustum, mat4 } from '@forgeax/engine-math';
+import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
-import { BatchTopology, batchLevelStride } from '../gpu-driven/batch-topology';
+import { batchLevelStride } from '../gpu-driven/batch-layout';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { type ShadowViewIdentity, ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import { GPU_DRIVEN_VIEW_WGSL, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import { buildGpuDrivenPbrInstancesBindGroupLayout } from '../pbr-pipeline';
+import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { addTypedShadowPasses } from '../typed-shadow-passes';
-import { preparedPbrSnapshot, standardPbrInputs } from './gpu-driven-production-fixture';
+import {
+  admitGpuFixture,
+  preparedPbrSnapshot,
+  standardPbrInputs,
+} from './gpu-driven-production-fixture';
+import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 const GPU_MAP_MODE_READ = 0x0001;
 
-const material = {
-  baseColor: new Float32Array([1, 1, 1]),
+const material = new MaterialResource({
+  passes: [],
+  baseColor: vec3.create(1, 1, 1),
   metallic: 0,
   roughness: 1,
-} as MaterialSnapshot;
+});
 
 function snapshot(entityKey: number, assetHandle = 3, x = 0): RenderableSnapshot {
   const world = new Float32Array(mat4.identity(mat4.create()));
@@ -54,6 +64,16 @@ function snapshot(entityKey: number, assetHandle = 3, x = 0): RenderableSnapshot
         topology: 'triangle-list',
         pipelineClass: 'opaque',
         materialResourceClass: 'plain',
+        geometry: {
+          receipt: {
+            identity: 'shadow',
+            vertexInputs: [],
+            topology: 'triangle-list',
+            indexed: true,
+          },
+          draw: { kind: 'indexed', first: 0, count: 36, baseVertex: 0, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
   };
@@ -110,23 +130,38 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
     const shaderModuleFactory = { createShaderModule: () => ok(shader) };
     const residency = new GpuResidencyCache();
-    residency.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw Error('unused cubemap');
-      },
-      device.caps,
-    );
-    const world = new World();
+    residency.configureGpuDevice(device, undefined, device.caps);
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const geometry = createBoxGeometry(2, 2, 2).unwrap();
-    const meshHandle = world.allocSharedRef('MeshAsset', geometry);
-    const mesh = residency.ensureResident(meshHandle, geometry, world).unwrap();
-    const preparedAt = (entityKey: number, x: number) =>
-      preparedPbrSnapshot(snapshot(entityKey, Number(meshHandle), x));
+    const meshHandle = assets.create(geometry).unwrap();
+    const mesh = residency
+      .ensureResident(meshHandle, geometry, worldRenderResources(world))
+      .unwrap();
+    const preparedSource = preparedPbrSnapshot(snapshot(0, Number(meshHandle), 0));
+    preparedSource.material.adopt({
+      ...preparedSource.material.snapshot,
+      passes: [
+        ...(preparedSource.material.snapshot.passes ?? []),
+        {
+          name: 'shadow',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'ShadowCaster' } },
+        },
+      ],
+      materialProgramKeys: {
+        forward: 'forgeax::default-standard-pbr',
+        shadow: 'forgeax::default-standard-pbr',
+      },
+    });
+    const preparedAt = (entityKey: number, x: number) => ({
+      ...preparedSource,
+      entityKey,
+      transform: snapshot(entityKey, Number(meshHandle), x).transform,
+    });
     const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
     const programs = standardPbrInputs(device, shader, viewLayout);
-    const state = programs.standardPbrPipelineState;
+    const state = programs.materialPipelineState;
     if (state === undefined) throw Error('expected prepared material pipeline');
     const instancesLayout = buildGpuDrivenPbrInstancesBindGroupLayout(device, device.caps);
     const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
@@ -137,7 +172,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       .unwrap();
     const productionInputs = {
       ...programs,
-      standardPbrPipelineState: {
+      materialPipelineState: {
         ...state,
         pbrPipelineLayout: pipelineLayout,
         gpuDrivenPbrPipelineLayout: pipelineLayout,
@@ -146,7 +181,6 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       },
       camera: makeZeroCameraFallbackSnapshot(),
       viewBindGroupLayout: viewLayout,
-      meshResidencyEpoch: residency.meshResidencyEpoch,
     };
     const projection = new RenderScene();
     const available = GpuScene.create(device, 8).unwrap();
@@ -194,30 +228,24 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           production = new GpuDrivenProduction(device, shaderModuleFactory);
         }
         const slots = projection.slotsSnapshot();
-        const prepared = production
-          .prepare({
-            ...productionInputs,
-            scene: { scene, plan: source.plan(), slots, slotAt: projection.slotAt },
-            // Fresh publications exercise retained claim admission on the real
-            // GPU, including removal/reentry at frame 30 and recovery at 45.
-            shadowCasterMembership: slots.map((slot, renderableIndex) => ({
-              worldEntity: slot.snapshot.entityKey,
-              renderableIndex,
-              drawItemIndex: 0,
-              materialHandle: -1,
-              passIndex: 0,
-              gpuDrivenEligible: true,
-              renderState: { cullMode: 'back' as const },
-            })),
-            meshBySlot: new Map(slots.map((slot) => [slot.slot, mesh])),
-          })
-          .unwrap();
+        const preparationInput = admitGpuFixture({
+          ...productionInputs,
+          shadowViews: true,
+          scene: {
+            scene,
+            plan: source.query(source.sourcePlan(), undefined),
+            slots,
+            slotAt: projection.slotAt,
+          },
+          meshBySlot: new Map(slots.map((slot) => [slot.slot, mesh])),
+        });
+        let prepared = production.prepare(preparationInput).unwrap();
         if (prepared === undefined || prepared.shadowViewPool === undefined)
           throw Error('expected admitted production shadow owner');
-        const pool = prepared.shadowViewPool;
+        let pool = prepared.shadowViewPool;
         pool.invalidate('view-clipping-changed');
         const update = () => {
-          if (prepared.updateShadowViews === undefined) throw Error('expected shadow projection');
+          if (prepared?.updateShadowViews === undefined) throw Error('expected shadow projection');
           prepared.updateShadowViews(views).unwrap();
           return views.map(({ identity }) => {
             const submitted = pool.submission(identity);
@@ -231,6 +259,9 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           if (prepared._abortResourceReplacement === undefined)
             throw Error('expected production submission abort');
           prepared._abortResourceReplacement();
+          prepared = production.prepare(preparationInput).unwrap();
+          if (prepared?.shadowViewPool === undefined) throw Error('expected retry preparation');
+          pool = prepared.shadowViewPool;
           current = update();
           expect(current[0]?.plan).not.toBe(aborted);
         }
@@ -248,8 +279,11 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           encoder.copyBufferToBuffer(indirect, 0, readback, index * 64, 20);
           encoder.copyBufferToBuffer(visible, 0, readback, index * 64 + 32, 32);
         }
+        prepared._sealResourceReads().unwrap();
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
-        await device.queue.onSubmittedWorkDone();
+        const completed = device.queue.onSubmittedWorkDone();
+        prepared._trackSubmittedWork(completed);
+        await completed;
         prepared._commitResourceReplacement();
         const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
         const words = new Uint32Array(mapped.getMappedRange().unwrap());
@@ -328,16 +362,16 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         pool.invalidate('view-clipping-changed');
         const input = {
           identity,
-          sourcePlan: topology.plan(),
+          sourcePlan: topology.query(topology.sourcePlan(), undefined),
           scene,
           planes,
           matrix,
           targetSize: 32,
         };
-        pool.update(input).unwrap();
+        updateShadowView(pool, input).unwrap();
         if (frame === 20) {
           pool._abortResourceReplacement();
-          pool.update(input).unwrap();
+          updateShadowView(pool, input).unwrap();
         }
         const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
         pool.project(graph, identity).unwrap();
@@ -451,7 +485,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     availability.scene.sync(delta).unwrap();
     const topologyOwner = new BatchTopology();
     topologyOwner.rebuild(projection.slotsSnapshot());
-    const source = topologyOwner.plan();
+    const source = topologyOwner.query(topologyOwner.sourcePlan(), undefined);
     const plan = {
       ...source,
       batches: source.batches.map((batch) => ({
@@ -481,7 +515,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         orthoTop: span / 2,
         orthoBottom: -span / 2,
       } as unknown as LodViewCamera;
-      view.update(plan, availability.scene, planes, lodCamera).unwrap();
+      updateGpuView(view, plan, availability.scene, planes, lodCamera).unwrap();
       const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
       view.addPasses(graph).unwrap();
       const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
@@ -503,7 +537,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     expect(await renderAt(0.6)).toEqual([36, 1, 0, 0, 0, 12, 0, 7, 0, 0]);
     expect(await renderAt(0.4)).toEqual([36, 0, 0, 0, 0, 12, 1, 7, 0, 0]);
     expect(view.inspect()).toMatchObject({
-      candidateUploadBytes: 0,
+      sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
     });
 
@@ -523,7 +557,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     availability.scene.sync(delta).unwrap();
     const topologyOwner = new BatchTopology();
     topologyOwner.rebuild(projection.slotsSnapshot());
-    const source = topologyOwner.plan();
+    const source = topologyOwner.query(topologyOwner.sourcePlan(), undefined);
     const plan = {
       ...source,
       batches: source.batches.map((batch) => ({
@@ -536,7 +570,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         },
       })),
     };
-    const batch = plan.batches[0];
+    const batch = plan.batches.at(0);
     if (batch === undefined) throw new Error('missing LOD batch');
     const view = GpuDrivenView.create({
       device,
@@ -558,7 +592,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         orthoTop: span / 2,
         orthoBottom: -span / 2,
       } as unknown as LodViewCamera;
-      view.update(plan, availability.scene, planes, lodCamera).unwrap();
+      updateGpuView(view, plan, availability.scene, planes, lodCamera).unwrap();
       const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
       view.addPasses(graph).unwrap();
       const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
@@ -598,7 +632,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     const hard = await renderAt(0.9);
     expect(hard.instances).toEqual([1, 0]);
     expect(hard.fades[0]).toBe(0);
-    expect(view.inspect()).toMatchObject({ candidateUploadBytes: 0, batchUploadBytes: 0 });
+    expect(view.inspect()).toMatchObject({ sharedInputUploadBytes: 0, batchUploadBytes: 0 });
     device.destroyBuffer(indirectReadback).unwrap();
     device.destroyBuffer(visibleReadback).unwrap();
     view.dispose();
@@ -657,13 +691,13 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     }).unwrap();
     const inputs = identities.map((identity) => ({
       identity,
-      sourcePlan: topologyOwner.plan(),
+      sourcePlan: topologyOwner.query(topologyOwner.sourcePlan(), undefined),
       scene: sceneAvailability.scene,
       planes,
       candidatePrimitiveIndices: [0, 1],
     }));
     for (const input of inputs) {
-      const update = pool.update(input).unwrap();
+      const update = updateShadowView(pool, input, input.sourcePlan).unwrap();
       expect(update.cache).toBe('invalidated');
       expect(update.plan.candidateCount).toBe(2);
       expect(update.plan.batches).toHaveLength(2);
@@ -726,8 +760,27 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           .unwrap(),
       };
     });
+    const uploadsBeforeObservation = sceneAvailability.scene.inputs.uploadBytes;
+    const materialReads = sceneAvailability.scene.inputs.capture();
+    const materialInputBuffer = materialReads.buffer().unwrap().buffer;
+    expect(sceneAvailability.scene.inputs.uploadBytes).toBe(uploadsBeforeObservation);
+    materialReads.seal().unwrap();
     const encoder = device.createCommandEncoder({ label: 'gpu-driven-shadow-views-dawn' }).unwrap();
     compiled.execute({ encoder }).unwrap();
+    const materialsReadback = device
+      .createBuffer({ size: 8, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+      .unwrap();
+    for (let slot = 0; slot < 2; slot++) {
+      const descriptor = sceneAvailability.scene.materialIndexForSlot(slot, 0);
+      if (descriptor === undefined) throw new Error('Missing scene material descriptor');
+      encoder.copyBufferToBuffer(
+        materialInputBuffer,
+        descriptor * 4,
+        materialsReadback,
+        slot * 4,
+        4,
+      );
+    }
     for (const readback of readbacks) {
       encoder.copyBufferToBuffer(readback.visible, 0, readback.visibleReadback, 0, 1040);
       encoder.copyBufferToBuffer(readback.indirect, 0, readback.indirectReadback, 0, 40);
@@ -741,8 +794,13 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     }
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     await device.queue.onSubmittedWorkDone();
+    materialReads.release();
     pool._commitResourceReplacement();
 
+    const materialMap = (await materialsReadback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+    const materialRows = new Uint32Array(materialMap.getMappedRange().unwrap().slice(0));
+    materialMap.unmap();
+    device.destroyBuffer(materialsReadback);
     for (const readback of readbacks) {
       const visibleMap = (await readback.visibleReadback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
       const visible = new Uint32Array(visibleMap.getMappedRange().unwrap().slice(0));
@@ -759,13 +817,13 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       const scene = sceneAvailability.scene;
       expect(Array.from(visible.slice(0, 4))).toEqual([
         scene.instanceIndexForSlot(0, 0),
-        scene.materialIndexForSlot(0, 0),
+        materialRows[0],
         0,
         0,
       ]);
       expect(Array.from(visible.slice(256, 260))).toEqual([
         scene.instanceIndexForSlot(1, 0),
-        scene.materialIndexForSlot(1, 0),
+        materialRows[1],
         1,
         0,
       ]);
@@ -777,7 +835,8 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       device.destroyBuffer(readback.overflowReadback);
     }
 
-    for (const input of inputs) expect(pool.update(input).unwrap().cache).toBe('hit');
+    for (const input of inputs)
+      expect(updateShadowView(pool, input, input.sourcePlan).unwrap().cache).toBe('hit');
 
     const hitGraph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     for (const identity of identities)
@@ -795,7 +854,9 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       throw new Error('point shadow input missing');
     }
     pool.invalidate('skin-palette-changed', pointIdentity);
-    expect(pool.update(pointInput).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, pointInput, pointInput.sourcePlan).unwrap().cache).toBe(
+      'invalidated',
+    );
     const invalidatedGraph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     const directionalIdentity = identities[0];
     const spotIdentity = identities[2];
@@ -838,13 +899,16 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       matrix[12] = frame % 2 === 0 ? 0.125 : 0;
       const movedPlanes = frustum.fromViewProjection(frustum.create(), matrix);
       for (const [index, input] of inputs.entries()) {
-        const update = pool
-          .update({ ...input, sourcePlan: topologyOwner.plan(), matrix, planes: movedPlanes })
-          .unwrap();
+        const sourcePlan = topologyOwner.query(topologyOwner.sourcePlan(), undefined);
+        const update = updateShadowView(
+          pool,
+          { ...input, sourcePlan, matrix, planes: movedPlanes },
+          sourcePlan,
+        ).unwrap();
         expect(update.cache).toBe('invalidated');
         expect(update.plan).toBe(retainedPlans[index]);
         expect(update.view.inspect()).toMatchObject({
-          candidateUploadBytes: 0,
+          sharedInputUploadBytes: 0,
           batchUploadBytes: 0,
         });
       }

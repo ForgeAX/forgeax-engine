@@ -42,7 +42,7 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async (original) => {
   return {
     ...real,
     createPublicationAssets: async () =>
-      new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+      new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
   };
 });
 vi.mock('../execution/bootstrap-entry', async (original) => {
@@ -504,7 +504,7 @@ it('keeps explicit repeated module preload idempotent', async () => {
   const { World } = await import('@forgeax/engine-ecs');
   const owner = new SourceRenderWorker(
     new World(),
-    new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+    new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
     { startupTimeoutMs: 30_000, bootstrapUrl: 'fixture://root' } as never,
     () => undefined,
   );

@@ -18,14 +18,12 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
+import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
@@ -107,58 +105,41 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
-  // Load both texture sets up front so set-switching is a values swap
-  // (no async on keypress). Each loaded TextureAsset is wrapped into a column
-  // handle once; the handle ints are what values carries.
+  // Prepare both sets once; key events only edit the current material.
   const loadSet = async (
     set: (typeof TEXTURE_SETS)[keyof typeof TEXTURE_SETS],
   ): Promise<{ diffuse: number; normal: number; height: number } | null> => {
-    const guids = [set.diffuse, set.normal, set.height].map((g) => AssetGuid.parse(g));
-    if (!guids.every((r) => r.ok)) {
-      console.error(`[learn-render 5.5 parallax-mapping] GUID parse failed for ${set.label}`);
-      return null;
-    }
     const loaded = await Promise.all(
-      guids.map((r) => assets.loadByGuid<TextureAsset>((r as { value: AssetGuid }).value)),
+      [set.diffuse, set.normal, set.height].map((guid) => assets.load(guid, 'texture')),
     );
-    if (!loaded.every((r) => r.ok)) {
-      const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
-      for (const r of loaded) {
-        if (!r.ok && bus !== undefined) bus.push({ code: r.error.code, hint: r.error.hint });
+    for (const result of loaded) {
+      if (!result.ok) {
+        console.error(`[learn-render 5.5 parallax-mapping] texture load failed for ${set.label}`, result.error);
+        return null;
       }
-      console.error(`[learn-render 5.5 parallax-mapping] loadByGuid failed for ${set.label}`);
-      return null;
     }
-    const [diffuse, normal, height] = loaded.map((r) =>
-      unwrapHandle(world.allocSharedRef('TextureAsset', (r as { value: TextureAsset }).value)),
-    );
-    return { diffuse: diffuse ?? 0, normal: normal ?? 0, height: height ?? 0 };
+    const [diffuse, normal, height] = loaded.map((result) => result.unwrap());
+    if (diffuse === undefined || normal === undefined || height === undefined) return null;
+    return { diffuse, normal, height };
   };
 
   const bricksHandles = await loadSet(TEXTURE_SETS.bricks2);
   const toyBoxHandles = await loadSet(TEXTURE_SETS.toyBox);
   if (bricksHandles === null || toyBoxHandles === null) return;
 
-  // Each texture set has immutable bindings; scalar parameters live in the World.
-  const materials = [bricksHandles, toyBoxHandles].map((textures) =>
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [{ name: 'Forward', program: { module: PARALLAX_SHADER_ID }, renderState: { tags: { LightMode: 'Forward' } } }],
-      values: {
-        baseColor: [1, 1, 1, 1], heightScale: HEIGHT_SCALE_DEFAULT, algoMode: 0,
-        baseColorTexture: textures.diffuse, normalTexture: textures.normal, heightTexture: textures.height,
-      },
-    }),
-  );
-  const mat = materials[0]!;
-  const algorithm = world.spawn({ component: RuntimeMaterialValue, data: { asset: mat, parameter: 'algoMode', value: [0] } }).unwrap();
-  const height = world.spawn({ component: RuntimeMaterialValue, data: { asset: mat, parameter: 'heightScale', value: [HEIGHT_SCALE_DEFAULT] } }).unwrap();
+  const mat = assets.create<MaterialAsset>({
+    kind: 'material',
+    passes: [{ name: 'Forward', program: { module: PARALLAX_SHADER_ID }, renderState: { tags: { LightMode: 'Forward' } } }],
+    values: {
+      baseColor: [1, 1, 1, 1], heightScale: HEIGHT_SCALE_DEFAULT, algoMode: 0,
+      baseColorTexture: bricksHandles.diffuse, normalTexture: bricksHandles.normal, heightTexture: bricksHandles.height,
+    },
+  }).unwrap();
+  const quad = assets.create(createPlaneGeometry(1, 1).unwrap()).unwrap();
 
-  // Wall quad facing +Z (HANDLE_QUAD = createPlaneGeometry(1,1) with tangents
-  // at @location(3); the shader builds its TBN from them).
-  const wall = world.spawn(
+  world.spawn(
     { component: Transform, data: { pos: [0, 0, 0]} },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: quad } },
     { component: MeshRenderer, data: { materials: [mat] } },
   ).unwrap();
 
@@ -186,12 +167,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   let activeSet: 'bricks2' | 'toyBox' = 'bricks2';
   const renderHud = (): void => {
     if (hud === null) return;
-    const algo = ALGO_LABELS[Math.round(world.get(algorithm, RuntimeMaterialValue).unwrap().value[0]!)] ?? '?';
+    const values = assets.read(mat).unwrap().values;
+    const algo = ALGO_LABELS[Math.round(Number(values?.algoMode ?? 0))] ?? '?';
     const setLabel = activeSet === 'bricks2' ? 'bricks2' : 'toy_box';
     hud.textContent = [
       'LearnOpenGL 5.5 — Parallax Mapping',
       `algorithm : ${algo}   [1 basic] [2 steep] [3 POM]`,
-      `heightScale: ${(world.get(height, RuntimeMaterialValue).unwrap().value[0]!).toFixed(2)}   [-]/[=] adjust`,
+      `heightScale: ${Number(values?.heightScale ?? HEIGHT_SCALE_DEFAULT).toFixed(2)}   [-]/[=] adjust`,
       `texture   : ${setLabel}   [T] toggle`,
       'camera    : WASD + mouse drag, scroll = zoom',
     ].join('\n');
@@ -199,37 +181,40 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   renderHud();
 
   window.addEventListener('keydown', (ev) => {
+    const values = assets.read(mat).unwrap().values;
     switch (ev.key) {
       case '1':
-        world.set(algorithm, RuntimeMaterialValue, { value: [0] }).unwrap();
+        assets.update(mat, { values: { algoMode: 0 } }).unwrap();
         break;
       case '2':
-        world.set(algorithm, RuntimeMaterialValue, { value: [1] }).unwrap();
+        assets.update(mat, { values: { algoMode: 1 } }).unwrap();
         break;
       case '3':
-        world.set(algorithm, RuntimeMaterialValue, { value: [2] }).unwrap();
+        assets.update(mat, { values: { algoMode: 2 } }).unwrap();
         break;
       case '-':
       case '_':
-        world.set(height, RuntimeMaterialValue, { value: [Math.max(
+        assets.update(mat, { values: { heightScale: Math.max(
           HEIGHT_SCALE_MIN,
-          (world.get(height, RuntimeMaterialValue).unwrap().value[0]!) - HEIGHT_SCALE_STEP,
-        )] }).unwrap();
+          Number(values?.heightScale ?? HEIGHT_SCALE_DEFAULT) - HEIGHT_SCALE_STEP,
+        ) } }).unwrap();
         break;
       case '=':
       case '+':
-        world.set(height, RuntimeMaterialValue, { value: [Math.min(
+        assets.update(mat, { values: { heightScale: Math.min(
           HEIGHT_SCALE_MAX,
-          (world.get(height, RuntimeMaterialValue).unwrap().value[0]!) + HEIGHT_SCALE_STEP,
-        )] }).unwrap();
+          Number(values?.heightScale ?? HEIGHT_SCALE_DEFAULT) + HEIGHT_SCALE_STEP,
+        ) } }).unwrap();
         break;
       case 't':
       case 'T': {
         activeSet = activeSet === 'bricks2' ? 'toyBox' : 'bricks2';
-        const material = materials[activeSet === 'bricks2' ? 0 : 1]!;
-        world.set(algorithm, RuntimeMaterialValue, { asset: material }).unwrap();
-        world.set(height, RuntimeMaterialValue, { asset: material }).unwrap();
-        world.set(wall, MeshRenderer, { materials: [material] }).unwrap();
+        const textures = activeSet === 'bricks2' ? bricksHandles : toyBoxHandles;
+        assets.update(mat, { values: {
+          baseColorTexture: textures.diffuse,
+          normalTexture: textures.normal,
+          heightTexture: textures.height,
+        } }).unwrap();
         break;
       }
       default:

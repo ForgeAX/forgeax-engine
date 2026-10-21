@@ -195,7 +195,7 @@ function partitionRecord(record: Record<string, unknown>, keyPrefix: string): { 
       if (child) groups.push(child);
       continue;
     }
-    fields.push(freezeField(key, name, kind, value));
+    fields.push(freezeField(path, name, kind, value));
   }
   return { fields, groups };
 }

@@ -8,6 +8,7 @@ import type { Buffer, Texture, TextureView } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import type { createRayDiffuseComposite } from './diffuse-composite';
 import type { RayDiffuseTargets } from './diffuse-graph';
 import { DIFFUSE_HISTORY_BYTES } from './diffuse-reconstruction';
 import type { PreparedRayDiffuse } from './renderer-diffuse';
@@ -140,4 +141,50 @@ export function addRayReconstructionPasses(
     if (!added.ok) return added;
   }
   return ok(signal);
+}
+
+/** All diffuse lanes compose their current signal into the same HDR attachments. */
+export function addRayDiffuseCompositePass(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  name: string,
+  current: () => Extract<ReturnType<typeof createRayDiffuseComposite>, { ok: true }>['value'],
+  target: RayDiffuseTargets,
+  irradiance: GraphBuffer,
+  view: GraphBuffer,
+  pixelCount: number,
+  reflectionResponse: GraphTextureView | undefined,
+) {
+  return graph.addRasterPass(name, {
+    accesses: [
+      { resource: target.scene.view, usage: 'color-attachment' },
+      { resource: irradiance, usage: 'storage-read' },
+      { resource: target.depth, usage: 'sampled-read' },
+      { resource: target.normal.view, usage: 'sampled-read' },
+      { resource: target.albedo.view, usage: 'sampled-read' },
+      { resource: target.f0.view, usage: 'sampled-read' },
+      { resource: view, usage: 'uniform-read' },
+      ...(reflectionResponse === undefined
+        ? []
+        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
+    ],
+    colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
+    encode: ({ pass, resources }) =>
+      current()
+        .record(
+          pass,
+          {
+            irradiance: resources.buffer(irradiance).unwrap(),
+            ...(reflectionResponse === undefined
+              ? {}
+              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
+            depth: resources.textureView(target.depth).unwrap(),
+            normal: resources.textureView(target.normal.view).unwrap(),
+            albedoMetallic: resources.textureView(target.albedo.view).unwrap(),
+            f0Occlusion: resources.textureView(target.f0.view).unwrap(),
+            view: { buffer: resources.buffer(view).unwrap(), size: VIEW_UNIFORM_BYTES },
+          },
+          pixelCount,
+        )
+        .unwrap(),
+  });
 }

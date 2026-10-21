@@ -16,7 +16,7 @@
 
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { box3, mat4, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
-import { Camera, type CameraProjection, cameraProjectionFromF32 } from '@forgeax/engine-render';
+import { Camera, cameraProjectionFromF32 } from '@forgeax/engine-render';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { PickError } from './pick-errors';
@@ -34,10 +34,9 @@ export function readWorldMatrix(world: World, entity: EntityHandle): Float32Arra
 /**
  * The screen-to-world ray plus the camera matrices used to build it.
  *
- *   - `ray`            — the unprojected world-space pick ray (origin + direction).
- *   - `view`           — `invert(camera GlobalTransform.world)`.
- *   - `proj`           — the camera projection matrix (perspective / orthographic).
- *   - `projectionKind` — the resolved camera projection discriminant.
+ *   - `ray`  — the unprojected world-space pick ray (origin + direction).
+ *   - `view` — `invert(camera GlobalTransform.world)`.
+ *   - `proj` — the camera projection matrix (perspective / orthographic).
  *
  * `view` and `proj` are returned separately so vertex picking can build its own
  * `viewProj = proj * view` for `worldToScreen` without recomputing the branch.
@@ -46,7 +45,6 @@ export interface ScreenRay {
   readonly ray: ray.Ray;
   readonly view: mat4.Mat4;
   readonly proj: mat4.Mat4;
-  readonly projectionKind: CameraProjection;
 }
 
 /** Build a screen ray from matrices captured with the accepted render frame. */
@@ -57,7 +55,6 @@ export function computeScreenRayFromMatrices(
   viewportHeight: number,
   viewMatrix: ArrayLike<number>,
   projectionMatrix: ArrayLike<number>,
-  projectionKind: CameraProjection,
 ): ScreenRay | undefined {
   if (
     !Number.isFinite(screenX) ||
@@ -78,8 +75,8 @@ export function computeScreenRayFromMatrices(
   view.set(viewMatrix);
   proj.set(projectionMatrix);
   const r = ray.create();
-  ray.screenToRay(r, screenX, screenY, viewportWidth, viewportHeight, view, proj, projectionKind);
-  return { ray: r, view, proj, projectionKind };
+  ray.screenToRay(r, screenX, screenY, viewportWidth, viewportHeight, view, proj);
+  return { ray: r, view, proj };
 }
 
 /**
@@ -141,9 +138,9 @@ export function computeScreenRay(
 
   // --- screen -> world ray (two-point unproject; clamp + NaN/Inf sanitized inside) ---
   const r = ray.create();
-  ray.screenToRay(r, screenX, screenY, viewportWidth, viewportHeight, view, proj, projectionKind);
+  ray.screenToRay(r, screenX, screenY, viewportWidth, viewportHeight, view, proj);
 
-  return { ray: r, view, proj, projectionKind };
+  return { ray: r, view, proj };
 }
 
 /** The point kernel and corner order shared by precise picking queries. */

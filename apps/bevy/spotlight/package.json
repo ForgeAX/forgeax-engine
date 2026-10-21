@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `spotlight` example: 4 SpotLights in a 2\u00d72 grid cast round light cones onto a ground plane with 40 random cubes.",
+  "description": "Reproduction of Bevy's `spotlight` example: 4 SpotLights in a 2×2 grid cast round light cones onto a ground plane with 40 random cubes.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -49,7 +49,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

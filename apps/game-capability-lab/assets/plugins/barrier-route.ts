@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { FixedUpdate, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
   Collider,
@@ -9,7 +10,6 @@ import {
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { inState } from '@forgeax/engine-state';
-import type { Handle } from '@forgeax/engine-types';
 import { DamageHazard } from './counterattack';
 import { GameState } from './gameplay-state';
 
@@ -79,18 +79,20 @@ export function createBarrierRoute(
   world: World,
   authored: AuthoredBarrierRouteIdentity,
 ): BarrierRouteHandle | undefined {
+  const assets = world.assets;
+  if (assets === undefined) return undefined;
   const barrierTransform = world.get(authored.barrier, Transform);
   const barrierMesh = world.get(authored.barrier, MeshFilter);
   const barrierRenderer = world.get(authored.barrier, MeshRenderer);
   if (!barrierTransform.ok || !barrierMesh.ok || !barrierRenderer.ok) return undefined;
-  const mesh = barrierMesh.value.assetHandle as Handle<'MeshAsset', 'shared'>;
-  const materials = [...barrierRenderer.value.materials] as Handle<'MaterialAsset', 'shared'>[];
-  if (!world.sharedRefs.retain(mesh).ok) return undefined;
-  const retainedMaterials: Handle<'MaterialAsset', 'shared'>[] = [];
+  const mesh = barrierMesh.value.assetHandle as AssetHandle<'mesh'>;
+  const materials = [...barrierRenderer.value.materials] as AssetHandle<'material'>[];
+  if (!assets.retain(mesh).ok) return undefined;
+  const retainedMaterials: AssetHandle<'material'>[] = [];
   for (const material of materials) {
-    if (!world.sharedRefs.retain(material).ok) {
-      world.sharedRefs.release(mesh);
-      for (const retained of retainedMaterials) world.sharedRefs.release(retained);
+    if (!assets.retain(material).ok) {
+      assets.release(mesh);
+      for (const retained of retainedMaterials) assets.release(retained);
       return undefined;
     }
     retainedMaterials.push(material);
@@ -219,8 +221,8 @@ export function createBarrierRoute(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      world.sharedRefs.release(mesh);
-      for (const material of retainedMaterials) world.sharedRefs.release(material);
+      assets.release(mesh);
+      for (const material of retainedMaterials) assets.release(material);
     },
   };
 }

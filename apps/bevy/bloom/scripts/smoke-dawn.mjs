@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-bloom headless dawn smoke (pixel falsifier + structural gate).
 // Strategy: the shared Bevy-faithful 10x10 emissive sphere field is rendered
@@ -98,20 +100,22 @@ const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { BLOOM_DISABLED, BLOOM_ENABLED, Camera } = await import('@forgeax/engine/render');
 
-const world = new World();
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 } finally {
   globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
 }
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 

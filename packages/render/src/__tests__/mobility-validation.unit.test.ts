@@ -1,4 +1,5 @@
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   ChildOf,
   Mobility,
@@ -14,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MeshFilter } from '../components/mesh-filter';
 import { SceneInstance } from '../components/scene-instance';
 import { detectMobilityInvalidKind } from '../scene/mobility-validation';
+import { testAssets } from './helpers/runtime-assets';
 
 function meshWorld(): World {
   const world = new World();
@@ -26,7 +28,11 @@ function meshWorld(): World {
 function mesh(world: World) {
   return {
     component: MeshFilter,
-    data: { assetHandle: world.allocSharedRef('MeshAsset', {} as never) },
+    data: {
+      assetHandle: testAssets(world)
+        .create(createBoxGeometry(1, 1, 1).unwrap())
+        .unwrap(),
+    },
   };
 }
 
@@ -95,7 +101,7 @@ describe('mobility-invalid-kind (render mesh owner)', () => {
         lamp: { components: { Transform: {}, Mobility: { kind: MobilityKindValue.stationary } } },
       },
     };
-    const handle = world.allocSharedRef('SceneAsset', asset);
+    const handle = testAssets(world).create(asset).unwrap();
     const root = worldInstantiateScene(world, handle, undefined, 'level/main').unwrap().root;
     const lamp = world.get(root, SceneInstance).unwrap().mapping[0] as unknown as EntityHandle;
     world.addComponent(lamp, mesh(world)).unwrap();

@@ -25,6 +25,7 @@ import { acquireBrowserCarrierPage } from './tools/display-carrier.js';
 import type {
   BrowserCaptureOptions,
   CaptureBackend,
+  CaptureBackendObserved,
   CommandError,
   CommandResult,
 } from './types.js';
@@ -110,7 +111,7 @@ export interface BrowserCaptureRunReport {
   readonly launchProfile: BrowserLaunchProfile;
   readonly report: string;
   readonly backendRequested: CaptureBackend;
-  readonly backend: 'software' | 'hardware' | 'unknown';
+  readonly backend: CaptureBackendObserved;
   readonly fallbackReason?: string;
   readonly deterministicRequested: boolean;
   readonly viewport: {
@@ -366,11 +367,19 @@ function captureDigest(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
-type CaptureBackendObserved = 'software' | 'hardware' | 'unknown';
-
-function observedBackend(runtime: BrowserCaptureRuntimeWitness): CaptureBackendObserved {
-  if (runtime.adapter === null) return 'unknown';
-  return isSoftwareAdapter(runtime) ? 'software' : 'hardware';
+/** @internal Classify a reported adapter as a software or hardware lane. */
+export function classifyCaptureAdapter(
+  adapter: Readonly<Record<string, unknown>> | null,
+): CaptureBackendObserved {
+  if (adapter === null) return 'unknown';
+  const witness = Object.values(adapter)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+  return ['swiftshader', 'llvmpipe', 'lavapipe', 'software'].some((token) =>
+    witness.includes(token),
+  )
+    ? 'software'
+    : 'hardware';
 }
 
 /** @internal Shared browser discovery for live capture and resource preview. */
@@ -718,15 +727,6 @@ async function runtimeWitness(
       };
     },
     { datasetKey: FORGEAX_FRAME_SUBMITTED_DATASET, probeAdapter },
-  );
-}
-
-function isSoftwareAdapter(runtime: BrowserCaptureRuntimeWitness): boolean {
-  const witness = Object.values(runtime.adapter ?? {})
-    .map((value) => String(value).toLowerCase())
-    .join(' ');
-  return ['swiftshader', 'llvmpipe', 'lavapipe', 'software'].some((token) =>
-    witness.includes(token),
   );
 }
 
@@ -1130,7 +1130,7 @@ async function openBrowserCaptureSession(
     // keeps the public capture contract portable without masking a flat frame.
     const initialLaunchBackend: CaptureBackend = backend === 'software' ? 'software' : 'hardware';
     let runtime = await openPage(initialLaunchBackend);
-    let observed = observedBackend(runtime);
+    let observed = classifyCaptureAdapter(runtime.adapter);
     const initialAdapterError = runtime.adapterError;
     if (backend === 'auto' && observed !== 'hardware' && carrierAttachment === undefined) {
       removePageListeners();
@@ -1143,7 +1143,7 @@ async function openBrowserCaptureSession(
       requestRecords.length = 0;
       requestByObject.clear();
       runtime = await openPage('software');
-      observed = observedBackend(runtime);
+      observed = classifyCaptureAdapter(runtime.adapter);
     }
     if (backend !== 'auto' && observed !== backend) {
       fail(
@@ -1439,7 +1439,7 @@ async function openBrowserCaptureSession(
         const requestSummary = summarizeRequests(requestRecords);
         const uiPresent = runtime.domUi.rootChildren > 0;
         const requireUi = captureOptions.requireUi ?? options.requireUi ?? false;
-        const captureBackend = observedBackend(runtime);
+        const captureBackend = classifyCaptureAdapter(runtime.adapter);
         if (captureBackend !== 'unknown') Object.assign(report, { backend: captureBackend });
         const backendMatches = backend === 'auto' || captureBackend === backend;
         const ok =

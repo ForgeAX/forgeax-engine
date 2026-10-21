@@ -5,6 +5,7 @@ import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { meshAssetOutputProducer } from '@forgeax/engine-import';
 import { generateMeshLods } from '@forgeax/engine-import/mesh-lod-generator';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { Materials } from '@forgeax/engine-render';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 export async function startGeneratedLodServer() {
@@ -49,6 +50,7 @@ export async function startGeneratedLodServer() {
           path,
           mediaType: body.mediaType,
           assetCodec: body.assetCodec,
+          contentEncoding: 'identity',
           byteLength: body.bytes.byteLength,
           integrity: {
             algorithm: 'sha256',
@@ -69,25 +71,53 @@ export async function startGeneratedLodServer() {
     new TextEncoder().encode(
       JSON.stringify(value, (_key, item) => (item instanceof Uint8Array ? [...item] : item)),
     );
-  routes.set(
-    '/material.pack.json',
-    encode({
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: [
-        { guid: materialGuid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} },
-      ],
-    }),
-  );
-  routes.set(
-    '/mesh.pack.json',
-    encode({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets }),
-  );
+  const materialPublication = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath: 'material.pack',
+    sourceRevision: 'fixture',
+    packageUrl: '/material.pack.json',
+    pack: JSON.parse(
+      new TextDecoder().decode(
+        encode({
+          assets: [
+            {
+              guid: materialGuid,
+              kind: 'material',
+              payload: cooked.payload,
+              refs: [],
+              artifacts: {},
+            },
+          ],
+        }),
+      ),
+    ),
+  });
+  const meshPublication = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath: 'mesh.pack',
+    sourceRevision: 'fixture',
+    packageUrl: '/mesh.pack.json',
+    pack: JSON.parse(new TextDecoder().decode(encode({ assets }))),
+  });
+  routes.set('/material.pack.json', encode(materialPublication.pack));
+  routes.set('/mesh.pack.json', encode(meshPublication.pack));
   routes.set(
     '/pack-index.json',
     encode([
-      ...guids.map((guid) => ({ guid, kind: 'mesh', packageUrl: '/mesh.pack.json' })),
-      { guid: materialGuid, kind: 'material', packageUrl: '/material.pack.json' },
+      ...guids.map((guid) => ({
+        guid,
+        kind: 'mesh',
+        packageUrl: '/mesh.pack.json',
+        sourcePath: 'mesh.pack',
+        publication: meshPublication.publication,
+      })),
+      {
+        guid: materialGuid,
+        kind: 'material',
+        packageUrl: '/material.pack.json',
+        sourcePath: 'material.pack',
+        publication: materialPublication.publication,
+      },
     ]),
   );
   const server = createServer((request, response) => {

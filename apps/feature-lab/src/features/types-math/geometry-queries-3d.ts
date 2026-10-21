@@ -52,7 +52,7 @@ export default defineFeature({
     );
     checks.ok('frustum culls sphere far left', !frustum.intersectsSphere(f, [-100, 0, 0], 1));
 
-    const center = ray.screenToRay(ray.create(), 50, 50, 100, 100, view, proj, 'perspective');
+    const center = ray.screenToRay(ray.create(), 50, 50, 100, 100, view, proj);
     checks.near('center pixel ray points -Z', center[5] as number, -1, 1e-4);
     const screen = vec2.create();
     const projected = ray.worldToScreen(screen, [0, 0, 0], vp, 100, 100);

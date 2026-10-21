@@ -515,9 +515,8 @@ interface AttachmentDepthOps {
 /**
  * Attachment policy for a single passKind — declares the colour / depth shape
  * the pass produces and the default load/store ops. Per-call-site overrides
- * (skybox vs main forward differing on `colorLoadOp`, sprite-split forward
- * differing on both `colorLoadOp` and `depthLoadOp`) flow through the
- * `options` parameter of {@link buildBeginRenderPassDescriptor}.
+ * (for example the skybox `colorLoadOp`) flow through the `options` parameter
+ * of {@link buildBeginRenderPassDescriptor}.
  *
  * `shape` discriminator drives which attachment slots the descriptor emits:
  * - `'depth-only'` → empty `colorAttachments[]`, `depthStencilAttachment` set
@@ -567,9 +566,6 @@ const DEPTH_ONLY_POLICY: PassKindAttachmentPolicy = {
  *    fullscreen-post-process-pass dispatcher, M2 tonemap pre-warm slot):
  *    color-only clear/store
  *
- * Sprite-split forward sub-pass reuses the `'forward'` policy with
- * `options.colorLoadOp='load'` + `options.depthLoadOp='load'`.
- *
  * Stencil-op gate is NOT in this table — it is derived from
  * `specAttachments.depthFormat` inside the helper (depth32float-stencil8
  * → emit `stencilLoadOp:'clear' / stencilStoreOp:'discard'`).
@@ -613,9 +609,9 @@ export const passKindPolicyTable: Readonly<Record<string, PassKindAttachmentPoli
  * shape — every record-stage call site routes through it (plan-strategy M4
  * AC-06). It dispatches on `passKindPolicyTable[passKind]` to pick the
  * attachment shape (depth-only / color-only / color-and-depth) and applies
- * default color/depth load+store ops; per-call overrides (sprite-split's
- * `loadOp:'load'`, main pass's dynamic `mainColorLoadOp`, skybox's specific
- * clearColor) flow through `options`.
+ * default color/depth load+store ops; per-call overrides (for example the
+ * skybox's specific clearColor) flow through `options`. The main forward pass
+ * and its sprite split are begun by the render graph, not by this helper.
  *
  * Stencil-op gate is auto-derived from `specAttachments.depthFormat`:
  * - `'depth32float-stencil8'` → emits `stencilLoadOp:'clear', stencilStoreOp:'discard'`

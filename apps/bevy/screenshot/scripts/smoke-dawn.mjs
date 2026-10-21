@@ -107,10 +107,11 @@ const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 let renderer;
+let assets;
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
-  renderer = constructed.value.renderer;
+  ({ renderer, assets } = constructed.value);
 } catch (err) {
   console.error(`[smoke] FAIL - renderer host construction failed: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -123,7 +124,7 @@ const errors = [];
 subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.hint }));
 
 
-const world = new World();
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const { buildScreenshotWorld, stepScreenshot } = await import(resolve(here, '..', 'src', 'screenshot.ts'));

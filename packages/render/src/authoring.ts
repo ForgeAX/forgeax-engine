@@ -6,8 +6,7 @@ export { SpriteAnimation } from './components/sprite-animation';
 export { SpriteInstances, type SpriteInstancesData } from './components/sprite-instances';
 export { SpritePlayback, spritePlaybackModeFromU32 } from './components/sprite-playback-mode';
 export { SpriteRegionOverride } from './components/sprite-region-override';
-export { TileLayer, TilemapSort } from './components/tile-layer';
-export { Tilemap } from './components/tilemap';
+export { Tilemap, TilemapSort } from './components/tilemap';
 export {
   createFullscreenRenderFeature,
   type FullscreenRenderFeatureOptions,

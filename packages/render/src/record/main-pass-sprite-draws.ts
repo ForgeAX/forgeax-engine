@@ -1,6 +1,10 @@
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
+import { detectNineSliceScaleTooSmall } from './main-pass-material';
+import { drawMaterial } from './material-pass-selection';
+import { materialUniformSlot } from './material-uniforms';
 import { resolveSpriteInstancesBuffer, uploadSpriteInstanceBuffer } from './sprite-instance-buffer';
 // @forgeax/engine-runtime - RenderSystem record stage: main-pass sprite draws.
 // feat-20260704 M5/w31: further-split from main-pass.ts (AC-05 <=1500 lines/file).
@@ -22,14 +26,15 @@ import {
 } from '../gpu-usage';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 import { SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET } from '../pbr-pipeline';
-import { buildBeginRenderPassDescriptor, standardTopologyVariantSet } from '../pipeline-spec';
-import type { DispatchEntry, MaterialSnapshot } from '../render-system-extract';
+import { standardTopologyVariantSet } from '../pipeline-spec';
+import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
 import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
 import { recordGeometryDraws, resolveGeometryInstancesBindGroup } from './main-pass-geometry';
 import {
   MAX_UNIFORM_INSTANCES,
   MESH_PER_ENTITY_STRIDE,
   packInstanceStorageBuffer,
+  prepareMeshDraw,
 } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE } from './render-context';
@@ -43,14 +48,14 @@ export function computeSplitLdrSprite(
   validatedOrdered: readonly (
     | {
         readonly source: {
-          readonly material: MaterialSnapshot;
-          readonly materials?: readonly MaterialSnapshot[];
+          readonly material: MaterialResource;
+          readonly materials?: readonly MaterialResource[];
         };
       }
     | undefined
   )[],
   tonemapActive: boolean,
-  dispatch?: readonly DispatchEntry[],
+  dispatch?: DispatchList,
 ): boolean {
   if (tonemapActive) return false;
   if (dispatch !== undefined && dispatch.length > 0) {
@@ -62,8 +67,8 @@ export function computeSplitLdrSprite(
     if (entry === undefined) continue;
     const materials = entry.source.materials;
     if (materials !== undefined) {
-      if (materials.some((material) => material.transparent === true)) return true;
-    } else if (entry.source.material.transparent === true) {
+      if (materials.some((material) => material.snapshot.transparent === true)) return true;
+    } else if (entry.source.material.snapshot.transparent === true) {
       return true;
     }
   }
@@ -71,14 +76,11 @@ export function computeSplitLdrSprite(
 }
 
 /**
- * feat-20260704 M3/w19: LDR sprite split sub-pass, extracted verbatim from
- * recordMainPass. Runs after the geometry pass when there are sprite / LDR
- * transparent entities and the split path is active (splitLdrSprite && a raw
- * unorm swap-chain view exists). Ends the geometry `pass`, opens a `spritePass`
- * on the resolved transparent-pass view (loadOp=load), draws the sprite / sprite-lit
- * entities (fold-instanced where possible) then the generic per-submesh
- * transparent PBR submeshes, and ends the sprite pass. Returns the updated
- * `geometryPassEnded` flag so the caller skips the unconditional pass.end().
+ * feat-20260704 M3/w19: LDR sprite split draws, extracted verbatim from
+ * encodeMainPass. Runs after the geometry draws when the split path is active
+ * and records the sprite / sprite-lit entities (fold-instanced where possible)
+ * then the generic per-submesh transparent PBR submeshes into the graph-owned
+ * `pass`.
  *
  * @internal
  */
@@ -95,17 +97,12 @@ export function recordSpritePass(
     materialWorld: RenderResourceScope,
     materialShaderId?: string,
   ) => BindGroup,
-  graphPass?: RhiRenderPassEncoder,
-  selectedDispatch?: readonly DispatchEntry[],
-): boolean {
+  selectedDispatch?: DispatchList,
+): void {
   const {
     runtime,
     pipelineState,
-    encoder,
     msaaActive,
-    ldrSpritePassView,
-    ldrSpriteColorView,
-    geometryDepthView,
     viewBindGroup,
     meshBindGroup,
     hdrpClusterBindGroup,
@@ -120,51 +117,8 @@ export function recordSpritePass(
   // the camera itself has no tone map enabled.
   const spriteIsHdr =
     c.tonemapActive || transparentPassColorFormat(c, pipelineState) === 'rgba16float';
-  let geometryPassEnded = false;
-  if (splitLdrSprite && (graphPass !== undefined || ldrSpritePassView !== null)) {
-    if (graphPass === undefined) {
-      pass.end();
-      geometryPassEnded = true;
-    }
-
-    // feat-20260604 M2 / w9 (F-1): under MSAA the sprite sub-pass writes the
-    // count=4 transparent-pass view of the SAME multisample texture the
-    // geometry pass wrote (loadOp=load preserves geometry under sprites) and
-    // resolves the combined result to the single-sample transparent-pass
-    // view at this (last) pass end. Depth reuses the shared count=4
-    // multisample depth (depthLoadOp=load preserves sprite-vs-mesh occlusion).
-    // The single-
-    // sample path is byte-for-byte unchanged (writes the swap-chain view).
-    const spriteColorView = msaaActive ? ldrSpriteColorView : ldrSpritePassView;
-    // sprite-split sub-pass: forward shape with both color and depth loaded
-    // (preserves prior content from the main forward pass under the sprites).
-    // Stencil ops auto-emitted by the helper because depthFormat carries
-    // stencil8.
-    const spritePass: RhiRenderPassEncoder =
-      graphPass ??
-      encoder.beginRenderPass(
-        buildBeginRenderPassDescriptor(
-          {
-            // SSOT for the sprite-pass color format is the resolved transparent
-            // attachment. Native linear-LDR frames use graph-owned `ldrColor`
-            // (possibly rgba16float); swap-chain fallback frames use their raw
-            // storage format. WebGPU requires the attachment format and PSO
-            // target to match, so both are resolved by the same helper.
-            colorFormats: [transparentPassColorFormat(c) as GPUTextureFormat],
-            depthFormat: 'depth32float-stencil8',
-            sampleCount: msaaActive ? 4 : 1,
-          },
-          {
-            colorViews: [spriteColorView],
-            depthView: geometryDepthView,
-            ...(msaaActive ? { resolveTargets: [ldrSpritePassView] } : {}),
-          },
-          'forward',
-          { colorLoadOp: 'load', depthLoadOp: 'load' },
-        ) as never,
-      );
-
-    spritePass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
+  if (splitLdrSprite) {
+    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
 
     // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w14 (D-7):
     // sprite PSO resolution migrated from the dedicated boot-time PSO
@@ -245,11 +199,6 @@ export function recordSpritePass(
         transparentPassColorFormat(c) as GPUTextureFormat,
       ) ?? null;
 
-    // bug-20260629: spritePH===null check moved OUTSIDE the entity loop so the
-    // sprite pass is properly ended before returning. Inside the loop the early
-    // `return` left spritePass open → render-pass-not-ended error every frame
-    // where the pipeline is still being compiled (frame 0 on first load).
-    //
     // feat-city-glb Bug 5: a missing sprite PSO must NOT abort the whole
     // sub-pass — the generic per-submesh PBR transparent loop below does not
     // depend on the sprite shader. Only skip the sprite ENTITIES when spritePH
@@ -293,7 +242,7 @@ export function recordSpritePass(
       ) ?? null;
     recordSpriteEntityDraws(
       c,
-      spritePass,
+      pass,
       matchedIndices,
       resolveMaterialBindGroup,
       spritePH,
@@ -305,7 +254,7 @@ export function recordSpritePass(
     // Keep program, geometry, bindings and dynamic offsets on the common draw path.
     recordSpriteTransparentPbrDraws(
       c,
-      spritePass,
+      pass,
       matchedIndices,
       materialSlotIndices,
       sampleCount,
@@ -313,10 +262,7 @@ export function recordSpritePass(
       meshGroup2,
       selectedDispatch,
     );
-
-    if (graphPass === undefined) spritePass.end();
   }
-  return geometryPassEnded;
 }
 
 /** Non-sprite transparent Passes use the same geometry and binding owner as opaque draws. */
@@ -334,7 +280,7 @@ function recordSpriteTransparentPbrDraws(
     shader?: string,
   ) => BindGroup,
   meshGroup2: BindGroup | null,
-  selectedDispatch?: readonly DispatchEntry[],
+  selectedDispatch?: DispatchList,
 ): void {
   const isSprite = (shader: string | undefined) =>
     shader === 'forgeax::sprite' || shader === 'forgeax::sprite-lit';
@@ -356,11 +302,13 @@ function recordSpriteTransparentPbrDraws(
   if (passes !== undefined) {
     for (const entry of passes) add(entry.renderableIndex, entry.materialHandle);
   } else {
-    for (const entry of c.validatedOrdered) {
+    for (const [row, entry] of c.validatedOrdered.entries()) {
       if (matchedIndices !== null && !matchedIndices.has(entry.renderableIndex)) continue;
-      if (isSprite(entry.source.material.materialShaderId)) continue;
-      for (const material of entry.source.materials) {
-        if (material.transparent === true) add(entry.renderableIndex, material.materialHandle ?? 0);
+      if (isSprite(drawMaterial(c, row).materialShaderId)) continue;
+      for (const slot of c.materialSlotIndices[row] ?? []) {
+        const material = c.materialSlots[slot];
+        if (material?.transparent === true)
+          add(entry.renderableIndex, material.materialHandle ?? 0);
       }
     }
   }
@@ -397,7 +345,7 @@ function recordSpriteTransparentPbrDraws(
  */
 function recordSpriteEntityDraws(
   c: _InternalRenderPipelineContext,
-  spritePass: RhiRenderPassEncoder,
+  pass: RhiRenderPassEncoder,
   matchedIndices: Set<number> | null,
   resolveMaterialBindGroup: (
     materialSlot: number,
@@ -428,7 +376,7 @@ function recordSpriteEntityDraws(
     // feat-20260625 M3 / w13: sub-pass entity filter migrated from
     // `shadingModel === 'sprite'` to `transparent === true` — the
     // shadingModel arm is gone post-feat (plan-strategy D-3).
-    if (spriteEntry === undefined || spriteEntry.source.material.transparent !== true) continue;
+    if (spriteEntry === undefined || drawMaterial(c, i).transparent !== true) continue;
     // feat-city-glb Bug 5 (per-submesh transparency): this loop is the
     // SPRITE path (whole-mesh sprite / sprite-lit PSO). Non-sprite
     // transparent materials (built-in PBR, incl. glTF alphaMode=BLEND) are
@@ -436,7 +384,7 @@ function recordSpriteEntityDraws(
     // below — so skip them here. Previously the 4.3-blending window (a PBR
     // material) was drawn through here with the sprite shader; it now flows
     // through the PBR loop, which is both correct and multi-submesh-capable.
-    const entityShaderId = spriteEntry.source.material.materialShaderId;
+    const entityShaderId = drawMaterial(c, i).materialShaderId;
     if (entityShaderId !== 'forgeax::sprite' && entityShaderId !== 'forgeax::sprite-lit') continue;
     const isSpriteLit = entityShaderId === 'forgeax::sprite-lit';
     // feat-20260622-chunk-gpu-instancing-sprite-tilemap M1 / w4-record-swap
@@ -464,6 +412,15 @@ function recordSpriteEntityDraws(
     // the material UBO. Only the base sprite path has the per-instance
     // region variant compiled; sprite-lit + non-instances entities
     // keep the PER_INSTANCE_REGION=false variant.
+    const slices = drawMaterial(c, i).paramSnapshot?.slicesAndMode as readonly number[] | undefined;
+    if (slices !== undefined)
+      detectNineSliceScaleTooSmall(
+        spriteEntry.source.transform.world,
+        [slices[0] ?? 0, slices[1] ?? 0, slices[2] ?? 0, slices[3] ?? 0],
+        spriteEntry.renderableIndex,
+        c.frameState.warnedNineSliceScaleEntities,
+        runtime.metrics,
+      );
     const activeSpritePH = isSpriteLit
       ? spriteLitPH
       : spriteEntry.source.spriteInstances !== undefined
@@ -493,17 +450,17 @@ function recordSpriteEntityDraws(
       continue;
     }
     if (lastSpritePipelineHandle !== activeSpritePH) {
-      spritePass.setPipeline(activeSpritePH);
+      pass.setPipeline(activeSpritePH);
       lastSpritePipelineHandle = activeSpritePH;
     }
 
     if (spriteEntry.mesh.vertexBuffer !== lastSpriteVertexBuffer) {
-      spritePass.setVertexBuffer(0, spriteEntry.mesh.vertexBuffer.handle);
+      pass.setVertexBuffer(0, spriteEntry.mesh.vertexBuffer.handle);
       lastSpriteVertexBuffer = spriteEntry.mesh.vertexBuffer;
     }
     const indexBuffer = spriteEntry.mesh.indexBuffer;
     if (indexBuffer !== null && indexBuffer !== lastSpriteIndexBuffer) {
-      spritePass.setIndexBuffer(indexBuffer.handle, spriteEntry.mesh.indexFormat);
+      pass.setIndexBuffer(indexBuffer.handle, spriteEntry.mesh.indexFormat);
       lastSpriteIndexBuffer = indexBuffer;
     }
 
@@ -529,7 +486,7 @@ function recordSpriteEntityDraws(
     let spriteInstanceCount = 1;
     const spriteInst = spriteEntry.source.instances;
     if (foldHeadBucket !== undefined && spriteInst === undefined) {
-      const buffer = resolveFoldInstanceBuffer(c, foldHeadBucket, i);
+      const buffer = resolveFoldInstanceBuffer(c, foldHeadBucket, spriteEntry.renderableIndex);
       if (buffer === null) continue;
       spriteInstanceBuffer = buffer;
       spriteInstanceCount = foldHeadBucket.bucketSize;
@@ -560,8 +517,8 @@ function recordSpriteEntityDraws(
             spriteInstanceBuffer,
             undefined,
           );
-          spritePass.setBindGroup(3, spriteInstBg);
-          spritePass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
+          pass.setBindGroup(3, spriteInstBg);
+          pass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
           c.onRenderableDraw?.(spriteEntry, 0);
           continue;
         }
@@ -613,9 +570,10 @@ function recordSpriteEntityDraws(
     // contract. Select the resource from the same capability axis used to
     // request the pipeline; binding the ordinary mesh group to the clustered
     // sprite-lit pipeline is rejected by WebGPU before the draw is recorded.
+    const meshSlot = prepareMeshDraw(c, spriteEntry, foldDispatchPlan?.headBuckets.has(i) === true);
     const spriteGroup2 =
       isSpriteLit && c.standardLighting?.kind === 'clustered'
-        ? clusteredMeshSlotBindGroup(c, i * MESH_PER_ENTITY_STRIDE)
+        ? clusteredMeshSlotBindGroup(c, meshSlot * MESH_PER_ENTITY_STRIDE)
         : pipelineState.meshStorageBuffer.pages === undefined
           ? meshBindGroup
           : meshSlotBindGroup(
@@ -623,7 +581,7 @@ function recordSpriteEntityDraws(
               c.frameState,
               pipelineState,
               c.bindGroupCounts,
-              i * MESH_PER_ENTITY_STRIDE,
+              meshSlot * MESH_PER_ENTITY_STRIDE,
             );
 
     // M3 / w12: LDR sprite split pass per-entity instances BG cache. Sprite
@@ -631,8 +589,9 @@ function recordSpriteEntityDraws(
     // records stay out of this bind-group path.
     const spriteInstancesBg = resolveGeometryInstancesBindGroup(c, spriteInstanceBuffer, undefined);
 
-    spritePass.setBindGroup(2, spriteGroup2 as BindGroup, [
-      meshSsboBufferBinding(pipelineState.meshStorageBuffer, i * MESH_PER_ENTITY_STRIDE).byteOffset,
+    pass.setBindGroup(2, spriteGroup2 as BindGroup, [
+      meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshSlot * MESH_PER_ENTITY_STRIDE)
+        .byteOffset,
     ]);
 
     const materialSlot = materialSlotIndices[i]?.[0] ?? 0;
@@ -641,19 +600,19 @@ function recordSpriteEntityDraws(
     // replace authored samplers, texture sources or cooked layouts here.
     const spritePassBg = resolveMaterialBindGroup(
       materialSlot,
-      spriteEntry.source.material,
+      drawMaterial(c, i),
       spriteEntry.source.entityKey,
       spriteEntry.world ?? world,
     );
 
-    spritePass.setBindGroup(1, spritePassBg, [
+    pass.setBindGroup(1, spritePassBg, [
       meshSsboBufferBinding(
         pipelineState.materialUniformBuffer,
-        materialSlot * MATERIAL_PER_ENTITY_STRIDE,
+        materialUniformSlot(c.runtime, drawMaterial(c, i)) * MATERIAL_PER_ENTITY_STRIDE,
       ).byteOffset,
     ]);
-    spritePass.setBindGroup(3, spriteInstancesBg);
-    spritePass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
+    pass.setBindGroup(3, spriteInstancesBg);
+    pass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
     recordPresented(
       spriteEntry,
       0,

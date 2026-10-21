@@ -1,6 +1,6 @@
 import { type CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import {
   Camera,
@@ -15,8 +15,11 @@ import {
 } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 export const VisibilityCaster = defineComponent('EntityVisibilityCaster', {});
 export const VisibilityTarget = defineComponent('EntityVisibilityTarget', {});
@@ -50,21 +53,20 @@ export interface VisibilityDemoScene {
   evidence(): VisibilityEvidence;
 }
 
-const CUBE = HANDLE_CUBE;
 
 function material(
-  world: World,
+  assets: AssetRegistry,
   baseColor: readonly [number, number, number, number],
-): Handle<'MaterialAsset', 'shared'> {
+): AssetHandle<'material'> {
   const asset: MaterialAsset = Materials.standard({
     baseColor,
     metallic: 0,
     roughness: 0.55,
   });
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', asset);
+  return assets.create(asset).unwrap();
 }
 
-function shadowOnlyMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
+function shadowOnlyMaterial(assets: AssetRegistry): AssetHandle<'material'> {
   const asset = Materials.standard({
     baseColor: [0.9, 0.12, 0.08, 1],
     metallic: 0,
@@ -75,17 +77,18 @@ function shadowOnlyMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
   }
   const shadowPass = asset.passes?.find((pass) => pass.name === 'shadow-caster');
   if (shadowPass === undefined) throw new Error('standard material has no shadow-caster pass');
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  return assets.create({
     ...asset,
     passes: [shadowPass],
-  });
+  }).unwrap();
 }
 
 function mesh(
   world: World,
+  cube: AssetHandle<'mesh'>,
   position: readonly [number, number, number],
   scale: readonly [number, number, number],
-  materialRef: Handle<'MaterialAsset', 'shared'>,
+  materialRef: AssetHandle<'material'>,
   tag:
     | typeof VisibilityCaster
     | typeof VisibilityTarget
@@ -97,7 +100,7 @@ function mesh(
   return world
     .spawn(
       { component: Transform, data: { pos: position, quat: [0, 0, 0, 1], scale } },
-      { component: MeshFilter, data: { assetHandle: CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [materialRef] } },
       { component: Visibility, data: { state: VisibilityStateValue.inherited } },
       { component: tag, data: {} },
@@ -106,24 +109,25 @@ function mesh(
     .unwrap();
 }
 
-export function createVisibilityDemoWorld(world = new World()): VisibilityDemoScene {
-  const red = material(world, [0.9, 0.12, 0.08, 1]);
-  const blue = material(world, [0.08, 0.3, 0.95, 1]);
-  const gold = material(world, [0.95, 0.65, 0.08, 1]);
-  const floorMaterial = material(world, [0.24, 0.28, 0.34, 1]);
-  const shadowOnlyRed = shadowOnlyMaterial(world);
+export function createVisibilityDemoWorld(assets: AssetRegistry, world = new World({ assets })): VisibilityDemoScene {
+  const cube = assets.create(BUILTIN_CUBE).unwrap();
+  const red = material(assets, [0.9, 0.12, 0.08, 1]);
+  const blue = material(assets, [0.08, 0.3, 0.95, 1]);
+  const gold = material(assets, [0.95, 0.65, 0.08, 1]);
+  const floorMaterial = material(assets, [0.24, 0.28, 0.34, 1]);
+  const shadowOnlyRed = shadowOnlyMaterial(assets);
 
   const floor = world
     .spawn(
       { component: Transform, data: { pos: [0, -1.35, 0], scale: [5, 0.15, 3] } },
-      { component: MeshFilter, data: { assetHandle: CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [floorMaterial] } },
     )
     .unwrap();
   void floor;
 
-  const caster = mesh(world, [-1.6, 0, 0], [0.8, 0.8, 0.8], blue, VisibilityCaster);
-  const target = mesh(world, [0, 0, 0], [0.8, 0.8, 0.8], red, VisibilityTarget);
+  const caster = mesh(world, cube, [-1.6, 0, 0], [0.8, 0.8, 0.8], blue, VisibilityCaster);
+  const target = mesh(world, cube, [0, 0, 0], [0.8, 0.8, 0.8], red, VisibilityTarget);
   const ancestor = world
     .spawn(
       { component: Transform, data: { pos: [1.7, 0, 0], scale: [1, 1, 1] } },
@@ -133,6 +137,7 @@ export function createVisibilityDemoWorld(world = new World()): VisibilityDemoSc
     .unwrap();
   const visibleChild = mesh(
     world,
+    cube,
     [0, 0, 0],
     [0.72, 0.72, 0.72],
     blue,
@@ -142,6 +147,7 @@ export function createVisibilityDemoWorld(world = new World()): VisibilityDemoSc
   world.set(visibleChild, Visibility, { state: VisibilityStateValue.visible }).unwrap();
   const inheritedDescendant = mesh(
     world,
+    cube,
     [0, 0.95, 0],
     [0.32, 0.32, 0.32],
     gold,
@@ -195,7 +201,7 @@ export function createVisibilityDemoWorld(world = new World()): VisibilityDemoSc
             component: Transform,
             data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [0.8, 0.8, 0.8] },
           },
-          { component: MeshFilter, data: { assetHandle: CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           { component: MeshRenderer, data: { materials: [shadowOnlyRed] } },
         )
         .unwrap();
@@ -224,7 +230,8 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
-  const scene = createVisibilityDemoWorld(app.world);
+  if (app.assets === undefined) throw new Error('Visibility demo requires the host AssetRegistry');
+  const scene = createVisibilityDemoWorld(app.assets, app.world);
   const variant = new URLSearchParams(location.search).get('variant');
   if (variant === 'shadow-gate-bypass') scene.installShadowGateBypass();
   const applyHiddenInput = (): void => {

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
   createRenderPublisher,
@@ -18,7 +19,9 @@ import {
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it, vi } from 'vitest';
+import { installDefaultAssetDecoders } from '../asset-contributions';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 function required<T>(
   result:
@@ -41,10 +44,13 @@ const contents =
       })()
     : Uint8Array.from(readFileSync(manifestPath)).buffer;
 
-it('keeps material publication while removing GPU-owned Shadow legacy mesh writes', async () => {
+it('shares physical mesh writes across CPU and GPU shadows while preserving material publication', async () => {
   const manifestUrl = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  installDefaultAssetDecoders(assets);
+  const world = new World({ assets });
   const identity = { source: 'shadow-legacy-mesh-consumer', epoch: 1 };
   world
     .spawn(
@@ -67,19 +73,24 @@ it('keeps material publication while removing GPU-owned Shadow legacy mesh write
       },
     })
     .unwrap();
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1] }),
-  );
-  const secondMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.1, 0.1, 0.8, 1] }),
-  );
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1] }))
+    .unwrap();
+  const secondMaterial = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.1, 0.1, 0.8, 1] }))
+    .unwrap();
   for (let index = 0; index < 2; index++)
     world
       .spawn(
         { component: Transform, data: { pos: [index, 0, 0] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(1, 1, 1).unwrap())
+              .unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [index === 0 ? material : secondMaterial] } },
       )
       .unwrap();
@@ -146,18 +157,23 @@ it('keeps material publication while removing GPU-owned Shadow legacy mesh write
       const packet = structuredClone(source);
       let disabled = 0;
       if (lane !== 'gpu')
-        for (const template of packet.templates)
-          if (
-            template.snapshot.shadowCasterPasses !== undefined &&
-            (lane === 'cpu' || lane === 'reason' || disabled++ === 0)
-          )
-            Object.assign(template.snapshot, {
-              shadowCasterPasses: template.snapshot.shadowCasterPasses.map((pass) => ({
-                ...pass,
-                ...(lane === 'reason'
-                  ? { cpuReason: 'transparent' as const }
-                  : { gpuDrivenEligible: false }),
-              })),
+        for (const material of packet.materials)
+          if (lane === 'cpu' || lane === 'reason' || disabled++ === 0)
+            Object.assign(material.value, {
+              passes: material.value.passes.map((pass) =>
+                (pass.renderState?.tags as { LightMode?: string } | undefined)?.LightMode ===
+                'ShadowCaster'
+                  ? {
+                      ...pass,
+                      renderState: {
+                        ...pass.renderState,
+                        ...(lane === 'reason'
+                          ? { blend: { color: {}, alpha: {} } }
+                          : { stencil: {} }),
+                      },
+                    }
+                  : pass,
+              ),
             });
       writes.length = 0;
       const receipt = required(renderer.draw({ publication: packet }));
@@ -193,10 +209,11 @@ it('keeps material publication while removing GPU-owned Shadow legacy mesh write
       mixed = await run('mixed'),
       reason = await run('reason'),
       gpu = await run('gpu');
-    expect(cpu.meshBytes).toBe(4 * 256);
-    expect(mixed.meshBytes).toBe(cpu.meshBytes);
+    // Main and shadow share each physical source slot, including direct residuals.
+    expect(cpu.meshBytes).toBe(2 * 256);
+    expect(mixed.meshBytes).toBe(256);
     expect(reason.meshBytes).toBe(cpu.meshBytes);
-    expect(gpu.meshBytes).toBe(2 * 256);
+    expect(gpu.meshBytes).toBe(0);
     expect(gpu.materialBytes).toBe(cpu.materialBytes);
     expect(mixed.materialPayloads).toEqual(cpu.materialPayloads);
     expect(reason.materialPayloads).toEqual(cpu.materialPayloads);

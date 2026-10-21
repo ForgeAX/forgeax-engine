@@ -1,8 +1,9 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/hello/rect-light-texture - one scene shared by the browser demo and the
 // Dawn smoke. A 45-degree tilted RectAreaLight faces the floor and the camera;
 // its sourceTexture paints the floor diffuse and the metal spheres' reflections.
 
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import {
@@ -15,8 +16,12 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, TextureAsset } from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { createGalleryTextures, GALLERY, type GalleryImage } from './images.ts';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const PANEL_TEXTURE_WIDTH = 64;
 export const PANEL_TEXTURE_HEIGHT = 32;
@@ -114,6 +119,11 @@ export function populateRectLightTextureWorld(
   initial: PanelSource = 'textured',
   compressed: ReadonlyMap<CompressedSource, TextureAsset> = new Map(),
 ): RectLightTextureScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   world
     .spawn(
       { component: Transform, data: { pos: CAMERA.position, quat: CAMERA.rotation } },
@@ -132,11 +142,8 @@ export function populateRectLightTextureWorld(
     )
     .unwrap();
 
-  const floorMesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(12, 12).unwrap());
-  const floor = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.45 }),
-  );
+  const floorMesh = sceneAssets.create(createPlaneGeometry(12, 12).unwrap()).unwrap();
+  const floor = sceneAssets.create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.45 })).unwrap();
   world
     .spawn(
       {
@@ -152,30 +159,24 @@ export function populateRectLightTextureWorld(
     [-2.4, 0.06],
     [2.4, 0.45],
   ] as const) {
-    const metal = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.95, 0.95, 0.95, 1], metallic: 1, roughness }),
-    );
+    const metal = sceneAssets.create(Materials.standard({ baseColor: [0.95, 0.95, 0.95, 1], metallic: 1, roughness })).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [x, 0.7, 0.4], scale: [0.7, 0.7, 0.7] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+        { component: MeshFilter, data: { assetHandle: primitiveSphere } },
         { component: MeshRenderer, data: { materials: [metal] } },
       )
       .unwrap();
   }
 
-  const textures = new Map<PanelSource, Handle<'TextureAsset', 'shared'>>();
-  const emitterMaterials = new Map<PanelSource, Handle<'MaterialAsset', 'shared'>>();
+  const textures = new Map<PanelSource, AssetHandle<'texture'>>();
+  const emitterMaterials = new Map<PanelSource, AssetHandle<'material'>>();
   const addSource = (source: PanelSource, light: TextureAsset | null, display: TextureAsset | null) => {
-    if (light) textures.set(source, world.allocSharedRef('TextureAsset', light));
-    const displayHandle = display ? world.allocSharedRef('TextureAsset', display) : textures.get(source);
+    if (light) textures.set(source, sceneAssets.create(light).unwrap());
+    const displayHandle = display ? sceneAssets.create(display).unwrap() : textures.get(source);
     emitterMaterials.set(
       source,
-      world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit([1, 1, 1, 1], displayHandle ? { baseColorTexture: displayHandle } : {}),
-      ),
+      sceneAssets.create(Materials.unlit([1, 1, 1, 1], displayHandle ? { baseColorTexture: displayHandle } : {})).unwrap(),
     );
   };
   addSource('uniform', null, null);
@@ -190,7 +191,7 @@ export function populateRectLightTextureWorld(
   for (const [name, texture] of compressed) addSource(name, texture, null);
   const sourceTexture = (source: PanelSource) => textures.get(source) ?? (0 as never);
   const emitterMaterial = (source: PanelSource) =>
-    emitterMaterials.get(source) as Handle<'MaterialAsset', 'shared'>;
+    emitterMaterials.get(source) as AssetHandle<'material'>;
 
   const lightData = {
     color: [1, 1, 1] as [number, number, number],
@@ -212,10 +213,7 @@ export function populateRectLightTextureWorld(
   // The emitter quad sits a hair behind the light plane so it never occludes
   // the receiver side it illuminates.
   const back = rotateByQuat(LIGHT.rotation, [0, 0, -0.01]);
-  const emitterMesh = world.allocSharedRef(
-    'MeshAsset',
-    createPlaneGeometry(LIGHT.width, LIGHT.height).unwrap(),
-  );
+  const emitterMesh = sceneAssets.create(createPlaneGeometry(LIGHT.width, LIGHT.height).unwrap()).unwrap();
   const emitterEntity = world
     .spawn(
       {

@@ -1,7 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Camera, TONEMAP_LINEAR } from '@forgeax/engine/render';
-import { createStandaloneRuntimeAssetBinding, type TextureAsset } from '@forgeax/engine/types';
+import type { TextureAsset } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { installMemoryPack } from '../asset-formats/fixtures/memory-pack';
 import { passChecks } from './shared/scenes';
 
 const LUT_GUID = 'dab53d78-d233-4c79-8cb3-c03f33f1a001';
@@ -34,51 +37,42 @@ export default defineFeature({
     'Camera.colorLut binds a GUID-catalogued 3D TextureAsset (no URL identity, no LUT registry); colorLutStrength blends it after tone mapping.',
   expect:
     'ON: a channel-swap LUT turns the red cube blue and the blue sphere red (green stays green). OFF (strength 0): original red cube, green box, blue sphere.',
-  async setup({ app, world, hud, frames }) {
+  async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const { camera } = spawnStage(world, {
       eye: [0, 1.6, 5],
       target: [0, 0.5, 0],
       data: { tonemap: TONEMAP_LINEAR },
     });
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [1, 0.05, 0.05, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [1, 0.05, 0.05, 1] }), {
       pos: [-1.6, 0.5, 0],
     });
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.05, 1, 0.05, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.05, 1, 0.05, 1] }), {
       pos: [0, 0.5, 0],
       scale: [0.6, 1, 0.6],
     });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [0.05, 0.05, 1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [0.05, 0.05, 1, 1] }), {
       pos: [1.6, 0.5, 0],
       scale: [0.55, 0.55, 0.55],
     });
     const assets = app.assets;
+    if (assets === undefined) throw new Error('App asset service is unavailable');
     const lut = channelSwapLut();
-    if (assets === undefined) {
-      hud.status('app.assets is unavailable: LUT cannot be catalogued');
-    } else {
-      const binding = createStandaloneRuntimeAssetBinding('feature-lab-3d-lut');
-      const snapshot = {
-        schemaVersion: 'runtime-catalog-snapshot-v1',
-        scopeId: binding.scopeId,
-        generation: binding.generation,
-        authority: 'authoritative',
-        entries: [
-          {
-            guid: LUT_GUID,
-            kind: 'texture',
-            packageUrl: 'data:application/json,{}',
-            sourceKey: LUT_SOURCE_KEY,
-          },
-        ],
-      };
-      assets.configureRuntimeBinding({
-        ...binding,
-        catalogUrl: `data:application/json,${encodeURIComponent(JSON.stringify(snapshot))}`,
-      });
-      await assets.refreshCatalog();
-      assets.catalog(LUT_GUID, lut).unwrap();
-    }
-    const handle = world.allocSharedRef('TextureAsset', lut);
+    await installMemoryPack(assets, [
+      { guid: LUT_GUID, kind: 'texture', payload: lut, sourceKey: LUT_SOURCE_KEY },
+    ]);
+    const handle = (await assets.load(LUT_GUID, 'texture')).unwrap();
     world.set(camera, Camera, { colorLut: handle, colorLutStrength: 1 } as never).unwrap();
     return {
       toggle(on) {

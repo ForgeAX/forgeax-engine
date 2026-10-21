@@ -15,12 +15,16 @@ const forbiddenFiles = [
   'src/shared/carrier-contract.mjs',
   'src/shared/effects.mjs',
   'src/shell/registry.mjs',
+  'packages/view-plugin-asset-references/src/runtime/program.ts',
+  'packages/view-plugin-asset-references/src/runtime/query.ts',
+  'scripts/asset-reference-program.mjs',
 ];
 const forbiddenExports = [
   './backend/page-broker',
   './frontend',
   './plugins/identity',
   './plugins/inspector',
+  './plugins/asset-references/runtime',
 ];
 
 async function sourceFiles(directory) {
@@ -40,6 +44,7 @@ function assertCurrentSource(source, name) {
   // Check concrete retired contracts, not prose such as an API's @deprecated tag.
   assert.doesNotMatch(source, /\b(?:viewWorkspaceClient|viewShell|workspaceConnection|revokeClient)\b/, name);
   assert.doesNotMatch(source, /(?:provide|get)\(\s*['"]viewWorkspace['"]/, name);
+  assert.doesNotMatch(source, /view\.asset-references\.get|forgeax:view-asset-reference-query|__FORGEAX_(?:VIEW_)?ASSET_REFERENCE_PROGRAM__/, name);
   if (name.startsWith('packages/')) {
     assert.doesNotMatch(source, /(?:from\s*|import\s*(?:\(\s*)?)['"](?:\.\.\/)+src\//, name);
   }

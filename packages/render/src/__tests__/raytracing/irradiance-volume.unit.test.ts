@@ -1,3 +1,4 @@
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { freezeRenderProfile, validateRenderProfile } from '../../assembly/renderer-facade';
 import {
@@ -20,8 +21,8 @@ import {
   type IrradianceVolumeLattice,
   integrateIrradianceProbes,
   irradianceProbePosition,
+  irradianceVolumeContribution,
   irradianceVolumeDigest,
-  irradianceVolumePackLoader,
   irradianceVolumeProbeBlocks,
   sphericalFibonacci,
   validateIrradianceLattice,
@@ -126,11 +127,15 @@ describe('irradiance volume codec', () => {
     }
   });
 
-  it('loads through the Pack loader and fails structurally without the artifact', async () => {
+  it('decodes through the typed owner and fails structurally without the artifact', async () => {
     const bytes = encodeIrradianceVolume(volume).unwrap();
-    expect(irradianceVolumePackLoader.kind).toBe(IRRADIANCE_VOLUME_KIND);
+    expect(irradianceVolumeContribution.kind.kind).toBe(IRRADIANCE_VOLUME_KIND);
     const load = (artifacts: Record<string, { bytes: Uint8Array }>) =>
-      irradianceVolumePackLoader.load({ artifacts } as never, {} as never);
+      irradianceVolumeContribution.decoder.decode({
+        envelope: { guid: 'volume', artifacts },
+        artifacts: { read: async (descriptor: { bytes: Uint8Array }) => ok(descriptor.bytes) },
+        signal: new AbortController().signal,
+      } as never);
     const loaded = (await load({ volume: { bytes } })) as {
       ok: boolean;
       value?: { digest: string };
@@ -139,7 +144,7 @@ describe('irradiance volume codec', () => {
     expect(loaded.value?.digest).toBe(irradianceVolumeDigest(bytes));
     const missing = (await load({})) as { ok: boolean; error?: { code: string } };
     expect(missing.ok).toBe(false);
-    expect(missing.error?.code).toBe('irradiance-volume-corrupt');
+    expect(missing.error?.code).toBe('asset-package-invalid');
   });
 
   it('lays the D level into the field probe stride', () => {

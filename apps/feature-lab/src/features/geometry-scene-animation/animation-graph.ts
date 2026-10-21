@@ -7,6 +7,7 @@ import {
   deriveAnimationTargetId,
   describeAnimationGraph,
 } from '@forgeax/engine/animation';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createWorldContext, type EntityHandle, World } from '@forgeax/engine/ecs';
 import { ChildOf, Name, scenePlugin, Transform } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
@@ -32,11 +33,6 @@ function translationClip(to: readonly [number, number, number]): AnimationClip {
   };
 }
 
-const CLIPS: Record<string, AnimationClip> = {
-  'lab/clip-x': translationClip([4, 0, 0]),
-  'lab/clip-y': translationClip([0, 4, 0]),
-};
-
 export default defineFeature({
   title: 'AnimationGraph blend evaluation',
   catalog: 'AnimationGraph',
@@ -46,9 +42,10 @@ export default defineFeature({
   expect:
     'All checks pass: blend(clipX, clipY) poses the target at (2,2,0), reweighting nodes to [1,0,1] yields (4,0,0), the description reports clip/clip/blend with root 2, and a negative weight is a structured error.',
   async run(checks) {
-    const graph = defineAnimationGraph((b) =>
-      b.blend([b.clip('lab/clip-x'), b.clip('lab/clip-y')]),
-    );
+    const sceneAssets = new AssetRegistry();
+    const clipX = sceneAssets.create(translationClip([4, 0, 0])).unwrap();
+    const clipY = sceneAssets.create(translationClip([0, 4, 0])).unwrap();
+    const graph = defineAnimationGraph((b) => b.blend([b.clip(clipX), b.clip(clipY)]));
     checks.ok('graph builds', graph.ok);
     if (!graph.ok) return;
     const desc = describeAnimationGraph(graph.value);
@@ -63,16 +60,17 @@ export default defineFeature({
     );
     checks.equal('description root', desc.root, 2);
 
-    const invalid = defineAnimationGraph((b) => b.clip('lab/clip-x', -1));
+    const invalid = defineAnimationGraph((b) => b.clip(clipX, -1));
     checks.equal(
       'negative weight rejected',
       invalid.ok ? 'ok' : invalid.error.code,
       'animation-graph-node-weight-invalid',
     );
 
-    const world = new World();
+    const world = new World({ assets: sceneAssets });
+
     await createWorldContext(world, [scenePlugin()]);
-    await createWorldContext(world, [animationPlugin((guid) => CLIPS[guid])]);
+    await createWorldContext(world, [animationPlugin()]);
     const player = world
       .spawn({ component: Transform, data: {} }, { component: Name, data: { value: 'Root' } })
       .unwrap() as EntityHandle;
@@ -80,7 +78,7 @@ export default defineFeature({
       .addComponent(player, {
         component: AnimationPlayer,
         data: {
-          graph: world.allocSharedRef('AnimationGraph', graph.value),
+          graph: sceneAssets.create(graph.value).unwrap(),
           nodeTimes: [0, 0, 0],
           nodeWeights: [1, 1, 1],
           nodeSpeeds: [0, 0, 0],
@@ -102,10 +100,10 @@ export default defineFeature({
 
     const pos = (): number[] =>
       Array.from(world.get(box, Transform).unwrap().pos, (v) => Math.round(v * 1000) / 1000);
-    world.update(0);
+    world.update(0).unwrap();
     checks.equal('equal blend averages the clips', pos(), [2, 2, 0]);
     world.set(player, AnimationPlayer, { nodeWeights: [1, 0, 1] }).unwrap();
-    world.update(0);
+    world.update(0).unwrap();
     checks.equal('zero weight removes clipY', pos(), [4, 0, 0]);
   },
 });

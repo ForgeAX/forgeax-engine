@@ -161,7 +161,7 @@ describe('CatalogReplica', () => {
       relations: base.relations,
       diagnostics: base.diagnostics,
     });
-    expect(replica.snapshot().version).toBe(1);
+    expect(replica.snapshot().version).toBe(2);
   });
 
   it('marks degraded gaps stale and reconcile restores the authoritative set', async () => {

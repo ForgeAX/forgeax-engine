@@ -1,32 +1,32 @@
-import { frustum, mat4 } from '@forgeax/engine-math';
+import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { EMPTY_GPU_DRAW_SELECTION } from '../gpu-driven/draw-selection';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
-import { GpuDrivenView } from '../gpu-driven/view-gpu';
+import { GPU_DRIVEN_BATCH_STRIDE, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+import { MaterialResource } from '../material-resource';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type {
-  ExtractedLights,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../render-system-extract';
+import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction } from '../temporal/frame';
+import { updateGpuView } from './helpers/gpu-input-read-domain';
 
-const material = {
-  baseColor: new Float32Array([1, 1, 1]),
+const material = new MaterialResource({
+  baseColor: vec3.create(1, 1, 1),
   metallic: 0,
   roughness: 1,
-} as MaterialSnapshot;
+  passes: [],
+});
 
 function snapshot(entityKey: number): RenderableSnapshot {
   return {
@@ -46,6 +46,11 @@ function snapshot(entityKey: number): RenderableSnapshot {
         baseVertex: 0,
         materialSlot: 0,
         topology: 'triangle-list',
+        geometry: {
+          receipt: { identity: 'cube', vertexInputs: [], topology: 'triangle-list', indexed: true },
+          draw: { kind: 'indexed', topology: 'triangle-list', first: 0, count: 36, baseVertex: 0 },
+          deformation: 'rigid',
+        },
         pipelineClass: 'opaque',
         materialResourceClass: 'plain',
       },
@@ -66,11 +71,21 @@ function preparedFrame(view: GpuDrivenView): PreparedGpuDrivenFrame {
   return {
     topologySignature: `view-generation:${view.inspect().resourceGeneration}`,
     worldKeys: [],
-    ownsAllDrawItems: true,
+    materialBindings: [],
+    shadowDirectRequired: false,
+    selection: EMPTY_GPU_DRAW_SELECTION,
+    _trackSubmittedWork: () => undefined,
+    _sealResourceReads: () => ok(undefined),
     standardPbrFrameResources: {
-      materialBindGroups: [],
-      materialSlotIndicesByEntity: new Map(),
-      materialStride: 0,
+      prepareMaterialBinding: (
+        (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+        (slot: number) => {
+          const group = groups[slot];
+          return group === undefined ? undefined : { group, byteOffset: slot * 0 };
+        }
+      )([]),
+      materialSlotIndicesByBinding: new Map(),
+
       sceneMaterialBuffer: {} as never,
     },
     _commitResourceReplacement: () => view._commitResourceReplacement(),
@@ -101,8 +116,9 @@ describe('GpuDrivenView graph projection', () => {
     }).unwrap();
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
     const update = (rows?: Uint32Array) =>
-      view.update(
-        topology.plan(),
+      updateGpuView(
+        view,
+        topology.query(topology.sourcePlan(), undefined),
         available.scene,
         planes,
         undefined,
@@ -148,7 +164,8 @@ describe('GpuDrivenView graph projection', () => {
       writes.mockClear();
       update(new Uint32Array([11])).unwrap();
       expect(writes.mock.calls.some(([buffer]) => buffer === next)).toBe(true);
-      expect(view.inspect().candidateUploadBytes).toBeGreaterThan(0);
+      // View-local overflow leaves the shared member arena resident.
+      expect(view.inspect().sharedInputUploadBytes).toBe(0);
       view._commitResourceReplacement();
       await device.queue.onSubmittedWorkDone();
       expect(destroys).toHaveBeenCalledWith(first);
@@ -208,11 +225,21 @@ describe('GpuDrivenView graph projection', () => {
     const prepared: PreparedGpuDrivenFrame = {
       topologySignature: 'stable-gpu-driven-test',
       worldKeys: [],
-      ownsAllDrawItems: true,
+      materialBindings: [],
+      shadowDirectRequired: false,
+      selection: EMPTY_GPU_DRAW_SELECTION,
+      _trackSubmittedWork: () => undefined,
+      _sealResourceReads: () => ok(undefined),
       standardPbrFrameResources: {
-        materialBindGroups: [],
-        materialSlotIndicesByEntity: new Map(),
-        materialStride: 0,
+        prepareMaterialBinding: (
+          (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+          (slot: number) => {
+            const group = groups[slot];
+            return group === undefined ? undefined : { group, byteOffset: slot * 0 };
+          }
+        )([]),
+        materialSlotIndicesByBinding: new Map(),
+
         sceneMaterialBuffer: {} as never,
       },
       _commitResourceReplacement: () => undefined,
@@ -249,37 +276,36 @@ describe('GpuDrivenView graph projection', () => {
       device,
       shaderModuleFactory: { createShaderModule: () => ok(shader) },
     }).unwrap();
-    view
-      .update(
-        topology.plan(),
-        sceneAvailability.scene,
-        frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
-      )
-      .unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+    ).unwrap();
     expect(view.inspect()).toMatchObject({
-      topologyRevision: 1,
+      topologyRevision: topology.query(topology.sourcePlan(), undefined).revision,
       candidateCount: 1,
       batchCount: 1,
       visibleCapacity: 64,
       updateCount: 1,
       bufferRebuilds: 1,
-      candidateUploadBytes: 304,
-      batchUploadBytes: 32,
+
+      batchUploadBytes: GPU_DRIVEN_BATCH_STRIDE,
       viewConstantsUploadBytes: 528,
       bindGroupCreates: 1,
     });
+    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
 
-    view
-      .update(
-        topology.plan(),
-        sceneAvailability.scene,
-        frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
-      )
-      .unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+    ).unwrap();
     expect(view.inspect()).toMatchObject({
       updateCount: 2,
       bufferRebuilds: 1,
-      candidateUploadBytes: 0,
+      sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
       viewConstantsUploadBytes: 528,
       bindGroupCreates: 0,
@@ -337,7 +363,12 @@ describe('GpuDrivenView graph projection', () => {
       shaderModuleFactory: { createShaderModule: () => ok(shader) },
     }).unwrap();
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
-    view.update(topology.plan(), sceneAvailability.scene, planes).unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      planes,
+    ).unwrap();
     const previousVisible = view.visibleBuffer;
     expect(previousVisible).toBeDefined();
     if (previousVisible === undefined) return;
@@ -424,7 +455,7 @@ describe('GpuDrivenView graph projection', () => {
       executeCompiledFrameGraph(
         internals,
         frameState,
-        { encoder: initialEncoder } as RenderPipelineFrame,
+        { encoder: initialEncoder, pipelineState } as unknown as RenderPipelineFrame,
         initialEncoder,
       ),
     ).toBe(true);
@@ -450,7 +481,12 @@ describe('GpuDrivenView graph projection', () => {
     const secondDelta = projection.apply([updateSnapshot(snapshot(2))]);
     sceneAvailability.scene.sync(secondDelta).unwrap();
     topology.rebuild(projection.slotsSnapshot());
-    view.update(topology.plan(), sceneAvailability.scene, planes).unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      planes,
+    ).unwrap();
 
     expect(view.inspect()).toMatchObject({ candidateCount: 2, candidateCapacity: 2 });
     forceCompileFailure = true;
@@ -476,7 +512,7 @@ describe('GpuDrivenView graph projection', () => {
       executeCompiledFrameGraph(
         internals,
         frameState,
-        { encoder: acceptedEncoder } as RenderPipelineFrame,
+        { encoder: acceptedEncoder, pipelineState } as unknown as RenderPipelineFrame,
         acceptedEncoder,
       ),
     ).toBe(true);
@@ -511,7 +547,12 @@ describe('GpuDrivenView graph projection', () => {
       shaderModuleFactory: { createShaderModule: () => ok(shader) },
     }).unwrap();
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
-    view.update(topology.plan(), sceneAvailability.scene, planes).unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      planes,
+    ).unwrap();
     const firstVisible = view.visibleBuffer;
     expect(firstVisible).toBeDefined();
     if (firstVisible === undefined) return;
@@ -519,7 +560,12 @@ describe('GpuDrivenView graph projection', () => {
     const secondDelta = projection.apply([updateSnapshot(snapshot(2))]);
     sceneAvailability.scene.sync(secondDelta).unwrap();
     topology.rebuild(projection.slotsSnapshot());
-    view.update(topology.plan(), sceneAvailability.scene, planes).unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      planes,
+    ).unwrap();
     vi.spyOn(device.queue, 'onSubmittedWorkDone').mockRejectedValueOnce(new Error('device lost'));
     view._commitResourceReplacement();
     await Promise.resolve();

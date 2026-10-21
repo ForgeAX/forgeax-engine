@@ -1,5 +1,11 @@
 # Resident Asset References and Navigation
 
+The runtime query PluginAsset, Pack lifecycle and internal-Pack hiding in this
+historical design are superseded by
+native asset inspection.
+Engine now returns native facts through `engine.entity.inspect`; View retains
+the presentation and navigation policy described below.
+
 ## Decision
 
 View supplies one optional native read-only query PluginAsset to each ordinary
@@ -10,8 +16,8 @@ there is no frame callback, continuous query, extra socket, or scene/asset regis
 
 This supersedes the mesh-only explicit-GUID limitation in
 [the original navigation design](2026-10-13-view-scene-mesh-asset-navigation-design.md).
-Engine's builtin `entity.inspect` still returns raw World handles. Engine code,
-game source and authored asset bindings are unchanged. The new code is packaged
+Engine's builtin `entity.inspect` still returns raw World handles. The Engine managed asset contract owns handles, revisions and adoption;
+this query only projects those public facts. The new code is packaged
 by View but executes as a native plugin beside the actual World, not in React
 panels or workspace-core. Project closing and Engine connection teardown retain
 their existing authority. Play, resource-preview Apps and independent runs never
@@ -34,20 +40,20 @@ operation. No workspace API or independent-run eval operation is added.
 
 The scope includes project, target, known target generation, World identity and
 browser generation. Engine target inspection validates the opaque entity
-reference; the native query then reads schema-declared `shared<T>` references,
+reference; the native query then reads schema-declared `asset<kind>` references,
 reference arrays and explicit AssetRef fields from that same live entity.
 Unique state references, entity arrays and arbitrary strings are excluded.
 
-For user-tier references the query borrows the base SharedRef payload and asks
-the actual AssetRegistry `guidOf` for its registered identity. It does not use
-a rendering projection or allocate/load resources. This preserves provenance
-when a handle holds an old payload after a Catalog replacement. Engine's
-registered identity does not promise the original authoring alias or binding
-publication/version. Builtins, stale handles and uncatalogued runtime payloads
-remain explicit unavailable states.
+The native query validates each managed handle against its declared kind and
+asks AssetRegistry `guidOf(handle)` for the adopted source identity. It never
+loads a resource or infers identity from a numeric address. Only the selected
+MeshFilter reads detached mesh content to resolve current material defaults;
+other references need no payload copy. A newer Catalog publication does not
+change the held asset until the runtime explicitly adopts it. Runtime-created
+content has no authored GUID; empty and invalid references remain explicit.
 
 Material overrides are resolved independently. A zero/absent override consults
-the material slots of the held mesh, with slot names and explicit default GUIDs.
+the material slots of the held mesh, with slot names and managed default material handles.
 An undeclared default is reported as Engine default without inventing an asset.
 Reads are bounded to 128 entries per collection and 256 total references, with
 an explicit incomplete-result marker. Raw entity inspection remains untouched.
@@ -114,6 +120,12 @@ opened tabs use live asset titles, and the generic title follows details-only
 opens rather than adopting a Scene or dedicated preview's name.
 
 ## Evidence and limits
+
+- Managed asset migration (2026-10-18): real Pack publications and an actual
+  World verify source identity, held defaults, independent overrides, rejected
+  stale bindings, bounded custom asset arrays, and native provider withdrawal
+  and restoration. Inspector follows `asset<kind>` schemas; numeric ranges no
+  longer identify builtins. Browser integration and final CI are separate gates.
 
 - PR #183 CI repair: browser shards 0/1 assumed an empty runtime Pack store;
   shard 2 looked up the Asset page after its label adopted an opened asset.

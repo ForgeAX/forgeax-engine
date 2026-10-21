@@ -1,9 +1,10 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { MeshRenderer } from '@forgeax/engine-render';
-import type { Handle, MaterialAsset } from '@forgeax/engine-runtime';
 import { Rotatable } from './rotating-target';
+import { TARGET_PROFILE } from './target-profile-decoder';
 import {
   GAME_DEFAULT_TARGET_PROFILE_GUID,
   type TargetProfile,
@@ -24,8 +25,8 @@ export type TargetProfileSnapshot = {
 
 export type TargetProfileLoop = {
   readonly entity: EntityHandle;
-  readonly originalMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
-  readonly profileMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
+  readonly originalMaterials: readonly AssetHandle<'material'>[];
+  readonly profileMaterials: readonly AssetHandle<'material'>[];
   readonly profile: TargetProfile;
   readonly originalRotationSpeed: number | null;
   active: 'original' | 'profile';
@@ -34,16 +35,16 @@ export type TargetProfileLoop = {
 };
 
 function cloneWithProfile(
-  world: World,
-  source: Handle<'MaterialAsset', 'shared'>,
+  assets: AssetRegistry,
+  source: AssetHandle<'material'>,
   color: readonly [number, number, number, number],
-): Handle<'MaterialAsset', 'shared'> | undefined {
-  const resolved = world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(source);
-  if (!resolved.ok) return undefined;
-  return world.allocSharedRef('MaterialAsset', {
-    ...resolved.value,
-    values: { ...resolved.value.values, baseColor: [...color] },
-  });
+): AssetHandle<'material'> | undefined {
+  const copied = assets.copy(source);
+  if (!copied.ok) return undefined;
+  const updated = assets.update(copied.value, { values: { baseColor: [...color] } });
+  if (updated.ok) return copied.value;
+  assets.release(copied.value).unwrap();
+  return undefined;
 }
 
 function setRotationSpeed(world: World, entity: EntityHandle, speed: number): void {
@@ -64,15 +65,20 @@ export async function createTargetProfileLoop(
   if (!renderer.ok || renderer.value.materials.length === 0) return undefined;
   const guid = AssetGuid.parse(GAME_DEFAULT_TARGET_PROFILE_GUID);
   if (!guid.ok) return undefined;
-  const loaded = await assets.loadByGuid<TargetProfile>(guid.value);
+  const loaded = await assets.load(guid.value, TARGET_PROFILE);
   if (!loaded.ok) {
     console.warn(`[game] target profile unavailable: ${loaded.error.code} — ${loaded.error.hint}`);
     return undefined;
   }
-  const profileMaterials: Handle<'MaterialAsset', 'shared'>[] = [];
+  const profile = assets.read(loaded.value).unwrap();
+  assets.release(loaded.value).unwrap();
+  const profileMaterials: AssetHandle<'material'>[] = [];
   for (const material of renderer.value.materials) {
-    const clone = cloneWithProfile(world, material, loaded.value.baseColor);
-    if (clone === undefined) return undefined;
+    const clone = cloneWithProfile(assets, material, profile.baseColor);
+    if (clone === undefined) {
+      for (const material of profileMaterials) assets.release(material).unwrap();
+      return undefined;
+    }
     profileMaterials.push(clone);
   }
   const originalRotation = world.get(entity, Rotatable);
@@ -80,7 +86,7 @@ export async function createTargetProfileLoop(
     entity,
     originalMaterials: [...renderer.value.materials],
     profileMaterials,
-    profile: loaded.value,
+    profile,
     originalRotationSpeed: originalRotation.ok ? originalRotation.value.speed : null,
     active: 'original',
     precisionHits: 0,

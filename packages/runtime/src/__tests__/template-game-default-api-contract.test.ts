@@ -1,33 +1,6 @@
-// template-game-default-api-contract.test - the surface APIs that the
-// `apps/game-capability-lab/main.ts` scene instantiation relies on
-// must continue to exist and compose. Catches the API drift that produced
-// `TypeError: Cannot read properties of undefined (reading
-// 'setSceneAssetResolver')` at runtime when an earlier
-// `world.sceneInstances.setSceneAssetResolver(...)` call survived a refactor
-// that moved the resolver onto World itself + made `assets.instantiate`
-// return the synthetic root Entity directly.
-//
-// Coverage (red-then-green tickets bundled into one file):
-//   (a) `assets.instantiate(handle, world)` exists and returns a
-//       Result<Entity>; when the scene is catalogued and a column handle is
-//       minted via `world.allocSharedRef('SceneAsset', payload)`, the call
-//       resolves handle-typed component fields automatically (no caller-side
-//       `setSceneAssetResolver` wiring required).
-//   (b) the synthetic root carries the `SceneInstance` component, whose
-//       `mapping` Uint32Array is indexed by `localId` and yields the live
-//       Entity for each authored node — the lookup the template's
-//       `attachScenePhysics` / `setupPlayerRoot` walks per node.
-//   (c) `world.sceneInstances` is NOT a thing on the current API
-//       surface (placeholder anti-regression: the runtime exposes the
-//       resolver via `world._setSceneAssetResolver` — already auto-wired
-//       inside `assets.instantiate` for in-registry handles — and the
-//       returned `instRes.value` is the synthetic root Entity, not an id
-//       to look up via a non-existent `byRef`).
-
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { componentDefinition } from '@forgeax/engine-ecs/internal';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
@@ -40,8 +13,9 @@ import { MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
+import { publishTestAssets } from './helpers/publish-runtime-assets';
 import { registerRuntimeComponents } from './helpers/register-runtime-components';
+import { testAssets } from './helpers/runtime-assets';
 
 // Shape this fixture mirrors the `apps/game-capability-lab/assets/scene.pack.json`
 // SceneAsset payload after the template's `instantiateScenePack` helper has
@@ -79,9 +53,9 @@ function buildSceneAssetWithGuidRef(): SceneAsset {
 
 describe('game-capability-lab API contract (regression for `world.sceneInstances` drift)', () => {
   it('(a) assets.instantiate returns the synthetic root Entity directly (no `byRef` indirection)', async () => {
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const world = new World();
     registerRuntimeComponents(world);
+    const reg = testAssets(world);
 
     const matGuid = AssetGuid.parse(MAT_GUID);
     expect(matGuid.ok).toBe(true);
@@ -97,24 +71,30 @@ describe('game-capability-lab API contract (regression for `world.sceneInstances
       ],
       values: { baseColor: [1, 1, 1, 1] as [number, number, number, number] },
     };
-    reg.catalog<MaterialAsset>(matGuid.value, mat);
 
     const sceneGuid = AssetGuid.parse(SCENE_GUID);
     expect(sceneGuid.ok).toBe(true);
     if (!sceneGuid.ok) return;
-    reg.catalog<SceneAsset>(sceneGuid.value, buildSceneAssetWithGuidRef());
+    publishTestAssets(reg, [
+      { guid: MAT_GUID, kind: 'material', payload: mat, refs: [], artifacts: {} },
+      {
+        guid: SCENE_GUID,
+        kind: 'scene',
+        payload: buildSceneAssetWithGuidRef(),
+        refs: [MAT_GUID],
+        artifacts: {},
+      },
+    ]);
 
-    const payloadRes = await reg.loadByGuid<SceneAsset>(sceneGuid.value);
+    const payloadRes = await reg.load(sceneGuid.value, 'scene');
     expect(payloadRes.ok).toBe(true);
     if (!payloadRes.ok) return;
 
-    // loadByGuid returns the PAYLOAD; mint a user-tier column handle to feed
-    // instantiate (the template does exactly this at its call site).
-    const handle = world.allocSharedRef('SceneAsset', payloadRes.value);
+    const handle = payloadRes.value;
 
     // The template uses precisely this 2-line shape; both must compile +
     // succeed without touching a `world.sceneInstances` surface.
-    const instRes = reg.instantiate<SceneAsset>(handle, world);
+    const instRes = reg.instantiate(handle, world);
     expect(instRes.ok).toBe(true);
     if (!instRes.ok) return;
     // `instRes.value` is an Entity (the synthetic SceneInstance root), not
@@ -124,9 +104,9 @@ describe('game-capability-lab API contract (regression for `world.sceneInstances
   });
 
   it('(b) the synthetic root carries SceneInstance.mapping[localId] = Entity (per-node lookup the template walks)', async () => {
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const world = new World();
     registerRuntimeComponents(world);
+    const reg = testAssets(world);
 
     const matGuid = AssetGuid.parse(MAT_GUID);
     if (!matGuid.ok) throw new Error('parse');
@@ -141,16 +121,24 @@ describe('game-capability-lab API contract (regression for `world.sceneInstances
       ],
       values: { baseColor: [1, 1, 1, 1] as [number, number, number, number] },
     };
-    reg.catalog<MaterialAsset>(matGuid.value, mat);
 
     const sceneGuid = AssetGuid.parse(SCENE_GUID);
     if (!sceneGuid.ok) throw new Error('parse');
-    reg.catalog<SceneAsset>(sceneGuid.value, buildSceneAssetWithGuidRef());
+    publishTestAssets(reg, [
+      { guid: MAT_GUID, kind: 'material', payload: mat, refs: [], artifacts: {} },
+      {
+        guid: SCENE_GUID,
+        kind: 'scene',
+        payload: buildSceneAssetWithGuidRef(),
+        refs: [MAT_GUID],
+        artifacts: {},
+      },
+    ]);
 
-    const payloadRes = await reg.loadByGuid<SceneAsset>(sceneGuid.value);
+    const payloadRes = await reg.load(sceneGuid.value, 'scene');
     if (!payloadRes.ok) throw new Error('load');
-    const handle = world.allocSharedRef('SceneAsset', payloadRes.value);
-    const instRes = reg.instantiate<SceneAsset>(handle, world);
+    const handle = payloadRes.value;
+    const instRes = reg.instantiate(handle, world);
     if (!instRes.ok) throw new Error('inst');
     const root = instRes.value;
 
@@ -365,20 +353,17 @@ describe('game-capability-lab API contract (regression for `world.sceneInstances
     expect(orphanedMaterialGuids).toEqual([]);
   });
 
-  it('(d) loadByGuid returns the catalogued SceneAsset payload (identity)', async () => {
-    const reg = new AssetRegistry(makeMockShaderRegistry());
-    const sceneGuid = AssetGuid.parse(SCENE_GUID);
-    if (!sceneGuid.ok) throw new Error('parse');
+  it('(d) repeated source load preserves the scene handle and detached reads', async () => {
+    const reg = testAssets(new World());
     const payload: SceneAsset = { kind: 'scene', entities: {} };
-    const cataloged = reg.catalog<SceneAsset>(sceneGuid.value, payload);
-    expect(cataloged.ok).toBe(true);
-    if (!cataloged.ok) return;
-    const loaded = await reg.loadByGuid<SceneAsset>(sceneGuid.value);
-    expect(loaded.ok).toBe(true);
-    if (!loaded.ok) return;
-    // loadByGuid returns the PAYLOAD (no handle); it is the same object the
-    // registry catalogued.
-    expect(loaded.value).toBe(cataloged.value);
-    expect(loaded.value.kind).toBe('scene');
+    publishTestAssets(reg, [{ guid: SCENE_GUID, kind: 'scene', payload, refs: [], artifacts: {} }]);
+    try {
+      const handle = (await reg.load(SCENE_GUID, 'scene')).unwrap();
+      expect((await reg.load(SCENE_GUID, 'scene')).unwrap()).toBe(handle);
+      expect(reg.read(handle).unwrap()).toEqual(payload);
+      expect(reg.read(handle).unwrap()).not.toBe(reg.read(handle).unwrap());
+    } finally {
+      reg.dispose();
+    }
   });
 });

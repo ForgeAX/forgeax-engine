@@ -93,5 +93,8 @@
     {
       "path": "../preview"
     }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

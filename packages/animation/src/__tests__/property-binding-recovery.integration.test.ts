@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, defineComponent, World } from '@forgeax/engine-ecs';
 import type { AnimationClip } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -28,13 +30,13 @@ const track = (binding: string, output: Float32Array | string[]): AnimationClip 
   ],
 });
 async function setup(clips: AnimationClip[], weights = clips.map(() => 1)) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   const context = await createWorldContext(world, [animationPlugin()]);
   const player = world
     .spawn({
       component: AnimationPlayer,
       data: {
-        clips: clips.map((clip) => world.allocSharedRef('AnimationClip', clip)),
+        clips: clips.map((clip) => runtimeAssetRegistry(world.assets).create(clip).unwrap()),
         times: clips.map(() => 0),
         speeds: clips.map(() => 0),
         weights,
@@ -148,7 +150,7 @@ describe('compiled property bindings and recovery', () => {
     await context.fiber.restart();
   });
   it('consumes graph-derived property slots with pause and reverse speed', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const clip: AnimationClip = {
       kind: 'animation-clip',
       duration: 1,
@@ -165,13 +167,14 @@ describe('compiled property bindings and recovery', () => {
         },
       ],
     };
-    const context = await createWorldContext(world, [animationPlugin(() => clip)]);
-    const graph = defineAnimationGraph((builder) => builder.clip('test/property-clock')).unwrap();
+    const context = await createWorldContext(world, [animationPlugin()]);
+    const reference = runtimeAssetRegistry(world.assets).create(clip).unwrap();
+    const graph = defineAnimationGraph((builder) => builder.clip(reference)).unwrap();
     const player = world
       .spawn({
         component: AnimationPlayer,
         data: {
-          graph: world.allocSharedRef('AnimationGraph', graph),
+          graph: runtimeAssetRegistry(world.assets).create(graph).unwrap(),
           nodeSpeeds: [1],
           looping: false,
         },

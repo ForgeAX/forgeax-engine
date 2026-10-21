@@ -1,11 +1,15 @@
 // Shared scene for Bevy `sprite`: one image-backed Sprite.
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const SPRITE_SIZE = 48;
 
@@ -50,11 +54,16 @@ export function spriteMaterial(texture: number): MaterialAsset {
 }
 
 export function buildSpriteWorld(world: World, texture: number): void {
-  const material = world.allocSharedRef('MaterialAsset', spriteMaterial(texture));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const material = sceneAssets.create(spriteMaterial(texture)).unwrap();
 
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [4, 4, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [material] } },
   );
   world.spawn(

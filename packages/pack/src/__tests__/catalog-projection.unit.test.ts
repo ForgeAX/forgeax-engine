@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
-import { projectExternalCatalogEntries, projectRuntimeCatalogRow } from '../catalog-projection.js';
+import {
+  currentProjectionFor,
+  projectExternalCatalogEntries,
+  projectRuntimeCatalogRow,
+} from '../catalog-projection.js';
 import { projectRuntimePack } from '../runtime-projection.js';
 
 describe('catalog projection admission', () => {
+  it('keeps operation descriptors only in the shared projection', () => {
+    const row = currentProjectionFor('imported-output', 'cooked');
+    expect(row).not.toHaveProperty('operations');
+    expect(row.projection.operations.preview.enabled).toBe(true);
+    expect(row).toMatchObject({
+      subject: 'imported-output',
+      execution: 'cooked',
+      lifecycle: 'current',
+    });
+  });
   it('samples a producer name once and preserves its first answer', () => {
     const nameFor = vi.fn().mockReturnValueOnce('first').mockReturnValueOnce('second');
     const rows = projectExternalCatalogEntries(

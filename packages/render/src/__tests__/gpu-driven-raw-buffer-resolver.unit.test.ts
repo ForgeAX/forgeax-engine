@@ -9,6 +9,7 @@ import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { RenderScene } from '../scene/render-scene';
 import {
+  admitGpuFixture,
   mesh,
   preparedSnapshot,
   standardPbrInputs,
@@ -42,23 +43,23 @@ it.each([
   availability.scene.sync(delta).unwrap();
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const frame = production
-    .prepare({
-      ...standardPbrInputs(device, shader, viewLayout),
-      scene: {
-        scene: availability.scene,
-        plan: topology.plan(),
-        slots: projection.slotsSnapshot(),
-        slotAt: projection.slotAt,
-      },
-      camera: makeZeroCameraFallbackSnapshot(),
-      meshBySlot: new Map([
-        [0, first],
-        [1, second],
-      ]),
-      meshResidencyEpoch: 1,
-      viewBindGroupLayout: viewLayout,
-      shadowCasterMembership: [],
-    })
+    .prepare(
+      admitGpuFixture({
+        ...standardPbrInputs(device, shader, viewLayout),
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: projection.slotsSnapshot(),
+          slotAt: projection.slotAt,
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: new Map([
+          [0, first],
+          [1, second],
+        ]),
+        viewBindGroupLayout: viewLayout,
+      }),
+    )
     .unwrap();
   if (frame === undefined) throw Error('missing GPU frame');
   const cause = new Error(`raw ${scenario}`);
@@ -99,7 +100,13 @@ it.each([
         encode: ({ pass, resources }) =>
           gpu.encode(viewGroup, pass, resources, {
             ...frame.standardPbrFrameResources,
-            materialBindGroups: [materialGroup],
+            prepareMaterialBinding: (
+              (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+              (slot: number) => {
+                const group = groups[slot];
+                return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+              }
+            )([materialGroup]),
           }),
       })
       .unwrap();

@@ -1,4 +1,4 @@
-import type { MaterialShaderVertexInput } from '@forgeax/engine-shader';
+import type { MaterialProgramVertexInput } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   hasGpuDrivenVertexColor,
@@ -6,7 +6,7 @@ import {
   ownGpuDrivenVertexInputs,
 } from '../gpu-driven/prepared-draw';
 
-function inputs(): [MaterialShaderVertexInput] {
+function inputs(): [MaterialProgramVertexInput] {
   return [{ semantic: 'position', location: 0, format: 'float32x3' }];
 }
 
@@ -105,7 +105,7 @@ describe('owned vertex input admission', () => {
         },
         format: 'float32x3',
       }),
-    ]) as readonly MaterialShaderVertexInput[];
+    ]) as readonly MaterialProgramVertexInput[];
     const actual = ownGpuDrivenVertexInputs(inputs());
     expect(hasRequiredVertexInputs(required, actual)).toBe(true);
     location = 1;
@@ -123,7 +123,7 @@ describe('owned vertex input admission', () => {
         },
         format: 'float32x3',
       }),
-    ]) as readonly MaterialShaderVertexInput[];
+    ]) as readonly MaterialProgramVertexInput[];
     const first = ownGpuDrivenVertexInputs(source);
     expect(read).toHaveBeenCalledTimes(1);
     location = 2;
@@ -206,12 +206,12 @@ describe('owned vertex input admission', () => {
     let fail = false;
     const failure = new Error('some temporarily unavailable');
     const read = vi.fn();
-    class VertexInputs extends Array<MaterialShaderVertexInput> {
+    class VertexInputs extends Array<MaterialProgramVertexInput> {
       override some(
         predicate: (
-          value: MaterialShaderVertexInput,
+          value: MaterialProgramVertexInput,
           index: number,
-          array: MaterialShaderVertexInput[],
+          array: MaterialProgramVertexInput[],
         ) => unknown,
         thisArg?: unknown,
       ): boolean {

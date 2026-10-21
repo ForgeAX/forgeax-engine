@@ -16,6 +16,7 @@ import {
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
+import { updateGpuView } from './helpers/gpu-input-read-domain';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw Error('Missing byte-shim fixture resource');
@@ -139,9 +140,17 @@ async function fixture() {
   }).unwrap();
   const planes = Float32Array.from({ length: 24 }, (_, i) => (i - 7) * 0.125);
   const update = (camera?: GpuDrivenOcclusionCamera) =>
-    view
-      .update(topology.plan(), scene.scene, planes, undefined, 0, undefined, undefined, camera)
-      .unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      scene.scene,
+      planes,
+      undefined,
+      0,
+      undefined,
+      undefined,
+      camera,
+    ).unwrap();
   update();
   view.setTelemetrySubmit({ frameId: 7, deviceGeneration: 3 });
   const destroys = vi.spyOn(device, 'destroyBuffer');

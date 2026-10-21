@@ -12,22 +12,13 @@ import * as SceneOwner from '@forgeax/engine-scene';
 // the bug exists. After m1t6 fixes collect to skip transient components,
 // the test must PASS.
 
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { LocalEntityId, SceneAsset, SceneEntity } from '@forgeax/engine-types';
+import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { rootsToSceneAsset } from '../collect-scene-asset';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
+import { publishTestAssets } from './helpers/publish-runtime-assets';
 import { registerSceneComponents } from './helpers/register-scene-components';
-
-function makeRegistry(): AssetRegistry {
-  return new AssetRegistry(makeMockShaderRegistry());
-}
-
-function _localId(n: number): LocalEntityId {
-  return n as LocalEntityId;
-}
+import { testAssets } from './helpers/runtime-assets';
 
 function hasComp(entity: SceneEntity, name: string): boolean {
   return (entity.components as Record<string, Record<string, unknown>>)[name] !== undefined;
@@ -42,11 +33,9 @@ describe('m1t3 — Children absent from collect (AC-04)', () => {
 
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     // biome-ignore lint/suspicious/noExplicitAny: branded type mismatch
-    const handle = world.allocSharedRef('SceneAsset', asset) as any;
+    const handle = reg.create(asset).unwrap() as any;
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -66,7 +55,7 @@ describe('m1t3 — Children absent from collect (AC-04)', () => {
     }
   });
 
-  it('3-level hierarchy: all entities free of Children in collect output', () => {
+  it('3-level hierarchy: all entities free of Children in collect output', async () => {
     // Nest 3 levels: use nested instantiateScene calls with child scene assets.
     // Level 1: outer parent scene.
     // Level 2: mid scene instantiated under outer parent entity.
@@ -86,20 +75,22 @@ describe('m1t3 — Children absent from collect (AC-04)', () => {
 
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
-    const sg0 = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    const sg1 = AssetGuid.parse('11111111-1111-1111-1111-111111111111');
-    const sg2 = AssetGuid.parse('22222222-2222-2222-2222-222222222222');
-    if (sg0.ok) reg.catalog(sg0.value, leafAsset);
-    if (sg1.ok) reg.catalog(sg1.value, midAsset);
-    if (sg2.ok) reg.catalog(sg2.value, outerAsset);
+    const reg = testAssets(world);
 
-    // biome-ignore lint/suspicious/noExplicitAny: branded type mismatch
-    const leafH = world.allocSharedRef('SceneAsset', leafAsset) as any;
-    // biome-ignore lint/suspicious/noExplicitAny: branded type mismatch
-    const midH = world.allocSharedRef('SceneAsset', midAsset) as any;
-    // biome-ignore lint/suspicious/noExplicitAny: branded type mismatch
-    const outerH = world.allocSharedRef('SceneAsset', outerAsset) as any;
+    const guid = (n: number) => `00000000-0000-5000-8000-${String(n).padStart(12, '0')}`;
+    publishTestAssets(
+      reg,
+      [leafAsset, midAsset, outerAsset].map((payload, index) => ({
+        guid: guid(index),
+        kind: 'scene',
+        payload,
+        refs: [],
+        artifacts: {},
+      })),
+    );
+    const leafH = (await reg.load(guid(0), 'scene')).unwrap();
+    const midH = (await reg.load(guid(1), 'scene')).unwrap();
+    const outerH = (await reg.load(guid(2), 'scene')).unwrap();
 
     // Instantiate outer scene first.
     const outerInst = SceneOwner.worldInstantiateScene(world, outerH);
@@ -142,11 +133,9 @@ describe('m1t3 — Children absent from collect (AC-04)', () => {
 
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     // biome-ignore lint/suspicious/noExplicitAny: branded type mismatch
-    const handle = world.allocSharedRef('SceneAsset', asset) as any;
+    const handle = reg.create(asset).unwrap() as any;
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
     if (!res.ok) return;

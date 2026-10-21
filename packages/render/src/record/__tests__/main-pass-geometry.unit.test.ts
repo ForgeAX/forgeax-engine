@@ -166,7 +166,6 @@ describe('temporal projection of multipass materials', () => {
     vertexEntry: 'vs_main',
     fragmentEntry: 'fs_forward',
     materialShaderId: 'forgeax::default-standard-pbr',
-    paramSnapshot: undefined,
   };
   const deferred = {
     ...forward,

@@ -1,6 +1,6 @@
 // Shared scene and time-driven atlas animation for Bevy `sprite_animation`.
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import {
@@ -12,6 +12,10 @@ import {
 import { spriteAnimationTickSystem } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const FRAME_COUNT = 6;
 export const FRAME_SIZE = 24;
@@ -75,12 +79,17 @@ function spriteMaterial(texture: number): MaterialAsset {
 }
 
 export function buildSpriteAnimationWorld(world: World, texture: number): void {
-  const material = world.allocSharedRef('MaterialAsset', spriteMaterial(texture));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const material = sceneAssets.create(spriteMaterial(texture)).unwrap();
   const regions = frameRegions();
   for (const [x, side, duration] of [[-2.1, 0, FRAME_DURATION_LEFT], [2.1, 1, FRAME_DURATION_RIGHT] as const]) {
     world.spawn(
       { component: Transform, data: { pos: [x, 0, 0], quat: [0, 0, 0, 1], scale: [3, 3, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [material] } },
       { component: SpriteAnimation, data: { frameCount: FRAME_COUNT, frameDuration: duration, currentFrame: 0, accumDt: 0, regions: new Float32Array(regions), playbackMode: SpritePlayback.loop } },
       { component: SpriteRegionOverride, data: { region: new Float32Array([0, 0, 1 / FRAME_COUNT, 1]) } },

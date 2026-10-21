@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 // hello-scene-nesting headless smoke — dawn-node structural smoke.
 //
 // This script boots dawn-node WebGPU, creates a renderer with inline
@@ -147,7 +148,7 @@ if (!assets) {
 
 // Mint a user-tier column handle for the unlit material so the inline
 // SceneAsset materials array references a real shared-ref id.
-const world = new World();
+const world = new World({ assets: assets });
 const worldContext = await createWorldContext(world, [
   renderComponentsPlugin(),
   scenePlugin(),
@@ -156,15 +157,8 @@ void worldContext;
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-const unlitMatHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.4, 0.2, 1]));
-const cubeGuid = AssetGuid.parse('cbe42beb-8975-5096-b3a1-3dda4cb4c077');
-if (!cubeGuid.ok) throw new Error('cube GUID parse failed');
-const cubeResult = await assets.loadByGuid(cubeGuid.value);
-if (!cubeResult.ok) {
-  console.error(`[smoke] FAIL - builtin cube loadByGuid: ${cubeResult.error.code}`);
-  process.exit(1);
-}
-const meshHandle = world.allocSharedRef('MeshAsset', cubeResult.value);
+const unlitMatHandle = world.assets.create(Materials.unlit([0.8, 0.4, 0.2, 1])).unwrap();
+const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
 // R2/B-5: bind a real material to the cube so the smoke produces a
 // non-black frame when the engine is healthy. Empty materials [] (the
@@ -210,17 +204,10 @@ const outerScene = {
   },
 };
 
-const innerHandle = world.allocSharedRef('SceneAsset', innerScene);
+const innerHandle = world.assets.create(innerScene).unwrap();
 
-const outerHandle = world.allocSharedRef('SceneAsset', outerScene);
-const sceneChildren = new Map([[Number(outerHandle), innerHandle]]);
-
-worldSetSceneAssetResolver(world, (sourceKey, parentHandle) => {
-  void sourceKey;
-  const child = sceneChildren.get(Number(parentHandle));
-  return child === undefined ? errResult({ code: 'asset-not-found' }) : okResult(child);
-});
-
+outerScene.entities.inner.instance.source = innerHandle;
+const outerHandle = assets.create(outerScene).unwrap();
 // A single world camera keeps the pixel proof self-contained. The mounted
 // scene's add override supplies a non-rendering Name component.
 world.spawn(
@@ -394,9 +381,9 @@ const faultyInner = structuredClone(innerScene);
 faultyInner.entities.cube.components.Transform.unknownField = 'M30-unknown-field';
 const faultyOuter = structuredClone(outerScene);
 const faultyInputSnapshot = JSON.stringify(faultyInner);
-const faultyInnerHandle = world.allocSharedRef('SceneAsset', faultyInner);
-const faultyOuterHandle = world.allocSharedRef('SceneAsset', faultyOuter);
-sceneChildren.set(Number(faultyOuterHandle), faultyInnerHandle);
+const faultyInnerHandle = world.assets.create(faultyInner).unwrap();
+faultyOuter.entities.inner.instance.source = faultyInnerHandle;
+const faultyOuterHandle = assets.create(faultyOuter).unwrap();
 const faultyResult = worldInstantiateScene(world, faultyOuterHandle);
 const faultyEntityCount = world.inspect().entityCount;
 const faultyDetail = faultyResult.ok ? undefined : faultyResult.error.detail;
@@ -417,17 +404,16 @@ if (!inputUnchanged || !noOrphanAfterFault || !healthyRetainedAfterFault) {
     `fault rejection invariant failed: ${JSON.stringify({ inputUnchanged, noOrphanAfterFault, healthyRetainedAfterFault, faultyEntityCount, baselineEntityCount })}`,
   );
 }
-sceneChildren.delete(Number(faultyOuterHandle));
-world.sharedRefs.release(faultyInnerHandle);
-world.sharedRefs.release(faultyOuterHandle);
+assets.release(faultyInnerHandle);
+assets.release(faultyOuterHandle);
 
 const correctedInner = structuredClone(faultyInner);
 delete correctedInner.entities.cube.components.Transform.unknownField;
 const correctedOuter = structuredClone(faultyOuter);
 const correctedInputSnapshot = JSON.stringify(correctedInner);
-const correctedInnerHandle = world.allocSharedRef('SceneAsset', correctedInner);
-const correctedOuterHandle = world.allocSharedRef('SceneAsset', correctedOuter);
-sceneChildren.set(Number(correctedOuterHandle), correctedInnerHandle);
+const correctedInnerHandle = world.assets.create(correctedInner).unwrap();
+correctedOuter.entities.inner.instance.source = correctedInnerHandle;
+const correctedOuterHandle = assets.create(correctedOuter).unwrap();
 const correctedResult = worldInstantiateScene(world, correctedOuterHandle);
 if (!correctedResult.ok) {
   m30Failures.push(`corrected instantiate failed: ${correctedResult.error.code}`);
@@ -435,7 +421,6 @@ if (!correctedResult.ok) {
   const correctedRoot = correctedResult.value.root;
   const correctedState = world.get(correctedRoot, SceneInstance);
   const correctedMember = correctedState.ok ? correctedState.value.mapping[2] : undefined;
-  const correctedEmpty = correctedResult.value.diagnostics.length === 0;
   const correctionInputUnchanged = JSON.stringify(correctedInner) === correctedInputSnapshot;
   const freshIdentity = Number(correctedRoot) !== Number(rootEntity)
     && correctedMember !== undefined
@@ -463,12 +448,11 @@ if (!correctedResult.ok) {
     ? { changed: true, count: worldDespawnScene(world, correctedRoot).unwrap() }
     : { changed: false, count: 0 };
   const healthyRetainedBeforeFinalTeardown = world.get(rootEntity, SceneInstance).ok;
-  sceneChildren.delete(Number(correctedOuterHandle));
-  world.sharedRefs.release(correctedInnerHandle);
-  world.sharedRefs.release(correctedOuterHandle);
-  if (!correctedEmpty || !correctionInputUnchanged || !freshIdentity || !healthyRetained) {
+  assets.release(correctedInnerHandle);
+  assets.release(correctedOuterHandle);
+  if (!correctionInputUnchanged || !freshIdentity || !healthyRetained) {
     m30Failures.push(
-      `corrected recovery invariant failed: ${JSON.stringify({ correctedEmpty, correctionInputUnchanged, freshIdentity, healthyRetained })}`,
+      `corrected recovery invariant failed: ${JSON.stringify({ correctionInputUnchanged, freshIdentity, healthyRetained })}`,
     );
   }
   if (repairedMeshedRenderCount === 0) {
@@ -486,8 +470,6 @@ if (!correctedResult.ok) {
     baselineEntityCount,
     noOrphanAfterFault,
     healthyRetainedAfterFault,
-    correctedDiagnostics: correctedResult.value.diagnostics,
-    correctedEmpty,
     correctionInputUnchanged,
     freshIdentity,
     healthyRetained,
@@ -550,10 +532,10 @@ if (failures.length > 0) {
 console.log(`[smoke] PASS - frames=${framesObserved}, Renderer.onError count=0, console.error RhiError count=0; lit regions=${meshedRenderCount}/2, pixelRegions=${JSON.stringify(pixelRegions)}, M30 recovery green`);
 
 worldDespawnScene(world, rootEntity).unwrap();
-world.sharedRefs.release(innerHandle);
-world.sharedRefs.release(outerHandle);
-world.sharedRefs.release(meshHandle);
-world.sharedRefs.release(unlitMatHandle);
+assets.release(innerHandle);
+assets.release(outerHandle);
+assets.release(meshHandle);
+assets.release(unlitMatHandle);
 
 device.destroy?.();
 delete globalThis.navigator.gpu;

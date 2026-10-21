@@ -15,6 +15,7 @@ import {
 } from '../browser-frame-signal';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { ErrorFanoutRegistry } from '../internal/error-fanout';
+import { browserInputOptions } from '../internal/input-attach';
 import type { BundlerOptions, CanvasDrawingBufferSize } from '../types';
 import {
   APP_PHASE_CATALOG,
@@ -125,7 +126,8 @@ export async function createWorkerExecutionApp(
         });
   const startupTimeoutMs =
     executionOptions.startupTimeoutMs === undefined ? 10_000 : executionOptions.startupTimeoutMs;
-  const frameTimeoutMs = executionOptions.frameTimeoutMs ?? 2_000;
+  const frameTimeoutMs =
+    executionOptions.frameTimeoutMs === undefined ? 2_000 : executionOptions.frameTimeoutMs;
   const syncCanvas = options.syncCanvas;
   let canvas = options.canvas;
   const initialPlatform = createBrowserPlatform(canvas);
@@ -193,16 +195,7 @@ export async function createWorkerExecutionApp(
   const attachInput = () =>
     options.appOptions.input === undefined
       ? attachBrowserInputBackend(canvas, {
-          ...(options.appOptions.uiRoot !== undefined ? { uiRoot: options.appOptions.uiRoot } : {}),
-          ...(options.appOptions.pointerLockAllowed !== undefined
-            ? { pointerLockAllowed: options.appOptions.pointerLockAllowed }
-            : {}),
-          ...(options.appOptions.virtualJoysticks !== undefined
-            ? { virtualJoysticks: options.appOptions.virtualJoysticks }
-            : {}),
-          ...(options.appOptions.lockProvider !== undefined
-            ? { lockProvider: options.appOptions.lockProvider }
-            : {}),
+          ...browserInputOptions(options.appOptions),
           onLockError: (detail) =>
             fanout.fire(
               new AppError({
@@ -337,6 +330,10 @@ export async function createWorkerExecutionApp(
   let musicFeedbackMs = 0;
   const createAudio = executionOptions.createHostAudio ?? createHostAudioConsumer;
   let audio: HostAudioConsumer;
+  const rejectedAudioPublications = new Map<
+    string,
+    import('@forgeax/engine-audio').AudioClipIdentity
+  >();
   try {
     audio = createAudio();
   } catch (cause) {
@@ -486,7 +483,7 @@ export async function createWorkerExecutionApp(
         ? {}
         : { render: { ...report.render, state: 'failed' as const } }),
       world: {
-        identity: message.worldIdentity,
+        identity: message.partialWrite ? message.worldIdentity : null,
         health: message.partialWrite ? 'poisoned' : report.world.health,
         partialWrite: message.partialWrite,
         retryable: message.retryable,
@@ -659,7 +656,11 @@ export async function createWorkerExecutionApp(
       ...frame,
       ...(musicState ? { musicState } : {}),
       ...(audioState.preparation ? { audioPreparation: audioState.preparation } : {}),
+      ...(rejectedAudioPublications.size
+        ? { rejectedAudioPublications: [...rejectedAudioPublications.values()] }
+        : {}),
     });
+    rejectedAudioPublications.clear();
     // Charge snapshot creation and synchronous publication as well as consumption.
     musicFeedbackMs = performance.now() - musicFeedbackStarted;
     scheduleFrame();
@@ -992,6 +993,9 @@ export async function createWorkerExecutionApp(
           publishBrowserFrameCompleted(canvas, {
             frameId: message.frameId,
             deviceGeneration: message.deviceGeneration ?? 0,
+            ...(message.shadowWorkload === undefined
+              ? {}
+              : { shadowWorkload: message.shadowWorkload }),
             ...(message.graphGeneration === undefined
               ? {}
               : { graphGeneration: message.graphGeneration }),
@@ -1031,7 +1035,11 @@ export async function createWorkerExecutionApp(
         const audioProfileOpen = profileFrameOpen
           ? (frameProfile?.beginPhase('app', 'host-audio').ok ?? false)
           : false;
-        for (const intent of message.audioIntents ?? []) audio.consume(intent);
+        for (const intent of message.audioIntents ?? []) {
+          const rejected = audio.consume(intent);
+          if (rejected)
+            rejectedAudioPublications.set(`${rejected.owner}:${rejected.handle}`, rejected);
+        }
         (options.appOptions.input ?? inputHandle?.backend)?.dispatchFeedback?.(
           message.feedbackIntents ?? [],
         );
@@ -1067,6 +1075,7 @@ export async function createWorkerExecutionApp(
           new Error('The previous World was replaced before inspection execution.'),
         );
         audio.dispose();
+        rejectedAudioPublications.clear();
         try {
           audio = createAudio();
         } catch (cause) {
@@ -1191,15 +1200,21 @@ export async function createWorkerExecutionApp(
       resolveResult = resolve;
       rejectResult = reject;
     });
-    pendingInspections.set(requestId, {
-      resolve: resolveResult,
-      reject: rejectResult,
-      startedResolve: resolveStarted,
-      startedReject: rejectStarted,
-      worldIdentity: expectedWorldIdentity,
-      cancelResolve: undefined,
-    });
-    session.post({ kind: 'inspect', requestId, code, worldIdentity: expectedWorldIdentity });
+    if (state === 'stopped') {
+      const error = lastError ?? lifecycleError('app-not-started');
+      rejectResult(error);
+      rejectStarted(error);
+    } else {
+      pendingInspections.set(requestId, {
+        resolve: resolveResult,
+        reject: rejectResult,
+        startedResolve: resolveStarted,
+        startedReject: rejectStarted,
+        worldIdentity: expectedWorldIdentity,
+        cancelResolve: undefined,
+      });
+      session.post({ kind: 'inspect', requestId, code, worldIdentity: expectedWorldIdentity });
+    }
     let cancelPromise: Promise<boolean> | undefined;
     const cancel = (): Promise<boolean> => {
       const pending = pendingInspections.get(requestId);

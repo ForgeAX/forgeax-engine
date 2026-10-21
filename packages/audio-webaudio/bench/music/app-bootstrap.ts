@@ -4,7 +4,6 @@ import { defineSharedKernel } from '@forgeax/engine/ecs/shared';
 import { Camera, perspective } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import type { ExecutionBootstrapEntry } from '@forgeax/engine/app';
-import { ok } from '@forgeax/engine/types';
 import { AudioCounter, run } from '../stream/app-kernel';
 import { savedScore } from './saved-score';
 
@@ -32,14 +31,8 @@ const entry: ExecutionBootstrapEntry = data => ({ features: [], plugins: [audioP
     }
     // Negative control: ordinary immediate source plays issued by real Update work.
     // This uses the existing SFX publication path, deliberately omitting musical targets.
-    const immediate = falsifier ? await loadMusicScore(savedScore(count), async guid => {
-      const assets = ctx.assets;
-      if (!assets) throw new Error('ordinary falsifier clips require the asset service');
-      const loaded = await assets.loadByGuid(assets.parseGuid(guid));
-      if (!loaded.ok) return loaded;
-      if (loaded.value.kind !== 'audio') throw new Error('ordinary source must resolve to audio');
-      return ok(loaded.value);
-    }) : undefined;
+    if (falsifier && !ctx.assets) throw new Error('ordinary falsifier clips require the asset service');
+    const immediate = falsifier ? await loadMusicScore(savedScore(count), ctx.assets!) : undefined;
     if (immediate && !immediate.ok) throw immediate.error;
     let immediateFrame = 0, immediateStem = 0;
     let sequence = 1, started = false, frame = 0;
@@ -56,7 +49,7 @@ const entry: ExecutionBootstrapEntry = data => ({ features: [], plugins: [audioP
       if (immediate?.ok) {
         if (immediateFrame++ % 3 === 0 && immediateStem < count) {
           const stem = immediateStem++;
-          audio.play(50000 + stem, immediate.value.stems[stem]!.clip,
+          audio.play(50000 + stem, immediate.value.assets, immediate.value.stems[stem]!.clip,
             { loop: true, volume: 0.1, spatialBlend: 0, bus: 'music' });
           port?.postMessage({ immediateStem: stem, submittedFrame: immediateFrame });
         }

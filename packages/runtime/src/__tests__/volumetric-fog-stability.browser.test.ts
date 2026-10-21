@@ -17,6 +17,7 @@ import { expect, it } from 'vitest';
 import { makeVolumetricDensity } from '../../../../apps/hello/volumetric-fog/src/volumetric-density-importer';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 // One device, 128-square output, no external assets or per-frame PNG encoding.
 // A real advancing World + FXAA exercises the volume history independently of TAA.
@@ -40,19 +41,22 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
     scale: 10,
     repeatFactor: 5,
   });
-  const density = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '3d', extent: { width: 128, height: 128, depth: 128 } },
-    format: 'r8unorm',
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-    data,
-  });
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0, 0, 0, 1], roughness: 1, metallic: 0 }),
-  );
+  const density = testAssets(world)
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '3d', extent: { width: 128, height: 128, depth: 128 } },
+      format: 'r8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data,
+    })
+    .unwrap();
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(1, 1, 1).unwrap())
+    .unwrap();
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0, 0, 0, 1], roughness: 1, metallic: 0 }))
+    .unwrap();
   const backdrop = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -10], scale: [20, 20, 1] } },
@@ -183,9 +187,9 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
     await renderer.dispose();
     world.despawn(fog).unwrap();
     world.despawn(backdrop).unwrap();
-    world.sharedRefs.release(mesh).unwrap();
-    world.sharedRefs.release(material).unwrap();
-    world.sharedRefs.release(density).unwrap();
+    testAssets(world).release(mesh).unwrap();
+    testAssets(world).release(material).unwrap();
+    testAssets(world).release(density).unwrap();
     await scene.fiber.dispose();
     canvas.remove();
   }

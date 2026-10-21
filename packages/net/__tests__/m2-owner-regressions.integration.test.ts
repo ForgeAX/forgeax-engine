@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import { err, ok } from '@forgeax/engine-types';
 import type {
@@ -568,6 +568,7 @@ describe('M2 confirmed owner regressions', () => {
     const replica = createReplicaCoordinator(new World(), replication);
     const session = new NetSession({ endpoint: receiver, maxRawMessages: 8 });
     session.attachReplica(replica, replication.limits);
+    const apply = vi.spyOn(replica, 'apply');
     sender.poll();
     session.receiveEvents();
 
@@ -579,7 +580,8 @@ describe('M2 confirmed owner regressions', () => {
     expect(session.receiveEvents()).toEqual([]);
     const current = session.getRecoverySnapshot();
 
-    expect(replica.lastPacketOutcome).toBe('ignored-old-epoch');
+    expect(apply.mock.results.at(-1)?.value.unwrap()).toBe('ignored-old-epoch');
+    apply.mockRestore();
     expect(current.state.kind).toBe('active');
     expect(current.epoch).toBe(accepted.epoch);
     expect(current.sequence).toBe(accepted.sequence);

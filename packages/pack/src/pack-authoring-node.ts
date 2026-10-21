@@ -23,6 +23,11 @@ import {
   resolvePackParameterInheritance,
   validatePackDefinition,
 } from './pack-authoring.js';
+import {
+  createFileSystemPackDrafts,
+  type FileSystemPackDraftOptions,
+} from './pack-authoring-drafts-node.js';
+import { packSourceFailure, readPackAuthoringDeclaration } from './pack-authoring-literals.js';
 import { declaredPackAssets, type ScanInventory, scanInventory } from './scanner.js';
 
 export interface PackAuthoringMaterializedAsset {
@@ -37,6 +42,7 @@ export interface PackAuthoringMaterializedAsset {
 }
 
 export interface FileSystemPackAuthoringOptions {
+  readonly drafts?: Omit<FileSystemPackDraftOptions<unknown>, 'gameRoot'>;
   readonly gameRoot: string;
   /** Project owner prepares the full closure, dependency lock and candidate compile. */
   readonly transfer?: (
@@ -241,6 +247,7 @@ function projectParameters(
     ...(parameter.maximum === undefined ? {} : { maximum: parameter.maximum }),
     ...(parameter.values === undefined ? {} : { values: parameter.values }),
     ...(parameter.kind === undefined ? {} : { kind: parameter.kind }),
+    ...(parameter.apply === undefined ? {} : { apply: parameter.apply }),
   }));
 }
 
@@ -1665,6 +1672,37 @@ async function executeRaw(
   options: FileSystemPackAuthoringOptions,
   operation: PackAuthoringOperation,
 ): Promise<Result<PackAuthoringOperationResult, PackAuthoringError>> {
+  if (operation.operation === 'asset.inspect' && operation.parametersOnly) {
+    const source = await readConfined(
+      options,
+      operation,
+      operation.sourcePath ?? operation.subject,
+    );
+    if (!source.ok) return source;
+    if (!source.value.relative.endsWith('.pack.ts'))
+      return err(
+        packSourceFailure(
+          source.value.relative,
+          'parametersOnly requires a .pack.ts source; use ordinary asset.inspect for JSON Packs',
+        ),
+      );
+    const declaration = readPackAuthoringDeclaration(source.value.relative, source.value.source);
+    if (!declaration.ok) return declaration;
+    return ok({
+      operation: operation.operation,
+      requestId: operation.requestId,
+      sourcePath: source.value.relative,
+      revision: declaration.value.revision,
+      packageId: declaration.value.packageId,
+      format: 'pack.ts',
+      status: 'identity',
+      parameters: projectParameters(declaration.value.parameters).map((parameter) => ({
+        ...parameter,
+        mode: typeof parameter.apply === 'object' ? 'runtime' : 'generation',
+        location: declaration.value.defaults.get(String(parameter.name))?.location,
+      })),
+    });
+  }
   if (
     operation.operation === 'asset.list' ||
     operation.operation === 'asset.inspect' ||
@@ -2152,7 +2190,41 @@ async function executeRaw(
 export function createFileSystemPackAuthoringPort(
   options: FileSystemPackAuthoringOptions,
 ): PackAuthoringGatewayPort<PackAuthoringOperationResult> {
-  return { execute: (operation) => executeRaw(options, operation) };
+  const drafts = createFileSystemPackDrafts({ gameRoot: options.gameRoot, ...options.drafts });
+  return {
+    dispose: () => drafts.dispose(),
+    async execute(operation) {
+      if (operation.operation !== 'asset.source.draft') return executeRaw(options, operation);
+      if (!operation.draft)
+        return err(
+          makeError('pack-parameter-invalid', 'a draft request', 'supply a draft action', {}),
+        );
+      try {
+        return ok({
+          operation: operation.operation,
+          requestId: operation.requestId,
+          draft: await drafts.execute(operation.draft),
+        });
+      } catch (cause) {
+        if (
+          cause !== null &&
+          typeof cause === 'object' &&
+          'code' in cause &&
+          'expected' in cause &&
+          'hint' in cause
+        )
+          return err(cause as PackAuthoringError);
+        return err(
+          makeError(
+            'pack-source-write-failed',
+            'a successful draft source operation',
+            'repair the source or filesystem error and retry',
+            { reason: cause instanceof Error ? cause.message : String(cause) },
+          ),
+        );
+      }
+    },
+  };
 }
 
 export function createFileSystemPackAuthoringGateway(

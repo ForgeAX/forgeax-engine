@@ -103,7 +103,7 @@ export default defineFeature({
       'asset-parse-failed',
     );
 
-    const assets = new AssetRegistry({} as never);
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
     const shared = { count: 0 };
     assets.setCatalogSource(createCatalogSource({ url: URL_, fetch: fetcher([entry], shared) }));
     const baseline = await assets.enumerateCatalog();

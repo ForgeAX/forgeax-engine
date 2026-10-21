@@ -21,7 +21,7 @@ describe('volumetric fog Dawn fixture source contract', () => {
 
   it('submits an ordinary transparent mesh through the same World and verifies the sorted lane', () => {
     expect(smokeSource).toContain('const transparentSubject = world');
-    expect(smokeSource).toContain('component: MeshFilter, data: { assetHandle: HANDLE_CUBE }');
+    expect(smokeSource).toContain('component: MeshFilter, data: { assetHandle: primitiveCube }');
     expect(smokeSource).toContain(
       'component: MeshRenderer, data: { materials: [transparentMaterial] }',
     );

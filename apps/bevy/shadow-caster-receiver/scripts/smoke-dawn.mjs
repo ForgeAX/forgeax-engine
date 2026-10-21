@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 // bevy-shadow-caster-receiver Dawn smoke. Renders the shared scene through
 // five Bevy key states and falsifies each one from pixels:
 //   baseline      red casts onto the ground; blue (NotShadowCaster) does not
@@ -34,9 +36,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const manifest = readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8');
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, dawn.canvas, {}, {
+  const hostResult = await constructRuntimeRendererHost(dawn.canvas, {}, {
     shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}`,
   });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {
   dawn.release();
 }
@@ -44,7 +48,7 @@ console.log(`[shadow-caster-receiver] backend=${rendererBackend(renderer)}`);
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error.code));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const scene = spawnCasterReceiverScene(world, WIDTH / HEIGHT);
 const project = createProjector({ position: CAMERA_POSITION, target: CAMERA_TARGET, fov: Math.PI / 4, width: WIDTH, height: HEIGHT });
 

@@ -1,5 +1,6 @@
 #define_import_path forgeax_pbr::temporal
 #import forgeax_material::texture_coordinates::{materialUvLinear}
+#import forgeax_material::alpha_hash::{alphaCoverage}
 
 #import forgeax_view::common::{sampleMaterialTexture}
 #import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
@@ -44,6 +45,7 @@ fn resolvePbrTemporalReactive(
 fn projectPbrSceneTemporal(
   baseColorAlpha : f32,
   alphaCutoff : f32,
+  alphaToCoverage : f32,
   alphaHash : f32,
   positionOS : vec3<f32>,
 #ifdef BASE_COLOR_TEXTURE_AVAILABLE
@@ -116,12 +118,14 @@ fn projectPbrSceneTemporal(
     }
   }
 #endif
-  let coverage = baseColorAlpha * baseSample.a * alphaSample;
+  let sampledAlpha = baseColorAlpha * baseSample.a * alphaSample;
+#ifndef ALPHA_CLIPPING_DISABLED
+  let coverage = alphaCoverage(sampledAlpha, alphaCutoff, alphaToCoverage);
+#else
+  let coverage = sampledAlpha;
+#endif
 #ifndef ALPHA_HASH_DISABLED
   applyAlphaHash(coverage, positionOS, alphaHash);
-#endif
-#ifndef ALPHA_CLIPPING_DISABLED
-  if (alphaCutoff > 0.0 && coverage <= alphaCutoff) { discard; }
 #endif
   var reactiveCoverage = resolvePbrTemporalReactive(reactive, coverage, 1.0);
 #ifndef ALPHA_HASH_DISABLED

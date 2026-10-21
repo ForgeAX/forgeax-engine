@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ANTIALIAS_TAA, DynamicResolution } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { serial } from './support/serial';
 
 export default defineFeature({
@@ -12,8 +14,14 @@ export default defineFeature({
   expect:
     'PASS when equal min/max bounds report status fixed at about half the canvas extent, an adaptive range reports a live status, and removing the component clears the inspection.',
   setup({ app, world, frames, canvas }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { eye: [0, 1.5, 5], data: { antialias: ANTIALIAS_TAA } });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [0.9, 0.4, 0.1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [0.9, 0.4, 0.1, 1] }), {
       pos: [0, 0.8, 0],
     });
     return {

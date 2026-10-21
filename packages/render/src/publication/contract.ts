@@ -1,10 +1,11 @@
 import type { TimeResource } from '@forgeax/engine-ecs';
 import type { MaterialRuntimeArtifact, MaterialShaderEntry } from '@forgeax/engine-shader';
-import type { Asset, Handle, MeshAsset, Result } from '@forgeax/engine-types';
+import type { Asset, AssetHandle, MeshAsset, Result } from '@forgeax/engine-types';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import type { FrameReceipt, RenderFrameInput } from '../render-contract';
 import type { DispatchEntry, ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import type { TransparentSortConfig } from '../systems/transparent-sort-config';
+import type { PublishedAssetPatch } from './asset-patch';
 import type { PublishedCanvasFrame } from './canvas';
 import type { PublishedRenderTarget, PublishedRenderTargetSource } from './targets';
 
@@ -16,7 +17,8 @@ export interface RenderPublicationIdentity {
 
 /** Source-owned handle in the receiver's existing publication namespace. */
 export interface PublishedMeshPreparation extends RenderPublicationIdentity {
-  readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+  readonly meshHandle: AssetHandle<'mesh'>;
+  readonly revision: number;
   readonly mesh: MeshAsset;
   /** Actual candidate draw facts; absent for standalone mesh-buffer residency. */
   readonly pipelinePreparation?: MeshPipelinePreparation;
@@ -24,6 +26,7 @@ export interface PublishedMeshPreparation extends RenderPublicationIdentity {
 
 /** Same producer snapshot/program vocabulary as a scene publication, without scene admission. */
 export interface MeshPipelinePreparation {
+  readonly materials: RenderPublication['materials'];
   readonly entity: number;
   readonly transform: RenderableSnapshot['transform'];
   readonly template: RenderPublicationTemplate;
@@ -50,18 +53,28 @@ export type RenderPublicationMetadata = Omit<
   | 'visibilitySnapshots'
   | 'featureVisibilitySnapshots'
   | 'hiddenEntityReports'
-  | 'shadowCasterEntityKeys'
-  | 'shadowCasterDrawKeys'
-  | 'shadowCasterMembership'
 >;
 
 export interface RenderPublicationTemplate {
-  readonly snapshot: Omit<RenderableSnapshot, 'worldId' | 'entityKey' | 'transform'>;
+  readonly snapshot: Omit<
+    RenderableSnapshot,
+    'worldId' | 'entityKey' | 'transform' | 'material' | 'materials' | 'materialOverrides'
+  > & {
+    readonly material: number;
+    readonly materials: readonly number[];
+    readonly materialOverrides?: readonly number[];
+  };
   readonly dispatch: readonly Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>[];
 }
 
 /** Numeric storage and published mesh copies are owned; source buffers never transfer. */
 export interface RenderPublication extends RenderPublicationIdentity {
+  readonly protocol: 2;
+  readonly materials: readonly {
+    readonly id: number;
+    readonly value: import('../render-system-extract').MaterialSnapshot;
+  }[];
+  readonly retiredMaterials: readonly number[];
   readonly revision: number;
   readonly base: number;
   readonly baseline: boolean;
@@ -96,13 +109,25 @@ export interface RenderPublication extends RenderPublicationIdentity {
   readonly transformEntities: Uint32Array;
   readonly transforms: Float32Array;
   readonly assets: readonly {
-    readonly handle: Handle<string, 'shared'>;
+    readonly handle: number;
+    readonly revision: number;
     readonly guid?: string;
     readonly sourceKey?: string;
     readonly value: Asset;
+    /** Omission retains the accepted projection; null clears a previous program contract. */
+    readonly materialProjection?:
+      | import('@forgeax/engine-assets-runtime').MaterialRenderProjection
+      | null;
   }[];
-  readonly retiredAssets: readonly Handle<string, 'shared'>[];
-  readonly invalidatedAssets: readonly Handle<string, 'shared'>[];
+  /** Fixed versions used by queued work, independent of the current asset rows. */
+  readonly assetVersions?: readonly {
+    readonly handle: number;
+    readonly revision: number;
+    readonly value: Asset;
+  }[];
+  readonly retiredAssetVersions?: readonly { readonly handle: number; readonly revision: number }[];
+  readonly assetPatches: readonly PublishedAssetPatch[];
+  readonly retiredAssets: readonly number[];
 }
 
 export interface PublishedRenderFrameInput {
@@ -137,7 +162,11 @@ export function renderPublicationAssetTransfers(packet: RenderPublication): Arra
       for (const child of Object.values(value)) collect(child);
     }
   };
-  for (const row of packet.assets) if (row.value.kind === 'mesh') collect(row.value);
+  for (const row of packet.assets) collect(row.value);
+  for (const patch of packet.assetPatches) {
+    collect(patch.fields);
+    for (const range of patch.ranges) collect(range.bytes);
+  }
   return [...buffers];
 }
 

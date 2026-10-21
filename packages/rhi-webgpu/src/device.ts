@@ -1180,34 +1180,13 @@ function rangeError(args: { expected: string; hint: string }): Result<never, Rhi
  *     message in .hint.
  *   - getMappedRange rejects with 'webgpu-runtime-error' when mapState !==
  *     'mapped' (F-8 row 2 detach guard) before delegating.
- *   - unmap is silent (spec normative; research §4.4) and resets the
- *     internal mapState slot to 'unmapped'.
- *
- * The wrapper carries an internal mapState slot so the shim can detect F-8
- * row 1 / row 2 fast-path; the slot is initialized to 'mapped' when the
- * descriptor sets `mappedAtCreation:true` (research §4.3) and otherwise
- * starts at 'unmapped'.
+ *   - unmap is silent (spec normative). Mapping state is read directly from
+ *     the native GPUBuffer, including pending, unmap and destroy transitions.
  */
 function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFlags): Buffer {
-  // Track mapState locally so the shim does not need to query raw.mapState
-  // (the spec exposes it but for symmetry with the F-8 guard semantics we
-  // mirror the slot in the wrapper).
-  const initialState =
-    typeof (raw as { mapState?: string }).mapState === 'string'
-      ? (raw as { mapState: 'unmapped' | 'pending' | 'mapped' }).mapState
-      : 'unmapped';
-  let mapState: 'unmapped' | 'pending' | 'mapped' = initialState;
   const wrapper = {
-    get mapState(): 'unmapped' | 'pending' | 'mapped' {
-      // Prefer the raw slot if available so destroyed-buffer transitions
-      // surface to AI users; fall back to the local slot for mocks that do
-      // not expose mapState (mock buffers keep a logical mapState only).
-      const rs = (raw as { mapState?: 'unmapped' | 'pending' | 'mapped' }).mapState;
-      if (typeof rs === 'string') {
-        mapState = rs;
-        return rs;
-      }
-      return mapState;
+    get mapState(): Buffer['mapState'] {
+      return raw.mapState;
     },
     async mapAsync(
       mode: GPUMapModeFlags,
@@ -1274,25 +1253,20 @@ function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFl
         });
       }
       // Delegate to raw GPUBuffer; raw rejection wraps as webgpu-runtime-error.
-      mapState = 'pending';
       try {
-        if (typeof raw.mapAsync === 'function') {
-          if (sizeArg === undefined && offset === undefined) {
-            await raw.mapAsync(mode);
-          } else if (sizeArg === undefined) {
-            await raw.mapAsync(mode, off);
-          } else {
-            await raw.mapAsync(mode, off, sizeArg);
-          }
+        if (sizeArg === undefined && offset === undefined) {
+          await raw.mapAsync(mode);
+        } else if (sizeArg === undefined) {
+          await raw.mapAsync(mode, off);
+        } else {
+          await raw.mapAsync(mode, off, sizeArg);
         }
-        mapState = 'mapped';
         // D-P2 #6: the structural wrapper carries both Buffer + MappedBuffer
         // members; on the success path we surface the same JS object typed as
         // the branded MappedBuffer (charter proposition 5: brand is structural,
         // no runtime cost).
         return ok(wrapper as unknown as MappedBuffer);
       } catch (e) {
-        mapState = 'unmapped';
         const message = e instanceof Error ? e.message : String(e);
         return rangeError({
           expected: 'underlying GPUBuffer.mapAsync to succeed',
@@ -1344,7 +1318,6 @@ function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFl
       } catch {
         // swallow per spec; the forgeax form does not surface unmap failures.
       }
-      mapState = 'unmapped';
     },
   } as unknown as Buffer;
   return wrapper;

@@ -5,18 +5,20 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { AnimationPlayer, AnimationTargetId, animationPlugin, bindAnimationTargets } from '@forgeax/engine-animation';
 import { World, createWorldContext } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective, renderComponentsPlugin } from '@forgeax/engine-render';
 import { attachRecorder, buildFrameModel, decodeTape, encodeTape, openReplay, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { skinningPlugin } from '@forgeax/engine-skinning';
 import { propagateTransforms, Transform, scenePlugin } from '@forgeax/engine-scene';
-import { type MeshAsset, type MaterialAsset, type SceneAsset, type AnimationClip, ok } from '@forgeax/engine-types';
+import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { fixtures } from 'virtual:mesh-io-fixtures';
 import { MESH_IO_LOGICAL_FRAMES, meshIoFrameIndices } from './frame-profile';
 import './style.css';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 function value<T>(result: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown }): T { if (!result.ok) throw result.error; return result.value; }
 function difference(a: Uint8Array, b: Uint8Array): number {
@@ -88,7 +90,10 @@ async function run() {
     host.renderer.subscribe((event) => { if (event.kind === 'error') errors.push(event.error); });
     configureRuntimeAssetCatalog(host.assets, runtimeBinding);
     value(host.renderer.setProfile({ ...host.renderer.inspect().profile, renderPath: 'forward', ssao: false }));
-    const world = new World();
+    const world = new World({ assets: host.assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
     await createWorldContext(world,[scenePlugin(),renderComponentsPlugin(),skinningPlugin(),animationPlugin()]);
     if (fixture.sceneGuid === undefined) world.spawn({ component: Transform, data: { pos: [0, 0, 3] } }, { component: Camera, data: { ...perspective({ fov: Math.PI / 4, aspect: 4 / 3 }), antialias: 0, bloom: 0, tonemap: 0 } }).unwrap();
     world.spawn({ component: DirectionalLight, data: { direction: [-0.5, -0.6, -1], intensity: fixture.lightIntensity ?? 3, castShadow: false } }).unwrap();
@@ -96,7 +101,8 @@ async function run() {
     const meshes = [];
     const loadedMeshes: MeshAsset[] = [];
     for (const guid of fixture.guids) {
-      const mesh = (await host.assets.loadByGuid<MeshAsset>(value(AssetGuid.parse(guid)))).unwrap();
+      const meshHandle = (await host.assets.load(guid, 'mesh')).unwrap();
+      const mesh = host.assets.read(meshHandle).unwrap();
       loadedMeshes.push(mesh);
       meshes.push({ guid, vertices: (mesh.attributes.position as Float32Array).length / 3, indices: mesh.indices?.length ?? 0, bounds: Array.from(mesh.aabb ?? []) });
       if (fixture.sceneGuid !== undefined) continue;
@@ -104,21 +110,21 @@ async function run() {
       const materialHandles = [];
       // Geometry round trips share one authored material. The closure case
       // consumes its source MTL; source glTF materials use their Scene below.
-      for (const slot of mesh.materialSlots) materialHandles.push(fixture.id !== 'obj-mtl' || slot.defaultMaterial === undefined ? world.allocSharedRef('MaterialAsset',material) : world.allocSharedRef('MaterialAsset',(await host.assets.loadByGuid<MaterialAsset>(slot.defaultMaterial)).unwrap()));
+      for (const slot of mesh.materialSlots) materialHandles.push(fixture.id !== 'obj-mtl' || slot.defaultMaterial === undefined ? sceneAssets.create(material).unwrap() : typeof slot.defaultMaterial === 'number' ? slot.defaultMaterial : (await host.assets.load(slot.defaultMaterial, 'material')).unwrap());
       world.spawn(
         { component: Transform, data: fixture.id === 'svg' ? { pos: [-0.5, -0.5, 0], scale: [0.1, 0.1, 0.1] } : { quat: [0.15, 0.2, 0, Math.sqrt(1 - 0.15 ** 2 - 0.2 ** 2)] } },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
         { component: MeshRenderer, data: { materials: materialHandles } },
       ).unwrap();
     }
     const lease = value(host.renderer.attach(world));
     let animationPlayer: import('@forgeax/engine-ecs').EntityHandle | undefined;
     if (fixture.sceneGuid !== undefined) {
-      const scene=(await host.assets.loadByGuid<SceneAsset>(value(AssetGuid.parse(fixture.sceneGuid)))).unwrap();
-      const anchor=host.assets.instantiate(world.allocSharedRef('SceneAsset',scene),world).unwrap();
+      const scene=(await host.assets.load(fixture.sceneGuid, 'scene')).unwrap();
+      const anchor=host.assets.instantiate(scene,world).unwrap();
       if (fixture.animationGuid !== undefined) {
-        const clip=(await host.assets.loadByGuid<AnimationClip>(value(AssetGuid.parse(fixture.animationGuid)))).unwrap();
-        animationPlayer=anchor;world.addComponent(anchor,{component:AnimationPlayer,data:{clips:[world.allocSharedRef('AnimationClip',clip)],times:[0],weights:[1],speeds:[0],paused:true,looping:false}}).unwrap();
+        const clip=(await host.assets.load(fixture.animationGuid, 'animation-clip')).unwrap();
+        animationPlayer=anchor;world.addComponent(anchor,{component:AnimationPlayer,data:{clips:[clip],times:[0],weights:[1],speeds:[0],paused:true,looping:false}}).unwrap();
         bindAnimationTargets(world,anchor,[...world.query({with:[AnimationTargetId]}).unwrap()].map(row=>row.entity)).unwrap();
       }
       for (const row of world.query({with:[Camera]}).unwrap()) world.set(row.entity,Camera,{antialias:0,bloom:0,tonemap:0}).unwrap();

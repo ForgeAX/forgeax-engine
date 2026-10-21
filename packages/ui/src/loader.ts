@@ -1,5 +1,7 @@
 import {
+  type AssetDecoderContribution,
   type AssetDecoderInput,
+  type AssetKind,
   type AssetLoadError,
   err,
   ok,
@@ -103,28 +105,46 @@ export function createUiLoader(): UiLoader {
     }
     if (Object.keys(resources).length && !candidate.sourcePath)
       return uiError('invalid-asset', 'UI companions require the author sourcePath');
-    return {
-      ok: true,
-      value: {
-        guid: candidate.guid,
-        html: candidate.html,
-        css: candidate.css,
-        ...(candidate.browserExtensions === undefined
-          ? {}
-          : { browserExtensions: candidate.browserExtensions }),
-        ...(candidate.sourcePath === undefined
-          ? {}
-          : { sourcePath: candidate.sourcePath as string }),
-        ...(Object.keys(resources).length ? { resources } : {}),
-        ...(candidate.localization === undefined ? {} : { localization: candidate.localization }),
-      },
-    };
+    try {
+      return {
+        ok: true,
+        value: {
+          guid: candidate.guid,
+          html: candidate.html,
+          css: candidate.css,
+          ...(candidate.browserExtensions === undefined
+            ? {}
+            : { browserExtensions: [...candidate.browserExtensions] }),
+          ...(candidate.sourcePath === undefined
+            ? {}
+            : { sourcePath: candidate.sourcePath as string }),
+          ...(Object.keys(resources).length ? { resources } : {}),
+          ...(candidate.localization === undefined
+            ? {}
+            : {
+                localization: {
+                  fallbackLng: candidate.localization.fallbackLng,
+                  defaultNS: candidate.localization.defaultNS,
+                  resources: structuredClone(candidate.localization.resources),
+                },
+              }),
+        },
+      };
+    } catch {
+      return uiError('invalid-asset', 'localization resources must be cloneable JSON data');
+    }
   };
   return {
     load,
     async decode(input) {
       const { envelope, signal } = input;
-      const asset = load({ ...envelope, artifacts: {} });
+      const asset = load({
+        guid: envelope.guid,
+        kind: envelope.kind,
+        payload: envelope.payload,
+        refs: envelope.refs,
+        artifacts: {},
+      });
       const project = (result: UiResult<UiAsset>): Result<UiAsset, AssetLoadError> =>
         result.ok
           ? ok(result.value)
@@ -142,27 +162,40 @@ export function createUiLoader(): UiLoader {
           detail: { guid: envelope.guid },
         });
       if (!asset.ok) return project(asset);
-      const resources: Record<string, UiLoaderInput['artifacts'][string]> = {};
-      const streams: Record<string, NonNullable<UiLoaderInput['streams']>[string]> = {};
+      const resources: Record<string, UiResource> = {};
       for (const [key, descriptor] of Object.entries(envelope.artifacts)) {
         if (signal.aborted) return cancelled();
-        if (uiResourcePath(key) !== key || uiResourceMimeType(key) !== descriptor.mediaType)
+        const mediaType = descriptor.mediaType;
+        if (uiResourcePath(key) !== key || uiResourceMimeType(key) !== mediaType)
           return project(
             uiResourceFailure(asset.value, key, 'invalid-companion-key-or-media-type'),
           );
         const url =
           descriptor.delivery === 'stream' ? input.artifacts.locate?.(descriptor) : undefined;
         if (url !== undefined) {
-          streams[key] = { descriptor, url };
+          if (typeof url !== 'string' || !url)
+            return project(uiResourceFailure(asset.value, key, 'invalid-companion-url'));
+          resources[key] = { mediaType, url };
           continue;
         }
         const read = await input.artifacts.read(descriptor);
         if (signal.aborted) return cancelled();
         if (!read.ok) return read;
-        resources[key] = { descriptor, bytes: read.value };
+        if (!(read.value instanceof Uint8Array))
+          return project(uiResourceFailure(asset.value, key, 'invalid-companion-bytes'));
+        resources[key] = { mediaType, bytes: read.value };
       }
       if (signal.aborted) return cancelled();
-      return project(load({ ...envelope, artifacts: resources, streams }));
+      const hasResources = Object.keys(resources).length > 0;
+      if (hasResources && !asset.value.sourcePath)
+        return project(uiError('invalid-asset', 'UI companions require the author sourcePath'));
+      return ok({ ...asset.value, ...(hasResources ? { resources } : {}) });
     },
   };
 }
+
+export const uiAssetContribution: AssetDecoderContribution<UiAsset, 'ui'> = {
+  kind: { kind: 'ui' } as AssetKind<UiAsset, 'ui'>,
+  consumer: 'UI',
+  decoder: createUiLoader(),
+};

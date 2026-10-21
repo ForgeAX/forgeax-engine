@@ -145,7 +145,7 @@ describe('author weight to bounded ID specialization', () => {
       offset += size * size * 4;
     }
   });
-  it('shares source arrays globally and validates control, array and surface tampering', () => {
+  it('retains shared layer identities and validates control, layer-index and surface tampering', () => {
     const s = source(3, 3, 32);
     for (let i = 0; i < s.heights.length; i++) s.weights[i * 32 + 31] = 1;
     const built = buildTerrainAssets(s, (key) => key, assets(s), policy(0)).unwrap();
@@ -153,32 +153,18 @@ describe('author weight to bounded ID specialization', () => {
     if (root?.kind !== 'terrain') throw new Error('missing root');
     const closure = new Map(Object.entries({ ...assets(s), ...built }));
     expect(root.sections).toHaveLength(4);
-    expect(Object.keys(built).filter((key) => key.includes('color-layers'))).toEqual([
-      'layers/terrain-color-layers',
-    ]);
-    const shared = built['layers/terrain-color-layers'];
-    expect(shared).toMatchObject({ shape: { extent: { layers: 32 } } });
+    expect(Object.keys(built).some((key) => key.includes('color-layers'))).toBe(false);
+    expect(root.layers).toEqual(s.layers);
     expect(terrainDerivedClosureValid(root, closure)).toBe(true);
-    if (shared?.kind !== 'texture') throw new Error('missing shared array');
-    const originalByte = shared.data[0] ?? 0;
-    shared.data[0] = originalByte ^ 1;
-    expect(terrainDerivedClosureValid(root, closure)).toBe(false);
-    shared.data[0] = originalByte;
     const neighbor = built['section/1/material'];
-    if (neighbor?.kind !== 'material' || neighbor.parent !== undefined)
-      throw new Error('missing neighbor');
+    if (neighbor?.kind !== 'material') throw new Error('missing neighbor');
     const neighborGuid = root.sections[1]?.material ?? '';
-    const colorLayers = neighbor.values?.terrainColorLayers;
-    if (colorLayers === undefined) throw new Error('missing color layers');
-    closure.set(neighborGuid, {
+    closure.set(String(neighborGuid), {
       ...neighbor,
-      values: {
-        ...neighbor.values,
-        terrainNormalHeightLayers: colorLayers,
-      },
+      values: { ...neighbor.values, terrainLayerIndices: [0, 0, 0, 0] },
     });
     expect(terrainDerivedClosureValid(root, closure)).toBe(false);
-    closure.set(neighborGuid, neighbor);
+    closure.set(String(neighborGuid), neighbor);
     const controls = built['section/0/weights'];
     if (controls?.kind !== 'texture') throw new Error('missing control');
     const old = controls.data[0];
@@ -190,7 +176,7 @@ describe('author weight to bounded ID specialization', () => {
       throw new Error('missing surface');
     const pass = surface.passes?.[0];
     if (!pass) throw new Error('missing pass');
-    closure.set(root.sections[0]?.material ?? '', {
+    closure.set(String(root.sections[0]?.material ?? ''), {
       ...surface,
       passes: [
         {
@@ -217,7 +203,7 @@ describe('author weight to bounded ID specialization', () => {
     expect(control?.mips).toEqual({ kind: 'none' });
     expect(control?.data).toHaveLength(4 * 4 * 4);
     expect(control?.data[4]).toBe(1);
-    expect(result.sections[0]?.height.mips).toEqual({ kind: 'packed', levelCount: 3 });
+    expect(result.height.mips).toEqual({ kind: 'packed', levelCount: 3 });
   });
   it.each([-1, NaN, Infinity, 1.01])('rejects invalid loss budget %s', (budget) => {
     expect(cookTerrain(source(), policy(budget)).ok).toBe(false);

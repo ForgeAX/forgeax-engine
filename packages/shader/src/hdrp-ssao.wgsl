@@ -141,7 +141,12 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
         let distance = length(delta);
         // Thickness rejects depth discontinuities independently of the optional
         // normal-plane bias. The search radius controls sample placement only.
-        if (distance <= 0.00001 || dot(delta, normal) <= bias || abs(delta.z) >= thickness) { continue; }
+        // X12/Y12 octahedral normals have a bounded angular uncertainty.
+        // Quantization must not turn a coplanar sample into an occluder when
+        // the authored bias is zero. sqrt(18)/(4095-sqrt(18)) bounds sin(error)
+        // after decoding and normalization; this scales with sample distance.
+        let normalUncertainty = distance * (4.242641 / (4095.0 - 4.242641));
+        if (distance <= 0.00001 || dot(delta, normal) <= max(bias, normalUncertainty) || abs(delta.z) >= thickness) { continue; }
         let falloff = mix(1.0, 2.0 / f32(step + 2u), distanceFallOff);
         let cosine = dot(delta / distance, viewDir);
         horizons[side] += max(0.0, (cosine - horizons[side]) * falloff);

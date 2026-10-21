@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runBenchmarkAdmission } from '../harness.js';
-import { type BenchmarkRecipe, createAdmissionReport } from '../report.js';
+import { type BenchmarkRecipe, type BenchmarkSample, createAdmissionReport } from '../report.js';
 
 const recipe: BenchmarkRecipe = {
   snapshotDigest: 'sha256:snapshot',
@@ -72,4 +72,31 @@ describe('tool service benchmark admission', () => {
     expect(report.admitted).toBe(false);
     expect(report.reasons).toContain('recipe identity drifted');
   });
+});
+
+it('rejects balanced mode totals when one mode has no warm samples', () => {
+  const samples: BenchmarkSample[] = Array.from({ length: 4 }, (_, index) => ({
+    mode: index % 2 === 0 ? 'private' : 'service',
+    phase: index < 2 || index % 2 === 0 ? 'cold' : 'warm',
+    durationMs: index % 2 === 0 ? 100 : 70,
+    peakRssBytes: 100,
+    exclusivePhasesMs: {},
+    rhiDebugOverheadMs: 0,
+    carrierRendezvousMs: 0,
+    cleanupPassed: true,
+    evictionPassed: true,
+    recipeDigest: recipe.digest,
+  }));
+  const report = createAdmissionReport(recipe, samples, {
+    sampleCountPerPhase: 1,
+    medianImprovement: 0.2,
+    p95Improvement: 0.1,
+    maxRegression: 0.1,
+    peakRssMultiplier: 1.25,
+  });
+  expect(report.private.samples).toBe(2);
+  expect(report.service.samples).toBe(2);
+  expect(report.valid).toBe(false);
+  expect(report.admitted).toBe(false);
+  expect(report.reasons).toContain('sample count is incomplete');
 });

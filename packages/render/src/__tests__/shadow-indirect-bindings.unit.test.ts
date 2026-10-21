@@ -2,6 +2,7 @@ import type { BindGroup, Buffer, RenderPipeline, RhiRenderPassEncoder } from '@f
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import {
   encodeDirectionalShadowPass,
   encodeStaticShadowPass,
@@ -9,6 +10,7 @@ import {
   type GpuDrivenShadowSubmission,
   recordGpuDrivenShadowIndirect,
 } from '../record/shadow-pass';
+import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import { replayShadowBundles } from './shadow-bundle.fixture';
 import { preparedShadowFixture } from './shadow-indirect.fixture';
 
@@ -312,7 +314,7 @@ it('retains native commands per projected batch through membership and local res
     encodeDirectionalShadowPass(fixture.context, recorded.pass, 0);
     expect(fixture.bundleRecording).toHaveBeenCalledTimes(64);
     expect(recorded.draws).toHaveLength(63);
-    const batch = fixture.batches[0];
+    const batch = fixture.batches.at(0);
     const projection = batch === undefined ? undefined : fixture.projections.get(batch.batchId);
     if (projection === undefined) throw Error('Missing first projected batch');
     projection.mesh = { ...projection.mesh, vertexBuffer: { handle: fixture.replacement } };
@@ -438,6 +440,83 @@ it('prepares static caster bindings once for every nonempty dirty region of the 
     fixture.projections.delete(batches.at(-1)?.batchId ?? -1);
     expect(() => encodeStaticShadowPass(context, recorded.pass, identity, dirty)).toThrow();
     expect(recorded.draws).toHaveLength(0);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+it('accepts a proved empty partial update before composing the retained static layer', async () => {
+  const fixture = await preparedFixture();
+  fixture.batches.length = 0;
+  const context = fixture.context;
+  const pool = context.gpuDrivenShadowViews;
+  if (pool === undefined) throw new Error('Missing shadow view owner');
+  const source = pool.submission({ kind: 'directional', index: 0 });
+  if (source === undefined) throw new Error('Missing shadow submission');
+  const submission = vi.spyOn(pool, 'submission').mockImplementation((identity) => ({
+    ...source,
+    identity,
+    generation: 2,
+    cache: 'invalidated',
+    selection: new GpuDrawSelection([]),
+  }));
+  const recorded = recorder();
+  try {
+    expect(() => encodeDirectionalShadowPass(context, recorded.pass, 0)).toThrow(
+      'submitted static shadow depth',
+    );
+    encodeStaticShadowPass(
+      context,
+      recorded.pass,
+      { kind: 'directional', index: 0 },
+      {
+        size: 64,
+        rects: [],
+      },
+    );
+    expect(recorded.draws).toHaveLength(0);
+    expect(() => encodeDirectionalShadowPass(context, recorded.pass, 0)).not.toThrow();
+  } finally {
+    submission.mockRestore();
+    fixture.dispose();
+  }
+});
+
+it('counts actual prepared shadow bundle commands on every successful execution, including cache hits', async () => {
+  const fixture = await preparedFixture();
+  const target = recorder();
+  const ledger = new ShadowRasterLedger();
+  try {
+    for (const frameId of [7, 8]) {
+      ledger.begin(true, frameId);
+      const slot = ledger.evaluate({ kind: 'directional', index: 0 }, 'content-changed');
+      ledger.encode(
+        slot,
+        target.pass,
+        (pass) => encodeDirectionalShadowPass(fixture.context, pass, 0),
+        'shadowCascade0',
+      );
+      ledger.commit();
+      expect(ledger.captureWorkload(frameId)?.[0]?.commands).toMatchObject({
+        bundleCalls: 1,
+        knownBundleIndirectDraws: 64,
+        knownBundleIndexedIndirectDraws: 0,
+        indirectDraws: 0,
+        indexedIndirectDraws: 0,
+      });
+    }
+    expect(fixture.bundleRecording).toHaveBeenCalledTimes(64);
+    fixture.batches.pop();
+    ledger.begin(true, 9);
+    const slot = ledger.evaluate({ kind: 'directional', index: 0 }, 'membership-changed');
+    ledger.encode(
+      slot,
+      target.pass,
+      (pass) => encodeDirectionalShadowPass(fixture.context, pass, 0),
+      'shadowCascade0',
+    );
+    ledger.commit();
+    expect(ledger.captureWorkload(9)?.[0]?.commands.knownBundleIndirectDraws).toBe(63);
   } finally {
     fixture.dispose();
   }

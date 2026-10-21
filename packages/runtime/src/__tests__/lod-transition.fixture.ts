@@ -18,6 +18,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RendererHostAssembly } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 export function value<T>(
   result:
@@ -42,7 +43,7 @@ export async function verifyLodTransition(
   } = {},
 ) {
   const { renderer, assets } = host;
-  const world = new World();
+  const world = new World({ assets });
   const lease = value(renderer.attach(world));
   const profile = renderer.inspect().profile;
   value(
@@ -63,25 +64,27 @@ export async function verifyLodTransition(
       .build()
       .unwrap();
   };
-  const lowerGuid = assets.parseGuid('019a0000-0000-7000-8000-000000000321');
-  assets.catalog(lowerGuid, mesh(true)).unwrap();
+  const lowerGuid = assets.create(mesh(true)).unwrap();
   const root = mesh(false);
   const rootHandle = (width: number) =>
-    world.allocSharedRef('MeshAsset', {
-      ...root,
-      lods: [{ mesh: lowerGuid, screenCoverage: 0.5 }],
-      lodHysteresis: width,
-    });
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [1, 1, 1, 1],
-      roughness: 1,
-      specular: 0,
-      ...(options.masked ? { alphaCutoff: 0.5 } : {}),
-      renderState: { cullMode: 'none' },
-    }),
-  );
+    testAssets(world)
+      .create({
+        ...root,
+        lods: [{ mesh: lowerGuid, screenCoverage: 0.5 }],
+        lodHysteresis: width,
+      })
+      .unwrap();
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [1, 1, 1, 1],
+        roughness: 1,
+        specular: 0,
+        ...(options.masked ? { alphaCutoff: 0.5 } : {}),
+        renderState: { cullMode: 'none' },
+      }),
+    )
+    .unwrap();
   const object = world
     .spawn(
       { component: Transform, data: {} },
@@ -238,14 +241,15 @@ export async function verifyLodTransition(
     expect((await sample(0.501, 'hard-near')).green).toBe(0);
     expect((await sample(0.499, 'hard-far')).green).toBe(1);
     if (options.masked) {
-      const invisible = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({
-          baseColor: [1, 1, 1, 0],
-          alphaCutoff: 0.5,
-          renderState: { cullMode: 'none' },
-        }),
-      );
+      const invisible = testAssets(world)
+        .create(
+          Materials.standard({
+            baseColor: [1, 1, 1, 0],
+            alphaCutoff: 0.5,
+            renderState: { cullMode: 'none' },
+          }),
+        )
+        .unwrap();
       world.set(object, MeshFilter, { assetHandle: rootHandle(0.1) }).unwrap();
       world.set(object, MeshRenderer, { materials: [invisible] }).unwrap();
       const clipped = await sample(0.5, 'alpha-clipped', options.recorder !== undefined, false);

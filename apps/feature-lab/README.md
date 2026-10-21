@@ -25,6 +25,21 @@ counts `passed` / `known` / `failed` / `total`; each result carries `verdict`
 visual features. Each feature page stubs the Vite HMR socket, so source edits on a shared
 dev server never reload a feature mid-run.
 
+## Capability-level examples
+
+Keep one catalog row per coherent capability. Channel buttons, mip selection,
+cancellation and cache details belong in that capability's example/manual, not
+in additional catalog rows.
+
+| Capability | Executable example | Proof |
+|:--|:--|:--|
+| Three.js compatibility | `?f=geometry-scene-animation/three-compatibility`; `pnpm --filter @forgeax/engine-three example` for interactive controls | Lab: 60 completed ready frames and actual green/red material readback; owner Browser/Dawn fixtures compare the bounded r184 surface. |
+| Scene hierarchy | `?f=geometry-scene-animation/scene-hierarchy` | Parent chain plus visible shear/mirrored scale and world-matrix checks. |
+| Perspective / orthographic camera | `?f=cameras-visibility/perspective-camera` or `orthographic-camera` | Existing projection toggle includes shared lens offsets; Three example exposes film/view controls. |
+| Voxel collision and editing | `?f=physics/voxel-collision` | Real Rapier raycasts, holes, mass, prepare/cancel/refuse/admit behavior. |
+| Current contact queries | `?f=physics/contact-queries` | Real completed-step contacts, unique neighbors, sensors, filters and stale-evidence refusal. |
+| Texture preview | `packages/three/example/textures.html` is a rendering comparison, not the Preview viewer; open a Texture/Equirect through the workspace Preview host | Owner `packages/preview/src/__tests__/texture-view.test.ts`, `texture-oracle.test.ts` validate options and evidence contracts; the manual names the live workspace viewer journey and its rendering boundary. |
+
 ## Feature kinds
 
 | Kind | Where | Proof |

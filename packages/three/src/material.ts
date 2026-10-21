@@ -8,7 +8,6 @@ import {
   type Result,
 } from '@forgeax/engine-types';
 import {
-  AdditiveBlending,
   AlwaysDepth,
   BackSide,
   DoubleSide,
@@ -18,6 +17,7 @@ import {
   GreaterEqualDepth,
   LessDepth,
   LessEqualDepth,
+  LineBasicMaterial,
   Material,
   MeshBasicMaterial,
   MeshLambertMaterial,
@@ -25,25 +25,31 @@ import {
   MeshNormalMaterial,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
-  MultiplyBlending,
   NeverDepth,
-  NoBlending,
   NormalBlending,
   NotEqualDepth,
   ObjectSpaceNormalMap,
-  SubtractiveBlending,
+  PointsMaterial,
+  SpriteMaterial,
   type Texture,
+  VideoTexture,
 } from 'three/src/Three.Core.js';
+import { projectBlending } from './blending';
+import { defaultMatcap } from './default-matcap';
 import { invalid, migration, unsupported } from './errors';
+import { projectStencil } from './stencil';
 
 export type SupportedMaterial =
   | MeshBasicMaterial
   | MeshStandardMaterial
   | MeshLambertMaterial
   | MeshMatcapMaterial
-  | MeshNormalMaterial;
+  | MeshNormalMaterial
+  | LineBasicMaterial
+  | PointsMaterial
+  | SpriteMaterial;
 
-const TEXTURE_SLOTS = {
+export const TEXTURE_SLOTS = {
   map: 'baseColorTexture',
   normalMap: 'normalTexture',
   roughnessMap: 'roughnessTexture',
@@ -72,8 +78,13 @@ export function materialTextures(material: SupportedMaterial): (readonly [string
   const result: (readonly [string, Texture])[] = [];
   for (const [field, parameter] of Object.entries(TEXTURE_SLOTS)) {
     const texture = (material as unknown as Record<string, Texture | null>)[field];
+    // WebGPU normal maps take priority over bump maps.
+    if (field === 'bumpMap' && 'normalMap' in material && material.normalMap !== null) continue;
+    if (texture instanceof VideoTexture) texture.update();
     if (texture != null) result.push([parameter, texture]);
   }
+  if (material instanceof MeshMatcapMaterial && material.matcap === null)
+    result.push(['baseColorTexture', defaultMatcap]);
   return result;
 }
 
@@ -83,6 +94,10 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
   if (
     ![
       'MeshBasicMaterial',
+      'LineBasicMaterial',
+      'LineDashedMaterial',
+      'PointsMaterial',
+      'SpriteMaterial',
       'MeshStandardMaterial',
       'MeshPhysicalMaterial',
       'MeshLambertMaterial',
@@ -91,47 +106,24 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
     ].includes(material.type)
   )
     return unsupported(material.type, material.uuid);
-  if (
-    material.onBeforeCompile !== Material.prototype.onBeforeCompile ||
-    material.customProgramCacheKey !== Material.prototype.customProgramCacheKey
-  )
-    return migration('Material shader callbacks', material.uuid);
   if (material.onBeforeRender !== Material.prototype.onBeforeRender)
     return unsupported('Material.onBeforeRender', material.uuid);
   const source = material as SupportedMaterial;
-  if (
-    source.wireframe ||
-    source.stencilWrite ||
-    source.premultipliedAlpha ||
-    source.clippingPlanes?.length ||
-    (source.transparent && source.side === DoubleSide && !source.forceSinglePass) ||
-    source.alphaHash
-  )
-    return unsupported(
-      'Material wireframe/stencil/clipping/premultiplication/alphaHash/two-pass transparency',
-      source.uuid,
-    );
+  if ('wireframe' in source && source.wireframe && !(source instanceof MeshBasicMaterial))
+    return unsupported('Lit wireframe needs native line attributes', source.uuid);
   if (
     ('envMap' in source && source.envMap !== null) ||
-    ('lightMap' in source && source.lightMap !== null) ||
-    ('flatShading' in source && source.flatShading)
+    ('lightMap' in source && source.lightMap !== null)
   )
-    return unsupported('Material environment/lightmap/flatShading', source.uuid);
-  if (
-    source instanceof MeshBasicMaterial &&
-    (source.alphaMap !== null || source.aoMap !== null || source.specularMap !== null)
-  )
-    return unsupported('MeshBasicMaterial alpha/AO/specular maps', source.uuid);
+    return unsupported('Material environment/lightmap', source.uuid);
+  if (source instanceof MeshBasicMaterial && source.aoMap !== null)
+    return unsupported('MeshBasicMaterial AO map', source.uuid);
   if (source instanceof MeshMatcapMaterial || source instanceof MeshNormalMaterial) {
     if (source.normalMap !== null || source.bumpMap !== null || source.displacementMap !== null)
       return unsupported('Normal/Matcap bump/normal/displacement maps', source.uuid);
     if (source instanceof MeshMatcapMaterial && (source.map !== null || source.alphaMap !== null))
       return unsupported('MeshMatcapMaterial color/alpha map', source.uuid);
-    if (source instanceof MeshMatcapMaterial && source.matcap === null)
-      return unsupported('MeshMatcapMaterial default procedural matcap', source.uuid);
   }
-  if (source instanceof MeshLambertMaterial && source.specularMap !== null)
-    return unsupported('MeshLambertMaterial.specularMap', source.uuid);
   if (
     source instanceof MeshPhysicalMaterial &&
     (source.dispersion !== 0 ||
@@ -142,21 +134,7 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
       'MeshPhysicalMaterial dispersion/anisotropic clearcoat normal scale',
       source.uuid,
     );
-  if (
-    source instanceof MeshPhysicalMaterial &&
-    source.transmission > 0 &&
-    (source.depthWrite || (source.transparent && source.blending !== NoBlending))
-  )
-    return unsupported(
-      'MeshPhysicalMaterial transmission with depthWrite or blending',
-      source.uuid,
-    );
-  if (
-    ![FrontSide, BackSide, DoubleSide].includes(source.side) ||
-    ![NoBlending, NormalBlending, AdditiveBlending, SubtractiveBlending, MultiplyBlending].some(
-      (value) => value === source.blending,
-    )
-  )
+  if (![FrontSide, BackSide, DoubleSide].includes(source.side))
     return unsupported('Material.side/blending', source.uuid);
   if (
     ![
@@ -183,6 +161,11 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
       .some((value) => typeof value === 'number' && !Number.isFinite(value))
   )
     return invalid('Material numeric parameters', source.uuid);
+  try {
+    projectBlending(source);
+  } catch (error) {
+    return err(error as Error);
+  }
   return ok(source);
 }
 
@@ -251,15 +234,35 @@ function surfaceValues(material: SupportedMaterial) {
   };
 }
 
+/** r184 WebGPU infers flat shading when the geometry has no normal attribute. */
+export function usesFlatShading(material: Material, hasNormal = true): boolean {
+  return (
+    !(
+      material instanceof MeshBasicMaterial ||
+      material instanceof LineBasicMaterial ||
+      material instanceof PointsMaterial ||
+      material instanceof SpriteMaterial
+    ) &&
+    (!hasNormal || ('flatShading' in material && material.flatShading === true))
+  );
+}
+
 export function materialValues(material: SupportedMaterial): unknown[] {
   return [
     material.version,
-    material.toneMapped,
     material.type,
     material.transparent,
     material.alphaTest,
     material.side,
+    material.shadowSide,
+    material.forceSinglePass,
     material.blending,
+    material.blendSrc,
+    material.blendDst,
+    material.blendEquation,
+    material.blendSrcAlpha,
+    material.blendDstAlpha,
+    material.blendEquationAlpha,
     material.depthTest,
     material.depthWrite,
     material.depthFunc,
@@ -269,6 +272,15 @@ export function materialValues(material: SupportedMaterial): unknown[] {
     material.polygonOffsetFactor,
     material.polygonOffsetUnits,
     material.alphaToCoverage,
+    material.alphaHash,
+    material.stencilWrite,
+    material.stencilFunc,
+    material.stencilFuncMask,
+    material.stencilWriteMask,
+    material.stencilRef,
+    material.stencilFail,
+    material.stencilZFail,
+    material.stencilZPass,
     ...Object.values(surfaceValues(material)).flat(),
   ];
 }
@@ -276,6 +288,7 @@ export function materialValues(material: SupportedMaterial): unknown[] {
 function projectSurface(
   material: SupportedMaterial,
   textures: Readonly<Record<string, MaterialTextureValue>>,
+  flatShading: boolean,
 ): Result<MaterialAsset, Error> {
   const comparisons: Readonly<Record<number, GPUCompareFunction>> = {
     [NeverDepth]: 'never',
@@ -289,70 +302,64 @@ function projectSurface(
   };
   const depthCompare = material.depthTest ? comparisons[material.depthFunc] : 'always';
   if (depthCompare === undefined) return unsupported('Material.depthFunc', material.uuid);
-  const blending =
-    material.blending !== NoBlending &&
-    (material.transparent || material.blending !== NormalBlending);
-  const blends: Partial<Record<number, GPUBlendState>> = {
-    [NormalBlending]: {
-      color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-      alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-    },
-    [AdditiveBlending]: {
-      color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
-      alpha: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
-    },
-    [SubtractiveBlending]: {
-      color: { srcFactor: 'zero', dstFactor: 'one-minus-src', operation: 'add' },
-      alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-    },
-    [MultiplyBlending]: {
-      color: { srcFactor: 'zero', dstFactor: 'src', operation: 'add' },
-      alpha: { srcFactor: 'zero', dstFactor: 'src-alpha', operation: 'add' },
-    },
-  };
+  const blend = projectBlending(material);
   const renderState: MaterialRenderState = {
     cullMode: material.side === DoubleSide ? 'none' : material.side === BackSide ? 'front' : 'back',
     depthCompare,
     depthWriteEnabled: material.depthTest && material.depthWrite,
     colorWriteMask: material.colorWrite ? 15 : 0,
     alphaToCoverageEnabled: material.alphaToCoverage,
+    ...projectStencil(material),
     ...(material.polygonOffset
       ? {
           depthBias: Math.trunc(material.polygonOffsetUnits),
           depthBiasSlopeScale: material.polygonOffsetFactor,
         }
       : {}),
-    ...(blending ? { blend: blends[material.blending] as GPUBlendState } : {}),
+    ...(blend === undefined ? {} : { blend }),
   };
   const values = surfaceValues(material);
   const opts = {
     renderState,
-    queue: material.transparent ? 3000 : 2000,
+    queue:
+      material.transparent || ('transmission' in material && Number(material.transmission) > 0)
+        ? 3000
+        : 2000,
     alphaCutoff: material.alphaTest,
+    // r184 MaterialNode.OPACITY converts its texture expression to float (red).
+    alphaChannel: 0,
+    alphaHash: material.alphaHash,
+    shadowAlphaMode: 'texture' as const,
+    alphaMode: (!material.transparent &&
+    material.blending === NormalBlending &&
+    !material.alphaToCoverage
+      ? 'opaque'
+      : material.premultipliedAlpha
+        ? 'premultiplied'
+        : 'preserve') as 'opaque' | 'premultiplied' | 'preserve',
   };
   try {
     if (material instanceof MeshNormalMaterial)
-      return ok(Materials.normal({ ...opts, opacity: material.opacity }));
+      return ok(Materials.normal({ ...opts, opacity: material.opacity, encoding: 'display' }));
     if (material instanceof MeshMatcapMaterial) {
       if (textures.baseColorTexture === undefined)
         return unsupported('MeshMatcapMaterial default procedural matcap', material.uuid);
       return ok(Materials.matcap(textures.baseColorTexture, { ...opts, color: values.baseColor }));
     }
-    if (material instanceof MeshBasicMaterial)
+    if (
+      material instanceof MeshBasicMaterial ||
+      material instanceof LineBasicMaterial ||
+      material instanceof PointsMaterial ||
+      material instanceof SpriteMaterial
+    )
       return ok(Materials.unlit(values.baseColor, { ...opts, ...textures }));
     const options = {
       ...values,
+      flatShading,
       ...opts,
       ...textures,
       ...(material instanceof MeshPhysicalMaterial
-        ? {
-            staticSwitches: {
-              clearcoat: true,
-              sheen: true,
-              anisotropy: true,
-              iridescence: true,
-            },
-          }
+        ? { staticSwitches: { clearcoat: true, sheen: true, anisotropy: true, iridescence: true } }
         : {}),
     };
     return ok(
@@ -365,35 +372,65 @@ function projectSurface(
   }
 }
 
-/** Destination conversion is sampled per render and runs before attachment blending. */
+/** WebGPU output conversion belongs to the camera's finishing pass. */
 export function projectMaterial(
   material: SupportedMaterial,
   textures: Readonly<Record<string, MaterialTextureValue>>,
-  output: readonly [number, number, number, number] = [0, 1, 1, 0],
+  flatShading = usesFlatShading(material),
+  varianceShadow = false,
 ): Result<MaterialAsset, Error> {
-  const surface = projectSurface(material, textures);
-  if (!surface.ok) return surface;
-  if (surface.value.parent !== undefined)
-    throw new Error('built-in material factory returned a child instead of a root');
-  const data = material instanceof MeshNormalMaterial;
-  return ok({
-    ...surface.value,
-    parameters: [
-      ...(surface.value.parameters ?? []),
-      {
-        name: 'fragmentOutput',
-        type: 'vec4',
-        default: [0, 1, 0, 0],
-      },
-    ],
-    values: {
-      ...surface.value.values,
-      fragmentOutput: [
-        data || !material.toneMapped ? 0 : output[0],
-        output[1],
-        data ? 0 : output[2],
-        output[3],
-      ],
-    },
+  const projected = projectSurface(material, textures, flatShading);
+  if (!projected.ok || projected.value.passes === undefined) return projected;
+  const passes = projected.value.passes.flatMap((pass) => {
+    const shadow = pass.name === 'shadow-caster';
+    const state = {
+      ...pass.renderState,
+      ...(material.stencilWrite ? { stencilReference: material.stencilRef } : {}),
+      ...(shadow && (material.shadowSide !== null || varianceShadow)
+        ? {
+            cullMode:
+              (material.shadowSide ?? material.side) === DoubleSide
+                ? ('none' as const)
+                : (material.shadowSide ?? material.side) === BackSide
+                  ? ('front' as const)
+                  : ('back' as const),
+          }
+        : {}),
+    };
+    if (
+      material instanceof MeshPhysicalMaterial &&
+      material.transmission > 0 &&
+      material.side === DoubleSide &&
+      !material.forceSinglePass &&
+      pass.name === 'forward'
+    )
+      return [
+        {
+          ...pass,
+          name: 'transmission-back',
+          renderState: {
+            ...state,
+            tags: { LightMode: 'TransmissionBack' },
+            cullMode: 'front' as const,
+          },
+        },
+        { ...pass, renderState: { ...state, cullMode: 'back' as const } },
+      ];
+    // Native MaterialPass already preserves multiple Forward draws per submesh.
+    // Keep the two faces adjacent within the source object's transparent order.
+    if (
+      material.transparent &&
+      material.side === DoubleSide &&
+      !material.forceSinglePass &&
+      pass.name === 'forward'
+    )
+      return [
+        { ...pass, name: 'forward-back', renderState: { ...state, cullMode: 'front' as const } },
+        { ...pass, renderState: { ...state, cullMode: 'back' as const } },
+      ];
+    return [{ ...pass, renderState: state }];
   });
+  const [first, ...rest] = passes;
+  if (first === undefined) return unsupported('Material has no render passes', material.uuid);
+  return ok({ ...projected.value, passes: [first, ...rest] });
 }

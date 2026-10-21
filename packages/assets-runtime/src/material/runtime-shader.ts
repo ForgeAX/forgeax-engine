@@ -1,4 +1,7 @@
-import type { CookedMaterialRecord, MaterialCookProgramContext } from '@forgeax/engine-pack';
+import type {
+  CookedMaterialRecord,
+  MaterialCookProgramContext,
+} from '@forgeax/engine-pack/material-cook';
 import { materialProgramContextKey } from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialArtifactConflictError,

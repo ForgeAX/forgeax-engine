@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "learn-render LearnOpenGL section 2.lighting 3.materials \u2014 material response differences via @forgeax/engine-app + standard material + animated PointLight (co-located on lamp entity).",
+  "description": "learn-render LearnOpenGL section 2.lighting 3.materials — material response differences via @forgeax/engine-app + standard material + animated PointLight (co-located on lamp entity).",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -55,7 +55,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

@@ -74,6 +74,36 @@ test('render worker preload uses its pinned optimizer fixture in an exclusive pr
   }
 });
 
+test('Three output, rendering and texture journeys do not share one process deadline', () => {
+  const files = ['output', 'render', 'texture'].map(
+    (name) => `packages/three/src/__tests__/${name}.browser.test.ts`,
+  );
+  for (const size of [8, 24, 1]) {
+    const groups = dryRunGroups(size);
+    const owners = files.map((file) => {
+      const matches = groups.filter((group) => group.includes(file));
+      assert.equal(matches.length, 1);
+      return matches[0];
+    });
+    assert.equal(new Set(owners).size, files.length);
+  }
+  for (const file of files) assert.ok(browserGroupWeight([file]) > 5);
+});
+
+test('Three authored-light shadow journeys retain three complete independent processes', () => {
+  const targets = ['directional', 'point', 'spot'].map(
+    (kind) => `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`,
+  );
+  for (const size of [8, 24, 1]) {
+    const groups = dryRunGroups(size);
+    assert.deepEqual(
+      groups.filter((group) => group.some((file) => targets.includes(file))).sort(),
+      targets.map((target) => [target]).sort(),
+    );
+  }
+  assert.ok(targets.every((target) => browserGroupWeight([target]) > 5));
+});
+
 test('host groups keep their deadline and start without Python or a GPU lease', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'forgeax-browser-host-'));
   const fixture = join(temporary, 'vitest.mjs');
@@ -274,6 +304,36 @@ test('Preview child execution receives its documented preparation deadline', () 
   }
 });
 
+test('native worker asset-owner loss receives isolation without changing other browser headers', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'forgeax-browser-isolation-'));
+  const fixture = join(temporary, 'vitest.mjs');
+  writeFileSync(fixture, 'console.log(process.env.FORGEAX_BROWSER_CROSS_ORIGIN_ISOLATED);');
+  const module = new URL('../run-split-vitest-browser.mjs', import.meta.url).href;
+  const program = `import { runGroup } from ${JSON.stringify(module)};
+    await runGroup({cliPath:process.argv[1],group:JSON.parse(process.argv[2]),groupIndex:1,groupCount:1,maxWorkers:1});`;
+  try {
+    for (const [file, isolated] of [
+      ['packages/app/__tests__/engine-worker-asset-loss.browser.test.ts', '1'],
+      ['packages/app/__tests__/worker-policy.browser.test.ts', '1'],
+      ['packages/app/__tests__/render-worker.browser.test.ts', '0'],
+    ]) {
+      const result = spawnSync(
+        process.execPath,
+        ['--input-type=module', '-e', program, fixture, JSON.stringify([file])],
+        { encoding: 'utf8' },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), isolated);
+      const prefix = '[browser-gate] process-start ';
+      const line = result.stderr.split('\n').find((value) => value.startsWith(prefix));
+      assert.ok(line, 'the official coordinator starts the bounded native child');
+      assert.equal(JSON.parse(line.slice(prefix.length)).timeoutMs, 300_000);
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test('lighting-channel sources and writers conserve both paths in bounded batches', () => {
   const groups = dryRunGroups();
   const files = groups.flat();
@@ -309,6 +369,7 @@ test('lighting-channel sources and writers conserve both paths in bounded batche
 
 test('short renderer deadlines own an exclusive runner without serializing ordinary groups', () => {
   for (const file of [
+    'packages/render/src/__tests__/managed-material-runtime.browser.test.ts',
     'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
     'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
     'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
@@ -372,6 +433,7 @@ test('the complete nine-light owner drains competing browser groups', () => {
 test('large render-worker owners retain singleton groups with exclusive runner admission', () => {
   const groups = dryRunGroups();
   for (const file of [
+    'packages/app/__tests__/engine-worker-asset-loss.browser.test.ts',
     'packages/app/__tests__/render-worker-environment.browser.test.ts',
     'packages/app/__tests__/render-worker-tiles.browser.test.ts',
     'packages/app/__tests__/render-worker-deformation.browser.test.ts',
@@ -1173,6 +1235,7 @@ test('the native PCM loop owner retains a fresh complete browser process', () =>
 // the environment/calibration neighbors passed their unchanged solo retries.
 test('exclusive renderer owners drain neighboring browser groups', async () => {
   const files = [
+    'packages/three/src/__tests__/material-output.browser.test.ts',
     'packages/app/__tests__/subsurface.browser.test.ts',
     'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
     'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',

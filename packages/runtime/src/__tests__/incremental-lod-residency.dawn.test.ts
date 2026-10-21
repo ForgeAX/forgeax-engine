@@ -11,12 +11,13 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createBarrelRendererFixture, readBarrelPixels } from './barrel-distortion-gpu-fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 it('submits resident LOD1, then admits late LOD2 without using retired mesh buffers', async () => {
   const fixture = await createBarrelRendererFixture();
   const { renderer, assets, device } = fixture;
-  const world = new World();
+  const world = new World({ assets });
   const plane = createPlaneGeometry(2, 2, 1, 1).unwrap();
   const indices = plane.indices;
   if (indices === undefined) throw new Error('indexed LOD fixture required');
@@ -32,26 +33,24 @@ it('submits resident LOD1, then admits late LOD2 without using retired mesh buff
       .build()
       .unwrap();
   };
-  const middle = assets.parseGuid('019a0000-0000-7000-8000-000000000323');
-  const lowest = assets.parseGuid('019a0000-0000-7000-8000-000000000324');
-  assets.catalog(middle, coloredMesh(1)).unwrap();
-  const root = world.allocSharedRef('MeshAsset', {
-    ...coloredMesh(0),
-    lods: [
-      { mesh: middle, screenCoverage: 0.9 },
-      { mesh: lowest, screenCoverage: 0.8 },
-    ],
-    lodHysteresis: 0,
-  });
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [1, 1, 1, 1],
-      roughness: 1,
-      specular: 0,
-      renderState: { cullMode: 'none' },
-    }),
-  );
+  const middle = assets.create(coloredMesh(1)).unwrap();
+  const root = testAssets(world)
+    .create({
+      ...coloredMesh(0),
+      lods: [{ mesh: middle, screenCoverage: 0.9 }],
+      lodHysteresis: 0,
+    })
+    .unwrap();
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [1, 1, 1, 1],
+        roughness: 1,
+        specular: 0,
+        renderState: { cullMode: 'none' },
+      }),
+    )
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
@@ -119,7 +118,15 @@ it('submits resident LOD1, then admits late LOD2 without using retired mesh buff
     for (let index = 0; index < 60; index++) await frame();
     expect(renderer.inspect().output.graphPassNames).toContain('gpu-driven.frustum-compact');
     await expectColor(1);
-    assets.catalog(lowest, coloredMesh(2)).unwrap();
+    const lowest = assets.create(coloredMesh(2)).unwrap();
+    assets
+      .update(root, {
+        lods: [
+          { mesh: middle, screenCoverage: 0.9 },
+          { mesh: lowest, screenCoverage: 0.8 },
+        ],
+      })
+      .unwrap();
     for (let index = 0; index < 60; index++) await frame();
     await expectColor(2);
   } finally {

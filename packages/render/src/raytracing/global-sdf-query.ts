@@ -9,6 +9,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
 import type { GlobalSdfComposition } from './global-sdf';
+import { createGlobalSdfBuffers } from './global-sdf-buffers';
 import {
   packReferenceRays,
   RAY_INPUT_STRIDE,
@@ -216,43 +217,21 @@ export async function createGlobalSdfQuery(
     return rayReferenceFailure(
       'a composed world region requires mask 255 or 0, a finite normal f32 ray length and finite f32 endpoints',
     );
-  const owned: Buffer[] = [];
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    for (const buffer of owned) device.destroyBuffer(buffer);
-    owned.length = 0;
-  };
   const settings = querySettings.value;
   const data = {
     rays: packed.value,
     hits: new Uint8Array(rays.length * GLOBAL_SDF_HIT_STRIDE),
     settings,
   };
+  const allocated = createGlobalSdfBuffers(device, 'global-sdf.query', data);
+  if (!allocated.ok) return allocated;
+  const allocation = allocated.value;
+  const { dispose } = allocation;
   const buffers = {
+    ...allocation.buffers,
     voxels: composition.buffers.voxels,
     grid: composition.buffers.settings,
-  } as Record<keyof GlobalSdfQuery['buffers'], Buffer>;
-  for (const key of Object.keys(data) as (keyof typeof data)[]) {
-    const bytes = data[key];
-    const made = device.createBuffer({
-      label: `global-sdf.query.${key}`,
-      size: bytes.byteLength,
-      usage: (key === 'settings' ? 64 : 128) | 12,
-    });
-    if (!made.ok) {
-      dispose();
-      return made;
-    }
-    buffers[key] = made.value;
-    owned.push(made.value);
-    const wrote = device.queue.writeBuffer(made.value, 0, bytes);
-    if (!wrote.ok) {
-      dispose();
-      return wrote;
-    }
-  }
+  };
   const fail = <T>(result: Result<never, T>) => {
     dispose();
     return result;
@@ -274,7 +253,7 @@ export async function createGlobalSdfQuery(
     rayCount,
     dispose,
     record(encoder) {
-      if (disposed) return rayReferenceFailure('global SDF query is disposed');
+      if (allocation.disposed) return rayReferenceFailure('global SDF query is disposed');
       const pass = encoder.beginComputePass({ label: 'global-sdf.query' });
       const result = recorder.value.record(pass, input, rayCount);
       pass.end();

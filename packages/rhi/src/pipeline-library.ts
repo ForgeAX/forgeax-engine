@@ -25,6 +25,12 @@ export interface PipelineLibraryManifest {
   readonly pipelineLayouts: readonly (readonly number[])[];
   readonly renderPipelines: readonly PipelineLibraryRender[];
   readonly computePipelines: readonly PipelineLibraryCompute[];
+  /** Build-projected entry closures. Ordinary requests retain their original source identity. */
+  readonly computeEntryModules?: readonly {
+    readonly module: number;
+    readonly entryPoint: string;
+    readonly specializedModule: number;
+  }[];
 }
 
 export interface PipelineLibraryInspection {

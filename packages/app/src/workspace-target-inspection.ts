@@ -1,7 +1,9 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Disabled, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { ChildOf, Name } from '@forgeax/engine-scene';
 import { projectComponentIntrospection } from './internal/component-introspection';
 import { EngineWorkspaceError } from './workspace';
+import { inspectWorkspaceAssetReferences } from './workspace-asset-references';
 
 function projectValue(value: unknown, depth = 0): unknown {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -55,7 +57,11 @@ export function observationEntity(world: World, entityId: string, targetId: stri
   return entity as EntityHandle;
 }
 
-export function createObservationInspection(world: World, targetId: string) {
+export function createObservationInspection(
+  world: World,
+  targetId: string,
+  registry?: () => AssetRegistry | undefined,
+) {
   const identity = (entity: EntityHandle) => {
     const name = world.get(entity, Name);
     return {
@@ -136,11 +142,15 @@ export function createObservationInspection(world: World, targetId: string) {
     inspect({ entityId }: { entityId: string }) {
       const entity = observationEntity(world, entityId, targetId);
       const components = world.componentsOf(entity).unwrap();
+      const assets = registry?.();
       return {
         ...identity(entity),
         targetId,
         worldId: world.identity,
         sampledAt: Date.now(),
+        ...(assets
+          ? { assetReferences: inspectWorkspaceAssetReferences(world, assets, entity) }
+          : {}),
         components: components.flatMap((component) => {
           const value = world.get(entity, component).unwrap();
           return projectComponentIntrospection(new Map([[component.name, component]])).map(

@@ -38,10 +38,15 @@ The Dawn smoke renders 60 frames and requires both red and cyan readback
 counts to stay above zero. `FALSIFY=truncate-materials` and
 `FALSIFY=duplicate-material` exercise the two load-bearing failure modes.
 
+An empty `materials` array uses all mesh defaults. Any override supplies the
+complete slot tuple, for example `[blue, defaultSecond]`. This binds the selected
+assets directly: their value updates remain live, while a later change to the
+mesh's default identity does not redirect an explicit binding.
+
 ## M26 default inheritance and repair
 
 The M26 gauntlet keeps the same mesh and adds two mesh-owned
-`materialSlots.defaultMaterial` GUIDs. With `MeshRenderer.materials=[]`, the
+`materialSlots.defaultMaterial` runtime references. With `MeshRenderer.materials=[]`, the
 renderer exposes `mesh-default` provenance for both slots. The journey then
 adds an ignored overflow override, checks the structured
 `mesh-renderer-material-override-overflow` detail and unchanged red/cyan
@@ -58,16 +63,14 @@ The public browser controller is `globalThis.__forgeaxMultiMaterial`; its
 `readState`, `injectOverflow`, `repair`, and `cleanup` methods are intentionally
 small evidence hooks rather than a second rendering path.
 
-## M32 shared-handle generation fencing
+## M32 retired asset identity
 
-The M32 journey uses the same page and `World` to bind an explicit red
-`MaterialAsset` handle beside a cyan sibling, remove only the red consumer
-edge, release its producer grant, and allocate a blue replacement in the same
-slot with a fresh generation. `resolveAssetHandle(world, oldHandle)` must retain
-the exact `shared-ref-stale` detail, while the pre-repair frame remains red/cyan.
-The fresh handle is then bound through `World.set`; the sibling, device error
-stream, reference counts, and repeated cleanup are checked before the page is
-closed.
+The M32 journey binds an explicit red material beside a cyan sibling, replaces
+only the first binding with the mesh's red default, releases the old producer
+hold, then creates a distinct blue asset. `assets.read(oldHandle)` must fail with
+`asset-reference-invalid`; the existing frame remains red/cyan until the blue
+reference is bound through `World.set`. Readback, sibling identity, retained
+asset validity and repeated cleanup are checked before closing the page.
 
 ```bash
 pnpm --filter @forgeax/hello-multi-material smoke:m32

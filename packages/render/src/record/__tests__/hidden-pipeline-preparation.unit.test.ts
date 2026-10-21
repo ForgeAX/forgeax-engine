@@ -18,7 +18,6 @@ const pass = (mode = 'Forward'): Omit<DispatchEntry, 'entityIndex' | 'renderable
   materialShaderId: 'test::prepared',
   vertexEntry: 'vertex',
   fragmentEntry: 'fragment',
-  paramSnapshot: undefined,
 });
 async function setup() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -27,9 +26,13 @@ async function setup() {
   const entry = f.add({ entity: 1, submeshes: 1 });
   const authoredPass = pass();
   Object.assign(entry.source, { authorVisible: false, pipelinePreparation: [authoredPass] });
-  Object.assign(entry.source.material, { materialShaderId: 'test::prepared' });
+  entry.source.material.adopt({
+    ...entry.source.material.snapshot,
+    materialShaderId: 'test::prepared',
+  });
   Object.assign(f.c, { validatedOrdered: [], pipelinePreparationEntries: [entry] });
   const encode = () => {
+    f.acceptMaterials();
     const encoder = device
       .createCommandEncoder()
       .unwrap()
@@ -129,7 +132,7 @@ it('observes changed authored state, source program, mask and geometry layout', 
       renderState: { cullMode: 'front' },
       vertexEntry: 'replacement',
     });
-    Object.assign(f.entry.source.material, { standardTextureMask: 5 });
+    f.entry.source.material.adopt({ ...f.entry.source.material.snapshot, standardTextureMask: 5 });
     f.encode();
     const after = lookup.mock.calls[1];
     expect(after?.[0]).toBe('test::replacement');
@@ -152,6 +155,18 @@ it('observes changed authored state, source program, mask and geometry layout', 
 it('prepares only authored ShadowCaster passes through validated module readiness', async () => {
   const f = await setup();
   const shadow = pass('ShadowCaster');
+  f.entry.source.material.adopt({
+    ...f.entry.source.material.snapshot,
+    passes: [
+      {
+        name: 'ShadowCaster',
+        program: { module: 'test::prepared', vertexEntry: 'vertex', fragmentEntry: 'fragment' },
+        renderState: { tags: { LightMode: 'ShadowCaster' }, cullMode: 'none' },
+      },
+    ],
+    materialProgramKeys: { ShadowCaster: 'test::prepared' },
+  });
+  f.acceptMaterials();
   Object.assign(f.entry.source, { pipelinePreparation: [f.authoredPass, shadow] });
   const lookup = vi.fn().mockReturnValue(null);
   Object.assign(f.c.runtime, { getMaterialShaderPipeline: lookup });

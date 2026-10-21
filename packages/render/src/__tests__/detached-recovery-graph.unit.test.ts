@@ -139,7 +139,7 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
       return executeCompiledFrameGraph(
         internals,
         frameState,
-        {} as never,
+        { pipelineState } as never,
         device.createCommandEncoder().unwrap(),
       );
     },

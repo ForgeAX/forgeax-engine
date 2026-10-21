@@ -1,8 +1,10 @@
 import { engineWorkspaceTargetToolsPlugin } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Outline, setActiveCamera } from '@forgeax/engine/render';
 import { ChildOf, Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Workspace selection outline',
@@ -13,6 +15,12 @@ export default defineFeature({
   expect:
     'ON: all nine grey cubes under the selected parent get a bright outline. OFF: highlight({}) clears the selection and the camera Outline disappears; materials never change.',
   async setup({ app, world, canvas, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { eye: [0, 4.5, 6], target: [0, 0.3, 0] });
     setActiveCamera(world, camera);
     const parent = world.spawn({ component: Transform, data: { pos: [0, 0, 0] } }).unwrap();
@@ -20,7 +28,7 @@ export default defineFeature({
     for (let i = 0; i < 9; i += 1) {
       spawnMesh(
         world,
-        MESH.cube,
+        stageCube,
         grey,
         { pos: [((i % 3) - 1) * 1.8, 0.5, (Math.floor(i / 3) - 1) * 1.6] },
         { component: ChildOf, data: { parent } },

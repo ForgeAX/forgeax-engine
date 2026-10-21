@@ -1,5 +1,5 @@
 {
-  "sourceRuns": [38320931831, 38325569733],
+  "sourceRuns": [38320931831, 38325569733, 39444004385, 39450499871],
   "files": {
     "apps/game-capability-lab/__tests__/hud-ui.browser.test.ts": 5.96,
     "apps/game-capability-lab/__tests__/settings-ui.browser.test.ts": 5.957,
@@ -265,6 +265,13 @@
     "packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts": 22.81,
     "packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts": 21.92,
     "packages/shader-compiler/src/__tests__/direct-dfg-lut.browser.test.ts": 0.907,
+    "packages/three/src/__tests__/features-0.browser.test.ts": 99.264,
+    "packages/three/src/__tests__/features-1.browser.test.ts": 87.143,
+    "packages/three/src/__tests__/features-2.browser.test.ts": 77.222,
+    "packages/three/src/__tests__/features-3.browser.test.ts": 68.388,
+    "packages/three/src/__tests__/features.browser.test.ts": 37.149,
+    "packages/three/src/__tests__/material-output.browser.test.ts": 208.516,
+    "packages/three/src/__tests__/texture.browser.test.ts": 128.854,
     "packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts": 0.973,
     "packages/ui-blitz/src/__tests__/composed-images.browser.test.ts": 3.519,
     "packages/ui-blitz/src/__tests__/control-layout.browser.test.ts": 1.646,
@@ -296,5 +303,6 @@
     "packages/ui/src/preview/__tests__/session-state.browser.test.ts": 0.426,
     "packages/ui/src/preview/__tests__/target-refresh.browser.test.ts": 0.434,
     "packages/wgpu-wasm/src/__tests__/native-external-image.browser.test.ts": 1.885
-  }
+  },
+  "localSource": "2026-10-20, Node 22.22.3: five Three feature browser files, complete successful singleton children of run-split-vitest-browser.mjs --group-size=1 --group-concurrency=1. These entries replace the former combined-file cost; all include startup and cleanup."
 }

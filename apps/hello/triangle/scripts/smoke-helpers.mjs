@@ -14,7 +14,7 @@
 //                        captures sharedDevice + offscreen mock canvas. Returns a state
 //                        object whose .sharedDevice / .renderTarget update lazily as the
 //                        engine path triggers context.configure / getCurrentTexture.
-//   populateSmokeWorld(world, components, assets) - canonical 3-entity smoke world spawn
+//   populateSmokeWorld(world, components, triangle) - canonical 3-entity smoke world spawn
 //                                        (triangle mesh + camera + directional light).
 //                                        Component schemas come from their canonical
 //                                        engine-render / engine-scene owners; the smoke
@@ -34,7 +34,7 @@
 // Token preservation contract (smoke-coverage-gate.mjs delta layer):
 //   - smoke-dawn.mjs MUST still contain literal:
 //       import('@forgeax/engine-ecs') / import('@forgeax/engine-runtime')
-//       HANDLE_TRIANGLE
+//       BUILTIN_TRIANGLE
 //       await host initialization
 //       renderer.draw({ leases: [attachment.value], ... })
 //   This helper deliberately does NOT host those tokens; the smoke scripts feed them in
@@ -46,6 +46,7 @@
 //   plan-strategy.md D-P8 row 1
 //   apps/hello/triangle/scripts/smoke-coverage-gate.mjs (delta layer literal token list)
 
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { normalizeDawnDeviceDescriptor } from '../../../../scripts/ci/normalize-dawn-device-limits.mjs';
 
 // feat-20260615-ci-smoke-time-budget: 800x600 → 200x150 (lavapipe fragment-bound)
@@ -219,15 +220,14 @@ export async function setupGpuShim({ width, height, rerunCmd, backendArgs = [] }
 // @forgeax/engine-assets-runtime, passed as `assets`. Data values mirror
 // apps/hello/triangle/src/main.ts M0 SSOT lock (charter proposition 5 co-source
 // binding exemplar).
-export function populateSmokeWorld(world, components, assets) {
+export function populateSmokeWorld(world, components, triangle) {
   const { Camera, DirectionalLight,MeshFilter, MeshRenderer, Transform } = components;
-  const { HANDLE_TRIANGLE } = assets;
   world.spawn(
     {
       component: Transform,
       data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+    { component: MeshFilter, data: { assetHandle: triangle } },
     {
       component: MeshRenderer,
       data: {},
@@ -254,6 +254,7 @@ export function populateSmokeWorld(world, components, assets) {
 //
 export async function bootRenderer({ createRenderer, mockCanvas, shaderManifestUrl, extraOpts = {} }) {
   let renderer;
+  let assets;
   try {
     // feat-20260608 / M2: shaderManifestUrl moved to BundlerOptions third arg.
     const created = await createRenderer(
@@ -263,6 +264,7 @@ export async function bootRenderer({ createRenderer, mockCanvas, shaderManifestU
     );
     if (!created.ok) throw created.error;
     renderer = created.value.renderer;
+    assets = created.value.assets;
   } catch (err) {
     console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -273,7 +275,7 @@ export async function bootRenderer({ createRenderer, mockCanvas, shaderManifestU
   renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
   });
-  return { renderer, errors };
+  return { renderer, assets, errors };
 }
 
 // Fixed-N frame loop + onSubmittedWorkDone + pixel readback (NDC-center + corner sample).
@@ -299,10 +301,7 @@ export async function runFrameLoopAndReadback({
   const frameStart = Date.now();
   let framesObserved = 0;
   for (let i = 0; i < TARGET_FRAMES; i++) {
-    // w25 - draw returns Result; ignore success summary in the smoke path
-    // (errors continue to flow through onError listener registered in caller).
-    const r = draw();
-    if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
+    await completeReadyFrame(() => draw().unwrap());
     framesObserved++;
   }
   const device = shim.sharedDevice;

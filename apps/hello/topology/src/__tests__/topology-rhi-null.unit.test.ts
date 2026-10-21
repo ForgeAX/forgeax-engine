@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   createBoxGeometry,
@@ -10,7 +11,6 @@ import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 
 const manifest = `data:application/json,${encodeURIComponent(JSON.stringify({
-  schemaVersion: '1.0.0',
   entries: [
     { hash: 'pbr00000', wgsl: '/* pbr stub */', glsl: '', bindings: '' },
     { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
@@ -62,8 +62,7 @@ describe('hello-topology RhiNull structural consumer', () => {
       { rhi },
       { shaderManifestUrl: manifest },
     );
-    expect(hostResult.ok).toBe(true);
-    if (!hostResult.ok) return;
+    if (!hostResult.ok) throw hostResult.error;
     const device = hostResult.value.debugDrawHost.device;
     expect(device).toBeInstanceOf(RhiNullDevice);
     if (!(device instanceof RhiNullDevice)) return;
@@ -74,12 +73,13 @@ describe('hello-topology RhiNull structural consumer', () => {
       return createPipeline(descriptor);
     };
 
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const attached = hostResult.value.renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
-    const meshHandle = world.allocSharedRef('MeshAsset', geometry);
-    const materialHandle = world.allocSharedRef('MaterialAsset', {
+    const meshHandle = assets.create(geometry).unwrap();
+    const materialHandle = assets.create({
       kind: 'material',
       passes: [{
         name: 'Forward',
@@ -87,7 +87,7 @@ describe('hello-topology RhiNull structural consumer', () => {
         renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
       }],
       values: { baseColor: [0.1, 0.9, 1.0] },
-    });
+    }).unwrap();
     const meshEntity = world.spawn(
       { component: Transform, data: { quat: [0, 0, 0, 1] } },
       { component: MeshFilter, data: { assetHandle: meshHandle } },

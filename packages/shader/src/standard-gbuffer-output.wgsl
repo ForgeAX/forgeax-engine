@@ -6,7 +6,7 @@
 struct GBufferOutput {
   @location(0) scene_color : vec4<f32>,
   @location(1) normal_roughness : u32,
-  @location(2) f0_occlusion : u32,
+  @location(2) f0_occlusion : vec2<u32>,
   @location(3) albedo_metallic : u32,
   @location(4) lighting_context : vec2<u32>,
   @location(5) receiver_geometry : vec2<u32>,
@@ -21,14 +21,17 @@ struct GBufferOutput {
 };
 
 fn encodeStandardGBuffer(normal : vec3<f32>, receiverNormal : vec3<f32>, roughness : f32, albedo : vec3<f32>,
-  metallic : f32, f0 : vec3<f32>, occlusion : f32, emissive : vec3<f32>,
+  metallic : f32, f0 : vec3<f32>, dielectricSpecular : vec4<f32>, occlusion : f32, emissive : vec3<f32>,
   opacity : f32, reflection : u32, probeRow : u32, receiveShadows : bool, receiverChannels : u32, subsurface : vec4<f32>, useDirectDfgLut : bool) -> GBufferOutput {
   var output : GBufferOutput;
   output.scene_color = vec4<f32>(emissive, opacity);
   output.receiver_geometry = vec2<u32>(encodeStandardReceiverNormal(receiverNormal)
     | select(0u, STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT, useDirectDfgLut), receiverChannels);
   output.normal_roughness = encodeStandardNormalRoughness(normal, roughness);
-  output.f0_occlusion = encodeStandardReflectance(f0, occlusion);
+  // Retain the dielectric response independently: recovering it from mixed
+  // quantized F0 becomes ill-conditioned as metalness approaches one.
+  output.f0_occlusion = vec2<u32>(encodeStandardReflectance(f0, occlusion),
+    encodeStandardReflectance(dielectricSpecular.rgb, dielectricSpecular.a));
   output.albedo_metallic = encodeStandardReflectance(albedo, metallic);
   // WGSL pack4x8unorm semantics, expressed with integer lanes: the actual
   // dynamic builtin produced zero profiles on the retained Dawn/Metal frame.

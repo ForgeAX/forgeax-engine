@@ -301,17 +301,15 @@ export async function pluginMigrateCommand(
     if (legacy.defaultScene !== undefined) {
       if (!AssetGuid.parse(legacy.defaultScene).ok) invalid('defaultScene', 'invalid scene GUID');
       source.push(`import { worldDespawnScene } from '@forgeax/engine/scene';
-import type { SceneAsset } from '@forgeax/engine/types';
 export const scene = { inject: ['assets', 'world', 'pluginPrograms'], async apply(ctx: Context, config: { scene: string; children: string[] }) {
   const assets = ctx.assets;
   if (!assets) throw new Error('scene requires assets');
-  const loaded = await assets.loadByGuid<SceneAsset>(assets.parseGuid(config.scene)); if (!loaded.ok) throw loaded.error;
+  const loaded = await assets.load(config.scene, 'scene'); if (!loaded.ok) throw loaded.error;
   await ctx.effect(async function* () {
-    const handle = ctx.world.allocSharedRef('SceneAsset', loaded.value);
-    yield () => ctx.world.sharedRefs.release(handle).unwrap();
-    const root = assets.instantiate<SceneAsset>(handle, ctx.world).unwrap();
+    yield () => assets.release(loaded.value).unwrap();
+    const root = assets.instantiate(loaded.value, ctx.world).unwrap();
     yield () => worldDespawnScene(ctx.world, root).unwrap();
-    ctx.provide('migratedScene', { root, asset: loaded.value });
+    ctx.provide('migratedScene', { root, asset: assets.read(loaded.value).unwrap() });
     for (const guid of config.children) { const result = await mountPluginAsset(ctx, guid); if (!result.ok) throw result.error; yield joinPluginFiber(result.value); }
   });
 } };`);

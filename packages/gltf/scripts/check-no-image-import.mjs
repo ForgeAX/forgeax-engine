@@ -7,9 +7,11 @@
 // decoder transitively into any consumer of engine-gltf, narrowing the
 // public surface to nothing AI users can reason about.
 //
-// Algorithm: walk `packages/gltf/src/**/*.{ts,mjs,cjs}` and inspect static
-// import declarations through TypeScript syntax. Comments and string examples
-// are not imports; named, type, subpath and side-effect imports are rejected.
+// Algorithm: walk production `packages/gltf/src/**/*.{ts,mjs,cjs}` and inspect
+// static import declarations through TypeScript syntax. Test hosts under
+// __tests__ install consumer decoders and do not enter the producer bundle.
+// Comments and string examples are not imports; named, type, subpath and
+// side-effect imports are rejected.
 //
 // Self-test: pass --root <fixture-dir> to point the scanner at a hermetic
 // fixture tree (used by scripts/__tests__).
@@ -41,6 +43,7 @@ function walk(dir) {
     const full = join(dir, ent);
     const s = statSync(full);
     if (s.isDirectory()) {
+      if (ent === '__tests__') continue;
       out.push(...walk(full));
     } else if (/\.(ts|mjs|cjs)$/.test(ent)) {
       out.push(full);

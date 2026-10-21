@@ -11,7 +11,6 @@ import type { DshRealmConnection } from './engine-host';
 
 interface RunningActivity {
   readonly controller: AbortController;
-  readonly sink: ActivitySink;
   readonly task: Promise<void>;
 }
 
@@ -20,17 +19,17 @@ export function createDshRealmIntelligenceProvider(
   connection: DshRealmConnection,
 ): IntelligenceProvider {
   const running = new Map<ActivityId, RunningActivity>();
-  let closed = false;
+  let closeTask: Promise<void> | undefined;
 
   return {
     id: 'deepseek-harness-federated',
     start(submission, sink) {
-      if (closed) {
+      if (closeTask !== undefined) {
         return err(new IntelligenceError({ code: 'intelligence-closed', detail: {} }));
       }
       const controller = new AbortController();
-      const task = run(submission, sink, controller);
-      running.set(submission.id, { controller, sink, task });
+      const task = Promise.resolve().then(() => run(submission, sink, controller));
+      running.set(submission.id, { controller, task });
       return ok(undefined);
     },
     cancel(id) {
@@ -46,12 +45,14 @@ export function createDshRealmIntelligenceProvider(
       activity.controller.abort();
       return ok(undefined);
     },
-    async close() {
-      if (closed) return;
-      closed = true;
-      for (const activity of running.values()) activity.controller.abort();
-      await Promise.allSettled([...running.values()].map((activity) => activity.task));
-      running.clear();
+    close() {
+      if (closeTask !== undefined) return closeTask;
+      const current = [...running.values()];
+      closeTask = Promise.allSettled(current.map((activity) => activity.task)).then(
+        () => undefined,
+      );
+      for (const activity of current) activity.controller.abort();
+      return closeTask;
     },
   };
 
@@ -61,18 +62,23 @@ export function createDshRealmIntelligenceProvider(
     controller: AbortController,
   ): Promise<void> {
     try {
+      if (controller.signal.aborted) {
+        sink.cancelled();
+        return;
+      }
       const result = await connection.activity(
         submission.input,
         submission.session.id,
         controller.signal,
       );
-      sink.text(result.output);
-      sink.complete(result.output);
+      if (!controller.signal.aborted) sink.text(result.output);
+      if (controller.signal.aborted) sink.cancelled();
+      else sink.complete(result.output);
     } catch (error) {
       if (controller.signal.aborted) sink.cancelled();
       else sink.fail(error);
     } finally {
-      running.delete(submission.id);
+      if (running.get(submission.id)?.controller === controller) running.delete(submission.id);
     }
   }
 }

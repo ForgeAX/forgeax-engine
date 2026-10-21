@@ -22,7 +22,8 @@
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
-    "@forgeax/apps-shared": "workspace:*"
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

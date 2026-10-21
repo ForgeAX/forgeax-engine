@@ -7,7 +7,7 @@
 //
 //   (1) createApp({ canvas, ... }, { importTransport: createRuntimeAssetImportTransport(runtimeBinding) })
 //   (2) configureRuntimeAssetCatalog(assets, runtimeBinding)
-//   (3) const scene = await assets.loadByGuid<SceneAsset>(SPONZA_SCENE_GUID);
+//   (3) const scene = await assets.load(SPONZA_SCENE_GUID, 'scene');
 //       assets.instantiate<SceneAsset>(scene.value, world)
 //   (4) app.start()
 //
@@ -35,7 +35,7 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Skylight } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 
-import type { EquirectAsset, SceneAsset } from '@forgeax/engine-types';
+
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
@@ -94,7 +94,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Step (2): configure the scoped dev or static build catalog.
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
-  // Step (3): loadByGuid<SceneAsset> + instantiate.
+  // Step (3): load the managed scene handle, then instantiate.
   // The gltfImporter has already produced the SceneAsset + every referenced
   // mesh / material / texture sub-asset POD; the runtime resolves the cross-
   // refs transparently when the scene instantiates.
@@ -103,9 +103,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 3.1] SPONZA_SCENE_GUID parse failed:', sceneGuidRes.error);
     return;
   }
-  const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuidRes.value);
+  const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
   if (!sceneRes.ok) {
-    console.error('[learn-render 3.1] loadByGuid<SceneAsset> failed:', sceneRes.error);
+    console.error('[learn-render 3.1] load failed:', sceneRes.error);
     const bus = (globalThis as unknown as {
       __learnRenderErrors?: Array<{ code: string; hint?: string }>;
     }).__learnRenderErrors;
@@ -116,9 +116,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       });
     return;
   }
-  // loadByGuid returns the payload (D-17); mint a user-tier column handle.
-  const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
-  const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+  // Instantiate the loaded scene handle.
+  const sceneHandle = sceneRes.value;
+  const instRes = assets.instantiate(sceneHandle, world);
   if (!instRes.ok) {
     const errAny = instRes.error as { code: string; hint?: string };
     console.error('[learn-render 3.1] scene instantiate failed:', errAny.code);
@@ -158,7 +158,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     world.set(cameraEntity, Camera, { aspect: window.innerWidth / window.innerHeight });
   });
 
-  console.warn(`[learn-render 3.1] backend=${renderer.inspect().capabilities.backendKind} scene loaded via loadByGuid<SceneAsset>`);
+  console.warn(`[learn-render 3.1] backend=${renderer.inspect().capabilities.backendKind} scene loaded via load`);
 
   // Expose scene-ready hook for visual tests (M4 playwright visual sentinel).
   (window as unknown as Record<string, unknown>).__sponzaSceneReady = true;
@@ -250,10 +250,10 @@ async function spawnSkylight(app: App): Promise<void> {
     return;
   }
 
-  const hdrHandleRes = await assets.loadByGuid<EquirectAsset>(guidRes.value);
+  const hdrHandleRes = await assets.load(guidRes.value, 'equirect');
   if (!hdrHandleRes.ok) {
     console.error(
-      `[learn-render 3.1] loadByGuid(newport_loft.hdr) failed: ${hdrHandleRes.error.code}`,
+      `[learn-render 3.1] load(newport_loft.hdr) failed: ${hdrHandleRes.error.code}`,
     );
     const bus = (globalThis as unknown as {
       __learnRenderErrors?: Array<{ code: string; hint?: string }>;
@@ -266,11 +266,9 @@ async function spawnSkylight(app: App): Promise<void> {
     return;
   }
 
-  // loadByGuid returns the EquirectAsset PAYLOAD (D-17); mint a user-tier source
-  // handle. The equirect->cubemap + IBL (diffuse + specular split-sum) is now
-  // INTERNAL to the engine (lazy, in the render record arm) -- no manual
-  // cubemap upload call; the Skylight holds the equirect handle.
-  const equirect = app.world.allocSharedRef('EquirectAsset', hdrHandleRes.value);
+  // Skylight holds the loaded equirect handle. The renderer prepares its
+  // cubemap and IBL projection when consumed.
+  const equirect = hdrHandleRes.value;
 
   app.world.spawn({
     component: Skylight,

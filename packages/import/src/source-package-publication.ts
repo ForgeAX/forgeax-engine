@@ -13,6 +13,7 @@ import {
 } from '@forgeax/engine-ddc';
 import { canonicalDdcJson } from '@forgeax/engine-ddc/key';
 import { stripRuntimePackLifecycle } from '@forgeax/engine-pack/build';
+import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import {
   type CatalogEntry,
   err,
@@ -199,7 +200,7 @@ async function commitSourcePackageDdc(
         }),
       );
     }
-    return ok(await inspectHead(candidate.root, candidate.lease.guid, candidate.lease.desiredKey));
+    return ok(commit.head);
   } catch (error) {
     return err(
       sourcePackageError('source-package-ddc-failed', candidate.context, {
@@ -282,7 +283,15 @@ function validatePublicationArtifactClosure(
   input: ImportPublicationInput,
 ): Result<Readonly<Record<string, DdcArtifact>>, SourcePackageError> {
   const context = publicationContext(input);
-  const pack = input.pack;
+  const decoded = decodeMaterialProgramWire(input.pack);
+  if (!decoded.ok)
+    return err(
+      sourcePackageError('source-package-publication-invalid', context, {
+        stage: 'route-integrity',
+        reason: 'invalid material program table',
+      }),
+    );
+  const pack = decoded.value;
   if (
     pack === null ||
     typeof pack !== 'object' ||
@@ -449,7 +458,9 @@ function validatePublicationArtifactClosure(
   if (input.transport !== undefined) {
     let transportedPack: unknown;
     try {
-      transportedPack = JSON.parse(input.transport.body) as unknown;
+      const decodedTransport = decodeMaterialProgramWire(JSON.parse(input.transport.body));
+      if (!decodedTransport.ok) throw new TypeError('Invalid material program table');
+      transportedPack = decodedTransport.value;
     } catch {
       return err(
         sourcePackageError('source-package-publication-invalid', context, {

@@ -1,9 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
-import { packInterleavedVertexAttributes } from '@forgeax/engine/geometry';
+import { createPrimitiveMesh, packInterleavedVertexAttributes } from '@forgeax/engine/geometry';
 import { ChildOf, GlobalTransform, Transform } from '@forgeax/engine/scene';
 import { Skin } from '@forgeax/engine/skinning';
 import type { MeshAsset, SkeletonAsset, VertexAttributeMap } from '@forgeax/engine/types';
-import { MESH, material, spawnMesh, unlit } from '../../../lab/stage';
+import { material, spawnMesh, unlit } from '../../../lab/stage';
 
 /** An ordinary three-joint Skin: the test sees the actual palette-driven surface. */
 export function spawnAnimatedRig(
@@ -12,6 +13,10 @@ export function spawnAnimatedRig(
   length: number,
   color: readonly [number, number, number, number],
 ): readonly [EntityHandle, EntityHandle, EntityHandle] {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const root = world.spawn({ component: Transform, data: { pos: [x, 0.15, 0] } }).unwrap();
   const middle = world
     .spawn(
@@ -86,13 +91,13 @@ export function spawnAnimatedRig(
   });
   spawnMesh(
     world,
-    world.allocSharedRef('MeshAsset', asset),
+    sceneAssets.create(asset).unwrap(),
     mat,
     {},
     {
       component: Skin,
       data: {
-        skeleton: world.allocSharedRef('SkeletonAsset', skeleton),
+        skeleton: sceneAssets.create(skeleton).unwrap(),
         joints: [root, middle, end],
       },
     },
@@ -106,7 +111,13 @@ export function effector(world: World, joint: EntityHandle): readonly [number, n
 }
 
 export function goalMarker(world: World, goal: readonly [number, number, number]): EntityHandle {
-  return spawnMesh(world, MESH.sphere, unlit(world, [1, 0.3, 0.08, 1]), {
+  const primitiveAssets = world.assets;
+  if (!(primitiveAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+  return spawnMesh(world, stageSphere, unlit(world, [1, 0.3, 0.08, 1]), {
     pos: goal,
     scale: [0.13, 0.13, 0.13],
   });

@@ -37,6 +37,12 @@ it('runs independent architecture and build lanes with every consumer required',
   for (const lane of [architecture, build]) {
     assert.doesNotMatch(lane, /^ {4}(?:needs|if):/m);
   }
+  for (const lane of [build, browser]) {
+    const preparation = lane.indexOf('uses: ./.github/actions/prepare-wgpu-wasm');
+    assert.ok(preparation >= 0, 'native builds must retain the Engine source-build fallback');
+    assert.ok(preparation < lane.indexOf('run: pnpm build:engine'));
+    assert.doesNotMatch(lane, /@forgeax\/engine-wgpu-wasm fetch-wasm/);
+  }
   assert.match(build, /run: pnpm build:engine && pnpm build:tools/);
   assert.match(build, /shards\.length !== 4/);
   assert.match(build, /new Set\(shards\)\.size !== shards\.length/);

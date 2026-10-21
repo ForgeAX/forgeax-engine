@@ -3,7 +3,7 @@
 // Demonstrates the engine-state API end-to-end:
 //   1. defineState('LevelId', ...) at module level
 //   2. createApp(canvas) auto-wires registerStatesPlugin
-//   3. loadByGuid<SceneAsset> loads tutorial + street-a scenes
+//   3. assets.create creates managed tutorial + street-a scene handles
 //   4. OnEnter(LevelId,'tutorial') assets.instantiate + despawnOnExit on scene root
 //   5. Spawn a cross-state player entity (red cube, MeshFilter + MeshRenderer, no scope)
 //   6. Keyboard handler (1 -> tutorial, 2 -> street-a, 3 -> main-menu)
@@ -11,7 +11,7 @@
 
 import { createApp } from '@forgeax/engine-app/browser';
 import { Entity, Update, type EntityHandle } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
@@ -29,12 +29,15 @@ import {
 import type { StateTokenVariant } from '@forgeax/engine-state';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const LevelId = defineState('LevelId', ['main-menu', 'tutorial', 'street-a'] as const);
 export const SessionPhase = defineState('SessionPhase', ['boot', 'ready'] as const);
 
-// Scene GUIDs — scenes are catalogued inline below via assets.catalog
-// (parallel copy kept in sync with scripts/smoke-dawn.mjs); no sidecar files.
+// Scene labels shared with scripts/smoke-dawn.mjs; scene values are created inline.
 const TUTORIAL_GUID = '6a000001-0001-4000-a000-000000000001';
 const STREET_A_GUID = '6a000002-0001-4000-a000-000000000002';
 
@@ -50,7 +53,11 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     throw new Error('createApp failed');
   }
   const app = appResult.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const { world } = app;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   console.log(`[hello-level-switch] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
@@ -59,14 +66,11 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
 
   // Register scene materials. tutorial floor = orange unlit, street-a floor =
   // blue standard-PBR. Handles feed the inline scene PODs below.
-  // feat-20260614 M8/D-17: AssetRegistry register* deleted. catalog<T>(guid,
-  // payload) stores the GUID->payload entry loadByGuid resolves; allocSharedRef
-  // mints the user-tier column handle the scene PODs / MeshRenderer need.
+  // assets.create returns the managed handles consumed by scene components.
   const unlitMatPayload = Materials.unlit([0.8, 0.4, 0.2, 1]);
   const unlitMatGuid = AssetGuid.parse('008e4f75-e7a3-4715-b05b-b93a9ec12074');
   if (!unlitMatGuid.ok) throw new Error('unlit material GUID parse failed');
-  assets.catalog(unlitMatGuid.value, unlitMatPayload);
-  const unlitMatHandle = world.allocSharedRef('MaterialAsset', unlitMatPayload);
+  const unlitMatHandle = assets.create(unlitMatPayload).unwrap();
 
   const stdMatPayload: MaterialAsset = {
     kind: 'material',
@@ -77,60 +81,56 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   };
   const stdMatGuid = AssetGuid.parse('f6af7007-158f-4d92-9e47-93bf2f213e1f');
   if (!stdMatGuid.ok) throw new Error('standard material GUID parse failed');
-  assets.catalog(stdMatGuid.value, stdMatPayload);
-  const stdMatHandle = world.allocSharedRef('MaterialAsset', stdMatPayload);
+  const stdMatHandle = assets.create(stdMatPayload).unwrap();
 
   // Player material: red unlit for cross-state visibility.
-  const playerMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const playerMatHandle = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
     ],
     values: { baseColor: [0.9, 0.2, 0.2] },
-  });
+  }).unwrap();
 
-  // Load scene assets via GUID. The two scenes are registered inline as
-  // SceneAsset PODs (kept in sync with the parallel copy in smoke-dawn.mjs)
-  // so loadByGuid resolves on the browser dev-server pack path. tutorial =
-  // orange unlit floor, street-a = blue standard-PBR floor; both reuse
-  // HANDLE_CUBE geometry scaled flat. Inline registration before loadByGuid
-  // is what the dev-server pack path needs; this demo wires no pluginPack.
+  // Create inline scene assets, mirrored by smoke-dawn.mjs: tutorial has an
+  // orange unlit floor; street-a has a blue standard-PBR floor. Both reuse
+  // the managed cube mesh, scaled flat.
   const FLOOR_TRANSFORM = {
     pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [10, 0.1, 10],};
 
   const tutorialGuid = AssetGuid.parse(TUTORIAL_GUID);
   if (!tutorialGuid.ok) throw new Error('tutorial GUID parse failed');
-  assets.catalog(tutorialGuid.value, {
+
+  const tutorialSceneRes = assets.create({
     kind: 'scene',
     entities: {
       floor: {
         components: {
           Transform: FLOOR_TRANSFORM,
-          MeshFilter: { assetHandle: HANDLE_CUBE },
+          MeshFilter: { assetHandle: primitiveCube },
           MeshRenderer: { materials: [Number(unlitMatHandle)] },
         },
       },
     },
   } satisfies SceneAsset);
-  const tutorialSceneRes = await assets.loadByGuid<SceneAsset>(tutorialGuid.value);
-  if (!tutorialSceneRes.ok) throw new Error(`tutorial loadByGuid failed: ${tutorialSceneRes.error.code}`);
+  if (!tutorialSceneRes.ok) throw new Error(`tutorial create scene failed: ${tutorialSceneRes.error.code}`);
 
   const streetGuid = AssetGuid.parse(STREET_A_GUID);
   if (!streetGuid.ok) throw new Error('street-a GUID parse failed');
-  assets.catalog(streetGuid.value, {
+
+  const streetSceneRes = assets.create({
     kind: 'scene',
     entities: {
       floor: {
         components: {
           Transform: FLOOR_TRANSFORM,
-          MeshFilter: { assetHandle: HANDLE_CUBE },
+          MeshFilter: { assetHandle: primitiveCube },
           MeshRenderer: { materials: [Number(stdMatHandle)] },
         },
       },
     },
   } satisfies SceneAsset);
-  const streetSceneRes = await assets.loadByGuid<SceneAsset>(streetGuid.value);
-  if (!streetSceneRes.ok) throw new Error(`street-a loadByGuid failed: ${streetSceneRes.error.code}`);
+  if (!streetSceneRes.ok) throw new Error(`street-a create scene failed: ${streetSceneRes.error.code}`);
 
   // Camera + light.
   world.spawn(
@@ -161,7 +161,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [0, 1.2, 1.5], quat: [0, 0, 0, 1], scale: [0.8, 0.8, 0.8],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [playerMatHandle] } },
   );
 
@@ -171,17 +171,16 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   // liveness guard makes the consumer callback safe to re-fire after a
   // forced same-state retry: the failed transition has already materialised
   // this root before a later callback throws.
-  // feat-20260614 D-17: loadByGuid returns the SceneAsset payload; mint a fresh
-  // user-tier column handle per entry via world.allocSharedRef so re-entering
-  // the state after a prior despawnOnExit release works (a stale handle whose
-  // ref despawnOnExit already released would fail shared-ref-released on
-  // re-entry). assets.instantiate resolves the scene's GUID-string component
-  // fields to fresh handles.
+  // Keep the scene handle across state entries; each instance owns its entity
+  // lifetime, so despawning an instance leaves the scene asset available.
   addOnEnter(LevelId, 'tutorial', (w) => {
+const sceneAssetsW = w.assets;
+if (!(sceneAssetsW instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
     if (tutorialRoot !== undefined && w.get(tutorialRoot, Entity).ok) {
       return;
     }
-    const ir = assets.instantiate(w.allocSharedRef('SceneAsset', tutorialSceneRes.value), w);
+    const ir = assets.instantiate(tutorialSceneRes.value, w);
     if (!ir.ok) {
       console.error(`[hello-level-switch] instantiate tutorial failed: ${ir.error.code}`);
       return;
@@ -194,7 +193,10 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
 
   // OnEnter street-a: instantiate scene, scope root for exit-cleanup.
   addOnEnter(LevelId, 'street-a', (w) => {
-    const ir = assets.instantiate(w.allocSharedRef('SceneAsset', streetSceneRes.value), w);
+const sceneAssetsW = w.assets;
+if (!(sceneAssetsW instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+    const ir = assets.instantiate(streetSceneRes.value, w);
     if (!ir.ok) {
       console.error(`[hello-level-switch] instantiate street-a failed: ${ir.error.code}`);
       return;
@@ -271,7 +273,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   let m29FaultUnsubscribe: (() => void) | undefined;
   let m29MainMenuExit: EntityHandle | undefined;
   let m29TutorialEnter: EntityHandle | undefined;
-  const m41NextStateKey = `__nextState__${LevelId.name}`;
+  const m41StateKey = `__state__${LevelId.name}`;
   const m41InvalidVariant = String('m41-runtime-invalid');
   let m41MainMenuExit: EntityHandle | undefined;
   let m41TutorialEnter: EntityHandle | undefined;
@@ -377,7 +379,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   }
 
   function m41PendingNextState(): Record<string, unknown> | null {
-    const pending = world.getResource<{ value: number; force: boolean } | undefined>(m41NextStateKey);
+    const pending = world.getResource<{ next: { value: number; force: boolean } | undefined }>(m41StateKey).next;
     return pending === undefined ? null : { value: pending.value, force: pending.force };
   }
 

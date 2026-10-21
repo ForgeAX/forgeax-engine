@@ -1,4 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 import type { World, EntityHandle } from '@forgeax/engine-ecs';
 import {
   Materials,
@@ -8,6 +9,9 @@ import {
   type Renderer,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 function difference(a: Uint8Array, b: Uint8Array) {
   if (a.length !== b.length || a.length === 0) throw new Error('Probe readback size mismatch');
@@ -47,6 +51,7 @@ function outsideFloorDifference(a: Uint8Array, b: Uint8Array) {
 /** The receiver/camera stay fixed between each frozen/new-capture comparison. */
 export async function verifyProbeUpdates(
   world: World,
+  assets: AssetRegistry,
   renderer: Renderer,
   probe: EntityHandle,
   object: EntityHandle,
@@ -54,6 +59,7 @@ export async function verifyProbeUpdates(
   capture: () => Promise<Uint8Array>,
   receiver: EntityHandle,
 ) {
+  const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
   const origin = Array.from(world.get(object, Transform).unwrap().pos);
   const data = world.get(probe, ReflectionProbe).unwrap();
   const original = { ...data, halfExtents: data.halfExtents.slice() };
@@ -69,7 +75,10 @@ export async function verifyProbeUpdates(
         throw new Error(`Probe capture disabled display GPU-driven work: ${JSON.stringify(gpu)}`);
       const work = renderer
         .inspect()
-        .perFramePassNames.filter((name) => name.startsWith('reflection-probe.')).length;
+        .perFramePassNames.filter((name) => /^reflection-probe\.\d+\.(capture|pmrem)\./.test(name)).length;
+      // The atlas copy is part of this filter step, never a second scheduled probe.
+      const copies = renderer.inspect().perFramePassNames.filter(name => /^reflection-probe\.\d+\.pmrem-copy\./.test(name)).length;
+      if (copies > 1 || (copies === 1 && work !== 1)) throw new Error('PMREM copy escaped its one-step budget');
       maxWork = Math.max(maxWork, work);
       if (work > 1) throw new Error(`Probe exceeded shared one-step frame budget: ${work}`);
     }
@@ -140,8 +149,8 @@ export async function verifyProbeUpdates(
       metallic: 0.8,
       roughness: 0.2,
     });
-    const shared = world.allocSharedRef('MaterialAsset', payload);
-    const independent = world.allocSharedRef('MaterialAsset', structuredClone(payload));
+    const shared = assets.create(payload).unwrap();
+    const independent = assets.create(structuredClone(payload)).unwrap();
     world.set(receiver, MeshRenderer, { materials: [shared] }).unwrap();
     world.set(object, MeshRenderer, { materials: [independent] }).unwrap();
     await step(3);
@@ -177,19 +186,16 @@ export async function verifyProbeUpdates(
     // A bright ordinary mesh behind the display camera must still enter the
     // probe. Its authored pose is identical across the two pixel reads.
     world.set(probe, ReflectionProbe, { updateIntent: 0 }).unwrap();
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
+    const material = assets.create(Materials.standard({
         baseColor: [1, 0.01, 0.01, 1],
         emissive: [1, 0, 0],
         emissiveIntensity: 6,
         roughness: 0.6,
-      }),
-    );
+      })).unwrap();
     offscreen = world
       .spawn(
         { component: Transform, data: { pos: [8, 3, 8], scale: [3, 5, 3] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cubeHandle } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

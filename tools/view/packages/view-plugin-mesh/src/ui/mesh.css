@@ -17,12 +17,8 @@
   position: relative;
 }
 
-.fx-mesh-preview-toolbar {
-  position: absolute;
-  top: var(--fx-ref-space-8, 8px);
-  right: var(--fx-ref-space-8, 8px);
-  z-index: 2;
-}
+.fx-mesh-preview .fx-preview-stats { top: 48px; }
+.fx-mesh-display-error { position: absolute; bottom: 8px; left: 8px; right: 8px; z-index: 2; margin: 0; padding: 6px; background: var(--fx-color-surface-canvas); color: var(--fx-color-text-primary); font-size: 11px; overflow-wrap: anywhere; }
 
 .fx-mesh-restore-error {
   position: absolute;
@@ -31,21 +27,6 @@
   z-index: 2;
   margin: 0;
   max-width: 16rem;
-}
-
-.fx-mesh-navigation-hint {
-  position: absolute;
-  right: 8px;
-  bottom: 6px;
-  z-index: 2;
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.4;
-  pointer-events: none;
-  user-select: none;
-  color: var(--fx-color-text-secondary);
-  opacity: 0.75;
-  text-shadow: 0 1px 2px var(--fx-color-background, rgba(0, 0, 0, 0.5));
 }
 
 .fx-asset-preview-surface {

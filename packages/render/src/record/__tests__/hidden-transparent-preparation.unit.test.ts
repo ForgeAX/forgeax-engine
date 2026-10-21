@@ -9,12 +9,16 @@ async function fixture() {
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module),
     entry = f.add({ entity: 1, submeshes: 1 });
-  Object.assign(entry.source.material, { transparent: true, materialShaderId: 'test::prepared' });
+  entry.source.material.adopt({
+    ...entry.source.material.snapshot,
+    transparent: true,
+    materialShaderId: 'test::prepared',
+  });
   Object.assign(entry.source, {
     authorVisible: false,
     pipelinePreparation: [
       {
-        materialHandle: entry.source.material.materialHandle ?? 0,
+        materialHandle: entry.source.material.snapshot.materialHandle ?? 0,
         passIndex: 0,
         queue: 3000,
         layer: 0,
@@ -24,11 +28,11 @@ async function fixture() {
         materialShaderId: 'test::prepared',
         vertexEntry: 'vertex',
         fragmentEntry: 'fragment',
-        paramSnapshot: undefined,
       },
     ],
   });
   Object.assign(f.c, { validatedOrdered: [], pipelinePreparationEntries: [entry] });
+  f.acceptMaterials();
   const prepare = () =>
     prepareMainPassPipelines(
       f.c,

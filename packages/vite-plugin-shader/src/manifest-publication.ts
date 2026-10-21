@@ -4,9 +4,32 @@ import {
   shaderSourceDigestInput,
 } from '@forgeax/engine-shader';
 
-type ShaderEntry = { readonly wgsl: string };
-type MaterialVariant = { readonly composedWgsl: string; readonly receipt?: unknown };
+type ShaderEntry = { readonly wgsl: string; readonly entryPoints?: unknown };
+type MaterialVariant = {
+  readonly composedWgsl: string;
+  readonly receipt?: unknown;
+  readonly entryPoints?: unknown;
+};
 type MaterialEntry = MaterialVariant & { readonly variants: readonly MaterialVariant[] };
+
+/** Identical publication facts share one value and retain row-local references. */
+function createFactTable() {
+  const values: unknown[] = [];
+  const indices = new Map<string, number>();
+  return {
+    values,
+    index(value: unknown): number {
+      const key = JSON.stringify(value);
+      let index = indices.get(key);
+      if (index === undefined) {
+        index = values.length;
+        values.push(value);
+        indices.set(key, index);
+      }
+      return index;
+    },
+  };
+}
 
 /** Publish each composed source once, sharing repeated source blocks across variants. */
 export function publishShaderManifest<E extends ShaderEntry, M extends MaterialEntry>(
@@ -19,19 +42,8 @@ export function publishShaderManifest<E extends ShaderEntry, M extends MaterialE
   const fragmentIndex = new Map<string, number>();
   const fragmentDigests: Buffer[] = [];
   const sources: Record<string, number[]> = {};
-  const receipts: unknown[] = [];
-  const receiptIndices = new Map<string, number>();
-  const receiptReference = (receipt: unknown) => {
-    if (receipt === undefined) return {};
-    const bytes = JSON.stringify(receipt);
-    let receiptIndex = receiptIndices.get(bytes);
-    if (receiptIndex === undefined) {
-      receiptIndex = receipts.length;
-      receipts.push(receipt);
-      receiptIndices.set(bytes, receiptIndex);
-    }
-    return { receiptIndex };
-  };
+  const receipts = createFactTable();
+  const entryPoints = createFactTable();
   const sourceDigest = (source: string, owner: string): string => {
     if (!source || /^\.?\/[^\n]+\.composed\.wgsl$/i.test(source)) {
       throw new Error(`Shader manifest requires composed WGSL bytes: ${owner}=${source}`);
@@ -65,16 +77,21 @@ export function publishShaderManifest<E extends ShaderEntry, M extends MaterialE
     sources[digest] = indices;
     return digest;
   };
-  const programs = entries.map(({ wgsl, ...entry }, index) => ({
+  const programs = entries.map(({ wgsl, entryPoints: reads, ...entry }, index) => ({
     ...entry,
+    ...(reads === undefined ? {} : { entryPointsIndex: entryPoints.index(reads) }),
     sourceDigest: sourceDigest(
       wgsl,
       `entry ${index} ${String('hash' in entry ? entry.hash : '')} keys ${Object.keys(entry).join(',')}`,
     ),
   }));
-  const variant = ({ composedWgsl, receipt, ...entry }: MaterialVariant, owner: string) => ({
+  const variant = (
+    { composedWgsl, receipt, entryPoints: reads, ...entry }: MaterialVariant,
+    owner: string,
+  ) => ({
     ...entry,
-    ...receiptReference(receipt),
+    ...(receipt === undefined ? {} : { receiptIndex: receipts.index(receipt) }),
+    ...(reads === undefined ? {} : { entryPointsIndex: entryPoints.index(reads) }),
     sourceDigest: sourceDigest(composedWgsl, owner),
   });
   const materials = materialShaders.map(({ variants, ...entry }, index) => ({
@@ -85,7 +102,8 @@ export function publishShaderManifest<E extends ShaderEntry, M extends MaterialE
   }));
   return {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
-    receipts,
+    receipts: receipts.values,
+    entryPoints: entryPoints.values,
     fragments,
     sources,
     entries: programs,
@@ -111,8 +129,8 @@ export function mergeShaderManifestPublications(
   const fragments: string[] = [];
   const fragmentIndices = new Map<string, number>();
   const sources: Record<string, number[]> = {};
-  const receipts: unknown[] = [];
-  const receiptIndices = new Map<string, number>();
+  const receipts = createFactTable();
+  const entryPoints = createFactTable();
   const project = <T extends Record<string, unknown>>(row: T, owner: Published): T => {
     const digest = row.sourceDigest;
     if (typeof digest !== 'string') throw new Error('Shader row has no source digest');
@@ -131,17 +149,22 @@ export function mergeShaderManifestPublications(
         return outputIndex;
       });
     }
-    if (row.receiptIndex === undefined) return row;
-    const receipt = owner.receipts[row.receiptIndex as number];
-    if (receipt === undefined) throw new Error('Shader receipt is missing');
-    const key = JSON.stringify(receipt);
-    let index = receiptIndices.get(key);
-    if (index === undefined) {
-      index = receipts.length;
-      receipts.push(receipt);
-      receiptIndices.set(key, index);
-    }
-    return { ...row, receiptIndex: index };
+    const remap = (
+      key: 'receiptIndex' | 'entryPointsIndex',
+      table: unknown[],
+      output: ReturnType<typeof createFactTable>,
+    ) => {
+      if (!Object.hasOwn(row, key)) return {};
+      const index = row[key];
+      if (!Number.isSafeInteger(index) || Number(index) < 0 || table[Number(index)] === undefined)
+        throw new Error(`Shader ${key} reference is missing`);
+      return { [key]: output.index(table[Number(index)]) };
+    };
+    return {
+      ...row,
+      ...remap('receiptIndex', owner.receipts, receipts),
+      ...remap('entryPointsIndex', owner.entryPoints, entryPoints),
+    };
   };
   const material = (row: Published['materialShaders'][number], owner: Published) => ({
     ...project(row, owner),
@@ -151,7 +174,8 @@ export function mergeShaderManifestPublications(
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
     fragments,
     sources,
-    receipts,
+    receipts: receipts.values,
+    entryPoints: entryPoints.values,
     entries: [
       ...engine.entries
         .filter((row) => engineEntryHashes.has(String((row as { hash?: unknown }).hash)))

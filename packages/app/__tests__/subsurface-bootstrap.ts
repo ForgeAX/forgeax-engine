@@ -35,8 +35,10 @@ const entry: ExecutionBootstrapEntry = (mode) => {
     },
     plugins: [{
       name: 'publication-subsurface-fixture',
-      inject: ['world', 'executionBootstrapHost'],
+      inject: ['world', 'assets', 'executionBootstrapHost'],
       apply(ctx) {
+          const assets = ctx.assets;
+          if (assets === undefined) throw new Error('Missing runtime asset owner');
         const world = ctx.world;
         const skinned = mode === 'skin';
         let mesh = createPlaneGeometry(2, 2, 8, 8).unwrap();
@@ -57,7 +59,7 @@ const entry: ExecutionBootstrapEntry = (mode) => {
           data.set([x >= 64 ? 255 : 0, 0, 0, 255], (y * 128 + x) * 4);
         const texture: TextureAsset = { kind: 'texture', shape: { viewDimension: '2d', extent: { width: 128, height: 128 } },
           format: 'rgba8unorm', colorSpace: 'linear', mips: { kind: 'none' }, data };
-        const textureHandle = world.allocSharedRef('TextureAsset', texture);
+        const textureHandle = assets.create(texture).unwrap();
         const material = (radius: number, weight: number): MaterialAsset => {
           const value = Materials.standard({ baseColor: [1, 1, 1, 1], baseColorTexture: { texture: textureHandle },
             roughness: 1, specular: 0, subsurfaceRadius: [radius, radius, radius], subsurfaceWeight: weight });
@@ -68,15 +70,15 @@ const entry: ExecutionBootstrapEntry = (mode) => {
           return { ...value, passes: [convert(value.passes[0]), ...value.passes.slice(1).map(convert)] };
         };
         const entity = world.spawn({ component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
-          { component: MeshRenderer, data: { materials: [world.allocSharedRef('MaterialAsset', material(0, 1))] } }).unwrap();
+          { component: MeshFilter, data: { assetHandle: assets.create(mesh).unwrap() } },
+          { component: MeshRenderer, data: { materials: [assets.create(material(0, 1)).unwrap()] } }).unwrap();
         const joints = [world.spawn({ component: Transform, data: {} }).unwrap(), world.spawn({ component: Transform, data: {} }).unwrap()];
         if (skinned) {
           const inverseBindMatrices = new Float32Array(32);
           for (const joint of [0, 1]) for (const diagonal of [0, 5, 10, 15]) inverseBindMatrices[joint * 16 + diagonal] = 1;
-          world.addComponent(entity, { component: Skin, data: { skeleton: world.allocSharedRef('SkeletonAsset', {
+          world.addComponent(entity, { component: Skin, data: { skeleton: assets.create({
             kind: 'skeleton', jointCount: 2, inverseBindMatrices, bounds: new Float32Array([-1, -1, -.01, 1, 1, .01]),
-          }), joints: new Uint32Array(joints) } }).unwrap();
+          }).unwrap(), joints: new Uint32Array(joints) } }).unwrap();
         }
         world.spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {
           projection: 1, left: -1, right: 1, top: 1, bottom: -1, near: .1, far: 30,
@@ -88,8 +90,7 @@ const entry: ExecutionBootstrapEntry = (mode) => {
           port.onmessage = (event) => {
             if (event.data === 'enable' || event.data === 'disable' || event.data === 'zero') {
               revision++;
-              world.set(entity, MeshRenderer, { materials: [world.allocSharedRef('MaterialAsset',
-                material(event.data === 'zero' ? 0 : 6, event.data === 'disable' ? 0 : 1))] }).unwrap();
+              world.set(entity, MeshRenderer, { materials: [assets.create(material(event.data === 'zero' ? 0 : 6, event.data === 'disable' ? 0 : 1)).unwrap()] }).unwrap();
             }
             if (event.data === 'pose') {
               revision++;

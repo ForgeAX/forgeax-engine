@@ -45,3 +45,28 @@ fn applyAlphaHash(alpha : f32, position : vec3<f32>, enabled : f32) {
     if (alpha < threshold) { discard; }
   }
 }
+
+// Coverage is resolved before hashing and before an opaque output forces alpha
+// to one. The strict cutoff is shared by color, depth and shadow writers.
+fn alphaCoverage(alpha : f32, cutoff : f32, smoothing : f32) -> f32 {
+  let width = fwidth(alpha);
+  var coverage = alpha;
+  if (cutoff > 0.0) {
+    if (smoothing > 0.5) {
+      // Constant alpha has no transition. Avoid smoothstep's undefined equal
+      // edges while preserving the strict alpha-test boundary.
+      coverage = smoothstep(cutoff, cutoff + max(width, 1e-7), alpha);
+      if (coverage <= 0.0) { discard; }
+    } else if (alpha <= cutoff) { discard; }
+  }
+  return coverage;
+}
+
+// 0: preserve sampled alpha, 1: opaque after coverage, 2: premultiplied RGB.
+fn materialOutputAlpha(alpha : f32, mode : f32) -> f32 {
+  return select(alpha, 1.0, mode > 0.5 && mode < 1.5);
+}
+
+fn materialOutputColor(color : vec3<f32>, alpha : f32, mode : f32) -> vec3<f32> {
+  return color * select(1.0, alpha, mode > 1.5);
+}

@@ -1,5 +1,5 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   type MeshMaterialBindingResidency,
@@ -44,8 +44,12 @@ describe('resolveMeshMaterialBindings', () => {
   });
   const deps = {
     isValidOverride: (handle: number) => handle === 11,
-    resolveMeshDefault: (guid: typeof DEFAULT_A) =>
-      AssetGuid.format(guid) === AssetGuid.format(DEFAULT_A) ? 21 : 22,
+    resolveMeshDefault: (guid: typeof DEFAULT_A | AssetHandle<'material'>) =>
+      typeof guid === 'number'
+        ? guid
+        : AssetGuid.format(guid) === AssetGuid.format(DEFAULT_A)
+          ? 21
+          : 22,
   };
 
   it('inherits every mesh default for an empty override vector', () => {

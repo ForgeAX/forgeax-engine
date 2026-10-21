@@ -1,6 +1,6 @@
 # apps/hello/gltf
 
-> feat-20260515-gltf-loader-via-asset-system M5 convergence app — end-to-end proof of the gltf importer pipeline landing inside the same `loadByGuid<SceneAsset>` + `sceneInstances.instantiate` spine `apps/hello/room` uses (charter P4 consistent abstraction; plan-strategy section 3.2 sequence B).
+> feat-20260515-gltf-loader-via-asset-system M5 convergence app — end-to-end proof of the gltf importer pipeline landing inside the same `assets.load(guid, 'scene')` + `assets.instantiate` spine `apps/hello/room` uses (charter P4 consistent abstraction; plan-strategy section 3.2 sequence B).
 
 ## Quickstart
 
@@ -11,16 +11,18 @@ pnpm --filter @forgeax/hello-gltf build
 pnpm --filter @forgeax/hello-gltf smoke  # dawn-node 60 frames + pixel readback (epsilon = 0.05)
 ```
 
-## 4-step recipe
+## Runtime recipe
 
-`src/main.ts` walks the AI-discoverable surface:
+[src/main.ts](src/main.ts) configures the app's Catalog source, selects the scene GUID from the imported Pack, and loads the complete scene closure:
 
-1. `configureRuntimeAssetCatalog(assets, runtimeBinding)` — selects the scoped dev catalog or the static `/pack-index.json` emitted by `vite-plugin-pack`.
-2. `await assets.loadByGuid<MeshAsset>(meshGuid)` — Tier-B cube positions + indices.
-3. `await assets.loadByGuid<MaterialAsset>(materialGuid)` — UnlitMaterial with `baseColor` scalar.
-4. `await assets.loadByGuid<SceneAsset>(sceneGuid)` then `assets.instantiate(handle, world)` — single Box node + Camera node materialised into ECS entities.
+```ts
+configureRuntimeAssetCatalog(assets, runtimeBinding);
+const scene = (await assets.load(assets.parseGuid(sceneEntry.guid), 'scene')).unwrap();
+const instance = assets.instantiate(scene, world).unwrap();
+app.start();
+```
 
-The GUIDs come from `assets/box.gltf.meta.json`, written by `forgeax asset import apps/hello/gltf/assets/box.gltf` (M4 toolchain). Each `loadByGuid<T>` returns `Result<Handle<T>, AssetError>`; AI users branch on `.ok` and exhaustive-switch on `.error.code` (no `default`; charter P3 explicit failure).
+The scene load resolves its Mesh and Material dependencies. Returned handles belong to the app's asset owner; spawning does not require another registration step. GUID identity comes from `assets/box.gltf.meta.json`. Production code handles the returned `Result` errors before using a handle.
 
 ## Tier-B fork fixture (`assets/box.gltf`)
 

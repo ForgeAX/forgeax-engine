@@ -83,7 +83,15 @@ it('captures transparent previews progressively and reopens from DDC without a G
     if (!facts.ok) throw facts.error;
     const config = await createViteConfig(facts.value, 'serve', '/', { server: { port: 0 }, bootstrapRoot: 'resource-bootstrap' }).catch(cause => { throw new Error(JSON.stringify(cause)); });
     stages.configMs = performance.now() - started;
-    server = await createServer(config); await server.listen();
+    server = await createServer(config);
+    const reloads: unknown[] = [];
+    const send = server.ws.send.bind(server.ws);
+    server.ws.send = ((...args: Parameters<typeof send>) => {
+      const message: unknown = args[0];
+      if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'full-reload') reloads.push(message);
+      return send(...args);
+    }) as typeof server.ws.send;
+    await server.listen();
     const pack = server.config.plugins.find(plugin => plugin.name === 'forgeax:pack') as unknown as { ready(): Promise<void> };
     await pack.ready();
     stages.projectReadyMs = performance.now() - started;
@@ -113,6 +121,8 @@ it('captures transparent previews progressively and reopens from DDC without a G
     }
     expect(completed, JSON.stringify((await owner.read(assets.map(row => row.guid))).thumbnails.map(({ dataUrl: _image, ...row }) => row))).toBe(true);
     const coldMs = performance.now() - start;
+    // Cold module discovery must finish without navigating an active capture.
+    expect(reloads).toEqual([]);
     expect(launches).toBe(expectCache ? 0 : 1);
     const cold = await owner.read(assets.map(row => row.guid));
     await writeFile(resolve(evidence, 'cold-measurements.json'), JSON.stringify({ stages, coldMs, changes, assets: cold.thumbnails.map(({ dataUrl: _dataUrl, ...row }) => row) }, null, 2));

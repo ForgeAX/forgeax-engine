@@ -51,7 +51,6 @@ export type {
 } from './reflection.js';
 export {
   reflectVfxLayout,
-  reflectVfxLayoutV3,
   reflectVfxRenderer,
   reflectVfxRendererV3,
 } from './reflection.js';

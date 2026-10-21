@@ -14,7 +14,7 @@
 //   (b) raf frame count >= SMOKE_MIN_FRAMES (default 60, ENV-overridable)
 //   (c) GPUBuffer copyTextureToBuffer pixel readback at two sample sites:
 //       - NDC-center (canvas center) RGB distance to clearColor
-//         [0.06, 0.06, 0.08] > SMOKE_PIXEL_THRESHOLD (default 0.05 - D-P4
+//         [0, 0, 0] > SMOKE_PIXEL_THRESHOLD (default 0.05 - D-P4
 //         maintains epsilon=0.05 unchanged so K-12 baseline anchor survives;
 //         ENV-overridable; 8-frame average D-RS5 baseline that smooths
 //         driver-timing jitter)
@@ -58,10 +58,9 @@
  * @property {string} reason
  */
 
-/** clearColor SSOT: byte-identical to webgpu-backend.ts:142 + main.ts default
- *  (architecture principle #1). */
+/** Black matches the current Camera clear-color default in this smoke scene. */
 export const CLEAR_COLOR_RGB = /** @type {readonly [number, number, number]} */ ([
-  0.06, 0.06, 0.08,
+  0, 0, 0,
 ]);
 
 /** Default ENV values: byte-identical to smoke.mjs's main entry (preventing

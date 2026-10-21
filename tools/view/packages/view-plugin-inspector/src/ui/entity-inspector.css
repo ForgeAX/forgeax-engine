@@ -179,3 +179,9 @@
   .insp-detail-field--transform .fx-inspector-form__input { font-size: 10px; }
   .insp-detail-field--transform .insp-field-copy { flex-basis: 18px; width: 18px; }
 }
+
+.insp-authoring { padding: 6px 10px; font-size: 11px; }
+.insp-author-field { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.insp-author-expose { color: var(--fx-color-text-secondary); background: transparent; border: 0; font-size: 10px; cursor: pointer; }
+.insp-author-input { width: 100%; min-width: 0; padding: 4px 6px; background: var(--fx-color-surface-inset); border: 1px solid var(--fx-color-border-control); border-radius: 4px; color: inherit; font: inherit; }
+.insp-author-input[aria-invalid=true] { border-color: var(--fx-color-text-danger); }

@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
@@ -55,8 +56,10 @@ async function fixture() {
   const initialized = await host.initialization;
   if (!initialized.ok) throw initialized.error;
   const renderer = exposeRenderer(host);
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const publisher = createRenderPublisher(world, assets, identity, undefined, [feature]);
   world
     .spawn(
@@ -75,7 +78,7 @@ async function fixture() {
     )
     .unwrap();
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+  const meshHandle = assets.create(mesh).unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
@@ -109,7 +112,12 @@ async function fixture() {
     featureAborted,
     request: nextRequest(),
     nextRequest,
-    meshInput: { ...identity, meshHandle, mesh },
+    meshInput: {
+      ...identity,
+      meshHandle,
+      mesh,
+      revision: runtimeAssets(assets).version(meshHandle).unwrap(),
+    },
   };
 }
 

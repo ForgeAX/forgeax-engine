@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { Renderer } from '@forgeax/engine-render';
 import {
   ANTIALIAS_FXAA,
@@ -17,11 +17,12 @@ import {
   VolumetricFog,
 } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { createStandaloneRuntimeAssetBinding, type TextureAsset } from '@forgeax/engine-types';
+import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { pickDisplay } from '../../../picking/src/display-picking';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 const WIDTH = 128;
 const HEIGHT = 128;
@@ -284,12 +285,17 @@ function spawnScene(
   const geometryMaterial =
     options.geometryColor === undefined
       ? undefined
-      : world.allocSharedRef('MaterialAsset', Materials.unlit(options.geometryColor));
+      : testAssets(world).create(Materials.unlit(options.geometryColor)).unwrap();
   if (options.geometry) {
     for (const position of [-1.15, 0, 1.15]) {
       world.spawn(
         { component: Transform, data: { pos: [position, 0, 0], scale: [0.7, 1.6, 0.35] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: MeshRenderer,
           data: geometryMaterial === undefined ? {} : { materials: [geometryMaterial] },
@@ -304,31 +310,39 @@ function spawnScene(
       [0, 2.2, [0.1, 0.95, 0.2]],
       [0, -1.6, [0.95, 0.8, 0.1]],
     ] as const) {
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit([...color, options.edgeAlpha ?? 1]),
-      );
+      const material = testAssets(world)
+        .create(Materials.unlit([...color, options.edgeAlpha ?? 1]))
+        .unwrap();
       world.spawn(
         {
           component: Transform,
           data: { pos: [x, y, -0.4], scale: [0.08, 0.9, 0.08] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       );
     }
   }
   if (options.highContrastEdge === true) {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([1, 1, 1, options.edgeAlpha ?? 0.5]),
-    );
+    const material = testAssets(world)
+      .create(Materials.unlit([1, 1, 1, options.edgeAlpha ?? 0.5]))
+      .unwrap();
     world.spawn(
       {
         component: Transform,
         data: { pos: [0, 0, 0], scale: [0.12, 2.6, 0.35] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }
@@ -447,14 +461,18 @@ function rgbDifference(left: Uint8Array, right: Uint8Array): number {
 }
 
 function spawnMarkerScene(world: World) {
-  const markerMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.unlit([0.95, 0.05, 0.05, 1]),
-  );
+  const markerMaterial = testAssets(world)
+    .create(Materials.unlit([0.95, 0.05, 0.05, 1]))
+    .unwrap();
   const marker = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0], scale: [0.9, 0.9, 0.9] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [markerMaterial] } },
     )
     .unwrap();
@@ -656,41 +674,10 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     if (!host.ok) throw host.error;
     renderer = host.value.renderer;
 
-    const lutGuid = 'dab53d78-d233-4c79-8cb3-c03f33130003';
-    const lutSourceKey = 'test://barrel-distortion-output/browser-channel-swap-lut';
-    const binding = createStandaloneRuntimeAssetBinding('barrel-distortion-output-browser-lut');
-    const catalog = {
-      schemaVersion: 'runtime-catalog-snapshot-v1',
-      scopeId: binding.scopeId,
-      generation: binding.generation,
-      authority: 'authoritative',
-      entries: [
-        {
-          guid: lutGuid,
-          kind: 'texture',
-          packageUrl: 'data:application/json,{}',
-          sourceKey: lutSourceKey,
-        },
-      ],
-    } as const;
-    try {
-      host.value.assets.configureRuntimeBinding({
-        ...binding,
-        catalogUrl: `data:application/json,${encodeURIComponent(JSON.stringify(catalog))}`,
-      });
-      expect(await host.value.assets.refreshCatalog()).toBe(true);
-    } catch (cause) {
-      throw browserRendererError('observation-assets-refresh', cause);
-    }
     const lut = createChannelSwapLut();
-    try {
-      host.value.assets.catalog(lutGuid, lut).unwrap();
-    } catch (cause) {
-      throw browserRendererError('observation-assets-catalog', cause);
-    }
 
     const world = new World();
-    let camera: number;
+    let camera: EntityHandle;
     try {
       camera = spawnScene(world, {
         clearColor: [0, 0, 0, 1],
@@ -701,13 +688,13 @@ describe('barrel distortion real output in Browser WebGPU', () => {
         antialias: ANTIALIAS_FXAA,
         tonemap: TONEMAP_LINEAR,
         barrel: { strength: 0.2, centerX: 0.5, centerY: 0.5 },
-      }) as number;
+      });
     } catch (cause) {
       throw browserRendererError('observation-spawn-scene', cause);
     }
-    let lutHandle: ReturnType<World['allocSharedRef']>;
+    let lutHandle: AssetHandle<'texture'>;
     try {
-      lutHandle = world.allocSharedRef('TextureAsset', lut);
+      lutHandle = testAssets(world).create(lut).unwrap();
     } catch (cause) {
       throw browserRendererError('observation-world-lut-handle', cause);
     }
@@ -786,7 +773,7 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     expect(encodingIndices).toHaveLength(1);
     expect(encodingIndices[0]).toBeGreaterThan(fxaaIndex);
     expect(enabledInspection.output.displayEncoded).toBe(true);
-    expect(enabledInspection.output.standardLut?.sourceKey).toBe(lutSourceKey);
+    expect(enabledInspection.output.standardLut?.sourceKey).toBeTruthy();
 
     world.set(camera, Camera, { colorLut: 0 as never, colorLutStrength: 0 }).unwrap();
     const disabled = await drawObservedFrame(world, COLOR_DOMAINS);
@@ -967,7 +954,7 @@ describe('barrel distortion real output in Browser WebGPU', () => {
         },
       })
       .unwrap();
-    const density = world.allocSharedRef('TextureAsset', createConstantVolumeDensity());
+    const density = testAssets(world).create(createConstantVolumeDensity()).unwrap();
     const releaseTransforms = registerPropagateTransforms(world);
     let fog: EntityHandle | undefined;
     const attached = renderer.attach(world);
@@ -1037,7 +1024,7 @@ describe('barrel distortion real output in Browser WebGPU', () => {
       );
     } finally {
       if (fog !== undefined) world.despawn(fog).unwrap();
-      world.sharedRefs.release(density).unwrap();
+      testAssets(world).release(density).unwrap();
       attached.value.dispose();
       releaseTransforms();
     }

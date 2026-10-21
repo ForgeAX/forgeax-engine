@@ -10,7 +10,7 @@ import { type BindGroup, RhiError, type TextureView } from '@forgeax/engine-rhi'
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
 import { atmosphereTextures } from './environment/luts';
-import { prepareHiddenGpuDrivenPipelines } from './gpu-driven/pipeline-preparation';
+import { prepareHiddenGpuDrivenPipelines } from './gpu-driven/material-artifacts';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -30,12 +30,12 @@ import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
 } from './record/render-context';
+import { registerScenePass, scenePassContext } from './record/scene-pass-work';
 import { registerScenePipelinePreparation } from './record/scene-pipeline-preparation';
 import {
   encodeSkyboxPass,
+  recordBloomBlurPass,
   recordBloomCompositePass,
-  recordBloomHorizontalPass,
-  recordBloomVerticalPass,
 } from './record/skybox-post-pass';
 import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
@@ -210,6 +210,7 @@ export interface TypedScenePassOptions {
   readonly sampled?: readonly RenderPipelineTarget[] | undefined;
   readonly directionalShadow?: RenderPipelineTarget | undefined;
   readonly spotShadow?: RenderPipelineTarget | undefined;
+  readonly shadowMoments?: RenderPipelineTarget | undefined;
   /** Stable world-space cloud shadow map sampled by direct-solar receivers. */
   readonly cloudShadow?: RenderPipelineTarget | undefined;
   readonly ssao?: RenderPipelineTarget | undefined;
@@ -227,6 +228,8 @@ export interface TypedScenePassOptions {
     | 'opaque'
     | 'transmission'
     | 'transparent'
+    | 'translucent-before-transmission'
+    | 'translucent'
     | 'oit-accumulate'
     | 'oit-residual'
     | 'single-layer-medium-nearest-layer'
@@ -253,6 +256,16 @@ export function addTypedScenePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   options: TypedScenePassOptions,
 ): Result<void, RenderGraphError> {
+  const request = registerScenePass(graph, {
+    selector: options.selector,
+    excludeSelector: options.excludeSelector,
+    recordMode: options.recordMode,
+    passKind: options.passKind ?? 'forward',
+    gpu: options.gpuDriven !== undefined,
+    gpuFilter: options.gpuDrivenFilter,
+    late: options.gpuDrivenPhase === 'late',
+    capture: false,
+  });
   const colorTargets = options.colorTargets ?? [options.color];
   const fragmentEntryPoint =
     options.passKind === 'temporal'
@@ -297,6 +310,18 @@ export function addTypedScenePass(
       factory !== undefined &&
       !prepareHiddenGpuDrivenPipelines({
         entries: entries ?? [],
+        materials: context.materialFrame,
+        resolve: (shader, request) =>
+          context.runtime.getMaterialShaderArtifact?.(shader, {
+            ...(typeof request === 'boolean' ? { vertexColorAvailable: request } : request),
+            clustered:
+              context.standardLighting?.kind === 'clustered' &&
+              (context.standardLighting.prepared.local.length > 0 ||
+                context.frameState.installedPipelineConfig?.ssao?.enabled === true),
+            probeBlend:
+              (context.frameState.probeBlendRecordProjection?.projection.records.length ?? 0) > 0,
+            reflectionFallback: context.frameState.reflectionFallbackDemand === true,
+          }),
         artifacts,
         factory,
         formats,
@@ -413,7 +438,13 @@ export function addTypedScenePass(
   }
   return graph.addRasterPass(options.name, {
     accesses,
-    executeIf: options.executeIf,
+    executeIf:
+      options.executeIf === undefined
+        ? undefined
+        : (frame) =>
+            options.executeIf?.(
+              scenePassContext(frame as _InternalRenderPipelineContext, request),
+            ) ?? true,
     colorAttachments: colorTargets.map((target, index) => ({
       view: target.view,
       ...(target.resolveTarget === undefined ? {} : { resolveTarget: target.resolveTarget }),
@@ -442,11 +473,7 @@ export function addTypedScenePass(
       stencilStoreOp: 'store',
     },
     encode: ({ pass, frame, resources }) => {
-      const colorViews = colorTargets.map((target) => resolvedView(resources, target.view));
-      const depthView = resolvedView(resources, options.depth.view);
-      const resolveView =
-        options.resolve === undefined ? null : resolvedView(resources, options.resolve.view);
-      const internal = frame as _InternalRenderPipelineContext;
+      const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
       const directionalShadow =
         options.directionalShadow === undefined
           ? undefined
@@ -486,11 +513,15 @@ export function addTypedScenePass(
         internal.runtime as RenderSystemInternals,
         internal.frameState,
         internal.pipelineState,
-        internal.validated.length > 0 || options.gpuDriven !== undefined,
+        internal.validatedOrdered.length > 0 || options.gpuDriven !== undefined,
         internal.bindGroupCounts,
         {
           directionalShadow,
           spotShadow,
+          shadowMoments:
+            options.shadowMoments === undefined
+              ? undefined
+              : resolvedView(resources, options.shadowMoments.view),
           cloudShadow,
           atmosphere:
             options.environment?.atmosphere === undefined
@@ -524,18 +555,18 @@ export function addTypedScenePass(
         true,
         internal.standardLighting,
       );
-      // GPU-driven indirect draws are encoded by `recordMainPass` after it
+      // GPU-driven indirect draws are encoded by `encodeMainPass` after it
       // has populated the frame-global material bind-group receipt. Encoding
       // here would race that producer and either observe an empty receipt or
       // issue the same indirect draw twice. Keep this wrapper responsible for
       // resolving graph-owned attachments; the main-pass owner orders the
       // material producer before the GPU consumer.
-      const { gpuDrivenDrawReceipts, ...directContext } = internal;
+      const { gpuDrivenSelection, ...directContext } = internal;
       const passContext: _InternalRenderPipelineContext = {
         ...directContext,
-        ...(options.gpuDriven === undefined || gpuDrivenDrawReceipts === undefined
+        ...(options.gpuDriven === undefined || gpuDrivenSelection === undefined
           ? {}
-          : { gpuDrivenDrawReceipts }),
+          : { gpuDrivenSelection }),
         ...(options.environment === undefined
           ? {}
           : {
@@ -544,9 +575,6 @@ export function addTypedScenePass(
                 prefilter: resolvedView(resources, options.environment.prefilter),
               },
             }),
-        geometryColorView: colorViews[0] ?? null,
-        geometryDepthView: depthView,
-        geometryColorResolveView: resolveView,
         transparentColorFormat: colorTargets[0]?.format as GPUTextureFormat,
         ...(options.passKind !== 'deferred' && colorTargets[1]?.format === 'rgba16float'
           ? { reflectionFallbackColorFormat: 'rgba16float' as const }
@@ -562,24 +590,21 @@ export function addTypedScenePass(
         internal.runtime.device,
         pass,
         (bundledPass) => {
-          encodeMainPass(passContext, bundledPass, options.selector, {
+          encodeMainPass(passContext, bundledPass, request.selector, {
             bundleDescriptor,
             ...(options.selectEntities === undefined
               ? {}
               : { selection: options.selectEntities(frame) }),
-            colorViews,
             colorFormats: colorTargets.map((target) => target.format as GPUTextureFormat),
-            depthView,
-            passKind: options.passKind ?? 'forward',
-            ...(options.clearColor === undefined ? {} : { clearColor: options.clearColor }),
-            ...(options.recordMode === undefined ? {} : { recordMode: options.recordMode }),
+            passKind: request.passKind,
+            ...(request.recordMode === undefined ? {} : { recordMode: request.recordMode }),
             ...(options.transparentDepthWrite === undefined
               ? {}
               : { transparentDepthWrite: options.transparentDepthWrite }),
             ...(options.coverageOnly === undefined ? {} : { coverageOnly: options.coverageOnly }),
-            ...(options.excludeSelector === undefined
+            ...(request.excludeSelector === undefined
               ? {}
-              : { excludeSelector: options.excludeSelector }),
+              : { excludeSelector: request.excludeSelector }),
             ...(options.transmissionBackdrop === undefined
               ? {}
               : { transmissionBackdropView: transmissionBackdrop }),
@@ -609,15 +634,6 @@ export function addTypedScenePass(
         },
         internal.frameState.renderBundleCounters,
       );
-      // encodeMainPass receives a pass-local context so attachment and
-      // bind-group overrides stay isolated. Its material UBO payload cache is
-      // frame-owned, however: return it to the original context so the next
-      // Standard scene pass can reuse the same validated slot projection.
-      // This remains frame-local and keeps the existing writeBuffer, texture
-      // readiness, UV-scale, and missing-texture diagnostic behavior intact.
-      if (passContext.materialUboPayloadCache !== undefined) {
-        internal.materialUboPayloadCache = passContext.materialUboPayloadCache;
-      }
     },
   });
 }
@@ -760,7 +776,14 @@ export function addTypedBloomPasses(
       [source],
       horizontal,
       (frame, resolve, pass) =>
-        recordBloomHorizontalPass(frame, resolve, pass, level, targets.levelDimensions[level]),
+        recordBloomBlurPass(
+          frame,
+          'horizontal',
+          resolve,
+          pass,
+          level,
+          targets.levelDimensions[level],
+        ),
       level,
     );
     if (!h.ok) return h;
@@ -768,7 +791,7 @@ export function addTypedBloomPasses(
       typedBloomLevelPassName('vertical', level),
       [horizontal],
       vertical,
-      (frame, resolve, pass) => recordBloomVerticalPass(frame, resolve, pass, level),
+      (frame, resolve, pass) => recordBloomBlurPass(frame, 'vertical', resolve, pass, level),
       level,
     );
     if (!v.ok) return v;

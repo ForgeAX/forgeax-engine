@@ -1,6 +1,11 @@
 /** Decode the broker's exact resource reference in every document and Worker. */
 export async function readResourceBytes(ref: any, invoke: any) {
-  const decode = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const decode = (base64: string) => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  };
   const output = ref.base64 ? decode(ref.base64) : new Uint8Array(ref.bytes);
   if (!ref.base64 && output.length > 0) {
     // The sender owns its bounded byte window. Derive the stride from the first

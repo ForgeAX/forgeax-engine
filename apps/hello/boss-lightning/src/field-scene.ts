@@ -1,4 +1,4 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World, type EntityHandle } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { Camera, CameraView } from '@forgeax/engine-render';
@@ -18,6 +18,9 @@ export const fieldCamera = {
   },
 };
 export async function populateFieldScene(world: World, assets: AssetRegistry, key: string): Promise<{player: EntityHandle; camera: EntityHandle}> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const effect = await loadVfxGpuEffect(assets, fieldGuid(`effect/${key}`));
   if (!effect.ok) throw effect.error;
   // Effect loading owns its ordinary eager Texture/Material GUID closure.
@@ -26,6 +29,6 @@ export async function populateFieldScene(world: World, assets: AssetRegistry, ke
     world.addComponent(camera,{component:CameraView,data:{viewport:[0,0,.5,1],order:0,updateInterval:1}}).unwrap();
     world.spawn({component:Transform,data:{pos:[0,0,4]}},{component:Camera,data:{fov:Math.PI/3,aspect:.5,near:.1,far:100}},{component:CameraView,data:{viewport:[.5,0,.5,1],order:1,updateInterval:3}}).unwrap();
   }
-  const player = world.spawn({ component: Transform, data: key === 'local' ? {pos:[.125,-.25,0],quat:[0,0,Math.SQRT1_2,Math.SQRT1_2],scale:[2,1,.5]} : {} }, { component: ParticleEffectPlayer, data: { effect: world.allocSharedRef('ParticleEffectAsset', effect.value), playing: true, seed: 21, timeScale: 1 } }).unwrap();
+  const player = world.spawn({ component: Transform, data: key === 'local' ? {pos:[.125,-.25,0],quat:[0,0,Math.SQRT1_2,Math.SQRT1_2],scale:[2,1,.5]} : {} }, { component: ParticleEffectPlayer, data: { effect: effect.value, playing: true, seed: 21, timeScale: 1 } }).unwrap();
   return { player, camera };
 }

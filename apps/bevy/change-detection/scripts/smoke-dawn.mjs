@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { readFileSync } from 'node:fs';
@@ -43,10 +44,12 @@ gpu.requestAdapter = async (options) => {
   adapter.requestDevice = async (descriptor) => { device = await requestDevice(descriptor); return device; };
   return adapter;
 };
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 if (rendererBackend(renderer) !== 'webgpu') throw new Error(`[smoke] backend=${rendererBackend(renderer)}`);
 const { buildChangeDetectionWorld, readChangeDetectionState } = await import(resolve(here, '..', 'src', 'change-detection.ts'));
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const state = buildChangeDetectionWorld(world);

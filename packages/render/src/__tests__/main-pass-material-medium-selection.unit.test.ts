@@ -6,6 +6,7 @@ import {
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
+import { defaultMaterialSnapshot } from '../render-system-extract';
 
 const SHA_MEDIUM_SHADER = 'sha256:464bbf-single-layer-medium';
 
@@ -24,6 +25,7 @@ function dependencies(
   const bindGroupEntries: Array<readonly TestBindGroupEntry[]> = [];
   const runtime = {
     device: {
+      queue: { writeBuffer: () => ({ ok: true, value: undefined, unwrap: () => undefined }) },
       caps: { storageBuffer: false },
       limits: { maxSampledTexturesPerShaderStage: 16 },
       createBindGroup: (descriptor: { readonly entries: readonly TestBindGroupEntry[] }) => {
@@ -86,6 +88,7 @@ function dependencies(
 
 function mediumSnapshot() {
   return {
+    ...defaultMaterialSnapshot(),
     materialShaderId: 'forgeax::selected-shadow',
     surfaceModel: 'single-layer-medium',
   } as never;
@@ -96,8 +99,14 @@ describe('main-pass Surface material selection', () => {
     const deps = dependencies();
     const scope = (identity: string) =>
       ({ identity }) as unknown as PerSubmeshMaterialBgDeps['world'];
-    const first = { materialHandle: 1, materialShaderId: 's', paramSnapshot: { roughness: 0.5 } };
+    const first = {
+      ...defaultMaterialSnapshot(),
+      materialHandle: 1,
+      materialShaderId: 's',
+      paramSnapshot: { roughness: 0.5 },
+    };
     const second = {
+      ...defaultMaterialSnapshot(),
       materialHandle: 7,
       materialShaderId: '1:s',
       paramSnapshot: { roughness: 0.9 },
@@ -147,6 +156,7 @@ describe('main-pass Surface material selection', () => {
       },
     });
     const material = {
+      ...defaultMaterialSnapshot(),
       materialShaderId: 'test',
       get materialHandle() {
         events.push('handle');
@@ -163,6 +173,7 @@ describe('main-pass Surface material selection', () => {
   it('retains material binding assembly across Worker clones and numeric value updates', () => {
     const deps = dependencies();
     const material = {
+      ...defaultMaterialSnapshot(),
       materialHandle: 17,
       materialShaderId: 'forgeax::default-standard-pbr',
       materialParamSchema: STANDARD_PIPELINE_PARAM_SCHEMA,

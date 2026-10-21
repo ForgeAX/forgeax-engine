@@ -1,31 +1,34 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createTerrainGrids } from '@forgeax/engine-geometry';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { worldRenderResources } from '../publication/resource-scope';
+import { editResidentMesh } from './managed-mesh-edit';
 
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused');
-    },
-    device.caps,
-  );
-  const world = new World();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const meshes = createTerrainGrids(8).map((mesh) => ({
     ...mesh,
     vertices: new Float32Array(mesh.vertices),
   }));
-  const handles = meshes.map((mesh) => world.allocSharedRef('MeshAsset', mesh));
+  const handles = meshes.map((mesh) => runtimeAssetRegistry(world.assets).create(mesh).unwrap());
   const upload = (index: number) =>
-    store.ensureResident(defined(handles[index]), defined(meshes[index]), world);
-  const retire = (index: number) => store.invalidateMesh(defined(handles[index]), world);
-  return { device, store, world, meshes, handles, upload, retire };
+    store.ensureResident(
+      defined(handles[index]),
+      defined(meshes[index]),
+      worldRenderResources(world),
+    );
+  const retire = (index: number) =>
+    store.invalidateMesh(defined(handles[index]), worldRenderResources(world));
+  return { device, store, assets, world, meshes, handles, upload, retire };
 }
 
 it.each([
@@ -47,7 +50,7 @@ it.each([
   });
   const lease =
     lifetime === 'lease'
-      ? defined(f.store.retainMeshResidency(defined(f.handles[0]), f.world))
+      ? defined(f.store.retainMeshResidency(defined(f.handles[0]), worldRenderResources(f.world)))
       : undefined;
   if (lifetime === 'submission') f.store.trackMeshSubmission(submitted);
   f.retire(0);
@@ -80,15 +83,27 @@ it('removes an exclusively updated VBO from the immutable sharing index', async 
   const second = f.upload(1).unwrap();
   f.retire(0);
   const mesh = defined(f.meshes[1]);
-  const changed = new Float32Array(mesh.vertices);
-  changed[0] = defined(changed[0]) + 1;
-  f.store.updateMesh(
-    defined(f.handles[1]),
-    changed,
-    new Uint16Array(defined(mesh.indices)),
-    f.world,
+  const handle = defined(f.handles[1]);
+  const position = mesh.attributes.position;
+  if (!(position instanceof Float32Array)) throw new Error('Expected grid position attribute');
+  editResidentMesh(
+    f.assets,
+    f.store,
+    handle,
+    () => {
+      f.assets
+        .writeRange(handle, {
+          attribute: 'position',
+          first: 0,
+          values: Float32Array.of(defined(position[0]) + 1, 0, 0),
+        })
+        .unwrap();
+    },
+    worldRenderResources(f.world),
   );
-  expect(f.store.getMeshGpuHandles(defined(f.handles[1]), f.world)).toBe(second);
+  expect(f.store.getMeshGpuHandles(defined(f.handles[1]), worldRenderResources(f.world))).toBe(
+    second,
+  );
   const third = f.upload(2).unwrap();
   expect(third.vertexBuffer).not.toBe(second.vertexBuffer);
   expect(second.vertexBuffer.isDestroyed).toBe(false);
@@ -103,7 +118,9 @@ it.each([
 ] as const)('does not acquire or destroy a retired shared VBO when the new IBO %s fails', async (failure) => {
   const f = await fixture();
   const first = f.upload(0).unwrap();
-  const lease = defined(f.store.retainMeshResidency(defined(f.handles[0]), f.world));
+  const lease = defined(
+    f.store.retainMeshResidency(defined(f.handles[0]), worldRenderResources(f.world)),
+  );
   f.retire(0);
   const rejected = err(
     new RhiError({
@@ -123,7 +140,9 @@ it.each([
   expect(writeBuffer.mock.calls).toHaveLength(failure === 'upload' ? 1 : 0);
   expect(destroyBuffer.mock.calls).toHaveLength(failure === 'upload' ? 1 : 0);
   expect(first.vertexBuffer.isDestroyed).toBe(false);
-  expect(f.store.getMeshGpuHandles(defined(f.handles[1]), f.world)).toBeUndefined();
+  expect(
+    f.store.getMeshGpuHandles(defined(f.handles[1]), worldRenderResources(f.world)),
+  ).toBeUndefined();
   await lease.release(true);
   expect(first.vertexBuffer.isDestroyed).toBe(true);
   const replacement = f.upload(1).unwrap();

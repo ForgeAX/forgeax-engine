@@ -3,8 +3,8 @@ import {
   type AcousticParameter,
   type AudioBus,
   AudioError,
+  prepareAudioBuses,
   validateAcousticEnvironment,
-  validateAudioBuses,
 } from '@forgeax/engine-audio';
 import { err, ok, type Result } from '@forgeax/engine-types';
 
@@ -72,13 +72,13 @@ export class BusGraph {
     retained: readonly string[] = [],
     reconnect: (input: (id: string) => GainNode | undefined) => void = () => {},
   ): Result<void, AudioError> {
-    const checked = validateAudioBuses(definitions);
+    const checked = prepareAudioBuses(definitions);
     if (!checked.ok) return checked;
     const candidate = new Map<string, BusState>();
-    for (const definition of definitions) {
+    for (const definition of checked.value) {
       const previous = this.buses.get(definition.id);
       candidate.set(definition.id, {
-        definition: structuredClone(definition),
+        definition,
         ...(previous?.volume === undefined ? {} : { volume: previous.volume }),
         ...(previous?.muted === undefined ? {} : { muted: previous.muted }),
         ...(previous?.effect ? { effect: previous.effect } : {}),

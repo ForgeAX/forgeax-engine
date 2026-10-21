@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DEFAULT_STANDARD_PROFILE, Materials, ProjectedDecal } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature, type FeatureDefinition } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { material, spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const feature: FeatureDefinition = defineFeature({
   title: 'Projected decals (DBuffer)',
@@ -13,8 +15,14 @@ const feature: FeatureDefinition = defineFeature({
     'ON: a red box-projected stain lies across the floor and wraps over the cube edge. OFF: opacity 0 removes the decal pass and the floor and cube are clean grey.',
   appOptions: { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' } },
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 3.5, 4.5], target: [0, 0, 0] });
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.7, 0.7, 0.72, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.7, 0.7, 0.72, 1] }), {
       pos: [0.6, 0.4, 0],
       scale: [0.8, 0.8, 0.8],
     });

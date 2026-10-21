@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
@@ -10,11 +11,12 @@ import {
 } from '@forgeax/engine-render';
 import { ChildOf, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { MaterialPass, MaterialRootAsset, MeshAsset } from '@forgeax/engine-types';
 
 /** Two-joint ribbon, with an inverse bind offset and blended influence band. */
 export function skinScene(segments = 16) {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const position = new Float32Array((segments + 1) * 2 * 3);
   const tangent = new Float32Array((segments + 1) * 2 * 4);
   const normal = new Float32Array(position.length);
@@ -69,13 +71,15 @@ export function skinScene(segments = 16) {
   ibm.set(mat4.identity(mat4.create()));
   ibm.set(mat4.identity(mat4.create()), 16);
   ibm[29] = -0.5;
-  const skeleton = world.allocSharedRef('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 2,
-    inverseBindMatrices: ibm,
-    jointPaths: ['root', 'root/upper'],
-    bounds: new Float32Array([-4, -4, -1, 4, 4, 1]),
-  });
+  const skeleton = assets
+    .create({
+      kind: 'skeleton',
+      jointCount: 2,
+      inverseBindMatrices: ibm,
+      jointPaths: ['root', 'root/upper'],
+      bounds: new Float32Array([-4, -4, -1, 4, 4, 1]),
+    })
+    .unwrap();
   const standard = Materials.standard({
     baseColor: [0, 0, 0, 1],
     specular: 0,
@@ -83,26 +87,29 @@ export function skinScene(segments = 16) {
     emissiveIntensity: 1,
     renderState: { cullMode: 'none' },
   });
-  const material = {
+  const skinPass = (pass: MaterialPass): MaterialPass => ({
+    ...pass,
+    program: {
+      ...pass.program,
+      module:
+        pass.program.module === 'forgeax_material::standard'
+          ? 'forgeax::pbr-skin'
+          : pass.program.module,
+    },
+  });
+  const [firstPass, ...otherPasses] = standard.passes ?? [];
+  if (firstPass === undefined) throw new Error('Standard material requires a Pass');
+  const material: MaterialRootAsset = {
     ...standard,
-    passes: standard.passes?.map((pass) => ({
-      ...pass,
-      program: {
-        ...pass.program,
-        module:
-          pass.program.module === 'forgeax_material::standard'
-            ? 'forgeax::pbr-skin'
-            : pass.program.module,
-      },
-    })),
+    passes: [skinPass(firstPass), ...otherPasses.map(skinPass)],
   };
   const entity = world
     .spawn(
       { component: Transform, data: { pos: [0.3, 0, 0], scale: [1.5, 0.8, 1] } },
-      { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+      { component: MeshFilter, data: { assetHandle: assets.create(mesh).unwrap() } },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', material)] },
+        data: { materials: [assets.create(material).unwrap()] },
       },
       { component: Skin, data: { skeleton, joints: new Uint32Array([root, upper]) } },
     )
@@ -143,5 +150,5 @@ export function skinScene(segments = 16) {
     propagateTransforms(world).unwrap();
   };
   pose(0, 0);
-  return { world, mesh, entity, camera, root, upper, skeleton, pose };
+  return { world, assets, mesh, entity, camera, root, upper, skeleton, pose };
 }

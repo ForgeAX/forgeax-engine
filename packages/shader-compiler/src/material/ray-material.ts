@@ -92,6 +92,9 @@ export async function cookRayMaterial(
   const defines = {
     ...lowered.value.defines,
     ALPHA_HASH_AVAILABLE: false,
+    // Ray hits report rejected coverage; Card captures decide whether their
+    // geometry proxy should keep it. Neither path discards inside the Surface.
+    SURFACE_COVERAGE_DEFERRED: true,
     RAY_SURFACE_CONTEXT: context === 'ray-hit',
     CARD_SURFACE_CONTEXT: context === 'card-capture',
   };

@@ -26,27 +26,28 @@ export function isValidStartupTimeoutMs(value: unknown): value is number | null 
   );
 }
 
-function startupTimeoutFromPackage(
+function timeoutFromPackage(
   root: string,
   packageJson: Record<string, unknown>,
+  key: 'startupTimeoutMs' | 'frameTimeoutMs' = 'startupTimeoutMs',
 ): CommandResult<ProjectFacts['startupTimeoutMs']> {
   const forgeax = packageJson.forgeax;
   const forgeaxConfig =
     forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
       ? (forgeax as Record<string, unknown>)
       : undefined;
-  const startupTimeoutMs = forgeaxConfig?.startupTimeoutMs;
-  if (startupTimeoutMs !== undefined && !isValidStartupTimeoutMs(startupTimeoutMs)) {
+  const timeoutMs = forgeaxConfig?.[key];
+  if (timeoutMs !== undefined && !isValidStartupTimeoutMs(timeoutMs)) {
     return projectError(
       'package-manifest-invalid',
-      'package.json#forgeax.startupTimeoutMs to be a positive timer-safe integer or null',
-      'Set a positive millisecond value or null to disable startup deadlines.',
-      { root, startupTimeoutMs },
+      `package.json#forgeax.${key} to be a positive timer-safe integer or null`,
+      `Set a positive millisecond value or null to disable ${key} deadlines.`,
+      { root, [key]: timeoutMs },
     );
   }
   return {
     ok: true,
-    value: startupTimeoutMs as ProjectFacts['startupTimeoutMs'],
+    value: timeoutMs as ProjectFacts['startupTimeoutMs'],
   };
 }
 
@@ -75,7 +76,7 @@ export async function readProjectStartupTimeoutMs(
       { root },
     );
   }
-  return startupTimeoutFromPackage(root, packageValue as Record<string, unknown>);
+  return timeoutFromPackage(root, packageValue as Record<string, unknown>);
 }
 
 export async function readProjectFacts(
@@ -143,8 +144,10 @@ export async function readProjectFacts(
     );
   }
   const packageJson = packageValue as Record<string, unknown>;
-  const startup = startupTimeoutFromPackage(root, packageJson);
+  const startup = timeoutFromPackage(root, packageJson);
   if (!startup.ok) return startup;
+  const frame = timeoutFromPackage(root, packageJson, 'frameTimeoutMs');
+  if (!frame.ok) return frame;
   return {
     ok: true,
     value: {
@@ -153,6 +156,7 @@ export async function readProjectFacts(
       name: forge.name,
       roots: forge.roots,
       ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
+      ...(frame.value === undefined ? {} : { frameTimeoutMs: frame.value }),
       assetRoots: forge.assetRoots,
       packageJson,
     },

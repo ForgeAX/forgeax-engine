@@ -28,6 +28,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildDedupComment,
   buildEvidenceComment,
+  classifyGreenRun,
   extractIssueMergeSha,
   findMatchingOpenIssues,
   POST_MERGE_LABELS,
@@ -44,6 +45,7 @@ async function drivePostMergeMonitor({
   openIssues,
   superseded = false,
   isoTimestamp = '2026-05-11T12:34:56.789Z',
+  comparisonStatuses = {},
 }) {
   const calls = {
     listForRepo: [],
@@ -71,6 +73,11 @@ async function drivePostMergeMonitor({
           calls.createComment.push(params);
           return { data: { id: 1, body: params.body } };
         }),
+      },
+      repos: {
+        compareCommits: vi.fn(async ({ base }) => ({
+          data: { status: comparisonStatuses[base] ?? 'diverged' },
+        })),
       },
     },
   };
@@ -107,9 +114,23 @@ async function drivePostMergeMonitor({
       });
     }
   } else if (workflowRun.conclusion === 'success') {
-    for (const issue of matched) {
-      const issueSha = extractIssueMergeSha(issue.body) || '';
-      const { body } = buildEvidenceComment(workflowRun, issueSha, isoTimestamp);
+    for (const issue of openIssues) {
+      const issueSha = extractIssueMergeSha(issue.body);
+      if (issueSha === null) continue;
+      const comparisonStatus =
+        issueSha === workflowRun.head_sha
+          ? 'identical'
+          : (
+              await octokit.rest.repos.compareCommits({
+                owner: 'org',
+                repo: 'repo',
+                base: issueSha,
+                head: workflowRun.head_sha,
+              })
+            ).data.status;
+      const scenario = classifyGreenRun(issueSha, workflowRun.head_sha, comparisonStatus);
+      if (scenario === null) continue;
+      const { body } = buildEvidenceComment(workflowRun, scenario, isoTimestamp);
       await octokit.rest.issues.update({
         owner: 'org',
         repo: 'repo',
@@ -164,7 +185,7 @@ describe('post-merge-monitor auto-close (w1, AC-02 / AC-03 / AC-06)', () => {
     expect(calls.create).toHaveLength(0);
   });
 
-  it('green + multiple open issues, one matches current head_sha -> close only the matching one with sha-rerun-green', async () => {
+  it('green + multiple open issues, closes the matching sha but leaves a newer red sha open', async () => {
     const workflowRun = {
       conclusion: 'success',
       head_sha: 'CURRENT',
@@ -177,6 +198,7 @@ describe('post-merge-monitor auto-close (w1, AC-02 / AC-03 / AC-06)', () => {
     const { calls } = await drivePostMergeMonitor({
       workflowRun,
       openIssues,
+      comparisonStatuses: { OTHER: 'behind' },
       isoTimestamp: '2026-05-11T13:00:00.000Z',
     });
 
@@ -187,6 +209,60 @@ describe('post-merge-monitor auto-close (w1, AC-02 / AC-03 / AC-06)', () => {
     expect(calls.createComment[0].body).toContain('sha-rerun-green');
     expect(calls.createComment[0].body).toContain('https://github.com/org/repo/actions/runs/789');
     expect(calls.createComment[0].body).toContain('2026-05-11T13:00:00.000Z');
+  });
+
+  it('green ancestor run does not close an issue for the newer failing sha', async () => {
+    const workflowRun = {
+      conclusion: 'success',
+      head_sha: 'OLDER_GREEN',
+      html_url: 'https://github.com/org/repo/actions/runs/790',
+    };
+    const openIssues = [{ number: 202, body: '**merge sha**: `NEWER_RED`' }];
+    const { calls, octokit } = await drivePostMergeMonitor({
+      workflowRun,
+      openIssues,
+      comparisonStatuses: { NEWER_RED: 'behind' },
+    });
+
+    expect(octokit.rest.repos.compareCommits).toHaveBeenCalledWith({
+      owner: 'org',
+      repo: 'repo',
+      base: 'NEWER_RED',
+      head: 'OLDER_GREEN',
+    });
+    expect(calls.update).toHaveLength(0);
+    expect(calls.createComment).toHaveLength(0);
+  });
+
+  it('green descendant run closes the tracked red sha as sha-progressed', async () => {
+    const workflowRun = {
+      conclusion: 'success',
+      head_sha: 'NEWER_GREEN',
+      html_url: 'https://github.com/org/repo/actions/runs/791',
+    };
+    const openIssues = [{ number: 203, body: '**merge sha**: `OLDER_RED`' }];
+    const { calls } = await drivePostMergeMonitor({
+      workflowRun,
+      openIssues,
+      comparisonStatuses: { OLDER_RED: 'ahead' },
+    });
+
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]).toMatchObject({ issue_number: 203, state: 'closed' });
+    expect(calls.createComment[0].body).toContain('sha-progressed');
+  });
+
+  it('green run leaves a labeled issue without a merge sha sentinel untouched', async () => {
+    const workflowRun = {
+      conclusion: 'success',
+      head_sha: 'CURRENT',
+      html_url: 'https://github.com/org/repo/actions/runs/792',
+    };
+    const openIssues = [{ number: 204, body: 'external issue without a merge sha' }];
+    const { calls } = await drivePostMergeMonitor({ workflowRun, openIssues });
+
+    expect(calls.update).toHaveLength(0);
+    expect(calls.createComment).toHaveLength(0);
   });
 });
 
@@ -298,5 +374,18 @@ describe('findMatchingOpenIssues helper (D-P2 + D-P3)', () => {
       { number: 1, body: 'external human issue with no sha' },
     ]);
     expect(matched).toEqual([]);
+  });
+});
+
+describe('classifyGreenRun ancestry gate', () => {
+  it('classifies the same sha as a rerun without a comparison', () => {
+    expect(classifyGreenRun('same', 'same', 'identical')).toBe('sha-rerun-green');
+  });
+
+  it('classifies a green descendant but rejects older or unrelated green commits', () => {
+    expect(classifyGreenRun('red', 'descendant', 'ahead')).toBe('sha-progressed');
+    expect(classifyGreenRun('red', 'ancestor', 'behind')).toBeNull();
+    expect(classifyGreenRun('red', 'unrelated', 'diverged')).toBeNull();
+    expect(classifyGreenRun(null, 'current', 'ahead')).toBeNull();
   });
 });

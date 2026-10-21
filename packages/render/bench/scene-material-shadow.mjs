@@ -11,10 +11,10 @@ import { DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { Mobility, MobilityKindValue, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { create, globals } from '@forgeax/engine-dawn-node';
-import { constructRendererHost } from '../src/construct-renderer.ts';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { ShadowViewStatePool } from '../src/gpu-driven/shadow-views.ts';
-
-import { makeCanvas, rgba, spawnScene, timingFacts, trackDiagnosticErrors, value } from './scene-material-scaling.mjs';
+import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+import { drawReady, makeCanvas, rgba, spawnScene, timingFacts, trackDiagnosticErrors, value } from './scene-material-scaling.mjs';
 
 const root=resolve(process.cwd());
 const output=resolve(process.argv[2] ?? 'artifacts/scene-material-scaling/shadow');
@@ -33,12 +33,12 @@ for(const dirtyRatio of [0,.01,1]) {
  if(process.argv[3]!==undefined&&process.argv[3]!==id)continue;
  const errors=[],devices=new Set(),textures=[];const restore=trackDiagnosticErrors(errors);
  const manifest=await readFile(resolve(root,'shared-build-inputs/shaders/manifest.json'),'utf8');
- const renderer=value(await constructRendererHost(makeCanvas(devices,textures,errors),{rhi,gpuPassTiming:{}},{shaderManifestUrl:`data:application/json,${encodeURIComponent(manifest)}`})).renderer;
- const world=new World(),scene=spawnScene(world,1000,false),lease=value(renderer.attach(world));
+ const host=value(await constructRuntimeRendererHost(makeCanvas(devices,textures,errors),{rhi,gpuPassTiming:{}},{shaderManifestUrl:`data:application/json,${encodeURIComponent(manifest)}`}));const {renderer,assets}=host;
+ const world=new World({assets}),scene=spawnScene(world,1000,false),lease=value(renderer.attach(world));
  for(let index=Math.ceil(1000*dirtyRatio);index<scene.entities.length;index++)value(world.addComponent(scene.entities[index].entity,{component:Mobility,data:{kind:MobilityKindValue.static}}));
  value(renderer.setProfile({...renderer.inspect().profile,renderPath:'deferred',ssao:false,gpuOcclusion:false}));
  value(world.set(scene.light,DirectionalLight,{mapSize:512,shadowDistance:15,castShadow:true}));
- value(world.spawn({component:Transform,data:{pos:[0,0,-.2]}},{component:MeshFilter,data:{assetHandle:world.allocSharedRef('MeshAsset',value(createPlaneGeometry(6,6)))}},{component:MeshRenderer,data:{materials:[world.allocSharedRef('MaterialAsset',Materials.standard({baseColor:[.4,.4,.4,1],roughness:.7}))]}}));
+ value(world.spawn({component:Transform,data:{pos:[0,0,-.2]}},{component:MeshFilter,data:{assetHandle:assets.create(value(createPlaneGeometry(6,6))).unwrap()}},{component:MeshRenderer,data:{materials:[assets.create(Materials.standard({baseColor:[.4,.4,.4,1],roughness:.7})).unwrap()]}}));
  const unsub=renderer.subscribe(event=>{if(event.kind==='error')errors.push(event.error);});
  let phase=0;
  const raw={A:[],B:[]},images={};
@@ -47,7 +47,7 @@ for(const dirtyRatio of [0,.01,1]) {
   for(let i=0;i<Math.ceil(1000*dirtyRatio);i++){const {entity,pos}=scene.entities[i];value(world.set(entity,Transform,{pos:[pos[0],pos[1],Math.sin(phase*.1+i)*.025]}));}
   phase++;value(world.update(1/60));value(propagateTransforms(world));const cpuWorldMs=performance.now()-start;
   if(picture)value(renderer.requestObservation(['final-display']));
-  const before=performance.now();const receipt=value(renderer.draw({leases:[lease],camera:{lease},environment:{lease}}));const cpuDrawMs=performance.now()-before;
+  const before=performance.now();const receipt=await drawReady(renderer,{leases:[lease],camera:{lease},environment:{lease}});const cpuDrawMs=performance.now()-before;
   const waitStart=performance.now();value(await receipt.completed);const completionWaitMs=performance.now()-waitStart;
   const observed=value(await renderer.observe(receipt,{include:picture?['timings','final-display']:['timings']}));
   const inspected=renderer.inspect();if(errors.length)throw new Error(JSON.stringify(errors));

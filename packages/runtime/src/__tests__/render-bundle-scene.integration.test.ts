@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { RhiNullAdapter, RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
@@ -8,6 +8,7 @@ import { expect, it, vi } from 'vitest';
 import { standardPbrManifestRow } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
 import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
+import { testAssets } from './helpers/runtime-assets';
 
 function value<T>(
   result:
@@ -54,21 +55,30 @@ it('retains bundles through resize and follows real scene membership and culling
   };
   const canvas = { width: 32, height: 32, getContext: () => null } as unknown as HTMLCanvasElement;
   const world = new World();
-  const material = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-unlit' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [1, 0, 0] },
-  });
+  const material = testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-unlit' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [1, 0, 0] },
+    })
+    .unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(1, 1, 1).unwrap())
+            .unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -136,7 +146,14 @@ it('retains bundles through resize and follows real scene membership and culling
         world
           .spawn(
             { component: Transform, data: {} },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            {
+              component: MeshFilter,
+              data: {
+                assetHandle: testAssets(world)
+                  .create(createBoxGeometry(1, 1, 1).unwrap())
+                  .unwrap(),
+              },
+            },
             { component: MeshRenderer, data: { materials: [material] } },
           )
           .unwrap(),

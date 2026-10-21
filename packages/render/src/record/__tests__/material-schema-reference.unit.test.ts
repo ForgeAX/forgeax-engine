@@ -4,6 +4,7 @@ import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { derive, ParamSchemaProjectionOwner } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { packMaterialProgramRow } from '../../material-row';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { MaterialSnapshot } from '../../render-system-extract';
 import {
   applyMaterialTextureUvScales,
@@ -13,6 +14,7 @@ import {
 
 function snapshot(): MaterialSnapshot {
   return {
+    passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
     baseColor: vec3.create(0.7, 0.2, 0.1),
     metallic: 0.2,
     roughness: 0.4,
@@ -44,7 +46,7 @@ it('uses the admitted ABI without hashing a transport copy and retains its autho
   try {
     const payload = new Float32Array(512);
     writePbrMaterialUboPayload(payload, material);
-    applyMaterialTextureUvScales(payload, material, new World());
+    applyMaterialTextureUvScales(payload, material, worldRenderResources(new World()));
     expect(hashes).toBe(0);
     expect(payload[member.offset / 4]).toBe(0.75);
     expect(payload[0]).toBeCloseTo(0.7);
@@ -79,7 +81,7 @@ it('recaptures a changed schema in the UV consumer after the UBO getter has run'
   };
   const payload = new Float32Array(512);
   writePbrMaterialUboPayload(payload, material);
-  applyMaterialTextureUvScales(payload, material, new World());
+  applyMaterialTextureUvScales(payload, material, worldRenderResources(new World()));
   const coordinate = derive(schema).coordinateRecords.find(
     (entry) => entry.parameter === 'replacement',
   );
@@ -109,7 +111,7 @@ it.each([
   };
   const derived = derive(schema);
   const direct = new Float32Array(derived.totalBytes / 4);
-  applyMaterialTextureUvScales(direct, material, new World());
+  applyMaterialTextureUvScales(direct, material, worldRenderResources(new World()));
   const packed = packMaterialProgramRow(schema, material, derived.totalBytes);
   if (packed === undefined) throw new Error('missing scene material row');
   expect(new Uint8Array(direct.buffer)).toEqual(packed);

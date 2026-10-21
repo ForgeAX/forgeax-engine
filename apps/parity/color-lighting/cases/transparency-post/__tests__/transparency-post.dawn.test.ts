@@ -45,7 +45,7 @@ describe('transparency post Dawn GPU integration', () => {
       if (!constructed.ok) throw constructed.error;
       const { renderer, debugDrawHost } = constructed.value;
       try {
-        const world = makeWorld(sceneCase);
+        const world = makeWorld(sceneCase, constructed.value.assets);
         const attachment = renderer.attach(world);
         if (!attachment.ok) throw attachment.error;
         world.update().unwrap();

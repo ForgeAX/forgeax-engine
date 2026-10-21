@@ -4,15 +4,16 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import { ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 
-const material = {
+const material = new MaterialResource({
   baseColor: Float32Array.of(1, 1, 1),
   metallic: 0,
   roughness: 1,
-} as MaterialSnapshot;
+} as MaterialSnapshot);
 
 export function shadowSourceSnapshot(
   entityKey: number,
@@ -40,6 +41,17 @@ export function shadowSourceSnapshot(
         topology: 'triangle-list',
         pipelineClass: 'opaque',
         materialResourceClass: 'plain',
+        drawItemIndex: 0,
+        geometry: {
+          receipt: {
+            identity: 'shadow-source-cube',
+            vertexInputs: [{ semantic: 'position', location: 0, format: 'float32x3' }],
+            topology: 'triangle-list',
+            indexed: true,
+          },
+          draw: { kind: 'indexed', first: 0, count: 36, baseVertex: 0, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
   };
@@ -80,17 +92,20 @@ export function shadowSourceFixture(
   update(shadowSourceSnapshot(1, -10));
   update(shadowSourceSnapshot(2, 10));
   const input = () => {
-    const classes = classifier.update(projection.slotsSnapshot(), scene);
+    const classes = classifier.update(
+      { slots: projection.slotsSnapshot(), slotAt: (slot) => projection.slotAt(slot) },
+      scene,
+    );
     return {
       identity,
-      sourcePlan: topology.plan(),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined),
       scene,
       matrix,
       planes,
       targetSize: 1024,
       graphGeneration: 1,
       candidatePrimitiveIndices: classes.staticSlots,
-      ignoredChangeSlots: classes.dynamicSet,
+      ignoredChangeSlots: classes.dynamicSlots,
     };
   };
   return {

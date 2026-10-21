@@ -11,7 +11,7 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { readbackTexturePixels } from '@forgeax/engine-rhi-debug';
 import { ok, resolveMaterialAsset } from '@forgeax/engine-types';
-import type { EquirectAsset, MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 // @ts-expect-error browser-safe evidence module is intentionally JavaScript.
 import { createLinearHdrRoiEvidence, fnv1a } from '../evidence/evaluator-core.mjs';
@@ -29,6 +29,8 @@ import { describeMaterialCase } from '../evidence/material-case-builder.mjs';
 import { createBrowserPhaseController } from '../evidence/browser-phase-controller.mjs';
 // @ts-expect-error browser-safe evidence module is intentionally JavaScript.
 import { createAdditiveCoatMutantPublication } from '../evidence/additive-coat-mutant.mjs';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+
 
 const WIDTH = caseInput.render.width;
 if (new URLSearchParams(location.search).has('webgl2')) {
@@ -98,6 +100,9 @@ function loadedMaterialReceipt(): unknown {
 }
 
 function makeTexture(world: World, channel: string) {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const data = new Uint8Array(4 * 4 * 4);
   for (let index = 0; index < data.length; index += 4) {
     data[index] = channel === 'R' ? 255 : channel === 'RG' ? 128 : 0;
@@ -113,7 +118,7 @@ function makeTexture(world: World, channel: string) {
     colorSpace: 'linear',
     mips: { kind: 'none' },
   };
-  return world.allocSharedRef('TextureAsset', payload);
+  return sceneAssets.create(payload).unwrap();
 }
 
 function makeMaterial(world: World, item: (typeof caseManifest.cases)[number]) {
@@ -253,7 +258,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   if (nativeDevice.ok && evidence) captureGpuErrors(nativeDevice.value, evidence.errors);
   configureRuntimeAssetCatalog(assets, runtimeBinding);
   const materialGuid = assets.parseGuid(PHYSICAL_MATERIAL_GUIDS.full);
-  const loadedMaterial = await assets.loadByGuid<MaterialAsset>(materialGuid);
+  const loadedMaterial = await assets.load(materialGuid, 'material');
   if (!loadedMaterial.ok) {
     evidence?.errors.push(`material-load-failed:${loadedMaterial.error.code}`);
     if (evidence) evidence.materialLoad = { status: 'failed', guid: PHYSICAL_MATERIAL_GUIDS.full, route: 'assets.loadByGuid' };
@@ -261,26 +266,26 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       `full physical material load failed: ${loadedMaterial.error.code} expected=${loadedMaterial.error.expected} hint=${loadedMaterial.error.hint}`,
     );
   }
-  loadedFullPhysicalMaterial = loadedMaterial.value;
+  loadedFullPhysicalMaterial = assets.read(loadedMaterial.value).unwrap();
   for (const root of physicalMaterialRoots) {
     if (root.guid === PHYSICAL_MATERIAL_GUIDS.full) continue;
-    const loaded = await assets.loadByGuid<MaterialAsset>(assets.parseGuid(root.guid));
+    const loaded = await assets.load(assets.parseGuid(root.guid), 'material');
     if (!loaded.ok) throw new Error(`physical root ${root.guid} load failed: ${loaded.error.code}`);
   }
   if (evidence) {
-    const loadedShader = loadedMaterial.value.passes?.[0]?.program.module;
-    const loadedParameterNames = loadedMaterial.value.parameters?.map((parameter) => parameter.name);
+    const loadedShader = loadedFullPhysicalMaterial.passes?.[0]?.program.module;
+    const loadedParameterNames = loadedFullPhysicalMaterial.parameters?.map((parameter) => parameter.name);
     evidence.materialLoad = {
       status: 'ok',
       guid: PHYSICAL_MATERIAL_GUIDS.full,
       route: 'assets.loadByGuid',
       ...(loadedShader === undefined ? {} : { shader: loadedShader }),
       ...(loadedParameterNames === undefined ? {} : { parameterNames: loadedParameterNames }),
-      ...(loadedMaterial.value.values === undefined ? {} : { values: loadedMaterial.value.values }),
-      ...(loadedMaterial.value.passes === undefined
+      ...(loadedFullPhysicalMaterial.values === undefined ? {} : { values: loadedFullPhysicalMaterial.values }),
+      ...(loadedFullPhysicalMaterial.passes === undefined
         ? {}
         : {
-            passModules: loadedMaterial.value.passes.map((pass) => ({
+            passModules: loadedFullPhysicalMaterial.passes.map((pass) => ({
               name: pass.name,
               module: pass.program.module,
             })),
@@ -288,10 +293,13 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     };
   }
   if (evidence) evidence.stage = 'prepare-scene';
-  const world = new World();
+  const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const meshResult = createBoxGeometry(1.2, 1.2, 1.2);
   if (!meshResult.ok) throw new Error(`box geometry failed: ${meshResult.error.code}`);
-  const mesh = world.allocSharedRef('MeshAsset', meshResult.value);
+  const mesh = sceneAssets.create(meshResult.value).unwrap();
   const skinnedAttributes = {
     position: new Float32Array([-0.55, -0.55, 0, 0.55, -0.55, 0, 0, 0.55, 0]),
     normal: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
@@ -302,7 +310,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   };
   const skinnedPacked = packInterleavedVertexAttributes(skinnedAttributes, 3);
   if (!skinnedPacked.ok) throw new Error(`skinned geometry packing failed: ${skinnedPacked.error.code}`);
-  const skinnedMesh = world.allocSharedRef('MeshAsset', {
+  const skinnedMesh = sceneAssets.create({
     kind: 'mesh',
     vertices: skinnedPacked.value.vertices,
     indices: new Uint16Array([0, 1, 2]),
@@ -310,24 +318,24 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     aabb: new Float32Array([-0.55, -0.55, 0, 0.55, 0.55, 0]),
     materialSlots: [{ slotName: 'Default' }],
     submeshes: [{ indexOffset: 0, indexCount: 3, vertexCount: 3, materialSlot: 0, topology: 'triangle-list' }],
-  });
+  }).unwrap();
   const identity = new Float32Array(16);
   identity[0] = 1;
   identity[5] = 1;
   identity[10] = 1;
   identity[15] = 1;
-  const skeleton = world.allocSharedRef('SkeletonAsset', {
+  const skeleton = sceneAssets.create({
     kind: 'skeleton',
     inverseBindMatrices: new Float32Array([...identity, ...identity]),
     jointCount: 2,
-  });
+  }).unwrap();
   const directCases = caseManifest.cases.filter((item) => item.lighting === 'direct');
   const entities = new Map<string, EntityHandle>();
   for (const item of directCases) {
     const position = caseInput.geometry.casePositions[item.caseId as keyof typeof caseInput.geometry.casePositions] as [number, number];
     const [x, y] = position;
     const material = makeMaterial(world, item);
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const materialHandle = sceneAssets.create(material).unwrap();
     const entity = world.spawn(
       { component: Transform, data: { pos: [x, y, 0] } },
       { component: MeshFilter, data: { assetHandle: item.geometry === 'skinned' ? skinnedMesh : mesh } },
@@ -414,7 +422,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     const mutantAssets = constructedMutant.value.assets;
     configureRuntimeAssetCatalog(mutantAssets, runtimeBinding);
     for (const root of physicalMaterialRoots) {
-      const loaded = await mutantAssets.loadByGuid<MaterialAsset>(mutantAssets.parseGuid(root.guid));
+      const loaded = await mutantAssets.load(mutantAssets.parseGuid(root.guid), 'material');
       if (!loaded.ok) throw new Error(`mutant root ${root.guid} load failed: ${loaded.error.code}`);
     }
     mutantRenderer = constructedMutant.value.renderer;
@@ -443,11 +451,12 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const expectedMaterials = () => [...entities.values()].map((entityKey) => ({
     entityKey, handle: world.get(entityKey, MeshRenderer).unwrap().materials[0],
   }));
-  let hdr: EquirectAsset | undefined;
+  let hdr: import('@forgeax/engine-types').AssetHandle<'equirect'> | undefined;
   const guid = assets.parseGuid(caseInput.ibl.sourceGuid);
-  const loaded = await assets.loadByGuid<EquirectAsset>(guid);
+  const loaded = await assets.load(guid, 'equirect');
   if (loaded.ok) hdr = loaded.value;
   else evidence?.errors.push(`ibl-load-failed:${loaded.error.code}`);
+  const hdrSource = hdr === undefined ? undefined : assets.read(hdr).unwrap();
   const captureFrame = async ({ phase, frameId }: { phase: 'direct' | 'ibl'; frameId: number }) => {
     const receipt = captureReceipt;
     if (receipt === undefined || receipt.frameId !== frameId) throw new Error('missing current capture receipt');
@@ -478,7 +487,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         authoredSlot: item.authoredSlot,
         channel: item.channel,
         material: { kind: 'MaterialAsset', shader: physicalMaterialModule(item) },
-        sourceClosure: item.lighting === 'ibl' ? { hdrReceipt: hdr === undefined ? undefined : { sourceGuid: caseInput.ibl.sourceGuid, sourceRevision: caseInput.ibl.sourceRevision, load: 'assets.loadByGuid', format: hdr.format, width: hdr.width, height: hdr.height } } : undefined,
+        sourceClosure: item.lighting === 'ibl' ? { hdrReceipt: hdr === undefined ? undefined : { sourceGuid: caseInput.ibl.sourceGuid, sourceRevision: caseInput.ibl.sourceRevision, load: 'assets.load', format: hdrSource?.format, width: hdrSource?.width, height: hdrSource?.height } } : undefined,
         submittedFrame: { start: Math.max(0, frameId - 29), end: frameId, count: 30 },
         readback: { status: 'ok', format: observed.value.metadata.format, colorSpace: 'linear-hdr', byteLength: projected.rawBytes.byteLength, frameId: observed.value.metadata.frameId, pipelineId: observed.value.metadata.pipelineId, backendId: observed.value.metadata.backendId },
         roi,
@@ -523,7 +532,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const pairEntity = entities.get('direct-rigid-factor-r');
   const assignPairMaterial = (material: ReturnType<typeof makePairMaterial>): void => {
     if (pairEntity === undefined) return;
-    world.set(pairEntity, MeshRenderer, { materials: [world.allocSharedRef('MaterialAsset', material)] }).unwrap();
+    world.set(pairEntity, MeshRenderer, { materials: [sceneAssets.create(material).unwrap()] }).unwrap();
   };
   const captureMutantObservation = async () => {
     if (mutantRenderer === undefined || mutantObservationHost === undefined || mutantFrameRequest === undefined) return undefined;
@@ -629,7 +638,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         return;
       }
       world.despawn(light).unwrap();
-      world.spawn({ component: Skylight, data: { equirect: world.allocSharedRef('EquirectAsset', hdr), intensity: 1 } }).unwrap();
+      world.spawn({ component: Skylight, data: { equirect: hdr, intensity: 1 } }).unwrap();
       for (const item of caseManifest.cases.filter((candidate) => candidate.lighting === 'ibl')) {
         const entity = entities.get(item.caseId.replace('ibl-', 'direct-'));
         if (entity !== undefined) {
@@ -640,7 +649,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
               scale: [1, 1, 1],
             }).unwrap();
           }
-          world.set(entity, MeshRenderer, { materials: [world.allocSharedRef('MaterialAsset', makeMaterial(world, item))] }).unwrap();
+          world.set(entity, MeshRenderer, { materials: [sceneAssets.create(makeMaterial(world, item)).unwrap()] }).unwrap();
         }
       }
     },

@@ -50,7 +50,8 @@
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-interaction": "workspace:*",
-    "@forgeax/engine-app": "workspace:*"
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

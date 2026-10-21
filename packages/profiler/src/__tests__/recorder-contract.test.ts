@@ -161,3 +161,83 @@ describe('bounded profiler recorder contract', () => {
     }
   });
 });
+
+describe('capture finalization ownership', () => {
+  it.each([
+    'owner',
+    'passes',
+    'nested',
+  ] as const)('retains the requested %s detail mode', (detail) => {
+    const profiler = createProfiler();
+    const session = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 4, detail }));
+    expect(session.detail).toBe(detail);
+  });
+
+  it('publishes the completed receipt before calling a reentrant sink', () => {
+    let session: import('../recorder.js').RecorderSession;
+    let writes = 0;
+    const profiler = createProfiler({
+      phaseCatalog: TEST_PHASE_CATALOG,
+      sink: {
+        write(capture) {
+          writes += 1;
+          expect(session.finish()).toEqual({ ok: true, value: capture });
+          expect(profiler.activeSession()).toBeUndefined();
+          expect(profiler.latestCapture()).toBe(capture);
+        },
+      },
+    });
+    session = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 4 }));
+    expectOk(session.beginFrame(10));
+    expectOk(session.endFrame());
+    const result = session.finish();
+    expect(result.ok).toBe(true);
+    expect(writes).toBe(1);
+  });
+  it('retains admitted limits independently of later caller edits', () => {
+    const limits = { frameLimit: 1, eventLimit: 4 };
+    const profiler = createProfiler({ phaseCatalog: TEST_PHASE_CATALOG });
+    const session = expectOk(profiler.startCapture(limits));
+    limits.frameLimit = 20;
+    limits.eventLimit = 0;
+    expectOk(session.beginFrame(100));
+    expectOk(session.beginPhase('app', 'frame-total'));
+    expectOk(session.endPhase());
+    expectOk(session.endFrame());
+    const capture = expectOk(session.finish());
+    expect(capture.frameLimit).toBe(1);
+    expect(capture.eventLimit).toBe(4);
+    expect(capture.records).toHaveLength(1);
+    expect(capture.completeness.status).toBe('complete');
+  });
+});
+
+it('samples accessor limits once before validating and retains them through auto-finish', () => {
+  const profiler = createProfiler({ enabled: true });
+  let frameReads = 0;
+  let eventReads = 0;
+  let detailReads = 0;
+  class Limits {
+    get frameLimit() {
+      return ++frameReads === 1 ? 1 : 0;
+    }
+    get eventLimit() {
+      return ++eventReads === 1 ? 4 : 0;
+    }
+    get detail() {
+      return ++detailReads === 1 ? ('nested' as const) : ('owner' as const);
+    }
+  }
+  const result = profiler.startCapture(new Limits());
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error(result.error.hint);
+  expect(result.value.detail).toBe('nested');
+  result.value.beginFrame(1);
+  result.value.endFrame();
+  expect(profiler.activeSession()).toBeUndefined();
+  expect(result.value.finish()).toMatchObject({
+    ok: true,
+    value: { frameLimit: 1, eventLimit: 4 },
+  });
+  expect([frameReads, eventReads, detailReads]).toEqual([1, 1, 1]);
+});

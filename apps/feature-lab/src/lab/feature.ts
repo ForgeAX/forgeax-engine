@@ -33,7 +33,7 @@ export interface FeatureContext {
   readonly world: World;
   readonly canvas: HTMLCanvasElement;
   readonly hud: FeatureHud;
-  /** Resolves after `count` additional renderer frame submissions. */
+  /** Resolves after `count` additional completed, ready renderer frames. */
   frames(count: number): Promise<void>;
 }
 

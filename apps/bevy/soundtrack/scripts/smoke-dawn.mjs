@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless structural smoke for soundtrack.
@@ -62,9 +63,11 @@ const { buildSoundtrackWorld } = await import('../src/soundtrack.ts');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const shaderManifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const audioBackend = createAudioIntentBackend({ emit: () => {} });
 const appResult = await createApp({ platform: createSmokePlatform(canvas),  renderer, world, plugins: [audioBackendPlugin(audioBackend), audioPlugin()] });
 if (!appResult.ok) throw new Error(`createApp failed: ${appResult.error.code}`);

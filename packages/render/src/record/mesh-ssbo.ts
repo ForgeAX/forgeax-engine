@@ -8,13 +8,15 @@ import {
   writeMeshSsboBuffer,
 } from '../assembly/mesh-ssbo-grow';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
-import type { DispatchEntry } from '../render-system-extract';
+import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
+import type { DispatchEntry, DispatchList } from '../render-system-extract';
 import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
 import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
+import type { _InternalRenderPipelineContext } from './render-context';
 
 /**
  * Stride between per-renderable `entity_world` mat4 slots inside the
@@ -25,8 +27,8 @@ import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
  */
 export const MESH_PER_ENTITY_STRIDE = 256;
 
-// current mat4 + previous mat4 + temporal vec4 + surface u32 row. See common.wgsl::Mesh.
-export const MESH_SSBO_BYTES = 160;
+// Current/previous mat4, temporal, surface and draw-local Sprite region. See common.wgsl::Mesh.
+export const MESH_SSBO_BYTES = 176;
 
 /** `Mesh.temporal.y` bit set: 1 = previous transform valid, 2 = shadow sampling off. */
 export function meshSurfaceFlags(source: {
@@ -37,7 +39,7 @@ export function meshSurfaceFlags(source: {
     (source.temporal?.motionValid === false ? 0 : 1) | (source.shadowReceiver === false ? 2 : 0)
   );
 }
-export const MESH_UBO_FULL_ARRAY_BYTES = 80 * 128;
+export const MESH_UBO_FULL_ARRAY_BYTES = 96 * 128;
 
 // bug-20260723-webgl2-instancing-uniform-range: the WebGL2 fallback shader
 // declares `array<InstanceData, 128>` in the instances bind group. Even when
@@ -127,6 +129,27 @@ export function extractEntryResourceHandle(entry: {
 // with a longer chain that shares the same prefix.
 const BIND_GROUP_CHAIN_LEAF_KEY: object = {};
 
+function bindGroupChainLeaf(
+  root: WeakMap<object, unknown>,
+  handles: readonly object[],
+): Map<string, BindGroup> {
+  let node = root;
+  for (const h of handles) {
+    let next = node.get(h) as WeakMap<object, unknown> | undefined;
+    if (next === undefined) {
+      next = new WeakMap();
+      node.set(h, next);
+    }
+    node = next;
+  }
+  let leaf = node.get(BIND_GROUP_CHAIN_LEAF_KEY) as Map<string, BindGroup> | undefined;
+  if (leaf === undefined) {
+    leaf = new Map();
+    node.set(BIND_GROUP_CHAIN_LEAF_KEY, leaf);
+  }
+  return leaf;
+}
+
 /**
  * feat-20260622-handle-to-id-allocator-elimination M2 / w7: walks a nested
  * WeakMap chain to find or create a BindGroup leaf. Each handle in the
@@ -148,20 +171,7 @@ export function getOrCreateFromChain(
   factory: () => BindGroup,
   counts: { createBindGroup: number; keys: string[] },
 ): BindGroup {
-  let node = root;
-  for (const h of handles) {
-    let next = node.get(h) as WeakMap<object, unknown> | undefined;
-    if (next === undefined) {
-      next = new WeakMap();
-      node.set(h, next);
-    }
-    node = next;
-  }
-  let leaf = node.get(BIND_GROUP_CHAIN_LEAF_KEY) as Map<string, BindGroup> | undefined;
-  if (leaf === undefined) {
-    leaf = new Map();
-    node.set(BIND_GROUP_CHAIN_LEAF_KEY, leaf);
-  }
+  const leaf = bindGroupChainLeaf(root, handles);
   const hit = leaf.get(variant);
   if (hit !== undefined) return hit;
   const bg = factory();
@@ -183,20 +193,7 @@ export function getOrCreateFromChainResult<E>(
   factory: () => Result<BindGroup, E>,
   counts: { createBindGroup: number; keys: string[] },
 ): Result<BindGroup, E> {
-  let node = root;
-  for (const h of handles) {
-    let next = node.get(h) as WeakMap<object, unknown> | undefined;
-    if (next === undefined) {
-      next = new WeakMap();
-      node.set(h, next);
-    }
-    node = next;
-  }
-  let leaf = node.get(BIND_GROUP_CHAIN_LEAF_KEY) as Map<string, BindGroup> | undefined;
-  if (leaf === undefined) {
-    leaf = new Map();
-    node.set(BIND_GROUP_CHAIN_LEAF_KEY, leaf);
-  }
+  const leaf = bindGroupChainLeaf(root, handles);
   const hit = leaf.get(variant);
   if (hit !== undefined) return ok(hit);
   const created = factory();
@@ -359,22 +356,45 @@ export function isMeshSsboDevMode(): boolean {
   return true;
 }
 
-// The optional 16-byte surface tail fits the existing 256-byte direct slot.
-const MESH_SLOT_FLOATS = 40;
+// Transform, temporal, surface and Sprite region fit the aligned direct slot.
+const MESH_SLOT_FLOATS = 44;
 const MESH_STRIDE_FLOATS = MESH_PER_ENTITY_STRIDE / Float32Array.BYTES_PER_ELEMENT;
 // Clean slots this close together are re-sent with their neighbours so a
 // scattered change still flushes as a few contiguous writes.
 const MESH_DIRTY_MERGE_GAP_SLOTS = 8;
 
+type MeshUpload = Pick<ValidatedRenderable, 'source' | 'meshSlot' | 'foldedMeshSlot'>;
+
+export function meshDrawSlot(
+  entry: Pick<MeshUpload, 'meshSlot' | 'foldedMeshSlot'>,
+  folded = false,
+): number {
+  const slot = folded ? entry.foldedMeshSlot : entry.meshSlot;
+  if (slot === undefined || !Number.isSafeInteger(slot) || slot < 0)
+    throw new Error('Draw recording requires a prepared physical mesh slot');
+  return slot;
+}
+
 /**
  * CPU copy of what the GPU mesh storage buffer holds. The buffer is written
- * only by {@link uploadMeshSsboBatch}, so its identity is the mirror key and a
+ * only by {@link flushMeshDrawUploads}, so its identity is the mirror key and a
  * replaced buffer starts with no known slots.
  */
 interface MeshSsboMirror {
   bytes: Uint8Array;
   bits: Uint32Array;
   known: Uint8Array;
+  readonly dirty: Set<number>;
+  readonly sources: Map<
+    number,
+    {
+      readonly source: MeshUpload['source'];
+      readonly surfaceBase: number | undefined;
+      readonly storageBuffer: boolean;
+      readonly folded: boolean;
+      readonly hasSurface: boolean;
+    }
+  >;
 }
 
 const mirrors = new WeakMap<object, MeshSsboMirror>();
@@ -384,7 +404,13 @@ const candidateBits = new Uint32Array(candidate.buffer);
 function meshSsboMirror(buffer: object, slotCount: number): MeshSsboMirror {
   let mirror = mirrors.get(buffer);
   if (mirror === undefined) {
-    mirror = { bytes: new Uint8Array(0), bits: new Uint32Array(0), known: new Uint8Array(0) };
+    mirror = {
+      bytes: new Uint8Array(0),
+      bits: new Uint32Array(0),
+      known: new Uint8Array(0),
+      dirty: new Set(),
+      sources: new Map(),
+    };
     mirrors.set(buffer, mirror);
   }
   if (mirror.known.length < slotCount) {
@@ -400,7 +426,7 @@ function meshSsboMirror(buffer: object, slotCount: number): MeshSsboMirror {
   return mirror;
 }
 
-function writeMeshSlotCandidate(entry: ValidatedRenderable, foldHead: boolean): void {
+function writeMeshSlotCandidate(entry: MeshUpload, foldHead: boolean): void {
   candidate.fill(0);
   candidateBits[38] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
   if (foldHead) {
@@ -422,25 +448,7 @@ function writeMeshSlotCandidate(entry: ValidatedRenderable, foldHead: boolean): 
   for (let k = 0; k < 16; k++) candidate[k] = worldFromLocal[k] ?? 0;
   const previousWorld = entry.source.temporal?.previousTransform.world ?? worldFromLocal;
   for (let k = 0; k < 16; k++) candidate[16 + k] = previousWorld[k] ?? 0;
-  let reactiveMaterial = false;
-  for (const material of entry.source.materials) {
-    const shader = material.materialShaderId;
-    // Published Standard programs use content hashes, not authored module names.
-    // Their accepted Surface contract still owns exact opacity/motion projection.
-    // Unknown custom programs retain the conservative reactive classification.
-    if (
-      material.transparent === true ||
-      shader === 'forgeax::sprite' ||
-      shader === 'forgeax::sprite-lit' ||
-      (shader !== undefined &&
-        !shader.startsWith('forgeax::') &&
-        !(material.surfaceModel === 'standard' && material.materialProgramKeys !== undefined))
-    ) {
-      reactiveMaterial = true;
-      break;
-    }
-  }
-  candidate[32] = entry.source.temporal?.reactive === true || reactiveMaterial ? 1 : 0;
+  candidate[32] = entry.source.temporal?.reactive === true ? 1 : 0;
   candidate[33] = meshSurfaceFlags(entry.source);
 }
 
@@ -455,7 +463,8 @@ function stageMeshSlot(mirror: MeshSsboMirror, slot: number): boolean {
       dirty = true;
     }
   }
-  mirror.known[slot] = 1;
+  // Candidate bytes are not evidence of a successful physical write.
+  if (dirty) mirror.known[slot] = 0;
   return dirty;
 }
 
@@ -475,13 +484,13 @@ function flushMeshRun(
     offset,
     (end - first) * MESH_PER_ENTITY_STRIDE,
   );
+  mirror.known.fill(1, first, end);
 }
 
 /**
- * Per-renderable `entity_world` upload for the main slots `[0, main.length)`
- * and the ShadowCaster residual slots that follow them. Both lanes are packed
- * into one persistent mirror and only slots whose bytes changed since the
- * last upload to this buffer are written, as coalesced contiguous runs.
+ * Stage actual source/folded transforms at their physical addresses. Reordering
+ * or shortening a pass list never moves another draw's bytes. Main, shadow and
+ * capture can share a source address; folded identity occupies its own slot.
  *
  * Each aligned slot carries current/previous mat4 at bytes 0/64, followed
  * by temporal metadata at byte 128. Normals are derived in the shader.
@@ -490,60 +499,118 @@ function flushMeshRun(
  *
  * @internal
  */
-export function uploadMeshSsboBatch(
-  queue: RhiQueue,
+function stageMeshDraw(
   meshStorageBuffer: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
-  main: readonly ValidatedRenderable[],
-  foldDispatchPlan: FoldDispatchPlan | null,
-  shadow: readonly ValidatedRenderable[] = [],
-  visibleSurfaceBases?: ReadonlyMap<number, number>,
-  storageBuffer = true,
-): number {
-  const slotCount = main.length + shadow.length;
-  if (slotCount === 0) return 0;
+  entry: MeshUpload,
+  folded: boolean,
+  visibleSurfaceBases: ReadonlyMap<number, number> | undefined,
+  storageBuffer: boolean,
+): void {
   const buffer =
     meshStorageBuffer.pages === undefined ? meshStorageBuffer.buffer : meshStorageBuffer;
   if (buffer === null) throw new Error('mesh draw storage is not allocated');
-  const mirror = meshSsboMirror(buffer, slotCount);
-  let runFirst = -1;
-  let runEnd = -1;
-  let runs = 0;
-  for (let slot = 0; slot < slotCount; slot++) {
-    const shadowSlot = slot >= main.length;
-    const entry = shadowSlot ? shadow[slot - main.length] : main[slot];
-    if (entry === undefined) {
-      candidate.fill(0);
-    } else {
-      writeMeshSlotCandidate(
-        entry,
-        !shadowSlot && foldDispatchPlan?.headBuckets.has(slot) === true,
-      );
-      if (!shadowSlot && visibleSurfaceBases !== undefined) {
-        candidateBits[36] =
-          visibleSurfaceBases.get(worldEntityKey(entry.source.worldId, entry.source.entityKey)) ??
-          0;
-        candidateBits[37] = entry.source.instances?.instanceCount ?? 1;
-      }
-    }
-    if (!storageBuffer)
-      candidateBits[18] = entry?.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
-    if (!stageMeshSlot(mirror, slot)) continue;
-    if (runFirst >= 0 && slot - runEnd <= MESH_DIRTY_MERGE_GAP_SLOTS) {
-      runEnd = slot + 1;
+  const slot = meshDrawSlot(entry, folded);
+  const mirror = meshSsboMirror(buffer, slot + 1);
+  const surfaceBase = visibleSurfaceBases?.get(
+    worldEntityKey(entry.source.worldId, entry.source.entityKey),
+  );
+  const previous = mirror.sources.get(slot);
+  if (
+    previous?.source === entry.source &&
+    previous.surfaceBase === surfaceBase &&
+    previous.storageBuffer === storageBuffer &&
+    previous.folded === folded &&
+    previous.hasSurface === (visibleSurfaceBases !== undefined)
+  )
+    return;
+  writeMeshSlotCandidate(entry, folded);
+  const surface = storageBuffer ? 36 : 16;
+  candidateBits[surface] = visibleSurfaceBases === undefined ? 0 : (surfaceBase ?? 0);
+  candidateBits[surface + 1] =
+    visibleSurfaceBases === undefined ? 0 : (entry.source.instances?.instanceCount ?? 1);
+  candidateBits[surface + 2] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  candidateBits[surface + 3] = 0;
+  const region = entry.source.spriteRegion;
+  if (region !== undefined) {
+    candidateBits[storageBuffer ? 39 : 19] = 1;
+    for (let index = 0; index < 4; index++)
+      candidate[(storageBuffer ? 40 : 20) + index] = region[index] ?? 0;
+  }
+  if (stageMeshSlot(mirror, slot)) mirror.dirty.add(slot);
+  mirror.sources.set(slot, {
+    source: entry.source,
+    surfaceBase,
+    storageBuffer,
+    folded,
+    hasSurface: visibleSurfaceBases !== undefined,
+  });
+}
+
+/** Stage only the row selected by a real draw. Recording never sweeps rows for updates. */
+export function prepareMeshDraw(
+  c: _InternalRenderPipelineContext,
+  entry: MeshUpload,
+  folded = false,
+): number {
+  stageMeshDraw(
+    c.pipelineState.meshStorageBuffer,
+    entry,
+    folded,
+    c.visibleSurface?.entityBases,
+    c.runtime.device.caps.storageBuffer,
+  );
+  return meshDrawSlot(entry, folded);
+}
+
+/** Flush the addresses explicitly staged by draws; failed ranges remain pending. */
+export function flushMeshDrawUploads(
+  queue: RhiQueue,
+  meshStorageBuffer: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
+): number {
+  const buffer =
+    meshStorageBuffer.pages === undefined ? meshStorageBuffer.buffer : meshStorageBuffer;
+  const mirror = buffer === null ? undefined : mirrors.get(buffer);
+  if (mirror === undefined || mirror.dirty.size === 0) return 0;
+  const slots = [...mirror.dirty].sort((a, b) => a - b);
+  let first = -1,
+    end = -1,
+    runs = 0;
+  const flush = () => {
+    flushMeshRun(queue, meshStorageBuffer, mirror, first, end);
+    for (let slot = first; slot < end; slot++) mirror.dirty.delete(slot);
+    runs++;
+  };
+  for (const slot of slots) {
+    if (first >= 0 && slot - end <= MESH_DIRTY_MERGE_GAP_SLOTS) {
+      end = slot + 1;
       continue;
     }
-    if (runFirst >= 0) {
-      flushMeshRun(queue, meshStorageBuffer, mirror, runFirst, runEnd);
-      runs += 1;
-    }
-    runFirst = slot;
-    runEnd = slot + 1;
+    if (first >= 0) flush();
+    first = slot;
+    end = slot + 1;
   }
-  if (runFirst >= 0) {
-    flushMeshRun(queue, meshStorageBuffer, mirror, runFirst, runEnd);
-    runs += 1;
-  }
+  if (first >= 0) flush();
   return runs;
+}
+
+/** Explicit batch preparation for standalone recorder callers. */
+export function uploadMeshSsboBatch(
+  queue: RhiQueue,
+  meshStorageBuffer: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
+  main: readonly MeshUpload[],
+  foldDispatchPlan: FoldDispatchPlan | null,
+  shadow: readonly MeshUpload[] = [],
+  visibleSurfaceBases?: ReadonlyMap<number, number>,
+  storageBuffer = true,
+): number {
+  for (const [index, entry] of main.entries()) {
+    stageMeshDraw(meshStorageBuffer, entry, false, visibleSurfaceBases, storageBuffer);
+    if (foldDispatchPlan?.headBuckets.has(index))
+      stageMeshDraw(meshStorageBuffer, entry, true, visibleSurfaceBases, storageBuffer);
+  }
+  for (const entry of shadow)
+    stageMeshDraw(meshStorageBuffer, entry, false, visibleSurfaceBases, storageBuffer);
+  return flushMeshDrawUploads(queue, meshStorageBuffer);
 }
 
 /**
@@ -571,7 +638,7 @@ export function uploadMeshSsboBatch(
  *     dispatch loop for bind-group selection / sort-stability invariants.
  */
 export interface FoldBucket {
-  readonly entries: readonly DispatchEntry[];
+  readonly entries: DispatchList;
   readonly bucketSize: number;
   readonly transforms: Float32Array;
   readonly materialHandle: number;
@@ -605,12 +672,11 @@ export interface FoldBucket {
  */
 export interface FoldRenderableLike {
   readonly transform: { readonly world: Float32Array };
-  readonly material: { readonly transparent?: boolean | undefined };
+  readonly material: import('../render-system-extract').MaterialSnapshot;
+  readonly spriteRegion?: import('../sprite-region').SpriteRegion | undefined;
 }
 
-const FOLDABLE_TRANSPARENT_SHADER_IDS = new Set(['forgeax::sprite', 'forgeax::sprite-lit']);
-
-type ParamSnapshot = DispatchEntry['paramSnapshot'];
+type ParamSnapshot = MaterialResource['snapshot']['paramSnapshot'];
 
 function sameParamSnapshot(a: ParamSnapshot, b: ParamSnapshot): boolean {
   if (a === b) return true;
@@ -628,11 +694,8 @@ function sameParamSnapshot(a: ParamSnapshot, b: ParamSnapshot): boolean {
 }
 
 function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderableLike[]): boolean {
-  return (
-    renderables[entry.renderableIndex]?.material.transparent === true &&
-    entry.materialShaderId !== undefined &&
-    FOLDABLE_TRANSPARENT_SHADER_IDS.has(entry.materialShaderId)
-  );
+  const material = renderables[entry.renderableIndex]?.material;
+  return material?.transparent === true && materialUsesSpriteGeometry(material);
 }
 
 /**
@@ -658,7 +721,7 @@ function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderab
  * @returns Array of FoldBucket descriptors in input order.
  */
 export function foldDispatchBuckets(
-  orderedEntries: readonly DispatchEntry[],
+  orderedEntries: DispatchList,
   mode: TransparentSortConfig['mode'],
   renderables: readonly FoldRenderableLike[],
 ): readonly FoldBucket[] {
@@ -676,7 +739,7 @@ export function foldDispatchBuckets(
   if (mode !== TRANSPARENT_SORT_MODE_LAYER_Z && mode !== TRANSPARENT_SORT_MODE_LAYER_Y) {
     const out: FoldBucket[] = [];
     for (let i = 0; i < orderedEntries.length; i++) {
-      const e = orderedEntries[i];
+      const e = orderedEntries.at(i);
       if (e === undefined) continue;
       out.push(makeSingletonBucket(e, renderables, mode));
     }
@@ -722,7 +785,7 @@ export function foldDispatchBuckets(
   const buckets: FoldBucket[] = [];
   let runStart = 0;
   while (runStart < orderedEntries.length) {
-    const head = orderedEntries[runStart];
+    const head = orderedEntries.at(runStart);
     if (head === undefined) {
       runStart += 1;
       continue;
@@ -741,14 +804,29 @@ export function foldDispatchBuckets(
     const headSortKey = readSortKey(mode, head.renderableIndex, renderables);
     let runEnd = runStart + 1;
     while (runEnd < orderedEntries.length) {
-      const cand = orderedEntries[runEnd];
+      const cand = orderedEntries.at(runEnd);
       if (cand === undefined) break;
       if (cand.layer !== head.layer) break;
       if (cand.materialHandle !== head.materialHandle) break;
+      const headRegion = renderables[head.renderableIndex]?.spriteRegion;
+      const candidateRegion = renderables[cand.renderableIndex]?.spriteRegion;
+      if (
+        headRegion !== candidateRegion &&
+        (headRegion === undefined ||
+          candidateRegion === undefined ||
+          headRegion.some((value, index) => value !== candidateRegion[index]))
+      )
+        break;
       // A bucket draws with its head's material slot, so differing per-entity
       // values (SpriteRegionOverride regions) split the run. Each override owns
       // its snapshot object, so equal regions must compare by value to fold.
-      if (!sameParamSnapshot(cand.paramSnapshot, head.paramSnapshot)) break;
+      if (
+        !sameParamSnapshot(
+          renderables[cand.renderableIndex]?.material.paramSnapshot,
+          renderables[head.renderableIndex]?.material.paramSnapshot,
+        )
+      )
+        break;
       // Defensive: cand transparent must also be true to join the run.
       // Same materialHandle implies same transparent flag in production
       // (material asset identity), but the check costs O(1) per cand and
@@ -794,12 +872,12 @@ function makeSingletonBucket(
 }
 
 function assembleTransforms(
-  run: readonly DispatchEntry[],
+  run: DispatchList,
   renderables: readonly FoldRenderableLike[],
 ): Float32Array {
   const out = new Float32Array(run.length * 16);
   for (let i = 0; i < run.length; i++) {
-    const e = run[i];
+    const e = run.at(i);
     if (e === undefined) continue;
     const w = renderables[e.renderableIndex]?.transform.world;
     if (w !== undefined) out.set(w, i * 16);
@@ -836,11 +914,9 @@ function readSortKey(
  *     that index — dispatch falls through to the existing per-entity path
  *     byte-identically (mode-bypass / non-foldable head / fold-disabled).
  *
- * Note: the maps are keyed on `validatedOrderedIndex`, NOT
- * `renderableIndex`. The dispatch loops iterate `validatedOrdered` by
- * positional index `i`, and that index drives mesh SSBO slot offset
- * (`i * MESH_PER_ENTITY_STRIDE`), material UBO slot, and per-entity bind
- * group cache keys, all of which the swap must coordinate with.
+ * The maps use the current `validatedOrdered` row index. Physical source
+ * and folded mesh addresses live on that row and survive independent capture
+ * ordering; materialSlotIndices owns its separate material-table lookup.
  */
 export interface FoldDispatchPlan {
   readonly headBuckets: ReadonlyMap<number, FoldBucket>;
@@ -872,14 +948,14 @@ export function buildFoldDispatchPlan(
   let foldedBucketCount = 0;
   for (const bucket of buckets) {
     if (bucket.bucketSize <= 1) continue;
-    const headEntry = bucket.entries[0];
+    const headEntry = bucket.entries.at(0);
     if (headEntry === undefined) continue;
     const headValidatedIdx = renderableIndexToValidatedIndex.get(headEntry.renderableIndex);
     if (headValidatedIdx === undefined) continue;
     headBuckets.set(headValidatedIdx, bucket);
     foldedBucketCount += 1;
     for (let i = 1; i < bucket.entries.length; i++) {
-      const memberEntry = bucket.entries[i];
+      const memberEntry = bucket.entries.at(i);
       if (memberEntry === undefined) continue;
       const memberValidatedIdx = renderableIndexToValidatedIndex.get(memberEntry.renderableIndex);
       if (memberValidatedIdx === undefined) continue;

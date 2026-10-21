@@ -62,9 +62,9 @@
 //   Path (c) -- apps/learn-render/1.getting-started/4.textures/src/index.ts
 //     File absent at the M3 milestone of the build-time image-import feat -> skip-not-fail
 //     (M8 of feat-20260515 returns the regression check). When present,
-//     it MUST contain `assets.loadByGuid` AND MUST NOT contain direct
+//     it MUST contain `assets.load` AND MUST NOT contain direct
 //     `decodeImage` or `.uploadTexture(` calls -- the AI user reaches
-//     textures only via the loadByGuid recipe (charter P4 consistent
+//     textures only via the load recipe (charter P4 consistent
 //     abstraction).
 //
 //   Path (d) -- packages/runtime/src/ must NOT statically import from
@@ -151,7 +151,7 @@ const engineImageImportRe =
 const decoderStripFailures = [];
 
 // (a.2-anti-whitelist) Runtime value imports from the image package are limited
-// to the two existing owner seams. Keep both exact-path and symbol-scoped: a
+// to their exact runtime-safe owner seams. Keep both exact-path and symbol-scoped: a
 // new decoder or a second assembly file must fail closed.
 const engineImageImportAllowlist = new Map([
   [
@@ -159,6 +159,10 @@ const engineImageImportAllowlist = new Map([
     /\b(?:textureContribution|equirectContribution)\b/,
   ],
   [join(root, 'packages/assets-runtime/src/decode-image-bytes.ts'), /\bdecodeImageInBrowser\b/],
+  [
+    join(root, 'packages/assets-runtime/src/runtime-asset-prepare.ts'),
+    /^\s*import\s*\{\s*prepareRuntimeTexture\s*\}\s*from\s*['"]@forgeax\/engine-image['"]\s*;?$/,
+  ],
 ]);
 
 // (a.2-anti) Only the exact owner assembly may import browser-safe image
@@ -263,36 +267,34 @@ if (!existsSync(texturesEntry)) {
   );
 } else {
   const content = readFileSync(texturesEntry, 'utf8');
-  // (c) regex: `\bassets\.loadByGuid\b` accepts the receiver-alias form
-  // (`const assets = app.assets; assets.loadByGuid<T>(guid)`); the
+  // (c) regex: `\bassets\.load\b` accepts the receiver-alias form
+  // (`const assets = app.assets; assets.load<T>(guid)`); the
   // `\.uploadTexture\s*\(` form matches actual method calls (skipping
   // doc-comment mentions of the architectural verb).
-  const hasLoadByGuid = /\bassets\.loadByGuid\b/.test(content);
+  const hasLoad = /\bassets\.load\b/.test(content);
   const hasDirectDecode = /\bdecodeImage\b/.test(content);
   const hasDirectUpload = /\.uploadTexture\s*\(/.test(content);
 
   const failures = [];
-  if (!hasLoadByGuid) {
-    failures.push('missing required `assets.loadByGuid` call (AI user entry-point)');
+  if (!hasLoad) {
+    failures.push('missing required `assets.load` call (AI user entry-point)');
   }
   if (hasDirectDecode) {
-    failures.push('contains direct `decodeImage` call (must route via loadByGuid)');
+    failures.push('contains direct `decodeImage` call (must route via load)');
   }
   if (hasDirectUpload) {
-    failures.push('contains direct `.uploadTexture(` call (must route via loadByGuid)');
+    failures.push('contains direct `.uploadTexture(` call (must route via load)');
   }
 
   if (failures.length > 0) {
     process.stderr.write(`AC-15 (c) FAIL: ${texturesEntry} violations:\n`);
     for (const f of failures) process.stderr.write(`  - ${f}\n`);
     process.stderr.write(
-      '[hint] The 4.textures example must consume textures only via `engine.assets.loadByGuid<TextureAsset>(guid)`; the disk-decode + GPU-upload steps are encapsulated by AssetRegistry (charter P4 consistent abstraction).\n',
+      '[hint] The 4.textures example must consume textures only via `engine.assets.load(guid, "texture")`; the disk-decode + GPU-upload steps are encapsulated by AssetRegistry (charter P4 consistent abstraction).\n',
     );
     totalFailures += 1;
   } else {
-    process.stdout.write(
-      `AC-15 (c) OK: ${texturesEntry} grep clean (loadByGuid only entry path)\n`,
-    );
+    process.stdout.write(`AC-15 (c) OK: ${texturesEntry} grep clean (load only entry path)\n`);
   }
 }
 

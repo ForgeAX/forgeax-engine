@@ -1,5 +1,6 @@
-import type { World } from '@forgeax/engine-ecs';
-import type { Asset, Handle, TagOf } from '@forgeax/engine-types';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import type { Asset, AssetHandle } from '@forgeax/engine-types';
 
 interface DisposableSource {
   addEventListener(type: 'dispose', listener: () => void): void;
@@ -10,33 +11,42 @@ export function sameValues(a: readonly unknown[], b: readonly unknown[]): boolea
   return a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
 }
 
+function disposable(source: object): DisposableSource | undefined {
+  return 'addEventListener' in source && 'removeEventListener' in source
+    ? (source as DisposableSource)
+    : undefined;
+}
+
 interface Entry<Payload extends Asset> {
   readonly values: readonly unknown[];
-  readonly handle: Handle<TagOf<Payload>, 'shared'>;
+  readonly handle: AssetHandle<Payload['kind']>;
   dirty: boolean;
   readonly invalidate: () => void;
 }
 
-/** Source leases only. World owns payloads; a rejected preparation releases its new leases. */
-export class SharedAssets<Source extends DisposableSource, Payload extends Asset> {
-  private entries = new Map<Source, Entry<Payload>>();
-  private pending: Map<Source, Entry<Payload>> | undefined;
+/** Source leases only; the surrounding asset adoption owns content commit and rollback. */
+export class SharedAssets<Source extends object, Payload extends Asset> {
+  private entries = new Map<Source, Map<string, Entry<Payload>>>();
+  private pending: Map<Source, Map<string, Entry<Payload>>> | undefined;
 
-  constructor(
-    private readonly world: World,
-    private readonly target: TagOf<Payload>,
-  ) {}
+  constructor(private readonly assets: AssetRegistry) {}
 
   read(
     source: Source,
-    values: readonly unknown[],
-  ): { handle: Handle<TagOf<Payload>, 'shared'>; payload: Payload } | undefined {
-    const entry = this.pending?.get(source) ?? this.entries.get(source);
-    if (entry === undefined || entry.dirty || !sameValues(values, entry.values)) return undefined;
-    this.pending?.set(source, entry);
+    values: readonly unknown[] | undefined,
+    variant = '',
+  ): { handle: AssetHandle<Payload['kind']>; payload: Payload } | undefined {
+    const entry = this.pending?.get(source)?.get(variant) ?? this.entries.get(source)?.get(variant);
+    if (
+      entry === undefined ||
+      entry.dirty ||
+      (values !== undefined && !sameValues(values, entry.values))
+    )
+      return undefined;
+    if (this.pending !== undefined) this.stage(source, variant, entry);
     return {
       handle: entry.handle,
-      payload: this.world.sharedRefs.resolve<TagOf<Payload>, Payload>(entry.handle).unwrap(),
+      payload: runtimeAssets(this.assets).borrow<Payload>(entry.handle).unwrap(),
     };
   }
 
@@ -44,10 +54,22 @@ export class SharedAssets<Source extends DisposableSource, Payload extends Asset
     source: Source,
     values: readonly unknown[],
     payload: Payload,
-  ): { handle: Handle<TagOf<Payload>, 'shared'>; payload: Payload } {
+    variant = '',
+  ): { handle: AssetHandle<Payload['kind']>; payload: Payload } {
     if (this.pending === undefined) throw new Error('resource preparation has not begun');
-    const previous = this.pending.get(source);
-    const handle = this.world.allocSharedRef(this.target, payload);
+    const committed = this.entries.get(source)?.get(variant);
+    const pending = this.pending.get(source)?.get(variant);
+    const previous = pending ?? committed;
+    const handle =
+      previous !== undefined && !previous.dirty
+        ? previous.handle
+        : this.assets.create(payload).unwrap();
+    if (
+      previous !== undefined &&
+      !previous.dirty &&
+      runtimeAssets(this.assets).borrow<Payload>(handle).unwrap() !== payload
+    )
+      this.assets.replace<Payload['kind'], Asset>(handle, payload).unwrap();
     const entry = {
       values,
       handle,
@@ -56,11 +78,24 @@ export class SharedAssets<Source extends DisposableSource, Payload extends Asset
         entry.dirty = true;
       },
     };
-    source.addEventListener('dispose', entry.invalidate);
-    this.pending.set(source, entry);
-    if (previous !== undefined && previous !== this.entries.get(source))
-      this.release(source, previous);
+    disposable(source)?.addEventListener('dispose', entry.invalidate);
+    if (pending !== undefined && pending !== committed) {
+      disposable(source)?.removeEventListener('dispose', pending.invalidate);
+      if (pending.handle !== committed?.handle && pending.handle !== handle)
+        this.assets.release(pending.handle).unwrap();
+    }
+    this.stage(source, variant, entry);
     return { handle, payload };
+  }
+
+  private stage(source: Source, variant: string, entry: Entry<Payload>): void {
+    if (this.pending === undefined) throw new Error('resource preparation has not begun');
+    let variants = this.pending.get(source);
+    if (variants === undefined) {
+      variants = new Map();
+      this.pending.set(source, variants);
+    }
+    variants.set(variant, entry);
   }
 
   begin(): void {
@@ -70,28 +105,37 @@ export class SharedAssets<Source extends DisposableSource, Payload extends Asset
 
   commit(): void {
     if (this.pending === undefined) throw new Error('resource preparation has not begun');
-    for (const [source, entry] of this.entries) {
-      if (this.pending.get(source) !== entry) this.release(source, entry);
+    for (const [source, variants] of this.entries) {
+      for (const [variant, entry] of variants) {
+        const pending = this.pending.get(source)?.get(variant);
+        if (pending !== entry) {
+          disposable(source)?.removeEventListener('dispose', entry.invalidate);
+          if (pending?.handle !== entry.handle) this.assets.release(entry.handle).unwrap();
+        }
+      }
     }
     this.entries = this.pending;
     this.pending = undefined;
   }
 
   abort(): void {
-    for (const [source, entry] of this.pending ?? []) {
-      if (this.entries.get(source) !== entry) this.release(source, entry);
+    for (const [source, variants] of this.pending ?? []) {
+      for (const [variant, entry] of variants) {
+        if (entry !== this.entries.get(source)?.get(variant))
+          disposable(source)?.removeEventListener('dispose', entry.invalidate);
+      }
     }
     this.pending = undefined;
   }
 
   dispose(): void {
     this.abort();
-    for (const [source, entry] of this.entries) this.release(source, entry);
+    for (const [source, variants] of this.entries) {
+      for (const entry of variants.values()) {
+        disposable(source)?.removeEventListener('dispose', entry.invalidate);
+        this.assets.release(entry.handle).unwrap();
+      }
+    }
     this.entries.clear();
-  }
-
-  private release(source: Source, entry: Entry<Payload>): void {
-    source.removeEventListener('dispose', entry.invalidate);
-    this.world.sharedRefs.release(entry.handle).unwrap();
   }
 }

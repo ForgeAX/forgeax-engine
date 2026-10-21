@@ -27,6 +27,7 @@ import {
   type ButtonHTMLAttributes,
   type ComponentPropsWithoutRef,
   type ElementType,
+  type FocusEvent,
   type HTMLAttributes,
   type InputHTMLAttributes,
   type MouseEvent,
@@ -696,6 +697,8 @@ export type MenuItem =
       disabled?: boolean;
       danger?: boolean;
       selected?: boolean;
+      selection?: 'radio' | 'checkbox';
+      checked?: boolean;
       onSelect?: () => void;
       buttonProps?: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'disabled' | 'onClick'> & DataAttributes;
     };
@@ -723,10 +726,11 @@ export function Menu({
           <button
             {...buttonProps}
             type="button"
-            role="menuitem"
+            role={item.selection === 'radio' ? 'menuitemradio' : item.selection === 'checkbox' ? 'menuitemcheckbox' : 'menuitem'}
             key={item.id}
             disabled={item.disabled}
-            aria-selected={item.selected || undefined}
+            aria-selected={item.selection ? undefined : item.selected || undefined}
+            aria-checked={item.selection ? Boolean(item.checked) : undefined}
             className={classes(
               'fx-menu__item',
               item.selected && 'fx-menu__item--selected',
@@ -736,7 +740,7 @@ export function Menu({
             onClick={item.onSelect}
           >
             <span className="fx-menu__leading" aria-hidden>
-              {item.selected ? <Check className="fx-icon" /> : item.icon}
+              {item.selected || item.checked ? <Check className="fx-icon" /> : item.icon}
             </span>
             <span className="fx-menu__label">{item.label}</span>
             {item.shortcut && <kbd className="fx-menu__shortcut">{item.shortcut}</kbd>}
@@ -1153,6 +1157,10 @@ export type TooltipProps = {
   placement?: 'top' | 'bottom';
   /** Render in the supplied overlay root, or document.body for standalone use. */
   portaled?: boolean;
+  /** Show above a modal dialog without contributing to its scroll area. */
+  topLayer?: boolean;
+  /** Suppress hover and focus hints while the anchor is unavailable. */
+  disabled?: boolean;
   /** When true, keeps the tooltip visible until unmounted (not dismissed by hover/focus leave). */
   open?: boolean;
 };
@@ -1209,16 +1217,25 @@ export function Tooltip({
   children,
   placement = 'top',
   portaled = false,
+  topLayer = false,
+  disabled = false,
   open = false,
 }: TooltipProps) {
   const overlayRoot = useOverlayRoot();
   const anchorRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLSpanElement>(null);
   const [hoverVisible, setHoverVisible] = useState(false);
-  const visible = open || hoverVisible;
+  const visible = !disabled && (open || hoverVisible);
   const [coords, setCoords] = useState({ x: 0, y: 0 });
   const [resolvedPlacement, setResolvedPlacement] = useState(placement);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const usesPortal = portaled || topLayer;
+
+  useEffect(() => {
+    if (disabled && timer.current) clearTimeout(timer.current);
+    if (disabled) setHoverVisible(false);
+  }, [disabled]);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   const updateCoords = useCallback(() => {
     const anchor = anchorRef.current?.getBoundingClientRect();
@@ -1239,33 +1256,42 @@ export function Tooltip({
 
   useLayoutEffect(() => {
     if (!visible) return;
+    const tip = tooltipRef.current;
+    if (topLayer && tip && !tip.matches(':popover-open')) tip.showPopover();
     updateCoords();
-    if (!portaled) return;
+    if (!usesPortal) return;
     const onLayout = () => updateCoords();
     window.addEventListener('resize', onLayout);
     window.addEventListener('scroll', onLayout, true);
     return () => {
       window.removeEventListener('resize', onLayout);
       window.removeEventListener('scroll', onLayout, true);
+      if (topLayer && tip?.matches(':popover-open')) tip.hidePopover();
     };
-  }, [portaled, updateCoords, visible]);
+  }, [topLayer, updateCoords, usesPortal, visible]);
 
-  const show = () => {
-    if (open) return;
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const show = (event: MouseEvent<HTMLSpanElement> | FocusEvent<HTMLSpanElement>) => {
+    // Portaled children belong to the React tree, but not to this anchor's DOM.
+    if (open || disabled || !event.currentTarget.contains(event.target as Node)) return;
+    if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
+      timer.current = null;
       setHoverVisible(true);
     }, 400);
   };
   const hide = () => {
     if (open) return;
     if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
     setHoverVisible(false);
     setResolvedPlacement(placement);
   };
 
-  const effectivePlacement = portaled ? resolvedPlacement : placement;
+  const effectivePlacement = usesPortal ? resolvedPlacement : placement;
 
-  const tooltipStyle = portaled
+  const tooltipStyle = usesPortal
     ? {
         left: coords.x,
         top: coords.y,
@@ -1279,10 +1305,11 @@ export function Tooltip({
   const tooltip = visible ? (
     <span
       ref={tooltipRef}
+      popover={topLayer ? 'manual' : undefined}
       className={classes(
         'fx-tooltip',
         effectivePlacement === 'bottom' ? 'fx-tooltip--bottom' : 'fx-tooltip--top',
-        portaled && 'fx-tooltip--fixed',
+        usesPortal && 'fx-tooltip--fixed',
         open && 'fx-tooltip--interactive',
       )}
       style={tooltipStyle}
@@ -1298,12 +1325,19 @@ export function Tooltip({
       className="fx-tooltip-anchor"
       onMouseEnter={show}
       onMouseLeave={hide}
+      onMouseOut={(event) => {
+        const next = event.relatedTarget;
+        const view = event.currentTarget.ownerDocument.defaultView;
+        if (!view || !(next instanceof view.Node) || !event.currentTarget.contains(next)) hide();
+      }}
       onFocus={show}
       onBlur={hide}
     >
       {children}
-      {portaled && typeof document !== 'undefined'
-        ? tooltip && createPortal(tooltip, overlayRoot ?? document.body)
+      {usesPortal && typeof document !== 'undefined'
+        ? tooltip && createPortal(tooltip, topLayer
+          ? anchorRef.current?.closest('dialog') ?? document.body
+          : overlayRoot ?? document.body)
         : tooltip}
     </span>
   );

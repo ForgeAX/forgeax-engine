@@ -42,6 +42,10 @@
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '1000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -211,9 +215,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { SpriteRegionOverride, SPRITE_PREMULTIPLIED_ALPHA_BLEND } = await import('@forgeax/engine-render/authoring');
 const { Camera, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const CAMERA_PROJECTION_ORTHOGRAPHIC = 1;
 
@@ -254,23 +256,28 @@ const synthPod = {
   colorSpace: 'srgb',
   mips: { kind: 'none' },
 };
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const textureHandle = world.allocSharedRef('TextureAsset', synthPod);
+const textureHandle = world.assets.create(synthPod).unwrap();
 
 
-const samplerHandle = world.allocSharedRef('SamplerAsset', {
+const samplerHandle = world.assets.create({
   kind: 'sampler',
   magFilter: 'nearest',
   minFilter: 'nearest',
   addressModeU: 'clamp-to-edge',
   addressModeV: 'clamp-to-edge',
-});
+}).unwrap();
 
 
 const region = [0, 0, 0.5, 0.5];
-const materialHandle = world.allocSharedRef('MaterialAsset', {
+const materialHandle = world.assets.create({
   kind: 'material',
   passes: [
     // feat-20260626-sprite-transparent-collapse M3 — post M1/M2 SSOT:
@@ -288,7 +295,7 @@ const materialHandle = world.allocSharedRef('MaterialAsset', {
     region,
     pivotAndSize: [0.5, 0.5, 1, 1],
   },
-});
+}).unwrap();
 
 okResult(
   world.spawn(
@@ -327,7 +334,7 @@ for (let i = 0; i < SPRITE_COUNT; i++) {
       data: {
         pos: [cx, cy, 0], quat: [0, 0, 0, 1], scale: [SPRITE_SPACING * 0.9, SPRITE_SPACING * 0.9, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
     {
       component: SpriteRegionOverride,

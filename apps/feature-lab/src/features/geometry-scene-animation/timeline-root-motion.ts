@@ -7,6 +7,7 @@ import {
   deriveAnimationTargetId,
   drainAnimationEvents,
 } from '@forgeax/engine/animation';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import {
   AUDIO_ENGINE_RESOURCE_KEY,
   type AudioBackend,
@@ -38,6 +39,10 @@ export default defineFeature({
   expect:
     'ON: cyan moves right without its root jumping, both upper joints bend, and all three keys arrive once. OFF: both rigs remain straight and no effects are dispatched.',
   setup({ world, app, hud }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0, 2, 12], target: [0, 1.3, 0] });
     const actor = world.spawn({ component: Transform, data: { pos: [-2.5, 0, 0] } }).unwrap();
     const rig = spawnAnimatedRig(world, 0, 1.4, [0.1, 0.8, 1, 1]),
@@ -71,22 +76,24 @@ export default defineFeature({
         },
       ],
     };
-    const mainClip = world.allocSharedRef('AnimationClip', clip);
-    const childClip = world.allocSharedRef('AnimationClip', {
-      kind: 'animation-clip',
-      duration: 1,
-      channels: [
-        {
-          targetId: upperId,
-          property: 'rotation',
-          sampler: {
-            input: new Float32Array([0]),
-            output: new Float32Array([0, 0, Math.sin(0.9 / 2), Math.cos(0.9 / 2)]),
-            interpolation: 'STEP',
+    const mainClip = sceneAssets.create(clip).unwrap();
+    const childClip = sceneAssets
+      .create({
+        kind: 'animation-clip',
+        duration: 1,
+        channels: [
+          {
+            targetId: upperId,
+            property: 'rotation',
+            sampler: {
+              input: new Float32Array([0]),
+              output: new Float32Array([0, 0, Math.sin(0.9 / 2), Math.cos(0.9 / 2)]),
+              interpolation: 'STEP',
+            },
           },
-        },
-      ],
-    });
+        ],
+      })
+      .unwrap();
     for (const joints of [rig, child]) {
       world
         .addComponent(joints[0], { component: AnimationTargetId, data: { value: rootId } })
@@ -106,11 +113,14 @@ export default defineFeature({
     world
       .addComponent(rig[0], { component: AnimationRootMotion, data: { targetId: rootId } })
       .unwrap();
-    const audio = world.allocSharedRef('AudioClipAsset', {
-      kind: 'audio',
-      sourceKey: 'timeline-click',
-      bytes: makeWav(440, 1),
-    });
+    const audio = sceneAssets
+      .create({
+        kind: 'audio',
+        mediaType: 'audio/wav',
+        sourceKey: 'timeline-click',
+        bytes: makeWav(440, 1),
+      })
+      .unwrap();
     const sound = world
       .spawn({
         component: AudioSource,

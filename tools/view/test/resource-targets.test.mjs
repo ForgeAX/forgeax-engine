@@ -27,7 +27,8 @@ test('consumer binding facts survive broker serialization and selection of an ol
   const next = broker.snapshot();
   assert.deepEqual(selectWorkspaceResourcePreview(next, asset.guid).assetBinding, current.assetBinding);
   assert.equal(first.previews[0].assetBinding.publication.digest, 'old-content');
-  assert.equal(broker.openRequest.preview.assetBinding, undefined, 'openRequest stores selection, not another binding snapshot');
+  assert.deepEqual(broker.openRequest.preview.assetBinding, current.assetBinding, 'the accepted open preserves its exact native binding');
+  assert.deepEqual(next.resourceOpens.mesh.preview.assetBinding, current.assetBinding);
 });
 
 test('the first Mesh preview is never mistaken for the Scene target', () => {

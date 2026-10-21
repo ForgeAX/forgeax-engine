@@ -49,9 +49,9 @@ beforeAll(async () => {
       nativeUi: typeof binding.UiDocument === 'function',
       async runtimeMesh() {
         const [{ RuntimePackProducer }, { AssetRegistry, validateAssetPublication },
-          { createStaticPackProgramHost, preparePackProgram }] = await Promise.all([
+          { createStaticPackProgramHost, preparePackProgram }, { meshAssetContribution }] = await Promise.all([
           import('@forgeax/engine-import'), import('@forgeax/engine-assets-runtime'),
-          import('@forgeax/engine-pack/runtime')]);
+          import('@forgeax/engine-pack/runtime'), import('@forgeax/engine-geometry')]);
         const parent = '01900000-0000-7000-8000-000000000101';
         const instance = '01900000-0000-7000-8000-000000000102';
         const modules = { 'mesh-program.mjs': ${JSON.stringify(meshProgram)} };
@@ -59,8 +59,9 @@ beforeAll(async () => {
         const programHost = createStaticPackProgramHost([{ modules, load: () => import('./mesh-program.mjs') }], imports);
         const producer = new RuntimePackProducer({ scopeId: 'wechat-runtime-url', programHost, imports,
           validate: (publication, fetcher, dependencies) => validateAssetPublication(publication.rows, fetcher,
-            { catalog: producer.catalog, fetcher: producer.fetch }, { dependencies }) });
-        const assets = new AssetRegistry({});
+            { catalog: producer.catalog, fetcher: producer.fetch }, { dependencies, decoders: [meshAssetContribution] }) });
+        const assets = new AssetRegistry({ scopeId: 'wechat-runtime-url' });
+        assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
         assets.setCatalogSource(producer.catalog, producer.fetch);
         try {
           (await producer.admit({ source: { schemaVersion: '2.0.0', kind: 'scriptable-pack-source',
@@ -70,14 +71,16 @@ beforeAll(async () => {
               imports: { '@forgeax/engine-geometry': 'native-test' } }).unwrap() } }
           })).unwrap();
           const generations = [], bounds = [];
-          let guid, typed = true;
+          let guid, handle, typed = true;
           for (const width of [1, 4]) {
             const generated = (await producer.generate({ schemaVersion: '3.0.0', packageId: instance,
               parent, values: { width } })).unwrap();
             const row = producer.rows()[0];
             if (!row || guid && row.guid !== guid) throw new Error('runtime mesh identity changed');
             guid = row.guid;
-            const mesh = (await assets.loadByGuid(assets.parseGuid(guid))).unwrap();
+            if (handle !== undefined) (await assets.reload(handle, { conflict: 'overwrite' })).unwrap();
+            handle = (await assets.load(guid, 'mesh')).unwrap();
+            const mesh = assets.read(handle).unwrap();
             generations.push(generated.publication.generation);
             bounds.push(Array.from(mesh.aabb));
             typed = typed && mesh.vertices instanceof Float32Array && ArrayBuffer.isView(mesh.indices);

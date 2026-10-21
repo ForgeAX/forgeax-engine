@@ -5,6 +5,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const MIN_FRAMES = smokeFrameBudget();
 const MODE_FRAMES = Math.ceil(MIN_FRAMES / 2);
@@ -98,7 +102,7 @@ const {
 } = await import('@forgeax/engine-render');
 const { createFullscreenRenderFeature } = await import('@forgeax/engine-app');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+
 
 const EFFECT_ID = 'learn-render-4-5::framebuffer-smoke-effect';
 const EFFECT_SOURCE = `
@@ -125,10 +129,12 @@ const effect = createFullscreenRenderFeature({
 });
 
 let renderer;
+let assets;
 try {
   const host = await constructRuntimeRendererHost(canvas, { features: [effect] }, { shaderManifestUrl: manifestUrl });
   if (!host.ok) throw host.error;
   renderer = host.value.renderer;
+  assets = host.value.assets;
 } catch (error) {
   originalConsoleError(`[smoke] FAIL - constructRendererHost failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -137,18 +143,23 @@ try {
 }
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
-const world = new World();
+const world = new World({ assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const attached = renderer.attach(world);
 if (!attached.ok) throw attached.error;
 const lease = attached.value;
-const material = world.allocSharedRef('MaterialAsset', {
+const material = world.assets.create({
   kind: 'material',
   passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } } }],
   values: { baseColor: [0.8, 0.4, 0.1, 1] },
-});
+}).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [material] } },
 ).unwrap();
 world.spawn(

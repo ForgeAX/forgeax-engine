@@ -2,6 +2,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import { worldEntityKey } from '../record/frame-snapshot';
+import type { FrameList } from '../scene/frame-list';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 
 /** One submitted raster address resolves through that frame's scene projection. */
@@ -42,7 +43,7 @@ function invalid(expected: string, hint: string): Result<never, RhiError> {
  * Draw holes preserve the original submesh address after transparent filtering.
  */
 export function projectVisibleSurfaces(
-  slots: readonly RenderSceneSlot[],
+  slots: FrameList<RenderSceneSlot>,
   maxRecords: number,
 ): Result<VisibleSurfaceProjection, RhiError> {
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 0 || maxRecords > 0xffff_fffe) {
@@ -57,6 +58,7 @@ export function projectVisibleSurfaces(
   let count = 0;
   for (const slot of ordered) {
     const source = slot.snapshot;
+    if (source.assetHandle === undefined) continue;
     const draws = source.gpuDrivenDraws ?? [];
     if (source.authorVisible === false || draws.length === 0) continue;
     if (slotBases.has(slot.slot)) {
@@ -134,10 +136,11 @@ export function projectVisibleSurfaces(
     const base = slotBases.get(slot.slot);
     if (base === undefined) continue;
     const source = slot.snapshot;
+    if (source.assetHandle === undefined) continue;
     const instanceCount = source.instances?.instanceCount ?? 1;
     for (const [index, draw] of (source.gpuDrivenDraws ?? []).entries()) {
       const drawItemIndex = gpuDrivenSourceDrawItemIndex(draw, index);
-      const material = source.materials[draw.materialSlot];
+      const material = source.materials[draw.materialSlot]?.snapshot;
       if (material === undefined) {
         return invalid(
           'each visible draw resolves its own material slot',

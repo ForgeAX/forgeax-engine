@@ -1,7 +1,8 @@
+import { isShaderEntryPointReads } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 const digestPattern = /^[a-f0-9]{64}$/;
-export const SHADER_MANIFEST_PUBLICATION_VERSION = '4.0.0' as const;
+export const SHADER_MANIFEST_PUBLICATION_VERSION = '5.0.0' as const;
 
 const sourceDomain = new TextEncoder().encode('forgeax.shader.source.v4\0');
 
@@ -24,7 +25,7 @@ export function shaderSourceDigestInput(
   return input;
 }
 
-async function digestShaderBytes(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
+export async function digestShaderBytes(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
   const subtle = globalThis.crypto?.subtle;
   return subtle === undefined
     ? sha256(bytes)
@@ -89,23 +90,40 @@ export function expandShaderManifestPublication(value: unknown): {
     !value.fragments.every((fragment) => typeof fragment === 'string') ||
     !isRecord(value.sources) ||
     !Array.isArray(value.receipts) ||
-    !value.receipts.every(isRecord)
+    !value.receipts.every(isRecord) ||
+    !Array.isArray(value.entryPoints) ||
+    !value.entryPoints.every(isShaderEntryPointReads)
   ) {
     throw new Error('Invalid shader manifest publication');
   }
   const fragments = [...value.fragments] as string[];
   const sources = value.sources;
   const receipts = value.receipts;
+  // Snapshot each shared compiler fact once before the first digest await.
+  // No row owns a writable copy of this publication-local table.
+  const entryPoints = structuredClone(value.entryPoints);
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+    Object.freeze(value);
+    for (const child of Object.values(value)) freeze(child);
+  };
+  freeze(entryPoints);
   const referenced = new Set<string>();
   const referencedReceipts = new Set<number>();
+  const referencedEntryPoints = new Set<number>();
   const check = (candidate: unknown): Record<string, unknown> => {
     if (
       !isRecord(candidate) ||
       typeof candidate.sourceDigest !== 'string' ||
       !digestPattern.test(candidate.sourceDigest) ||
-      ['wgsl', 'composedWgsl', 'composedWgslUrl', 'composedWgslSha256', 'receipt'].some((key) =>
-        Object.hasOwn(candidate, key),
-      )
+      [
+        'wgsl',
+        'composedWgsl',
+        'composedWgslUrl',
+        'composedWgslSha256',
+        'receipt',
+        'entryPoints',
+      ].some((key) => Object.hasOwn(candidate, key))
     ) {
       throw new Error('Shader row requires one source digest');
     }
@@ -121,6 +139,17 @@ export function expandShaderManifestPublication(value: unknown): {
       }
       referencedReceipts.add(index as number);
     }
+    if (Object.hasOwn(candidate, 'entryPointsIndex')) {
+      const index = candidate.entryPointsIndex;
+      if (
+        !Number.isSafeInteger(index) ||
+        (index as number) < 0 ||
+        (index as number) >= entryPoints.length
+      ) {
+        throw new Error('Invalid shader entry points reference');
+      }
+      referencedEntryPoints.add(index as number);
+    }
     return candidate;
   };
   const entries = value.entries.map(check);
@@ -134,6 +163,9 @@ export function expandShaderManifestPublication(value: unknown): {
   }
   if (referencedReceipts.size !== receipts.length) {
     throw new Error('Shader receipt table has unused entries');
+  }
+  if (referencedEntryPoints.size !== entryPoints.length) {
+    throw new Error('Shader entry points table has unused entries');
   }
   const sourceFragments = new Map<string, readonly string[]>();
   const sourceIndices = new Map<string, readonly number[]>();
@@ -167,11 +199,14 @@ export function expandShaderManifestPublication(value: unknown): {
   // capability permutation. Verification below never populates this cache.
   const decoded = new Map<string, string>();
   const expand = (row: Record<string, unknown>, field: string) => {
-    const { sourceDigest, receiptIndex, ...metadata } = row;
+    const { sourceDigest, receiptIndex, entryPointsIndex, ...metadata } = row;
     const digest = sourceDigest as string;
     const result = {
       ...metadata,
       ...(receiptIndex === undefined ? {} : { receipt: receipts[receiptIndex as number] }),
+      ...(entryPointsIndex === undefined
+        ? {}
+        : { entryPoints: entryPoints[entryPointsIndex as number] }),
     };
     fragmentsByRow.set(result, sourceFragments.get(digest) as readonly string[]);
     Object.defineProperty(result, field, {

@@ -32,7 +32,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node scripts/generate-validator.mjs && tsup",
+    "build": "node scripts/generate-profile-types.mjs && node scripts/generate-validator.mjs && tsup",
     "test": "vitest run",
     "smoke:consumer": "node scripts/consume-smoke.mjs",
     "test:perf": "node ../../scripts/bench/profiler-overhead.mjs"

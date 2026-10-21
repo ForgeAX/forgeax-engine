@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `play_sound_effect` example.
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
@@ -7,7 +8,7 @@ import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { AudioClipAsset, Handle } from '@forgeax/engine-types';
+
 
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -44,15 +45,15 @@ const assets = app.assets;
 if (assets === undefined) throw new Error('bevy-play-sound-effect: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
 const audioEngine = world.getResource<WebAudioEngine>('AudioEngine');
-let clipHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
+let clipHandle: AssetHandle<'audio'> = HANDLE_NONE;
 let loaded = false;
 const guid = AssetGuid.parse(SFX_GUID);
 if (!guid.ok) {
   console.error('[bevy-play-sound-effect] invalid SFX GUID:', SFX_GUID);
 } else {
-  const clipResult = await assets.loadByGuid<AudioClipAsset>(guid.value);
+  const clipResult = await assets.load(guid.value, 'audio');
   if (clipResult.ok) {
-    clipHandle = world.allocSharedRef('AudioClipAsset', clipResult.value);
+    clipHandle = clipResult.value;
     loaded = true;
     world.set(scene.audioAnchor, AudioSource, {
       clip: clipHandle,

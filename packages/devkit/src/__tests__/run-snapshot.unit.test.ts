@@ -48,6 +48,8 @@ const workspaceMetadataMutation = vi.hoisted(() => ({
   mutated: false,
 }));
 
+const snapshotTreeMutation = vi.hoisted(() => ({ path: '', directory: '', reads: 0 }));
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -58,6 +60,13 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       if (matches && workspaceMetadataMutation.reads === workspaceMetadataMutation.failRead)
         throw Object.assign(new Error('Injected terminal metadata read failure'), { code: 'EIO' });
       const value = await actual.readFile(...args);
+      if (String(args[0]) === snapshotTreeMutation.path) {
+        snapshotTreeMutation.reads++;
+        await actual.writeFile(
+          join(snapshotTreeMutation.directory, `late-${snapshotTreeMutation.reads}.ts`),
+          'export const value = 1;',
+        );
+      }
       if (matches && workspaceMetadataMutation.reads === workspaceMetadataMutation.triggerRead) {
         const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
         const changed = JSON.parse(bytes.toString('utf8')) as {
@@ -502,6 +511,68 @@ it('copies a linked package payload without its repository fixtures', async () =
     await expect(access(join(copied, 'assets/ignored.bin'))).rejects.toThrow();
     await expect(access(join(copied, 'fixtures'))).rejects.toThrow();
     await snapshot.dispose();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('identifies changing inputs after exhausting stable snapshot retries', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-snapshot-changing-tree-'));
+  const project = join(directory, 'project');
+  const output = join(directory, 'snapshot');
+  try {
+    await mkdir(project);
+    await writeJson(join(project, 'package.json'), { name: 'changing-tree' });
+    const entry = join(project, 'entry.ts');
+    await writeFile(entry, 'export const value = 1;');
+    Object.assign(snapshotTreeMutation, { path: entry, directory: project, reads: 0 });
+    await expect(createRunSnapshot(project, output)).rejects.toMatchObject({
+      message: expect.stringContaining('Project inputs changed while snapshotting'),
+      cause: {
+        section: 'files',
+        before: { source: join(project, 'package.json'), target: join('project', 'package.json') },
+        after: { source: join(project, 'late-3.ts'), target: join('project', 'late-3.ts') },
+      },
+    });
+    expect(snapshotTreeMutation.reads).toBe(3);
+    await expect(access(output)).rejects.toThrow();
+  } finally {
+    Object.assign(snapshotTreeMutation, { path: '', directory: '', reads: 0 });
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('ignores TypeScript build metadata while pinning published runtime bytes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-snapshot-build-metadata-'));
+  try {
+    const project = join(directory, 'project');
+    const dependency = join(directory, 'dependency');
+    await mkdir(join(project, 'node_modules'), { recursive: true });
+    await mkdir(join(dependency, 'dist'), { recursive: true });
+    await writeJson(join(project, 'package.json'), { dependencies: { fixture: '*' } });
+    await writeJson(join(dependency, 'package.json'), { name: 'fixture', files: ['dist'] });
+    await writeFile(join(dependency, 'dist/index.js'), 'export const value = 1;');
+    await symlink(dependency, join(project, 'node_modules/fixture'), 'junction');
+    const caches = [
+      join(project, 'tsconfig.tsbuildinfo'),
+      join(dependency, 'dist/tsconfig.tmp.tsbuildinfo'),
+    ];
+    for (const cache of caches) await writeFile(cache, 'first compiler state');
+    const first = await createRunSnapshot(project, join(directory, 'first'));
+    await expect(access(join(first.root, 'tsconfig.tsbuildinfo'))).rejects.toThrow();
+    await expect(
+      access(join(first.root, 'node_modules/fixture/dist/tsconfig.tmp.tsbuildinfo')),
+    ).rejects.toThrow();
+    for (const cache of caches) await writeFile(cache, 'next compiler state');
+    const second = await createRunSnapshot(project, join(directory, 'second'));
+    expect(second.version).toBe(first.version);
+    await writeFile(join(dependency, 'dist/index.js'), 'export const value = 2;');
+    const third = await createRunSnapshot(project, join(directory, 'third'));
+    expect(third.version).not.toBe(first.version);
+    expect(
+      await readFile(join(first.root, 'node_modules/fixture/dist/index.js'), 'utf8'),
+    ).toContain('value = 1');
+    await Promise.all([first.dispose(), second.dispose(), third.dispose()]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -128,7 +128,24 @@ const { Materials } = await import('@forgeax/engine-render');
   } = await import('@forgeax/engine-render');
   const { propagateTransforms, Transform } = await import('@forgeax/engine-scene');
 
-const world = new World();
+const here = dirname(fileURLToPath(import.meta.url));
+const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+
+let renderer;
+let assets;
+try {
+  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  if (!constructed.ok) throw constructed.error;
+  renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
+} catch (err) {
+  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+} finally {
+  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
+}
+const world = new World({ assets });
 world.spawn({
   component: DirectionalLight,
   data: { castShadow: true,
@@ -137,21 +154,6 @@ world.spawn({
   },
 });
 
-const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
-
-let renderer;
-try {
-  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
-  if (!constructed.ok) throw constructed.error;
-  renderer = constructed.value.renderer;
-} catch (err) {
-  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-} finally {
-  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
-}
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -169,8 +171,8 @@ if (!boxResult.ok) {
   console.error(`[smoke] FAIL - createBoxGeometry failed: ${boxResult.error.code}`);
   process.exit(1);
 }
-const cubeHandle = world.allocSharedRef('MeshAsset', boxResult.value);
-const defaultHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([0.55, 0.55, 0.6, 1]));
+const cubeHandle = world.assets.create(boxResult.value).unwrap();
+const defaultHandle = world.assets.create(Materials.unlit([0.55, 0.55, 0.6, 1])).unwrap();
 
 // Cube at the origin + a perspective camera looking down -Z. The center of the
 // viewport casts a ray straight through the origin -> the cube must be hit.
@@ -201,7 +203,9 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
+  if (!r.ok) throw r.error;
+  const completed = await r.value.completed;
+  if (!completed.ok) throw completed.error;
   framesObserved++;
 }
 

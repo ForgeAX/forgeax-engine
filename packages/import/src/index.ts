@@ -1,7 +1,7 @@
 // @forgeax/engine-import — build-time asset import runner + ImporterRegistry.
 //
 // The build-time half of the engine's import/load split (the runtime half is
-// the LoaderRegistry in @forgeax/engine-runtime). An Importer turns an external
+// AssetRegistry domain decoding). An Importer turns an external
 // source (.gltf / .png / .ttf) plus its *.meta.json GUID declarations into
 // in-memory ImportedAsset[] PODs; the import runner enforces the GUID
 // import-stable iron law and writes the DDC (.pack.json / .bin).
@@ -55,7 +55,6 @@ export {
   produceBuildAssets,
 } from './build-production.js';
 export {
-  type CatalogImporterDisposition,
   type CatalogImporterPolicy,
   catalogImporterPolicy,
   DEFAULT_CATALOG_IMPORTER_KEYS,
@@ -131,7 +130,7 @@ export {
   reconcileMeshLodMeta,
   validateMeshLodContract,
 } from './mesh-lod.js';
-export { projectImportProductForBuild } from './pack-projection.js';
+export { projectImportProductForBuild, projectPackBuildCatalog } from './pack-projection.js';
 export { pluginAssetOutputProducer, resolvePluginProgram } from './plugin-asset-producer.js';
 export * from './runtime-pack.js';
 export type { RuntimePackPinnedAsset, RuntimePackRecipe } from './runtime-pack-snapshot.js';
@@ -145,8 +144,6 @@ export {
   type ScriptablePackAssetSnapshot,
   type ScriptablePackAssetSnapshotSource,
   type ScriptablePackDomainError,
-  type ScriptablePackExternalEvidence,
-  type ScriptablePackExternalUsage,
   type ScriptablePackSourceClosureEntry,
   type ScriptablePackStagedOutput,
 } from './scriptable-pack.js';

@@ -2,7 +2,6 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { buildCustomMeshWorld, makeCustomMeshTexture, stepCustomMesh } from './generate-custom-mesh.js';
 
 type EvidenceGlobal = typeof globalThis & {
@@ -18,15 +17,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('asset owner unavailable');
   const texture = makeCustomMeshTexture();
-  const textureHandle = app.world.allocSharedRef('TextureAsset', texture);
-  const state = buildCustomMeshWorld(app.world, unwrapHandle(textureHandle));
+  const textureHandle = assets.create(texture).unwrap();
+  const state = buildCustomMeshWorld(app.world, assets, textureHandle);
   app.world.addSystem(Update, {
     name: 'bevy-generate-custom-mesh-input',
     after: [FRAME_START_SCAN_SYSTEM_NAME],
     queries: [],
     fn: (world) => stepCustomMesh(
       world,
+      assets,
       state,
       world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY),
     ),

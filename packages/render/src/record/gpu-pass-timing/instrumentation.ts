@@ -3,6 +3,7 @@ import type {
   RenderGraphPassInstrumentation,
   RenderGraphPassInstrumentationScope,
 } from '@forgeax/engine-render-graph';
+import type { RenderPassDescriptor } from '@forgeax/engine-rhi';
 import type { GpuPassTimingPassIdentity } from './contract';
 import type { GpuPassTimingCapture } from './session';
 
@@ -24,58 +25,39 @@ export function createPassTimingInstrumentation<Frame extends RenderGraphFrame>(
     viewId,
   };
   let activeWrites: TimestampWrites | undefined;
-  const activeCapture = capture;
+  const applyTimestampWrites = (
+    descriptor: Pick<RenderPassDescriptor, 'timestampWrites'>,
+  ): void => {
+    if (activeWrites === undefined) return;
+    if (descriptor.timestampWrites !== undefined) {
+      capture.markOwnerConflict(activeIdentity);
+      return;
+    }
+    descriptor.timestampWrites = activeWrites;
+  };
   const rasterScope: RenderGraphPassInstrumentationScope = {
     renderPassDescriptor: (descriptor) => {
-      const capture = activeCapture;
-      const identity = activeIdentity;
-      const writes = activeWrites;
-      if (capture === undefined || identity === undefined || writes === undefined) {
-        return descriptor;
-      }
-      if (descriptor.timestampWrites !== undefined) {
-        capture.markOwnerConflict(identity);
-        return descriptor;
-      }
-      (descriptor as { timestampWrites?: TimestampWrites }).timestampWrites = writes;
+      applyTimestampWrites(descriptor);
       return descriptor;
     },
   };
   const computeScope: RenderGraphPassInstrumentationScope = {
     computePassDescriptor: (descriptor) => {
-      const capture = activeCapture;
-      const identity = activeIdentity;
-      const writes = activeWrites;
-      if (capture === undefined || identity === undefined || writes === undefined) {
-        return descriptor;
-      }
-      if (descriptor.timestampWrites !== undefined) {
-        capture.markOwnerConflict(identity);
-        return descriptor;
-      }
-      (descriptor as { timestampWrites?: TimestampWrites }).timestampWrites = writes;
+      applyTimestampWrites(descriptor);
       return descriptor;
     },
   };
   const copyScope: RenderGraphPassInstrumentationScope = {
     beforeCopy: (encoder) => {
-      const capture = activeCapture;
-      const identity = activeIdentity;
-      if (capture === undefined || identity === undefined) return;
-      capture.copyBoundaryBefore(identity, encoder);
+      capture.copyBoundaryBefore(activeIdentity, encoder);
     },
     afterCopy: (encoder) => {
-      const capture = activeCapture;
-      const identity = activeIdentity;
-      if (capture === undefined || identity === undefined) return;
-      capture.copyBoundaryAfter(identity, encoder);
+      capture.copyBoundaryAfter(activeIdentity, encoder);
     },
   };
   const instrumentation: RenderGraphPassInstrumentation<Frame> = {
     begin: (pass) => {
       if (pass.kind === 'subgraph') return undefined;
-      const capture = activeCapture;
-      if (capture === undefined) return undefined;
       activeIdentity.passName = pass.name;
       activeIdentity.passKind = pass.kind;
       activeIdentity.executionIndex = capture.nextExecutionIndex;

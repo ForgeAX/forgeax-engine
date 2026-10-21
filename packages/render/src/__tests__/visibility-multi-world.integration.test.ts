@@ -3,11 +3,13 @@ import { ChildOf } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { resolveVisibility } from '../extract/visibility';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import { RenderScene } from '../scene/render-scene';
 
-const sceneMaterial = {} as MaterialSnapshot;
+const sceneMaterial = new MaterialResource(defaultMaterialSnapshot());
 
 function sceneSnapshot(worldId: number, entityKey: number, x: number): RenderableSnapshot {
   const world = new Float32Array(16);
@@ -81,6 +83,6 @@ describe('visibility World isolation', () => {
 
     expect(scene.slot(0, 3)).toMatchObject({ slot: first?.slot, generation: first?.generation });
     expect(scene.slot(1, 3)).toMatchObject({ slot: second?.slot, generation: second?.generation });
-    expect(scene.materialize().map((entry) => entry.worldId)).toEqual([1, 0]);
+    expect(scene.materialize().map((entry) => entry.worldId)).toEqual([0, 1]);
   });
 });

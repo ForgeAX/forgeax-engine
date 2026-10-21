@@ -3,7 +3,7 @@ import { dirname, extname, join } from 'node:path';
 
 import type { DecodedImage, ImageError, ImageMeta } from '@forgeax/engine-types';
 import { imageError } from './errors.js';
-import { decodeHdr, type HdrDecoded } from './hdr-decoder.js';
+import { decodeHdr } from './hdr-decoder.js';
 import { parseImage } from './parse-image.js';
 import type { Result } from './result.js';
 import { err, ok } from './result.js';
@@ -22,21 +22,13 @@ interface SidecarMeta extends Omit<ExternalAssetPackage, 'importSettings'> {
 }
 
 /**
- * Result envelope returned by decodeImageFromFile for PNG/JPG sources.
+ * Result envelope returned by decodeImageFromFile for PNG/JPG/HDR sources.
  * Carries both the raw DecodedImage POD (for direct uploadTexture consumption)
- * and the parsed ImageMeta POD.
+ * and the parsed ImageMeta POD; HDR sources arrive quantized to 8-bit, so
+ * float consumers call decodeHdr directly.
  */
 export interface DecodedImageWithMeta {
   readonly decoded: DecodedImage;
-  readonly meta: ImageMeta;
-}
-
-/**
- * Result envelope returned by decodeImageFromFile for .hdr sources.
- * Carries the HDR-decoded float data ready for cubemap upload.
- */
-export interface DecodedHdrWithMeta {
-  readonly hdr: HdrDecoded;
   readonly meta: ImageMeta;
 }
 
@@ -61,7 +53,7 @@ function deriveSidecarPath(sourcePath: string): string {
  * sequence A; AC-17 path (a) sidecar three-way fallback).
  *
  * Behaviour (left-to-right, fail-fast on first surfaced ImageError):
- *  1. Sniff extension -- not in `.png / .jpg / .jpeg` -> image-format-unsupported
+ *  1. Sniff extension -- not in `.png / .jpg / .jpeg / .hdr` -> image-format-unsupported
  *  2. Stat source -- absent -> image-decode-failed with the source path
  *  3. Stat sibling `<source>.meta.json` (importer: 'image') -- absent -> image-meta-missing
  *  4. Read source bytes + parse sidecar JSON
@@ -183,13 +175,6 @@ export async function decodeImageFromFile(
     }
     const hdrRes = decodeHdr(bytes);
     if (!hdrRes.ok) return err(hdrRes.error);
-    // DecodedImageWithMeta expects DecodedImage; for HDR we return the HDR
-    // variant through a separate export path. Downstream consumers
-    // distinguish by file extension.
-    // For the DecodedImageWithMeta return type compatibility, we synthesise
-    // a minimal DecodedImage POD carrying the byte representation.
-    // This keeps the return type stable for existing PNG/JPG callers.
-    // The HDR data is available through the separate decodeHdr export.
     const rgba8 = new Uint8Array(hdrRes.value.width * hdrRes.value.height * 4);
     // convert float to quantised 8-bit for the POD shape (lossy; consumers
     // should use decodeHdr directly for float precision)

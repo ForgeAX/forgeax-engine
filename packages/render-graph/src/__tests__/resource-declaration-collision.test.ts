@@ -55,7 +55,6 @@ function makeDevice(): {
 }
 
 const compileOptions = {
-  backendKind: 'webgpu' as const,
   caps: { backendKind: 'webgpu', compute: true, storageBuffer: true } as never,
 };
 

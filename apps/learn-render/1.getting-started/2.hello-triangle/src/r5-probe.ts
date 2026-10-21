@@ -11,12 +11,16 @@
 // Exposes window.__r5Probe for the e2e script to read results.
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const statusEl = document.getElementById('status')!;
 
@@ -146,7 +150,12 @@ async function main(): Promise<void> {
     P.ready = true;
     log('render host ready, backend=' + renderer.inspect().capabilities.backendKind);
 
-    const world = new World();
+    const world = new World({ assets: constructed.value.assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const lease = worldAttachment1.value;
@@ -186,7 +195,7 @@ async function main(): Promise<void> {
             data: {
               pos: [(i % 200) * 0.02 - 2, Math.floor(i / 200) * 0.02 - 2, -1], quat: [0, 0, 0, 1], scale: [0.01, 0.01, 0.01],},
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+          { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
           { component: MeshRenderer, data: {} },
         );
       }
@@ -218,7 +227,7 @@ async function main(): Promise<void> {
           data: {
             pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+        { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
         { component: MeshRenderer, data: {} },
       );
 
@@ -315,7 +324,7 @@ async function main(): Promise<void> {
           data: {
             pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+        { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
         { component: MeshRenderer, data: {} },
       );
       world.update().unwrap();

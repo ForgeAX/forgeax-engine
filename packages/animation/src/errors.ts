@@ -35,7 +35,7 @@ export class AnimationGraphEmptyError extends Error {
 // -- AnimationGraphNodeOutOfRangeError -------------------------------------------
 
 /** Detail for `'animation-graph-node-out-of-range'`. */
-export interface AnimationGraphNodeOutOfRangeDetail {
+interface AnimationGraphNodeOutOfRangeDetail {
   /** Index of the node holding the offending reference, or the graph root. */
   readonly node: number;
   /** The out-of-range reference value that was encountered. */
@@ -73,7 +73,7 @@ export class AnimationGraphNodeOutOfRangeError extends Error {
 // -- AnimationGraphNodeWeightInvalidError ----------------------------------------
 
 /** Detail for `'animation-graph-node-weight-invalid'`. */
-export interface AnimationGraphNodeWeightInvalidDetail {
+interface AnimationGraphNodeWeightInvalidDetail {
   /** Index of the node whose static weight is invalid. */
   readonly node: number;
   /** The offending weight value (negative or non-finite / NaN). */
@@ -107,7 +107,7 @@ export class AnimationGraphNodeWeightInvalidError extends Error {
 // -- AnimationGraphCycleError ----------------------------------------------------
 
 /** Detail for `'animation-graph-cycle'`. */
-export interface AnimationGraphCycleDetail {
+interface AnimationGraphCycleDetail {
   /** A node index that participates in the detected cycle (the back edge). */
   readonly node: number;
 }
@@ -136,59 +136,9 @@ export class AnimationGraphCycleError extends Error {
   }
 }
 
-// -- AnimationGraphClipMissingError ----------------------------------------------
-
-/** Detail for `'animation-graph-clip-missing'`. */
-export interface AnimationGraphClipMissingDetail {
-  /** Index of the clip node whose `shared<AnimationClip>` handle failed to resolve. */
-  readonly node: number;
-  /** The raw clip handle that did not resolve (never registered / rc released). */
-  readonly clip: number;
-}
-
-/**
- * Structured error for a graph clip leaf whose `shared<AnimationClip>` handle
- * cannot be resolved at evaluation time (never registered, or its refcount was
- * released). Raised by `evaluateAnimationGraph` (M3 / w25) BEFORE any derived
- * slot is written, so a dangling clip never leaves a dirty pose (requirements
- * AC-11 clip-missing branch, plan §8). Unlike the construction-time
- * {@link AnimationGraphError} shapes, this is an EVALUATION-time error: it is not
- * part of `defineAnimationGraph`'s `Result` (topology is validated at build, clip
- * liveness only at eval), so it stays out of the construction closed union.
- *
- *   - `.code = 'animation-graph-clip-missing'`
- *   - `.expected` -- every clip node's handle resolves to a live AnimationClip
- *   - `.hint` -- keep the clip asset registered (rc retained) while the graph
- *     references it
- *   - `.detail = { node, clip }`
- */
-export class AnimationGraphClipMissingError extends Error {
-  readonly code = 'animation-graph-clip-missing' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: AnimationGraphClipMissingDetail;
-
-  constructor(detail: AnimationGraphClipMissingDetail) {
-    const { node, clip } = detail;
-    super(`AnimationGraph clip node ${node} references unresolved AnimationClip handle ${clip}`);
-    this.name = 'AnimationGraphClipMissingError';
-    this.expected = 'every clip node handle resolves to a live AnimationClip';
-    this.hint = `clip node ${node} references AnimationClip handle ${clip}, which did not resolve; keep the clip asset registered (refcount retained) for as long as the graph references it`;
-    this.detail = detail;
-  }
-}
-
-// -- AnimationGraphErrorCode / AnimationGraphError closed unions ------------------
-
-/**
- * Closed union of AnimationGraph-cluster error codes. AI users perform
- * exhaustive `switch (err.code)` without default; TS guards completeness.
- */
-export type AnimationGraphErrorCode = AnimationGraphError['code'];
-
 /**
  * Closed union of the AnimationGraph-cluster structured error classes, each
- * carrying an `AnimationGraphErrorCode` discriminant on `.code`.
+ * carrying a literal `.code` discriminant.
  */
 export type AnimationGraphError =
   | AnimationGraphEmptyError

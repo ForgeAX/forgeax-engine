@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   encodeIrradianceVolume,
   IRRADIANCE_VOLUME_ARTIFACT,
@@ -69,31 +70,15 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     [LIT, constantVolume(0.5)],
     [DARK, constantVolume(0)],
   ]);
-  const fetched: string[] = [];
-  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith('/pack-index.json')) {
-      fetched.push(url);
-      return new Response(
-        JSON.stringify(
-          [LIT, DARK].map((guid) => ({
-            guid,
-            packageUrl: `/baked/${guid}.pack.json`,
-            kind: IRRADIANCE_VOLUME_KIND,
-            sourcePath: `${guid}.fxiv`,
-          })),
-        ),
-      );
-    }
-    const guid = [...volumes.keys()].find((key) => url.includes(key));
-    if (guid !== undefined) {
-      fetched.push(url);
-      const bytes = volumes.get(guid) as Uint8Array;
-      if (url.endsWith('.fxiv')) return new Response(Uint8Array.from(bytes).buffer);
-      return new Response(
-        JSON.stringify({
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
+  const publications = new Map(
+    [...volumes].map(([guid, bytes]) => [
+      guid,
+      createRuntimePackPublication({
+        scopeId: 'asset-runtime',
+        sourcePath: `${guid}.fxiv`,
+        sourceRevision: 'fixture',
+        packageUrl: `/baked/${guid}.pack.json`,
+        pack: {
           assets: [
             {
               guid,
@@ -108,12 +93,39 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
                   path: `${guid}.fxiv`,
                   mediaType: IRRADIANCE_VOLUME_MEDIA_TYPE,
                   byteLength: bytes.byteLength,
+                  contentEncoding: 'identity',
+                  integrity: { algorithm: 'sha256', digest: irradianceVolumeDigest(bytes) },
                 },
               },
             },
           ],
-        }),
+        },
+      }),
+    ]),
+  );
+  const fetched: string[] = [];
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/pack-index.json')) {
+      fetched.push(url);
+      return new Response(
+        JSON.stringify(
+          [LIT, DARK].map((guid) => ({
+            guid,
+            packageUrl: `/baked/${guid}.pack.json`,
+            kind: IRRADIANCE_VOLUME_KIND,
+            sourcePath: `${guid}.fxiv`,
+            publication: publications.get(guid)?.publication,
+          })),
+        ),
       );
+    }
+    const guid = [...volumes.keys()].find((key) => url.includes(key));
+    if (guid !== undefined) {
+      fetched.push(url);
+      const bytes = volumes.get(guid) as Uint8Array;
+      if (url.endsWith('.fxiv')) return new Response(Uint8Array.from(bytes).buffer);
+      return new Response(JSON.stringify(publications.get(guid)?.pack));
     }
     return original(input, init);
   });

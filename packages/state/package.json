@@ -31,6 +31,9 @@
     "@forgeax/engine-plugin": "workspace:*",
     "@forgeax/engine-types": "workspace:*"
   },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*"
+  },
   "forgeax": {
     "metrics": {
       "bundle-size": {

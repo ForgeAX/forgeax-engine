@@ -1,18 +1,22 @@
+import { vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { describe, expect, it } from 'vitest';
 import { GpuScene } from '../gpu-scene';
+import { GPU_MATERIAL_DESCRIPTOR } from '../gpu-scene-inputs';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 
-const material = {
-  baseColor: new Float32Array([0.25, 0.5, 0.75]),
+const material = new MaterialResource({
+  baseColor: vec3.create(0.25, 0.5, 0.75),
   metallic: 0.2,
   roughness: 0.8,
-  baseColorTexture: 23,
+  baseColorTexture: 23 as import('@forgeax/engine-types').AssetHandle<'texture'>,
   materialHandle: 17,
-} as MaterialSnapshot;
+  passes: [],
+});
 const GPU_MAP_MODE_READ = 0x0001;
 
 function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
@@ -36,6 +40,16 @@ function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
         topology: 'triangle-list',
         pipelineClass: 'forgeax::default-unlit',
         materialResourceClass: 'base-color-texture',
+        geometry: {
+          receipt: {
+            identity: 'native-schema',
+            vertexInputs: [],
+            topology: 'triangle-list',
+            indexed: true,
+          },
+          draw: { kind: 'indexed', first: 3, count: 36, baseVertex: -2, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
     material,
@@ -65,11 +79,11 @@ describe('GpuScene Dawn residency', () => {
     const projection = new RenderScene();
     const first = snapshot(7, 3);
     const firstDraw = first.gpuDrivenDraws?.[0];
-    const secondMaterial = {
-      ...material,
-      baseColor: new Float32Array([0.9, 0.1, 0.2]),
+    const secondMaterial = new MaterialResource({
+      ...material.snapshot,
+      baseColor: vec3.create(0.9, 0.1, 0.2),
       materialHandle: 18,
-    } as MaterialSnapshot;
+    });
     if (firstDraw === undefined) throw new Error('GPU draw fixture unavailable');
     availability.scene
       .sync(
@@ -77,31 +91,44 @@ describe('GpuScene Dawn residency', () => {
           updateSnapshot({
             ...first,
             materials: [material, secondMaterial],
-            gpuDrivenDraws: [firstDraw, { ...firstDraw, first: 39, materialSlot: 1 }],
+            gpuDrivenDraws: [
+              firstDraw,
+              {
+                ...firstDraw,
+                first: 39,
+                materialSlot: 1,
+                geometry: {
+                  ...firstDraw.geometry,
+                  draw: { ...firstDraw.geometry.draw, first: 39 },
+                },
+              },
+            ],
           }),
           updateSnapshot(snapshot(8, 9)),
         ]),
       )
       .unwrap();
 
+    const inputReads = availability.scene.inputs.capture();
+    const input = inputReads.buffer().unwrap();
+    inputReads.seal().unwrap();
     const sources = {
+      input: input.buffer,
       primitive: availability.scene.primitiveBuffer,
       instance: availability.scene.instanceBuffer,
       transform: availability.scene.transformBuffer,
-      drawTemplate: availability.scene.drawTemplateBuffer,
       material: availability.scene.materialBuffer,
     } as const;
+    const byteLength = (name: keyof typeof sources) =>
+      name === 'input' ? input.byteLength : availability.scene.inspect().tables[name].bytes;
     const readbacks = Object.fromEntries(
       Object.entries(sources).map(([name]) => {
-        const layout = GPU_SCENE_LAYOUTS[name as keyof typeof GPU_SCENE_LAYOUTS];
         return [
           name,
           device
             .createBuffer({
               label: `gpu-scene-${name}-readback`,
-              size:
-                layout.stride *
-                (name === 'transform' ? 4 : name === 'drawTemplate' || name === 'material' ? 3 : 2),
+              size: byteLength(name as keyof typeof sources),
               usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
             })
             .unwrap(),
@@ -112,17 +139,11 @@ describe('GpuScene Dawn residency', () => {
     for (const [name, source] of Object.entries(sources) as Array<
       [keyof typeof sources, import('@forgeax/engine-rhi').Buffer]
     >) {
-      encoder.copyBufferToBuffer(
-        source,
-        0,
-        readbacks[name],
-        0,
-        GPU_SCENE_LAYOUTS[name].stride *
-          (name === 'transform' ? 4 : name === 'drawTemplate' || name === 'material' ? 3 : 2),
-      );
+      encoder.copyBufferToBuffer(source, 0, readbacks[name], 0, byteLength(name));
     }
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     await device.queue.onSubmittedWorkDone();
+    inputReads.release();
 
     const views = {} as Record<keyof typeof sources, DataView>;
     for (const [name, readback] of Object.entries(readbacks) as Array<
@@ -133,105 +154,68 @@ describe('GpuScene Dawn residency', () => {
       mapped.unmap();
     }
 
-    expect(
+    const firstPrimitive = availability.scene.primitiveIndexForSlot(0);
+    const secondPrimitive = availability.scene.primitiveIndexForSlot(1);
+    if (firstPrimitive === undefined || secondPrimitive === undefined)
+      throw new Error('Expected both retained primitive rows');
+    const primitive = (row: number, field: string) =>
       views.primitive.getUint32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'assetHandle'),
+        row * GPU_SCENE_LAYOUTS.primitive.stride +
+          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, field),
         true,
-      ),
-    ).toBe(48);
-    expect(
-      views.primitive.getUint32(
-        GPU_SCENE_LAYOUTS.primitive.stride +
-          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'materialIndex'),
-        true,
-      ),
-    ).toBe((2 * GPU_SCENE_LAYOUTS.material.stride) / 16);
+      );
+    expect(primitive(firstPrimitive, 'sourceIndex')).toBe(0);
+    expect(primitive(secondPrimitive, 'sourceIndex')).toBe(1);
+    const firstMaterial = primitive(firstPrimitive, 'materialIndex');
+    expect(primitive(secondPrimitive, 'materialIndex')).toBe(firstMaterial);
+    expect(firstMaterial).toBe(availability.scene.materialIndexForSlot(0, 0));
+    const otherMaterial = availability.scene.materialIndexForSlot(0, 1);
+    if (otherMaterial === undefined) throw new Error('Expected second material descriptor');
+    expect(otherMaterial).not.toBe(firstMaterial);
+    const firstInstance = primitive(firstPrimitive, 'instanceStart');
     expect(
       views.instance.getUint32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.instance, 'primitiveIndex'),
+        firstInstance * GPU_SCENE_LAYOUTS.instance.stride +
+          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.instance, 'primitiveIndex'),
+        true,
+      ),
+    ).toBe(firstPrimitive);
+    expect(
+      views.instance.getUint32(
+        firstInstance * GPU_SCENE_LAYOUTS.instance.stride +
+          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.instance, 'transformIndex'),
         true,
       ),
     ).toBe(0);
-    expect(
-      views.instance.getUint32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.instance, 'transformIndex'),
-        true,
-      ),
-    ).toBe(0);
-    expect(
+    const transform = (row: number, field: string, element = 0) =>
       views.transform.getFloat32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'currentWorld'),
+        row * GPU_SCENE_LAYOUTS.transform.stride +
+          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, field) +
+          element * 4,
         true,
-      ),
-    ).toBe(1);
-    expect(
-      views.transform.getFloat32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousWorld'),
-        true,
-      ),
-    ).toBe(1);
-    const firstTransformIndex = views.primitive.getUint32(
-      gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex'),
-      true,
-    );
-    expect(firstTransformIndex).toBe(1);
-    expect(
-      views.transform.getFloat32(
-        firstTransformIndex * GPU_SCENE_LAYOUTS.transform.stride +
-          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'currentWorld') +
-          12 * 4,
-        true,
-      ),
-    ).toBe(3);
-    const secondTransformIndex = views.primitive.getUint32(
-      GPU_SCENE_LAYOUTS.primitive.stride +
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex'),
-      true,
-    );
-    expect(secondTransformIndex).toBe(2);
-    expect(
-      views.transform.getFloat32(
-        secondTransformIndex * GPU_SCENE_LAYOUTS.transform.stride +
-          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousWorld') +
-          12 * 4,
-        true,
-      ),
-    ).toBe(9);
-    expect(
-      views.drawTemplate.getUint32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.drawTemplate, 'indexCount'),
-        true,
-      ),
-    ).toBe(36);
-    expect(
-      views.drawTemplate.getInt32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.drawTemplate, 'baseVertex'),
-        true,
-      ),
-    ).toBe(-2);
-    expect(
-      views.drawTemplate.getUint32(
-        GPU_SCENE_LAYOUTS.drawTemplate.stride +
-          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.drawTemplate, 'materialIndex'),
-        true,
-      ),
-    ).toBe(GPU_SCENE_LAYOUTS.material.stride / 16);
-    expect(
+      );
+    expect(transform(0, 'currentWorld')).toBe(1);
+    expect(transform(0, 'previousWorld')).toBe(1);
+    const firstTransform = primitive(firstPrimitive, 'transformIndex');
+    const secondTransform = primitive(secondPrimitive, 'transformIndex');
+    expect(firstTransform).toBe(1);
+    expect(secondTransform).toBe(2);
+    expect(transform(firstTransform, 'currentWorld', 12)).toBe(3);
+    expect(transform(secondTransform, 'previousWorld', 12)).toBe(9);
+    const materialPayload = (descriptor: number) =>
+      views.input.getUint32((descriptor + GPU_MATERIAL_DESCRIPTOR.payload) * 4, true) * 16;
+    const materialOffset = materialPayload(firstMaterial);
+    const otherMaterialOffset = materialPayload(otherMaterial);
+    expect(otherMaterialOffset - materialOffset).toBe(GPU_SCENE_LAYOUTS.material.stride);
+    const materialValue = (base: number, field: string) =>
       views.material.getFloat32(
-        GPU_SCENE_LAYOUTS.material.stride +
-          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, 'baseColor'),
+        base + gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, field),
         true,
-      ),
-    ).toBeCloseTo(0.9);
-    expect(
-      views.material.getFloat32(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, 'baseColor'), true),
-    ).toBeCloseTo(0.25);
-    expect(
-      views.material.getFloat32(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, 'metallic'), true),
-    ).toBeCloseTo(0.2);
-    expect(
-      views.material.getFloat32(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, 'roughness'), true),
-    ).toBeCloseTo(0.8);
+      );
+    expect(materialValue(otherMaterialOffset, 'baseColor')).toBeCloseTo(0.9);
+    expect(materialValue(materialOffset, 'baseColor')).toBeCloseTo(0.25);
+    expect(materialValue(materialOffset, 'metallic')).toBeCloseTo(0.2);
+    expect(materialValue(materialOffset, 'roughness')).toBeCloseTo(0.8);
 
     availability.scene.dispose();
     for (const readback of Object.values(readbacks)) device.destroyBuffer(readback);

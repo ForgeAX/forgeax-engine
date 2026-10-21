@@ -109,7 +109,7 @@ describe('profiler overflow long-tail bounded evidence', () => {
     expect(model.ok).toBe(true);
     if (!model.ok) return;
     expect(model.value.summary.completeness).toEqual(capture.completeness);
-    expect(model.value.completeness.status).toBe('overflow');
+    expect(model.value.summary.completeness.status).toBe('overflow');
 
     const cli = runProfilerCli(['summary'], JSON.stringify(capture));
     expect(cli.exitCode).toBe(0);

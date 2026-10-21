@@ -125,7 +125,8 @@
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-vfx": "workspace:*",
-    "@forgeax/engine-vfx-render": "workspace:*"
+    "@forgeax/engine-vfx-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

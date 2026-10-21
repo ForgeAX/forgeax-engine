@@ -22,13 +22,17 @@ import {
   PerspectiveCamera,
   ReinhardToneMapping,
   WebGLCoordinateSystem,
+  WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
 
 export function cameraData(camera: Camera, toneMapping: number, exposure: number): CameraData {
   if (!(camera instanceof PerspectiveCamera || camera instanceof OrthographicCamera))
     return unsupported(camera.type, camera.uuid).unwrap();
-  if (camera.coordinateSystem !== WebGLCoordinateSystem)
+  if (
+    camera.coordinateSystem !== WebGLCoordinateSystem &&
+    camera.coordinateSystem !== WebGPUCoordinateSystem
+  )
     return unsupported('Camera.coordinateSystem', camera.uuid).unwrap();
   const modes: Readonly<Record<number, number>> = {
     [NoToneMapping]: TONEMAP_NONE,
@@ -43,6 +47,8 @@ export function cameraData(camera: Camera, toneMapping: number, exposure: number
   if (tonemap === undefined) return unsupported('Renderer.toneMapping').unwrap();
   if (!Number.isFinite(exposure) || exposure < 0)
     return invalid('Renderer.toneMappingExposure').unwrap();
+  if (exposure === 0)
+    return unsupported('Zero exposure requires native Camera exposure to admit zero').unwrap();
   // Read the cached projection: changing fov/zoom without updateProjectionMatrix must stay stale.
   const e = camera.projectionMatrix.elements;
   if (!e.every(Number.isFinite) || e[0] <= 0 || e[5] <= 0)
@@ -57,11 +63,22 @@ export function cameraData(camera: Camera, toneMapping: number, exposure: number
     (!isPerspective && (e[8] !== 0 || e[9] !== 0))
   )
     return unsupported('Camera custom projection', camera.uuid).unwrap();
-  const near = isPerspective ? e[14] / (e[10] - 1) : (e[14] + 1) / e[10];
-  const far = isPerspective ? e[14] / (e[10] + 1) : (e[14] - 1) / e[10];
-  if (!Number.isFinite(near) || !Number.isFinite(far) || near <= 0 || far <= near)
+  const nearZ = camera.reversedDepth
+    ? 1
+    : camera.coordinateSystem === WebGPUCoordinateSystem
+      ? 0
+      : -1;
+  const farZ = camera.reversedDepth ? 0 : 1;
+  const near = isPerspective ? e[14] / (e[10] + nearZ) : (e[14] - nearZ) / e[10];
+  const far = isPerspective ? e[14] / (e[10] + farZ) : (e[14] - farZ) / e[10];
+  if (
+    !Number.isFinite(near) ||
+    !Number.isFinite(far) ||
+    (isPerspective ? near <= 0 : near < 0) ||
+    far <= near
+  )
     return unsupported(
-      'Camera near/far: prototype requires 0 < near < far < Infinity',
+      'Camera near/far: requires finite near < far; near > 0 for perspective, near >= 0 for orthographic',
       camera.uuid,
     ).unwrap();
   return {

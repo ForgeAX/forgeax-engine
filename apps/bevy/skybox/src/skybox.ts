@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/bevy/skybox - source-aligned scene for Bevy's examples/3d/skybox.rs.
 
 import type { World } from '@forgeax/engine-ecs';
@@ -9,13 +10,13 @@ import {
   perspective,
 } from '@forgeax/engine-render';
 import { SKYBOX_MODE_CUBEMAP, TONEMAP_REINHARD_EXTENDED } from '@forgeax/engine-render';
-import type { Handle } from '@forgeax/engine-types';
+
 import { quat } from '@forgeax/engine-math';
 import { Transform } from '@forgeax/engine-scene';
 
 export function buildSkyboxWorld(
   world: World,
-  equirect: Handle<'EquirectAsset', 'shared'>,
+  equirect: AssetHandle<'equirect'>,
   aspect: number,
   options: { includeSkybox?: boolean } = {},
 ): void {

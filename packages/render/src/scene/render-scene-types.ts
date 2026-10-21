@@ -1,7 +1,9 @@
 import type { RenderSceneResyncReason } from '../inspection-types';
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
+import type { MaterialResource } from '../material-resource';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
+import type { MeshFrame } from './mesh-frame';
 
 export type { RenderSceneResyncReason } from '../inspection-types';
 
@@ -34,6 +36,10 @@ export interface RenderSceneSlot extends RenderSceneRecord {
 }
 
 export interface RenderSceneApplyResult {
+  readonly materials?: import('./material-dispatch').MaterialFrame;
+  readonly meshes?: MeshFrame;
+  /** Shared resource adoption carries no entity operations. */
+  readonly materialUpdates?: readonly MaterialResource[];
   readonly created: number;
   readonly updated: number;
   readonly removed: number;

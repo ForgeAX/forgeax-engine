@@ -1,12 +1,10 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { BindGroup, BindGroupEntry, BindGroupLayout, Buffer } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-rhi';
 import { STANDARD_DIRECT_DFG_LUT_BINDING } from '@forgeax/engine-shader';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   derive,
-  type Handle,
   type MaterialAsset,
-  type MaterialTextureValue,
   materialValuesToLinearRuntime,
   type SamplerAsset,
 } from '@forgeax/engine-types';
@@ -27,7 +25,13 @@ import {
   standardNormalInputField,
 } from '../pbr-pipeline';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { internSharedRefFromGuid, materialStandardTextureMask } from '../render-system-extract';
+import {
+  assetReferenceText,
+  materialStandardTextureMask,
+  materialTextureRef,
+  materialTextureValue,
+  resolveRuntimeAssetReference,
+} from '../render-system-extract';
 import {
   applyParamSchemaDefaultsToUbo,
   applyParamSnapshotToUbo,
@@ -117,20 +121,21 @@ function acquireMaterialBinding(
 }
 
 function preparedHandle<Brand extends string>(
-  runtime: RenderSystemInternals,
   world: RenderResourceScope,
-  guid: string,
+  reference: unknown,
   brand: Brand,
-): Handle<Brand, 'shared'> | undefined {
-  if ('resolveAsset' in world)
-    return world.handleForGuid(guid) as Handle<Brand, 'shared'> | undefined;
-  return internSharedRefFromGuid(world, runtime.assets, guid, brand);
+): AssetHandle<Brand> | undefined {
+  if (typeof reference === 'number')
+    return reference === 0 ? undefined : (reference as AssetHandle<Brand>);
+  const guid = assetReferenceText(reference);
+  if (guid === undefined) return undefined;
+  return resolveRuntimeAssetReference(world, guid, brand);
 }
 
-function unavailablePreparedMaterial(reason: string, worldIndex: number, materialGuid: string) {
+function unavailablePreparedMaterial(reason: string, worldIndex: number, materialHandle: number) {
   return err(
     new Error(
-      `prepared material ${reason} (world=${worldIndex}, guid=${materialGuid.slice(0, 48)})`,
+      `prepared material ${reason} (world=${worldIndex}, handle=${String(materialHandle)})`,
     ),
   );
 }
@@ -140,43 +145,28 @@ export function preparedMaterialBindings(
   worlds: readonly RenderResourceScope[],
   materialShaderId: string,
   worldIndex: number,
-  materialGuid: string,
+  handle: number,
   layout: BindGroupLayout,
   skylightResources?: SkylightBindGroupResources,
   scope?: PreparedMaterialBindingsScope,
-  materialAssetHandle?: unknown,
 ) {
   const device = runtime.device;
   const generation = runtime.deviceScope?.generation ?? 0;
   const world = worlds[worldIndex];
-  const handle =
-    materialAssetHandle === undefined
-      ? world === undefined
-        ? undefined
-        : preparedHandle(runtime, world, materialGuid, 'MaterialAsset')
-      : typeof materialAssetHandle === 'number' &&
-          Number.isSafeInteger(materialAssetHandle) &&
-          materialAssetHandle >= 0
-        ? (materialAssetHandle as Handle<'MaterialAsset', 'shared'>)
-        : undefined;
   const pipelineState = runtime.getPipelineState();
   if (world === undefined)
-    return unavailablePreparedMaterial('source-world-unavailable', worldIndex, materialGuid);
-  if (handle === undefined)
-    return unavailablePreparedMaterial(
-      materialAssetHandle === undefined ? 'guid-handle-unavailable' : 'asset-handle-invalid',
-      worldIndex,
-      materialGuid,
-    );
+    return unavailablePreparedMaterial('source-world-unavailable', worldIndex, handle);
+  if (!Number.isSafeInteger(handle) || handle <= 0)
+    return unavailablePreparedMaterial('asset-handle-invalid', worldIndex, handle);
   if (pipelineState === null)
-    return unavailablePreparedMaterial('pipeline-state-unavailable', worldIndex, materialGuid);
-  const resolved = resolveAssetHandle<MaterialAsset>(world, handle);
+    return unavailablePreparedMaterial('pipeline-state-unavailable', worldIndex, handle);
+  const resolved = world.resolveAsset<MaterialAsset>(handle);
   if (!resolved.ok) return resolved;
   const material = resolved.value;
   const kind = material.kind;
   if (kind !== 'material') {
     const label = typeof kind === 'string' ? (kind as string).slice(0, 24) : typeof kind;
-    return unavailablePreparedMaterial(`asset-kind-mismatch:${label}`, worldIndex, materialGuid);
+    return unavailablePreparedMaterial(`asset-kind-mismatch:${label}`, worldIndex, handle);
   }
   const schema = runtime.getParamSchema?.(materialShaderId) ?? [];
   // Feature materials share the ordinary linear parameter domain and semantic texture defaults.
@@ -205,15 +195,12 @@ export function preparedMaterialBindings(
   for (const slot of fields) {
     const field = standardNormalInputField(slot, textureMask);
     const value = values[field];
-    const textureValue =
-      typeof value === 'object' && value !== null && 'texture' in value
-        ? (value as MaterialTextureValue)
-        : undefined;
+    const textureValue = materialTextureValue(value);
     let sampler = pipelineState.defaultSampler;
     if (textureValue?.sampler !== undefined) {
-      const handle = preparedHandle(runtime, world, String(textureValue.sampler), 'SamplerAsset');
+      const handle = preparedHandle(world, textureValue.sampler, 'sampler');
       if (handle !== undefined) {
-        const asset = resolveAssetHandle<SamplerAsset>(world, handle);
+        const asset = world.resolveAsset<SamplerAsset>(handle);
         if (asset.ok) {
           const resident = runtime.gpuStore.ensureSamplerResident(handle, asset.value, world);
           if (resident.ok) sampler = resident.value;
@@ -221,12 +208,9 @@ export function preparedMaterialBindings(
       }
     }
     let view = defaultViewForUserRegionField(field, pipelineState, schema);
-    if (textureValue !== undefined) {
-      const handle = preparedHandle(runtime, world, String(textureValue.texture), 'TextureAsset');
-      if (handle !== undefined) {
-        view = residentTextureView(world, runtime.gpuStore, runtime, handle) ?? view;
-      }
-    }
+    const texture = preparedHandle(world, materialTextureRef(value), 'texture');
+    if (texture !== undefined)
+      view = residentTextureView(world, runtime.gpuStore, runtime, texture) ?? view;
     textureResources.push({ sampler, view });
   }
   const entries: BindGroupEntry[] = [];
@@ -337,7 +321,7 @@ export function preparedMaterialBindings(
   let buffer: Buffer | undefined;
   if (payload !== undefined) {
     const created = device.createBuffer({
-      label: `prepared-material:${materialGuid}`,
+      label: `prepared-material:${handle}`,
       size: payload.byteLength,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     });

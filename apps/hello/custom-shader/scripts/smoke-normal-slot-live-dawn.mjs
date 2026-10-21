@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -244,10 +245,11 @@ const manifest = `data:application/json,${encodeURIComponent(readFileSync(MANIFE
 const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifest });
 assert(constructed.ok, constructed.ok ? undefined : `${constructed.error.code}: ${constructed.error.hint}`);
 const renderer = constructed.value.renderer;
+const assets = constructed.value.assets;
 renderer.subscribe((event) => { if (event.kind === 'error') console.error(`[normal-slot-live] renderer error: ${JSON.stringify(event.error)}`); });
 assert(renderer.inspect().capabilities.backendKind === 'webgpu', `unexpected backend: ${renderer.inspect().capabilities.backendKind}`);
 
-const world = new World();
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const baseColorTexturePayload = {
@@ -267,10 +269,10 @@ const liveSwapNormalTexturePayload = {
   ...baseColorTexturePayload,
   data: new Uint8Array([224, 32, 224, 255, 32, 32, 224, 255, 32, 32, 224, 255, 224, 32, 224, 255]),
 };
-const baseColorHandle = world.allocSharedRef('TextureAsset', baseColorTexturePayload);
-const normalHandle = world.allocSharedRef('TextureAsset', normalTexturePayload);
-const liveSwapBaseColorHandle = world.allocSharedRef('TextureAsset', liveSwapBaseColorTexturePayload);
-const liveSwapNormalHandle = world.allocSharedRef('TextureAsset', liveSwapNormalTexturePayload);
+const baseColorHandle = assets.create(baseColorTexturePayload).unwrap();
+const normalHandle = assets.create(normalTexturePayload).unwrap();
+const liveSwapBaseColorHandle = assets.create(liveSwapBaseColorTexturePayload).unwrap();
+const liveSwapNormalHandle = assets.create(liveSwapNormalTexturePayload).unwrap();
 const normalMaterial = materialFromRecord(derived.record, baseColorHandle, normalHandle);
 const swapMaterial = materialFromRecord(
   derived.record,
@@ -289,11 +291,11 @@ const swapMaterial = materialFromRecord(
       ? liveSwapNormalHandle
       : normalHandle,
 );
-const normalMaterialHandle = world.allocSharedRef('MaterialAsset', normalMaterial);
-const swapMaterialHandle = world.allocSharedRef('MaterialAsset', swapMaterial);
+const normalMaterialHandle = assets.create(normalMaterial).unwrap();
+const swapMaterialHandle = assets.create(swapMaterial).unwrap();
 const box = createBoxGeometry(1, 1, 1);
 assert(box.ok, 'box geometry creation failed');
-const boxHandle = world.allocSharedRef('MeshAsset', box.value);
+const boxHandle = assets.create(box.value).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [-0.9, 0, 0] } },
   { component: MeshFilter, data: { assetHandle: boxHandle } },
@@ -358,22 +360,21 @@ async function readback(label) {
   return { ...result, rgba };
 }
 
-async function drawFrame(label) {
+let completedFrames = 0;
+async function drawFrame(_label) {
   world.update().unwrap();
-  const result = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  assert(result.ok, `${label} draw failed: ${result.ok ? '' : JSON.stringify(result.error)}`);
-  await sharedDevice.queue.onSubmittedWorkDone();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  completedFrames++;
 }
 
 // Custom material PSOs are built through the renderer's lazy runtime cache.
 // Warm the public draw path before taking the baseline so the evidence tests
 // the live resource rebind rather than the first-frame pipeline compile.
-for (let frame = 0; frame < 4; frame += 1) await drawFrame(`warmup-${frame}`);
+for (let frame = 0; frame < Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10)); frame += 1) await drawFrame(`warmup-${frame}`);
 const before = await readback('before');
 let m36Evidence;
 let m36Stale;
@@ -394,7 +395,7 @@ if (m36Mode) {
       JSON.stringify(m36Stale.error.detail.current),
     'Dawn stale generation vectors were equal',
   );
-  for (let frame = 0; frame < 4; frame += 1) await drawFrame(`stale-${frame}`);
+  for (let frame = 0; frame < Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10)); frame += 1) await drawFrame(`stale-${frame}`);
   m36StalePixels = await readback('stale');
 
   const recook = await execFileAsync(process.execPath, [RECOOK_SCRIPT, '--write'], {
@@ -415,15 +416,12 @@ if (m36Mode) {
   assert(fresh.ok, `Dawn fresh recook failed: ${fresh.ok ? '' : fresh.error.code}`);
   assert(fresh.value.record.artifactDigest !== derived.record.artifactDigest, 'Dawn recook kept the stale digest');
   assert(materialCache.generationError('01935b00-7d8c-7c4e-9f12-345678abcd03') === undefined, 'Dawn stale diagnostic survived recook');
-  const freshMaterialHandle = world.allocSharedRef(
-    'MaterialAsset',
-    materialFromRecord(fresh.value.record, baseColorHandle, normalHandle),
-  );
+  const freshMaterialHandle = assets.create(materialFromRecord(fresh.value.record, baseColorHandle, normalHandle)).unwrap();
   const freshMutation = world.set(entity, MeshRenderer, { materials: [freshMaterialHandle] });
   assert(freshMutation.ok, `Dawn fresh material publication failed: ${freshMutation.ok ? '' : freshMutation.error.code}`);
-  const allocationRelease = world.sharedRefs.release(freshMaterialHandle);
+  const allocationRelease = assets.release(freshMaterialHandle);
   assert(allocationRelease.ok, 'Dawn fresh material allocation was not released');
-  for (let frame = 0; frame < 4; frame += 1) await drawFrame(`fresh-${frame}`);
+  for (let frame = 0; frame < Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10)); frame += 1) await drawFrame(`fresh-${frame}`);
   m36Evidence = {
     stale: {
       code: m36Stale.error.code,
@@ -436,7 +434,7 @@ if (m36Mode) {
       inputDigest: fresh.value.record.receipt.identity.cookIdentity,
       generation: lastMaterialGeneration,
       allocationRelease: { ok: allocationRelease.ok },
-      materialRefcount: world.sharedRefs.refcount(freshMaterialHandle),
+      materialRetained: assets.validate(freshMaterialHandle).ok,
     },
     stalePixels: {
       sha256: m36StalePixels.sha256,
@@ -447,12 +445,12 @@ if (m36Mode) {
   const mutation = liveSwap ? world.set(entity, MeshRenderer, { materials: [swapMaterialHandle] }) : { ok: true };
   assert(mutation.ok, `live material rebind failed: ${mutation.ok ? '' : mutation.error.code}`);
 }
-for (let frame = 0; frame < 4; frame += 1) await drawFrame(`pre-resize-${frame}`);
+for (let frame = 0; frame < Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10)); frame += 1) await drawFrame(`pre-resize-${frame}`);
 const beforeResize = m36Mode ? before : await readback('before-resize');
 if (resizeRebuild) {
   mockCanvas.width = RESIZED_WIDTH;
   mockCanvas.height = RESIZED_HEIGHT;
-  for (let frame = 0; frame < 4; frame += 1) await drawFrame(`post-resize-${frame}`);
+  for (let frame = 0; frame < Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10)); frame += 1) await drawFrame(`post-resize-${frame}`);
 }
 const after = await readback(resizeRebuild ? 'after-resize' : 'after');
 const delta = resizeRebuild ? undefined : compareRgba(before.rgba, after.rgba, WIDTH, HEIGHT);
@@ -498,7 +496,8 @@ if (m36Mode) {
     pixels: { staleDelta, siblingDelta, freshDelta },
     rendererErrors: errors,
   }));
-  sharedDevice.destroy();
+  await renderer.dispose();
+sharedDevice.destroy();
 } else {
 const afterBaseColorHandle = inheritanceLive
   ? inheritanceFalsify
@@ -523,7 +522,7 @@ const output = {
   status: 'pass',
   frontDoor: 'engine-renderer-world-draw',
   backend: renderer.inspect().capabilities.backendKind,
-  frames: { before: 1, after: 1 },
+  frames: { completed: completedFrames },
   material: {
     beforeHandle: normalMaterialHandle,
     afterHandle: liveSwap ? swapMaterialHandle : normalMaterialHandle,
@@ -549,5 +548,6 @@ const output = {
   derivedCookInputDigest: derived.record.receipt.identity.cookIdentity,
 };
 console.log(JSON.stringify(output));
+await renderer.dispose();
 sharedDevice.destroy();
 }

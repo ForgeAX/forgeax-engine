@@ -1,8 +1,7 @@
 # hello-text
 
 > **World-space MSDF text oracle** — load one baked FontAsset, spawn four
-> GlyphText entities, and let the shared layout system produce billboarded
-> meshes through the normal render path.
+> GlyphText entities, and let the Renderer share billboarded layout geometry.
 
 ## Run locally
 
@@ -31,10 +30,10 @@ world.spawn(
 );
 ~~~
 
-GlyphText is authoring data. The runtime glyphTextLayoutSystem bakes one mesh
-per text entity and attaches MeshFilter plus MeshRenderer; consumers do not
-create glyph geometry or a second text renderer. fontSize is in world units,
-and a newline starts a new line.
+GlyphText retains a managed Font handle and label values. The Renderer shares
+layout geometry for equal Font content, text and size; labels retain only their
+authored components. `assets.update(fontHandle, patch)` changes subsequent draws
+without enumerating labels. fontSize is in world units, and a newline starts a new line.
 
 ## Scene matrix
 
@@ -52,9 +51,9 @@ through the normal importer, GUID, catalog, and runtime loader chain.
 ## Evidence and falsifiers
 
 - scripts/smoke-dawn.mjs requires 60 frames, four GlyphText entities with
-  generated MeshFilter/MeshRenderer, zero app errors, and visible MSDF pixels.
+  no generated Mesh components, zero renderer errors, and visible MSDF pixels.
 - FALSIFY=atlas-empty pnpm --filter @forgeax/hello-text smoke must report
-  FALSIFY atlas-empty PASS - 0 text meshes baked, proving the smoke is
+  FALSIFY atlas-empty PASS with fewer than 200 text pixels, proving the smoke is
   sensitive to the font path while keeping the falsifier itself green.
 - Browser evidence should include a non-black canvas screenshot, zero page and
   console errors, and successful /pack-index.json plus font DDC requests.

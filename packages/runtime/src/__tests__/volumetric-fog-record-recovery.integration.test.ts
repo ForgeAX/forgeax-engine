@@ -20,6 +20,16 @@ import {
   standardPbrManifestRow,
 } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
+
+function required<T>(
+  result:
+    | { readonly ok: true; readonly value: T }
+    | { readonly ok: false; readonly error: unknown },
+): T {
+  if (!result.ok) throw result.error;
+  return result.value;
+}
 
 const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
   JSON.stringify({
@@ -119,13 +129,11 @@ function failingNullRhi(controller: { failNext: boolean; failEncode?: boolean })
       encoded.value.beginRenderPass = (passDescriptor) => {
         if (controller.failEncode) {
           controller.failEncode = false;
-          return err(
-            new RhiError({
-              code: 'webgpu-runtime-error',
-              expected: 'render pass encoding succeeds',
-              hint: 'the recovery regression intentionally rejects one encode',
-            }),
-          );
+          throw new RhiError({
+            code: 'webgpu-runtime-error',
+            expected: 'render pass encoding succeeds',
+            hint: 'the recovery regression intentionally rejects one encode',
+          });
         }
         return beginRenderPass(passDescriptor);
       };
@@ -175,7 +183,7 @@ describe('volumetric fog record recovery projection', () => {
       bufferBytes: expectedResourceFacts.bufferBytes * 2,
       totalBytes: expectedResourceFacts.totalBytes + expectedResourceFacts.bufferBytes,
     };
-    const densityHandle = world.allocSharedRef('TextureAsset', densityAsset);
+    const densityHandle = testAssets(world).create(densityAsset).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3] } },
@@ -234,6 +242,7 @@ describe('volumetric fog record recovery projection', () => {
       resourceFacts: expectedResourceFacts,
     });
     expect(densityBytesPerVoxel).toBe(1);
+    if (accepted === undefined) throw new Error('accepted volume inspection missing');
     const acceptedMemoryBytes = accepted.memoryBytes;
 
     controller.failNext = true;
@@ -320,7 +329,7 @@ it.each([
   ).unwrap();
   const world = new World();
   try {
-    const attached = renderer.attach(world).unwrap();
+    const attached = required(renderer.attach(world));
     const camera = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3] } },
@@ -335,7 +344,7 @@ it.each([
     const light = world
       .spawn({ component: DirectionalLight, data: { direction: [0, -1, -1], castShadow: true } })
       .unwrap();
-    const texture = world.allocSharedRef('TextureAsset', density());
+    const texture = testAssets(world).create(density()).unwrap();
     const fog = world
       .spawn({
         component: VolumetricFog,
@@ -361,7 +370,7 @@ it.each([
     });
     const firstResult = renderer.draw(request);
     expect(firstResult.ok, JSON.stringify(errors)).toBe(true);
-    const first = firstResult.unwrap();
+    const first = required(firstResult);
     expect(errors).toEqual([]);
     expect(first).toBeDefined();
     expect(
@@ -385,7 +394,7 @@ it.each([
       renderer.inspect().perFramePassNames,
       JSON.stringify(renderer.inspect().perFramePassNames),
     ).toEqual(previousPasses);
-    const retry = renderer.draw(request).unwrap();
+    const retry = required(renderer.draw(request));
     expect(retry?.barrelDistortion?.strength).toBeCloseTo(0.3);
     expect(retry?.barrelDistortion?.width).toBe(96);
     expect(renderer.inspect().perFramePassNames).not.toContain('volume-composite');

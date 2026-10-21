@@ -1,10 +1,11 @@
 import type { ComponentProps } from 'react';
 import '@forgeax/view-components/styles.css';
-import { OverlayRootProvider } from '@forgeax/view-components';
+import { OverlayRootProvider, PanelVisibilityProvider } from '@forgeax/view-components';
 import '../i18n/index.ts';
 import { createRoot } from 'react-dom/client';
 import { MaterialPanel, MaterialPropertiesPanel } from './MaterialPanel';
 import { MaterialPreviewPanel } from './MaterialPreviewPanel';
+import { MaterialStatsPanel } from './MaterialStatsPanel';
 import './material.css';
 
 type MountProps = ComponentProps<typeof MaterialPreviewPanel> & ComponentProps<typeof MaterialPropertiesPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
@@ -43,4 +44,8 @@ export async function mountMaterialPreviewPanel(props: MountProps) {
     />,
     props,
   );
+}
+
+export async function mountMaterialStatsPanel(props: MountProps) {
+  return mount(<PanelVisibilityProvider element={props.mountElement}><MaterialStatsPanel client={props.client} /></PanelVisibilityProvider>, props);
 }

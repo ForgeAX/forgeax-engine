@@ -1,9 +1,68 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { type AssetRegistry, runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
+import { validateMaterialCookProgramContext } from '@forgeax/engine-pack/material-cook';
 import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
-import { getAdmittedParamSchemaInterface, type ParamSchemaEntry } from '@forgeax/engine-types';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import {
+  getAdmittedParamSchemaInterface,
+  isMaterialProgramAbi,
+  type MaterialAsset,
+  type ParamSchemaEntry,
+} from '@forgeax/engine-types';
+import type { MaterialSnapshot } from '../render-system-extract';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
+
+/** Validate the fixed context table against its source and already admitted program closure. */
+export function validPublicationMaterialProjection(
+  input: unknown,
+  material: MaterialAsset,
+  available: (key: string) => boolean,
+): input is NonNullable<RenderPublication['assets'][number]['materialProjection']> {
+  if (input === null || typeof input !== 'object') return false;
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value.materialGuid !== 'string' ||
+    typeof value.specializationKey !== 'string' ||
+    typeof value.artifactHash !== 'string' ||
+    !Number.isSafeInteger(value.publicationGeneration) ||
+    Number(value.publicationGeneration) < 0 ||
+    !Array.isArray(value.staticSelection) ||
+    !value.staticSelection.every((item) => typeof item === 'string') ||
+    !Array.isArray(value.passes) ||
+    value.runtimeValues === null ||
+    typeof value.runtimeValues !== 'object'
+  )
+    return false;
+  const passes = new Map<string, string>();
+  for (const pass of value.passes) {
+    if (
+      pass === null ||
+      typeof pass !== 'object' ||
+      typeof pass.name !== 'string' ||
+      typeof pass.module !== 'string' ||
+      !Array.isArray(pass.programs) ||
+      passes.has(pass.name)
+    )
+      return false;
+    passes.set(pass.name, pass.module);
+    for (const program of pass.programs) {
+      if (
+        program === null ||
+        typeof program !== 'object' ||
+        typeof program.specializationKey !== 'string' ||
+        typeof program.artifactHash !== 'string' ||
+        !available(program.specializationKey) ||
+        !validateMaterialCookProgramContext(program.context).ok ||
+        (program.address !== undefined &&
+          program.address !== 'direct' &&
+          program.address !== 'scene-index') ||
+        (program.entry !== undefined && typeof program.entry !== 'string') ||
+        (program.abi !== undefined && !isMaterialProgramAbi(program.abi))
+      )
+        return false;
+    }
+  }
+  return (material.passes ?? []).every((pass) => passes.get(pass.name) === pass.program.module);
+}
 
 /** The same complete program closure feeds scene publication and candidate preparation. */
 export function publicationMaterialProgramKeys(material: MaterialSnapshot): ReadonlySet<string> {
@@ -45,7 +104,7 @@ function sameSchemaValue(left: unknown, right: unknown): boolean {
   );
 }
 
-/** Native clones lose realm-local schema admission; the selected program remains its owner. */
+/** Native clones regain schema admission through their selected immutable program. */
 export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
   const materials = new Map<MaterialSnapshot, MaterialSnapshot>();
   let observedSchema: readonly ParamSchemaEntry[] | undefined;
@@ -78,39 +137,40 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
         : registry.findMaterialArtifact(material.materialShaderId);
     // Full content includes defaults and author metadata. A merged schema or
     // another Pass's ABI must not be replaced merely because field types match.
-    const rebound =
+    let rebound =
       schema !== undefined &&
       shader?.ok === true &&
       schema !== shader.value.paramSchema &&
       matchesSchema(material, shader.value.paramSchema)
         ? { ...material, materialParamSchema: shader.value.paramSchema }
         : material;
+    const entryPoints = Object.fromEntries(
+      material.passes.flatMap((pass) => {
+        const key =
+          material.materialProgramKeys?.[pass.name] ??
+          runtimeMaterialShaderId(pass.program.module, pass.name);
+        if (key === undefined) return [];
+        const program = registry.findMaterialArtifact(key);
+        const reads = program.ok ? program.value.program.entryPoints : undefined;
+        return reads === undefined ? [] : [[pass.name, reads]];
+      }),
+    );
+    if (Object.keys(entryPoints).length > 0)
+      rebound = { ...rebound, materialEntryPoints: entryPoints };
     materials.set(material, rebound);
     return rebound;
   };
-  return <T extends Pick<RenderableSnapshot, 'material' | 'materials'>>(row: T): T => ({
-    ...row,
-    material: rebind(row.material),
-    materials: row.materials.map(rebind),
-  });
+  return rebind;
 }
 
 export function rebindPublicationMaterialSchemas(
   registry: ShaderRegistry,
   input: PreparedRenderPublication,
 ): PreparedRenderPublication {
-  if (input.frame.renderables.length === 0) return input;
+  if (input.materialUpdates.length === 0) return input;
   const rebind = publicationMaterialSchemaRebinder(registry);
-  const snapshots = new Map(input.frame.renderables.map((row) => [row, rebind(row)]));
-  return {
-    ...input,
-    frame: { ...input.frame, renderables: [...snapshots.values()] },
-    operations: input.operations.map((operation) =>
-      operation.kind === 'update' && operation.snapshot !== undefined
-        ? { ...operation, snapshot: snapshots.get(operation.snapshot) ?? operation.snapshot }
-        : operation,
-    ),
-  };
+  for (const resource of input.materialUpdates) resource.adopt(rebind(resource.snapshot));
+  return input;
 }
 
 /** Admit immutable producer artifacts before the full Renderer prepares their pipelines. */
@@ -137,7 +197,11 @@ export function installPublicationPrograms(
       previous.ok &&
       (previous.value.source !== row.shader.source ||
         !sameSchemaValue(previous.value.paramSchema, row.shader.paramSchema) ||
-        !sameSchemaValue(previous.value.receipt, row.shader.receipt))
+        !sameSchemaValue(previous.value.receipt, row.shader.receipt) ||
+        !sameSchemaValue(
+          previous.value.program.entryPoints,
+          row.shader.entryPoints ?? row.shader.receipt?.entryPoints,
+        ))
     ) {
       throw new RenderPublicationError({
         reason: 'shape',

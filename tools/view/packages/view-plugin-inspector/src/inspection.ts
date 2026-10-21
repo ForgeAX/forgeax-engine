@@ -26,7 +26,7 @@ export type InspectorResourceReference = {
   inherited?: boolean;
   slotName?: string;
   bindingSource?: AssetReference['origin'];
-  status?: AssetReference['status'];
+  status?: AssetReference['status'] | 'missing';
 };
 export type InspectorEntity = {
   id: string;
@@ -66,7 +66,7 @@ const BEHAVIOR_COMPONENTS = new Set<string>([...SCENE_ENTITY_COMPONENTS.navigati
 for (const kind of ['camera', 'directionalLight', 'pointLight', 'spotLight', 'areaLight', 'skylight', 'sky', 'fog', 'reflection', 'postProcess', 'sprite', 'tilemap', 'text', 'geometry', 'decal', 'terrain'] as const) {
   for (const name of SCENE_ENTITY_COMPONENTS[kind]) RENDER_COMPONENTS.add(name);
 }
-for (const name of ['MeshFilter', 'CameraView', 'RuntimeMaterialValue', 'RuntimeMeshVertices']) RENDER_COMPONENTS.add(name);
+for (const name of ['MeshFilter', 'CameraView']) RENDER_COMPONENTS.add(name);
 RENDER_COMPONENTS.delete('SpriteAnimation');
 
 const FUNCTIONAL_GROUPS = {
@@ -86,12 +86,6 @@ const COMMON_FIELDS: Record<string, readonly string[]> = {
   AudioSource: ['clip', 'playing', 'paused', 'loop', 'volume', 'playbackRate'],
   AnimationPlayer: ['clips', 'paused', 'looping'],
 };
-const ASSET_KINDS: Record<string, string> = {
-  MeshAsset: 'mesh', MaterialAsset: 'material', SceneAsset: 'scene', SkeletonAsset: 'skeleton',
-  TextureAsset: 'texture', EquirectAsset: 'equirect', AudioClipAsset: 'audio', VideoAsset: 'video',
-  ParticleEffectAsset: 'particle-effect', TerrainAsset: 'terrain', IesProfileAsset: 'ies-profile',
-  AnimationClip: 'animation', AnimationGraph: 'animation-graph', AnimationMask: 'animation-mask', RenderTarget: 'render-target',
-};
 const CAMERA_RENDER_SECTIONS: Record<string, readonly string[]> = {
   exposure: ['tonemap', 'exposure', 'exposureMode', 'compensationEv', 'rangeEv', 'rates', 'whitePoint', 'temperature', 'tint', 'colorLut', 'colorLutStrength'],
   antialiasing: ['antialias', 'transparency', 'historyVersion'],
@@ -101,7 +95,7 @@ const CAMERA_RENDER_SECTIONS: Record<string, readonly string[]> = {
 const ENTITY_DATA_COMPONENTS = new Set([
   'Entity', 'Name', 'ChildOf', 'Children', 'GlobalTransform', 'Transform', 'TransformInterpolation', 'Mobility', 'Disabled',
   'Visibility', 'ShadowParticipation', 'Layer', 'SortKey', 'ClippingPlanes', 'CapsuleShadow',
-  'CameraView', 'RuntimeMaterialValue', 'RuntimeMeshVertices',
+  'CameraView',
 ]);
 const MESH_COMPONENTS = ['MeshFilter', 'MeshRenderer', 'Skin', 'Instances'] as const;
 
@@ -217,8 +211,10 @@ export function inspectorEntityFromInspection(
             };
           }
           const type = schema.type ?? '';
-          const shared = /^shared<([^>]+)>$/.exec(type);
-          const sharedArray = /^array<shared<([^>]+)>>$/.exec(type);
+          const shared = /^asset<([^>]+)>$/.exec(type)
+            ?? (/^shared<(?:[^>]*Asset|AnimationClip|AnimationGraph)>$/.test(type) ? ['shared', 'asset'] : null);
+          const sharedArray = /^array<asset<([^>]+)>>$/.exec(type)
+            ?? (/^array<shared<(?:[^>]*Asset|AnimationClip|AnimationGraph)>(?:,\s*\d+)?>$/.test(type) ? ['shared', 'asset'] : null);
           const handle = /^unique<[^>]+>$/.test(type) && typeof rawValue === 'number';
           const vector = /^(?:array<(?:f32|f64),\s*([34])>|vec([34])|(quat))$/.exec(type);
           const vectorSize = vector ? Number(vector[1] ?? vector[2] ?? 4) : 0;
@@ -252,10 +248,10 @@ export function inspectorEntityFromInspection(
             value: label ?? normalizeInspectorFieldValue(rawValue, kind),
             ...(schema.labels ? { options: label ? Object.keys(schema.labels) : [...Object.keys(schema.labels), String(rawValue)] }
               : options ? { options } : {}),
-            ...(shared || asset ? { presentation: 'resource' as const, resource: resource(`${component.name}.${key}`, rawValue, shared ? ASSET_KINDS[shared[1]!] ?? 'asset'
+            ...(shared || asset ? { presentation: 'resource' as const, resource: resource(`${component.name}.${key}`, rawValue, shared ? shared[1]!
               : rawValue && typeof rawValue === 'object' && 'kind' in rawValue && typeof rawValue.kind === 'string' ? rawValue.kind : 'asset') }
               : sharedArray ? { presentation: 'collection' as const,
-                resources: inspectorCollection(rawValue).entries.map(([index, value]) => resource(`${component.name}.${key}[${index}]`, value, ASSET_KINDS[sharedArray[1]!] ?? 'asset')) }
+                resources: inspectorCollection(rawValue).entries.map(([index, value]) => resource(`${component.name}.${key}[${index}]`, value, sharedArray[1]!)) }
               : color ? { presentation: 'color' as const, colorChannels: rawValue as number[] }
                 : collection ? { presentation: 'collection' as const }
                   : handle ? { presentation: 'handle' as const } : {}),

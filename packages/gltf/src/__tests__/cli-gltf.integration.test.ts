@@ -6,10 +6,11 @@
 //
 // Uses the BoxTextured fixture from forgeax-engine-assets.
 
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SCANNER_BLACKLIST } from '@forgeax/engine-pack/scanner';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCliGltf } from '../cli-gltf.js';
 
@@ -118,5 +119,20 @@ describe('cli-gltf integration (AC-18)', () => {
 
     const kinds = meta.subAssets?.map((s) => s.kind) ?? [];
     expect(kinds).toContain('texture');
+  });
+
+  it('uses the complete Pack directory policy while keeping explicit roots inspectable', async () => {
+    for (const name of SCANNER_BLACKLIST) {
+      await mkdir(join(tempDir, name));
+      await writeFile(join(tempDir, name, 'orphan.gltf'), '{}');
+    }
+    const io = makeIO();
+    expect(await runCliGltf(['import', '--check', tempDir], ctxFor(io))).toBe(0);
+    expect(await runCliGltf(['import', '--check', join(tempDir, '.forgeax')], ctxFor(io))).not.toBe(
+      0,
+    );
+    expect(io.stderr.join('')).toContain('gltf-meta-missing');
+    await writeFile(join(tempDir, 'visible.glb'), '');
+    expect(await runCliGltf(['import', '--check', tempDir], ctxFor(makeIO()))).not.toBe(0);
   });
 });

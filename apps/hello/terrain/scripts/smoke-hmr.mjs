@@ -136,12 +136,14 @@ try {
     return s.height > initial.height + 2.9 && !s.gate.blocked;
   }, 'height +3 replacement resumes');
   const changed = await state();
-  assert.notEqual(changed.asset, initial.asset);
+  assert.equal(changed.asset, initial.asset);
+  assert(changed.version > initial.version);
   if (worker) {
     assert.equal(changed.worldIdentity, initial.worldIdentity);
     assert(changed.render.epoch > recovered.render.epoch);
   }
-  assert.equal(changed.physics.shapeIds.includes(`terrain:${changed.asset}`), true);
+  assert.equal(changed.physics.asset, changed.asset);
+  assert.equal(changed.physics.version, changed.version);
   const query = await page.evaluate(() => window.__terrainHmrProbe.submitted());
   assert(query.ok && Math.abs(query.value - changed.height) < 0.02);
   await page.screenshot({ path: resolve(dir, 'after.png') });

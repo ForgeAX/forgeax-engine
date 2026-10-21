@@ -185,11 +185,7 @@ export function toUnique<T extends string>(raw: number): Handle<T, 'unique'> {
  * structural cast - the `as Handle<T, 'shared'>` literal here is the
  * AC-01 exemption single point of brand creation (D-7).
  *
- * Used by `AssetRegistry.register<T>(asset).unwrap()` to brand the returned handle
- * with `Handle<TagOf<T>, 'shared'>`, and by builtin handle constants
- * (`HANDLE_CUBE` / `HANDLE_TRIANGLE` / `HANDLE_ROOM_CUBE` / `BUILTIN_HANDLE_*`)
- * to brand compile-time u32 literals without caller-side `as unknown as`
- * casts (AC-05).
+ * Used by the ECS SharedRefStore after allocating or validating a local slot.
  */
 export function toShared<T extends string>(raw: number): Handle<T, 'shared'> {
   return raw as Handle<T, 'shared'>;
@@ -218,21 +214,6 @@ export function unwrapHandle<T extends string, M extends 'unique' | 'shared'>(
 ): number {
   return h;
 }
-
-/**
- * Slot boundary between the builtin tier and the user tier (feat-20260614 M6
- * D-15 / D-16). Builtin asset handles (the 5 process-static meshes:
- * HANDLE_CUBE=1 .. HANDLE_NINESLICE_QUAD=5) occupy slots `[1, BUILTIN_BASE)`;
- * user-tier handles minted by `World.sharedRefs.alloc` start at `BUILTIN_BASE`.
- *
- * Defined here in `@forgeax/engine-types` — the single dependency shared by
- * both `@forgeax/engine-ecs` (SharedRefStore `nextSlot` init + builtin-slot
- * fail-fast) and `@forgeax/engine-runtime` (BuiltinAssetRegistry resolve
- * dispatch + AssetRegistry index) — so the boundary is one named constant with
- * no cross-package circular dependency. Value 1024 is the historic
- * `FIRST_USER_HANDLE` literal, promoted to the shared SSOT.
- */
-export const BUILTIN_BASE = 1024;
 
 // === Gen-slot codec SSOT (feat-20260623-asset-handle-generation M1 / w2) ==========
 //

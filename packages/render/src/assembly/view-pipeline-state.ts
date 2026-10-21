@@ -5,6 +5,7 @@ import { inspectStandardBloomGraph } from '../pipeline/standard-post';
 import { COOKIE_MATRIX_BYTES } from '../prepare/extended-lighting/resources';
 import type { BloomFrameReceipts } from '../record/frame-snapshot';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from '../record/mesh-ssbo';
+import { createPointsLinesViewBuffer } from '../record/points-lines-view-buffer';
 import {
   type BloomPersistentBundle,
   MATERIAL_PER_ENTITY_STRIDE,
@@ -13,7 +14,7 @@ import {
   type RenderSystemInternals,
 } from '../record/render-context';
 import { SHADOW_CASTER_BUFFER_SIZE } from '../record/shadow-pass';
-import { POINTS_LINES_VIEW_BUFFER_SIZE, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
+import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
 import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import { createMeshSsboGrowController, INITIAL_MESH_SSBO_SLOT_COUNT } from './mesh-ssbo-grow';
 import {
@@ -156,13 +157,17 @@ export function createViewPipelineState(
       };
     },
   });
+  const pointsLinesView = createPointsLinesViewBuffer(device, scope);
   const state: PipelineState = {
     ...base,
     perPassResources,
     viewUniformBuffer: allocate('camera', VIEW_UNIFORM_BUFFER_SIZE),
-    pointsLinesViewBuffer: allocate('points-lines', POINTS_LINES_VIEW_BUFFER_SIZE),
+    get pointsLinesViewBuffer() {
+      return pointsLinesView.buffer;
+    },
+    ensurePointsLinesViewCapacity: pointsLinesView.ensureCapacity,
     shadowCasterCascadeBuffer: allocate('shadow-casters', SHADOW_CASTER_BUFFER_SIZE),
-    shadowParamsBuffer: allocate('shadow-params', 64),
+    shadowParamsBuffer: allocate('shadow-params', SHADOW_PARAMS_BYTES),
     meshStorageBuffer: mesh.state.mesh as PipelineState['meshStorageBuffer'],
     materialUniformBuffer: mesh.state.material as PipelineState['materialUniformBuffer'],
     skinPaletteAllocator: createSkinPaletteAllocator(

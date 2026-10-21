@@ -13,6 +13,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 import { error, json, save, scene } from './taa-maturity.fixture';
 
 it
@@ -34,23 +35,25 @@ it
             skinWeight: Float32Array.from({ length: count * 4 }, (_, i) => (i % 4 === 0 ? 1 : 0)),
           }
         : geometry.attributes;
-    const mesh = carrier.world.allocSharedRef('MeshAsset', {
-      ...geometry,
-      attributes,
-      vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
-      ...(kind === 'morph'
-        ? {
-            morphTargets: [
-              {
-                position: Float32Array.from({ length: count * 3 }, (_, i) =>
-                  i % 3 === 0 ? 0.125 : 0,
-                ),
-              },
-            ],
-            morphWeights: new Float32Array([0]),
-          }
-        : {}),
-    });
+    const mesh = testAssets(carrier.world)
+      .create({
+        ...geometry,
+        attributes,
+        vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
+        ...(kind === 'morph'
+          ? {
+              morphTargets: [
+                {
+                  position: Float32Array.from({ length: count * 3 }, (_, i) =>
+                    i % 3 === 0 ? 0.125 : 0,
+                  ),
+                },
+              ],
+              morphWeights: new Float32Array([0]),
+            }
+          : {}),
+      })
+      .unwrap();
     let material = Materials.standard({ baseColor: [0.8, 0.2, 0.1, 1], roughness: 1 });
     if (kind === 'skin') {
       if (material.parent !== undefined || material.passes === undefined)
@@ -74,7 +77,7 @@ it
         { component: MeshFilter, data: { assetHandle: mesh } },
         {
           component: MeshRenderer,
-          data: { materials: [carrier.world.allocSharedRef('MaterialAsset', material)] },
+          data: { materials: [testAssets(carrier.world).create(material).unwrap()] },
         },
       )
       .unwrap();
@@ -85,12 +88,14 @@ it
         .unwrap();
     else {
       joint = carrier.world.spawn({ component: Transform, data: {} }).unwrap();
-      const skeleton = carrier.world.allocSharedRef('SkeletonAsset', {
-        kind: 'skeleton',
-        jointCount: 1,
-        inverseBindMatrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
-        bounds: new Float32Array([-0.5, -0.5, -0.1, 0.625, 0.5, 0.1]),
-      });
+      const skeleton = testAssets(carrier.world)
+        .create({
+          kind: 'skeleton',
+          jointCount: 1,
+          inverseBindMatrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+          bounds: new Float32Array([-0.5, -0.5, -0.1, 0.625, 0.5, 0.1]),
+        })
+        .unwrap();
       carrier.world
         .addComponent(object, {
           component: Skin,

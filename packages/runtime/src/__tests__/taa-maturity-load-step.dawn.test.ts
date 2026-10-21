@@ -15,6 +15,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import { json, quantile, save, scene } from './taa-maturity.fixture';
 
@@ -45,11 +46,12 @@ it.skipIf(
       ...(recorder === undefined ? {} : { rhi: recorder.backend.rhi }),
     });
     const { world, camera, renderer } = carrier;
-    const mesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(4, 3, 16, 16).unwrap());
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.3, 0.5, 0.7, 1], roughness: 0.35, metallic: 0.3 }),
-    );
+    const mesh = testAssets(world)
+      .create(createPlaneGeometry(4, 3, 16, 16).unwrap())
+      .unwrap();
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.3, 0.5, 0.7, 1], roughness: 0.35, metallic: 0.3 }))
+      .unwrap();
     const surface = world
       .spawn(
         { component: Transform, data: { pos: [30, 0, -0.1] } },

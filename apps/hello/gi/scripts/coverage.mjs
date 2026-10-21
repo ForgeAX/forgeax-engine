@@ -235,7 +235,7 @@ function trs(pos, q, s) {
 
 function spawnObjects(world, scene, material) {
   const handles = Object.fromEntries(
-    Object.entries(meshes).map(([name, mesh]) => [name, world.allocSharedRef('MeshAsset', mesh)]),
+    Object.entries(meshes).map(([name, mesh]) => [name, world.assets.create(mesh).unwrap()]),
   );
   const entities = new Map();
   for (const o of scene.objects)
@@ -679,7 +679,7 @@ async function createSceneRenderer(id, tracker) {
     capture: CAPTURE,
     onDevice: (device) => tracker.install(device),
   });
-  const world = new World();
+  const world = new World({ assets: created.assets });
   let entities;
   let scene;
   let material;
@@ -688,7 +688,7 @@ async function createSceneRenderer(id, tracker) {
     await gi.spawnSponza(world, created.assets, SPONZA_DIST);
   } else {
     scene = PROCEDURAL[id];
-    material = gi.publishMaterials(world, created.assets, cooked);
+    material = await gi.publishMaterials(world, created.assets, cooked);
     entities = spawnObjects(world, scene, material);
   }
   const lease = created.renderer.attach(world).unwrap();

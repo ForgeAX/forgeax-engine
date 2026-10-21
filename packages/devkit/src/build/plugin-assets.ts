@@ -16,6 +16,7 @@ import {
 import {
   type AnyScriptablePackDefinition,
   AssetGuid,
+  executePackBuild,
   PackageId,
   type PackBuildReadContext,
   type PackOutputMap,
@@ -420,13 +421,12 @@ export async function discoverPluginAssets(
         });
       },
     };
-    const result =
-      'parameters' in definition
-        ? await definition.build({
-            ...context,
-            values: resolvePackParameterValues(definition, overrides).unwrap(),
-          })
-        : await definition.build(context);
+    const result = await executePackBuild(definition, {
+      ...context,
+      ...('parameters' in definition
+        ? { values: resolvePackParameterValues(definition, overrides).unwrap() }
+        : {}),
+    });
     if (blocked) return undefined;
     if (!result.ok) failure(sourcePath, result.error);
     return result.value;
@@ -456,7 +456,7 @@ export async function discoverPluginAssets(
         batch.map(async (declaration) => ({
           declaration,
           outputs:
-            declaration.format === 'pack.ts'
+            declaration.format === 'pack.ts' && declaration.definition.plugins === true
               ? await evaluate(declaration.sourcePath, definitionFor(declaration))
               : undefined,
         })),
@@ -467,6 +467,7 @@ export async function discoverPluginAssets(
         if (result.status === 'rejected') throw result.reason;
         const { declaration, outputs } = result.value;
         if (declaration.format === 'pack.ts') {
+          if (declaration.definition.plugins !== true) continue;
           if (outputs === undefined) deferred.push(relative(facts.root, declaration.sourcePath));
           else
             await add(
@@ -494,6 +495,7 @@ export async function discoverPluginAssets(
     }
     // Instances must execute the original declaring module; moving an instance does not rebase imports.
     for (const [sourcePath, instance] of inventory.instances) {
+      if (instance.root.definition.plugins !== true) continue;
       await capturePluginSourceInput(capturedSources, sourcePath, instance.sourceRevision);
       const definition = retainedInventory
         ? (await loadScriptablePack(instance.root.sourcePath)).unwrap()

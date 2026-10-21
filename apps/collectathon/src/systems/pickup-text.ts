@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/collectathon -- pickup-text: MSDF floating "+1" text on Core pickup (AC-12).
 //
 // Two-phase per frame:
@@ -25,7 +26,6 @@ import { GlyphText } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { StateToken } from '@forgeax/engine-state';
 import { despawnOnExit } from '@forgeax/engine-state';
-import type { Handle } from '@forgeax/engine-types';
 
 import { PICKUP_SIGNAL_KEY, type PickupSignal } from '../resources';
 import { readDt } from './frame-time';
@@ -43,12 +43,12 @@ const FONT_SIZE = 0.15;
  * holds active text entity handles and their remaining lifetimes.
  *
  * @param fontHandle shared FontAsset handle (minted by main.ts after
- *   loadByGuid + allocSharedRef). When undefined, the system is a no-op
+ *   assets.load). When undefined, the system is a no-op
  *   (no font available -- graceful degradation without crashing).
  * @param gameState the GameState token for Play-scoped despawnOnExit.
  */
 export function createPickupTextSystem(
-  fontHandle: Handle<'FontAsset', 'shared'>,
+  fontHandle: AssetHandle<'font'>,
   gameState: StateToken,
 ): SystemHandle<readonly []> {
   const active: Map<EntityHandle, number> = new Map();

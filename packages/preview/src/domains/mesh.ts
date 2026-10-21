@@ -2,10 +2,10 @@ import { evaluateMeshOracle, type MeshOracleInput } from '../evidence/oracle.js'
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
 import { isRecord } from '../request-schema.js';
 import {
-  loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
   type ResourceSubject,
+  readResourceSubject,
   subjectFailure,
 } from './subject.js';
 
@@ -170,7 +170,7 @@ export function inspectMeshSubject(input: ResourceSubject): InspectionResult {
 }
 
 export async function executeMeshPreview(args: ResourcePreviewArgs, input: ResourcePreviewInput) {
-  const loaded = await loadResourceSubject(args.guid, input, 'mesh');
+  const loaded = readResourceSubject(args.guid, input, 'mesh');
   if (!loaded.ok) return loaded;
   const inspected = inspectMeshSubject(loaded.value);
   if (!inspected.ok) return inspected;

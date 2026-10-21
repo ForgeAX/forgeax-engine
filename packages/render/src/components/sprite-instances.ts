@@ -61,12 +61,15 @@
 //     SpriteInstances, type SpriteInstancesData,
 //   } from '@forgeax/engine-render';
 //
+//   import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+//   const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+//
 //   // 1 entity rendering N instanced sprites (16N transforms f32 + 4N regions f32):
 //   const transforms = new Float32Array(N * 16);
 //   const regions    = new Float32Array(N * 4);
 //   // ... fill column-major mat4 columns + [uMin, vMin, uW, vH] per instance ...
 //   world.spawn(
-//     { component: MeshFilter,      data: { assetHandle: HANDLE_QUAD } },
+//     { component: MeshFilter,      data: { assetHandle: quad } },
 //     { component: MeshRenderer,    data: { /* sprite-shaded MaterialAsset */ } },
 //     { component: SpriteInstances, data: { transforms, regions } },
 //   );
@@ -142,11 +145,12 @@ import { defineComponent } from '@forgeax/engine-ecs';
  * 80B-per-instance buffer to the GPU in the record stage.
  *
  * @example Spawn an entity rendering 10000 instanced sprites:
+ *   const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
  *   const transforms = new Float32Array(10000 * 16);
  *   const regions    = new Float32Array(10000 * 4);
  *   // ... fill mat4 columns + [uMin, vMin, uW, vH] ...
  *   world.spawn(
- *     { component: MeshFilter,      data: { assetHandle: HANDLE_QUAD } },
+ *     { component: MeshFilter,      data: { assetHandle: quad } },
  *     { component: MeshRenderer,    data: { ... } },
  *     { component: SpriteInstances, data: { transforms, regions } },
  *   );

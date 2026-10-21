@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { Update } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -18,8 +20,14 @@ export default defineFeature({
   expect:
     'All checks pass: no frames while released, the same World/Renderer/entities after restore, and frames resume.',
   setup({ app, world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    const cube = spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.95, 0.45, 0.1, 1] }), {
+    const cube = spawnMesh(world, stageCube, standard(world, { baseColor: [0.95, 0.45, 0.1, 1] }), {
       pos: [0, 0.5, 0],
     });
     let memo: Promise<readonly FeatureCheck[]> | undefined;

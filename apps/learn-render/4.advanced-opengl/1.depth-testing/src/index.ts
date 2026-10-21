@@ -13,7 +13,7 @@
 //       the fragment's clip-space depth.
 //
 // Textures are loaded through the scoped GUID asset pipeline:
-//   configureRuntimeAssetCatalog(assets, runtimeBinding) + loadByGuid<TextureAsset>.
+//   configureRuntimeAssetCatalog(assets, runtimeBinding) + assets.load(guid, 'texture').
 //
 // GREP anchors for AI users:
 //   - "// 1. engine usage"    public engine API consumed
@@ -25,15 +25,15 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App } from '@forgeax/engine-app';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
@@ -41,6 +41,8 @@ import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-
 // 2. example glue
 
 import './depth-viz.wgsl';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const DEPTH_VIZ_SHADER_ID = 'learn_render::depth_viz';
 
@@ -97,7 +99,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 4.1 depth-testing] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -121,11 +129,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Load textures through the GUID asset pipeline.
-  const metalHandleRes = await assets.loadByGuid<TextureAsset>(metalGuidRes.value);
-  const marbleHandleRes = await assets.loadByGuid<TextureAsset>(marbleGuidRes.value);
+  const metalHandleRes = await assets.load(metalGuidRes.value, 'texture');
+  const marbleHandleRes = await assets.load(marbleGuidRes.value, 'texture');
   if (!metalHandleRes.ok || !marbleHandleRes.ok) {
     console.error(
-      '[learn-render 4.1 depth-testing] loadByGuid failed:',
+      '[learn-render 4.1 depth-testing] load failed:',
       metalHandleRes.ok ? null : metalHandleRes.error.code,
       marbleHandleRes.ok ? null : marbleHandleRes.error.code,
     );
@@ -136,8 +144,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     }
     return;
   }
-  const metalTex = unwrapHandle(world.allocSharedRef('TextureAsset', metalHandleRes.value));
-  const marbleTex = unwrapHandle(world.allocSharedRef('TextureAsset', marbleHandleRes.value));
+  const metalTex = Number(metalHandleRes.value);
+  const marbleTex = Number(marbleHandleRes.value);
 
   // Create materials. When USE_DEPTH_VIZ is true, all entities share the
   // depth-viz shader material (single grayscale output). When false, PBR
@@ -145,7 +153,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   let floorMat;
   let cubeMat;
   if (USE_DEPTH_VIZ) {
-    const vizMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+    const vizMat = assets.create({
       kind: 'material',
       passes: [
         { name: 'Forward', program: { module: DEPTH_VIZ_SHADER_ID }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -155,13 +163,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         metallic: 0.0,
         roughness: 1.0,
       },
-    });
+    }).unwrap();
     floorMat = vizMat;
     cubeMat = vizMat;
   } else {
     // Normal path: PBR materials with LO textures (raw MaterialAsset POJO
     // because Materials.standard factory does not expose baseColorTexture).
-    const metalFloorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+    const metalFloorMat = assets.create({
       kind: 'material',
       passes: [
         { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -172,8 +180,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         roughness: 0.9,
         baseColorTexture: metalTex,
       },
-    });
-    const marbleCubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+    }).unwrap();
+    const marbleCubeMat = assets.create({
       kind: 'material',
       passes: [
         { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -184,7 +192,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         roughness: 0.5,
         baseColorTexture: marbleTex,
       },
-    });
+    }).unwrap();
     floorMat = metalFloorMat;
     cubeMat = marbleCubeMat;
   }
@@ -197,7 +205,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [0, FLOOR_Y, 0], quat: [SIN_NEG_90, 0, 0, COS_NEG_90], scale: [FLOOR_SCALE, FLOOR_SCALE, FLOOR_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [floorMat] } },
   ).unwrap();
 
@@ -208,7 +216,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE1_POS[0], CUBE1_POS[1], CUBE1_POS[2]],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   ).unwrap();
 
@@ -219,7 +227,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE2_POS[0], CUBE2_POS[1], CUBE2_POS[2]],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   ).unwrap();
 

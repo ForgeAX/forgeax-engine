@@ -59,6 +59,19 @@ export type ExecuteContext = {
   readonly importModule?: (specifier: string) => Promise<unknown>;
 };
 
+// One ordered binding list drives both compilation and invocation. Keep simple
+// parameters so statement scripts can retain a top-level "use strict" directive.
+const evalRootNames = [
+  'world',
+  'renderer',
+  'assets',
+  'rhiCapture',
+  'simulation',
+  'profiler',
+  'execution',
+  'plugins',
+] as const satisfies readonly (keyof ExecuteContext)[];
+
 export type ExecuteResult = { ok: true; value: unknown } | { ok: false; error: RemoteError };
 
 // Capture import at module load time. This is the host realm's dynamic
@@ -74,17 +87,6 @@ const _import = async (specifier: string): Promise<unknown> => import(/* @vite-i
 // construction-time SyntaxError. Returns the compiled fn, or throws the
 // statement-mode SyntaxError if BOTH modes fail to parse.
 function compile(script: string): FunctionConstructor['prototype'] {
-  const params = [
-    'world',
-    'renderer',
-    'assets',
-    'rhiCapture',
-    'simulation',
-    'profiler',
-    'execution',
-    'plugins',
-    '_import',
-  ] as const;
   try {
     // Expression mode: `return (<expr>)` auto-returns a lone expression
     // (including an await-expression), preserving last-expression-value.
@@ -92,13 +94,13 @@ function compile(script: string): FunctionConstructor['prototype'] {
     // still returns its value (the old indirect-eval completion-value
     // behavior) instead of parsing as a statement that returns undefined.
     const expr = script.replace(/[\s;]+$/, '');
-    return new AsyncFunction(...params, `return (${expr}\n)`);
+    return new AsyncFunction(...evalRootNames, '_import', `return (${expr}\n)`);
   } catch (e) {
     if (!(e instanceof SyntaxError)) throw e;
     // Statement mode: the script IS the async body — legalizes top-level
     // return + await + arbitrary statements. If this also fails to parse,
     // its SyntaxError is the authoritative one to surface.
-    return new AsyncFunction(...params, script);
+    return new AsyncFunction(...evalRootNames, '_import', script);
   }
 }
 
@@ -120,14 +122,7 @@ export async function executeScript(script: string, ctx: ExecuteContext): Promis
     // AsyncFunction always returns a Promise; await resolves the value and
     // surfaces any runtime throw into this catch.
     const value: unknown = await fn(
-      ctx.world,
-      ctx.renderer,
-      ctx.assets,
-      ctx.rhiCapture,
-      ctx.simulation,
-      ctx.profiler,
-      ctx.execution,
-      ctx.plugins,
+      ...evalRootNames.map((name) => ctx[name]),
       ctx.importModule ?? _import,
     );
 

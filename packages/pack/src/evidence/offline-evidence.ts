@@ -4,11 +4,8 @@ import type {
   AssetEvidence,
   AssetEvidenceError,
   AssetEvidenceInputs,
-  AssetEvidenceLocator,
   CookProduct,
-  CookReceipt,
   PackageVerificationEvidence,
-  SourceDeclarationEvidence,
 } from '@forgeax/engine-types';
 import {
   projectAssetEvidence,
@@ -29,11 +26,8 @@ export interface OfflinePackageInput {
 }
 
 /** Node/CLI input shape; it intentionally has no runtime or WebSocket fields. */
-export interface OfflineAssetEvidenceInput {
-  readonly guid: string;
-  readonly source?: SourceDeclarationEvidence;
-  readonly locator?: AssetEvidenceLocator;
-  readonly receipt?: CookReceipt;
+export interface OfflineAssetEvidenceInput
+  extends Pick<AssetEvidenceInputs, 'guid' | 'source' | 'locator' | 'receipt'> {
   readonly package?: OfflinePackageInput;
   readonly product?: CookProduct;
 }

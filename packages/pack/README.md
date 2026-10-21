@@ -1,6 +1,65 @@
 # @forgeax/engine-pack
 
+## Shared material program transport
+
+Published packages with repeated cooked material programs use the
+`pack-material-programs/1` envelope: one complete Pack plus a package-local
+program table. The transport replaces only `material-cook/4` program records
+with bounded integer references. Decode restores readonly sharing before normal
+Pack, publication, artifact and material validation. Material parameters, GUIDs,
+receipts, references and specialization facts remain in their original records.
+Plain packages without repeated programs keep their existing envelope.
+Malformed references, non-object table records, unknown envelope fields and
+unused table entries fail closed. There is no process-wide intern pool.
+
+`encodeMaterialProgramWire` and `decodeMaterialProgramWire` are available through
+`@forgeax/engine-pack/runtime`. Source authoring remains ordinary Pack; the table
+is a delivery representation. Browser/native resource reads, current publication
+reads and CLI Pack parsing restore it through this same codec. Fresh platform
+JSON is decoded before the existing immutable material-fact retention, which
+visits each shared program once; custom response readers retain clone semantics.
+
+Catalog row operations live only in `projection.operations`. Successful producer
+rows retain the three public projection axes but no longer duplicate the entire
+operation matrix as an undeclared row extension.
+
+## Optional live parameters and author drafts
+
+Authoring recipe: [expose a field in View](../../skills/forgeax-engine-assets/SKILL.md#view-pack-parameters).
+`asset inspect <source.pack.ts> --parameters-only --json` uses the same literal
+reader as drafts and reports generation/runtime modes, default locations and
+binding declarations. The gateway's `asset.inspect` accepts `parametersOnly: true`
+for this file-only query. It never requests an inventory or Catalog, imports the
+module, or generates; `status: identity` is not target or runtime validation.
+Descriptor failures carry the source path and 1-based line/column. Ordinary
+inspection remains unchanged. File-local constant package IDs are supported by
+the literal reader, including the standard source scaffold's shorthand property.
+
+Existing `parameters` arrays, `default`, `build(context.values)`, zero-parameter
+Packs and instance `values` retain their behavior. A descriptor may add
+`apply: 'build'` (the default) or `apply: { asset: 'material/body', path:
+['values', 'baseColor'] }`. Live parameters are withheld from generation inputs;
+the producer fills their otherwise absent output leaves after `build`. Duplicate
+bindings and independent assignments to a bound leaf fail validation.
+
+The build entry exports `readPackAuthoringDeclaration`, `readPackDraftSource`
+and `createFileSystemPackDrafts`. Declaration reads parse literal descriptors
+without evaluating user modules. Dynamic TS stays supported by ordinary builds
+but is not automatically rewritten. Opted-in Worker builds remove live metadata
+from the execution closure and reject ambient source/reflection bypasses.
+Named Scene, light/sky, physics and Skin schemas used by Game3D are admitted as
+generation vocabulary; runtime service and plugin imports remain unavailable.
+
+A draft owns sparse edits, at most 256 undo steps and one reusable generation.
+Live edits return a field delta; Generate alone runs the Worker; Save alone
+atomically updates TS defaults, direct JSON fields or instance overrides.
+Revisions derive from file bytes. Refresh performs field-level three-way merging;
+conflicts and write failures preserve edits. Managers retain at most 32 documents,
+confine real source paths and serialize saves to the same physical file.
+
 ## Runtime schema validation
+
+Scanner and CLI declarations select their shared identity fields from `PackIndexEntry`; cooked and runtime catalog projections preserve their own required and optional fields. Scanner executor options use `LoadScriptablePackOptions`, and offline evidence selects the portable evidence inputs while retaining its Node-owned package verification.
 
 Meta and Pack validators are generated from `schema/` by
 `scripts/generate-validators.mjs` during the package build. The runtime `./schema`
@@ -9,6 +68,16 @@ the explicit Node-only entry for Scene and Material validator factories. Generat
 source is checked in; `--check` verifies schema/generator freshness. The package's
 native-host regression imports both source and built runtime entries with Node's
 `--disallow-code-generation-from-strings` flag.
+
+## Producer output
+
+Pack owns the shared asset CLI output contract used by Pack, glTF and FBX.
+The Node-only `./build` entry exposes `AssetCliContext` and
+`emitAssetCliError`; errors retain `code`, `expected`, `hint` and optional
+`detail`. The pure `serializeMetaJson` helper is available from the root and
+`./build` entries and emits recursively sorted keys, two-space JSON and one
+trailing LF. Source producers share these rules while retaining their own
+parsers, sidecar identity checks and filesystem writes.
 
 ## MaterialAsset 唯一成功路径
 
@@ -23,6 +92,20 @@ recook 并重新验证，不手改 cooked payload。
 > 并沿 producer owner 回到源输入。
 
 ## Authoring and recovery index
+
+## Procedural plugin capability
+
+A ScriptablePack that can produce plugins declares `plugins: true` beside
+`schemaVersion` and `packageId`. Ordinary resource Packs omit it. Plugin discovery
+still validates fresh source metadata but executes only declared plugin producers;
+map meshes, materials and equipment are produced by the normal asset worklist.
+Direct Pack JSON plugin outputs remain explicit in their existing source entries.
+
+Both cold production and verified cache hits reject plugin outputs from an
+undeclared producer. Parameters, instances, isolated worker lifetimes, deferred
+content reads and complete final reference validation keep their existing owners.
+When migrating an older procedural plugin Pack, add `plugins: true`; do not add
+it to ordinary resource Packs to restore the former duplicate execution.
 
 ## ScriptablePack 与 Pack authoring
 
@@ -82,7 +165,7 @@ current output topology: there is no output manifest, `output.add()`,
 sparse `values`. These branches are mutually exclusive. Every instance has an
 independent package identity, while the parent chain is resolved through the
 current Source Index. The authoring form is lowered to the ordinary Pack v2
-transport before runtime; player code still calls `loadByGuid()` and never
+transport before runtime; player code still calls `assets.load(guid, kind)` and never
 executes TypeScript or understands parameters.
 
 `@forgeax/engine-pack/build` exposes the filesystem gateway
@@ -208,7 +291,9 @@ recreate that table.
 
 The public happy path is: declare one stable `packageId` and return a complete
 `sourceKey -> Asset` topology from `definePack`, run the Vite Pack producer,
-publish Pack v2 plus the Catalog, then call `AssetRegistry.loadByGuid(guid)`.
+publish Pack v2 plus the Catalog, then call `assets.load(guid, kind)` and bind the
+returned asset handle. Use `assets.read(handle)` when a detached payload snapshot
+is needed.
 The durable consumer matrix is the exported
 `SCRIPTABLE_PACK_ASSET_KINDS` list: mesh, material, scene, texture, equirect,
 sampler, font, render-pipeline, tileset, video, skeleton, skin,
@@ -216,8 +301,8 @@ animation-clip, animation-graph, audio, particle-effect, and ies-profile.
 
 Every successful row keeps its `sourceKey` identity, dependency `refs`, and
 producer-owned `artifacts`. Audio keeps `mediaType` and bytes; particle effects
-keep `programFingerprint` and the cooked program. Animation and tile consumers
-turn a loaded payload into a World-owned shared reference at their own boundary.
+keep `programFingerprint` and the cooked program. Animation and tile components
+consume the loaded handles through the World's asset registry.
 
 For failure, switch on `code`, inspect `expected`, `hint`, and narrowed `detail`:
 repair the definition or producer, rebuild/cold-cook, refresh the Catalog LKG,
@@ -288,6 +373,12 @@ Disk schema, GUID tools (`AssetGuid` brand + UUIDv7/v5), mesh-binary wire facts,
 ## AssetEvidence: the offline proof chain
 
 Pack owns the offline half of the GUID evidence chain: `source inventory -> catalog packageUrl/cookReceiptUrl -> producer CookReceipt -> Pack v2 package and artifact verification -> AssetEvidence`.
+
+`check:no-assets-load` guards Pack production sources against runtime loading and
+Runtime/Assets imports through either physical packages or public SDK paths.
+Games and tools use the runtime `AssetRegistry.load` API; their code is outside
+this offline boundary. The gate's executable fixtures cover both accepted game
+loading and rejected Pack dependencies.
 
 The catalog is a locator, not proof. `lookup/verify --guid --project --catalog --json` joins the source meta or authored pack, the catalog row, the receipt, and the package descriptors. Both commands emit one JSON record on stdout or one structured `{code, expected, hint, detail}` record on stderr; there is no runtime or WebSocket dependency.
 
@@ -934,3 +1025,23 @@ Runtime Pack publication derives the complete protocol tuple through Types `crea
 UUID string admission uses `isValidAssetGuidString` from `@forgeax/engine-types`.
 Pack owns byte parsing/formatting, generation and source-key derivation, and
 reuses the Types `AssetGuid` brand.
+
+Package product and finalized document envelopes derive GUID, kind, name and ref
+fields from the runtime envelope contract. Finalization replaces artifact bodies
+with descriptors while retaining the product receipt and source identity types.
+
+Standalone ScriptablePack loads and pooled loads use one worker executor and
+revision-tagged load/build protocol. A standalone executor retires after one
+task; the pool supplies its bounded reuse policy. Both routes retain worker
+resource limits, source snapshots, build timeouts and retirement cleanup.
+Retirement remains terminal even when captured sources arrive after a module
+timeout. Cleanup waits for in-flight directory preparation before removing it;
+only a completed reusable lease clears the executor's disposal state.
+Directory allocation failures retain the structured module-load error and
+still retire the Worker, including when no temporary output was created.
+
+Author-closure transfer uses the same relative source candidate order as scriptable execution, including `.js` to `.ts`, `.mjs` to `.mts`, `.cjs` to `.cts` and extensionless index resolution.
+
+The module executor pool derives capacity from its retained Worker set. Its cache preparation resolves path and ownership together, and concurrent pool disposals await the same Worker retirements before removing an owned cache.
+
+`NativeCookerRegistry.runTransaction` returns the accepted `{ draft, generation }` snapshot with `status: 'committed' | 'recovered'`; only recovery carries `recoveryHint`. A failed candidate retains the previous snapshot without parallel draft or generation fields. Draft admission is shared by `runDraft`, `run` and transactions; malformed producer output and throwing transaction validation return structured failures. Publication callbacks remain responsible for atomic publication.

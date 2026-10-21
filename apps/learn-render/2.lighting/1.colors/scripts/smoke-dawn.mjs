@@ -16,6 +16,10 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -1480,7 +1484,6 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Materials } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 const { unwrapHandle } = await import('@forgeax/engine-types');
-const { HANDLE_CUBE, resolveAssetHandle } = await import('@forgeax/engine-assets-runtime');
 
 const { buildEngineShaderManifest } = await import(
   '@forgeax/engine-vite-plugin-shader'
@@ -1518,7 +1521,12 @@ const errors = [];
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -1528,7 +1536,7 @@ const lease = worldAttachment1.value;
 // the default white texture at the fixed cubeCenter ROI.
 const specularColorTextureHandle = materialSpecularColorTexture
   ? unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
         format: 'rgba8unorm',
@@ -1537,36 +1545,36 @@ const specularColorTextureHandle = materialSpecularColorTexture
         mips: materialBaseColorTextureSamplerMinFilter
           ? { kind: 'generate' }
           : { kind: 'none' },
-      }),
+      }).unwrap(),
     )
   : undefined;
 const normalTextureHandle = materialNormalTexture
   ? unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
         format: 'rgba8unorm',
         data: new Uint8Array([255, 128, 255, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     )
   : undefined;
 const emissiveTextureHandle = materialEmissiveTexture
   ? unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
         format: 'rgba8unorm',
         data: new Uint8Array([0, 0, 0, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     )
   : undefined;
 const baseColorTextureHandle = materialBaseColorTexture
   ? unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: {
           viewDimension: '2d',
@@ -1691,7 +1699,7 @@ const baseColorTextureHandle = materialBaseColorTexture
                   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_SAMPLER_MAX_ANISOTROPY !== ''
                 ? { kind: 'generate' }
                 : { kind: 'none' },
-      }),
+      }).unwrap(),
     )
   : undefined;
 const baseColorSamplerHandle =
@@ -1705,7 +1713,7 @@ const baseColorSamplerHandle =
   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_SAMPLER_MAX_ANISOTROPY !== '' ||
   materialBaseColorTextureMipmap
   ? unwrapHandle(
-      world.allocSharedRef('SamplerAsset', {
+      world.assets.create({
         kind: 'sampler',
         magFilter:
           materialBaseColorTextureSamplerMinFilter ||
@@ -1777,7 +1785,7 @@ const baseColorSamplerHandle =
         maxAnisotropy: FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_SAMPLER_MAX_ANISOTROPY === '1'
           ? 16
           : undefined,
-      }),
+      }).unwrap(),
     )
   : undefined;
 const metallicRoughnessSamplerHandle =
@@ -1791,7 +1799,7 @@ const metallicRoughnessSamplerHandle =
   materialMetallicRoughnessTextureSamplerMaxAnisotropy ||
   materialMetallicRoughnessTextureMipmap
   ? unwrapHandle(
-      world.allocSharedRef('SamplerAsset', {
+      world.assets.create({
         kind: 'sampler',
         magFilter:
           materialMetallicRoughnessTextureSamplerMagFilter
@@ -1868,12 +1876,12 @@ const metallicRoughnessSamplerHandle =
           : materialMetallicRoughnessTextureMipmap
             ? { lodMinClamp: 1, lodMaxClamp: 1 }
             : {}),
-      }),
+      }).unwrap(),
     )
   : undefined;
 const metallicRoughnessTextureHandle = materialMetallicRoughnessTexture
   ? unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: {
           viewDimension: '2d',
@@ -1977,26 +1985,24 @@ const metallicRoughnessTextureHandle = materialMetallicRoughnessTexture
             FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_MIPMAP === '1')
             ? { kind: 'generate' }
             : { kind: 'none' },
-      }),
+      }).unwrap(),
     )
   : undefined;
 const occlusionTextureHandle = materialOcclusionTexture
   ? unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
         format: 'rgba8unorm',
         data: new Uint8Array([0, 0, 0, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     )
   : undefined;
 
 // Mint material column handles (mirrors src/index.ts scene setup; M8 D-17).
-const objectMatHandle = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({
+const objectMatHandle = world.assets.create(Materials.standard({
     baseColor:
       FALSIFY_OBJECT_COLOR === 'green'
         ? [0.1, 1.0, 0.1, materialBaseColorAlpha]
@@ -2103,14 +2109,13 @@ const objectMatHandle = world.allocSharedRef(
     normalScale: FALSIFY_MATERIAL_NORMAL_SCALE === '' ? [1, 1] : [0, 0],
     emissiveTexture: emissiveTextureHandle,
     occlusionTexture: occlusionTextureHandle,
-  }),
-);
-const lampMatHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([1.0, 1.0, 1.0, 1.0]));
+  })).unwrap();
+const lampMatHandle = world.assets.create(Materials.unlit([1.0, 1.0, 1.0, 1.0])).unwrap();
 
 const directionalLightColor =
   FALSIFY_LIGHT_COLOR === 'blue' ? [0.05, 0.05, 1.0] : [1.0, 1.0, 1.0];
 
-const cubeAssetRes = resolveAssetHandle(world, HANDLE_CUBE);
+const cubeAssetRes = assets.read(primitiveCube);
 if (!cubeAssetRes.ok) {
   console.error(`[smoke] FAIL - HANDLE_CUBE asset unavailable: ${cubeAssetRes.error.code}`);
   process.exit(1);
@@ -2153,7 +2158,7 @@ const multiUvCubeAsset = {
   attributes: multiUvCubeAttributes,
   aabb: new Float32Array(cubeAsset.aabb),
 };
-const multiUvCubeHandle = world.allocSharedRef('MeshAsset', multiUvCubeAsset);
+const multiUvCubeHandle = world.assets.create(multiUvCubeAsset).unwrap();
 const samplerCubeVertices = new Float32Array(cubeAsset.vertices);
 const samplerCubeUv = new Float32Array(cubeVertexCount * 2);
 const samplerCubeUvValue = materialBaseColorTextureSamplerAddress
@@ -2171,7 +2176,7 @@ for (let i = 0; i < cubeVertexCount; i++) {
   samplerCubeUv[i * 2] = uv[0];
   samplerCubeUv[i * 2 + 1] = uv[1];
 }
-const samplerCubeHandle = world.allocSharedRef('MeshAsset', {
+const samplerCubeHandle = world.assets.create({
   ...cubeAsset,
   vertices: samplerCubeVertices,
   attributes: {
@@ -2181,7 +2186,7 @@ const samplerCubeHandle = world.allocSharedRef('MeshAsset', {
     tangent: new Float32Array(cubeAsset.attributes.tangent),
   },
   aabb: new Float32Array(cubeAsset.aabb),
-});
+}).unwrap();
 const objectMeshHandle =
   materialBaseColorTextureUvSet || FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1'
     ? multiUvCubeHandle
@@ -2193,7 +2198,7 @@ const objectMeshHandle =
         materialBaseColorTextureMipmap ||
         materialMetallicRoughnessTextureSamplerAddress
       ? samplerCubeHandle
-      : HANDLE_CUBE;
+      : primitiveCube;
 
 // Spawn colored cube at origin.
 world
@@ -2241,7 +2246,7 @@ world
       data: {
         pos: [LPX, LPY, LPZ], quat: [0, 0, 0, 1], scale: [0.2, 0.2, 0.2],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [lampMatHandle] } },
   )
   .unwrap();

@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { MeshRenderer } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
+import { spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Unlit shading',
@@ -11,6 +13,14 @@ export default defineFeature({
   expect:
     'ON: three bright flat magenta/cyan/yellow shapes on a black stage. OFF: the same shapes use Standard PBR and turn black (no light in the scene).',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnGround(world);
     spawnCamera(world);
     const colors = [
@@ -20,7 +30,7 @@ export default defineFeature({
     ] as const;
     const flat = colors.map((rgba) => unlit(world, rgba));
     const lit = colors.map((baseColor) => standard(world, { baseColor }));
-    const meshes = [MESH.cube, MESH.sphere, MESH.cube] as const;
+    const meshes = [stageCube, stageSphere, stageCube] as const;
     const entities = meshes.map((mesh, index) =>
       spawnMesh(world, mesh, flat[index] as (typeof flat)[number], {
         pos: [-1.6 + index * 1.6, 0.6, 0],

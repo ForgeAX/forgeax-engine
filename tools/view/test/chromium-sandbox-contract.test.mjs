@@ -32,9 +32,10 @@ function hasSandboxEnabled(options, source) {
 }
 
 test('tracked View Chromium launches keep sandboxing enabled', () => {
-  const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+  const deleted = new Set(execFileSync('git', ['ls-files', '--deleted', '-z'], { encoding: 'utf8' }).split('\0'));
+  const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' })
     .split('\0')
-    .filter(path => sourceExtensions.test(path));
+    .filter(path => sourceExtensions.test(path) && !deleted.has(path));
   const violations = [];
 
   for (const path of files) {

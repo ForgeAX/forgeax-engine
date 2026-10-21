@@ -1,9 +1,11 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { worldRenderResources } from '../publication/resource-scope';
 
 export async function verifyTextureGenerations() {
   const recorder = attachRecorder(gpu).unwrap();
@@ -15,15 +17,10 @@ export async function verifyTextureGenerations() {
   const errors: string[] = [];
   raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('no cubemap');
-    },
-    device.caps,
-  );
-  const world = new World();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const scope = worldRenderResources(world);
   const source = (index: number): TextureAsset => ({
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
@@ -33,8 +30,8 @@ export async function verifyTextureGenerations() {
     data: new Uint8Array([index * 25, 255 - index * 20, index * 10, 255]),
   });
   let payload = source(0),
-    handle = world.allocSharedRef('TextureAsset', payload);
-  let previous = store.ensureResident(handle, payload, world).unwrap();
+    handle = assets.create(payload).unwrap();
+  let previous = store.ensureResident(handle, payload, scope).unwrap();
   const layout = device
     .createBindGroupLayout({
       entries: [
@@ -71,14 +68,14 @@ export async function verifyTextureGenerations() {
     for (let index = 1; index <= 8; index++) {
       const oldHandle = handle,
         oldPayload = payload;
-      const oldLease = store.retainTextureResidency(oldHandle, world);
+      const oldLease = store.retainTextureResidency(oldHandle, scope);
       assert(oldLease);
-      world.sharedRefs.release(oldHandle).unwrap();
+      assets.release(oldHandle).unwrap();
       payload = source(index);
-      handle = world.allocSharedRef('TextureAsset', payload);
-      expect(Number(handle) & 0xffffff).toBe(Number(oldHandle) & 0xffffff);
+      handle = assets.create(payload).unwrap();
+      expect(assets.validate(oldHandle)).toMatchObject({ ok: false });
       expect(handle).not.toBe(oldHandle);
-      const current = store.ensureResident(handle, payload, world).unwrap();
+      const current = store.ensureResident(handle, payload, scope).unwrap();
       const binding = device
         .createBindGroup({
           layout,
@@ -100,7 +97,7 @@ export async function verifyTextureGenerations() {
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       const completed = device.queue.onSubmittedWorkDone();
       oldLease.track(completed);
-      store.invalidateTexture(oldHandle, world);
+      store.invalidateTexture(oldHandle, scope);
       expect(previous.texture.isDestroyed).toBe(false);
       const released = oldLease.release(true);
       await completed;
@@ -112,7 +109,7 @@ export async function verifyTextureGenerations() {
       const values = [...new Uint32Array(bytes.buffer)];
       assert(payload.data && oldPayload.data);
       expect(values).toEqual([...payload.data, ...oldPayload.data]);
-      expect(store.getTextureGpuView(handle, world)).toBe(current.view);
+      expect(store.getTextureGpuView(handle, scope)).toBe(current.view);
       expect(previous.texture.isDestroyed).toBe(true);
       expect(current.texture.isDestroyed).toBe(false);
       facts.push({ handle: Number(handle), rgba: values.slice(0, 4), previous: values.slice(4) });
@@ -147,8 +144,9 @@ export async function verifyTextureGenerations() {
     expect(errors).toEqual([]);
     return { bytes, facts };
   } finally {
-    world.sharedRefs.release(handle).unwrap();
+    assets.release(handle).unwrap();
     store.destroyAll();
+    assets.dispose();
     device.destroyBuffer(output).unwrap();
     (await recorder.dispose()).unwrap();
     raw.destroy();

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `animation/easing_functions` example (eased vs linear motion) \u2014 a MOTION demo exercising the new math `easing` namespace (smoothstep/smootherstep, mapping Bevy EaseFunction / GLSL smoothstep), contrasting a linear cube with a smoothstep-eased cube over createApp's managed frame-loop + Time.elapsed.",
+  "description": "Reproduction of Bevy's `animation/easing_functions` example (eased vs linear motion) — a MOTION demo exercising the new math `easing` namespace (smoothstep/smootherstep, mapping Bevy EaseFunction / GLSL smoothstep), contrasting a linear cube with a smoothstep-eased cube over createApp's managed frame-loop + Time.elapsed.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -49,7 +49,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

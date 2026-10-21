@@ -1,13 +1,11 @@
-// Unit — RhiCallEvent + Tape + work inspection type validation.
+// Unit — RhiCallEvent + Tape type validation.
 //
 // Verifies that ~5 RhiCallEvent kinds can be constructed at the type level,
 // that they are JSON-serializable (no native GPU objects in the shape),
-// and that Tape / work inspection / RhiCapsRecorded types compile.
+// and that Tape / RhiCapsRecorded types compile.
 
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type {
-  InspectBindingEntry,
-  InspectReport,
   RhiCallEvent,
   RhiCallEventBeginRenderPass,
   RhiCallEventCreateBuffer,
@@ -200,67 +198,5 @@ describe('RhiCapsRecorded — constructibility', () => {
     };
     expect(caps.canvasFormat).toBe('bgra8unorm');
     expect(caps.rgba16floatRenderable).toBe(false);
-  });
-});
-
-describe('InspectReport — constructibility', () => {
-  it('full report without rt compiles', () => {
-    const report: InspectReport = {
-      frameIdx: 0,
-      workIndex: 5,
-      passIdx: 0,
-      bindings: [],
-      drawCall: {
-        pipelineKind: 'render',
-        pipelineHandleId: 'pipeline:1',
-      },
-    };
-    expectTypeOf(report).toMatchTypeOf<InspectReport>();
-    expect(report.frameIdx).toBe(0);
-    expect(report.workIndex).toBe(5);
-    expect(report.rt).toBeUndefined();
-  });
-
-  it('report with rt path as string (not base64)', () => {
-    const report: InspectReport = {
-      frameIdx: 0,
-      workIndex: 42,
-      passIdx: 1,
-      bindings: [],
-      drawCall: {
-        pipelineKind: 'compute',
-        pipelineHandleId: 'pipeline:2',
-        dispatchX: 16,
-        dispatchY: 1,
-        dispatchZ: 1,
-      },
-      rt: '.forgeax-debug/test-run/inspect/d0042-rt0.png',
-    };
-    // AC-19: rt is a path string, not base64 data URI
-    expect(report.rt).toContain('png');
-    expect(report.rt).not.toContain('base64');
-    expect(report.rt).not.toContain('data:');
-  });
-});
-
-describe('InspectBindingEntry — constructibility', () => {
-  it('buffer kind', () => {
-    const entry: InspectBindingEntry = {
-      groupIndex: 0,
-      entryIndex: 0,
-      handleId: 'buf-3',
-      kind: 'buffer',
-    };
-    expect(entry.kind).toBe('buffer');
-  });
-
-  it('texture kind', () => {
-    const entry: InspectBindingEntry = {
-      groupIndex: 1,
-      entryIndex: 2,
-      handleId: 'texture:5',
-      kind: 'texture',
-    };
-    expect(entry.kind).toBe('texture');
   });
 });

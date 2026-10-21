@@ -29,11 +29,28 @@
         "@forgeax/engine-runtime",
         "@forgeax/engine-state"
       ],
-      "risks": ["baseline", "dynamic", "churn", "recovery", "gpu", "behavioral"],
-      "phaseInputs": ["baseline", "dynamic", "churn", "recovery"],
+      "risks": [
+        "baseline",
+        "dynamic",
+        "churn",
+        "recovery",
+        "gpu",
+        "behavioral"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "dynamic",
+        "churn",
+        "recovery"
+      ],
       "evidence": {
-        "frontDoors": ["dawn-node"],
-        "legs": ["semantic", "recovery"]
+        "frontDoors": [
+          "dawn-node"
+        ],
+        "legs": [
+          "semantic",
+          "recovery"
+        ]
       },
       "oracle": {
         "stdoutIncludes": [
@@ -76,7 +93,9 @@
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-shader": "workspace:*",

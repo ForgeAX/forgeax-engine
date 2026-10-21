@@ -1,8 +1,9 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { Disabled, FixedUpdate, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { inState } from '@forgeax/engine-state';
-import { quat, type Handle } from '@forgeax/engine-runtime';
+import { quat } from '@forgeax/engine-runtime';
 import {
   Projectile,
   Sentinel,
@@ -120,7 +121,7 @@ export function createSentinelRangedThreat(args: {
 }): SentinelRangedThreat {
   const originalPresentation = args.world.get(args.entity, TargetPresentation);
   const originalMaterials = originalPresentation.ok
-    ? [...originalPresentation.value.authoredMaterials] as Handle<'MaterialAsset', 'shared'>[]
+    ? [...originalPresentation.value.authoredMaterials] as AssetHandle<'material'>[]
     : [];
   const readCadence = (): SentinelCadence => {
     const current = args.world.get(args.entity, Sentinel);

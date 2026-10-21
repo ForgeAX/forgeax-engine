@@ -8,6 +8,10 @@ import { spawnSync } from 'node:child_process';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { classifyDawnErrors, normalizeReadbackRgba, READINESS_FRAME_LIMIT } from './smoke-diagnostics.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -82,7 +86,7 @@ const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { mat4 } = await import('@forgeax/engine-math');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
-const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+
 const { Transform, scenePlugin } = await import('@forgeax/engine-scene');
 const {
   loadVfxGpuEffect,
@@ -97,7 +101,6 @@ const {
   validatedStagePlan,
 } = await import('@forgeax/engine-vfx-render');
 
-const world = new World();
 let playerEntity = 0;
 let cameraEntity = 0;
 const cameraEntities = new WeakMap();
@@ -151,6 +154,8 @@ if (!benchmarkMode && !m11Mode && !m35Mode) {
   };
 }
 const assets = constructed.value.assets;
+const world = new World({assets});
+const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 const errors = [];
 let currentFrame = -1;
 renderer.subscribe((event) => {
@@ -170,9 +175,9 @@ const attached = await host.attachWorld({ world, assets });
 if (!attached.ok) throw new Error(`VFX host attach failed: ${attached.error.hint}`);
 
 const materialGuid = assets.parseGuid('019e9c00-0000-7000-8000-000000000002');
-const material = await assets.loadByGuid(materialGuid);
+const material = await assets.load(materialGuid, 'material');
 if (!material.ok) throw new Error(`strike material load failed: ${material.error.hint}`);
-const strikeMaterial = world.allocSharedRef('MaterialAsset', material.value);
+const strikeMaterial = material.value;
 cameraEntity = world.spawn(
   { component: Transform, data: { pos: [0, 1.2, 7.5] } },
   { component: Camera, data: { fov: Math.PI / 3, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
@@ -184,13 +189,13 @@ world.spawn({
 }).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 1.4, 0], scale: [0.16, 2.8, 0.16] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [strikeMaterial] } },
 ).unwrap();
 
 const loaded = await loadVfxGpuEffect(assets, '019e9c00-0000-7000-8000-000000000000');
 if (!loaded.ok) throw new Error(`particle effect load failed: ${loaded.error.code}: ${loaded.error.hint}`);
-let effectAsset = loaded.value;
+let effectAsset = assets.read(loaded.value).unwrap();
 let benchmarkAllocatedCapacity = 0;
 if (benchmarkMode) {
   const emitterCount = effectAsset.program.emitters.length;
@@ -249,7 +254,7 @@ if (!depthProviderReady.ok) {
   }
   throw new Error(`scene-depth provider failed: ${depthProviderReady.error.hint}`);
 }
-const effect = world.allocSharedRef('ParticleEffectAsset', effectAsset);
+const effect = benchmarkMode ? assets.create(effectAsset).unwrap() : loaded.value;
 playerEntity = world.spawn(
   { component: Transform, data: { pos: [0, -0.2, 0] } },
   { component: ParticleEffectPlayer, data: { effect, playing: true, seed: SEED, timeScale: 1 } },
@@ -282,7 +287,7 @@ for (const showcase of benchmarkMode || m35Mode ? [] : topologyShowcases) {
       emitters: [showcaseEmitter],
     },
   };
-  const showcaseHandle = world.allocSharedRef('ParticleEffectAsset', showcaseEffect);
+  const showcaseHandle = world.assets.create(showcaseEffect).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [showcase.x, -0.8, 0] } },
     {
@@ -305,7 +310,7 @@ if (m35Mode) {
     )
     .unwrap();
   cameraEntities.set(healthyWorld, healthyCameraEntity);
-  const healthyEffect = healthyWorld.allocSharedRef('ParticleEffectAsset', effectAsset);
+  const healthyEffect = effect;
   healthyPlayerEntity = healthyWorld
     .spawn(
       { component: Transform, data: { pos: [0, -0.2, 0] } },
@@ -833,7 +838,7 @@ const result = {
   errors,
   warmupErrors,
   persistentErrors,
-  depthProviderReady: depthProviderReady.value.readiness === 'ready',
+  depthProviderReady: depthProviderReady.ok,
   softParticle,
   eventScenario,
   eventOverflow,

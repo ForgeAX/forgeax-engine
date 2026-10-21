@@ -1,6 +1,7 @@
 import {
   computeTangentVec4,
   createMeshBuilder,
+  deriveVertexLayoutProjection,
   writeNormalPlaneTangent,
 } from '@forgeax/engine-geometry';
 import {
@@ -42,27 +43,39 @@ export interface MeshExportItem {
   readonly materials?: readonly MeshExportMaterial[];
 }
 
+/** Three source/export names; Geometry alone owns their storage widths. */
+const STATIC_ATTRIBUTE_NAMES: Readonly<Partial<Record<keyof VertexAttributeMap, string>>> = {
+  position: 'position',
+  normal: 'normal',
+  uv: 'uv',
+  tangent: 'tangent',
+  color: 'color',
+  uv1: 'uv1',
+  uv2: 'uv2',
+  uv3: 'uv3',
+  uv4: 'TEXCOORD_4',
+  uv5: 'TEXCOORD_5',
+  uv6: 'TEXCOORD_6',
+  uv7: 'TEXCOORD_7',
+};
+
 export function geometryToMesh(geometry: BufferGeometry): Result<MeshAsset, AssetError> {
   if (geometry.getAttribute('normal') === undefined) geometry.computeVertexNormals();
-  const attributes: VertexAttributeMap = {};
-  for (const [name, key] of [
-    ['position', 'position'],
-    ['normal', 'normal'],
-    ['uv', 'uv'],
-    ['color', 'color'],
-  ] as const) {
-    const attribute = geometry.getAttribute(name);
-    if (attribute === undefined) continue;
-    const values = new Float32Array(attribute.count * (name === 'color' ? 4 : attribute.itemSize));
-    for (let i = 0; i < attribute.count; i++) {
-      const components = name === 'color' ? 4 : attribute.itemSize;
-      for (let component = 0; component < components; component++) {
-        values[i * components + component] =
-          component === 3 && attribute.itemSize === 3 ? 1 : attribute.getComponent(i, component);
+  const attributes: VertexAttributeMap = Object.fromEntries(
+    Object.entries(STATIC_ATTRIBUTE_NAMES).flatMap(([key, name]) => {
+      const attribute = geometry.getAttribute(name);
+      if (attribute === undefined) return [];
+      const components = key === 'color' ? 4 : attribute.itemSize;
+      const values = new Float32Array(attribute.count * components);
+      for (let i = 0; i < attribute.count; i++) {
+        for (let component = 0; component < components; component++) {
+          values[i * components + component] =
+            component === 3 && attribute.itemSize === 3 ? 1 : attribute.getComponent(i, component);
+        }
       }
-    }
-    attributes[key] = values;
-  }
+      return [[key, values]];
+    }),
+  );
   const count = geometry.getAttribute('position')?.count ?? 0;
   if (count > 10_000_000) return formatFailure('position', 'mesh exceeds ten million vertices');
   const indices =
@@ -73,25 +86,27 @@ export function geometryToMesh(geometry: BufferGeometry): Result<MeshAsset, Asse
   // Missing/collapsed UVs cannot define texture orientation. Use a finite
   // normal-plane basis only when the shared UV-derived kernel rejects that case.
   attributes.uv ??= new Float32Array(count * 2);
-  const tangents = computeTangentVec4(
-    attributes.position as Float32Array,
-    attributes.normal as Float32Array,
-    attributes.uv as Float32Array,
-    indices,
-  );
-  if (tangents.ok) attributes.tangent = tangents.value;
-  else {
-    const normals = attributes.normal as Float32Array;
-    const basis = new Float32Array(count * 4);
-    for (let i = 0; i < count; i++) {
-      const nx = normals[i * 3] ?? 0,
-        ny = normals[i * 3 + 1] ?? 0,
-        nz = normals[i * 3 + 2] ?? 0;
-      if (!writeNormalPlaneTangent(basis, i * 4, nx, ny, nz))
-        return formatFailure('normal', 'triangle normals must define a finite tangent plane');
-      basis[i * 4 + 3] = 1;
+  if (attributes.tangent === undefined) {
+    const tangents = computeTangentVec4(
+      attributes.position as Float32Array,
+      attributes.normal as Float32Array,
+      attributes.uv as Float32Array,
+      indices,
+    );
+    if (tangents.ok) attributes.tangent = tangents.value;
+    else {
+      const normals = attributes.normal as Float32Array;
+      const basis = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) {
+        const nx = normals[i * 3] ?? 0,
+          ny = normals[i * 3 + 1] ?? 0,
+          nz = normals[i * 3 + 2] ?? 0;
+        if (!writeNormalPlaneTangent(basis, i * 4, nx, ny, nz))
+          return formatFailure('normal', 'triangle normals must define a finite tangent plane');
+        basis[i * 4 + 3] = 1;
+      }
+      attributes.tangent = basis;
     }
-    attributes.tangent = basis;
   }
   const groups =
     geometry.groups.length === 0
@@ -138,7 +153,6 @@ export function exportObject(
     }
     if (
       item.mesh.submeshes.some((submesh) => submesh.topology !== 'triangle-list') ||
-      item.mesh.attributes.skinIndex !== undefined ||
       item.mesh.morphTargets !== undefined
     )
       return formatFailure(
@@ -160,20 +174,14 @@ export function exportObject(
       return formatFailure('matrix', 'world matrix requires sixteen finite values');
     const matrix = item.matrix === undefined ? new Matrix4() : new Matrix4().fromArray(item.matrix);
     const geometry = new BufferGeometry();
-    for (const [key, semantic, size] of [
-      ['position', 'position', 3],
-      ['normal', 'normal', 3],
-      ['uv', 'uv', 2],
-      ['uv1', 'uv1', 2],
-      ['uv2', 'uv2', 2],
-      ['uv3', 'uv3', 2],
-      ['uv4', 'TEXCOORD_4', 2],
-      ['uv5', 'TEXCOORD_5', 2],
-      ['uv6', 'TEXCOORD_6', 2],
-      ['uv7', 'TEXCOORD_7', 2],
-      ['color', 'color', 4],
-      ['tangent', 'tangent', 4],
-    ] as const) {
+    for (const { key, byteLength } of deriveVertexLayoutProjection(canonical.attributes)
+      .attributes) {
+      const semantic = STATIC_ATTRIBUTE_NAMES[key];
+      if (semantic === undefined)
+        return formatFailure(
+          item.name,
+          'static triangle meshes are required; bake skins before exporting',
+        );
       const attribute = canonical.attributes[key];
       if (attribute === undefined) continue;
       if (!(attribute instanceof Float32Array))
@@ -181,7 +189,10 @@ export function exportObject(
           `${item.name}.${key}`,
           'export requires materialized float attributes',
         );
-      geometry.setAttribute(semantic, new BufferAttribute(attribute, size));
+      geometry.setAttribute(
+        semantic,
+        new BufferAttribute(attribute, byteLength / Float32Array.BYTES_PER_ELEMENT),
+      );
     }
     if (canonical.indices !== undefined)
       geometry.setIndex(new BufferAttribute(canonical.indices, 1));

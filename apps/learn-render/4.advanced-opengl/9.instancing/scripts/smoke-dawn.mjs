@@ -9,8 +9,8 @@
 //   2. parseGltfFromFile(rock.gltf) -- vendored asteroid mesh.
 //   3. decodeImageFromFile(mars.png + rock.png) -- the planet + rock
 //      diffuse textures.
-//   4. registerWithGuid for each (mesh + texture pairs) so the demo's
-//      4 vendored GUIDs are reachable.
+//   4. assets.create for each mesh and texture; components consume the
+//      managed handles.
 //   5. spawn 1 planet entity at origin (non-instanced) + 1 asteroid
 //      belt entity with World-owned Instances.transforms containing
 //      ASTEROID_COUNT=12 packed transforms (smoke uses small N for
@@ -250,16 +250,16 @@ const mkTex = (decoded) => ({
   colorSpace: decoded.colorSpace,
   mips: decoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 });
-// World must exist before allocSharedRef mints any column handle.
-const world = new World();
+// Bind the World to the asset registry used by this scene.
+const world = new World({ assets: assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
 // Texture handles feed material baseColorTexture fields (numeric slot ->
 // unwrapHandle); mesh handles feed MeshFilter.assetHandle (branded handle).
-const marsHandle = unwrapHandle(world.allocSharedRef('TextureAsset', mkTex(marsDecoded)));
-const rockTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', mkTex(rockTexDecoded)));
+const marsHandle = unwrapHandle(world.assets.create(mkTex(marsDecoded)).unwrap());
+const rockTexHandle = unwrapHandle(world.assets.create(mkTex(rockTexDecoded)).unwrap());
 
 // Bridge planet/rock mesh IRs to MeshAsset.
 const planetMeshIrs = planetDoc.meshes.filter((m) => m.meshIndex === 0);
@@ -270,23 +270,23 @@ const planetMeshAsset = planetMeshResult.value;
 const rockMeshResult = meshIrToMeshAsset(rockMeshIrs);
 if (!rockMeshResult.ok) throw rockMeshResult.error;
 const rockMeshAsset = rockMeshResult.value;
-const planetMeshHandle = world.allocSharedRef('MeshAsset', planetMeshAsset);
-const rockMeshHandle = world.allocSharedRef('MeshAsset', rockMeshAsset);
+const planetMeshHandle = world.assets.create(planetMeshAsset).unwrap();
+const rockMeshHandle = world.assets.create(rockMeshAsset).unwrap();
 
 // Materials: planet uses mars.png, asteroid uses rock.png. PBR standard
 // (Materials.standard mirrors src/index.ts; emits a passes-based payload).
-const planetMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+const planetMaterial = world.assets.create(Materials.standard({
   baseColor: [0.7, 0.7, 0.7, 1],
   metallic: 0.1,
   roughness: 0.8,
   baseColorTexture: marsHandle,
-}));
-const rockMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+})).unwrap();
+const rockMaterial = world.assets.create(Materials.standard({
   baseColor: [0.7, 0.7, 0.7, 1],
   metallic: 0.05,
   roughness: 0.9,
   baseColorTexture: rockTexHandle,
-}));
+})).unwrap();
 
 // LO 4.9 central planet (non-instanced) at origin.
 world.spawn(

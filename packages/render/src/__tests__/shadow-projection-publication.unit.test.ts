@@ -31,7 +31,7 @@ it('publishes one read-only capability without exposing its owned map through it
 it('retains exactly equal draw layout across new plans but rejects same-count membership and resource changes', () => {
   const fixture = createFilterPlanFixture();
   const source = fixture.prepare().source;
-  const batch = source.batches[0];
+  const batch = source.batches.at(0);
   if (batch === undefined || batch.candidates.length === 0) throw Error('missing batch');
   const rewrap = (replacement: GpuDrivenBatch): SubmissionPlan => ({
     ...source,

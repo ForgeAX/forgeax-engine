@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Skylight, TONEMAP_ACES_FILMIC } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 import { proceduralEquirect } from './support/scene';
 
 export default defineFeature({
@@ -12,12 +14,22 @@ export default defineFeature({
   expect:
     'ON: the spheres are lit only by the sky; the chrome ones mirror a blue top and orange bottom, the rough white one is bluish above and orange below. OFF: Skylight intensity = 0 and the spheres go black.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, {
       eye: [0, 0.4, 5],
       target: [0, 0.4, 0],
       data: { tonemap: TONEMAP_ACES_FILMIC },
     });
-    const equirect = world.allocSharedRef('EquirectAsset', proceduralEquirect());
+    const equirect = sceneAssets.create(proceduralEquirect()).unwrap();
     const sky = world
       .spawn({ component: Skylight, data: { equirect, intensity: 1.5 } as never })
       .unwrap();
@@ -25,7 +37,7 @@ export default defineFeature({
     roughness.forEach((value, index) => {
       spawnMesh(
         world,
-        MESH.sphere,
+        stageSphere,
         standard(world, {
           baseColor: [0.95, 0.95, 0.95, 1],
           metallic: index < 2 ? 1 : 0,

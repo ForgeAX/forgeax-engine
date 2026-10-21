@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { expect, it } from 'vitest';
+import { composeShader } from '../../../naga/src/index';
 
 const source = readFileSync(
   new URL('../../../shader/src/lighting-directional.wgsl', import.meta.url),
@@ -68,12 +69,13 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
       '',
     );
     const module = device.createShaderModule({
-      code: `
+      code: await composeShader(
+        `
       struct View {
         depthBias: f32, normalBias: f32,
         splitPlanes: array<vec4<f32>,4>, directionalShadowFilter: vec4<f32>,
       }
-      const view = View(0.0, 1.0, array<vec4<f32>,4>(vec4(1.0),vec4(1.0),vec4(1.0),vec4(1.0)), vec4(2.0));
+      const view = View(0.0, 1.0, array<vec4<f32>,4>(vec4(1.0,1.0,1.0,0.0),vec4(1.0,1.0,1.0,1.0),vec4(1.0,1.0,1.0,0.0),vec4(1.0)), vec4(2.0));
       const MAX_PCF_HALF = 2;
       @group(0) @binding(0) var shadowMap: texture_depth_2d_array;
       @group(0) @binding(1) var shadowSampler: sampler_comparison;
@@ -83,7 +85,7 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
       }
       ${shaderFunction('_directionalReceiverDepthBias')}
       ${shaderFunction('_directionalReceiverPlaneGradient')}
-      ${readFileSync(new URL('../../../shader/src/shadow-pcf.wgsl', import.meta.url), 'utf8').replace(/^#.*$/gm, '')}
+      ${readFileSync(new URL('../../../shader/src/shadow-pcf.wgsl', import.meta.url), 'utf8').replace(/^#define_import_path.*$/gm, '')}
       ${receiver}
       @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let normals = array<vec3<f32>,4>(vec3(-0.4,0.0,1.0),vec3(0.4,0.0,1.0),vec3(0.0,0.0,1.0),vec3(-0.4,0.0,1.0));
@@ -93,6 +95,14 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
         let layer = select(id.x,0u,id.x==3u);
         result[id.x] = vec4(_sampleShadowForCascade(p,layer,n,l,0u,vec2(0.0)), _directionalReceiverPlaneGradient(layer,n,l), 0.0);
       }`,
+        {
+          'forgeax_view::common': readFileSync(
+            new URL('../../../shader/src/common.wgsl', import.meta.url),
+            'utf8',
+          ),
+        },
+        { STORAGE_BUFFER_AVAILABLE: true },
+      ),
     });
     const pipeline = await device.createComputePipelineAsync({
       layout: 'auto',

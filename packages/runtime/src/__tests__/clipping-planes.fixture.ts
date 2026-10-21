@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
@@ -22,10 +23,11 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 function textureArrayLayers(
@@ -99,9 +101,9 @@ export async function verifyClippingPlanes(
   renderer: Renderer,
   recorder: RecorderAttachment,
   save: (name: string, bytes: Uint8Array) => void | Promise<void>,
-  materials?: readonly MaterialAsset[],
+  materials?: { assets: AssetRegistry; handles: readonly AssetHandle<'material'>[] },
 ) {
-  const world = new World();
+  const world = materials === undefined ? new World() : new World({ assets: materials.assets });
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -130,21 +132,24 @@ export async function verifyClippingPlanes(
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(4, 4, 0.1).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(4, 4, 0.1).unwrap())
+            .unwrap(),
         },
       },
       {
         component: MeshRenderer,
         data: {
           materials: [
-            world.allocSharedRef(
-              'MaterialAsset',
-              Materials.standard({
-                baseColor: [0.8, 0.1, 0.1, 1],
-                emissive: [1, 0, 0],
-                emissiveIntensity: 1,
-              }),
-            ),
+            testAssets(world)
+              .create(
+                Materials.standard({
+                  baseColor: [0.8, 0.1, 0.1, 1],
+                  emissive: [1, 0, 0],
+                  emissiveIntensity: 1,
+                }),
+              )
+              .unwrap(),
           ],
         },
       },
@@ -228,11 +233,9 @@ export async function verifyClippingPlanes(
       ['disabled', [], false, true, false],
     ] as const) {
       if (materials !== undefined) {
-        const material = materials[caseIndex];
+        const material = materials.handles[caseIndex];
         if (material === undefined) throw new Error('missing cooked clipping material');
-        world
-          .set(mesh, MeshRenderer, { materials: [world.allocSharedRef('MaterialAsset', material)] })
-          .unwrap();
+        world.set(mesh, MeshRenderer, { materials: [material] }).unwrap();
       }
       caseIndex += 1;
       world

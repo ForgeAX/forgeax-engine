@@ -4,6 +4,7 @@
 // small in-memory device stub (no GPU).
 
 import type {
+  CommandBuffer,
   Result,
   RhiCommandEncoder,
   RhiError,
@@ -194,11 +195,18 @@ describe('versioned Canvas uploads', () => {
 });
 
 // A rejected outer submission must retry its mips, while unchanged accepted versions do no work.
-it('records Canvas mips in the supplied frame encoder and commits only after submission', () => {
+it('records only pending Canvas mips and commits only after submission', () => {
   const counters = { created: 0, destroyed: 0, copies: 0 };
   const device = makeDevice(counters);
   const levels: number[] = [];
-  const encoder = {} as RhiCommandEncoder;
+  const encoder = { finish: () => ok({} as CommandBuffer) } as RhiCommandEncoder;
+  let encoders = 0;
+  const frameDevice = {
+    createCommandEncoder: () => {
+      encoders++;
+      return ok(encoder);
+    },
+  };
   let mipDraws = 0;
   let releases = 0;
   const store = new DynamicTextureStore();
@@ -221,14 +229,123 @@ it('records Canvas mips in the supplied frame encoder and commits only after sub
   const upload = (version: number) =>
     store.uploadFrame(key, SOURCE, 17, 5, { version, generateMipmaps: true });
   expect(upload(1)?.ok).toBe(true);
-  store.encodeMipmaps(encoder).unwrap()(false);
-  store.encodeMipmaps(encoder).unwrap()(true);
+  store.prepareMipmaps(frameDevice)?.unwrap().complete(false);
+  store.prepareMipmaps(frameDevice)?.unwrap().complete(true);
   expect(upload(1)?.ok).toBe(true);
-  store.encodeMipmaps(encoder).unwrap()(true);
+  expect(store.prepareMipmaps(frameDevice)).toBeUndefined();
+  expect(encoders).toBe(2);
   expect([mipDraws, releases, counters.copies]).toEqual([2, 2, 1]);
   upload(2);
-  store.encodeMipmaps(encoder).unwrap()(true);
+  store.prepareMipmaps(frameDevice)?.unwrap().complete(true);
   expect(mipDraws).toBe(3);
   store.uploadFrame(CLIP, SOURCE, 17, 5);
   expect(levels).toEqual([5, 1]); // Video keeps its single-level upload policy.
+});
+
+it('does not acknowledge a later unversioned upload through an older mip submission', () => {
+  const device = makeDevice({ created: 0, destroyed: 0, copies: 0 });
+  const encoder = { finish: () => ok({} as CommandBuffer) } as RhiCommandEncoder;
+  const frameDevice = { createCommandEncoder: () => ok(encoder) };
+  let mipDraws = 0;
+  let releases = 0;
+  device.encodeMipmaps = () => {
+    mipDraws++;
+    return ok(() => {
+      releases++;
+    });
+  };
+  const store = new DynamicTextureStore();
+  store.configureGpuDevice(device);
+  const key = {};
+  const upload = () => store.uploadFrame(key, SOURCE, 8, 8, { generateMipmaps: true });
+  upload();
+  const first = store.prepareMipmaps(frameDevice)?.unwrap();
+  upload();
+  first?.complete(true);
+  first?.complete(true);
+  const second = store.prepareMipmaps(frameDevice)?.unwrap();
+  expect(second).toBeDefined();
+  second?.complete(true);
+  expect(store.prepareMipmaps(frameDevice)).toBeUndefined();
+  expect([mipDraws, releases]).toEqual([2, 2]);
+  store.destroyAll();
+});
+
+it.each([
+  'encoder',
+  'mips',
+  'finish',
+] as const)('retries every pending Canvas after %s failure and releases partial scratch', (stage) => {
+  const device = makeDevice({ created: 0, destroyed: 0, copies: 0 });
+  const failed = { ok: false, error: { code: 'rhi-not-available' } } as const;
+  let reject = true;
+  let mipDraws = 0;
+  let releases = 0;
+  let finishes = 0;
+  device.encodeMipmaps = () => {
+    mipDraws++;
+    if (reject && stage === 'mips' && mipDraws === 2) return failed as never;
+    return ok(() => {
+      releases++;
+    });
+  };
+  const encoder = {
+    finish: () => {
+      finishes++;
+      return reject && stage === 'finish' ? failed : ok({} as CommandBuffer);
+    },
+  } as RhiCommandEncoder;
+  const frameDevice = {
+    createCommandEncoder: () => (reject && stage === 'encoder' ? (failed as never) : ok(encoder)),
+  };
+  const store = new DynamicTextureStore();
+  store.configureGpuDevice(device);
+  for (let i = 0; i < 2; i++)
+    store.uploadFrame({}, SOURCE, 8, 8, { version: 1, generateMipmaps: true });
+  expect(store.prepareMipmaps(frameDevice)?.ok).toBe(false);
+  expect(releases).toBe(stage === 'encoder' ? 0 : stage === 'mips' ? 1 : 2);
+  expect(finishes).toBe(stage === 'encoder' ? 0 : 1);
+  reject = false;
+  const before = mipDraws;
+  store.prepareMipmaps(frameDevice)?.unwrap().complete(true);
+  expect(mipDraws - before).toBe(2);
+  expect(store.prepareMipmaps(frameDevice)).toBeUndefined();
+  expect(releases).toBe(mipDraws - (stage === 'mips' ? 1 : 0));
+  store.destroyAll();
+});
+
+it('removes retired, resized and lost-device uploads from pending mip work', () => {
+  const counters = { created: 0, destroyed: 0, copies: 0 };
+  const encoded: Texture[] = [];
+  const device = makeDevice(counters);
+  device.encodeMipmaps = (_encoder, texture) => {
+    encoded.push(texture);
+    return ok(() => {});
+  };
+  const encoder = { finish: () => ok({} as CommandBuffer) } as RhiCommandEncoder;
+  const frameDevice = { createCommandEncoder: () => ok(encoder) };
+  const store = new DynamicTextureStore();
+  store.configureGpuDevice(device);
+  const alive = {},
+    retired = {},
+    lifetime = new AbortController();
+  store.uploadFrame(retired, SOURCE, 8, 8, {
+    version: 1,
+    generateMipmaps: true,
+    signal: lifetime.signal,
+  });
+  store.uploadFrame(alive, SOURCE, 8, 8, { version: 1, generateMipmaps: true });
+  lifetime.abort();
+  store.uploadFrame(alive, SOURCE, 16, 8, { version: 2, generateMipmaps: true });
+  store.prepareMipmaps(frameDevice)?.unwrap().complete(true);
+  expect(encoded).toHaveLength(1);
+  expect(counters.destroyed).toBe(2);
+  store.uploadFrame(alive, SOURCE, 16, 8, { version: 3, generateMipmaps: true });
+  store.configureGpuDevice({ ...device });
+  expect(store.prepareMipmaps(frameDevice)).toBeUndefined();
+  store.uploadFrame(alive, SOURCE, 16, 8, { version: 3, generateMipmaps: true });
+  store.prepareMipmaps(frameDevice)?.unwrap().complete(true);
+  expect(encoded).toHaveLength(2);
+  store.destroyAll();
+  expect(counters.created).toBe(counters.destroyed);
 });

@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // hello-compressed-texture -- KTX2/Basis block-compression e2e demo (M6 w39).
 //
 // Loads a 256x256 checkerboard texture through the build-time pack pipeline:
@@ -29,21 +30,25 @@ import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { decodeImageBytes, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import { decodeImageBytes } from '@forgeax/engine-assets-runtime';
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 
-import { unwrapHandle } from '@forgeax/engine-types';
-import type { Handle, MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 
 // GUIDs embedded in the demo's .meta.json sidecars (subAssets[0].guid).
 // These are the stable identifiers the pack plugin stamps into pack-index.json
-// at build time; the runtime resolves them via loadByGuid.
+// at build time; the runtime resolves them via assets.load.
 const COMPRESSED_GUID = '8a2b5c3d-4e6f-7a8b-9c0d-1e2f3a4b5c6d';
 const UNCOMPRESSED_GUID = '9b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e';
 const PNG_2X2_SOLID_RED_BASE64 =
@@ -122,6 +127,8 @@ async function bootstrap(
   }
   configureRuntimeAssetCatalog(assets, runtimeBinding);
   const world = app.world;
+const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   app.start().unwrap();
 
   if (loadMode === 'runtime-recovery') {
@@ -137,39 +144,38 @@ async function bootstrap(
     return;
   }
 
-  // loadByGuid returns the raw TextureAsset POD; the Basis transcode arm
-  // runs transparently inside the load path (M5 w34).
-  const texLoadRes = await assets.loadByGuid<TextureAsset>(guidRes.value);
+  // Load a managed texture handle, then read its decoded metadata.
+  // Basis transcoding runs inside the load path.
+  const texLoadRes = await assets.load(guidRes.value, 'texture');
   if (!texLoadRes.ok) {
     console.error(
-      '[compressed-texture] texture loadByGuid failed:',
+      '[compressed-texture] texture load failed:',
       texLoadRes.error.code,
       texLoadRes.error.hint,
     );
     return;
   }
-  const texAsset = texLoadRes.value;
+  const texAsset = assets.read(texLoadRes.value).unwrap();
   const mipLevelCount = texAsset.mips.kind === 'packed' ? texAsset.mips.levelCount : 1;
   console.warn(
     `[compressed-texture] texture loaded: format=${texAsset.format} ` +
       `size=${texAsset.data.byteLength}B mipLevelCount=${mipLevelCount}`,
   );
 
-  // Mint a shared texture handle; the render-system-record path resolves it
-  // at bind-time.
-  const textureHandle = world.allocSharedRef('TextureAsset', texAsset);
+  // Bind the loaded texture handle to the material.
+  const textureHandle = texLoadRes.value;
 
   // Default linear-repeat sampler.
-  const samplerHandle = world.allocSharedRef('SamplerAsset', {
+  const samplerHandle = assets.create({
     kind: 'sampler',
     magFilter: 'linear',
     minFilter: 'linear',
     addressModeU: 'repeat',
     addressModeV: 'repeat',
-  });
+  }).unwrap();
 
   // Packed PBR material with the checkerboard texture wired to baseColor.
-  const materialHandle = world.allocSharedRef('MaterialAsset', {
+  const materialHandle = assets.create({
     kind: 'material',
     passes: [
       {
@@ -185,7 +191,7 @@ async function bootstrap(
       baseColorTexture: textureHandle,
       sampler: samplerHandle,
     },
-  });
+  }).unwrap();
 
   // A staggered layout of 4 quads helps the parity smoke (w42) exercise
   // the pipeline against multiple draw calls and UV offsets.
@@ -200,7 +206,7 @@ async function bootstrap(
     world.spawn(
       {
         component: MeshFilter,
-        data: { assetHandle: HANDLE_QUAD },
+        data: { assetHandle: primitiveQuad },
       },
       {
         component: MeshRenderer,
@@ -261,6 +267,9 @@ async function bootstrapRuntimeRecovery(
   app: App,
   world: World,
 ): Promise<void> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const materialFor = (
     baseColor: readonly [number, number, number, number],
     textureHandle?: number,
@@ -281,31 +290,28 @@ async function bootstrapRuntimeRecovery(
     } as NonNullable<MaterialAsset['values']>,
   });
 
-  const baselineMaterialHandle = world.allocSharedRef(
-    'MaterialAsset',
-    materialFor([0, 0, 0, 1]),
-  );
+  const baselineMaterialHandle = sceneAssets.create(materialFor([0, 0, 0, 1])).unwrap();
   const meshEntity = spawnRuntimeRecoveryScene(world, baselineMaterialHandle);
-  const releasedBaseline = world.sharedRefs.release(baselineMaterialHandle);
+  const releasedBaseline = sceneAssets.release(baselineMaterialHandle);
   if (!releasedBaseline.ok) {
     throw new Error(`[m27] baseline material release failed: ${releasedBaseline.error.code}`);
   }
 
   const installMaterial = (material: MaterialAsset): void => {
-    const nextHandle = world.allocSharedRef('MaterialAsset', material);
+    const nextHandle = sceneAssets.create(material).unwrap();
     const setResult = world.set(meshEntity, MeshRenderer, { materials: [nextHandle] });
     if (!setResult.ok) {
-      world.sharedRefs.release(nextHandle);
+      sceneAssets.release(nextHandle);
       throw new Error(`[m27] material switch failed: ${setResult.error.code}`);
     }
-    const releasedOwner = world.sharedRefs.release(nextHandle);
+    const releasedOwner = sceneAssets.release(nextHandle);
     if (!releasedOwner.ok) {
       throw new Error(`[m27] material owner release failed: ${releasedOwner.error.code}`);
     }
   };
 
-  let textureHandle: Handle<'TextureAsset', 'shared'> | undefined;
-  let samplerHandle: Handle<'SamplerAsset', 'shared'> | undefined;
+  let textureHandle: AssetHandle<'texture'> | undefined;
+  let samplerHandle: AssetHandle<'sampler'> | undefined;
   const state: {
     phase: RuntimeRecoveryPhase;
     invalidCode: string | null;
@@ -334,8 +340,8 @@ async function bootstrapRuntimeRecovery(
 
   const readState = (): RuntimeRecoveryState => ({ ...state });
   const publish = (): void => {
-    state.textureHandle = textureHandle === undefined ? null : unwrapHandle(textureHandle);
-    state.samplerHandle = samplerHandle === undefined ? null : unwrapHandle(samplerHandle);
+    state.textureHandle = textureHandle === undefined ? null : Number(textureHandle);
+    state.samplerHandle = samplerHandle === undefined ? null : Number(samplerHandle);
     state.liveSharedRefs = world.sharedRefs._liveCount();
     const stateElement = document.getElementById('texture-recovery-state');
     if (stateElement) stateElement.textContent = JSON.stringify(readState());
@@ -365,19 +371,19 @@ async function bootstrapRuntimeRecovery(
     const result = await decodeImageBytes(pngBytes(), 'image/png', { mipmap: false });
     if (!result.ok) throw new Error(`[m27] valid PNG decode failed: ${result.error.code}`);
 
-    textureHandle = world.allocSharedRef('TextureAsset', result.value);
-    samplerHandle = world.allocSharedRef('SamplerAsset', {
+    textureHandle = sceneAssets.create(result.value).unwrap();
+    samplerHandle = sceneAssets.create({
       kind: 'sampler',
       magFilter: 'linear',
       minFilter: 'linear',
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
-    });
+    }).unwrap();
     installMaterial(
       materialFor(
         [1, 1, 1, 1],
-        unwrapHandle(textureHandle),
-        unwrapHandle(samplerHandle),
+        Number(textureHandle),
+        Number(samplerHandle),
       ),
     );
     state.phase = 'repaired';
@@ -395,13 +401,13 @@ async function bootstrapRuntimeRecovery(
       installMaterial(materialFor([0, 0, 0, 1]));
       state.materialHasTexture = false;
       if (textureHandle !== undefined) {
-        const released = world.sharedRefs.release(textureHandle);
+        const released = sceneAssets.release(textureHandle);
         if (!released.ok) throw new Error(`[m27] texture release failed: ${released.error.code}`);
         textureHandle = undefined;
         state.releasedResources += 1;
       }
       if (samplerHandle !== undefined) {
-        const released = world.sharedRefs.release(samplerHandle);
+        const released = sceneAssets.release(samplerHandle);
         if (!released.ok) throw new Error(`[m27] sampler release failed: ${released.error.code}`);
         samplerHandle = undefined;
         state.releasedResources += 1;
@@ -423,10 +429,15 @@ async function bootstrapRuntimeRecovery(
 
 function spawnRuntimeRecoveryScene(
   world: World,
-  materialHandle: Handle<'MaterialAsset', 'shared'>,
+  materialHandle: AssetHandle<'material'>,
 ): EntityHandle {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   const meshEntity = world.spawn(
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
     { component: Transform, data: { pos: [0, 0, 0], scale: [2.6, 1.8, 1] } },
   );

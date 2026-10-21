@@ -22,19 +22,28 @@
         "parameters": [
           {
             "name": "alphaChannel",
-            "type": "f32"
+            "type": "f32",
+            "default": 1
           },
           {
             "name": "baseColor",
-            "type": "color"
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
           },
           {
             "name": "metallic",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "roughness",
-            "type": "f32"
+            "type": "f32",
+            "default": 0.5
           },
           {
             "name": "subsurfaceRadius",
@@ -52,78 +61,111 @@
           },
           {
             "name": "metallicChannel",
-            "type": "f32"
+            "type": "f32",
+            "default": 2
           },
           {
             "name": "roughnessChannel",
-            "type": "f32"
+            "type": "f32",
+            "default": 1
           },
           {
             "name": "aoChannel",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "extraChannel",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "emissive",
             "type": "vec3",
-            "colorSpace": "linear"
+            "colorSpace": "linear",
+            "default": [
+              0,
+              0,
+              0
+            ]
           },
           {
             "name": "emissiveIntensity",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "occlusionStrength",
-            "type": "f32"
+            "type": "f32",
+            "default": 1
           },
           {
             "name": "alphaCutoff",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "specular",
-            "type": "f32"
+            "type": "f32",
+            "default": 1
           },
           {
             "name": "alphaHash",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "specularColor",
             "type": "vec3",
-            "colorSpace": "linear"
+            "colorSpace": "linear",
+            "default": [
+              1,
+              1,
+              1
+            ]
           },
           {
             "name": "normalScale",
-            "type": "vec2"
+            "type": "vec2",
+            "default": [
+              1,
+              1
+            ]
           },
           {
             "name": "bumpScale",
-            "type": "f32"
+            "type": "f32",
+            "default": 1
           },
           {
             "name": "ior",
-            "type": "f32"
+            "type": "f32",
+            "default": 1.5
           },
           {
             "name": "displacementScale",
-            "type": "f32"
+            "type": "f32",
+            "default": 1
           },
           {
             "name": "displacementBias",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "diffuseTransmission",
-            "type": "f32"
+            "type": "f32",
+            "default": 0
           },
           {
             "name": "diffuseTransmissionColor",
             "type": "vec3",
-            "colorSpace": "linear"
+            "colorSpace": "linear",
+            "default": [
+              1,
+              1,
+              1
+            ]
           },
           {
             "name": "baseColorTexture",

@@ -14,8 +14,8 @@ const config = { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-700
 
 describe('game-3d player lifecycle', () => {
   it('cleans contributions when animation loading fails', async () => {
-    const { world, ctx, entity, loadByGuid } = await pluginFixture();
-    loadByGuid.mockRejectedValueOnce(new Error('animation unavailable'));
+    const { world, ctx, entity, load } = await pluginFixture();
+    load.mockRejectedValueOnce(new Error('animation unavailable'));
     try {
       await expect(ctx.plugin(playerPlugin, config)).rejects.toThrow('animation unavailable');
       expect(world.get(entity('player'), ThirdPersonRig).ok).toBe(false);

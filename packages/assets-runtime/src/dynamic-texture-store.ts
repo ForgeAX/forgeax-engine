@@ -1,4 +1,5 @@
 import type {
+  CommandBuffer,
   Result,
   RhiCommandEncoder,
   RhiDevice,
@@ -116,7 +117,6 @@ interface TransientEntry {
   width: number;
   height: number;
   mipLevelCount: number;
-  mipsDirty: boolean;
   version?: number | undefined;
   unsubscribe?: (() => void) | undefined;
 }
@@ -129,6 +129,8 @@ interface TransientEntry {
 export class DynamicTextureStore {
   private device: DynamicTextureDevice | undefined = undefined;
   private readonly entries = new Map<DynamicTextureKey, TransientEntry>();
+  /** Only successful uploads enter this queue; each token identifies the bytes to acknowledge. */
+  private readonly pendingMips = new Map<TransientEntry, object>();
 
   /**
    * Wire the GPU device the store uploads through. Called once after the
@@ -197,7 +199,6 @@ export class DynamicTextureStore {
       return copied;
     }
     entry.version = options?.version;
-    entry.mipsDirty = mipLevelCount > 1;
     if (entry !== previous) {
       this.release(key);
       this.entries.set(key, entry);
@@ -208,41 +209,67 @@ export class DynamicTextureStore {
         entry.unsubscribe = () => signal.removeEventListener('abort', release);
       }
     }
+    if (mipLevelCount > 1) this.pendingMips.set(entry, {});
     return ok(entry.view);
   }
 
-  /** Encode dirty Canvas chains before scene passes, with the outer frame's commit decision. */
-  encodeMipmaps(encoder: RhiCommandEncoder): Result<(submitted: boolean) => void, RhiError> {
-    const work: { entry: TransientEntry; version: number | undefined; release: () => void }[] = [];
-    for (const entry of this.entries.values()) {
-      if (!entry.mipsDirty) continue;
-      const encoded = this.device?.encodeMipmaps?.(
-        encoder,
-        entry.texture,
-        entry.width,
-        entry.height,
-      );
-      if (encoded === undefined || !encoded.ok) {
-        for (const item of work) item.release();
-        return (
-          encoded ??
-          err(
-            new RhiError({
-              code: 'rhi-not-available',
-              expected: 'dynamic mipmap encoder is configured',
-              hint: 'use adaptDynamicTextureDevice with prewarmed mipmap pipelines',
-            }),
-          )
-        );
-      }
-      work.push({ entry, version: entry.version, release: encoded.value });
-    }
-    return ok((submitted) => {
-      for (const { entry, version, release } of work) {
-        if (submitted && entry.version === version) entry.mipsDirty = false;
+  /** Record actual uploads after scene recording, then submit their mips before scene commands. */
+  prepareMipmaps(
+    device: Pick<RhiDevice, 'createCommandEncoder'>,
+  ):
+    | Result<{ readonly buffer: CommandBuffer; complete(submitted: boolean): void }, RhiError>
+    | undefined {
+    if (this.pendingMips.size === 0) return undefined;
+    const created = device.createCommandEncoder({ label: 'dynamic-texture-mips' });
+    if (!created.ok) return created;
+    const encoder = created.value;
+    const work: { entry: TransientEntry; upload: object; release: () => void }[] = [];
+    let finished = false;
+    let completed = false;
+    const complete = (submitted: boolean) => {
+      if (completed) return;
+      completed = true;
+      for (const { entry, upload, release } of work) {
+        if (submitted && this.pendingMips.get(entry) === upload) this.pendingMips.delete(entry);
         release();
       }
-    });
+    };
+    try {
+      for (const [entry, upload] of this.pendingMips) {
+        const encoded = this.device?.encodeMipmaps?.(
+          encoder,
+          entry.texture,
+          entry.width,
+          entry.height,
+        );
+        if (encoded === undefined || !encoded.ok) {
+          complete(false);
+          return (
+            encoded ??
+            err(
+              new RhiError({
+                code: 'rhi-not-available',
+                expected: 'dynamic mipmap encoder is configured',
+                hint: 'use adaptDynamicTextureDevice with prewarmed mipmap pipelines',
+              }),
+            )
+          );
+        }
+        work.push({ entry, upload, release: encoded.value });
+      }
+      finished = true;
+      const result = encoder.finish();
+      if (!result.ok) {
+        complete(false);
+        return result;
+      }
+      return ok({ buffer: result.value, complete });
+    } catch (cause) {
+      complete(false);
+      throw cause;
+    } finally {
+      if (!finished) encoder.finish();
+    }
   }
 
   /**
@@ -258,6 +285,7 @@ export class DynamicTextureStore {
   release(key: DynamicTextureKey): void {
     const entry = this.entries.get(key);
     if (entry === undefined) return;
+    this.pendingMips.delete(entry);
     entry.unsubscribe?.();
     this.device?.destroyTexture(entry.texture);
     this.entries.delete(key);
@@ -293,7 +321,6 @@ export class DynamicTextureStore {
       width,
       height,
       mipLevelCount,
-      mipsDirty: false,
     });
   }
 }

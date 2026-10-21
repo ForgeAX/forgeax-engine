@@ -1,3 +1,5 @@
+import type { AssetHandle } from '@forgeax/engine-types';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 // apps/learn-render/1.getting-started/4.textures/src/index.ts
 // LearnOpenGL section 1.4 - Textures (forgeax mapping with disk JPEG +
 // .meta.json sidecar -> @forgeax/engine-image decode -> GUID-keyed
@@ -107,7 +109,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { World } from '@forgeax/engine-ecs';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -115,10 +117,12 @@ import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 
-import { unwrapHandle } from '@forgeax/engine-types';
-import type { Handle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-wood.pack.json';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 // 2. example-specific glue - LO 1.4 container chapter mapped onto
 // forgeax. Three GUID literals form the disk-schema -> runtime bridge
@@ -244,7 +248,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // engine-builtin HANDLE_CUBE; material reconstructed from the
     // .pack.json payload because parseAssetPayload material arm is
     // out-of-scope for v1 -- charter P5 producer / consumer split).
-    const containerHandleRes = await assets.loadByGuid<TextureAsset>(containerGuidRes.value);
+    const containerHandleRes = await assets.load(containerGuidRes.value, 'texture');
     if (!containerHandleRes.ok) {
       console.error(
         '[learn-render 1.4 textures] container texture loadByGuid failed:',
@@ -258,17 +262,20 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // so the disk-schema reads the same as a regular .pack.json mesh
     // entry while the runtime continues to draw the procedural cube
     // without re-decoding vertex data. The builtin payload is resolved
-    // off HANDLE_CUBE via the two-tier `resolveAssetHandle` (M8 D-15) and
+    // from the canonical geometry factory and
     // re-catalogued under the demo GUID via `catalog`.
-    const world = new World();
+    const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
-    const cubeAssetRes = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE);
+    const cubeAssetRes = createBoxGeometry(1, 1, 1);
     if (!cubeAssetRes.ok) {
       console.error('[learn-render 1.4 textures] HANDLE_CUBE asset unavailable');
       return;
     }
-    assets.catalog<MeshAsset>(cubeGuidRes.value, cubeAssetRes.value);
+
 
     const matPack = materialPackJson as unknown as MaterialPackFile;
     const matEntry = matPack.assets.find((a) => a.kind === 'material');
@@ -278,8 +285,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     }
     // loadByGuid returns the texture PAYLOAD (M8 D-17); mint a user-tier column
     // handle so the baseColorTexture slot carries a resolved numeric Handle.
-    const containerTexHandle = unwrapHandle(
-      world.allocSharedRef('TextureAsset', containerHandleRes.value),
+    const containerTexHandle = Number(
+      containerHandleRes.value,
     );
     const woodMaterial: MaterialAsset = {
       kind: 'material',
@@ -291,10 +298,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         baseColorTexture: containerTexHandle,
       },
     };
-    assets.catalog<MaterialAsset>(matGuidRes.value, woodMaterial);
 
-    const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuidRes.value);
-    const matHandleRes = await assets.loadByGuid<MaterialAsset>(matGuidRes.value);
+
+    const cubeHandleRes = assets.create(cubeAssetRes.value);
+    const matHandleRes = assets.create(woodMaterial);
     if (!cubeHandleRes.ok || !matHandleRes.ok) {
       console.error(
         '[learn-render 1.4 textures] loadByGuid failed:',
@@ -304,8 +311,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       return;
     }
     // loadByGuid returns payloads (M8 D-17); mint user-tier column handles.
-    const cubeHandle = world.allocSharedRef('MeshAsset', cubeHandleRes.value);
-    const matHandle = world.allocSharedRef('MaterialAsset', matHandleRes.value);
+    const cubeHandle = cubeHandleRes.value;
+    const matHandle = matHandleRes.value;
 
     // Step (3): spawn the textured cube + camera onto the world.
     //
@@ -346,12 +353,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // values.baseColorTexture: Handle<TextureAsset> | undefined assigns
     // to a typed local with no `as` cast (charter P4 consistent abstraction).
     // AI users read this block as the single grep target for AC-09.
-    const mat = matHandleRes.value;
+    const mat = assets.read(matHandleRes.value).unwrap();
     const slot =
-      (mat.values?.baseColorTexture as Handle<'TextureAsset', 'shared'> | undefined);
+      (mat.values?.baseColorTexture as AssetHandle<'texture'> | undefined);
     console.warn(
       `[learn-render 1.4 textures] baseColorTexture slot=${
-        slot === undefined ? 'undefined' : unwrapHandle(slot).toString()
+        slot === undefined ? 'undefined' : Number(slot).toString()
       }`,
     );
 

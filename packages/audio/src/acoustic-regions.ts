@@ -1,4 +1,5 @@
-import { defineComponent, type World } from '@forgeax/engine-ecs';
+import { Disabled, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { type AudioError, ok, type Result } from '@forgeax/engine-types';
@@ -157,11 +158,23 @@ function environmentAt(
     }));
 }
 
+function createPlayingSources(world: World) {
+  const query = world.query({ read: [AudioSource], optional: [GlobalTransform] });
+  if (!query.ok) return;
+  return {
+    world,
+    query: query.value,
+    projection: createStateProjection(world, [AudioSource, Disabled], [AudioSource]),
+    playing: new Map<number, EntityHandle>(),
+  };
+}
+
 /** Per-World projection. Unchanged fields/poses produce no control publications. */
 export function createAcousticRegionSystem() {
   let regions = new Map<number, Region>();
   const previous = new Map<number, string>();
   let environment = '[]';
+  let sources: ReturnType<typeof createPlayingSources>;
   return {
     reset(backend: AudioBackend): void {
       for (const entity of previous.keys()) backend.setAcousticRoutes(entity, FALLBACK);
@@ -169,6 +182,7 @@ export function createAcousticRegionSystem() {
       previous.clear();
       regions.clear();
       environment = '[]';
+      sources = undefined;
     },
     update(world: World, backend: AudioBackend): Result<void, AudioError> {
       const next = new Map<number, Region>();
@@ -243,12 +257,23 @@ export function createAcousticRegionSystem() {
         regions = next;
         return ok(undefined);
       }
-      const sources = world.query({ read: [AudioSource], optional: [GlobalTransform] });
-      if (!sources.ok) return acousticFailure('source query unavailable');
+      if (sources?.world !== world) sources = createPlayingSources(world);
+      if (sources === undefined) return acousticFailure('source query unavailable');
+      const batch = sources.projection.read();
+      for (const index of batch.indices) {
+        const entity = sources.projection.entity(index);
+        const row = entity === undefined ? undefined : sources.query.at(entity);
+        if (row?.get(AudioSource).playing === true) sources.playing.set(index, row.entity);
+        else sources.playing.delete(index);
+      }
+      batch.accept();
       const requests: { entity: number; routes: AcousticRoutes; fingerprint: string }[] = [];
       const alive = new Set<number>();
-      for (const row of sources.value) {
-        if (!row.get(AudioSource).playing) continue;
+      // Spatial mixing samples the selected playing voices; discovering that
+      // selection consumes ECS mutations, never a scan of all clip consumers.
+      for (const entity of sources.playing.values()) {
+        const row = sources.query.at(entity);
+        if (row === undefined) continue;
         if (ordered.length && alive.size >= 256)
           return acousticFailure('at most 256 playing regional sources per World');
         alive.add(row.entity);

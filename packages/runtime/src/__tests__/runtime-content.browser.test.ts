@@ -1,6 +1,6 @@
-import { RuntimeMaterialValue, RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
   DirectionalLight,
@@ -31,19 +31,14 @@ it('projects managed shared material and mesh writes into two independent browse
   };
   progress('viewport');
   await page.viewport(800, 600);
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const scene = await createWorldContext(world, [scenePlugin()]);
   const mesh = createBoxGeometry(2, 2, 0.5).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
-  const unused = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
-  world
+  const meshHandle = assets.create(mesh).unwrap();
+  const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
+  const unused = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
+  const entity = world
     .spawn(
       { component: Transform, data: {} },
       { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -69,12 +64,7 @@ it('projects managed shared material and mesh writes into two independent browse
     })
     .unwrap();
   const input = [1, 0, 0, 1];
-  const color = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: { asset: material, parameter: 'baseColor', kind: 2, value: input },
-    })
-    .unwrap();
+  assets.update(material, { values: { baseColor: input } }).unwrap();
   input.fill(0); // Mutating the source array must not change either renderer.
   const consumers = [];
   const surface = document.createElement('div');
@@ -91,6 +81,19 @@ it('projects managed shared material and mesh writes into two independent browse
       const renderer = (
         await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' })
       ).unwrap();
+      renderer.subscribe((event) => {
+        if (event.kind === 'error') {
+          // biome-ignore lint/suspicious/noConsole: retain the renderer owner failure before completion retirement.
+          console.error(
+            JSON.stringify({
+              kind: 'runtime-content-error',
+              ...event.error,
+              message: event.error.message,
+              stack: event.error.stack,
+            }),
+          );
+        }
+      });
       const lease = renderer.attach(world).unwrap();
       consumers.push({ canvas, renderer, lease });
       progress(`renderer-${index}-ready`);
@@ -143,35 +146,38 @@ it('projects managed shared material and mesh writes into two independent browse
     };
     const red = await capture('red');
     for (const count of red) expect(count.red).toBeGreaterThan(1_000);
-    world.set(color, RuntimeMaterialValue, { value: [0, 0, 1, 1] }).unwrap();
+    assets.update(material, { values: { baseColor: [0, 0, 1, 1] } }).unwrap();
     const blue = await capture('blue');
     for (const count of blue) {
       expect(count.blue).toBeGreaterThan(1_000);
       expect(count.red).toBeLessThan(10);
     }
-    const vertices = mesh.vertices.slice();
-    const stride = deriveVertexLayoutProjection(mesh.attributes).arrayStride / 4;
-    for (let offset = 0; offset < vertices.length; offset += stride)
+    const original = mesh.attributes.position;
+    if (!(original instanceof Float32Array)) throw new Error('missing positions');
+    const vertices = original.slice();
+    for (let offset = 0; offset < vertices.length; offset += 3)
       vertices[offset] = (vertices[offset] ?? 0) * 0.4;
-    const content = world
-      .spawn({ component: RuntimeMeshVertices, data: { asset: meshHandle, vertices } })
-      .unwrap();
+    assets.writeRange(meshHandle, { attribute: 'position', first: 0, values: vertices }).unwrap();
     vertices.fill(0);
     const narrow = await capture('narrow');
     for (const [index, count] of narrow.entries()) {
       expect(count.blue).toBeGreaterThan(400);
       expect(count.blue).toBeLessThan((blue[index]?.blue ?? 0) * 0.6);
     }
-    world.despawn(content).unwrap();
+    assets.writeRange(meshHandle, { attribute: 'position', first: 0, values: original }).unwrap();
     const restored = await capture('restored');
     for (const [index, count] of restored.entries())
       expect(count.blue).toBeGreaterThan((blue[index]?.blue ?? 0) * 0.95);
-    world.set(color, RuntimeMaterialValue, { asset: unused }).unwrap();
+    world.set(entity, MeshRenderer, { materials: [unused] }).unwrap();
     for (const count of await capture('rebound')) expect(count.blue).toBeLessThan(10);
-    world.set(color, RuntimeMaterialValue, { asset: material }).unwrap();
+    world.set(entity, MeshRenderer, { materials: [material] }).unwrap();
     for (const count of await capture('returned')) expect(count.blue).toBeGreaterThan(1_000);
-    world.despawn(color).unwrap();
+    world.despawn(entity).unwrap();
     for (const count of await capture('deleted')) expect(count.blue).toBeLessThan(10);
+  } catch (cause) {
+    // biome-ignore lint/suspicious/noConsole: retain the exact failed receipt before resource teardown.
+    console.error(JSON.stringify({ kind: 'runtime-content-failed-receipt', ...(cause as object) }));
+    throw cause;
   } finally {
     progress('cleanup');
     for (const { canvas, lease, renderer } of consumers) {
@@ -181,5 +187,6 @@ it('projects managed shared material and mesh writes into two independent browse
     }
     surface.remove();
     await scene.fiber.dispose();
+    assets.dispose();
   }
 }, 120_000);

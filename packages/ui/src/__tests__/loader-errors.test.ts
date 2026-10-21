@@ -17,6 +17,21 @@ describe('ui loader errors', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('returns a structured error when localization cannot become an owned snapshot', () => {
+    expect(
+      createUiLoader().load({
+        guid: 'a',
+        html: '<div/>',
+        css: '',
+        localization: {
+          fallbackLng: 'en',
+          defaultNS: 'translation',
+          resources: new Proxy({ en: { translation: { label: 'Play' } } }, {}),
+        },
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'invalid-asset' } });
+  });
+
   it('accepts Pack v2 loader input and rejects a catalog row as content', () => {
     const loader = createUiLoader();
     const result = loader.load({

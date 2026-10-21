@@ -5,10 +5,11 @@ import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { ResourceAssetActionResolver } from '@forgeax/view-workspace-core/frontend-contract';
 import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspection-presentation';
-import { selectWorkspaceResourceSubject } from '@forgeax/view-workspace-core/resource-open';
-import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { selectWorkspaceResourcePreview, selectWorkspaceResourceSubject } from '@forgeax/view-workspace-core/resource-open';
+import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import { RESOURCE_KINDS } from '../identity.ts';
 import './material.css';
+import { boundPreviewInspection } from '@forgeax/view-workspace-core/preview-facts';
 
 export function MaterialPanel(props: { client?: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   return <MaterialPropertiesPanel {...props} />;
@@ -42,16 +43,18 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
   );
   const subject = selectWorkspaceResourceSubject(workspace, RESOURCE_KINDS);
   const projectId = workspace?.project?.id;
+  const preview = selectWorkspaceResourcePreview(workspace, subject?.guid);
+  const binding = preview?.assetBinding;
   const [inspection, setInspection] = useState<Record<string, unknown> | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!subject?.guid || !projectId) {
+    if (!subject?.guid || !projectId || binding) {
       setInspection(null);
       setFailed(false);
       return undefined;
     }
-    const controller = new AbortController();
+    const controller = createWorkspaceObservation(reader, state => state?.project?.id === projectId && selectWorkspaceResourceSubject(state, RESOURCE_KINDS)?.guid === subject.guid && !selectWorkspaceResourcePreview(state, subject.guid)?.assetBinding);
     void client.inspectAsset(subject.guid, {
       projectId,
       tabId: VIEW_WORKSPACE_TAB_ID,
@@ -66,8 +69,8 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
         setFailed(true);
       }
     });
-    return () => controller.abort();
-  }, [client, subject?.guid, projectId]);
+    return () => controller.dispose();
+  }, [client, reader, subject?.guid, projectId, binding]);
 
   if (!subject) {
     return (
@@ -76,7 +79,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
       </div>
     );
   }
-  if (failed) {
+  if (failed && !binding) {
     return (
       <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties">
         <EmptyState title={t('material.unavailable')} description={t('material.inspectFailed')} />
@@ -86,7 +89,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
   return (
     <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties" data-view-readonly="true">
       <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
-      <InspectorForm assetActions={assetActions} inspection={inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('material.facts')} />
+      <InspectorForm assetActions={assetActions} inspection={binding ? boundPreviewInspection(subject, binding) : inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('material.facts')} />
     </div>
   );
 }

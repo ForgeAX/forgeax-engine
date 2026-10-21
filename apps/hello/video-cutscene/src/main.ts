@@ -24,7 +24,7 @@ import type { App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -32,8 +32,10 @@ import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Materials } from '@forgeax/engine-render';
 
-import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas');
 if (!canvas) throw new Error('hello-video-cutscene: missing <canvas id="canvas">');
@@ -59,23 +61,24 @@ if (!appRes.ok) {
   throw new Error('hello-video-cutscene: createApp failed');
 }
 const app: App = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
 console.warn(`[hello-video-cutscene] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
 
 const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
 // A red cube + light + perspective camera. autoAspect defaults to true, so the
 // aspect-sync sidecar on the createApp(canvas) path keeps Camera.aspect in step
 // with canvas size (contract contact surface 3).
-const cubeMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-  'MaterialAsset',
-  Materials.unlit([0.9, 0.3, 0.25, 1]),
-);
+const cubeMatHandle = app.assets.create(Materials.unlit([0.9, 0.3, 0.25, 1])).unwrap();
 
 const cube = world
   .spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();

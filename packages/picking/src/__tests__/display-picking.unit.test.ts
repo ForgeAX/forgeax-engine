@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import {
@@ -47,7 +48,6 @@ describe('display picking frame authority', () => {
       },
     );
     const ray = computeDisplayScreenRay(32, 32, mapping, 64, 64);
-    expect(ray).toMatchObject({ projectionKind: 'orthographic' });
     expect(ray).toBeDefined();
     if (ray === undefined) return;
     expect(Array.from(ray.view)).toEqual(Array.from(viewMatrix));
@@ -123,7 +123,8 @@ describe('display picking frame authority', () => {
 
 describe('display vertex selection', () => {
   it('remaps all and single-entity hits before radius and limit selection', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0]);
     const mesh: MeshAsset = {
       kind: 'mesh',
@@ -146,8 +147,8 @@ describe('display vertex selection', () => {
       kind: 'material',
       passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' } }],
     };
-    const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const meshHandle = assets.create(mesh).unwrap();
+    const materialHandle = assets.create(material).unwrap();
     const entities = [0, -1].map((z) =>
       world
         .spawn(

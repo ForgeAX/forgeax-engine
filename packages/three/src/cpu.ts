@@ -1,3 +1,4 @@
-// Keep upstream CPU/data semantics and type exports at the pinned revision. The
-// public index overrides WebGLRenderer with the native Forgeax adapter.
-export * from 'three/src/Three.js';
+// Preserve the pinned upstream CPU/data constructors without bundling a GPU renderer.
+
+export { ClippingGroup } from 'three/src/objects/ClippingGroup.js';
+export * from 'three/src/Three.Core.js';

@@ -98,7 +98,7 @@ window.addEventListener('keydown', (ev) => {
 
 ## Tangent space without a tangent attribute change
 
-LO 5.5 transforms the view, light, and fragment positions into **tangent space** in the vertex shader, then runs the whole parallax + lighting computation there. This demo does the same — but builds the TBN basis **in-shader** from the per-vertex tangent that `createPlaneGeometry` (and `HANDLE_QUAD`) already emit at `@location(3)`. No geometry-format change, no extra vertex attribute:
+LO 5.5 transforms the view, light, and fragment positions into **tangent space** in the vertex shader, then runs the whole parallax + lighting computation there. This demo does the same — but builds the TBN basis **in-shader** from the per-vertex tangent that `createPlaneGeometry` (and `createPrimitiveMesh('quad')`) already emit at `@location(3)`. No geometry-format change, no extra vertex attribute:
 
 ```wgsl
 let n = normalize(transformNormal(meshes[idx].worldFromLocal, in.normal));
@@ -122,7 +122,7 @@ let worldToTangent = transpose(mat3x3<f32>(t, b, n));
 | Height map binding | manual `glActiveTexture` + `glUniform1i("depthMap", 3)` | `paramSchema` declares `heightTexture` -> engine derives the BGL slot |
 | `basic` formula | LO uses offset limiting (no `/viewDir.z`) | identical (offset limiting preserved, `feat` constraint F-1) |
 | Tangent space | per-vertex `aTangent`/`aBitangent` attributes from the mesh | built in-shader from `createPlaneGeometry`'s `@location(3)` tangent |
-| Texture loading | `stbi_load` + `glTexImage2D` | GUID asset pipeline (`loadByGuid<TextureAsset>`) |
+| Texture loading | `stbi_load` + `glTexImage2D` | GUID asset pipeline (`assets.load(guid, 'texture')`) |
 | UV trim | `if (texCoords.x > 1.0 || ... ) discard;` | identical `discard` silhouette trim |
 | Error handling | `glGetError` manual checks | structured `Result` + `renderer.onError` bus (charter P3) |
 

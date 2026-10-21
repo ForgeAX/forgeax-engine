@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-skin headless smoke (tweak-20260611-skin-fox-3clip-and-kb-sample-assets M4 / m4-1).
 //
 // End-to-end proof: dawn-node drives the same Khronos Fox.glb 3-instance
@@ -285,137 +286,21 @@ const surveyGuid = subGuid('animation-clip', 0);
 const walkGuid = subGuid('animation-clip', 1);
 const runGuid = subGuid('animation-clip', 2);
 
-const glbBytes = readFileSync(FOX_GLB_PATH);
-const glbAb = glbBytes.buffer.slice(glbBytes.byteOffset, glbBytes.byteOffset + glbBytes.byteLength);
-const docResult = await parseGlb(glbAb, FOX_GLB_PATH);
-if (!docResult.ok) {
-  console.error('[smoke] FAIL - parseGlb failed:', docResult.error);
-  process.exit(1);
-}
-const doc = docResult.value;
-
-const skeletonRec = doc.skeletons[0];
-if (!skeletonRec) {
-  console.error('[smoke] FAIL - Fox.glb GltfDoc.skeletons[0] missing');
-  process.exit(1);
-}
-// w64: World holds the SharedRefStore minted handles need; create it before
-// any allocSharedRef. catalog stores GUID->payload for instantiate resolution.
-const world = new World();
-const worldContext = await createWorldContext(world, [
-  renderComponentsPlugin(),
-  scenePlugin(),
-  animationPlugin(),
-  skinningPlugin(),
-]);
-const worldAttachment1 = renderer.attach(world);
-if (!worldAttachment1.ok) throw worldAttachment1.error;
-const lease = worldAttachment1.value;
-const drawFrame = () => renderer.draw({
-  leases: [lease],
-  camera: { lease },
-  environment: { lease },
-});
 const assets = hostAssets;
-assets.catalog(skeletonGuid, {
-  kind: 'skeleton',
-  inverseBindMatrices: skeletonRec.inverseBindMatrices,
-  jointCount: skeletonRec.jointCount,
-});
-assets.catalog(skinGuid, {
-  kind: 'skin',
-  skeletonGuid: AssetGuid.format(skeletonGuid),
-  jointPaths: skeletonRec.jointPaths,
-});
-
-function recToClip(rec) {
-  const channels = [];
-  for (const ch of rec.channels) {
-    const property =
-      ch.property === 'translation' || ch.property === 'rotation' || ch.property === 'scale'
-        ? ch.property
-        : 'rotation';
-    channels.push({
-      targetId: ch.targetId,
-      property,
-      sampler: {
-        input: ch.sampler.input,
-        output: ch.sampler.output,
-        interpolation: ch.sampler.interpolation === 'STEP' ? 'STEP' : 'LINEAR',
-      },
-    });
-  }
-  let duration = rec.duration;
-  if (!Number.isFinite(duration) || duration <= 0) duration = 1;
-  return { kind: 'animation-clip', duration, channels };
+const world = new World({ assets });
+const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin(), animationPlugin(), skinningPlugin()]);
+const lease = renderer.attach(world).unwrap();
+const drawFrame = () => renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+useBuiltAssetSource(assets, resolve(here, '..', 'dist'));
+const surveyHandle = (await assets.load(surveyGuid, 'animation-clip')).unwrap();
+const walkHandle = (await assets.load(walkGuid, 'animation-clip')).unwrap();
+const runHandle = (await assets.load(runGuid, 'animation-clip')).unwrap();
+const sceneHandle = (await assets.load(sceneGuid, 'scene')).unwrap();
+if (FALSIFY === 'no-skin') {
+  const scene = assets.read(sceneHandle).unwrap();
+  for (const entity of Object.values(scene.entities)) delete entity.components.Skin;
+  assets.update(sceneHandle, { entities: scene.entities }).unwrap();
 }
-
-const surveyClip = recToClip(doc.animationClips[0]);
-const walkClip = recToClip(doc.animationClips[1]);
-const runClip = recToClip(doc.animationClips[2]);
-assets.catalog(surveyGuid, surveyClip);
-assets.catalog(walkGuid, walkClip);
-assets.catalog(runGuid, runClip);
-const surveyHandle = world.allocSharedRef('AnimationClip', surveyClip);
-const walkHandle = world.allocSharedRef('AnimationClip', walkClip);
-const runHandle = world.allocSharedRef('AnimationClip', runClip);
-
-const meshIrs = doc.meshes.filter((m) => m.meshIndex === 0);
-// The bridge owns MeshAsset.materialSlots, so the producer must preserve the
-// glTF material identity when constructing the smoke asset. Leaving the map
-// out creates an engine-default slot (handle 0), which cannot route a skinned
-// primitive to the authored pbr-skin pass and makes the Dawn smoke bind the
-// ordinary pbr layout at group(2).
-const meshResult = meshIrToMeshAsset(meshIrs, {
-  guidByIndex: new Map([[0, AssetGuid.format(materialGuid)]]),
-});
-if (!meshResult.ok) throw meshResult.error;
-const meshAsset = meshResult.value;
-const firstMaterialSlot = meshAsset.materialSlots?.[0];
-if (
-  firstMaterialSlot?.defaultMaterial === undefined ||
-  AssetGuid.format(firstMaterialSlot.defaultMaterial) !== AssetGuid.format(materialGuid)
-) {
-  throw new Error('[smoke] mesh bridge dropped the authored Fox material slot');
-}
-assets.catalog(meshGuid, meshAsset);
-const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-// feat-20260611 w17-a: smoke-dawn parallels the gltf-importer cooker by
-// passing { skinned: true } so toMaterialAsset routes the emitted
-// MaterialAsset to `forgeax::pbr-skin`. Fox.glb's only material is consumed
-// exclusively by skinned primitives; main.ts (browser path) gets this for
-// free via the cooker's auto-detection in gltf-importer.ts.
-const matAsset = toMaterialAsset(doc.materials[0], { skinned: true });
-assets.catalog(materialGuid, matAsset);
-const matHandle = world.allocSharedRef('MaterialAsset', matAsset);
-
-// tweak-20260611 M6: bridge auto-emits Skin { skeleton: <guid-string> } on
-// every NodeIr with skinIndex set, so the demo no longer post-patches the
-// scene to inject Skin (the previous workaround). _resolveSceneGuids
-// resolves the GUID string to a runtime Handle at instantiate time.
-// FALSIFY=no-skin: drop skeletonGuidBySkinIndex so the bridge does not emit
-// Skin -> findSkinnedMember returns undefined per spawn -> smoke fails on
-// the AC-09 multi-instance assertion below.
-const bridgeCtx = {
-  meshHandles: new Map([[0, meshHandle]]),
-  materialHandles: new Map([[0, matHandle]]),
-  ...(FALSIFY === 'no-skin'
-    ? {}
-    : { skeletonGuidBySkinIndex: new Map([[0, AssetGuid.format(skeletonGuid)]]) }),
-};
-const scene = gltfDocToSceneAsset(doc, bridgeCtx);
-assets.catalog(sceneGuid, scene);
-
-// --- 4. Build world: 3 instances + camera + light ------------------------------
-
-const sceneRes = await assets.loadByGuid(sceneGuid);
-if (!sceneRes.ok) {
-  console.error('[smoke] FAIL - loadByGuid<SceneAsset> failed:', sceneRes.error);
-  process.exit(1);
-}
-// loadByGuid returns the payload (D-17); mint a user-tier column handle reused
-// across the 3 instantiate calls below.
-const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
 
 // FALSIFY=clip-fixed: collapse the lineup to a single clip handle so the
 // AC-03 distinct-poses assertion below trips. The smoke checks all three
@@ -632,7 +517,7 @@ async function renderM22Frames(count) {
 if (M22_RECOVERY) {
   const first = perInstance[0];
   const healthy = perInstance[1];
-  const clipResult = first && world.sharedRefs.resolve(first.clip);
+  const clipResult = first && assets.read(first.clip);
   const diagnostics = [];
   const unsubscribe = subscribeAnimationDiagnostics((source, diagnostic) => {
     if (source === world) diagnostics.push(diagnostic);

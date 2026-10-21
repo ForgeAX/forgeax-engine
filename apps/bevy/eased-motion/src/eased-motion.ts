@@ -5,12 +5,16 @@ import {
   defineAnimationGraph,
   deriveAnimationTargetId,
 } from '@forgeax/engine-animation';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { Name, Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
-import type { AnimationTransformChannel, AnimationClip, AnimationTargetIdValue, MaterialAsset } from '@forgeax/engine-types';
+import type { AnimationTransformChannel, AnimationClip, AnimationTargetIdValue } from '@forgeax/engine-types';
 import { easing, quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const START_X = -6;
 const END_X = 6;
@@ -19,7 +23,6 @@ const CLIP_DURATION = 6;
 const ROTATION_DURATION = 4;
 const SAMPLE_COUNT = 24;
 const CUBE_ID: AnimationTargetIdValue = deriveAnimationTargetId(['Cube']);
-export const EASED_MOTION_CLIP_GUID = 'demo/eased-motion/clip';
 
 const channel = (
   targetId: AnimationTargetIdValue,
@@ -76,24 +79,26 @@ export function buildEasedMotionWorld(
   world: World,
   clip: AnimationClip = createEasedMotionClip(),
 ): EasedMotionState {
-  const cubeMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0.35, 0.08, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const cubeMaterial = sceneAssets.create(Materials.standard({ baseColor: [1, 0.35, 0.08, 1] })).unwrap();
   const cube = world
     .spawn(
       { component: Transform, data: { pos: [START_X, 2, 0], scale: [1, 1, 1] } },
       { component: Name, data: { value: 'Cube' } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMaterial] } },
       { component: AnimationTargetId, data: { value: CUBE_ID } },
     )
     .unwrap() as EntityHandle;
 
-  world.internSharedRef('AnimationClip', clip);
-  const graphResult = defineAnimationGraph((builder) => builder.clip(EASED_MOTION_CLIP_GUID));
+  const clipHandle = sceneAssets.create(clip).unwrap();
+  const graphResult = defineAnimationGraph((builder) => builder.clip(clipHandle));
   if (!graphResult.ok) throw new Error(`[eased-motion] graph build failed: ${graphResult.error.code}`);
-  const graphHandle = world.allocSharedRef('AnimationGraph', graphResult.value);
+  const graphHandle = sceneAssets.create(graphResult.value).unwrap();
   world
     .addComponent(cube, {
       component: AnimationPlayer,

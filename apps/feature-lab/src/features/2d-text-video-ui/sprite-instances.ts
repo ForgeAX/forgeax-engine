@@ -1,4 +1,5 @@
-import { HANDLE_QUAD } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { SpriteInstances } from '@forgeax/engine/render/authoring';
 import { Transform } from '@forgeax/engine/scene';
@@ -49,13 +50,19 @@ export default defineFeature({
   expect:
     'ON: the whole canvas is tiled by a 24x12 diagonal pattern of red/green/blue/yellow squares. OFF: the component is rewritten with only the top 2 rows, so the rest of the canvas is empty.',
   setup({ world, canvas }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     spawnOrthoCamera(world, canvas);
     const halfHeight = viewHalfHeight(canvas);
     const mat = spriteMaterial(world, spriteMaterialAsset(quadrantTexture(world), [1, 1, 1, 1]));
     const entity = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } as never },
+        { component: MeshFilter, data: { assetHandle: primitiveQuad } as never },
         { component: MeshRenderer, data: { materials: [mat] } as never },
         { component: SpriteInstances, data: grid(ROWS, halfHeight) },
       )

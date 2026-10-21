@@ -1,4 +1,5 @@
 import { encodePng } from '@forgeax/engine-image/png';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -68,22 +69,22 @@ const camera = (h, moving = false, frame = 59) => {
     .unwrap();
 };
 function inventory(h, encoding) {
-  const root = h.app.world.sharedRefs
-    .resolve(h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset)
-    .unwrap();
+  const rootHandle = h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset;
+  const root = h.app.assets.read(rootHandle).unwrap();
   const rootGuid = AssetGuid.format(materialTerrainGuid(encoding));
-  assert.equal(
-    h.app.assets.lookup(rootGuid),
-    root,
-    'loaded root identity must equal the selected production GUID',
-  );
+  assert.equal(h.app.assets.source(rootHandle).unwrap()?.guid, rootGuid, 'loaded root retains the selected source GUID');
+  const records = runtimeAssets(h.app.assets);
   assert.equal(root.materialEncoding.kind, encoding);
   const sourceDescriptor = {
     columns: root.columns,
     rows: root.rows,
     spacing: root.spacing,
     subsectionVertices: root.subsectionVertices,
-    layers: root.layers,
+    layers: root.layers.map(layer => {
+      const source = h.app.assets.source(layer.material).unwrap();
+      assert(source, 'author material must retain its source GUID');
+      return { ...layer, material: source.guid };
+    }),
   };
   const authorHeightSha256 = hash(
     new Uint8Array(root.heights.buffer, root.heights.byteOffset, root.heights.byteLength),
@@ -102,11 +103,11 @@ function inventory(h, encoding) {
   const closure = new Map();
   while (queue.length) {
     const guid = queue.pop();
-    if (closure.has(guid)) continue;
-    const asset = h.app.assets.lookup(guid);
+    if (closure.has(String(guid))) continue;
+    const asset = h.app.assets.read(guid).unwrap();
     assert(asset, `missing actual closure ${guid}`);
-    closure.set(guid, asset);
-    for (const ref of h.app.assets.assetCatalog.get(guid)?.refs ?? []) queue.push(ref.guid);
+    closure.set(String(guid), asset);
+    queue.push(...records.dependencies(guid).unwrap());
   }
   assert(
     terrainDerivedClosureValid(root, closure),
@@ -115,14 +116,14 @@ function inventory(h, encoding) {
   const arrays = [...closure].filter(
     ([, a]) => a.kind === 'texture' && a.shape.viewDimension === '2d-array',
   );
-  const controls = root.sections.map((s) => h.app.assets.lookup(s.weightTexture));
-  const heights = root.sections.map((s) => h.app.assets.lookup(s.heightTexture));
+  const controls = root.sections.map((s) => h.app.assets.read(s.weightTexture).unwrap());
+  const heights = root.sections.map((s) => h.app.assets.read(s.heightTexture).unwrap());
   const authors = Object.fromEntries(
     [...closure].filter(
       ([guid]) =>
-        root.layers.some((l) => l.material === guid) ||
+        root.layers.some((l) => String(l.material) === guid) ||
         root.layers.some((l) =>
-          (h.app.assets.assetCatalog.get(l.material)?.refs ?? []).some((r) => r.guid === guid),
+          records.dependencies(l.material).unwrap().some(handle => String(handle) === guid),
         ),
     ),
   );
@@ -189,7 +190,7 @@ async function capture(h, recorder, encoding, renderPath, root, caseName) {
     const chunks = (row.initialData ?? []).map((d) => blobs.get(d.hash).subarray(0, d.byteLength));
     return Buffer.concat(chunks);
   };
-  const material = h.app.assets.lookup(root.sections[0].material);
+  const material = h.app.assets.read(root.sections[0].material).unwrap();
   const abi = derive(
     projectMaterialParameterSchema(
       material.parameters,
@@ -233,7 +234,7 @@ async function capture(h, recorder, encoding, renderPath, root, caseName) {
     const sectionIndex = root.sections.findIndex((s) => s.x === section[0] && s.z === section[1]);
     assert(sectionIndex >= 0, 'actual uniform must identify a canonical section');
     assert(
-      Buffer.from(h.app.assets.lookup(root.sections[sectionIndex].weightTexture).data).equals(
+      Buffer.from(h.app.assets.read(root.sections[sectionIndex].weightTexture).unwrap().data).equals(
         controlBytes,
       ),
       'captured control must equal its own admitted section payload',

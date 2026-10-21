@@ -35,7 +35,6 @@ export {
   type DdcLayoutResult,
   type DdcProjectLayout,
   type DdcServeOptions,
-  isDdcLayout,
   resolveBuildDdcLayout,
   resolveDdcLayout,
 } from './layout.js';
@@ -63,7 +62,6 @@ export {
   assertRuntimeScope,
   createRuntimeScope,
   type DdcRuntimeScope,
-  runtimeScopeHash,
 } from './runtime-scope.js';
 export {
   type DdcGenerationCandidate,
@@ -85,5 +83,4 @@ export {
   type DdcStatusRootKind,
   projectDdcStatusForBrowser,
   serializeDdcStatus,
-  toBrowserDdcStatus,
 } from './status.js';

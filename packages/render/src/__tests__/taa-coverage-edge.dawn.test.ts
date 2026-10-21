@@ -181,9 +181,10 @@ it('accumulates mixed coverage while preserving subpixel motion, uniform disoccl
   const edge = await resolveCoverage(source, true);
   const stationary = edge[0];
   if (stationary === undefined) throw new Error('Missing stationary coverage sample');
-  // Karis blend of current 0.5 and history 0.25 with weight 0.95.
+  // Fresh local age retains one prior sample: Karis blend of current 0.5
+  // and history 0.25 at equal sample weights, despite global frame 200.
   expect(stationary[0]).toBeCloseTo(
-    (0.5 * (0.05 / 1.5) + 0.25 * (0.95 / 1.25)) / (0.05 / 1.5 + 0.95 / 1.25),
+    (0.5 * (0.5 / 1.5) + 0.25 * (0.5 / 1.25)) / (0.5 / 1.5 + 0.5 / 1.25),
     3,
   );
   expect(stationary[8]).toBeCloseTo(1 / 255, 7);

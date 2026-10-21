@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { type PointsLinesExpandedGeometry, PointsLinesExpansionCache } from '../expansion-cache';
 import { type PointsLinesGpuResourceAdapter, PointsLinesPreparation } from '../prepare';
 import { createPointsLinesLaneContract, createPointsLinesRecordPlan } from '../record';
-import { createPointsLinesSnapshot } from '../snapshot';
+import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 
 function mesh(generation = 1): MeshAsset {
   return {
@@ -40,15 +40,16 @@ function snapshot(meshGeneration = 1, materialGeneration = 1) {
 describe('Points/Lines expansion cache and LKG recovery', () => {
   it('reuses geometry when style changes and keeps style out of the cache key', () => {
     const cache = new PointsLinesExpansionCache();
-    const first = cache.getOrCreate(snapshot(), mesh());
+    const source = mesh();
+    const first = cache.getOrCreate(snapshot(), source);
     const styled = cache.getOrCreate(
       createPointsLinesSnapshot({
         ...snapshot(),
         style: { kind: 'lines', width: 9 },
       }),
-      mesh(),
+      source,
     );
-    const material = cache.getOrCreate(snapshot(1, 2), mesh());
+    const material = cache.getOrCreate(snapshot(1, 2), source);
 
     expect(first).toBe(styled);
     expect(first).toBe(material);
@@ -118,12 +119,13 @@ describe('Points/Lines expansion cache and LKG recovery', () => {
       cache: new PointsLinesExpansionCache(),
       adapter,
     });
-    const first = preparation.prepare(snapshot(), mesh()).unwrap();
+    const source = mesh();
+    const first = preparation.prepare(snapshot(), source).unwrap();
     const changedSnapshot = createPointsLinesSnapshot({
       ...snapshot(),
       style: { kind: 'lines', width: 9 },
     });
-    const changed = preparation.prepare(changedSnapshot, mesh()).unwrap();
+    const changed = preparation.prepare(changedSnapshot, source).unwrap();
     const plan = createPointsLinesRecordPlan(
       changedSnapshot,
       changed.geometry,

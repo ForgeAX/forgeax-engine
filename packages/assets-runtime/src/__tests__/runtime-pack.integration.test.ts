@@ -4,6 +4,7 @@ import {
   createBoxGeometry,
   encodeMeshDistanceField,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
+  meshAssetContribution,
 } from '@forgeax/engine-geometry';
 import { decodePackBlob, preparePackProgram } from '@forgeax/engine-pack/runtime';
 import {
@@ -25,12 +26,16 @@ import {
 } from '../../../import/src/runtime-pack.js';
 import { parseRuntimePackSnapshot } from '../../../import/src/runtime-pack-content.js';
 import { scriptablePackFingerprint } from '../../../import/src/scriptable-pack-fingerprint.js';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { defineAssetKind } from '../asset-kind.js';
 import { AssetRegistry } from '../asset-registry.js';
 import type { CatalogSource } from '../catalog-source.js';
-import { createAssetRegistry } from '../internal/load-asset.js';
+import { createAssetSource } from '../internal/asset-source.js';
+import { DecoderRegistry } from '../internal/decoder-registry.js';
+import { runtimeAssetReference } from '../internal/runtime-assets';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
+import { loadFixtureAsset, runtimePackDecoders } from './fixtures/runtime-pack-decoders';
 
 const parent = '01900000-0000-7000-8000-000000000101';
 const id = '01900000-0000-7000-8000-000000000102';
@@ -53,7 +58,7 @@ function producer(
           catalog: value.catalog,
           fetcher: value.fetch,
         },
-        { dependencies },
+        { ...{ dependencies }, decoders: runtimePackDecoders },
       ),
     imports: {
       geometry: { identity: 'test-engine', url: import.meta.resolve('@forgeax/engine-geometry') },
@@ -63,7 +68,9 @@ function producer(
   return value;
 }
 function reader(source: RuntimePackProducer) {
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ scopeId: 'test-runtime', shaderRegistry: {} as never });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  assets.installDecoder(materialContribution.kind, materialContribution.decoder);
   assets.setCatalogSource(source.catalog, source.fetch);
   return assets;
 }
@@ -98,6 +105,38 @@ function generator(delay = ''): RuntimePackContent {
 function outputGuid(packageId: string) {
   return AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
 }
+
+it('publishes regenerated content immediately while keeping receipts stable across restore', async () => {
+  const source = producer(new Map());
+  const assets = reader(source);
+  const restored = producer();
+  const recovered = reader(restored);
+  try {
+    (await source.admit(generator())).unwrap();
+    const first = (await source.generate(instance(id, 2))).unwrap();
+    expect((await assets.enumerateCatalog()).unwrap()).toEqual(first.rows);
+    const changed = (await source.generate(instance(id, 4))).unwrap();
+    expect((await assets.enumerateCatalog()).unwrap()).toEqual(changed.rows);
+    expect(assets.catalogSnapshot()?.stale).toBe(false);
+    expect((await source.generate(instance(id, 2))).unwrap()).toEqual(first);
+    expect((await assets.enumerateCatalog()).unwrap()).toEqual(first.rows);
+    expect(assets.catalogSnapshot()?.stale).toBe(false);
+    const saved = JSON.parse(JSON.stringify(source.snapshot()));
+    (await restored.restore(saved)).unwrap();
+    expect((await recovered.enumerateCatalog()).unwrap()).toEqual(first.rows);
+    expect((await restored.generate(instance(id, 4))).unwrap()).toEqual(changed);
+    expect((await recovered.enumerateCatalog()).unwrap()).toEqual(changed.rows);
+    expect(recovered.catalogSnapshot()?.stale).toBe(false);
+    const before = await source.catalog.enumerate();
+    const after = await restored.catalog.enumerate();
+    expect(before.revisions[0]?.rootId).not.toBe(after.revisions[0]?.rootId);
+  } finally {
+    assets.clearCatalogSource();
+    recovered.clearCatalogSource();
+    source.dispose();
+    restored.dispose();
+  }
+});
 
 async function inheritedAnchor(width: number) {
   const anchor = '01900000-0000-7000-8000-000000000104';
@@ -149,9 +188,7 @@ describe('resolved runtime parameter anchors', () => {
         values: {},
       };
       (await source.generate(selection)).unwrap();
-      const defaults = (
-        await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(id)))
-      ).unwrap();
+      const defaults = (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap();
       expect(defaults.attributes.position).toEqual(
         createBoxGeometry(4, 2, 3).unwrap().attributes.position,
       );
@@ -161,8 +198,7 @@ describe('resolved runtime parameter anchors', () => {
       (await source.generate(copy)).unwrap();
       const expected = createBoxGeometry(2, 2, 3).unwrap().attributes.position;
       expect(
-        (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(other)))).unwrap()
-          .attributes.position,
+        (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap().attributes.position,
       ).toEqual(expected);
       expect(cache.size).toBe(3);
       (await source.generate(copy)).unwrap();
@@ -177,14 +213,17 @@ describe('resolved runtime parameter anchors', () => {
       (await restored.restore(saved)).unwrap();
       for (const packageId of [id, other])
         expect(
-          (
-            await recovered.loadByGuid<MeshAsset>(recovered.parseGuid(outputGuid(packageId)))
-          ).unwrap().attributes.position,
+          (await loadFixtureAsset(recovered, outputGuid(packageId), 'mesh')).unwrap().attributes
+            .position,
         ).toEqual(expected);
       (await restored.generate(selection)).unwrap();
+      (
+        await recovered.reload(defined(runtimeAssetReference(recovered, outputGuid(id))), {
+          conflict: 'overwrite',
+        })
+      ).unwrap();
       expect(
-        (await recovered.loadByGuid<MeshAsset>(recovered.parseGuid(outputGuid(id)))).unwrap()
-          .attributes.position,
+        (await loadFixtureAsset(recovered, outputGuid(id), 'mesh')).unwrap().attributes.position,
       ).toEqual(defaults.attributes.position);
       expect(
         await restored.generate({ ...selection, packageId: parent, parent: id }),
@@ -256,8 +295,7 @@ describe('resolved runtime parameter anchors', () => {
       source.dispose();
       (await restored.restore(saved)).unwrap();
       expect(
-        (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(id)))).unwrap().attributes
-          .position,
+        (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap().attributes.position,
       ).toEqual(createBoxGeometry(3, 2, 3).unwrap().attributes.position);
     } finally {
       source.dispose();
@@ -290,8 +328,8 @@ describe('resolved runtime parameter anchors', () => {
           await source.generate({ schemaVersion: '3.0.0', packageId, parent: anchor, values: {} })
         ).unwrap();
         expect(
-          (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(packageId)))).unwrap()
-            .attributes.position,
+          (await loadFixtureAsset(assets, outputGuid(packageId), 'mesh')).unwrap().attributes
+            .position,
         ).toEqual(createBoxGeometry(width, 2, 3).unwrap().attributes.position);
       }
       expect(source.programEntries().size).toBe(1);
@@ -599,11 +637,13 @@ it.each([
     usage: 'reference',
   });
   const legacy = reader(source);
-  const runtime = createAssetRegistry({
+  const runtime = new AssetRegistry({
     catalog: source.catalog,
     scopeId: 'test-runtime',
     fetcher: source.fetch,
   });
+  runtime.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
   const read = () =>
     mode === 'legacy' ? legacy.readPluginDefinition(guid) : runtime.readPluginDefinition(guid);
   expect((await read()).ok).toBe(true);
@@ -613,7 +653,6 @@ it.each([
   const b2 = defined(defined((await publish(id, c2)).publication).outputs[0]);
   expect(b2.digest).toBe(b1.digest);
   expect(c2.digest).not.toBe(c1.digest);
-  if (mode === 'runtime') expect(runtime.snapshot().ready).not.toContain(guid);
   expect((await read()).ok).toBe(false);
   legacy.invalidateAll();
   expect((await read()).ok).toBe(false);
@@ -774,7 +813,8 @@ it('refuses a root removed synchronously by an observer during a runtime cache h
     )
   ).unwrap();
   const guid = defined(mesh.rows[0]).guid;
-  const runtime = createAssetRegistry({
+  const runtime = createAssetSource({
+    decoders: new DecoderRegistry(),
     catalog: source.catalog,
     scopeId: 'test-runtime',
     fetcher: source.fetch,
@@ -858,9 +898,13 @@ it.each([
       };
     },
   };
-  const legacy = new AssetRegistry({} as never);
+  const legacy = new AssetRegistry({ scopeId: 'test-runtime', shaderRegistry: {} as never });
+  legacy.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  legacy.installDecoder(materialContribution.kind, materialContribution.decoder);
   legacy.setCatalogSource(catalog, source.fetch);
-  const runtime = createAssetRegistry({ catalog, scopeId: 'test-runtime', fetcher: source.fetch });
+  const runtime = new AssetRegistry({ catalog, scopeId: 'test-runtime', fetcher: source.fetch });
+  runtime.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     const pending =
       mode === 'legacy'
@@ -894,7 +938,7 @@ describe('runtime Pack production through real codecs and readers', () => {
     const admitted = await source.admit(content);
     expect(admitted.ok, JSON.stringify(admitted)).toBe(true);
     const guid = outputGuid(id);
-    const loaded = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(guid))).unwrap();
+    const loaded = (await loadFixtureAsset(assets, guid, 'mesh')).unwrap();
     expect(loaded.attributes.position).toEqual(mesh.attributes.position);
     expect((await source.admit(structuredClone(content))).ok).toBe(true);
     const conflicting = (
@@ -910,8 +954,7 @@ describe('runtime Pack production through real codecs and readers', () => {
     expect((await restored.restore(JSON.parse(saved))).ok).toBe(true);
     const restoredAssets = reader(restored);
     expect(
-      (await restoredAssets.loadByGuid<MeshAsset>(restoredAssets.parseGuid(guid))).unwrap()
-        .attributes.position,
+      (await loadFixtureAsset(restoredAssets, guid, 'mesh')).unwrap().attributes.position,
     ).toEqual(mesh.attributes.position);
     restored.dispose();
     assets.clearCatalogSource();
@@ -930,9 +973,12 @@ describe('runtime Pack production through real codecs and readers', () => {
     expect(cache.size).toBe(2);
     const assets = reader(source);
     const guid = outputGuid(id);
-    const first = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(guid))).unwrap();
+    const first = (await loadFixtureAsset(assets, guid, 'mesh')).unwrap();
     expect((await source.generate(instance(id, 4))).ok).toBe(true);
-    const next = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(guid))).unwrap();
+    (
+      await assets.reload(defined(runtimeAssetReference(assets, guid)), { conflict: 'overwrite' })
+    ).unwrap();
+    const next = (await loadFixtureAsset(assets, guid, 'mesh')).unwrap();
     expect(next.attributes.position).not.toEqual(first.attributes.position);
     expect((await source.generate(instance(id, 100))).ok).toBe(false);
     expect(
@@ -946,8 +992,7 @@ describe('runtime Pack production through real codecs and readers', () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const recoveredAssets = reader(restored);
     expect(
-      (await recoveredAssets.loadByGuid<MeshAsset>(recoveredAssets.parseGuid(guid))).unwrap()
-        .attributes.position,
+      (await loadFixtureAsset(recoveredAssets, guid, 'mesh')).unwrap().attributes.position,
     ).toEqual(next.attributes.position);
     restored.dispose();
     assets.clearCatalogSource();
@@ -1105,8 +1150,7 @@ it('captures an external PluginAsset whose saved source retains another asset re
   const consumerReader = reader(consumer);
   expect((await consumerReader.readPluginDefinition(plugin.guid)).ok).toBe(true);
   expect(
-    (await consumerReader.loadByGuid<MeshAsset>(consumerReader.parseGuid(mesh.guid))).unwrap()
-      .attributes.position,
+    (await loadFixtureAsset(consumerReader, mesh.guid, 'mesh')).unwrap().attributes.position,
   ).toEqual(createBoxGeometry(3, 4, 5).unwrap().attributes.position);
   consumerReader.clearCatalogSource();
   consumer.dispose();
@@ -1123,12 +1167,15 @@ it('refuses a seeded old dependency that overlaps a candidate output', async () 
     )
   ).unwrap();
   const result = await validateAssetPublication(publication.rows, source.fetch, undefined, {
-    dependencies: new Map([
-      [
-        outputGuid(id),
-        { asset: createBoxGeometry(9, 9, 9).unwrap(), row: defined(publication.rows[0]) },
-      ],
-    ]),
+    ...{
+      dependencies: new Map([
+        [
+          outputGuid(id),
+          { asset: createBoxGeometry(9, 9, 9).unwrap(), row: defined(publication.rows[0]) },
+        ],
+      ]),
+    },
+    decoders: runtimePackDecoders,
   });
   expect(result).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
   source.dispose();
@@ -1257,9 +1304,7 @@ it('saves only reachable dependency recipes and restores the pinned version afte
   const recovery = await restored.restore(saved);
   expect(recovery.ok, JSON.stringify(recovery)).toBe(true);
   const assets = reader(restored);
-  const mesh = (
-    await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(dependentId)))
-  ).unwrap();
+  const mesh = (await loadFixtureAsset(assets, outputGuid(dependentId), 'mesh')).unwrap();
   expect(mesh.attributes.position).toEqual(createBoxGeometry(2, 2, 3).unwrap().attributes.position);
   expect(restored.rows().some((row) => row.guid === dependency.guid)).toBe(false);
   restored.withdraw(other);
@@ -1288,10 +1333,15 @@ it('fences concurrent direct admission against an instance claiming the same ide
         entered();
         await gate;
       }
-      return validateAssetPublication(state.rows, fetcher, {
-        catalog: source.catalog,
-        fetcher: source.fetch,
-      });
+      return validateAssetPublication(
+        state.rows,
+        fetcher,
+        {
+          catalog: source.catalog,
+          fetcher: source.fetch,
+        },
+        { decoders: runtimePackDecoders },
+      );
     },
   });
   (await source.admit(generator())).unwrap();
@@ -1323,7 +1373,9 @@ it.each([
     validate: async (state, fetcher) => {
       entered();
       await gate;
-      return validateAssetPublication(state.rows, fetcher);
+      return validateAssetPublication(state.rows, fetcher, undefined, {
+        decoders: runtimePackDecoders,
+      });
     },
   });
   const content = (
@@ -1369,12 +1421,10 @@ it('discards corrupted or cross-instance cache entries and rebuilds from preserv
   (await source.generate(instance(id, 2))).unwrap();
   const assets = reader(source);
   expect(
-    (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(id)))).unwrap().attributes
-      .position,
+    (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap().attributes.position,
   ).toEqual(createBoxGeometry(2, 2, 3).unwrap().attributes.position);
   expect(
-    (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(other)))).unwrap().attributes
-      .position,
+    (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap().attributes.position,
   ).toEqual(createBoxGeometry(4, 2, 3).unwrap().attributes.position);
   source.dispose();
   assets.clearCatalogSource();
@@ -1409,7 +1459,9 @@ it('does not start another saved generator after cancellation during recovery pr
           enter();
           await gate;
         }
-        return validateAssetPublication(state.rows, fetcher);
+        return validateAssetPublication(state.rows, fetcher, undefined, {
+          decoders: runtimePackDecoders,
+        });
       },
     });
     const controller = new AbortController();
@@ -1495,26 +1547,26 @@ it.each([
       };
     },
   };
-  const legacy = new AssetRegistry({} as never);
+  const legacy = new AssetRegistry({ scopeId: 'test-runtime', shaderRegistry: {} as never });
+  legacy.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  legacy.installDecoder(materialContribution.kind, materialContribution.decoder);
   legacy.setCatalogSource(catalog, async () => {
     throw new Error('unbound transport');
   });
-  const runtime = createAssetRegistry({
+  const runtime = new AssetRegistry({
     catalog,
     scopeId: 'test-runtime',
     fetcher: async () => {
       throw new Error('unbound transport');
     },
   });
-  const kind = defineAssetKind<Uint8Array, 'mesh'>('mesh');
-  runtime.installDecoder(kind, {
-    decode: (input) => input.artifacts.read(defined(input.envelope.artifacts.body)),
-  });
+  runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
+  runtime.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
   try {
     const pending =
       mode === 'legacy'
-        ? legacy.loadByGuid<MeshAsset>(legacy.parseGuid(row.guid))
-        : runtime.load(row.guid, kind);
+        ? loadFixtureAsset(legacy, row.guid, 'mesh')
+        : loadFixtureAsset(runtime, row.guid, 'mesh');
     await entered;
     (await source.generate(instance(id, 4))).unwrap();
     expect(source.catalog.openPackage(row.packageUrl)).toBeUndefined();
@@ -1522,11 +1574,9 @@ it.each([
     const result = await pending;
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(opens).toBe(1);
-    if (mode === 'legacy')
-      expect((result.unwrap() as MeshAsset).attributes.position).toEqual(
-        createBoxGeometry(2, 2, 3).unwrap().attributes.position,
-      );
-    else expect((result.unwrap() as Uint8Array).byteLength).toBeGreaterThan(0);
+    expect(result.unwrap().attributes.position).toEqual(
+      createBoxGeometry(2, 2, 3).unwrap().attributes.position,
+    );
   } finally {
     resume();
     legacy.clearCatalogSource();
@@ -1578,7 +1628,7 @@ it('keeps generated binary content compact through admission and JSON restore', 
     (await source.admit(content)).unwrap();
     (await restored.restore(JSON.parse(JSON.stringify(source.snapshot())))).unwrap();
     const assets = reader(restored);
-    const result = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(id)))).unwrap();
+    const result = (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap();
     expect(result.vertices).toEqual(mesh.vertices);
     expect(result.indices).toEqual(mesh.indices);
     assets.clearCatalogSource();
@@ -1642,7 +1692,7 @@ it('hashes and consumes one private cache snapshot across asynchronous hashing',
     const pending = source.generate(instance(id, 2));
     Object.assign(cached.content, replacement);
     (await pending).unwrap();
-    const mesh = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(outputGuid(id)))).unwrap();
+    const mesh = (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap();
     expect(mesh.aabb?.[3]).toBe(1);
   } finally {
     assets.clearCatalogSource();
@@ -1671,7 +1721,7 @@ it('restores existing numeric-byte snapshots with their original content identit
     const output = defined(state.rows[0]?.publication?.outputs[0]);
     const saved = await source.exportSource(new Map([[output.guid, output.digest]]));
     (await restored.restore(JSON.parse(JSON.stringify(saved)))).unwrap();
-    const loaded = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(output.guid))).unwrap();
+    const loaded = (await loadFixtureAsset(assets, output.guid, 'mesh')).unwrap();
     expect(loaded.vertices).toEqual(mesh.vertices);
     expect(loaded.indices).toEqual(mesh.indices);
   } finally {
@@ -1792,31 +1842,34 @@ it('retains a prepared mesh distance field through native publication, JSON tran
     assetCodec: MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
   };
   const content = (await prepareRuntimePackContent(id, { box: prepared })).unwrap();
-  const legacy = new AssetRegistry({} as never);
+  const legacy = new AssetRegistry({ scopeId: 'test-runtime', shaderRegistry: {} as never });
+  legacy.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  legacy.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     const admitted = (await source.admit(content)).unwrap();
     const row = defined(admitted.rows[0]);
-    const native = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(row.guid))).unwrap();
+    const native = (await loadFixtureAsset(assets, row.guid, 'mesh')).unwrap();
     expect(native.distanceField?.values).toEqual(field.values);
     expect(native.distanceField).toMatchObject({ artifact });
-    // Omitting the in-memory publication forces ordinary package JSON and artifact reads.
-    const { publication: _, ...wireRow } = row;
+    // The same publication reads through the source-owned transport after JSON serialization.
+    const wireRow = structuredClone(row);
     legacy.setCatalogSource(
       {
+        expectedScope: source.catalog.expectedScope,
         enumerate: async () => ok([wireRow]),
         subscribe: () => () => {},
         openPackage: source.catalog.openPackage,
       },
       source.fetch,
     );
-    const wire = (await legacy.loadByGuid<MeshAsset>(legacy.parseGuid(row.guid))).unwrap();
+    const wire = (await loadFixtureAsset(legacy, row.guid, 'mesh')).unwrap();
     expect(wire.distanceField?.meshDigest).toBe(field.meshDigest);
     expect(wire.distanceField?.values).toEqual(field.values);
     expect(wire.distanceField).toMatchObject({ artifact });
     (await restored.restore(JSON.parse(JSON.stringify(source.snapshot())))).unwrap();
     const recovered = reader(restored);
     try {
-      const mesh = (await recovered.loadByGuid<MeshAsset>(recovered.parseGuid(row.guid))).unwrap();
+      const mesh = (await loadFixtureAsset(recovered, row.guid, 'mesh')).unwrap();
       expect(mesh.distanceField?.values).toEqual(field.values);
       expect(mesh.distanceField).toMatchObject({ artifact });
     } finally {

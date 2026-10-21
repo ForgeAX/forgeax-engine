@@ -11,6 +11,7 @@ import { buildPbrMaterialUboPayload } from '../record/main-pass-material';
 import { type MaterialSnapshot, materialValueSnapshot } from '../render-system-extract';
 
 const snapshot = (): MaterialSnapshot => ({
+  passes: [],
   baseColor: vec3.create(0.25, 0.5, 0.75),
   metallic: 0.2,
   roughness: 0.8,
@@ -23,6 +24,7 @@ const float = (row: Uint8Array | undefined, offset = 0) => {
 describe('material row defaults', () => {
   it('uses the built-in Unlit ABI when an authored material omits its parameter schema', () => {
     const material: MaterialSnapshot = {
+      passes: [],
       ...materialValueSnapshot({ baseColor: [1, 0.15, 0.15] }),
       materialShaderId: 'forgeax::default-unlit',
       paramSnapshot: { baseColor: [1, 0.15, 0.15] },
@@ -44,10 +46,13 @@ describe('material row defaults', () => {
       return member.offset;
     };
     for (const intensity of [undefined, 0, 2]) {
-      const material = materialValueSnapshot({
-        emissive: [0.8, 0.3, 0.1],
-        ...(intensity === undefined ? {} : { emissiveIntensity: intensity }),
-      });
+      const material: MaterialSnapshot = {
+        passes: [],
+        ...materialValueSnapshot({
+          emissive: [0.8, 0.3, 0.1],
+          ...(intensity === undefined ? {} : { emissiveIntensity: intensity }),
+        }),
+      };
       expect(material.roughness).toBe(1);
       for (const row of [
         packStandardPbrMaterialRow(createStandardPbrArtifactReceipt(), material),

@@ -63,13 +63,13 @@ export class DeviceScope {
   readonly parent: DeviceScope | undefined;
   private lifecycleState: DeviceScopeState = 'active';
   private readonly resources = new Map<ResourceRef<unknown>, OwnedResource>();
-  private readonly children: DeviceScope[] = [];
+  private readonly children = new Set<DeviceScope>();
 
   private constructor(generation: number, owner: string, parent?: DeviceScope) {
     this.generation = generation;
     this.owner = owner;
     this.parent = parent;
-    parent?.children.push(this);
+    parent?.children.add(this);
   }
 
   static create(generation: number, owner: string): DeviceScope {
@@ -166,8 +166,7 @@ export class DeviceScope {
   }
 
   private detachChild(child: DeviceScope): void {
-    const index = this.children.indexOf(child);
-    if (index >= 0) this.children.splice(index, 1);
+    this.children.delete(child);
   }
 
   retire(): void {

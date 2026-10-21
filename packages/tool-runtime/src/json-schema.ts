@@ -13,6 +13,8 @@ export interface ToolJsonSchema {
   readonly const?: JsonValue;
   readonly minLength?: number;
   readonly minItems?: number;
+  readonly maxItems?: number;
+  readonly uniqueItems?: boolean;
   readonly minimum?: number;
   readonly maximum?: number;
   readonly description?: string;
@@ -28,7 +30,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  if (left === right) return true;
+  if (Array.isArray(left)) {
+    return (
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => sameJson(item, right[index]))
+    );
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]))
+  );
 }
 
 function typeMatches(type: ToolJsonSchema['type'], value: unknown): boolean {
@@ -82,6 +97,16 @@ function validate(
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems)
       return { path, message: `must contain at least ${schema.minItems} items` };
+    if (schema.maxItems !== undefined && value.length > schema.maxItems)
+      return { path, message: `must contain at most ${schema.maxItems} items` };
+    if (schema.uniqueItems === true) {
+      for (let index = 0; index < value.length; index += 1) {
+        for (let previous = 0; previous < index; previous += 1) {
+          if (sameJson(value[index], value[previous]))
+            return { path: `${path}[${index}]`, message: 'must be unique' };
+        }
+      }
+    }
     if (schema.items !== undefined) {
       for (let index = 0; index < value.length; index += 1) {
         const failure = validate(value[index], schema.items, `${path}[${index}]`);
@@ -119,8 +144,10 @@ export function parseToolJsonSchema<T = unknown>(
 }
 
 export function toolJsonSchema<T = unknown>(schema: ToolJsonSchema): ToolSchema<T> {
+  const describe = JSON.stringify(schema);
+  const admitted: ToolJsonSchema = JSON.parse(describe);
   return {
-    parse: (value) => parseToolJsonSchema<T>(value, schema),
-    describe: JSON.stringify(schema),
+    parse: (value) => parseToolJsonSchema<T>(value, admitted),
+    describe,
   };
 }

@@ -25,7 +25,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = result.value;
-  const scene = buildAnimatedMaterialWorld(app.world, target.width / Math.max(target.height, 1));
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('asset owner unavailable');
+  const scene = buildAnimatedMaterialWorld(app.world, assets, target.width / Math.max(target.height, 1));
   let lastHueDelta = 0;
   app.world.addSystem(Update, {
     name: 'animate-materials',
@@ -34,7 +36,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       const elapsed = world.hasResource('Time')
         ? world.getResource<{ elapsed: number }>('Time').elapsed
         : 0;
-      lastHueDelta = stepAnimatedMaterials(world, scene, elapsed);
+      lastHueDelta = stepAnimatedMaterials(assets, scene, elapsed);
     },
   });
   app.onError((error) => console.error('[bevy-animated-material] app error:', error.code, error.hint));

@@ -1,11 +1,15 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import { vec3 } from '@forgeax/engine-math';
 import type { BindGroupLayout, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
-import type { RhiNullDevice } from '@forgeax/engine-rhi-null';
 import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
 } from '@forgeax/engine-shader';
 import type { MeshGpuHandles } from '../device/gpu-residency';
+import {
+  collectGpuDrivenMaterialArtifacts,
+  GpuDrivenMaterialProgramProjection,
+} from '../gpu-driven/material-artifacts';
 import { standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import type { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { GpuBuffer } from '../gpu-resource';
@@ -14,24 +18,68 @@ import {
   GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import type { PipelineState } from '../record/render-context';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { MaterialDispatch } from '../scene/material-dispatch';
+import { SceneSlots } from '../scene/scene-slots';
 
 const receipt = createStandardPbrArtifactReceipt();
 const materialShaderId = 'forgeax::default-standard-pbr';
 const EMPTY_RESOURCE_CLASS = JSON.stringify({ textures: [], samplers: [], video: [] });
 
 /** Receipt-backed fixture for tests of scene identity and raster resource routing. */
-export function preparedPbrSnapshot(source: RenderableSnapshot): RenderableSnapshot {
-  const material = { ...source.material, materialShaderId: materialShaderId };
+export function preparedPbrSnapshot(
+  source: Omit<RenderableSnapshot, 'gpuDrivenDraws'> & {
+    readonly gpuDrivenDraws?: readonly (Omit<
+      NonNullable<RenderableSnapshot['gpuDrivenDraws']>[number],
+      'geometry'
+    > &
+      Partial<Pick<NonNullable<RenderableSnapshot['gpuDrivenDraws']>[number], 'geometry'>>)[];
+  },
+): RenderableSnapshot {
+  const prepareMaterial = (value: MaterialResource) =>
+    new MaterialResource({
+      ...value.snapshot,
+      materialShaderId,
+      passes: value.snapshot.passes?.length
+        ? value.snapshot.passes
+        : [
+            {
+              name: 'forward',
+              program: { module: materialShaderId },
+              renderState: { ...value.snapshot.renderState, tags: { LightMode: 'Forward' } },
+            },
+          ],
+      materialProgramKeys: value.snapshot.materialProgramKeys ?? { forward: materialShaderId },
+    });
+  const material = prepareMaterial(source.material);
   return {
     ...source,
     material,
-    materials: source.materials.map((value) => ({ ...value, materialShaderId: materialShaderId })),
+    materials: source.materials.map((value) =>
+      value === source.material ? material : prepareMaterial(value),
+    ),
     gpuDrivenDraws: (source.gpuDrivenDraws ?? []).map((draw) => ({
       ...draw,
       pipelineClass: `${materialShaderId}|${draw.topology}|rigid`,
       materialResourceClass: 'standard-pbr-resources',
+      geometry: {
+        receipt: {
+          identity: 'fixture',
+          vertexInputs: receipt.vertexInputs,
+          topology: draw.topology,
+          indexed: draw.kind === 'indexed',
+        },
+        draw: {
+          kind: draw.kind,
+          first: draw.first,
+          count: draw.count,
+          baseVertex: draw.baseVertex,
+          topology: draw.topology,
+        },
+        deformation: 'rigid',
+      },
       prepared: {
         identity: { material: materialShaderId, geometry: 'fixture', deformation: 'rigid' },
         receiptGeneration: receipt.generation,
@@ -59,7 +107,7 @@ export function standardPbrInputs(
   viewLayout: BindGroupLayout,
 ): Pick<
   Parameters<GpuDrivenProduction['prepare']>[0],
-  'standardPbrArtifact' | 'standardPbrPipelineState'
+  'materialArtifact' | 'materialPipelineState'
 > {
   const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const meshLayout = device
@@ -93,15 +141,14 @@ export function standardPbrInputs(
     receipt,
   };
   return {
-    standardPbrArtifact: artifact,
+    materialArtifact: artifact,
     // These tests stop before material binding; only the raster layout is consumed.
-    standardPbrPipelineState: {
+    materialPipelineState: {
       pbrPipelineLayout,
       meshBindGroupLayout: meshLayout,
       instancesBindGroupLayout: instancesLayout,
       gpuDrivenInstancesBindGroupLayout: instancesLayout,
       gpuDrivenPbrPipelineLayout: pbrPipelineLayout,
-      standardPbrShaderModule: shader,
       gpuDrivenPbrPrograms: new Map([[programKey, { module: shader, artifact }]]),
       standardPbrShaderUvSetCount: 1,
     } as unknown as PipelineState,
@@ -109,12 +156,13 @@ export function standardPbrInputs(
 }
 
 export function snapshot(entityKey: number, assetHandle: number): RenderableSnapshot {
-  const material = {
-    baseColor: new Float32Array([0.25 * entityKey, 0.5, 0.75]),
+  const material = new MaterialResource({
+    baseColor: vec3.create(0.25 * entityKey, 0.5, 0.75),
     metallic: 0,
     roughness: 1,
     materialShaderId: 'forgeax::default-unlit',
-  } as MaterialSnapshot;
+    passes: [],
+  });
   const world = new Float32Array(16);
   world[0] = 1;
   world[5] = 1;
@@ -139,6 +187,16 @@ export function snapshot(entityKey: number, assetHandle: number): RenderableSnap
         topology: 'triangle-list',
         pipelineClass: 'forgeax::default-unlit|triangle-list|null',
         materialResourceClass: EMPTY_RESOURCE_CLASS,
+        geometry: {
+          receipt: {
+            identity: 'fixture',
+            vertexInputs: receipt.vertexInputs,
+            topology: 'triangle-list',
+            indexed: true,
+          },
+          draw: { kind: 'indexed', first: 0, count: 3, baseVertex: 0, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
   };
@@ -165,7 +223,7 @@ export function updateSnapshot(value: RenderableSnapshot) {
   };
 }
 
-export function mesh(device: RhiNullDevice, indexed = true, withLod = false): MeshGpuHandles {
+export function mesh(device: RhiDevice, indexed = true, withLod = false): MeshGpuHandles {
   const vertex = device
     .createBuffer({
       size: 144,
@@ -215,5 +273,72 @@ export function mesh(device: RhiNullDevice, indexed = true, withLod = false): Me
           ],
         }
       : {}),
+  };
+}
+
+/** The fixture enters the same shared material/geometry admission as the Renderer. */
+export function admitGpuFixture(
+  input: Omit<
+    Parameters<GpuDrivenProduction['prepare']>[0],
+    'batchExecutions' | 'meshByBinding'
+  > & {
+    readonly meshBySlot?: ReadonlyMap<number, MeshGpuHandles>;
+    readonly batchExecutions?: Parameters<GpuDrivenProduction['prepare']>[0]['batchExecutions'];
+    readonly meshByBinding?: Parameters<GpuDrivenProduction['prepare']>[0]['meshByBinding'];
+  },
+): Parameters<GpuDrivenProduction['prepare']>[0] {
+  const dispatch = new MaterialDispatch();
+  const slots = input.scene?.slots ?? [];
+  const meshes = new Map<string, MeshGpuHandles>();
+  for (const slot of slots) {
+    if (slot === undefined) continue;
+    dispatch.bind(slot.slot, slot.snapshot);
+    const mesh = input.meshBySlot?.get(slot.slot);
+    if (mesh !== undefined) meshes.set(`${slot.worldId}:${slot.snapshot.assetHandle}`, mesh);
+  }
+  const slotOwner = new SceneSlots();
+  for (const slot of slots) slotOwner.set(slot.slot, slot);
+  const slotFrame = slotOwner.capture();
+  const selected =
+    input.batchExecutions === undefined
+      ? collectGpuDrivenMaterialArtifacts({
+          batches: input.scene?.plan.batches ?? [],
+          programs: new GpuDrivenMaterialProgramProjection().project(
+            dispatch.query(slotFrame),
+            dispatch.materials(),
+          ),
+          resolve: (id, request) => {
+            const shadow = typeof request === 'object' && request.pass === 'shadow';
+            const table = shadow ? input.shadowMaterialArtifacts : input.materialArtifacts;
+            return table === undefined ? input.materialArtifact : table.get(id);
+          },
+          clustered: input.clustered ?? false,
+          reflectionFallback: false,
+          probeBlend: input.probeBlendRecordBuffer !== undefined,
+          shadowViews: input.shadowViews ?? false,
+        })
+      : {
+          batchExecutions: input.batchExecutions,
+          materialArtifacts: input.materialArtifacts ?? new Map(),
+          shadowMaterialArtifacts: input.shadowMaterialArtifacts ?? new Map(),
+        };
+  const meshByBinding = new Map<
+    import('../gpu-driven/batch-topology').GpuDrivenBatchBinding,
+    MeshGpuHandles
+  >();
+  for (const batch of input.scene?.plan.batches ?? []) {
+    const binding = batch.binding;
+    if (binding === undefined) throw new Error('Missing shared fixture binding');
+    const mesh = meshes.get(`${binding.worldId}:${binding.assetHandle}`);
+    if (mesh !== undefined) meshByBinding.set(binding, mesh);
+  }
+  return {
+    ...input,
+    shadowViews: input.shadowViews ?? false,
+    materialFrame: dispatch.materials(),
+    batchExecutions: input.batchExecutions ?? selected.batchExecutions,
+    materialArtifacts: selected.materialArtifacts,
+    shadowMaterialArtifacts: selected.shadowMaterialArtifacts,
+    meshByBinding: input.meshByBinding ?? meshByBinding,
   };
 }

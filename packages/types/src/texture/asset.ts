@@ -25,6 +25,9 @@ export interface TextureAsset {
   readonly shape: TextureShape;
   readonly format: GPUTextureFormat;
   readonly data: Uint8Array;
+  /** Encoded source bytes. Omitted means native texel/block bytes in `format`.
+   * The Renderer derives device-specific storage without replacing this source. */
+  readonly encoding?: 'basis' | 'ktx2';
   readonly colorSpace: 'srgb' | 'linear';
   readonly mips: TextureMipPolicy;
 }

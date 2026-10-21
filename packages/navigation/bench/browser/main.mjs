@@ -1,19 +1,20 @@
 import { createApp } from '@forgeax/engine/app/browser';
 import {FixedTime,FixedUpdate,Update} from '@forgeax/engine/ecs';
-import {HANDLE_CUBE} from '@forgeax/engine/assets-runtime';
+import {createBoxGeometry} from '@forgeax/engine/geometry';
 import {Camera,Materials,MeshFilter,MeshRenderer,perspective} from '@forgeax/engine/render';
 import {ChildOf,Transform,Name} from '@forgeax/engine/scene';
 import {quat} from '@forgeax/engine/math';
 import {physicsPlugin,Collider} from '@forgeax/engine/physics';
 import {navigationCharacterPlugin,NavigationCharacter,NavigationAgent,setNavigationTarget} from '@forgeax/engine/navigation';
 import {forgeaxBundlerAdapter} from 'virtual:forgeax/bundler';
-import {loadNavigationScene} from './simulation.mjs';
+import {loadNavigationScene,sceneGuid} from './simulation.mjs';
 const canvas=document.querySelector('canvas'),status=document.querySelector('#status');
 const result=await createApp(canvas,{time:{fixedDeltaSeconds:1/60,maxStepsPerUpdate:1},plugins:[physicsPlugin('rapier-3d')]},forgeaxBundlerAdapter());if(!result.ok)throw result.error;
 const app=result.value,world=app.world,registry=app.assets;app.onError(e=>{window.navigationError={code:e.code,hint:e.hint,detail:e.detail};status.textContent=JSON.stringify(window.navigationError);});
-const {asset,scene,mesh}=await loadNavigationScene(registry,world);await app.pluginContext.plugin(navigationCharacterPlugin(mesh));registry.instantiateFlat(world.allocSharedRef('SceneAsset',scene),world).unwrap();
-const mat=(rgba)=>world.allocSharedRef('MaterialAsset',Materials.unlit(rgba)),floorMaterial=mat([.12,.19,.24,1]),wallMaterial=mat([.28,.35,.43,1]),teal=mat([.12,.65,.57,1]),gold=mat([1,.75,.15,1]),blue=mat([.25,.55,1,1]),red=mat([1,.35,.27,1]);
-const spawn=(pos,scale,material,parent)=>world.spawn({component:Transform,data:{pos,scale}},{component:MeshFilter,data:{assetHandle:HANDLE_CUBE}},{component:MeshRenderer,data:{materials:[material]}},...(parent===undefined?[]:[{component:ChildOf,data:{parent}}])).unwrap();
+const {asset,handle}=await loadNavigationScene(registry,world);await app.pluginContext.plugin(navigationCharacterPlugin(handle));registry.release(handle).unwrap();registry.instantiateFlat((await registry.load(registry.parseGuid(sceneGuid),'scene')).unwrap(),world).unwrap();
+const mat=(rgba)=>registry.create(Materials.unlit(rgba)).unwrap(),floorMaterial=mat([.12,.19,.24,1]),wallMaterial=mat([.28,.35,.43,1]),teal=mat([.12,.65,.57,1]),gold=mat([1,.75,.15,1]),blue=mat([.25,.55,1,1]),red=mat([1,.35,.27,1]);
+const cube=registry.create(createBoxGeometry(1,1,1).unwrap()).unwrap();
+const spawn=(pos,scale,material,parent)=>world.spawn({component:Transform,data:{pos,scale}},{component:MeshFilter,data:{assetHandle:cube}},{component:MeshRenderer,data:{materials:[material]}},...(parent===undefined?[]:[{component:ChildOf,data:{parent}}])).unwrap();
 for(const e of Array.from(world.query({with:[Collider,Transform]}).unwrap(),row=>row.entity)){const c=world.get(e,Collider).unwrap();if(world.hasComponent(e,NavigationCharacter)){spawn([0,0,0],[.6,1.6,.6],world.get(e,Transform).unwrap().pos[0]<0?blue:red,e);for(let i=0;i<32;i++){const a=i*Math.PI/16;spawn([Math.cos(a)*.31,-.67,Math.sin(a)*.31],[.045,.035,.045],gold,e);}}else spawn([0,0,0],Array.from(c.halfExtents,x=>x*2),c.halfExtents[1]<.2?floorMaterial:wallMaterial,e);}
 // Ordinary retained meshes visualize producer/query facts; no new simulation authority.
 for(const polygon of asset.polygons)for(let i=0;i<polygon.length;i++){const a=polygon[i]*3,b=polygon[(i+1)%polygon.length]*3,x=(asset.vertices[a]+asset.vertices[b])/2,z=(asset.vertices[a+2]+asset.vertices[b+2])/2,dx=asset.vertices[b]-asset.vertices[a],dz=asset.vertices[b+2]-asset.vertices[a+2],e=spawn([x,.08,z],[Math.hypot(dx,dz),.025,.025],teal);world.set(e,Transform,{quat:[0,Math.sin(-Math.atan2(dz,dx)/2),0,Math.cos(-Math.atan2(dz,dx)/2)]}).unwrap();}

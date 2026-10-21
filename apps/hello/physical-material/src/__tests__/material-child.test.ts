@@ -1,18 +1,16 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { Materials } from '@forgeax/engine-render';
+import { Materials, materialContribution } from '@forgeax/engine-render';
 import { materialGuidText, materialValuesToLinearRuntime, resolveMaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { physicalMaterialChild, physicalMaterialRoots } from '../material-contract';
 
-describe('physical material Catalog children', () => {
-  it('admits complete root defaults through the real Catalog validator', () => {
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+describe('physical material children', () => {
+  it('rejects uncooked static roots before runtime admission', () => {
+    const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+    assets.installDecoder(materialContribution.kind, materialContribution.decoder);
     for (const root of physicalMaterialRoots) {
-      expect(assets.catalog(root.parent, root.material).ok).toBe(true);
-      const { values, ...incomplete } = root.material;
-      expect(values).toBeDefined();
-      expect(assets.catalog(root.parent, incomplete)).toMatchObject({ ok: false, error: { code: 'asset-invalid-value' } });
+      expect(assets.create(root.material)).toMatchObject({ok: false, error: {code: 'material-specialization-not-cooked'}});
     }
   });
   it.each(physicalMaterialRoots)('retains $module static selection and parameter ABI through the parent', (root) => {

@@ -30,7 +30,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*"

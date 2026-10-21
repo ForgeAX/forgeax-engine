@@ -1,9 +1,13 @@
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const TEXTURE_SIZE = 48;
 
@@ -39,10 +43,15 @@ function material(
 }
 
 function spawnPanel(world: World, texture: number, pos: readonly [number, number, number], color: readonly [number, number, number, number], mode: 'opaque' | 'mask' | 'blend'): void {
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material(texture, color, mode));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const materialHandle = sceneAssets.create(material(texture, color, mode)).unwrap();
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [2.4, 2.4, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   );
 }

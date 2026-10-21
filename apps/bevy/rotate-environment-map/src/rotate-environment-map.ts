@@ -1,8 +1,9 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
+
 import { type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import {
   Camera,
   DirectionalLight,
@@ -16,6 +17,10 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export interface EnvironmentScene {
   readonly skylight: EntityHandle;
@@ -24,16 +29,18 @@ export interface EnvironmentScene {
 
 export function buildEnvironmentWorld(
   world: World,
-  equirect: Handle<'EquirectAsset', 'shared'>,
+  equirect: AssetHandle<'equirect'>,
   aspect: number,
 ): EnvironmentScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const sphereGeometry = createSphereGeometry(1.25, 48, 32);
   if (!sphereGeometry.ok) throw new Error(`rotate-environment-map sphere failed: ${sphereGeometry.error.code}`);
-  const sphere = world.allocSharedRef('MeshAsset', sphereGeometry.value);
-  const gold = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0.72, 0.18, 1], metallic: 0.9, roughness: 0.1 }),
-  );
+  const sphere = sceneAssets.create(sphereGeometry.value).unwrap();
+  const gold = sceneAssets.create(Materials.standard({ baseColor: [1, 0.72, 0.18, 1], metallic: 0.9, roughness: 0.1 })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: sphere } },
@@ -42,7 +49,7 @@ export function buildEnvironmentWorld(
 
   world.spawn(
     { component: Transform, data: { pos: [0, -1.8, 0], quat: [0, 0, 0, 1], scale: [8, 0.05, 8] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [gold] } },
   );
   world.spawn({ component: PointLight, data: { color: [1, 1, 1], intensity: 100_000, range: 40 } });

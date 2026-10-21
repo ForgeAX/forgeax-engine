@@ -26,3 +26,28 @@ describe('AI Native federation consumer', () => {
     await runtime.close();
   });
 });
+
+it('keeps concurrent close calls pending until the Activity has retired', async () => {
+  let finish!: (value: { output: string }) => void;
+  const activity = () =>
+    new Promise<{ output: string }>((resolve) => {
+      finish = resolve;
+    });
+  const provider = createDshRealmIntelligenceProvider({
+    activity,
+  } as unknown as DshRealmConnection);
+  const runtime = createIntelligenceRuntime(provider);
+  runtime.submit({ input: 'pending' });
+  await Promise.resolve();
+  const first = provider.close();
+  let secondDone = false;
+  const second = provider.close().then(() => {
+    secondDone = true;
+  });
+  await Promise.resolve();
+  expect(secondDone).toBe(false);
+  finish({ output: 'late' });
+  await Promise.all([first, second]);
+  expect(runtime.poll().map((event) => event.type)).toEqual(['cancelled']);
+  await runtime.close();
+});

@@ -141,7 +141,7 @@ export function addProjectedDecalPasses(
   }
   for (const name of ['normal', 'albedo', 'f0']) {
     const output = createRenderPipelineTarget(graph, `decal-surface-${name}`, {
-      format: 'r32uint',
+      format: name === 'f0' ? 'rg32uint' : 'r32uint',
       size: input.size,
     });
     if (!output.ok) return output;

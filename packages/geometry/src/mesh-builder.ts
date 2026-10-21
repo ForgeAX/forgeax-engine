@@ -13,6 +13,7 @@ import {
   type VertexAttributeMap,
 } from '@forgeax/engine-types';
 import {
+  CANONICAL_KEYS,
   deriveVertexLayoutProjection,
   packInterleavedVertexAttributes,
   type VertexLayoutProjectionAttribute,
@@ -31,9 +32,7 @@ const TOPOLOGIES: readonly PrimitiveTopology[] = [
 ];
 
 /** Input shape for one independently drawn submesh. */
-export type MeshBuilderSubmesh = Partial<Submesh> & {
-  readonly topology?: PrimitiveTopology;
-};
+export type MeshBuilderSubmesh = Partial<Submesh>;
 
 /** All authoring facts accepted by {@link createMeshBuilder}. */
 export interface MeshBuilderOptions {
@@ -80,12 +79,6 @@ function sourceView(key: AttributeKey, value: AttributeSource): AttributeView | 
   return undefined;
 }
 
-function cloneAttribute(key: AttributeKey, value: AttributeSource): AttributeView | undefined {
-  const view = sourceView(key, value);
-  if (view === undefined) return undefined;
-  return view.slice();
-}
-
 function attributeKeys(attributes: VertexAttributeMap): AttributeKey[] {
   return deriveVertexLayoutProjection(attributes).attributes.map((attribute) => attribute.key);
 }
@@ -118,9 +111,9 @@ function copySlots(slots: readonly MeshMaterialSlot[] | undefined): MeshMaterial
 
 function validateAttributeBatch(
   attributes: VertexAttributeMap,
-): Result<{ readonly keys: readonly AttributeKey[]; readonly vertexCount: number }, AssetError> {
-  const keys = attributeKeys(attributes);
-  if (keys.length === 0)
+): Result<readonly (readonly [AttributeKey, AttributeView])[], AssetError> {
+  const projection = deriveVertexLayoutProjection(attributes);
+  if (projection.attributes.length === 0)
     return failure('attributes', [], 'at least one canonical attribute is required');
   const position = attributes.position;
   if (position === undefined)
@@ -141,10 +134,11 @@ function validateAttributeBatch(
     );
   }
   const vertexCount = positionView.length / 3;
-  for (const { key, byteLength, format } of deriveVertexLayoutProjection(attributes).attributes) {
+  const views: (readonly [AttributeKey, AttributeView])[] = [];
+  for (const { key, byteLength, format } of projection.attributes) {
     const value = attributes[key];
     if (value === undefined) continue;
-    const view = sourceView(key, value);
+    const view = key === 'position' ? positionView : sourceView(key, value);
     if (view === undefined) {
       return failure(
         key,
@@ -152,6 +146,7 @@ function validateAttributeBatch(
         key === 'skinIndex' ? 'storage must be Uint16Array' : 'storage must be Float32Array',
       );
     }
+    views.push([key, view]);
     const expectedLength = vertexCount * (byteLength / (format === 'uint16x4' ? 2 : 4));
     if (view.length !== expectedLength) {
       return failure(key, view.length, `cardinality must be ${expectedLength}`);
@@ -166,7 +161,7 @@ function validateAttributeBatch(
       }
     }
   }
-  return ok({ keys, vertexCount });
+  return ok(views);
 }
 
 function validateSlots(slots: readonly MeshMaterialSlot[]): Result<void, AssetError> {
@@ -280,9 +275,12 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
   const materialSlots = copySlots(options.materialSlots);
 
   const appendVertices = (batch: VertexAttributeMap): Result<void, AssetError> => {
-    const checked = validateAttributeBatch(batch);
+    const captured: VertexAttributeMap = Object.fromEntries(
+      CANONICAL_KEYS.map((key) => [key, batch[key]]),
+    );
+    const checked = validateAttributeBatch(captured);
     if (!checked.ok) return checked;
-    const incomingKeys = checked.value.keys;
+    const incomingKeys = checked.value.map(([key]) => key);
     const existingKeys = Object.keys(attributes);
     if (existingKeys.length > 0 && existingKeys.join('|') !== incomingKeys.join('|')) {
       return failure(
@@ -291,11 +289,8 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
         'every appended batch must carry the same canonical keys',
       );
     }
-    for (const key of incomingKeys) {
-      const value = batch[key];
-      if (value === undefined) continue;
-      const cloned = cloneAttribute(key, value);
-      if (cloned === undefined) return failure(key, typeof value, 'storage could not be cloned');
+    for (const [key, view] of checked.value) {
+      const cloned = view.slice();
       const previous = attributes[key];
       attributes[key] = previous === undefined ? cloned : appendArray(previous, cloned);
     }
@@ -323,18 +318,15 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
 
   const build = (): Result<MeshAsset, AssetError> => {
     const source = attributes as VertexAttributeMap;
-    const checked = validateAttributeBatch(source);
-    if (!checked.ok) return checked;
+    // appendVertices admits and copies every channel; only private owned arrays remain here.
+    const positionView = attributes.position;
+    if (positionView === undefined)
+      return failure('attributes', [], 'at least one canonical attribute is required');
+    if (!(positionView instanceof Float32Array))
+      return failure('attributes.position', typeof positionView, 'position storage is invalid');
     const slotCheck = validateSlots(materialSlots);
     if (!slotCheck.ok) return slotCheck;
-    const vertexCount = checked.value.vertexCount;
-    const position = source.position;
-    if (position === undefined)
-      return failure('attributes.position', undefined, 'position is required');
-    const positionView = sourceView('position', position);
-    if (!(positionView instanceof Float32Array)) {
-      return failure('attributes.position', typeof position, 'position storage is invalid');
-    }
+    const vertexCount = positionView.length / 3;
 
     let maxIndex = 0;
     for (const value of indices) maxIndex = Math.max(maxIndex, value);
@@ -368,11 +360,10 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
     if (!ranges.ok) return ranges;
     const aabb = box3.fromPositions(box3.create(), positionView);
     const copiedAttributes: VertexAttributeMap = {};
-    for (const key of checked.value.keys) {
-      const value = source[key];
+    for (const key of attributeKeys(source)) {
+      const value = attributes[key];
       if (value === undefined) continue;
-      const cloned = cloneAttribute(key, value);
-      if (cloned === undefined) return failure(key, typeof value, 'storage could not be cloned');
+      const cloned = value.slice();
       if (key === 'skinIndex') {
         if (!(cloned instanceof Uint16Array)) {
           return failure(key, typeof value, 'skinIndex storage must be Uint16Array');
@@ -387,10 +378,10 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
     }
     const mesh: MeshAsset = {
       kind: 'mesh',
-      vertices: packed.value.vertices.slice(),
-      ...(indexArray === undefined ? {} : { indices: indexArray.slice() }),
+      vertices: packed.value.vertices,
+      ...(indexArray === undefined ? {} : { indices: indexArray }),
       attributes: copiedAttributes,
-      aabb: Float32Array.from(aabb),
+      aabb,
       submeshes: ranges.value,
       materialSlots: Object.freeze(materialSlots.map((slot) => ({ ...slot }))),
     };

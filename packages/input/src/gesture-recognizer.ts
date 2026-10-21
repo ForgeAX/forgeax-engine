@@ -139,7 +139,6 @@ export interface LongPressTracker {
   readonly y: number;
   readonly pointerType: PointerType;
   readonly armed: boolean;
-  readonly fired: boolean;
 }
 
 /** Timestamped position sample for swipe velocity (D-10, 100ms window). */
@@ -268,7 +267,6 @@ function handleDown(ctx: WorkContext, ev: PointerPhaseEvent, now: number): void 
       y: ev.y,
       pointerType: ev.pointerType,
       armed: true,
-      fired: false,
     },
     swipeHistory: [{ t: now, x: ev.x, y: ev.y }],
   });
@@ -414,7 +412,7 @@ function fireLongPresses(
   const pinch = ctx.pinch;
   for (const [id, tracker] of ctx.pointers) {
     const lp = tracker.longPress;
-    if (!lp.armed || lp.fired) continue;
+    if (!lp.armed) continue;
     if (now - lp.downTime < LONG_PRESS_DURATION_MS) continue;
     if (!pointerMap.has(id)) continue; // finger must still be down
     // A finger locked into an active pinch pair is committed to the dual
@@ -428,7 +426,7 @@ function fireLongPresses(
       pointerType: narrowGesturePointerType(lp.pointerType),
       timestamp: now,
     });
-    tracker.longPress = { ...lp, fired: true };
+    tracker.longPress = { ...lp, armed: false };
   }
 }
 

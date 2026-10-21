@@ -31,6 +31,8 @@ import type { TemporalView } from '../temporal/view';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
 export const VIEW_UNIFORM_BYTES = 1280;
+/** Four Point/Spot lanes each for depth, filtering, viewport and frozen origins. */
+export const SHADOW_PARAMS_BYTES = 16 * 16;
 export const POINTS_LINES_VIEW_BYTES = 176;
 export const POINTS_LINES_VIEW_SLOT_STRIDE = 256;
 export const POINTS_LINES_VIEW_SLOT_COUNT = 1024;
@@ -94,6 +96,8 @@ function directionalShadowFilterCarrier(
   quality: DirectionalShadowQuality | undefined,
 ): readonly [number, number, number] {
   if (quality === undefined) return [0, 0, 0];
+  if (quality.kind === 'variance') return [DirectionalShadowFilterValue.variance, 0, 0];
+  if (quality.kind === 'pcf-soft') return [DirectionalShadowFilterValue.pcfSoft, 0, 0];
   if (quality.kind === 'pcf-vogel') return [DirectionalShadowFilterValue.pcfVogel, 0, 0];
   if (quality.kind === 'pcss') {
     return [
@@ -213,7 +217,7 @@ export function writeViewUbo(
   },
   fog?: Pick<FogFrame, 'color' | 'density' | 'heightFalloff' | 'maxOpacity'>,
   atmosphere?: AtmosphereParameters,
-  atmosphereCapture = false,
+  sceneCapture = false,
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
   frameTimeSeconds?: number,
   viewport?: { readonly width: number; readonly height: number },
@@ -258,7 +262,7 @@ export function writeViewUbo(
   const frameTime = Math.fround(frameTimeSeconds ?? 0);
   viewPayload[291] = Number.isFinite(frameTime) ? frameTime : 0;
   if (atmosphere !== undefined)
-    writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, atmosphereCapture ? 64 : 0);
+    writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
   for (let i = 0; i < 16; i++) viewPayload[i] = mainProjection[i] ?? 0;
   viewPayload[16] = light.direction[0] ?? 0;
   viewPayload[17] = light.direction[1] ?? -1;
@@ -352,6 +356,11 @@ export function writeViewUbo(
       }
     }
   }
+  // Reserved w lanes carry receiver policy without increasing the View ABI.
+  viewPayload[111] = lights.directionalCsmConfig?.shadowBiasMode ?? 0;
+  viewPayload[115] = 1 - (lights.directionalCsmConfig?.shadowIntensity ?? 1);
+  viewPayload[119] = (lights.directionalCsmConfig?.shadowRadius ?? 1) - 1;
+  viewPayload[123] = lights.directionalCsmConfig?.shadowMapAspect ?? 1;
   // cascadeCount / cascadeBlend at [124..125].
   viewPayload[124] = lights.cascadeCount ?? 0;
   viewPayload[125] = lights.cascadeBlend ?? 0;
@@ -400,7 +409,9 @@ export function writeViewUbo(
     }
   }
 
-  if (atmosphereCapture && atmosphere !== undefined) {
+  // Raw scene targets have no screen-space opaque Fog pass. Their surface
+  // writers evaluate the same medium inline, including analytic Fog alone.
+  if (sceneCapture) {
     viewPayload[290] = 1;
     viewPayload[317] = 0;
   }

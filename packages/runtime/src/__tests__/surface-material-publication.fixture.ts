@@ -1,4 +1,5 @@
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetReference, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
 import {
@@ -24,6 +25,7 @@ import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.
 import { loadBackendPack } from '../backend-selection';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import type { SurfaceMaterialPublicationValue } from './material-publication.server';
 import {
   compareSurfaceAppLifecycleRois,
@@ -212,7 +214,7 @@ export async function verifySurfaceMaterialPublication(options: {
   );
   const deltas: CatalogDelta[] = [];
   const stopCatalog = assets.subscribeCatalog((delta) => deltas.push(delta));
-  const world = new World();
+  const world = new World({ assets });
   let lease: RenderWorldLease | undefined;
   const pages: ReadonlyDynamicInputPage[] = [];
   try {
@@ -225,9 +227,9 @@ export async function verifySurfaceMaterialPublication(options: {
     const parsed = AssetGuid.parse(options.guid);
     if (!parsed.ok) throw parsed.error;
     const load = async (): Promise<MaterialAsset> => {
-      const result = await assets.loadByGuid<MaterialAsset>(parsed.value);
+      const result = await assets.load(parsed.value, 'material');
       if (!result.ok) throw result.error;
-      return result.value;
+      return runtimeAssets(assets).borrow<MaterialAsset>(result.value).unwrap();
     };
     const baseline = await load();
     const baselineProjection = assets.getMaterialProjectionForPayload(baseline);
@@ -240,7 +242,7 @@ export async function verifySurfaceMaterialPublication(options: {
     lease = attached.value;
     const uniqueEntities = [...new Set(mediumMembers.map((member) => member.entityKey))];
     const installMaterial = (material: MaterialAsset): void => {
-      const handle = world.internSharedRef('MaterialAsset', material);
+      const handle = testAssets(world).create(material).unwrap();
       for (const entity of uniqueEntities) {
         const slotCount =
           Math.max(
@@ -282,12 +284,10 @@ export async function verifySurfaceMaterialPublication(options: {
       )
       .sort();
     const draw = (
-      material: MaterialAsset,
       input: SurfaceDynamicInputFrame,
       armObservation: boolean,
       lane: 'direct' | 'gpu-driven' = publicationLane,
     ): FrameReceipt => {
-      installMaterial(material);
       renderer.setSurfaceDynamicInput(input);
       world.update(0).unwrap();
       if (armObservation) renderer.requestObservation(['linear-hdr']).unwrap();
@@ -309,8 +309,10 @@ export async function verifySurfaceMaterialPublication(options: {
       material: MaterialAsset,
       input: SurfaceDynamicInputFrame,
       armObservation: boolean,
-    ): Promise<FrameReceipt> =>
-      completeReadyFrame(() => awaitCompletion(draw(material, input, armObservation)));
+    ): Promise<FrameReceipt> => {
+      installMaterial(material);
+      return completeReadyFrame(() => awaitCompletion(draw(input, armObservation)));
+    };
     const readObservationRois = (
       observation: FrameDomainObservation,
     ): readonly [SurfaceAppLifecycleRoi, SurfaceAppLifecycleRoi] => {
@@ -338,15 +340,20 @@ export async function verifySurfaceMaterialPublication(options: {
       readonly rois: readonly [SurfaceAppLifecycleRoi, SurfaceAppLifecycleRoi];
       readonly memberIdsByPass: SurfacePassMemberIds;
     }> => {
+      installMaterial(material);
       let receipt: FrameReceipt | undefined;
       let firstSubmitted = onFirstSubmitted;
       for (let frame = 0; frame < 12; frame += 1) {
         receipt = await completeReadyFrame(async () => {
-          const submitted = draw(material, input, frame === 11, lane);
+          const submitted = draw(input, frame === 11, lane);
           const notify = firstSubmitted;
           firstSubmitted = undefined;
           notify?.(submitted);
           return awaitCompletion(submitted);
+        }).catch((cause: unknown) => {
+          throw new Error(
+            `Surface publication readiness failed: ${inspect({ cause, renderErrors: renderErrors.slice(0, 2), material: { surface: material.surface, passes: material.passes }, projection: projection.passes.map(({ name, programs }) => ({ name, programs: programs.map((program) => ({ key: program.specializationKey, context: program.context })) })), state: renderer.inspect().renderScene })}`,
+          );
         });
       }
       if (receipt === undefined) throw new Error('Surface HMR frame receipt unavailable');
@@ -471,7 +478,8 @@ export async function verifySurfaceMaterialPublication(options: {
       }
     }
     const overlapOrder: string[] = [];
-    const oldReceipt = draw(baseline, baselineInput, true);
+    installMaterial(baseline);
+    const oldReceipt = draw(baselineInput, true);
     overlapOrder.push('old-submitted');
     let oldObservationSettled = false;
     overlapOrder.push('old-observation-started');
@@ -505,7 +513,10 @@ export async function verifySurfaceMaterialPublication(options: {
             (delta) =>
               delta.authority !== 'degraded' &&
               delta.changed.some(
-                (row) => row.guid === options.guid && row.packageUrl === packageUrl,
+                (row) =>
+                  row.guid === options.guid &&
+                  new URL(row.packageUrl, options.binding.catalogUrl).href ===
+                    new URL(packageUrl, options.binding.catalogUrl).href,
               ),
           );
         if (match !== undefined) return match;
@@ -533,7 +544,9 @@ export async function verifySurfaceMaterialPublication(options: {
       const row = snapshot.entries.find((candidate) => candidate.guid === options.guid);
       if (row === undefined) throw new Error('Surface changed Catalog row is absent');
       const delta = await waitForChangedDelta(cursor, row.packageUrl);
-      assets.invalidate(options.guid);
+      const handle = runtimeAssetReference(assets, options.guid);
+      if (handle === undefined) throw new Error('Surface source handle unavailable');
+      (await assets.reload(handle, { conflict: 'overwrite' })).unwrap();
       return { material: await load(), snapshot, row, delta, cursor };
     };
 

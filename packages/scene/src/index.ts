@@ -40,6 +40,12 @@ export {
   type SceneExternalizationError,
 } from './instances/externalization';
 export {
+  type SceneFieldWriteError,
+  sceneFieldWritable,
+  worldSceneEntityAddressOf,
+  worldWriteSceneField,
+} from './instances/field-write';
+export {
   type CompiledSceneAsset,
   type CompiledSceneEntity,
   type CompiledSceneResult,
@@ -51,7 +57,6 @@ export {
   type SceneAssetResolver,
   type SceneInstanceOverrideRecord,
   type SceneInstanceState,
-  type SceneInstantiateDiagnostic,
   type SceneInstantiateFlatOk,
   type SceneInstantiateOk,
   type SceneMembersSpawn,
@@ -67,7 +72,6 @@ export {
   worldInstantiateSceneAsset,
   worldInstantiateSceneAssetFlat,
   worldInstantiateSceneFlat,
-  worldInstantiateScenePayload,
   worldInstantiateSceneRec,
   worldReattachSceneMember,
   worldRemoveSceneOverride,

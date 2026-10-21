@@ -1,8 +1,10 @@
 import { vec3 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
+import { MaterialResource } from '../material-resource';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderFrameState } from '../record/frame-snapshot';
-import { uploadMaterialUniforms } from '../record/material-uniforms';
-import type { _InternalRenderPipelineContext } from '../record/render-context';
+import type { PerSubmeshMaterialBgDeps } from '../record/main-pass-material';
+import { materialUniformResources, prepareMaterialUniform } from '../record/material-uniforms';
 import { MATERIAL_PER_ENTITY_STRIDE } from '../record/render-context';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { nativeDeviceFixture } from './native-device-fixture';
@@ -16,6 +18,7 @@ it('preserves native uniform bytes through sparse edits, reordering and an inter
   const readback = device.createBuffer({ size, usage: 1 | 8 }).unwrap();
   const frameState = {} as RenderFrameState;
   const red: MaterialSnapshot = {
+    passes: [],
     materialParamSchema: [
       { name: 'baseColor', type: 'vec4' },
       { name: 'roughness', type: 'f32' },
@@ -25,17 +28,15 @@ it('preserves native uniform bytes through sparse edits, reordering and an inter
     metallic: 0,
     roughness: 0.5,
   };
-  const green: MaterialSnapshot = { ...red, baseColor: vec3.create(0, 1, 0) };
-  const context = (materials: MaterialSnapshot[], state = frameState) =>
-    ({
-      runtime: { device },
-      frameState: state,
-      materialSlots: materials,
-      materialSlotCount: materials.length,
-      materialSlotOwners: materials.map((_, renderableIndex) => ({ renderableIndex })),
-      validatedOrdered: [],
-      pipelineState: { materialUniformBuffer: { buffer } },
-    }) as unknown as _InternalRenderPipelineContext;
+  const root = new MaterialResource({ ...red, passes: [] });
+  const green = { ...root.snapshot, baseColor: vec3.create(0, 1, 0) };
+  const deps = {
+    runtime: { device },
+    frameState,
+    pipelineState: { materialUniformBuffer: { buffer } },
+  } as unknown as PerSubmeshMaterialBgDeps;
+  const resources = materialUniformResources([]);
+  const world = {} as RenderResourceScope;
   const write = vi.spyOn(device.queue, 'writeBuffer');
   const read = async () => {
     const encoder = device.createCommandEncoder().unwrap();
@@ -55,35 +56,17 @@ it('preserves native uniform bytes through sparse edits, reordering and an inter
     );
   };
   try {
-    uploadMaterialUniforms(context([red, red, red]));
-    expect(await read()).toEqual([
-      [1, 0, 0],
-      [1, 0, 0],
-      [1, 0, 0],
-    ]);
-    uploadMaterialUniforms(context([red, red, red]));
+    const old = root.snapshot;
+    prepareMaterialUniform(deps, old, world, resources);
+    expect((await read())[0]).toEqual([1, 0, 0]);
+    for (let index = 0; index < 100; index++) prepareMaterialUniform(deps, old, world, resources);
     expect(write).toHaveBeenCalledTimes(1);
-    uploadMaterialUniforms(context([red, green, red]));
-    expect(write.mock.calls[1]?.[1]).toBe(MATERIAL_PER_ENTITY_STRIDE);
-    expect(write.mock.calls[1]?.[4]).toBe(MATERIAL_PER_ENTITY_STRIDE);
-    expect(await read()).toEqual([
-      [1, 0, 0],
-      [0, 1, 0],
-      [1, 0, 0],
-    ]);
-    uploadMaterialUniforms(context([green, red, red]));
-    expect(await read()).toEqual([
-      [0, 1, 0],
-      [1, 0, 0],
-      [1, 0, 0],
-    ]);
-    uploadMaterialUniforms(context([green, green, green], {} as RenderFrameState));
-    uploadMaterialUniforms(context([green, red, red]));
-    expect(await read()).toEqual([
-      [0, 1, 0],
-      [1, 0, 0],
-      [1, 0, 0],
-    ]);
+    root.adopt(green);
+    prepareMaterialUniform(deps, root.snapshot, world, resources);
+    expect((await read())[0]).toEqual([0, 1, 0]);
+    prepareMaterialUniform(deps, old, world, resources);
+    expect((await read())[0]).toEqual([1, 0, 0]);
+    expect(write).toHaveBeenCalledTimes(3);
     expect(await native.popErrorScope()).toBeNull();
     scopeOpen = false;
   } finally {

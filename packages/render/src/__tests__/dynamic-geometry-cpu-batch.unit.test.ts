@@ -1,4 +1,4 @@
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   createDynamicGeometryLifecycle,
@@ -177,8 +177,8 @@ describe('DynamicGeometryLifecycle CPU batch acceptance', () => {
   });
 
   it('C02 checks every scalar credential without trusting the external MeshAsset copy', () => {
-    const firstHandle = {} as Handle<'MeshAsset', 'shared'>;
-    const secondHandle = {} as Handle<'MeshAsset', 'shared'>;
+    const firstHandle = {} as AssetHandle<'mesh'>;
+    const secondHandle = {} as AssetHandle<'mesh'>;
     const mutations: readonly {
       readonly name: string;
       readonly expected:

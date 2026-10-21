@@ -1,13 +1,17 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   AudioSource,
   audioBackendPlugin,
+  audioContribution,
   audioPlugin,
   createAudioIntentBackend,
 } from '@forgeax/engine-audio';
 import { createWorldContext, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
 
-const world = new World();
+const assets = new AssetRegistry();
+assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+const world = new World({ assets });
 const backend = createAudioIntentBackend({ emit: (intent) => self.postMessage(intent) });
 const ctx = await createWorldContext(world, [
   audioBackendPlugin(backend),
@@ -19,11 +23,14 @@ let source: EntityHandle | undefined;
 self.onmessage = async (event) => {
   const data = event.data;
   if (data.kind === 'start') {
-    const clip = world.allocSharedRef('AudioClipAsset', {
-      kind: 'audio',
-      sourceKey: 'worker-spatial',
-      bytes: data.bytes,
-    });
+    const clip = assets
+      .create({
+        kind: 'audio',
+        mediaType: 'audio/wav',
+        sourceKey: 'worker-spatial',
+        bytes: data.bytes,
+      })
+      .unwrap();
     parent = world.spawn({ component: Transform, data: { pos: [-2, 0, 0] } }).unwrap();
     source = world
       .spawn(

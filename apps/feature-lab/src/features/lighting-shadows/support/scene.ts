@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
 import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine/geometry';
 import { Materials, MeshFilter, MeshRenderer, PointLight, SpotLight } from '@forgeax/engine/render';
@@ -92,8 +93,8 @@ function skinnedVariant(material: MaterialAsset, caster: boolean): MaterialAsset
 
 export interface SkinnedCharacter {
   readonly entity: EntityHandle;
-  readonly casterMaterial: ReturnType<World['allocSharedRef']>;
-  readonly hiddenMaterial: ReturnType<World['allocSharedRef']>;
+  readonly casterMaterial: import('@forgeax/engine/types').AssetHandle<'material'>;
+  readonly hiddenMaterial: import('@forgeax/engine/types').AssetHandle<'material'>;
 }
 
 /**
@@ -106,6 +107,10 @@ export function spawnSkinnedCharacter(
   pos: Vec3,
   color: readonly [number, number, number, number],
 ): SkinnedCharacter {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const box = createBoxGeometry(0.4, 1.6, 0.4).unwrap();
   const position = box.attributes.position as Float32Array;
   const count = position.length / 3;
@@ -114,26 +119,30 @@ export function spawnSkinnedCharacter(
     skinIndex: new Uint16Array(count * 4),
     skinWeight: Float32Array.from({ length: count * 4 }, (_, index) => (index % 4 === 0 ? 1 : 0)),
   };
-  const mesh = world.allocSharedRef('MeshAsset', {
-    ...box,
-    attributes,
-    vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
-  });
+  const mesh = sceneAssets
+    .create({
+      ...box,
+      attributes,
+      vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
+    })
+    .unwrap();
   const body = Materials.standard({ baseColor: color, metallic: 0, roughness: 0.6 });
-  const casterMaterial = world.allocSharedRef('MaterialAsset', skinnedVariant(body, true));
-  const hiddenMaterial = world.allocSharedRef('MaterialAsset', skinnedVariant(body, false));
+  const casterMaterial = sceneAssets.create(skinnedVariant(body, true)).unwrap();
+  const hiddenMaterial = sceneAssets.create(skinnedVariant(body, false)).unwrap();
   const inverseBindMatrices = new Float32Array(16);
   for (const lane of [0, 5, 10, 15]) inverseBindMatrices[lane] = 1;
-  const skeleton = world.allocSharedRef('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 1,
-    inverseBindMatrices,
-    bounds: new Float32Array([-0.3, -0.9, -0.3, 0.3, 0.9, 0.3]),
-    shadowCapsules: {
-      joints: new Uint16Array([0]),
-      shapes: new Float32Array([0, -0.58, 0, 0, 0.58, 0, 0.22]),
-    },
-  });
+  const skeleton = sceneAssets
+    .create({
+      kind: 'skeleton',
+      jointCount: 1,
+      inverseBindMatrices,
+      bounds: new Float32Array([-0.3, -0.9, -0.3, 0.3, 0.9, 0.3]),
+      shadowCapsules: {
+        joints: new Uint16Array([0]),
+        shapes: new Float32Array([0, -0.58, 0, 0, 0.58, 0, 0.22]),
+      },
+    })
+    .unwrap();
   const joint = world
     .spawn({ component: Transform, data: { pos: [pos[0], pos[1] + 0.8, pos[2]] } })
     .unwrap();

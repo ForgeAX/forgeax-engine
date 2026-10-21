@@ -24,6 +24,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { CHANNEL_EPSILON, CHANNEL_SIZE } from './lighting-channels.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -35,17 +36,22 @@ export async function verifyChannelShadows(
 ) {
   const world = new World();
   const strengths = { directional: 3, point: 20, spot: 20 } as const;
-  const receiverMesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 0.05).unwrap());
-  const casterMesh = world.allocSharedRef('MeshAsset', createBoxGeometry(0.4, 0.4, 0.2).unwrap());
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.5, 0.5, 0.5, 1],
-      roughness: 0.7,
-      emissive: [0.02, 0.02, 0.02],
-      emissiveIntensity: 1,
-    }),
-  );
+  const receiverMesh = testAssets(world)
+    .create(createBoxGeometry(2, 2, 0.05).unwrap())
+    .unwrap();
+  const casterMesh = testAssets(world)
+    .create(createBoxGeometry(0.4, 0.4, 0.2).unwrap())
+    .unwrap();
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.5, 0.5, 0.5, 1],
+        roughness: 0.7,
+        emissive: [0.02, 0.02, 0.02],
+        emissiveIntensity: 1,
+      }),
+    )
+    .unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -4] } },

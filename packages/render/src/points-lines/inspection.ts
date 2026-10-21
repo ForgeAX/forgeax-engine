@@ -1,17 +1,13 @@
 import type { RenderError } from '../errors/render';
-import type { PointsLinesRetainedSnapshot, PointsLinesStyle } from './snapshot';
+import type { PointsLinesLane } from './record';
+import type { PointsLinesPreparedSnapshot, PointsLinesStyle } from './snapshot';
 
 export type PointsLinesSourceError = Extract<
   RenderError,
   { readonly code: `points-lines-${string}` }
 >;
 
-export type PointsLinesInspectionLane =
-  | 'pending'
-  | 'refused'
-  | 'direct'
-  | 'clustered'
-  | 'cpu-webgl2';
+export type PointsLinesInspectionLane = 'pending' | 'refused' | PointsLinesLane;
 
 export interface PointsLinesInspectionCache {
   readonly hit: boolean;
@@ -49,19 +45,19 @@ export interface PointsLinesInspection {
   readonly refusal?: PointsLinesInspectionRefusal;
 }
 
-export interface PointsLinesInspectionInput {
-  readonly snapshot: PointsLinesRetainedSnapshot;
-  readonly topology: 'point-list' | 'line-list' | 'line-strip';
-  readonly lane: PointsLinesInspectionLane;
-  readonly pointCount: number;
-  readonly segmentCount: number;
-  readonly sourceBytes: number;
-  readonly derivedBytes: number;
-  readonly cache: PointsLinesInspectionCache;
-  readonly drawCount: number;
-  readonly uploadBytes: number;
-  readonly lastKnownGood: boolean;
-  readonly refusal?: PointsLinesInspectionRefusal;
+export interface PointsLinesInspectionInput
+  extends Omit<
+    PointsLinesInspection,
+    | 'entityKey'
+    | 'worldId'
+    | 'component'
+    | 'meshHandle'
+    | 'meshGeneration'
+    | 'materialHandle'
+    | 'materialGeneration'
+    | 'style'
+  > {
+  readonly snapshot: PointsLinesPreparedSnapshot;
 }
 
 export function inspectPointsLines(input: PointsLinesInspectionInput): PointsLinesInspection {

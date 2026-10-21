@@ -5,6 +5,9 @@ type TaaHistoryResetReason =
   | 'recover'
   | 'device-generation';
 
+/** Lifecycle of one temporal history attempt, shared by TAA, SSR and the frame coordinator. */
+export type TemporalAttemptState = 'none' | 'active' | 'committed' | 'aborted';
+
 interface TaaHistoryInspection {
   readonly token: number;
   readonly deviceGeneration: number;
@@ -13,7 +16,7 @@ interface TaaHistoryInspection {
   readonly requestVersion: number;
   readonly generation: number;
   readonly seed: number;
-  readonly attempt: 'none' | 'active' | 'committed' | 'aborted';
+  readonly attempt: TemporalAttemptState;
   readonly valid: boolean;
   readonly resetReason: TaaHistoryResetReason | undefined;
 }
@@ -48,7 +51,7 @@ export class TaaHistoryStore {
     const generation = this.generation;
     const seed = this.seed;
     this.attempt = 'active';
-    let state: 'active' | 'committed' | 'aborted' = 'active';
+    let state: Exclude<TemporalAttemptState, 'none'> = 'active';
     return {
       generation,
       seed,

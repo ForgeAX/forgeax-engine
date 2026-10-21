@@ -134,13 +134,27 @@ export async function getOrCreateMipmapPipeline(
   return pipelineRes;
 }
 
+const devicePreparations = new WeakMap<RhiDevice, Promise<Result<MipmapPipelineCache, RhiError>>>();
+
 async function ensureDeviceCache(
   device: RhiDevice,
   asyncCreateShaderModule: MipmapShaderModuleFactory,
 ): Promise<Result<MipmapPipelineCache, RhiError>> {
   const existing = deviceCache.get(device);
   if (existing !== undefined) return ok(existing);
+  const preparing = devicePreparations.get(device);
+  if (preparing !== undefined) return preparing;
+  const pending = buildDeviceCache(device, asyncCreateShaderModule).finally(() =>
+    devicePreparations.delete(device),
+  );
+  devicePreparations.set(device, pending);
+  return pending;
+}
 
+async function buildDeviceCache(
+  device: RhiDevice,
+  asyncCreateShaderModule: MipmapShaderModuleFactory,
+): Promise<Result<MipmapPipelineCache, RhiError>> {
   const moduleRes = await asyncCreateShaderModule(device, {
     code: MIPMAP_WGSL,
     label: 'mipmap-wgsl',
@@ -183,7 +197,7 @@ async function ensureDeviceCache(
 // COPY_SRC | RENDER_ATTACHMENT.
 const MIPMAP_SCRATCH_USAGE = 0x01 | 0x10;
 
-interface MipmapTextureDescriptor {
+export interface MipmapTextureDescriptor {
   readonly format: GPUTextureFormat;
   readonly width: number;
   readonly height: number;
@@ -295,11 +309,7 @@ export interface MipmapEncoderWork {
   readonly discard: () => void;
 }
 
-/**
- * Encode a prewarmed mip chain into the caller's frame transaction. The returned
- * cleanup releases scratch after submission or abort; it never submits work.
- * @internal
- */
+/** Record into the submission owner's encoder; release scratch after submission or abort. */
 export function encodeMipmaps(
   device: RhiDevice,
   encoder: RhiCommandEncoder,
@@ -307,31 +317,23 @@ export function encodeMipmaps(
   descriptor: MipmapTextureDescriptor,
 ): Result<() => void, RhiError> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
-  if (levels <= 1) return ok(() => undefined);
-
+  if (levels <= 1) return ok(() => {});
   const cache = deviceCache.get(device);
-  if (cache === undefined) {
+  const pipeline = cache?.pipelines.get(descriptor.format);
+  if (cache === undefined || pipeline === undefined)
     return err(
       new RhiError({
         code: 'rhi-not-available',
-        expected: 'mipmap pipeline cache prewarmed for this device before prepareMipmaps',
-        hint: 'call prewarmMipmapPipeline(device, formats) before preparing recovery mip work',
+        expected: `prewarmed mipmap pipeline for ${descriptor.format}`,
+        hint: 'prewarm the texture format before recording its mip chain',
       }),
     );
-  }
-  const pipeline = cache.pipelines.get(descriptor.format);
-  if (pipeline === undefined) {
-    return err(
-      new RhiError({
-        code: 'rhi-not-available',
-        expected: `mipmap pipeline for format ${descriptor.format} prewarmed`,
-        hint: `format ${descriptor.format} was not prewarmed; add it to the prewarmMipmapPipeline format list`,
-      }),
-    );
-  }
   const encoded = encodeMipmapBlit(device, encoder, texture, descriptor, levels, pipeline, cache);
   if (!encoded.ok) return encoded;
+  let released = false;
   return ok(() => {
+    if (released) return;
+    released = true;
     device.destroyTexture(encoded.value);
   });
 }
@@ -348,6 +350,7 @@ export function prepareMipmaps(
 ): Result<MipmapEncoderWork, RhiError> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
   if (levels <= 1) return ok({ finish: () => ok(undefined), discard: () => undefined });
+
   const encoderRes = device.createCommandEncoder({ label: 'mipmap-recovery-setup-encoder' });
   if (!encoderRes.ok) return encoderRes;
   const encoded = encodeMipmaps(device, encoderRes.value, texture, descriptor);

@@ -57,6 +57,98 @@ describe('immutable DDC entry store', () => {
     await expect(store.read(KEY)).resolves.toEqual(entry());
   });
 
+  it('captures the complete caller entry before asynchronous integrity hashing', async () => {
+    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
+    roots.push(root);
+    const store = new DdcEntryStore(root);
+    const backing = new Uint8Array([99, 1, 2, 3, 99]);
+    const source = {
+      ...entry(),
+      payload: { kind: 'texture', width: 2, height: 1 },
+      refs: [...entry().refs],
+      receipt: { ...entry().receipt },
+      artifacts: {
+        payload: { mediaType: 'application/octet-stream', bytes: backing.subarray(1, 4) },
+      },
+    };
+    const expected = structuredClone(source);
+    let capturing = true;
+    Object.assign(source.payload, {
+      toJSON: () => {
+        if (!capturing) throw new Error('author callback escaped synchronous capture');
+        return {
+          height: expected.payload.height,
+          kind: expected.payload.kind,
+          width: expected.payload.width,
+        };
+      },
+    });
+    const staging = store.stage(source);
+    capturing = false;
+    source.key = 'b'.repeat(64);
+    source.guid = 'changed';
+    source.payload.width = 9;
+    source.refs.push('changed');
+    backing.fill(7);
+    source.artifacts.payload.mediaType = 'changed';
+    Object.assign(source.receipt, {
+      key: source.key,
+      guid: source.guid,
+      producer: 'changed',
+      outputDigest: `sha256:${'0'.repeat(64)}`,
+    });
+
+    const staged = await staging;
+    expect(staged.key).toBe(KEY);
+    await expect(store.publish(staged)).resolves.toMatchObject({ result: 'published', key: KEY });
+    await expect(store.read(KEY)).resolves.toEqual(expected);
+    await expect(store.read(source.key)).resolves.toBeNull();
+  });
+
+  it('cannot repair an invalid initial artifact after staging has started', async () => {
+    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
+    roots.push(root);
+    const source = { ...entry(), receipt: { ...entry().receipt } };
+    const replacement = {
+      ...source,
+      artifacts: {
+        payload: { mediaType: 'application/octet-stream', bytes: new Uint8Array([7, 7, 7]) },
+      },
+    };
+    source.receipt.outputDigest = ddcOutputDigest(replacement);
+    const staging = new DdcEntryStore(root).stage(source);
+    Object.assign(source.artifacts, replacement.artifacts);
+    await expect(staging).rejects.toMatchObject({ code: 'ddc-entry-invalid' });
+    await expect(readdir(root)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects key-dependent payload serialization before sealing a stage', async () => {
+    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
+    roots.push(root);
+    const source = {
+      ...entry(),
+      payload: { toJSON: (key: string) => ({ key }) },
+      receipt: { ...entry().receipt },
+    };
+    source.receipt.outputDigest = ddcOutputDigest(source);
+    const store = new DdcEntryStore(root);
+    await expect(store.stage(source)).rejects.toMatchObject({ code: 'ddc-entry-invalid' });
+    await expect(store.read(KEY)).resolves.toBeNull();
+  });
+
+  it('validates the captured receipt identity after serialization callbacks', async () => {
+    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
+    roots.push(root);
+    const source = entry();
+    const receipt = { ...source.receipt };
+    Object.assign(source.receipt, {
+      toJSON: () => ({ ...receipt, key: 'b'.repeat(64) }),
+    });
+    const store = new DdcEntryStore(root);
+    await expect(store.stage(source)).rejects.toMatchObject({ code: 'ddc-entry-invalid' });
+    await expect(store.read(KEY)).resolves.toBeNull();
+  });
+
   it('does not expose a partial entry when a required artifact is missing', async () => {
     const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
     roots.push(root);

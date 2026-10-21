@@ -1,3 +1,4 @@
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import {
   createBoxGeometry,
@@ -7,15 +8,16 @@ import {
 import { quat, vec3 } from '@forgeax/engine-math';
 import { Materials, MeshFilter, MeshRenderer, Visibility } from '@forgeax/engine-render';
 import { Name, Transform } from '@forgeax/engine-scene';
-import type {
-  Handle,
-  MaterialAsset,
-  MaterialParameter,
-  MaterialPass,
-  MeshAsset,
-} from '@forgeax/engine-types';
+import type { AssetHandle, MaterialParameter, MaterialPass } from '@forgeax/engine-types';
+import {
+  GIZMO_AXES,
+  GIZMO_PLANE_MAX,
+  GIZMO_PLANE_MIN,
+  GIZMO_PLANES,
+  type GizmoHandle,
+} from './gizmo-handles';
 import { add, mul, type V3 } from './gizmo-math';
-import type { GizmoHandle, GizmoMode, TransformGizmo } from './transform-gizmo';
+import type { GizmoMode, TransformGizmo } from './transform-gizmo';
 
 const COLORS = [
   [1, 0.12, 0.09, 1],
@@ -35,16 +37,17 @@ interface Part {
 /** Retained ordinary meshes: no custom GPU pipeline, per-frame geometry, or DOM overlay. */
 export function createGizmoPresentation(gizmo: TransformGizmo): { sync(): void; dispose(): void } {
   const world = gizmo.world;
+  const assets = runtimeAssetRegistry(world.assets);
   const parts: Part[] = [];
-  const handles: Array<Handle<'MeshAsset' | 'MaterialAsset', 'shared'>> = [];
+  const handles: Array<AssetHandle<'mesh' | 'material'>> = [];
   const meshes = [
     createCylinderGeometry(0.018, 0.018, 0.72, 10),
     createCylinderGeometry(0, 0.07, 0.2, 12),
     createBoxGeometry(0.12, 0.12, 0.12),
     createTorusGeometry(1, 0.018, 6, 64),
-    createBoxGeometry(0.24, 0.24, 0.014),
+    createBoxGeometry(GIZMO_PLANE_MAX - GIZMO_PLANE_MIN, GIZMO_PLANE_MAX - GIZMO_PLANE_MIN, 0.014),
   ].map((r) => {
-    const h = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', r.unwrap());
+    const h = assets.create(r.unwrap()).unwrap();
     handles.push(h);
     return h;
   });
@@ -53,12 +56,14 @@ export function createGizmoPresentation(gizmo: TransformGizmo): { sync(): void; 
       queue: 4000,
       renderState: { depthCompare: 'always', depthWriteEnabled: false, cullMode: 'none' },
     });
-    const h = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      parameters: m.parameters as readonly MaterialParameter[],
-      values: { baseColor: c },
-      passes: [m.passes?.[0] as MaterialPass],
-    });
+    const h = assets
+      .create({
+        kind: 'material',
+        parameters: m.parameters as readonly MaterialParameter[],
+        values: { baseColor: c },
+        passes: [m.passes?.[0] as MaterialPass],
+      })
+      .unwrap();
     handles.push(h);
     return h;
   });
@@ -76,22 +81,20 @@ export function createGizmoPresentation(gizmo: TransformGizmo): { sync(): void; 
         { component: Transform, data: {} },
         {
           component: MeshFilter,
-          data: { assetHandle: meshes[mesh] as Handle<'MeshAsset', 'shared'> },
+          data: { assetHandle: meshes[mesh] as AssetHandle<'mesh'> },
         },
         {
           component: MeshRenderer,
-          data: { materials: [materials[color] as Handle<'MaterialAsset', 'shared'>] },
+          data: { materials: [materials[color] as AssetHandle<'material'>] },
         },
         { component: Visibility, data: { state: 1 } },
       )
       .unwrap();
     parts.push({ entity, handle, modes, offset, rotation, color, last: '' });
   };
-  for (let i = 0; i < 3; i++) {
-    const axis: V3 = i === 0 ? [1, 0, 0] : i === 1 ? [0, 1, 0] : [0, 0, 1];
+  for (const [i, { handle: h, direction: axis }] of GIZMO_AXES.entries()) {
     const q = quat.create();
     quat.fromUnitVectors(q, [0, 1, 0], axis);
-    const h = (['X', 'Y', 'Z'] as const)[i] as 'X' | 'Y' | 'Z';
     addPart(h, ['translate', 'scale'], 0, mul(axis, 0.54), q, i);
     addPart(h, ['translate'], 1, mul(axis, 0.9), q, i);
     addPart(h, ['scale'], 2, axis, quat.identity(quat.create()), i);
@@ -99,11 +102,12 @@ export function createGizmoPresentation(gizmo: TransformGizmo): { sync(): void; 
     quat.fromUnitVectors(ring, [0, 0, 1], axis);
     addPart(h, ['rotate'], 3, [0, 0, 0], ring, i);
   }
-  for (const [h, offset, normal, c] of [
-    ['XY', [0.34, 0.34, 0], [0, 0, 1], 2],
-    ['YZ', [0, 0.34, 0.34], [1, 0, 0], 0],
-    ['XZ', [0.34, 0, 0.34], [0, 1, 0], 1],
-  ] as const) {
+  for (const { handle: h, axes, normalAxis: c } of GIZMO_PLANES) {
+    const normal = GIZMO_AXES[c].direction;
+    const offset = mul(
+      add(GIZMO_AXES[axes[0]].direction, GIZMO_AXES[axes[1]].direction),
+      (GIZMO_PLANE_MIN + GIZMO_PLANE_MAX) / 2,
+    );
     const q = quat.create();
     quat.fromUnitVectors(q, [0, 0, 1], normal);
     addPart(h, ['translate'], 4, offset, q, c);
@@ -137,7 +141,7 @@ export function createGizmoPresentation(gizmo: TransformGizmo): { sync(): void; 
         world.set(p.entity, Visibility, { state: 2 }).unwrap();
         world
           .set(p.entity, MeshRenderer, {
-            materials: [materials[highlighted ? 3 : p.color] as Handle<'MaterialAsset', 'shared'>],
+            materials: [materials[highlighted ? 3 : p.color] as AssetHandle<'material'>],
           })
           .unwrap();
         p.last = key;
@@ -148,7 +152,7 @@ export function createGizmoPresentation(gizmo: TransformGizmo): { sync(): void; 
       disposed = true;
       gizmo.cancel();
       for (const p of parts) world.despawn(p.entity).unwrap();
-      for (const h of handles) world.sharedRefs.release(h).unwrap();
+      for (const h of handles) assets.release(h).unwrap();
     },
   };
 }

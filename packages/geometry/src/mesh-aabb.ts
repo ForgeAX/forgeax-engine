@@ -1,23 +1,9 @@
 import { isFiniteBounds3, type MeshAsset as TypesMeshAsset } from '@forgeax/engine-types';
 
-/**
- * Compute the local-space AABB of a mesh from its position attribute.
- *
- * Reads every third float from the position buffer as (x, y, z) and computes
- * [minX, minY, minZ, maxX, maxY, maxZ]. When position is absent, empty, or
- * less than 3 floats, returns an inverted-infinity empty box ([+Inf,+Inf,+Inf,
- * -Inf,-Inf,-Inf]) — consumers interpret this as "always-visible" (no culling).
- *
- * The position attribute can be Float32Array, ArrayBuffer (re-wrapped as
- * Float32Array), or Uint16Array (unlikely for position data; treated as
- * absent). Empty vertices (0 x 12 = 0) also produce empty box.
- *
- * Anchors: plan-strategy D-7 (register-time computation); D-1 (Float32Array
- * bare type); requirements AC-02 (empty -> inverted-infinity).
- */
+/** Derive local bounds from canonical positions; empty geometry has finite zero bounds. */
 function computeAABB(asset: TypesMeshAsset): Float32Array {
   const pos = asset.attributes.position;
-  // Convert to Float32Array if possible; bail to empty-box otherwise.
+  // Canonical admission validates position storage before this bounds projection.
   let floatPos: Float32Array;
   if (pos instanceof Float32Array) {
     floatPos = pos;
@@ -49,7 +35,7 @@ function computeAABB(asset: TypesMeshAsset): Float32Array {
 }
 
 function emptyBox(): Float32Array {
-  return Float32Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+  return new Float32Array(6);
 }
 
 function hasPositionData(position: unknown): boolean {

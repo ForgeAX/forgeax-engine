@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Renderer extract/prepare/record',
@@ -10,11 +12,19 @@ export default defineFeature({
   expect:
     'All checks pass: submissions and receipts advance one per frame, the compiled graph is ready with passes, the render scene holds the spawned renderables, and each frame-submitted event carries a receipt.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.6, 1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.6, 1, 1] }), {
       pos: [-0.8, 0.5, 0],
     });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [1, 0.5, 0.1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [1, 0.5, 0.1, 1] }), {
       pos: [0.8, 0.5, 0],
     });
     await frames(3);

@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import {
   buildMeshCardLayout,
@@ -16,11 +17,13 @@ import {
   PointLightShadow,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import type { GiCamera, GiLight, GiMaterialName, ProceduralGiScene, Vec3 } from './scenes.ts';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 type Entity = EntityHandle;
-type MaterialHandle = Handle<'MaterialAsset', 'shared'>;
+type MaterialHandle = AssetHandle<'material'>;
 
 export interface GiSceneControls {
   readonly camera: Entity;
@@ -200,7 +203,10 @@ export function spawnProceduralScene(
   aspect: number,
   boxMesh: MeshAsset,
 ): GiSceneControls {
-  const mesh = world.allocSharedRef('MeshAsset', boxMesh);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const mesh = sceneAssets.create(boxMesh).unwrap();
   const panels: Entity[] = [];
   for (const box of scene.boxes) {
     const entity = world

@@ -19,9 +19,9 @@ if (!created.ok) throw created.error;
 const app = created.value;
 
 // Load clip via asset system
-const loaded = await app.renderer.assets.loadByGuid<AudioClipAsset>(bgmGuid);
+const loaded = await app.renderer.assets.load(bgmGuid, 'audio');
 if (!loaded.ok) throw loaded.error;
-const clip = app.world.allocSharedRef('AudioClipAsset', loaded.value);
+const clip = loaded.value;
 
 // Spawn BGM source
 app.world.spawn({
@@ -45,7 +45,13 @@ app.world.spawn(
 | `engine-worker` | `createAudioIntentBackend` batches POD intents with frame completion | `createHostAudioConsumer` owns decode, cache, nodes, and `AudioContext` |
 | `shared` | Same Engine Worker intent path | Same Host consumer; Kernel Workers never receive audio state |
 
-`AudioClipAsset` carries either encoded `bytes` or a Cook-validated PCM16 `stream` manifest and HTTP locator. The latter publishes only its bounded index across Workers. The first play intent for a `sourceKey` carries bytes; identical later plays reuse the Host decode cache, while changed bytes under the stable key are republished. Intents cover play, stop, per-source volume, playback rate, pause and seek, bus volume/mute, source pose, listener pose, and destroy. Stale async decode completion is fenced by both the entity play epoch and the current source-key content, so it cannot resurrect a stopped, replaced, or superseded source.
+`AudioClipAsset` carries encoded `bytes` or a validated PCM16 `stream` manifest. The asset owner supplies identity and revision automatically. `AudioBackend.play(entity, assets, clipHandle, options)` and `prepareClips(requestId, assets, handles)` use the same managed content as ECS sources. A new publication copies its bytes or bounded stream index once; repeated plays reuse that version without comparing bytes. `sourceKey` describes provenance and never merges independently edited assets.
+
+Each play and music preparation fixes the content it starts with. Later asset edits affect later plays; they do not cancel existing voices or pending decoding. Stop, entity replacement and Host disposal fence late completion. A rejected Host publication is returned to the producer: local adapters return it from `emit`, while App transports sparse rejections back to the Engine Worker. Custom transports deliver them to `backend.rejectPublication`; explicit replay then sends the required bytes again. No consumer fanout is required. ECS source control consumes the World mutation projection and retains only accepted playing controls plus failed source indices for retry; unchanged or idle clip consumers are never scanned. Acoustic mixing maintains its playing selection from the same World evidence and samples only those active voices. Neither path keeps a second clip catalogue.
+
+Publication metadata is bounded by `maxPublishedSources` and `maxPublishedBytes` (the latest per-asset publication sizes). The App Engine Worker separately bounds its actual outgoing frame queue to 4096 commands / 64 MiB, including every retained fixed version and serialized metadata. Host accounting includes encoded data, outstanding native decode jobs and prepared music buffers. These budgets exclude native decoder working memory and live platform node memory.
+
+Transport admission failures throw `AudioError` and remain observable in backend state. ECS records each control only after successful delivery to its transport; rejected play, stop, seek and control edges retry on later audio ticks, including stops for removed entities. Direct backend callers handle the failure before retrying. Preparations expose rejection through their receipt. Destruction replaces queued work with the destroy command so exhausted frame capacity cannot prevent Host cleanup.
 
 ## ECS component schema
 
@@ -53,7 +59,7 @@ app.world.spawn(
 
 | Field | Type | Default | Description |
 |:--|:--|:--|:--|
-| `clip` | `Handle<'AudioClipAsset', 'shared'>` | required | World shared-ref handle for the loaded POD clip |
+| `clip` | `AssetHandle<'audio'>` | required | Asset-owner handle for the loaded clip |
 | `playing` | `boolean` | `false` | Edge-detected: false->true starts playback, true->false stops |
 | `paused` | `boolean` | `false` | Pauses an admitted source while `playing` remains true; false resumes its retained clip position |
 | `playbackRate` | `number` | `1` | Positive sample advance multiplier; speed and pitch change together |
@@ -95,7 +101,7 @@ audio.configureBuses([
 audio.setBus(entityId, 'voice');
 ```
 
-Read [the Host routing and streaming contract](../audio-webaudio/README.md#configurable-buses-and-shared-effects) for effect ownership, publication limits and actual playback status. Configuration/control intents express requests; `getState().lastError` reports Host refusal. `validateAudioBuses()` can validate a declaration before publication. Worker publication retention defaults to 64 MiB and 256 source keys; identical content sends no repeat bytes/index, while replacement republishes it.
+Read [the Host routing and streaming contract](../audio-webaudio/README.md#configurable-buses-and-shared-effects) for effect ownership, publication limits and actual playback status. Configuration/control intents express requests; `getState().lastError` reports Host refusal. `prepareAudioBuses()` returns a validated immutable declaration snapshot. Worker publication and the Host graph consume those same named bus/send values, including prototype accessors. Worker publication retention defaults to 64 MiB and 256 source keys; identical content sends no repeat bytes/index, while replacement republishes it.
 
 ## Acoustic regions
 
@@ -180,7 +186,7 @@ Immediate audio failures use `Result<T, AudioError>` or the existing audio state
 | `context-creation-failed` | `new AudioContext()` threw or returned null | check browser supports AudioContext; verify no privacy extension blocks audio |
 | `decode-failed` | `decodeAudioData(arrayBuffer)` rejected | ensure audio file is a valid wav/mp3/ogg/flac at the GUID path |
 | `context-suspended` | play() called while AudioContext is suspended and gesture listener failed | call play after user gesture (click/tap/keydown) to trigger resume() |
-| `invalid-clip-handle` | AudioSource.clip handle is dangling | verify clip was registered via AssetRegistry.register() before spawning |
+| `invalid-clip-handle` | AudioSource.clip handle is dangling | load or create the clip in the World asset owner before spawning |
 | `bus-not-found` | AudioSource.bus is outside `'sfx' \| 'music'` | use 'sfx' or 'music' bus literal; custom bus names not supported in v1 |
 
 Each error carries 4-field structured surface: `.code` / `.expected` / `.hint` / `.detail`. `.detail` is narrowed per-code via discriminated union (e.g. `decode-failed` carries `reason: string`).
@@ -250,14 +256,18 @@ acoustics. [Native measurements and reproduction](../audio-webaudio/bench/spatia
 
 `MusicScore` is saved author data referencing ordinary buffered audio GUIDs. Use the
 same Import/Cook/Pack/Catalog route as `AudioSource`; `loadMusicScore` resolves those
-GUIDs through the caller's existing asset service. It creates no music catalogue.
+GUIDs through the caller's existing asset service. The returned preparation holds those loaded handles; the caller releases its load grants after its last preparation request. It creates no music catalogue.
 Game section policy is a complete stem weight vector, rather than another FSM.
+
+`validMusicScore` owns the timing, stem-count and offset rules for saved scores
+and Host preparation. `validMusicBpm` also admits tempo commands. `MUSIC_LIMITS`
+supplies production capacities and result-report bounds; Web Audio still owns
+native sample admission, decoding and epoch retirement.
 
 ```ts
 import { loadMusicScore, type AudioBackend, type AudioClipAsset } from '@forgeax/engine/audio';
 
-const prepared = await loadMusicScore(savedScore, guid =>
-  assets.loadByGuid<AudioClipAsset>(assets.parseGuid(guid)));
+const prepared = await loadMusicScore(savedScore, assets);
 if (!prepared.ok) throw prepared.error;
 // This preparation runs on the Host, before Worker game controls are admitted.
 const audio = hostAudioBackend;
@@ -311,3 +321,5 @@ time stretching are outside this capability. The closed failure vocabulary and
 recovery fields live in [`src/music.ts`](src/music.ts).
 
 [Source choices and frozen measurement contract](../audio-webaudio/bench/music/contract.md)
+
+AudioIntent declares each acoustic and bus operation once; Host consumers and Worker queues use that same closed union.

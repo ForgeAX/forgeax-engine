@@ -1,11 +1,14 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import { RenderScene } from '../scene/render-scene';
 
@@ -18,9 +21,14 @@ const LIGHTWEIGHT_RENDER_SCENE_PERF = process.env.FORGEAX_RENDER_PERF_LIGHTWEIGH
 const RENDER_SCENE_ENTITY_COUNT = LIGHTWEIGHT_RENDER_SCENE_PERF ? 10_000 : 100_000;
 const RENDER_SCENE_DELTA_COUNT = LIGHTWEIGHT_RENDER_SCENE_PERF ? 1_000 : 10_000;
 
-const sceneMaterial = {} as MaterialSnapshot;
+const sceneMaterials = Array.from(
+  { length: 1_000 },
+  () => new MaterialResource(defaultMaterialSnapshot()),
+);
 
 function sceneSnapshot(entityKey: number): RenderableSnapshot {
+  const material = sceneMaterials[entityKey % 1_000];
+  if (material === undefined) throw new Error('Missing fixture material');
   const world = new Float32Array(16);
   world[0] = 1;
   world[5] = 1;
@@ -31,8 +39,8 @@ function sceneSnapshot(entityKey: number): RenderableSnapshot {
     assetHandle: 1,
     transform: { world },
     localAabb: new Float32Array([-0.5, -0.5, -0.5, 0.5, 0.5, 0.5]),
-    material: { ...sceneMaterial, materialHandle: entityKey % 1_000 },
-    materials: [{ ...sceneMaterial, materialHandle: entityKey % 1_000 }],
+    material,
+    materials: [material],
     materialBindingSources: ['engine-default'],
     worldId: 0,
     entityKey,
@@ -40,7 +48,9 @@ function sceneSnapshot(entityKey: number): RenderableSnapshot {
 }
 
 function buildWorld(inherited: boolean, withHierarchy: boolean): World {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const world = new World({ assets });
   const parent = withHierarchy
     ? world
         .spawn(
@@ -60,7 +70,7 @@ function buildWorld(inherited: boolean, withHierarchy: boolean): World {
         ...(inherited
           ? [{ component: Visibility, data: { state: VisibilityStateValue.inherited } }]
           : []),
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();
@@ -117,9 +127,10 @@ describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_EN
     );
     const stable = scene.materialize();
     const noChange = scene.apply([]);
+    expect(scene.materialize()).toBe(stable);
     const delta = scene.apply(
       Array.from({ length: RENDER_SCENE_DELTA_COUNT }, (_, entityKey) => {
-        const previous = stable[entityKey];
+        const previous = stable.at(entityKey);
         const world =
           previous === undefined
             ? new Float32Array(16)
@@ -132,11 +143,19 @@ describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_EN
     expect(noChange).toMatchObject({ updated: 0, resynced: 0 });
     expect(delta).toMatchObject({ updated: RENDER_SCENE_DELTA_COUNT, resynced: 0 });
     expect(scene.inspect()).toMatchObject({ renderableScans: RENDER_SCENE_DELTA_COUNT });
-    // Transform-only updates patch the retained snapshot in place so the
-    // unified scene flow does not allocate a second large publication.
-    expect(scene.materialize()).toBe(stable);
-    expect(stable[0]?.transform.world[12]).toBe(1);
-    expect(stable[RENDER_SCENE_DELTA_COUNT - 1]?.transform.world[12]).toBe(1_000);
+    // Explicit materialization retains each accepted snapshot. The delta only
+    // replaces changed rows; unchanged rows and repeated reads reuse identity.
+    const changed = scene.materialize();
+    expect(changed).not.toBe(stable);
+    expect(stable.at(0)?.transform.world[12]).toBe(0);
+    expect(stable.at(RENDER_SCENE_DELTA_COUNT - 1)?.transform.world[12]).toBe(999);
+    expect(changed.at(0)?.transform.world[12]).toBe(1);
+    expect(changed.at(RENDER_SCENE_DELTA_COUNT - 1)?.transform.world[12]).toBe(1_000);
+    expect(changed.at(RENDER_SCENE_DELTA_COUNT)).toBe(stable.at(RENDER_SCENE_DELTA_COUNT));
+    expect(changed.at(RENDER_SCENE_ENTITY_COUNT - 1)).toBe(
+      stable.at(RENDER_SCENE_ENTITY_COUNT - 1),
+    );
+    expect(scene.materialize()).toBe(changed);
     expect(scene.querySpatial({ min: [-1, -1, -1], max: [1, 1, 1] }).length).toBeGreaterThan(0);
   }, 60_000);
 });

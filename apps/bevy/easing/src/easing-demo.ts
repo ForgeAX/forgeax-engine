@@ -25,13 +25,16 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
 import { easing, quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Path endpoints (world X) the cubes travel between. */
 export const X_START = -4;
@@ -57,24 +60,23 @@ export function easedX(u: number): number {
 
 /** Build the easing World: a linear cube (top lane) + a smoothstep-eased cube (bottom lane) + light + camera. */
 export function buildEasingWorld(world: World): void {
-  const linMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.5, 0.6, 0.9, 1] }),
-  );
-  const easeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.6, 0.3, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const linMat = sceneAssets.create(Materials.standard({ baseColor: [0.5, 0.6, 0.9, 1] })).unwrap();
+  const easeMat = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.6, 0.3, 1] })).unwrap();
 
   world.spawn(
     { component: Transform, data: { pos: [X_START, Y_LINEAR, 0], quat: [0, 0, 0, 1], scale: [0.7, 0.7, 0.7] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [linMat] } },
     { component: Mover, data: { mode: 0 } },
   );
   world.spawn(
     { component: Transform, data: { pos: [X_START, Y_EASED, 0], quat: [0, 0, 0, 1], scale: [0.7, 0.7, 0.7] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [easeMat] } },
     { component: Mover, data: { mode: 1 } },
   );

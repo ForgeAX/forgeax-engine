@@ -1,14 +1,14 @@
 // World-data conversion: read the asi_world JSON shapes we already mirror in
 // ./types.ts, return:
 //   - layers : { heightKey, subIndex, layerOrder, tiles: Uint32Array(cols*rows) }
-//     -- one TileLayer per (height bucket, sub-layer index) pair. asi_world
+//     -- one Tilemap per (height bucket, sub-layer index) pair. asi_world
 //     cells carry a `graphic_index: number[]` array where each entry is one
 //     sub-layer (bottom to top) painted into the same cell at the same
 //     height (e.g. [4, 6] = "light grass at idx 4, then wall trim at idx 6
 //     on top"). The earlier path collapsed this to `graphic_index[last]`
 //     only, which made the lower-painted terrain transitions vanish (height=1
 //     wall trim hid the grass underneath; height=-99 sunken floors lost
-//     their middle band). We now spawn one TileLayer per sub-layer index
+//     their middle band). We now spawn one Tilemap per sub-layer index
 //     across all cells in the bucket; layerOrder is `height * 100 + subIndex`
 //     so sub-layers stack within their height bucket but never cross into
 //     the next bucket (HEIGHT_LAYER_BASE = 100 gives 100 sub-layer slots

@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import type { FeatureCheck } from '../../lab/feature';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { evalInApp } from './_shared/eval';
 
 export default defineFeature({
@@ -12,10 +14,16 @@ export default defineFeature({
   expect:
     'ON: eval grows the magenta cube to fill the centre. OFF: eval shrinks it to a small cube on the floor.',
   async setup({ app, world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.6, 5], target: [0, 0.8, 0] });
     const cube = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [1, 0.1, 0.9, 1], roughness: 0.5 }),
       { pos: [0, 0.2, 0], scale: [0.4, 0.4, 0.4] },
     );

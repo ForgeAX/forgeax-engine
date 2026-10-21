@@ -1,13 +1,7 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import {
-  AUDIO_ENGINE_RESOURCE_KEY,
-  AUDIO_TICK_SYSTEM_NAME,
-  AudioSource,
-  type AudioBackend,
-  type AudioClipAsset,
-  audioPlugin,
-} from '@forgeax/engine-audio';
+import { AUDIO_ENGINE_RESOURCE_KEY, AUDIO_TICK_SYSTEM_NAME, AudioSource, type AudioBackend, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import {
   FRAME_START_SCAN_SYSTEM_NAME,
@@ -22,11 +16,11 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { addOnEnter, defineState, getState, setNextState } from '@forgeax/engine-state';
-import { type Handle, type MaterialAsset, type TextureAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { CapstoneVelocity, buildCapstoneScene } from './scene';
 import './pulse-material.wgsl';
-import { CAPSTONE_CONTENT_GUID, capstoneContentLoader, type CapstoneContent } from './reimport';
+import { CAPSTONE_CONTENT_GUID, capstoneContentKind, capstoneContentDecoder } from './reimport';
 
 const SFX_GUID = '019e7535-5e5e-75fe-a328-0b08e3a72744';
 const Phase = defineState('M8CapstonePhase', ['boot', 'playing', 'mutated', 'recovered'] as const);
@@ -50,11 +44,11 @@ const world = app.world;
 const assets = app.assets;
 if (assets === undefined) throw new Error('m8-capstone: app asset owner unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-assets.loaders.register(capstoneContentLoader());
+assets.installDecoder(capstoneContentKind, capstoneContentDecoder);
 
 const scene = buildCapstoneScene(world);
 const pulseShaderId = 'my_game::pulse_material';
-const pulseTexture = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+const pulseTexture = assets.create({
   kind: 'texture',
   shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
   format: 'rgba8unorm',
@@ -66,18 +60,18 @@ const pulseTexture = world.allocSharedRef<'TextureAsset', TextureAsset>('Texture
   ]),
   colorSpace: 'linear',
   mips: { kind: 'none' },
-});
+}).unwrap();
 const pulseParams: Record<string, number | number[]> = {
   baseColor: [0.2, 0.75, 1],
   metallic: 0,
   roughness: 2,
   baseColorTexture: pulseTexture,
 };
-const customMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+const customMaterial = assets.create({
   kind: 'material',
   passes: [{ name: 'Forward', program: { module: pulseShaderId }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
   values: pulseParams,
-});
+}).unwrap();
 const phase = { value: 'boot' };
 const fixedTicks = { value: 0 };
 const pickCount = { value: 0 };
@@ -86,7 +80,7 @@ const renderMode = { value: 'standard' };
 const fault = { code: 'none' };
 const recovery = { value: 0 };
 const audioCounters = { starts: 0, previousActive: 0 };
-let clipHandle = 0 as unknown as Handle<'AudioClipAsset', 'shared'>;
+let clipHandle = 0 as unknown as AssetHandle<'audio'>;
 let rearmAudio = false;
 let collisionSeen = false;
 
@@ -99,9 +93,10 @@ phaseOnEnter('recovered');
 
 const guid = AssetGuid.parse(SFX_GUID);
 if (!guid.ok) throw new Error(`m8-capstone: invalid SFX GUID ${SFX_GUID}`);
-const clipResult = await assets.loadByGuid<AudioClipAsset>(guid.value);
+const clipResult = await assets.load(guid.value, 'audio');
 if (clipResult.ok) {
-  clipHandle = world.allocSharedRef('AudioClipAsset', clipResult.value);
+  const clip = assets.read(clipResult.value).unwrap();
+  clipHandle = clipResult.value;
   world.set(scene.emitter, AudioSource, {
     clip: clipHandle,
     playing: false,
@@ -110,21 +105,22 @@ if (clipResult.ok) {
   });
   content.ready = true;
   content.revision = 1;
-  if (clipResult.value.stream)
+  if (clip.stream)
     throw new Error('[m8-capstone] loaded-byte fixture requires a buffered short SFX');
-  content.bytes = clipResult.value.bytes.length;
+  content.bytes = clip.bytes.length;
 } else {
   throw new Error(`m8-capstone content load failed: ${clipResult.error.code}`);
 }
 
 const contentGuid = AssetGuid.parse(CAPSTONE_CONTENT_GUID);
 if (!contentGuid.ok) throw new Error(`m8-capstone: invalid content GUID ${CAPSTONE_CONTENT_GUID}`);
-const contentResult = await assets.loadByGuid<CapstoneContent>(contentGuid.value);
+const contentResult = await assets.load(contentGuid.value, capstoneContentKind);
 if (!contentResult.ok) throw new Error(`m8-capstone content reimport seed failed: ${contentResult.error.code}`);
 content.ready = true;
 content.revision = 1;
-content.title = contentResult.value.title;
-content.markers = contentResult.value.markers.length;
+const contentPayload = assets.read(contentResult.value).unwrap();
+content.title = contentPayload.title;
+content.markers = contentPayload.markers.length;
 
 const audio = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
 world.insertResource('m8CapstoneContent', content);
@@ -156,7 +152,7 @@ world.addSystem(Update, {
   fn: () => {
     const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
     const spaceUp = input.keyboard.up(' ');
-    if (!rearmAudio && spaceUp && clipHandle !== (0 as unknown as Handle<'AudioClipAsset', 'shared'>)) {
+    if (!rearmAudio && spaceUp && clipHandle !== (0 as unknown as AssetHandle<'audio'>)) {
       world.set(scene.emitter, AudioSource, { clip: clipHandle, playing: true, spatialBlend: 1, bus: 'sfx' });
       rearmAudio = true;
     } else if (rearmAudio) {

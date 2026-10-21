@@ -8,7 +8,8 @@ import {
 } from '@forgeax/engine-shader';
 import { derive, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { BatchTopology, batchLevelStride } from '../gpu-driven/batch-topology';
+import { batchLevelStride } from '../gpu-driven/batch-layout';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GPU_DRIVEN_VIEW_WGSL, GpuDrivenView } from '../gpu-driven/view-gpu';
@@ -22,6 +23,7 @@ import {
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { snapshot, standardPbrInputs, updateSnapshot } from './gpu-driven-production-fixture';
+import { updateGpuView } from './helpers/gpu-input-read-domain';
 
 const WIDTH = 32;
 const ROW_BYTES = WIDTH * 16;
@@ -257,16 +259,24 @@ describe('GPU-driven native first-instance addressing', () => {
     let previousVisible: Buffer | undefined;
     let previousMirrorBase = 0;
     try {
-      for (let frame = 0; frame < 5; frame += 1) {
+      for (let frame = 0; frame < 60; frame += 1) {
         if (frame === 2) add(Array.from({ length: 19 }, (_, index) => member(index + 4, 2, 1)));
         if (frame === 3) view._recoverFromOverflow().unwrap();
         pyramid.write(frame < 2);
-        view
-          .update(topology.plan(), scene, cameras.planes, cameras.lod, 0, undefined, undefined, {
+        updateGpuView(
+          view,
+          topology.query(topology.sourcePlan(), undefined),
+          scene,
+          cameras.planes,
+          cameras.lod,
+          0,
+          undefined,
+          undefined,
+          {
             ...cameras.occlusion,
             historyKey: frame >= 3 ? 'first-instance-recovery' : cameras.occlusion.historyKey,
-          })
-          .unwrap();
+          },
+        ).unwrap();
         const visible = view.visibleBuffer;
         const indirect = view.indirectBuffer;
         if (visible === undefined || indirect === undefined)
@@ -280,18 +290,15 @@ describe('GPU-driven native first-instance addressing', () => {
         if (frame === 3) expect(mirrorBase).toBeGreaterThan(previousMirrorBase);
         if (material === undefined) {
           const input = standardPbrInputs(device, raster, emptyLayout);
-          if (
-            input.standardPbrPipelineState === undefined ||
-            input.standardPbrArtifact === undefined
-          ) {
+          if (input.materialPipelineState === undefined || input.materialArtifact === undefined) {
             throw new Error('missing receipt-backed material fixture');
           }
           material = MaterialAbiRasterAdapter.create({
             device,
             visibleBuffer: visible,
-            artifact: input.standardPbrArtifact,
+            artifact: input.materialArtifact,
             pipelineState: {
-              ...input.standardPbrPipelineState,
+              ...input.materialPipelineState,
               gpuDrivenInstancesBindGroupLayout: instancesLayout,
               gpuDrivenPbrPipelineLayout: layout,
             },
@@ -324,8 +331,9 @@ describe('GPU-driven native first-instance addressing', () => {
           tables.primitive.bytes,
           surface,
         );
-        const plan = topology.plan();
-        expect(plan.batches).toHaveLength(3);
+        const plan = topology.query(topology.sourcePlan(), undefined);
+        // Distinct managed material roots retain independent execution groups.
+        expect(plan.batches).toHaveLength(frame < 2 ? 3 : 22);
         for (const batch of plan.batches.slice(1)) expect(batch.visibleBase).toBeGreaterThan(0);
         const groups: BindGroup[] = [];
         const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
@@ -432,8 +440,12 @@ describe('GPU-driven native first-instance addressing', () => {
         if (gpu.addLateOcclusion === undefined) throw new Error('missing native late phase');
         gpu.addLateOcclusion(pyramidView).unwrap();
         addRaster(true);
-        expect(new Set(groups.slice(0, 3)).size).toBe(enabled ? 1 : 3);
-        expect(new Set(groups.slice(3)).size).toBe(enabled ? 1 : 3);
+        expect(new Set(groups.slice(0, plan.batches.length)).size).toBe(
+          enabled ? 1 : plan.batches.length,
+        );
+        expect(new Set(groups.slice(plan.batches.length)).size).toBe(
+          enabled ? 1 : plan.batches.length,
+        );
         if (frame === 4) expect(groups[0]).toBe(previousGroup);
         if (frame === 2 || frame === 3) expect(groups[0]).not.toBe(previousGroup);
         const pixelResource = graph
@@ -485,8 +497,8 @@ describe('GPU-driven native first-instance addressing', () => {
               // Material addresses count the receipt's 16-byte units, not
               // primitive slots. The shader also loads the distinct material
               // color through that address. Surface rows follow candidate
-              // order (the non-indexed batch remains last).
-              const candidate = row === 2 && frame >= 2 ? 21 : row > 2 ? row - 1 : row;
+              // order within the independently retained material groups.
+              const candidate = row;
               expect(
                 pixel,
                 `feature=${enabled}, frame=${frame}, phase=${phase}, row=${row}`,

@@ -6,6 +6,7 @@ import {
   serializeCookedMaterialRecord,
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { standardSurfaceParameters } from '@forgeax/engine-types';
 
@@ -38,34 +39,48 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
         ],
       },
     });
-    const payload = JSON.stringify({
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: [
-        {
-          guid,
-          kind: 'material',
-          payload: {
-            ...(draft.payload as Record<string, unknown>),
-            cooked: JSON.parse(
-              serializeCookedMaterialRecord(
-                validateCookedMaterialRecord(
-                  (draft.payload as { cooked: unknown }).cooked,
-                ).unwrap(),
+    const sourcePath = 'material.pack';
+    const publication = createRuntimePackPublication({
+      scopeId: 'asset-runtime',
+      sourcePath,
+      sourceRevision: 'fixture',
+      packageUrl: '/material.pack.json',
+      pack: {
+        assets: [
+          {
+            guid,
+            kind: 'material',
+            payload: {
+              ...(draft.payload as Record<string, unknown>),
+              cooked: JSON.parse(
+                serializeCookedMaterialRecord(
+                  validateCookedMaterialRecord(
+                    (draft.payload as { cooked: unknown }).cooked,
+                  ).unwrap(),
+                ),
               ),
-            ),
+            },
+            refs: draft.refs,
+            artifacts: {},
           },
-          refs: draft.refs,
-          artifacts: {},
-        },
-      ],
+        ],
+      },
     });
+    const payload = JSON.stringify(publication.pack);
     const server = createServer((request, response) => {
       response.setHeader('Access-Control-Allow-Origin', '*');
       response.setHeader('Content-Type', 'application/json');
       response.end(
         request.url === '/pack-index.json'
-          ? JSON.stringify([{ guid, kind: 'material', packageUrl: '/material.pack.json' }])
+          ? JSON.stringify([
+              {
+                guid,
+                kind: 'material',
+                packageUrl: '/material.pack.json',
+                sourcePath,
+                publication: publication.publication,
+              },
+            ])
           : payload,
       );
     });

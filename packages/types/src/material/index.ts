@@ -31,6 +31,7 @@ export {
   materialGuidText,
   type ResolvedMaterial,
   resolveMaterialAsset,
+  validateMaterialValues,
 } from './resolve.js';
 export {
   deriveStandardLayerPlan,
@@ -56,5 +57,6 @@ export {
 } from './standard-schema.js';
 export * from './static-switches.js';
 export * from './surface-model.js';
+export { TERRAIN_MATERIAL_PARAMETERS } from './terrain-schema.js';
 
 export { unlitMaterialParameters } from './unlit-parameters';

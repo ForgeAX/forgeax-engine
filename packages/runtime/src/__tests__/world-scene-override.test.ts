@@ -1,4 +1,6 @@
 import * as SceneOwner from '@forgeax/engine-scene';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { testAssets } from './helpers/runtime-assets';
 // feat-20260608-scene-nesting-ecs-fication M2 / w20 (red phase) —
 // setSceneOverride / removeSceneOverride / detachSceneMember /
 // reattachSceneMember + AC-19 mount-time override apply invariants.
@@ -18,14 +20,13 @@ import * as SceneOwner from '@forgeax/engine-scene';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import { SceneInstance } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, SceneAsset } from '@forgeax/engine-types';
-import { ok } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { registerSceneComponents } from './helpers/register-scene-components';
 
-function registerSceneAsset(world: World, asset: SceneAsset): Handle<'SceneAsset', 'shared'> {
+function registerSceneAsset(world: World, asset: SceneAsset): AssetHandle<'scene'> {
   registerSceneComponents(world);
-  return world.allocSharedRef('SceneAsset', asset);
+  return testAssets(world).create(asset).unwrap();
 }
 
 describe('AC-19 mount-time override apply (w20)', () => {
@@ -42,16 +43,14 @@ describe('AC-19 mount-time override apply (w20)', () => {
         instance: {
           components: {},
           instance: {
-            source: 'child',
+            source: childHandle,
             overrides: [{ target: ['entity-0'], components: { Transform: { pos: [42, 0, 0] } } }],
           },
         },
       },
     };
     const parentHandle = registerSceneAsset(world, parent);
-    SceneOwner.worldSetSceneAssetResolver(world, (source) =>
-      source === 'child' ? ok(childHandle) : ok(childHandle),
-    );
+
     const r = SceneOwner.worldInstantiateScene(world, parentHandle);
     if (!r.ok) throw new Error('instantiate failed');
     const inst = world.get(r.value.root, SceneInstance);

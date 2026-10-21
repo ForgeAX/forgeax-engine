@@ -12,6 +12,7 @@ import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../../renderer-host';
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 
 const WIDTH = 64;
@@ -211,11 +212,11 @@ async function captureCase(testCase: AlphaCase): Promise<[number, number, number
     const plane = createPlaneGeometry(2.8, 2.8);
     expect(plane.ok).toBe(true);
     if (!plane.ok) throw new Error('plane creation failed');
-    const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
+    const meshHandle = testAssets(world).create(plane.value).unwrap();
     const texture =
       testCase.textureColor === undefined ? undefined : makeTexture(testCase.textureColor);
     const textureHandle =
-      texture === undefined ? undefined : world.allocSharedRef('TextureAsset', texture);
+      texture === undefined ? undefined : testAssets(world).create(texture).unwrap();
     // The renderer-owned record stage derives GPU residency from this world
     // asset. No renderer store upload is part of the public contract.
     const renderState =
@@ -255,7 +256,7 @@ async function captureCase(testCase: AlphaCase): Promise<[number, number, number
         ? { alphaCutoff: testCase.cutoff }
         : {}),
     });
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const materialHandle = testAssets(world).create(material).unwrap();
     world.spawn(
       { component: Transform, data: {} },
       { component: MeshFilter, data: { assetHandle: meshHandle } },

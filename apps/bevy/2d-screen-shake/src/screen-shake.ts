@@ -23,14 +23,18 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { noise, quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Bevy TRAUMA_DECAY_PER_SECOND = 0.5. */
 const TRAUMA_DECAY_PER_SECOND = 0.5;
@@ -72,47 +76,40 @@ function firstCamera(world: World): EntityHandle | null {
 
 /** Build the 2D screen-shake scene: background + player + obstacles + camera. */
 export function buildScreenShakeWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // ── Background tile (dark blue, Bevy srgb(0.2, 0.2, 0.3)) ─────────
-  const bgMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.2, 0.2, 0.3, 1]),
-  );
+  const bgMat = sceneAssets.create(Materials.unlit([0.2, 0.2, 0.3, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [WORLD_W, WORLD_H, 0.01] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [bgMat] } },
   );
 
   // ── Player icon (cyan, Bevy srgb(0.25, 0.94, 0.91)) ──────────────
-  const playerMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.25, 0.94, 0.91, 1]),
-  );
+  const playerMat = sceneAssets.create(Materials.unlit([0.25, 0.94, 0.91, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 2], quat: [0, 0, 0, 1], scale: [50, 100, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [playerMat] } },
   );
 
   // ── Obstacle 1 (red, Bevy srgb(0.85, 0.0, 0.2)) ──────────────────
-  const obs1Mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.85, 0.0, 0.2, 1]),
-  );
+  const obs1Mat = sceneAssets.create(Materials.unlit([0.85, 0.0, 0.2, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [-450, 200, 2], quat: [0, 0, 0, 1], scale: [50, 50, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [obs1Mat] } },
   );
 
   // ── Obstacle 2 (green, Bevy srgb(0.5, 0.8, 0.2)) ──────────────────
-  const obs2Mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.5, 0.8, 0.2, 1]),
-  );
+  const obs2Mat = sceneAssets.create(Materials.unlit([0.5, 0.8, 0.2, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [450, -150, 2], quat: [0, 0, 0, 1], scale: [70, 50, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [obs2Mat] } },
   );
 

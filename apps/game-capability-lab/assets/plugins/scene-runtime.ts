@@ -1,10 +1,11 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { CharacterController, Collider, ColliderShapeValue, CollidingEntities, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Materials, MeshFilter, MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import type { SceneBinding } from '../capability-matrix.plugin';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { Handle, MaterialAsset, SceneAsset } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { Transform } from '@forgeax/engine-scene';
 import { Rotatable } from './rotating-target';
@@ -13,7 +14,7 @@ import { cloneWithClearcoat } from './clearcoat-material';
 import { BouncyBallHazard, DamageHazard, PlayerHealth } from './counterattack';
 import { ProjectileCover, Sentinel } from './components/gameplay';
 
-export type MatHandle = Handle<'MaterialAsset', 'shared'>;
+export type MatHandle = AssetHandle<'material'>;
 export type GameContext = {
   world: World;
   assets?: AssetRegistry;
@@ -115,14 +116,13 @@ async function expandNestedNodes(
   for (const key of instanceKeys) {
     const declaration = asset.entities[key]?.instance;
     if (declaration === undefined) continue;
-    const sourceKey = `guid:${declaration.source.toLowerCase()}`;
+    const sourceKey = typeof declaration.source === 'number' ? `ref:${declaration.source}` : `guid:${declaration.source.toLowerCase()}`;
     if (ancestors.has(sourceKey)) throw new Error(`Nested SceneAsset cycle detected at ${declaration.source}`);
-    const parsed = AssetGuid.parse(declaration.source);
-    if (!parsed.ok) throw new Error(`Nested SceneAsset GUID is invalid: ${declaration.source}`);
-    const loaded = await assets.loadByGuid<SceneAsset>(parsed.value);
-    if (!loaded.ok) throw new Error(`Nested SceneAsset load failed: ${loaded.error.code}`);
+    const handle = typeof declaration.source === 'number' ? declaration.source : (await assets.load(declaration.source, 'scene')).unwrap();
+    const childAsset = assets.read(handle).unwrap();
+    if (typeof declaration.source === 'string') assets.release(handle).unwrap();
     ancestors.add(sourceKey);
-    const child = await expandNestedNodes(assets, loaded.value, nextMemberFirst, ancestors);
+    const child = await expandNestedNodes(assets, childAsset, nextMemberFirst, ancestors);
     ancestors.delete(sourceKey);
 
     for (const [childNode, childAddress] of child.addressByNode) {
@@ -181,20 +181,22 @@ export async function loadScene(ctx: GameContext): Promise<LoadedScene | null> {
     console.warn(`[game] authored scene GUID is invalid: ${parsed.error.code} — ${parsed.error.hint}`);
     return null;
   }
-  const loaded = await assets.loadByGuid<SceneAsset>(parsed.value);
+  const loaded = await assets.load(parsed.value, 'scene');
   if (!loaded.ok) {
     console.warn(`[game] authored scene load failed: ${loaded.error.code} — ${loaded.error.hint}`, loaded.error.detail);
     return null;
   }
-  const handle = ctx.world.allocSharedRef('SceneAsset', loaded.value);
+  const handle = loaded.value;
+  const authored = assets.read(handle).unwrap();
   const instance = assets.instantiate(handle, ctx.world);
+  assets.release(handle).unwrap();
   if (!instance.ok) {
     console.warn(`[game] authored scene instantiate failed: ${instance.error.code} — ${instance.error.hint}`);
     return null;
   }
   const scene = ctx.world.get(instance.value, SceneInstance);
   if (!scene.ok) return null;
-  const nodes = (await expandNestedNodes(ctx.assets, loaded.value)).nodes;
+  const nodes = (await expandNestedNodes(ctx.assets, authored)).nodes;
   const mapping = new Map<number, EntityHandle>();
   const mappingArray = scene.value.mapping as unknown as { [index: number]: number };
   for (const node of nodes) {
@@ -229,16 +231,18 @@ export function loadedFromScene(world: World, ctx: SceneBinding): LoadedScene | 
   return { mapping, nodes };
 }
 
-export function spawnFallbackScene(ctx: GameContext): void {
-  const cubeMesh = ctx.world.internSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-  const material = ctx.world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard({
+export function spawnFallbackScene(ctx: GameContext & { assets: AssetRegistry }): void {
+  const cubeMesh = ctx.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const material = ctx.assets.create(Materials.standard({
     baseColor: [0.48, 0.62, 0.35, 1], roughness: 0.95, metallic: 0,
-  }));
+  })).unwrap();
   ctx.world.spawn(
     { component: Transform, data: { pos: [0, -0.1, 0], scale: [24, 0.2, 24] } },
     { component: MeshFilter, data: { assetHandle: cubeMesh } },
     { component: MeshRenderer, data: { materials: [material] } },
-  );
+  ).unwrap();
+  ctx.assets.release(cubeMesh).unwrap();
+  ctx.assets.release(material).unwrap();
 }
 
 export function spawnGroundCollider(ctx: GameContext): void {
@@ -265,8 +269,8 @@ export function attachScenePhysics(ctx: GameContext, loaded: LoadedScene): Scene
     const renderer = world.get(entity, MeshRenderer);
     const materials = renderer.ok ? renderer.value.materials : undefined;
     return materials === undefined || materials.length === 0
-      ? [0 as MatHandle]
-      : [...materials] as MatHandle[];
+      ? []
+      : [...materials];
   };
   for (const node of loaded.nodes) {
     const name = (node.components.Name as { value?: string } | undefined)?.value;
@@ -292,11 +296,14 @@ export function attachScenePhysics(ctx: GameContext, loaded: LoadedScene): Scene
       case 'BlueBall': {
         dynamic();
         sphere(0.55);
-        const authoredMat = materialsOf(entity)[0] ?? (0 as MatHandle);
-        const clearcoatMat = ctx.assets === undefined ? undefined : cloneWithClearcoat(world, authoredMat, ctx.assets);
-        const mat = clearcoatMat ?? authoredMat;
-        if (clearcoatMat !== undefined) world.set(entity, MeshRenderer, { materials: [clearcoatMat] });
-        props.push({ e: entity, materials: [mat], clearcoat: clearcoatMat !== undefined });
+        const authoredMaterials = materialsOf(entity);
+        const authoredMat = authoredMaterials[0];
+        const clearcoatMat = ctx.assets === undefined || authoredMat === undefined ? undefined : cloneWithClearcoat(authoredMat, ctx.assets);
+        if (clearcoatMat !== undefined) {
+          world.set(entity, MeshRenderer, { materials: [clearcoatMat] }).unwrap();
+          ctx.assets!.release(clearcoatMat).unwrap();
+        }
+        props.push({ e: entity, materials: clearcoatMat === undefined ? authoredMaterials : [clearcoatMat], clearcoat: clearcoatMat !== undefined });
         world.addComponent(entity, { component: ScoringTarget, data: { points: 15, relayStep: 1 } });
         break;
       }
@@ -314,7 +321,7 @@ export function attachScenePhysics(ctx: GameContext, loaded: LoadedScene): Scene
         world.addComponent(entity, { component: Rotatable, data: { speed: 0.3 } });
         const materials = materialsOf(entity);
         props.push({ e: entity, materials });
-        animatedMaterial = { e: entity, mat: materials[0] ?? (0 as MatHandle) };
+        if (materials[0] !== undefined) animatedMaterial = { e: entity, mat: materials[0] };
         world.addComponent(entity, { component: ScoringTarget, data: { points: 10, relayStep: 3 } });
         break;
       case 'BouncyBall':

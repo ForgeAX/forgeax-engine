@@ -244,7 +244,7 @@ try {
         lowestReady: value.lodAssetsReady[2],
       },
       targetVisible: value.targetVisible,
-      rootMeshSharedRefCount: value.rootMeshSharedRefCount,
+      rootMeshResident: value.rootMeshResident,
       revisionRace: value.revisionRace,
       dynamicReceipt: value.dynamicReceipt,
       screenshot: screenshotPath,
@@ -312,13 +312,13 @@ try {
   const ready = await runPhase('lod2-ready-resident', { visible: 2, nearLevel: 0, farLevel: 2 });
   assert.equal(ready.assetRegistry.lowestReady, true);
 
-  const visibleRefCount = ready.rootMeshSharedRefCount;
+  const visibleResidency = ready.rootMeshResident;
   await page.evaluate(() => globalThis.__forgeaxLodAcceptance.setVisible(false));
   const hidden = await runPhase('visibility-hidden', { visible: 0 });
   assert.equal(hidden.targetVisible, false);
   assert.equal(
-    hidden.rootMeshSharedRefCount,
-    visibleRefCount,
+    hidden.rootMeshResident,
+    visibleResidency,
     'Visibility must not release the mesh shared reference',
   );
   assert.equal(

@@ -1,4 +1,6 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   Collider,
   ColliderShapeValue,
@@ -8,7 +10,7 @@ import {
 } from '@forgeax/engine/physics';
 import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
 import { waitForPhysicsWorld } from './support/live';
 import { vec3 } from './support/rapier3d';
 
@@ -29,6 +31,12 @@ export default defineFeature({
   expect:
     'ON: red, green and blue cubes fall and stack on the grey floor. OFF: gravity is zero and the three cubes hang still, spread out high in the air.',
   async setup({ world, frames, hud }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { physics, waitedFrames } = await waitForPhysicsWorld<RapierPhysicsWorld3D>(
       world,
       frames,
@@ -40,7 +48,7 @@ export default defineFeature({
     spawnSun(world);
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [0.55, 0.55, 0.58, 1], roughness: 0.9 }),
       { pos: [0, -0.05, 0], scale: [12, 0.1, 12] },
       {
@@ -51,7 +59,7 @@ export default defineFeature({
     const cubes: EntityHandle[] = FLOAT_HEIGHTS.map((y, index) =>
       spawnMesh(
         world,
-        MESH.cube,
+        stageCube,
         standard(world, { baseColor: COLORS[index] as (typeof COLORS)[number], roughness: 0.5 }),
         { pos: [index === 1 ? 0.15 : 0, y, 0] },
         { component: RigidBody, data: { type: RigidBodyTypeValue.dynamic, mass: 1 } },

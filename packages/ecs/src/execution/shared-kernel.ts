@@ -69,10 +69,18 @@ export interface WorldExecutionState {
   readonly fault: WorldExecutionFault | null;
 }
 
+// A replacement Worker starts its counter again; its World scope must stay distinct.
+const worldRealmIdentity =
+  globalThis.crypto?.randomUUID?.() ??
+  Array.from({ length: 4 }, () =>
+    Math.floor(Math.random() * 0x1_0000_0000)
+      .toString(16)
+      .padStart(8, '0'),
+  ).join('');
 let nextWorldIdentity = 1;
 
 export function createWorldIdentity(): string {
-  const identity = `world-${nextWorldIdentity}`;
+  const identity = `world-${worldRealmIdentity}-${nextWorldIdentity}`;
   nextWorldIdentity += 1;
   return identity;
 }

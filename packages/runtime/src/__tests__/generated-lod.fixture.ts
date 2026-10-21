@@ -21,9 +21,10 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const hdr = (bytes: Uint8Array, rowBytes: number) => {
@@ -76,7 +77,7 @@ export async function verifyGeneratedLods(
   for (const text of publication.guids) {
     const guid = AssetGuid.parse(text);
     if (!guid.ok) throw guid.error;
-    meshes.push(renderValue(await assets.loadByGuid<MeshAsset>(guid.value)));
+    meshes.push(assets.read((await assets.load(guid.value, 'mesh')).unwrap()).unwrap());
   }
   expect(required(meshes[0]).lods).toHaveLength(2);
   expect(meshes.map((mesh) => required(mesh.indices).length / 3)).toEqual(
@@ -85,18 +86,15 @@ export async function verifyGeneratedLods(
   expect(required(meshes[1]).vertices.byteLength).toBeLessThan(
     required(meshes[0]).vertices.byteLength,
   );
-  const world = new World();
+  const world = new World({ assets });
   const materialId = renderValue(AssetGuid.parse(publication.materialGuid));
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    renderValue(await assets.loadByGuid<MaterialAsset>(materialId)),
-  );
+  const material = (await assets.load(materialId, 'material')).unwrap();
   const object = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0] } },
       {
         component: MeshFilter,
-        data: { assetHandle: world.allocSharedRef('MeshAsset', required(meshes[0])) },
+        data: { assetHandle: testAssets(world).create(required(meshes[0])).unwrap() },
       },
       { component: MeshRenderer, data: { materials: [material] } },
     )
@@ -134,10 +132,10 @@ export async function verifyGeneratedLods(
   const evidence: unknown[] = [];
   try {
     for (let level = 0; level < 4; level++) {
-      const mesh =
-        level === 3 ? required(meshes[0]) : { ...required(meshes[level]), lods: undefined };
+      const { lods: _lods, ...levelMesh } = required(meshes[level === 3 ? 0 : level]);
+      const mesh = level === 3 ? required(meshes[0]) : levelMesh;
       world
-        .set(object, MeshFilter, { assetHandle: world.allocSharedRef('MeshAsset', mesh) })
+        .set(object, MeshFilter, { assetHandle: testAssets(world).create(mesh).unwrap() })
         .unwrap();
       // Outside the last crossfade band, while keeping >100 visible pixels.
       if (level === 3) world.set(camera, Transform, { pos: [0, 0, 22] }).unwrap();

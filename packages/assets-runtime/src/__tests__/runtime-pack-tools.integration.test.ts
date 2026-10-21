@@ -12,6 +12,7 @@ import {
 import { scriptablePackFingerprint } from '../../../import/src/scriptable-pack-fingerprint.js';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
+import { runtimePackDecoders } from './fixtures/runtime-pack-decoders';
 
 const packageId = '01900000-0000-7000-8000-000000000981';
 const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'behavior'));
@@ -70,7 +71,8 @@ function content(id = packageId): RuntimePackContent {
 const producer = () =>
   new RuntimePackProducer({
     scopeId: 'tools-test',
-    validate: (state, fetcher) => validateAssetPublication(state.rows, fetcher),
+    validate: (state, fetcher) =>
+      validateAssetPublication(state.rows, fetcher, undefined, { decoders: runtimePackDecoders }),
   });
 
 it('admits and restores inline declarations without evaluating programs or creating another tools authority', async () => {
@@ -190,7 +192,8 @@ it('generates plugin source and tool closure through cache and cold restore with
   const source = new RuntimePackProducer({
     scopeId: 'generated-tools',
     cache,
-    validate: (state, fetcher) => validateAssetPublication(state.rows, fetcher),
+    validate: (state, fetcher) =>
+      validateAssetPublication(state.rows, fetcher, undefined, { decoders: runtimePackDecoders }),
   });
   const restored = producer();
   try {

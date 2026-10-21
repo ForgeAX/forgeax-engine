@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -68,7 +70,9 @@ const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(man
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (error) {
   console.error(`[smoke] FAIL - renderer: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -78,7 +82,7 @@ try {
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const scene = build2dShapesWorld(world);

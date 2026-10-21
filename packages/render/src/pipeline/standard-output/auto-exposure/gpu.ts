@@ -394,6 +394,15 @@ fn mul_rgb_to_xyz(value: vec3<f32>) -> vec3<f32> {
   );
 }
 
+// Inverse of mul_rgb_to_xyz: adapted XYZ must return to linear sRGB.
+fn mul_xyz_to_rgb(value: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    dot(vec3<f32>(3.2404548, -1.5371389, -0.4985315), value),
+    dot(vec3<f32>(-0.9692664, 1.8760109, 0.0415561), value),
+    dot(vec3<f32>(0.0556434, -0.2040259, 1.0572252), value)
+  );
+}
+
 fn mul_bradford(value: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(
     dot(vec3<f32>(0.8951, 0.2664, -0.1614), value),
@@ -437,7 +446,7 @@ fn apply_white_balance(value: vec3<f32>) -> vec3<f32> {
   let scale = target_lms / source_lms;
   let adapted_lms = mul_bradford(mul_rgb_to_xyz(value)) * scale;
   let adapted_xyz = mul_bradford_inverse(adapted_lms);
-  let adapted_rgb = vec3<f32>(adapted_xyz.x / 0.95047, adapted_xyz.y, adapted_xyz.z / 1.08883);
+  let adapted_rgb = mul_xyz_to_rgb(adapted_xyz);
   return adapted_rgb * vec3<f32>(
     max(0.0, 1.0 + WB_TINT),
     max(0.0, 1.0 - WB_TINT),

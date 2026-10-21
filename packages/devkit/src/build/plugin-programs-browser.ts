@@ -23,6 +23,7 @@ export class BrowserPluginProgramArchive {
   readonly entries = new Map<string, string>();
   private readonly chunks = new Map<string, string>();
   private readonly rendered = new Map<string, string>();
+  private readonly groups = new Map<string, string>();
 
   recordRendered(code: string, chunk: Rolldown.RenderedChunk): void {
     if (Object.keys(chunk.modules).some((id) => this.chunks.has(id)))
@@ -62,6 +63,66 @@ export class BrowserPluginProgramArchive {
         visit(dependency);
     };
     for (const id of this.entries.values()) visit(id);
+  }
+
+  /** Coalesce only modules with identical static entry reachability; lazy boundaries survive. */
+  prepareGroups(context: Rolldown.PluginContext): void {
+    const roots = new Set(this.entries.values());
+    for (const id of context.getModuleIds()) {
+      const info = context.getModuleInfo(id);
+      if (!info) continue;
+      if (info.isEntry && !this.chunks.has(normalizePath(id))) roots.add(id);
+      for (const dependency of info.dynamicallyImportedIds) roots.add(dependency);
+    }
+    const memberships = new Map<string, string[]>();
+    for (const root of [...roots].sort()) {
+      const seen = new Set<string>();
+      const visit = (id: string) => {
+        if (seen.has(id)) return;
+        seen.add(id);
+        const info = context.getModuleInfo(id);
+        if (!info || info.meta[engineCapabilityMeta]) return;
+        if (this.chunks.has(normalizePath(id))) {
+          const entries = memberships.get(id) ?? [];
+          entries.push(root);
+          memberships.set(id, entries);
+        }
+        for (const dependency of info.importedIds) visit(dependency);
+      };
+      visit(root);
+    }
+    this.groups.clear();
+    for (const [id, entries] of memberships) {
+      if (!entries.length) continue;
+      this.groups.set(
+        id,
+        `program-group-${createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 16)}`,
+      );
+    }
+  }
+
+  groupedOutput(output: Rolldown.OutputOptions): Rolldown.OutputOptions {
+    if (
+      output.codeSplitting === false ||
+      output.inlineDynamicImports ||
+      (output.format !== undefined &&
+        output.format !== 'es' &&
+        output.format !== 'esm' &&
+        output.format !== 'module')
+    )
+      return output;
+    const splitting = typeof output.codeSplitting === 'object' ? output.codeSplitting : {};
+    return {
+      ...output,
+      codeSplitting: {
+        ...splitting,
+        includeDependenciesRecursively: false,
+        groups: [
+          { name: (id) => this.groups.get(id) ?? null, priority: 100 },
+          ...(splitting.groups ?? []),
+        ],
+      },
+    };
   }
 
   /** A complete delivered graph contains every selected entry, regardless of its active export. */

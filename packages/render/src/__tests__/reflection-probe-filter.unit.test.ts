@@ -2,17 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceProbeFilter,
   boxProjectReflectionDirection,
+  commitProbeFilterStep,
   createProbeFilterState,
 } from '../reflection/filter';
 import { buildReflectionProbeTable } from '../reflection/gpu-table';
 
 describe('ReflectionProbe bounded filtering and table projection', () => {
-  it('does at most one face and one mip filter step per frame', () => {
+  it('advances two faces within one mip after each accepted frame', () => {
     const state = createProbeFilterState({ probeIndex: 2, faceCount: 6, mipCount: 5 });
     expect(advanceProbeFilter(state)).toEqual({ probeIndex: 2, faceIndex: 0, mipLevel: 0 });
-    expect(advanceProbeFilter({ ...state, cursor: 1 })).toEqual({
+    expect(advanceProbeFilter(commitProbeFilterStep(state, true))).toEqual({
       probeIndex: 2,
-      faceIndex: 1,
+      faceIndex: 2,
       mipLevel: 0,
     });
   });

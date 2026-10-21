@@ -4,20 +4,20 @@ import { createInputSnapshot, INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engin
 import { CharacterController, Collider, ColliderShapeValue, physicsPlugin, RigidBody, RigidBodyTypeValue } from '@forgeax/engine/physics';
 import { GlobalTransform, sceneEntity, scenePlugin, Transform, worldInstantiateSceneAsset, worldResolveSceneEntity } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { camera as cameraPlugin } from '../../camera/camera.pack.ts';
 import { sceneWorldFixture } from '../../shared/__tests__/plugin-fixture.ts';
 import playerPlugin from '../player.ts';
 import { PLAYER_JOINT_NAMES } from '../player-rig.ts';
 
 async function temporalFixture() {
-  const { world, ctx, asset } = await sceneWorldFixture();
+  const { world, ctx, asset, assets } = await sceneWorldFixture();
   await ctx.plugin(scenePlugin());
   await ctx.plugin(animationPlugin());
   await ctx.plugin(physicsPlugin('rapier-3d'));
-  const source = world.allocSharedRef('SceneAsset', asset);
-  const root = worldInstantiateSceneAsset(world, source, asset, undefined, new Set(), [], undefined, 'scene/showcase').unwrap();
-  world.sharedRefs.release(source).unwrap();
+  const source = assets.create(asset).unwrap();
+  const root = worldInstantiateSceneAsset(world, source, asset, undefined, new Set(), undefined, 'scene/showcase').unwrap();
+  assets.release(source).unwrap();
   const entity = (key: string) => worldResolveSceneEntity(world, root, sceneEntity('scene/showcase', key)).unwrap();
   const player = entity('player');
   world.set(player, Transform, { pos: [0, 0.91, 0] }).unwrap();
@@ -36,7 +36,8 @@ async function temporalFixture() {
     } }],
   };
   ctx.provide('gameScene', { root });
-  ctx.provide('gameHost', { assets: { loadByGuid: async () => ({ ok: true, value: clip }) } } as never);
+  vi.spyOn(assets, 'load').mockImplementation(async () => assets.create(clip));
+  ctx.provide('gameHost', { assets } as never);
   let moving = false;
   const empty = createInputSnapshot();
   world.insertResource(INPUT_SNAPSHOT_RESOURCE_KEY, {

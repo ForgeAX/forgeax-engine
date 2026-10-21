@@ -12,9 +12,10 @@ import { resetSsaoResources } from '../ssao-buffers';
 import { prepareFrameLighting, writeHdrpClusterAndSsaoBuffers } from './frame-lighting';
 import type { RenderFrameState } from './frame-snapshot';
 import { computeViewMatrix } from './helpers';
+import { createPointsLinesViewBuffer } from './points-lines-view-buffer';
 import type { PipelineState, RenderSystemInternals } from './render-context';
 import type { CubeCaptureGraphState } from './target-capture-graph';
-import { POINTS_LINES_VIEW_BUFFER_SIZE, VIEW_UNIFORM_BUFFER_SIZE } from './view-ubo';
+import { VIEW_UNIFORM_BUFFER_SIZE } from './view-ubo';
 
 interface CaptureLightingView {
   readonly runtime: RenderSystemInternals;
@@ -23,7 +24,7 @@ interface CaptureLightingView {
   atmosphere?: AtmosphereLease;
   frozenLights?: ExtractedLights;
   readonly viewBuffer: import('@forgeax/engine-rhi').Buffer;
-  readonly pointsLinesViewBuffer: import('@forgeax/engine-rhi').Buffer;
+  readonly pointsLinesView: ReturnType<typeof createPointsLinesViewBuffer>;
 }
 // Keyed by a writer's ordinal among this frame's writers of its target: each
 // needs its own view uniform because queue writes all land before submission,
@@ -35,9 +36,9 @@ function retireView(view: CaptureLightingView): void {
   resetHdrpBuffers(view.runtime);
   resetSsaoResources(view.runtime);
   const device = view.runtime.device;
+  view.pointsLinesView.dispose();
   const release = () => {
     device.destroyBuffer(view.viewBuffer);
-    device.destroyBuffer(view.pointsLinesViewBuffer);
   };
   void device.queue.onSubmittedWorkDone().then(release, release);
 }
@@ -57,7 +58,7 @@ export function disposeTargetCaptures(owner: CubeCaptureGraphState): void {
 }
 
 /** Cluster bounds, uniforms, membership and bindings belong to the captured camera. */
-export interface CaptureLightingInput {
+interface CaptureLightingInput {
   readonly target: object;
   readonly faceCamera: import('../render-contract').CameraSnapshot;
   readonly candidateGeneration?: number;
@@ -105,14 +106,12 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     });
     if (!buffer.ok) throw buffer.error;
-    const pointsLines = device.createBuffer({
-      label: 'capture-points-lines',
-      size: POINTS_LINES_VIEW_BUFFER_SIZE,
-      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-    });
-    if (!pointsLines.ok) {
+    let pointsLines: ReturnType<typeof createPointsLinesViewBuffer>;
+    try {
+      pointsLines = createPointsLinesViewBuffer(device);
+    } catch (error) {
       device.destroyBuffer(buffer.value);
-      throw pointsLines.error;
+      throw error;
     }
     view = {
       // Resource caches and their retirement keep the creation device even
@@ -123,7 +122,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       }) as RenderSystemInternals,
       state: { ...frameState },
       viewBuffer: buffer.value,
-      pointsLinesViewBuffer: pointsLines.value,
+      pointsLinesView: pointsLines,
     };
     layers.set(ordinal, view);
   }
@@ -170,7 +169,6 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       environments: frozen.source.kind === 'none' ? [] : [frozen.source],
       suns: frozen.sun === undefined ? [] : [frozen.sun],
       fogs: current.fog === undefined ? [] : [current.fog],
-      lane: current.lane,
     }).unwrap();
   }
   const csm =
@@ -202,7 +200,10 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
             },
     },
     viewUniformBuffer: view.viewBuffer,
-    pointsLinesViewBuffer: view.pointsLinesViewBuffer,
+    get pointsLinesViewBuffer() {
+      return view.pointsLinesView.buffer;
+    },
+    ensurePointsLinesViewCapacity: view.pointsLinesView.ensureCapacity,
   };
   const prepared = prepareFrameLighting(
     view.runtime,

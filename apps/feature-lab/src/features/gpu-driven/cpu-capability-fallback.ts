@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh } from '../../lab/stage';
+import { material, spawnMesh } from '../../lab/stage';
 import { bootWebgl2App, submittedFrames } from '../rhi-backends/support/webgl2-app';
 import { inspect, mainChannel, spawnGrid } from './support/scene';
 
@@ -13,6 +15,12 @@ export default defineFeature({
   expect:
     "All checks pass: on WebGPU the opaque grid stays on lane 'gpu' while the blended cube is counted as a CPU fallback draw; the wgpu-webgl2 inset reports GPU Scene 'unsupported', no GPU lane, and still submits frames.",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnGrid(world);
     const glass = material(
       world,
@@ -27,7 +35,7 @@ export default defineFeature({
         queue: 3000,
       }),
     );
-    spawnMesh(world, MESH.cube, glass, { pos: [0, 1.6, 1], scale: [1.4, 1.4, 1.4] });
+    spawnMesh(world, stageCube, glass, { pos: [0, 1.6, 1], scale: [1.4, 1.4, 1.4] });
     await frames(20);
     const inset = await bootWebgl2App();
     return {

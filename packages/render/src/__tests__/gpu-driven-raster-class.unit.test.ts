@@ -1,12 +1,14 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type RhiNullDevice, RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { GpuResidencyCache, type MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenMaterialResourceClass } from '../extract/gpu-driven';
+import { prepareBatchExecution } from '../gpu-driven/batch-execution';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
@@ -18,6 +20,8 @@ import {
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+import { MaterialResource } from '../material-resource';
+import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
@@ -30,46 +34,11 @@ import type {
 import { RenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction } from '../temporal/frame';
 import {
+  admitGpuFixture,
   preparedPbrSnapshot as preparedPbrFixture,
+  snapshot,
   standardPbrInputs,
 } from './gpu-driven-production-fixture';
-
-const EMPTY_RESOURCE_CLASS = JSON.stringify({ textures: [], samplers: [] });
-function snapshot(entityKey: number, assetHandle: number): RenderableSnapshot {
-  const material = {
-    baseColor: new Float32Array([0.25 * entityKey, 0.5, 0.75]),
-    metallic: 0,
-    roughness: 1,
-    materialShaderId: 'forgeax::default-unlit',
-  } as MaterialSnapshot;
-  const world = new Float32Array(16);
-  world[0] = 1;
-  world[5] = 1;
-  world[10] = 1;
-  world[15] = 1;
-  return {
-    assetHandle,
-    transform: { world },
-    localAabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
-    material,
-    materials: [material],
-    materialBindingSources: ['engine-default'],
-    worldId: 0,
-    entityKey,
-    gpuDrivenDraws: [
-      {
-        kind: 'indexed',
-        first: 0,
-        count: 3,
-        baseVertex: 0,
-        materialSlot: 0,
-        topology: 'triangle-list',
-        pipelineClass: 'forgeax::default-unlit|triangle-list|null',
-        materialResourceClass: EMPTY_RESOURCE_CLASS,
-      },
-    ],
-  };
-}
 
 function updateSnapshot(value: RenderableSnapshot) {
   return {
@@ -173,23 +142,24 @@ it.each([
   availability.scene.sync(delta).unwrap();
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const frame = production
-    .prepare({
-      ...standardPbrInputs(device, shader, viewLayout),
-      scene: {
-        scene: availability.scene,
-        plan: topology.plan(),
-        slots: projection.slotsSnapshot(),
-        slotAt: projection.slotAt,
-      },
-      camera: makeZeroCameraFallbackSnapshot(),
-      meshBySlot: new Map([
-        [0, first],
-        [1, second],
-      ]),
-      meshResidencyEpoch: 1,
-      viewBindGroupLayout: viewLayout,
-      shadowCasterMembership: [],
-    })
+    .prepare(
+      admitGpuFixture({
+        ...standardPbrInputs(device, shader, viewLayout),
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: projection.slotsSnapshot(),
+          slotAt: projection.slotAt,
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: new Map([
+          [0, first],
+          [1, second],
+        ]),
+
+        viewBindGroupLayout: viewLayout,
+      }),
+    )
     .unwrap();
   if (frame === undefined) throw Error('expected GPU frame');
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -205,7 +175,13 @@ it.each([
       encode: ({ pass, resources }) =>
         gpu.encode(viewGroup, pass, resources, {
           ...frame.standardPbrFrameResources,
-          materialBindGroups: [materialGroup],
+          prepareMaterialBinding: (
+            (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+            (slot: number) => {
+              const group = groups[slot];
+              return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+            }
+          )([materialGroup]),
         }),
     })
     .unwrap();
@@ -273,15 +249,9 @@ it.each([
   const pbr = standardPbrInputs(device, shader, viewLayout);
   const source = preparedPbrFixture(snapshot(1, 3));
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw Error('no cubemap');
-    },
-    device.caps,
-  );
-  const world = new World();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const texture = (value: number) => ({
     kind: 'texture' as const,
     shape: { viewDimension: '2d' as const, extent: { width: 1, height: 1 } },
@@ -292,11 +262,11 @@ it.each([
   });
   const assetA = texture(32),
     assetB = texture(128);
-  const handleA = world.allocSharedRef('TextureAsset', assetA),
-    handleB = world.allocSharedRef('TextureAsset', assetB);
-  const residentA = store.ensureResident(handleA, assetA, world).unwrap();
-  const residentB = store.ensureResident(handleB, assetB, world).unwrap();
-  const leaseA = store.retainTextureResidency(handleA, world);
+  const handleA = assets.create(assetA).unwrap(),
+    handleB = assets.create(assetB).unwrap();
+  const residentA = store.ensureResident(handleA, assetA, worldRenderResources(world)).unwrap();
+  const residentB = store.ensureResident(handleB, assetB, worldRenderResources(world)).unwrap();
+  const leaseA = store.retainTextureResidency(handleA, worldRenderResources(world));
   if (leaseA === undefined) throw Error('missing texture residency lease');
   let finishSubmittedA = () => {};
   const submittedA = new Promise<void>((resolve) => {
@@ -341,9 +311,11 @@ it.each([
     })
     .unwrap();
   let materialGroup = materialGroupA;
-  const row = (changed: boolean) => {
-    const material = {
-      ...source.material,
+  const firstMaterial = new MaterialResource(source.material.snapshot);
+  const secondMaterial = new MaterialResource(source.material.snapshot);
+  const row = (changed: boolean, material: MaterialResource) => {
+    material.adopt({
+      ...source.material.snapshot,
       standardTextureMask: 1,
       deferredPass: false,
       paramSnapshot: { alphaCutoff: kind === 'alphaCutoff' && changed ? 0.5 : 0 },
@@ -353,14 +325,14 @@ it.each([
       samplerHandles: new Map([
         ['baseColorTexture', (kind === 'sampler' && changed ? 2 : 1) as never],
       ]),
-    };
+    });
     return {
       ...source,
       material,
       materials: [material],
       gpuDrivenDraws: (source.gpuDrivenDraws ?? []).map((draw) => ({
         ...draw,
-        materialResourceClass: gpuDrivenMaterialResourceClass(material),
+        materialResourceClass: gpuDrivenMaterialResourceClass(material.snapshot),
       })),
     };
   };
@@ -370,35 +342,36 @@ it.each([
   const topology = new BatchTopology();
   const apply = (changed: boolean) => {
     const delta = projection.apply([
-      updateSnapshot(row(changed)),
-      updateSnapshot({ ...row(true), entityKey: 2 }),
+      updateSnapshot(row(changed, firstMaterial)),
+      updateSnapshot({ ...row(true, secondMaterial), entityKey: 2 }),
     ]);
     availability.scene.sync(delta).unwrap();
     topology.apply(delta);
   };
   apply(false);
-  expect(topology.plan().batches.length).toBe(2);
+  expect(topology.query(topology.sourcePlan(), undefined).batches.length).toBe(2);
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const sharedMesh = mesh(device);
   const prepare = () => {
     const current = production
-      .prepare({
-        ...pbr,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, sharedMesh],
-          [1, sharedMesh],
-        ]),
-        meshResidencyEpoch: 1,
-        viewBindGroupLayout: viewLayout,
-        shadowCasterMembership: [],
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbr,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [0, sharedMesh],
+            [1, sharedMesh],
+          ]),
+
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     if (current === undefined) throw Error('expected GPU frame');
     return current;
@@ -423,7 +396,13 @@ it.each([
           encode: ({ pass, resources }) =>
             gpu.encode(viewGroup, pass, resources, {
               ...current.standardPbrFrameResources,
-              materialBindGroups: [materialGroup],
+              prepareMaterialBinding: (
+                (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                (slot: number) => {
+                  const group = groups[slot];
+                  return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                }
+              )([materialGroup]),
             }),
         })
         .unwrap();
@@ -486,7 +465,7 @@ it.each([
     const pipelineCount = pipelines.mock.calls.length;
     apply(true);
     current = prepare();
-    expect(topology.plan().batches.length).toBe(1);
+    expect(topology.query(topology.sourcePlan(), undefined).batches.length).toBe(2);
     expect(current.topologySignature).toBe(firstSignature);
     encode(first).unwrap();
     expect(bound.mock.calls.some(([index, value]) => index === 1 && value === materialGroupB)).toBe(
@@ -502,7 +481,9 @@ it.each([
     expect(boundCurrentGroup).toBe(true);
     expect(pipelines.mock.calls.length).toBe(pipelineCount);
     expect(current.standardPbrFrameResources.resourceGeneration).toBe(firstResourceGeneration);
-    expect(current.ownsAllDrawItems).toBe(true);
+    const selectedSource = projection.slotsSnapshot().at(0);
+    assert(selectedSource);
+    expect(current.selection.has(selectedSource.snapshot, 0)).toBe(true);
     expect(errors).toHaveLength(0);
     expect(next).toBe(first);
     expect(state.compiledFrameGraphGeneration).toBe(1);
@@ -514,7 +495,7 @@ it.each([
     expect(residentA.texture.isDestroyed).toBe(false);
     expect(residentB.texture.isDestroyed).toBe(false);
     await device.queue.onSubmittedWorkDone();
-    store.invalidateTexture(handleA, world);
+    store.invalidateTexture(handleA, worldRenderResources(world));
     const releasedA = leaseA.release(false);
     expect(residentA.texture.isDestroyed).toBe(false);
     finishSubmittedA();
@@ -541,7 +522,7 @@ it('separates physical layouts, specializations and selected programs after reso
   ).unwrap() as RhiNullDevice;
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const artifact = standardPbrInputs(device, shader, viewLayout).standardPbrArtifact;
+  const artifact = standardPbrInputs(device, shader, viewLayout).materialArtifact;
   if (artifact === undefined || artifact.receipt === undefined) throw Error('missing material');
   const original = preparedPbrFixture(snapshot(1, 3));
   const originalMesh = mesh(device);
@@ -554,25 +535,31 @@ it('separates physical layouts, specializations and selected programs after reso
     const projection = new RenderScene();
     const topology = new BatchTopology();
     topology.apply(projection.apply([updateSnapshot(source)]));
-    const batch = topology.plan().batches[0];
+    const batch = topology.query(topology.sourcePlan(), undefined).batches.at(0);
     if (batch === undefined) throw Error('missing admitted batch');
-    const rows = prepareBatchRows(batch, {
-      slotAt: projection.slotAt,
-      meshBySlot: new Map([[0, resident]]),
-      worldKeys: undefined,
-      materialArtifact: selected,
-      skinArtifact: undefined,
-      materialArtifacts: undefined,
-    });
-    const key = rows.facts.get(0)?.get(0)?.rasterClassKey;
+    const binding = batch.binding;
+    if (binding === undefined) throw Error('missing shared binding');
+    const accepted = binding.material.snapshot;
+    assert(accepted.materialShaderId);
+    const execution = prepareBatchExecution(
+      binding.geometry,
+      accepted,
+      {
+        kind: 'forward',
+        shaderId: accepted.materialShaderId,
+        ...(accepted.renderState === undefined ? {} : { renderState: accepted.renderState }),
+      },
+      () => selected,
+    ).unwrap();
+    const rows = prepareBatchRows(batch, { mesh: resident, worldKeys: undefined, execution });
+    const key = rows.fact?.rasterClassKey;
     if (key === undefined) throw Error('missing prepared raster class');
     return key;
   };
-  const materialSource = (material: MaterialSnapshot): RenderableSnapshot => ({
-    ...original,
-    material,
-    materials: [material],
-  });
+  const materialSource = (snapshot: MaterialSnapshot): RenderableSnapshot => {
+    const material = new MaterialResource(snapshot);
+    return { ...original, material, materials: [material] };
+  };
   const mirroredWorld = new Float32Array(original.transform.world);
   mirroredWorld[0] = -1;
   const mirrored = { ...original, transform: { world: mirroredWorld } };
@@ -605,13 +592,13 @@ it('separates physical layouts, specializations and selected programs after reso
     ],
     [
       'texture specialization',
-      materialSource({ ...original.material, standardTextureMask: 4 }),
+      materialSource({ ...original.material.snapshot, standardTextureMask: 4 }),
       originalMesh,
       artifact,
     ],
     [
       'raster state',
-      materialSource({ ...original.material, renderState: { cullMode: 'front' } }),
+      materialSource({ ...original.material.snapshot, renderState: { cullMode: 'front' } }),
       originalMesh,
       artifact,
     ],
@@ -646,7 +633,7 @@ it('separates physical layouts, specializations and selected programs after reso
       expect(classFor(source, resident, selected), name).not.toBe(baseline);
     }
     const customId = 'game::custom-coverage';
-    const customMaterial = { ...original.material, materialShaderId: customId };
+    const customMaterial = { ...original.material.snapshot, materialShaderId: customId };
     const customSource = {
       ...materialSource(customMaterial),
       gpuDrivenDraws: (original.gpuDrivenDraws ?? []).map((draw) => {
@@ -683,9 +670,9 @@ it.each([
   const viewGroup = device.createBindGroup({ layout: viewLayout, entries: [] }).unwrap();
   const materialGroup = device.createBindGroup({ layout: viewLayout, entries: [] }).unwrap();
   const pbr = standardPbrInputs(device, shader, viewLayout);
-  if (pbr.standardPbrArtifact === undefined || pbr.standardPbrPipelineState === undefined)
+  if (pbr.materialArtifact === undefined || pbr.materialPipelineState === undefined)
     throw Error('missing prepared Standard material');
-  const originalArtifact = pbr.standardPbrArtifact;
+  const originalArtifact = pbr.materialArtifact;
   let artifact = originalArtifact;
   let shaderUvSetCount = 1;
   const source = preparedPbrFixture(snapshot(1, 3));
@@ -695,7 +682,8 @@ it.each([
   const topology = new BatchTopology();
   let deferred = false;
   const apply = () => {
-    const material = { ...source.material, deferredPass: deferred };
+    const material = source.material;
+    material.adopt({ ...source.material.snapshot, deferredPass: deferred });
     const delta = projection.apply([
       updateSnapshot({ ...source, material, materials: [material] }),
     ]);
@@ -705,30 +693,31 @@ it.each([
   apply();
   const originalMesh = mesh(device);
   let resident = originalMesh;
-  let meshResidencyEpoch = 1;
+
   const production = new GpuDrivenProduction(device, {
     createShaderModule: () => ok(shader),
   });
   const prepare = () => {
     const prepared = production
-      .prepare({
-        standardPbrArtifact: artifact,
-        standardPbrPipelineState: {
-          ...pbr.standardPbrPipelineState,
-          standardPbrShaderUvSetCount: shaderUvSetCount,
-        } as PipelineState,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([[0, resident]]),
-        meshResidencyEpoch,
-        viewBindGroupLayout: viewLayout,
-        shadowCasterMembership: [],
-      })
+      .prepare(
+        admitGpuFixture({
+          materialArtifact: artifact,
+          materialPipelineState: {
+            ...pbr.materialPipelineState,
+            standardPbrShaderUvSetCount: shaderUvSetCount,
+          } as PipelineState,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([[0, resident]]),
+
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     if (prepared === undefined) throw Error('expected GPU frame');
     return prepared;
@@ -760,7 +749,16 @@ it.each([
                 viewGroup,
                 pass,
                 resources,
-                { ...current.standardPbrFrameResources, materialBindGroups: [materialGroup] },
+                {
+                  ...current.standardPbrFrameResources,
+                  prepareMaterialBinding: (
+                    (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                    (slot: number) => {
+                      const group = groups[slot];
+                      return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                    }
+                  )([materialGroup]),
+                },
                 filter,
                 filter === 'deferred-opaque' ? 'fs_gbuffer' : 'fs_opaque',
               );
@@ -808,7 +806,9 @@ it.each([
       ['deferred-opaque', deferred ? 1 : 0, deferred],
       ['forward-only-opaque', deferred ? 0 : 1, !deferred],
     ]);
-    expect(current.ownsAllDrawItems).toBe(true);
+    const selectedSource = projection.slotsSnapshot().at(0);
+    assert(selectedSource);
+    expect(current.selection.has(selectedSource.snapshot, 0)).toBe(true);
     expect(current.standardPbrFrameResources.resourceGeneration).toBe(resourceGeneration);
     expect(errors).toHaveLength(0);
   };
@@ -824,7 +824,6 @@ it.each([
         apply();
       } else {
         resident = { ...originalMesh, uvSetCount: changed ? 2 : 1 };
-        meshResidencyEpoch += 1;
       }
       current = prepare();
       const next = compile();
@@ -847,7 +846,7 @@ it.each([
         uv: new Float32Array(6),
       }),
     };
-    meshResidencyEpoch += 1;
+
     current = prepare();
     const changedLayout = compile();
     encode(changedLayout);
@@ -878,27 +877,24 @@ it.each([
   }
 });
 
-it('retains raster topology when a new asset handle shares both physical mesh buffers', async () => {
+it('retains shared mesh residency when replacement grows the shared GPU input buffer', async () => {
   const device = (
     await (await rhi.requestAdapter()).unwrap().requestDevice()
   ).unwrap() as RhiNullDevice;
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const inputs = standardPbrInputs(device, shader, viewLayout);
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw Error('unused');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const upload = () => {
     const payload = createBoxGeometry(1, 1, 1).unwrap();
-    const handle = world.allocSharedRef('MeshAsset', payload);
-    return { handle, mesh: store.ensureResident(handle, payload, world).unwrap() };
+    const handle = assets.create(payload).unwrap();
+    return {
+      handle,
+      mesh: store.ensureResident(handle, payload, worldRenderResources(world)).unwrap(),
+    };
   };
   const first = upload(),
     replacement = upload();
@@ -918,20 +914,20 @@ it('retains raster topology when a new asset handle shares both physical mesh bu
     availability.scene.sync(delta).unwrap();
     topology.apply(delta);
     const prepared = production
-      .prepare({
-        ...inputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([[0, resident.mesh]]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: Number(resident.handle),
-        shadowCasterMembership: [],
-      })
+      .prepare(
+        admitGpuFixture({
+          ...inputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([[0, resident.mesh]]),
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     if (prepared === undefined) throw Error('expected GPU frame');
     return prepared;
@@ -956,7 +952,13 @@ it('retains raster topology when a new asset handle shares both physical mesh bu
           encode: ({ pass, resources }) =>
             gpu.encode(viewGroup, pass, resources, {
               ...current.standardPbrFrameResources,
-              materialBindGroups: [materialGroup],
+              prepareMaterialBinding: (
+                (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                (slot: number) => {
+                  const group = groups[slot];
+                  return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                }
+              )([materialGroup]),
             }),
         })
         .unwrap();
@@ -1006,7 +1008,7 @@ it('retains raster topology when a new asset handle shares both physical mesh bu
     ).toBe(true);
     expect(draws).toHaveBeenCalledOnce();
   };
-  const lease = store.retainMeshResidency(first.handle, world);
+  const lease = store.retainMeshResidency(first.handle, worldRenderResources(world));
   if (lease === undefined) throw Error('missing old residency lease');
   let finishOld = () => {},
     finishNew = () => {};
@@ -1022,22 +1024,36 @@ it('retains raster topology when a new asset handle shares both physical mesh bu
     encode(graph);
     store.trackMeshSubmission(oldCompleted);
     const beforeInfo = graph.inspect();
+    const resourceGeneration = production.inspect().resourceGeneration;
+    const oldInputs = availability.scene.inputs.capture();
+    const oldCapacity = oldInputs.buffer().unwrap().byteLength;
+    oldInputs.release();
+    // Stable material allocation can make an ordinary replacement fit. Force
+    // actual arena growth instead of relying on that former allocation order.
+    for (let i = 0; i <= oldCapacity / 8; i++) availability.scene.inputs.allocateDescriptor(2);
     current = prepare(replacement);
-    expect(current.topologySignature).toBe(beforeSignature);
-    expect(compile()).toBe(graph);
-    store.invalidateMesh(first.handle, world);
+    // Arena capacity replacement is a real graph dependency even when the
+    // independently retained vertex/index allocation is unchanged.
+    expect(production.inspect().resourceGeneration).toBeGreaterThan(resourceGeneration ?? 0);
+    expect(current.topologySignature).not.toBe(beforeSignature);
+    const replacementGraph = compile();
+    if (replacementGraph === null) throw Error('missing replacement graph');
+    expect(replacementGraph).not.toBe(graph);
+    store.invalidateMesh(first.handle, worldRenderResources(world));
     const released = lease.release(false);
-    expect(store.getMeshGpuHandles(first.handle, world)).toBeUndefined();
+    expect(store.getMeshGpuHandles(first.handle, worldRenderResources(world))).toBeUndefined();
     expect(replacement.mesh.vertexBuffer.isDestroyed).toBe(false);
     expect(replacement.mesh.indexBuffer?.isDestroyed).toBe(false);
-    encode(graph);
+    encode(replacementGraph);
     store.trackMeshSubmission(newCompleted);
-    expect(state.compiledFrameGraphGeneration).toBe(1);
-    expect(graph.inspect()).toBe(beforeInfo);
+    expect(state.compiledFrameGraphGeneration).toBe(2);
+    expect(replacementGraph.inspect().passes.map((pass) => pass.name)).toEqual(
+      beforeInfo.passes.map((pass) => pass.name),
+    );
     expect(errors).toHaveLength(0);
     // Graph imports borrow physical buffers; retired asset handles and both
     // submitted frames still retain the shared allocation independently.
-    store.invalidateMesh(replacement.handle, world);
+    store.invalidateMesh(replacement.handle, worldRenderResources(world));
     finishNew();
     await newCompleted;
     expect(replacement.mesh.vertexBuffer.isDestroyed).toBe(false);
@@ -1060,85 +1076,5 @@ it('retains raster topology when a new asset handle shares both physical mesh bu
     production.dispose();
     availability.scene.dispose();
     store.destroyAll();
-  }
-});
-
-it('preserves raw logical-handle getter order and error identity without keying physical raster reuse', async () => {
-  const device = (
-    await (await rhi.requestAdapter()).unwrap().requestDevice()
-  ).unwrap() as RhiNullDevice;
-  const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
-  const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const artifact = standardPbrInputs(device, shader, viewLayout).standardPbrArtifact;
-  if (artifact === undefined) throw Error('missing artifact');
-  const projection = new RenderScene();
-  const topology = new BatchTopology();
-  topology.apply(projection.apply([updateSnapshot(preparedPbrFixture(snapshot(1, 3)))]));
-  const source = topology.plan().batches[0];
-  if (source === undefined) throw Error('missing source');
-  const resident = mesh(device);
-  const assetFailure = new Error('second raw logical-handle read');
-  const kindFailure = new Error('later raw draw-kind read');
-  const trace: string[] = [];
-  let assetReads = 0,
-    kindReads = 0,
-    fail = true;
-  const input = {
-    ...source,
-    key: {
-      ...source.key,
-      get assetHandle() {
-        trace.push('asset');
-        if (++assetReads === 2 && fail) throw assetFailure;
-        return source.key.assetHandle;
-      },
-      get drawKind() {
-        trace.push('kind');
-        if (++kindReads === 3 && fail) throw kindFailure;
-        return source.key.drawKind;
-      },
-    },
-  };
-  const prepare = () =>
-    prepareBatchRows(input, {
-      slotAt: projection.slotAt,
-      meshBySlot: new Map([[0, resident]]),
-      worldKeys: undefined,
-      materialArtifact: artifact,
-      skinArtifact: undefined,
-      materialArtifacts: undefined,
-    });
-  try {
-    let caught: unknown;
-    try {
-      prepare();
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBe(assetFailure);
-    expect(trace).toEqual(['asset', 'kind', 'kind', 'asset']);
-    fail = false;
-    assetReads = kindReads = 0;
-    trace.length = 0;
-    const before = prepare().facts.get(0)?.get(0)?.rasterClassKey;
-    expect(before).toBeDefined();
-    expect(assetReads).toBe(2);
-    const after = prepareBatchRows(
-      { ...input, key: { ...source.key, assetHandle: 999 } },
-      {
-        slotAt: projection.slotAt,
-        meshBySlot: new Map([[0, resident]]),
-        worldKeys: undefined,
-        materialArtifact: artifact,
-        skinArtifact: undefined,
-        materialArtifacts: undefined,
-      },
-    )
-      .facts.get(0)
-      ?.get(0)?.rasterClassKey;
-    expect(after).toBe(before);
-  } finally {
-    resident.vertexBuffer.destroy().unwrap();
-    resident.indexBuffer?.destroy().unwrap();
   }
 });

@@ -6,6 +6,8 @@ import {
   type Texture,
 } from '@forgeax/engine-rhi';
 import type { DeviceScope } from '../device/device-scope';
+import { IBL_UNIFORM_SLOT_STRIDE } from '../ibl/IblPipelineCache';
+import { pmremExtent, pmremLevelCount } from '../ibl/pmrem';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
@@ -30,6 +32,7 @@ export interface AtmosphereStorage {
   readonly sky: Texture;
   readonly irradiance: Texture;
   readonly prefilter: Texture;
+  readonly prefilterScratch: Texture;
   readonly captureSky: Texture;
   readonly distantSkyLight: Texture;
   readonly params: Buffer;
@@ -129,7 +132,13 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
         current: undefined,
         scope,
         vertices: buffer(runtime, scope, 'atmosphere-face-vertices', 216, 0x28),
-        iblParams: buffer(runtime, scope, 'atmosphere-ibl-params', VIEW_UNIFORM_BYTES, 0x48),
+        iblParams: buffer(
+          runtime,
+          scope,
+          'atmosphere-ibl-params',
+          pmremLevelCount(64) * 6 * IBL_UNIFORM_SLOT_STRIDE,
+          0x48,
+        ),
       };
     } catch (error) {
       scope.retire();
@@ -192,7 +201,26 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
       medium,
       sky: texture(runtime, scope, 'atmosphere-sky', 128, 128, 6),
       irradiance: texture(runtime, scope, 'atmosphere-irradiance', 16, 16, 6),
-      prefilter: texture(runtime, scope, 'atmosphere-prefilter', 64, 64, 6, 5),
+      prefilter: texture(
+        runtime,
+        scope,
+        'atmosphere-prefilter',
+        pmremExtent(64).width,
+        pmremExtent(64).height,
+        1,
+        1,
+        0x17,
+      ),
+      prefilterScratch: texture(
+        runtime,
+        scope,
+        'atmosphere-prefilter-scratch',
+        pmremExtent(64).width,
+        pmremExtent(64).height,
+        1,
+        1,
+        0x17,
+      ),
       captureSky: texture(runtime, scope, 'atmosphere-capture-sky', 192, 208, 1, 1, 0x0c),
       distantSkyLight: texture(runtime, scope, 'atmosphere-distant-sky-light', 1, 1, 1, 1, 0x0c),
       params: buffer(runtime, scope, 'atmosphere-params', VIEW_UNIFORM_BYTES, 0x48),

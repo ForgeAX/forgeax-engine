@@ -6,7 +6,7 @@
 #pragma variant_axis DIRECTIONAL_PCSS_AVAILABLE
 #pragma variant_axis DIRECT_DFG_LUT_AVAILABLE
 
-#import forgeax_view::common::{view, FullscreenOutput, fullscreen_triangle}
+#import forgeax_view::common::{viewDirectionToCamera, view, FullscreenOutput, fullscreen_triangle}
 #import forgeax_scene_temporal::{sceneViewZ}
 #import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardReceiverNormal, decodeStandardReflectance, STANDARD_GBUFFER_NO_RECEIVE_BIT, STANDARD_GBUFFER_PROBE_ROW_MASK, STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT}
 #import forgeax_pbr::lighting_directional::{evalDirectionalShadowFactorAtPixel}
@@ -25,9 +25,9 @@ struct DeferredLightingParams {
 };
 @group(1) @binding(7) var<uniform> params : DeferredLightingParams;
 @group(1) @binding(8) var irradianceMap : texture_cube<f32>;
-@group(1) @binding(9) var prefilterMap : texture_cube<f32>;
+@group(1) @binding(9) var prefilterMap : texture_2d<f32>;
 @group(1) @binding(10) var brdfLut : texture_2d<f32>;
-@group(1) @binding(11) var skylightPrefilterMap : texture_cube<f32>;
+@group(1) @binding(11) var skylightPrefilterMap : texture_2d<f32>;
 @group(1) @binding(12) var<uniform> skylight : SkylightUniforms;
 @group(1) @binding(13) var<storage, read> capsules : array<vec4<f32>>;
 @group(1) @binding(14) var<storage, read> capsuleTiles : array<u32>;
@@ -39,9 +39,9 @@ fn directDfgTextureFilteringWitness() {
   let sample = textureSample(directDfgLut, linearSampler, vec2<f32>(0.0));
   let occlusion = textureSample(screenOcclusion, linearSampler, vec2<f32>(0.0));
   let irradiance = textureSample(irradianceMap, linearSampler, vec3<f32>(0.0, 0.0, 1.0));
-  let prefilter = textureSample(prefilterMap, linearSampler, vec3<f32>(0.0, 0.0, 1.0));
+  let prefilter = textureSample(prefilterMap, linearSampler, vec2<f32>(0.5));
   let brdf = textureSample(brdfLut, linearSampler, vec2<f32>(0.0));
-  let skylightPrefilter = textureSample(skylightPrefilterMap, linearSampler, vec3<f32>(0.0, 0.0, 1.0));
+  let skylightPrefilter = textureSample(skylightPrefilterMap, linearSampler, vec2<f32>(0.5));
 }
 #endif
 @group(3) @binding(0) var<storage, read> probeBlendRecords : array<vec4<f32>>;
@@ -197,8 +197,10 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
   let normal = normalSample.xyz;
   let roughness = normalSample.w;
   let albedo = decodeStandardReflectance(textureLoad(albedoMetallic, pixel, 0).r);
-  let response = decodeStandardReflectance(textureLoad(f0Occlusion, pixel, 0).r);
-  let direction = normalize(view.cameraPos - position);
+  let specular = textureLoad(f0Occlusion, pixel, 0).rg;
+  let response = decodeStandardReflectance(specular.r);
+  let dielectricSpecular = decodeStandardReflectance(specular.g);
+  let direction = viewDirectionToCamera(position);
   var sh : array<vec4<f32>, 9>;
   var localBlend = 0.0;
   let probeRow = context & STANDARD_GBUFFER_PROBE_ROW_MASK;
@@ -213,7 +215,7 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
     }
   }
   let environment = evaluateStandardEnvironment(position, normal, direction, albedo.rgb, vec3<f32>(0.0),
-    albedo.a, roughness, response.rgb, skylight, irradianceMap, linearSampler,
+    albedo.a, roughness, response.rgb, dielectricSpecular, albedo.rgb, skylight, irradianceMap, linearSampler,
     prefilterMap, linearSampler, brdfLut, skylightPrefilterMap, sh, localBlend);
   var screenAo = 1.0;
   if (params.lanes.x > 0.0) {
@@ -229,7 +231,7 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
     // independent shading normal. No depth-neighborhood inference is needed.
     let receiverNormal = decodeStandardReceiverNormal(receiver.x);
     let directionalLayerBase = receiver.x >> 24u;
-    shadow = evalDirectionalShadowFactorAtPixel(receiverNormal, position, viewZ, directionalLayerBase, in.position.xy);
+    shadow = evalDirectionalShadowFactorAtPixel(select(receiverNormal, normal, view.splitPlanes[0].w > 0.5), position, viewZ, directionalLayerBase, in.position.xy);
     if (view.directionalShadowFilter.w > 0.0 && shadow > 0.0) {
       shadow *= directionalContactShadow(position, normal, pixel);
     }
@@ -238,7 +240,7 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
     }
   }
   let receiverChannels = receiver.y;
-  let direct = evaluateStandardDirect(position, ndc, viewZ, normal, direction, albedo.rgb, vec3<f32>(0.0),
+  let direct = evaluateStandardDirect(position, ndc, viewZ, in.position.xy, normal, direction, albedo.rgb, vec3<f32>(0.0),
     albedo.a, roughness * roughness, response.rgb, shadow, receiveShadows, receiverChannels,
     textureLoad(lightingContext, pixel, 0).g >> 24u > 0u,
     (receiver.x & STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT) != 0u,

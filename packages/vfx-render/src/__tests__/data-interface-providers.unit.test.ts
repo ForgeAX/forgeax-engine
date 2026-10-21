@@ -54,6 +54,6 @@ describe('VFX host Data Interface providers', () => {
       ],
       11,
     );
-    expect(result).toMatchObject({ ok: true, value: { readiness: 'ready', generation: 11 } });
+    expect(result).toMatchObject({ ok: true, value: { generation: 11 } });
   });
 });

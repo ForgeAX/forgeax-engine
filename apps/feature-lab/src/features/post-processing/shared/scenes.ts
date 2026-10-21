@@ -1,13 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import type { FeatureCheck } from '../../../lab/feature';
-import {
-  type CameraOptions,
-  MESH,
-  spawnCamera,
-  spawnMesh,
-  standard,
-  unlit,
-} from '../../../lab/stage';
+import { type CameraOptions, spawnCamera, spawnMesh, standard, unlit } from '../../../lab/stage';
 
 function zRotation(angle: number): readonly [number, number, number, number] {
   return [0, 0, Math.sin(angle / 2), Math.cos(angle / 2)];
@@ -18,17 +13,23 @@ function zRotation(angle: number): readonly [number, number, number, number] {
  * the stair-stepped edges, and the bar count keeps the edge pixel share high.
  */
 export function spawnAliasingEdges(world: World, camera: CameraOptions['data'] = {}): EntityHandle {
+  const primitiveAssets = world.assets;
+  if (!(primitiveAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const white = unlit(world, [1, 1, 1, 1]);
   const red = unlit(world, [1, 0.1, 0.05, 1]);
   for (let i = 0; i < 22; i++) {
-    spawnMesh(world, MESH.cube, i % 2 === 0 ? white : red, {
+    spawnMesh(world, stageCube, i % 2 === 0 ? white : red, {
       pos: [0, -2.3 + i * 0.22, 0],
       scale: [9, 0.035, 0.035],
       rotation: zRotation(0.08 + i * 0.012),
     });
   }
   for (let i = 0; i < 10; i++) {
-    spawnMesh(world, MESH.cube, white, {
+    spawnMesh(world, stageCube, white, {
       pos: [-3.5 + i * 0.8, 0, 0.2],
       scale: [0.03, 6, 0.03],
       rotation: zRotation(0.25 + i * 0.02),
@@ -52,24 +53,36 @@ export function passChecks(names: readonly string[], expected: readonly string[]
 
 /** Five orange emissive spheres whose linear radiance doubles left to right (0.5x .. 8x). */
 export function spawnHdrRamp(world: World): void {
+  const primitiveAssets = world.assets;
+  if (!(primitiveAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   for (let i = 0; i < 5; i++) {
     const glow = standard(world, {
       baseColor: [0.05, 0.05, 0.05, 1],
       emissive: [1, 0.45, 0.1],
       emissiveIntensity: 0.5 * 2 ** i,
     });
-    spawnMesh(world, MESH.sphere, glow, { pos: [-2.4 + i * 1.2, 0.7, 0], scale: [0.5, 0.5, 0.5] });
+    spawnMesh(world, stageSphere, glow, { pos: [-2.4 + i * 1.2, 0.7, 0], scale: [0.5, 0.5, 0.5] });
   }
 }
 
 /** A saturated checkerboard wall filling the view: straight lines make any remap obvious. */
 export function spawnCheckerWall(world: World, cells = 12): void {
+  const primitiveAssets = world.assets;
+  if (!(primitiveAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   const a = unlit(world, [1, 0.8, 0.1, 1]);
   const b = unlit(world, [0.1, 0.25, 0.9, 1]);
   const size = 8 / cells;
   for (let y = 0; y < cells; y++) {
     for (let x = 0; x < cells * 2; x++) {
-      spawnMesh(world, MESH.quad, (x + y) % 2 === 0 ? a : b, {
+      spawnMesh(world, stageQuad, (x + y) % 2 === 0 ? a : b, {
         pos: [-8 + size / 2 + x * size, -4 + size / 2 + y * size, 0],
         scale: [size, size, 1],
       });

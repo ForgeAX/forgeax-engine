@@ -17,7 +17,7 @@
 
 #import forgeax_view::common::{applyLodCoverage, View, Mesh, InstanceData, ShadowCasterCascade, view, shadowCasterCascade, sampleMaterialTexture}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, SCENE_INDEX_LOCAL_IDENTITY}
+#import forgeax_view::common::{sceneIndexDraw, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
 #else
 #import forgeax_view::common::{meshes, instances}
 #endif
@@ -128,14 +128,14 @@ fn standardVertexPosition(in : VsInput) -> vec3<f32> {
 
 fn shadowVertex(in : VsInput, idx : u32) -> VsOut {
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
-  // visible = (scene instance row, material row, palette base, LOD fade).
+  // visible = (scene instance row, material row, candidate row, LOD fade).
   let visible = visibleItems[idx];
   let materialIndex = visible.y;
   let lodFadeBits = visible.w;
   let sceneDraw = sceneIndexDraw(visible.x);
   material = sceneMaterials[materialIndex];
 #if SKINNING_DISABLED == false
-  let paletteBase = visible.z;
+  let paletteBase = sceneInstances[visible.x].customDataStart;
   // The palette already carries world space; keep the shared scene rows bound.
   _ = sceneDraw.world;
 #endif
@@ -299,6 +299,24 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
 #endif
     view.fogHeightOpacity.w,
   );
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+  var shadowMaterial = material;
+  var shadowInput = input;
+#ifdef SHADOW_ALPHA_MODE_AVAILABLE
+  // GPU Scene supplies per-invocation material values. Keep derivative-bearing
+  // Surface evaluation outside divergent flow, including the native mode.
+  let textureOnly = material.shadowAlphaMode > 0.5;
+  shadowMaterial.baseColor.a = select(material.baseColor.a, 1.0, textureOnly);
+#ifdef ALPHA_HASH_AVAILABLE
+  shadowMaterial.alphaHash = select(material.alphaHash, 0.0, textureOnly);
+#endif
+#ifdef ALPHA_TO_COVERAGE_AVAILABLE
+  shadowMaterial.alphaToCoverage = select(material.alphaToCoverage, 0.0, textureOnly);
+#endif
+  shadowInput.vertexColor.a = select(input.vertexColor.a, 1.0, textureOnly);
+#endif
+  return evaluate_standard_surface(shadowInput, shadowMaterial);
+#else
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
 #if ALPHA_MASK == true
   return evaluate_standard_surface(input, material);
@@ -307,6 +325,7 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
 #endif
 #else
   return evaluate_surface(input);
+#endif
 #endif
 #endif
 }

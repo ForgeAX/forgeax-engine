@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage } from '../../lab/stage';
+import { material, spawnMesh, spawnStage } from '../../lab/stage';
 import { materialToggle } from './lib/swap';
 
 export default defineFeature({
@@ -12,6 +14,12 @@ export default defineFeature({
   expect:
     'ON: the orange slab casts a large dark shadow on the floor. OFF: the same asset with its shadow-caster pass removed casts no shadow. Checks list the pass names and LightMode tags.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 4, 6], target: [0, 0, 0] });
     const withShadow = Materials.standard({ baseColor: [1, 0.5, 0.1, 1], roughness: 0.6 });
     if (withShadow.parent !== undefined) throw new Error('Materials.standard emits a root asset');
@@ -20,7 +28,7 @@ export default defineFeature({
     const noShadow = { ...withShadow, passes: [first, ...rest] as const };
     const on = material(world, withShadow);
     const off = material(world, noShadow);
-    const slab = spawnMesh(world, MESH.cube, on, { pos: [0, 1.6, 0], scale: [2.2, 0.15, 2.2] });
+    const slab = spawnMesh(world, stageCube, on, { pos: [0, 1.6, 0], scale: [2.2, 0.15, 2.2] });
     return {
       toggle: materialToggle(world, slab, on, off),
       checks() {

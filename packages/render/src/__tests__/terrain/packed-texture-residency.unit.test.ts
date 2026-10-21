@@ -1,21 +1,16 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../../device/gpu-residency';
+import { worldRenderResources } from '../../publication/resource-scope';
 
 it('uploads every authored uncompressed packed mip through ordinary texture residency', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const writes = vi.spyOn(device.queue, 'writeTexture');
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const data = new Uint8Array(84);
   data.fill(17, 0, 64);
   data.fill(83, 64, 80);
@@ -28,9 +23,12 @@ it('uploads every authored uncompressed packed mip through ordinary texture resi
     mips: { kind: 'packed', levelCount: 3 },
     data,
   };
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   try {
-    store.ensureResident(world.allocSharedRef('TextureAsset', texture), texture, world).unwrap();
+    store
+      .ensureResident(assets.create(texture).unwrap(), texture, worldRenderResources(world))
+      .unwrap();
     expect(
       writes.mock.calls.map(([destination, bytes, layout, extent]) => ({
         mip: destination.mipLevel,
@@ -52,6 +50,7 @@ it('uploads every authored uncompressed packed mip through ordinary texture resi
     );
   } finally {
     store.destroyAll();
+    assets.dispose();
     writes.mockRestore();
   }
 });

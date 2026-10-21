@@ -1,12 +1,15 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { frustum, mat4 } from '@forgeax/engine-math';
+import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
+import { createStandardPbrArtifactReceipt } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, buildBatchAlignedSubmission } from '../gpu-driven/batch-topology';
 import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
+import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import {
   type ShadowViewIdentity,
   ShadowViewStatePool,
@@ -17,8 +20,14 @@ import {
   shadowViewIdentityKey,
 } from '../gpu-driven/shadow-views';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { FrameProjection } from '../scene/frame-list';
+import { TreeFrame } from '../scene/frame-tree-list';
+import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import { RenderScene } from '../scene/render-scene';
+import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
+import { updateShadowView } from './helpers/gpu-input-read-domain';
 
 const shadowViewsPath = new URL('../gpu-driven/shadow-views.ts', import.meta.url);
 const shadowViewsSource = existsSync(shadowViewsPath) ? readFileSync(shadowViewsPath, 'utf8') : '';
@@ -31,11 +40,29 @@ const shadowKinds = [
   { name: 'spot atlas', token: 'spot' },
 ] as const;
 
-const material = {
+const material = new MaterialResource({
   baseColor: new Float32Array([1, 1, 1]),
   metallic: 0,
   roughness: 1,
-} as MaterialSnapshot;
+} as MaterialSnapshot);
+
+const draw = {
+  kind: 'indexed' as const,
+  first: 0,
+  count: 36,
+  baseVertex: 0,
+  topology: 'triangle-list' as const,
+};
+const geometry = {
+  draw,
+  deformation: 'rigid' as const,
+  receipt: {
+    identity: 'shadow-box',
+    vertexInputs: createStandardPbrArtifactReceipt().vertexInputs,
+    indexed: true,
+    topology: draw.topology,
+  },
+};
 
 function snapshot(entityKey: number): RenderableSnapshot {
   return {
@@ -57,6 +84,7 @@ function snapshot(entityKey: number): RenderableSnapshot {
         topology: 'triangle-list',
         pipelineClass: 'opaque',
         materialResourceClass: 'plain',
+        geometry,
       },
     ],
   };
@@ -77,7 +105,7 @@ function updateSnapshot(value: RenderableSnapshot) {
   };
 }
 
-async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}) {
+async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, count = 2) {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -94,11 +122,13 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}) {
       gpuDrivenDraws: [{ ...draw, lodRanges: [{ first: 0, count: 12, baseVertex: 0 }] }],
     };
   };
-  const scene = GpuScene.create(device, 2).unwrap();
+  const scene = GpuScene.create(device, count).unwrap();
   if (scene.status !== 'available') throw new Error('scene unavailable');
   scene.scene
     .sync(
-      projection.apply([updateSnapshot(lodAt(1, 0)), updateSnapshot(lodAt(2, 50))]),
+      projection.apply(
+        Array.from({ length: count }, (_, index) => updateSnapshot(lodAt(index + 1, index * 50))),
+      ),
       undefined,
       boundsOf,
     )
@@ -112,7 +142,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}) {
   const identity: ShadowViewIdentity = { kind: 'directional', index: 0, layer: 'static' };
   const input = {
     identity,
-    sourcePlan: topology.plan(),
+    sourcePlan: topology.query(topology.sourcePlan(), undefined),
     scene: scene.scene,
     planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     lodProjectedHeights: new Map([
@@ -122,7 +152,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}) {
     lodSelection: 'near/near',
     ...extra,
   } as const;
-  pool.update(input).unwrap();
+  updateShadowView(pool, input).unwrap();
   pool._commitResourceReplacement();
   return {
     pool,
@@ -136,63 +166,428 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}) {
 }
 
 describe('GPU-driven shadow view owner contract', () => {
+  it.each([
+    'outside',
+    'partial',
+  ] as const)('preserves retained depth across raw canonical class transitions (%s)', async (mode) => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+    const projection = new RenderScene();
+    const available = GpuScene.create(device, 4).unwrap();
+    if (available.status !== 'available') throw Error('Missing scene');
+    const scene = available.scene;
+    const topology = new BatchTopology();
+    const pool = ShadowViewStatePool.create({
+      device,
+      shaderModuleFactory: { createShaderModule: () => ok(shader) },
+    }).unwrap();
+    const classifier = new ShadowCasterClassifier();
+    const identity = { kind: 'directional', index: 0, layer: 'static' } as const;
+    const matrix =
+      mode === 'outside'
+        ? undefined
+        : mat4.multiply(
+            mat4.create(),
+            mat4.orthographic(mat4.create(), -32, 32, -32, 32, 0.1, 100),
+            mat4.lookAt(mat4.create(), [0, 50, 0], [0, 0, 0], [0, 0, -1]),
+          );
+    const planes = frustum.fromViewProjection(
+      frustum.create(),
+      matrix ?? mat4.identity(mat4.create()),
+    );
+    const apply = (entity: number, x: number) => {
+      const value = preparedPbrSnapshot({ ...placed(entity, x), assetHandle: entity + 3 });
+      scene
+        .sync(projection.apply([updateSnapshot(value)]), undefined, (slot) =>
+          projection.cullingWorldBoundsAt(slot),
+        )
+        .unwrap();
+    };
+    const frame = () => {
+      const classes = classifier.update(
+        { slots: projection.slotsSnapshot(), slotAt: (slot) => projection.slotAt(slot) },
+        scene,
+      );
+      const sourcePlan = topology.query(topology.sourcePlan(), undefined);
+      const result = updateShadowView(pool, {
+        identity,
+        sourcePlan,
+        scene,
+        planes,
+        ...(matrix === undefined ? {} : { matrix }),
+        candidatePrimitiveIndices: classes.staticSlots,
+        ignoredChangeSlots: classes.dynamicSlots,
+      }).unwrap();
+      updateShadowView(pool, {
+        identity: { kind: 'directional', index: 0 },
+        sourcePlan,
+        scene,
+        planes,
+        candidatePrimitiveIndices: classes.dynamicSlots,
+      }).unwrap();
+      pool._commitResourceReplacement();
+      return result;
+    };
+    try {
+      apply(1, mode === 'outside' ? 0 : -10);
+      apply(2, mode === 'outside' ? 50 : 10);
+      topology.rebuild(projection.slotsSnapshot());
+      frame();
+      const baseline = frame();
+      const resourceGeneration = baseline.view.computeResourceGeneration;
+      const visibleBuffer = baseline.view.visibleBuffer;
+      const sceneBuffers = [scene.primitiveBuffer, scene.instanceBuffer, scene.transformBuffer];
+      const capacity = scene.rowCapacity;
+      apply(mode === 'outside' ? 2 : 1, mode === 'outside' ? 60 : -12);
+      const changed = frame();
+      expect(changed.view.visibleBuffer).toBe(visibleBuffer);
+      expect(scene.rowCapacity).toBe(capacity);
+      expect(scene.primitiveBuffer).toBe(sceneBuffers[0]);
+      expect(scene.instanceBuffer).toBe(sceneBuffers[1]);
+      expect(scene.transformBuffer).toBe(sceneBuffers[2]);
+      const detail = JSON.stringify({
+        reason: pool.invalidationReason(identity),
+        before: resourceGeneration,
+        after: changed.view.computeResourceGeneration,
+      });
+      if (mode === 'outside') expect(changed.cache, detail).toBe('hit');
+      else {
+        expect(changed.cache).toBe('invalidated');
+        expect(pool.dirtyRects(identity), detail).toHaveLength(1);
+      }
+    } finally {
+      pool.dispose();
+      scene.dispose();
+    }
+  });
+  it.each([
+    'mesh',
+    'material',
+  ] as const)('captures raw binding facts for a held view when %s changes in place', async (kind) => {
+    const f = await lodShadowFixture();
+    try {
+      const batch = f.input.sourcePlan.batches.at(0);
+      if (batch?.binding === undefined) throw new Error('Missing fixture binding');
+      const binding = { ...batch.binding };
+      const original = { assetHandle: binding.assetHandle, material: binding.material };
+      const raw = { ...f.input.sourcePlan, batches: [{ ...batch, binding }] };
+      const input = { ...f.input, identity: { ...f.identity, index: 31 }, sourcePlan: raw };
+      const first = updateShadowView(f.pool, input).unwrap();
+      f.pool._commitResourceReplacement();
+      if (kind === 'mesh') binding.assetHandle = 999;
+      else
+        binding.material = new MaterialResource({
+          baseColor: new Float32Array([0, 1, 0]),
+          metallic: 0,
+          roughness: 1,
+        } as MaterialSnapshot);
+      expect(first.plan.batches.at(0)?.binding?.assetHandle).toBe(original.assetHandle);
+      expect(first.plan.batches.at(0)?.binding?.material).toBe(original.material);
+      const next = updateShadowView(f.pool, input).unwrap();
+      expect(next.cache).toBe('invalidated');
+      expect(next.plan.batches.at(0)?.binding?.assetHandle).toBe(binding.assetHandle);
+      expect(next.plan.batches.at(0)?.binding?.material).toBe(binding.material);
+      expect(first.plan.batches.at(0)?.binding?.assetHandle).toBe(original.assetHandle);
+      expect(first.plan.batches.at(0)?.binding?.material).toBe(original.material);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('reobserves mutable candidate values without changing an already prepared view', async () => {
+    const f = await lodShadowFixture();
+    try {
+      const batch = f.input.sourcePlan.batches.at(0);
+      const original = batch?.candidates.at(0);
+      if (batch === undefined || original === undefined)
+        throw new Error('Missing fixture candidate');
+      const mutable = { ...original };
+      const raw = buildBatchAlignedSubmission(
+        f.input.sourcePlan,
+        new Map([[batch.batchId, [mutable]]]),
+      );
+      const input = { ...f.input, identity: { ...f.identity, index: 30 }, sourcePlan: raw };
+      const first = updateShadowView(f.pool, input).unwrap();
+      expect(first.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+      mutable.primitiveIndex = 1;
+      expect(first.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+      f.pool._commitResourceReplacement();
+      const next = updateShadowView(f.pool, input).unwrap();
+      expect(next.cache).toBe('invalidated');
+      expect(next.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(1);
+      expect(first.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it.each([
+    'candidate',
+    'entry',
+  ] as const)('detaches a raw candidate %s alias from an already prepared view', async (kind) => {
+    const f = await lodShadowFixture();
+    try {
+      const batch = f.input.sourcePlan.batches.at(0);
+      const original = batch?.candidates.at(0);
+      if (batch === undefined || original === undefined) throw Error('Missing fixture candidate');
+      const mutable = { ...original };
+      const entry = {
+        member: { ...original, entityKey: 1, instanceCount: 1 },
+        candidates: mutable,
+      };
+      const candidates = new FrameProjection(
+        new TreeFrame<typeof entry>().with(entry, 0, 0),
+        (entry) => entry.candidates,
+      );
+      expect(MemberCandidates.is(candidates)).toBe(false);
+      const sourcePlan = {
+        ...f.input.sourcePlan,
+        batches: [{ ...batch, candidates }],
+        candidateCount: 1,
+      };
+      const input = { ...f.input, identity: { ...f.identity, index: 35 }, sourcePlan };
+      const first = updateShadowView(f.pool, input).unwrap();
+      expect(first.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+      if (kind === 'candidate') mutable.primitiveIndex = 1;
+      else entry.candidates = { ...mutable, primitiveIndex: 1 };
+      expect(candidates.at(0)?.primitiveIndex).toBe(1);
+      expect(first.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+      f.pool._commitResourceReplacement();
+      const next = updateShadowView(f.pool, input).unwrap();
+      expect(next.cache).toBe('invalidated');
+      expect(next.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(1);
+      expect(first.plan.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('detaches a generic aligned list from a raw mutable root', async () => {
+    const f = await lodShadowFixture();
+    try {
+      const batch = f.input.sourcePlan.batches.at(0);
+      const original = batch?.candidates.at(0);
+      if (batch === undefined || original === undefined) throw Error('Missing fixture candidate');
+      const entry = {
+        member: { ...original, entityKey: 1, instanceCount: 1 },
+        candidates: { ...original },
+      };
+      const candidates = new FrameProjection(
+        new TreeFrame<typeof entry>().with(entry, 0, 0),
+        (entry) => entry.candidates,
+      );
+      const source = {
+        ...f.input.sourcePlan,
+        batches: [{ ...batch, candidates }],
+        candidateCount: 1,
+      };
+      const aligned = buildBatchAlignedSubmission(source, new Map([[batch.batchId, candidates]]));
+      entry.candidates = { ...original, primitiveIndex: 1 };
+      expect(candidates.at(0)?.primitiveIndex).toBe(1);
+      expect(aligned.batches.at(0)?.candidates.at(0)?.primitiveIndex).toBe(0);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('rebinds shared submesh executions without reading 10,000 retained candidate members', async () => {
+    const f = await lodShadowFixture({}, 10_000);
+    const cleanup: (() => void)[] = [];
+    try {
+      const batch = f.input.sourcePlan.batches.at(0);
+      if (batch === undefined) throw new Error('Missing batch');
+      let reads = 0;
+      const candidates = batch.candidates;
+      const at = MemberCandidates.prototype.at;
+      const iterate = MemberCandidates.prototype[Symbol.iterator];
+      const lookup = vi.spyOn(MemberCandidates.prototype, 'at').mockImplementation(function (
+        this: MemberCandidates,
+        index,
+      ) {
+        reads++;
+        return at.call(this, index);
+      });
+      const iterator = vi
+        .spyOn(MemberCandidates.prototype, Symbol.iterator)
+        .mockImplementation(function* (this: MemberCandidates) {
+          for (const value of iterate.call(this)) {
+            reads++;
+            yield value;
+          }
+        });
+      cleanup.push(
+        () => lookup.mockRestore(),
+        () => iterator.mockRestore(),
+      );
+      expect([...candidates]).toHaveLength(10_000);
+      expect(reads).toBe(10_000); // Authenticate actual candidate reads before the quiet controls.
+      reads = 0;
+      const { lod: _lod, ...withoutLod } = batch;
+      const shared = Object.freeze({ ...withoutLod, candidates });
+      const source = Object.freeze({ ...f.input.sourcePlan, batches: Object.freeze([shared]) });
+      const input = {
+        ...f.input,
+        sourcePlan: source,
+        identity: { ...f.identity, index: 11 },
+        shadowMaterials: new ShadowMaterialContent(),
+      };
+      updateShadowView(f.pool, input, source).unwrap();
+      f.pool._commitResourceReplacement();
+      reads = 0;
+      const numeric = { ...source, batches: [Object.freeze({ ...shared, materialAddress: 128 })] };
+      expect(
+        updateShadowView(f.pool, { ...input, sourcePlan: numeric }, numeric).unwrap().cache,
+      ).toBe('hit');
+      expect(reads).toBe(0);
+      const structural = {
+        ...source,
+        batches: [
+          shared,
+          Object.freeze({
+            ...shared,
+            batchId: shared.batchId + 1,
+            key: { ...shared.key, first: 3, count: 3 },
+            visibleBase: 16_384,
+            indirectOffset: 20,
+          }),
+        ],
+        visibleCapacity: 26_384,
+        candidateCount: 20_000,
+      };
+      const next = updateShadowView(
+        f.pool,
+        { ...input, sourcePlan: structural },
+        structural,
+      ).unwrap();
+      expect(next.cache).toBe('invalidated');
+      expect(next.plan.batches).toHaveLength(2);
+      expect(reads).toBe(0);
+      expect(next.plan.batches.at(0)?.candidates).toBe(candidates);
+      expect(next.plan.batches.at(1)?.candidates).toBe(candidates);
+      expect(source.batches).toHaveLength(1);
+    } finally {
+      for (const restore of cleanup) restore();
+      f.dispose();
+    }
+  });
+
+  it.each([
+    1, 2,
+  ])('keeps submitted depth when %i members are selected and only an unselected batch changes', async (selectedCount) => {
+    const f = await lodShadowFixture({}, 3);
+    try {
+      const batch = f.input.sourcePlan.batches.at(0);
+      if (batch === undefined) throw new Error('Missing source batch');
+      const source = {
+        ...f.input.sourcePlan,
+        visibleCapacity: 65,
+        batches: [batch.candidates.slice(0, 2), batch.candidates.slice(2)].map(
+          (candidates, index) =>
+            Object.freeze({
+              ...batch,
+              batchId: index,
+              candidates: Object.freeze(candidates),
+              visibleCapacity: candidates.length,
+              visibleBase: index * 64,
+              indirectOffset: index * 20,
+            }),
+        ),
+      };
+      const input = {
+        ...f.input,
+        sourcePlan: source,
+        identity: { ...f.identity, index: 10 },
+        candidatePrimitiveIndices: Array.from({ length: selectedCount }, (_, index) => index),
+      };
+      const first = updateShadowView(f.pool, input, source).unwrap();
+      f.pool._commitResourceReplacement();
+      expect(updateShadowView(f.pool, input, source).unwrap().cache).toBe('hit');
+      const changed = {
+        ...source,
+        batches: source.batches.map((row, index) =>
+          index === 0
+            ? row
+            : Object.freeze({ ...row, materialAddress: (row.materialAddress ?? 0) + 1 }),
+        ),
+      };
+      const next = updateShadowView(f.pool, { ...input, sourcePlan: changed }, changed).unwrap();
+      expect(next.cache).toBe('hit');
+      expect(next.plan).toBe(first.plan);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('rejects retained depth after a physical view replacement without external invalidation', async () => {
+    const f = await lodShadowFixture({ candidatePrimitiveIndices: [0] });
+    try {
+      const first = updateShadowView(f.pool, f.input, f.input.sourcePlan).unwrap();
+      f.pool._commitResourceReplacement();
+      first.view._recoverFromOverflow().unwrap();
+      const next = updateShadowView(f.pool, f.input, f.input.sourcePlan).unwrap();
+      expect(next.cache).toBe('invalidated');
+      expect(f.pool.invalidationReason(f.identity)).toBe('source-changed');
+      expect(next.plan).not.toBe(first.plan);
+      expect(Reflect.get(next.view, 'bindGroup')).toBeDefined();
+      expect(next.view.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
+    } finally {
+      f.dispose();
+    }
+  });
+
   it('borrows complete captured batches while detaching partial and permuted projections', async () => {
     const f = await lodShadowFixture();
     try {
       const source = f.input.sourcePlan;
-      const full = f.pool
-        .update(
-          {
-            ...f.input,
-            identity: { ...f.identity, index: 10 },
-            candidatePrimitiveIndices: [1, 0, 1],
-          },
-          source,
-        )
-        .unwrap();
+      const full = updateShadowView(
+        f.pool,
+        {
+          ...f.input,
+          identity: { ...f.identity, index: 10 },
+          candidatePrimitiveIndices: [1, 0, 1],
+        },
+        source,
+      ).unwrap();
       expect(full.plan).not.toBe(source);
-      expect(full.plan.batches[0]).toBe(source.batches[0]);
-      expect(full.plan.batches[0]?.candidates).toBe(source.batches[0]?.candidates);
-      const partial = f.pool
-        .update(
-          { ...f.input, identity: { ...f.identity, index: 11 }, candidatePrimitiveIndices: [1] },
-          source,
-        )
-        .unwrap();
+      expect(full.plan.batches.at(0)).toBe(source.batches.at(0));
+      expect(full.plan.batches.at(0)?.candidates).toBe(source.batches.at(0)?.candidates);
+      const partial = updateShadowView(
+        f.pool,
+        { ...f.input, identity: { ...f.identity, index: 11 }, candidatePrimitiveIndices: [1] },
+        source,
+      ).unwrap();
       expect(
-        partial.plan.batches[0]?.candidates.map((candidate) => candidate.primitiveIndex),
+        partial.plan.batches.at(0)?.candidates.map((candidate) => candidate.primitiveIndex),
       ).toEqual([1]);
-      expect(partial.plan.batches[0]?.candidates).not.toBe(source.batches[0]?.candidates);
-      expect(source.batches[0]?.candidates.map((candidate) => candidate.primitiveIndex)).toEqual([
-        0, 1,
-      ]);
+      expect(partial.plan.batches.at(0)?.candidates).not.toBe(source.batches.at(0)?.candidates);
+      expect(source.batches.at(0)?.candidates.map((candidate) => candidate.primitiveIndex)).toEqual(
+        [0, 1],
+      );
       const permuted = buildBatchAlignedSubmission(
         source,
         new Map(source.batches.map((batch) => [batch.batchId, [...batch.candidates].reverse()])),
       );
-      const reordered = f.pool
-        .update(
-          {
-            ...f.input,
-            sourcePlan: permuted,
-            identity: { ...f.identity, index: 12 },
-            candidatePrimitiveIndices: [0, 1],
-          },
-          permuted,
-        )
-        .unwrap();
-      expect(
-        reordered.plan.batches[0]?.candidates.map((candidate) => candidate.primitiveIndex),
-      ).toEqual([0, 1]);
-      expect(reordered.plan.batches[0]?.candidates).not.toBe(permuted.batches[0]?.candidates);
-      const raw = f.pool
-        .update({
+      const reordered = updateShadowView(
+        f.pool,
+        {
           ...f.input,
-          identity: { ...f.identity, index: 13 },
+          sourcePlan: permuted,
+          identity: { ...f.identity, index: 12 },
           candidatePrimitiveIndices: [0, 1],
-        })
-        .unwrap();
-      expect(raw.plan.batches[0]).not.toBe(source.batches[0]);
+        },
+        permuted,
+      ).unwrap();
+      expect(
+        reordered.plan.batches.at(0)?.candidates.map((candidate) => candidate.primitiveIndex),
+      ).toEqual([0, 1]);
+      expect(reordered.plan.batches.at(0)?.candidates).not.toBe(permuted.batches.at(0)?.candidates);
+      const raw = updateShadowView(f.pool, {
+        ...f.input,
+        identity: { ...f.identity, index: 13 },
+        candidatePrimitiveIndices: [0, 1],
+      }).unwrap();
+      expect(raw.plan.batches.at(0)).not.toBe(source.batches.at(0));
     } finally {
       f.dispose();
     }
@@ -200,7 +595,7 @@ describe('GPU-driven shadow view owner contract', () => {
   it('matches raw projection for overlapping batches, empty selections and sparse slot domains', async () => {
     const f = await lodShadowFixture();
     try {
-      const batch = f.input.sourcePlan.batches[0];
+      const batch = f.input.sourcePlan.batches.at(0);
       if (batch === undefined) throw Error('fixture batch missing');
       const source = Object.freeze({
         ...f.input.sourcePlan,
@@ -226,18 +621,42 @@ describe('GPU-driven shadow view owner contract', () => {
           sourcePlan: source,
           candidatePrimitiveIndices: candidates,
         };
-        const raw = f.pool
-          .update({ ...input, identity: { ...f.identity, index: 20 + index * 2 } })
-          .unwrap();
+        const raw = updateShadowView(f.pool, {
+          ...input,
+          identity: { ...f.identity, index: 20 + index * 2 },
+        }).unwrap();
         f.pool._commitResourceReplacement();
-        const owned = f.pool
-          .update({ ...input, identity: { ...f.identity, index: 21 + index * 2 } }, source)
-          .unwrap();
-        expect(owned.plan).toEqual(raw.plan);
+        const owned = updateShadowView(
+          f.pool,
+          { ...input, identity: { ...f.identity, index: 21 + index * 2 } },
+          source,
+        ).unwrap();
+        const facts = (plan: typeof raw.plan) => ({
+          ...plan,
+          batches: [...plan.batches].map((value) => ({
+            ...value,
+            materialAddress:
+              value.materialAddress ??
+              (value.binding === undefined
+                ? 0
+                : (f.input.scene.materialIndexForResource(value.binding.material) ?? 0)),
+            geometryAddress:
+              value.geometryAddress ??
+              (value.binding === undefined
+                ? 0
+                : (f.input.scene.geometryIndexForResource(
+                    value.binding.worldId,
+                    value.binding.assetHandle,
+                  ) ?? 0)),
+            candidates: [...value.candidates],
+            ...(value.members === undefined ? {} : { members: [...value.members] }),
+          })),
+        });
+        expect(facts(owned.plan)).toEqual(facts(raw.plan));
         expect(owned.plan).not.toBe(raw.plan);
       }
       expect(source.batches.map((value) => value.batchId)).toEqual([2, 0, 1]);
-      expect(source.batches[0]?.candidates).toBe(batch.candidates);
+      expect(source.batches.at(0)?.candidates).toBe(batch.candidates);
     } finally {
       f.dispose();
     }
@@ -275,21 +694,21 @@ describe('GPU-driven shadow view owner contract', () => {
     }
     const owner = kind === 'wrong-owner' ? f.input.sourcePlan : undefined;
     try {
-      f.pool
-        .update(
-          {
-            ...f.input,
-            sourcePlan: source,
-            identity: { ...f.identity, index: 1 },
-            candidatePrimitiveIndices: [0],
-          },
-          owner,
-        )
-        .unwrap();
+      updateShadowView(
+        f.pool,
+        {
+          ...f.input,
+          sourcePlan: source,
+          identity: { ...f.identity, index: 1 },
+          candidatePrimitiveIndices: [0],
+        },
+        owner,
+      ).unwrap();
       armed = true;
       let thrown: unknown;
       try {
-        f.pool.update(
+        updateShadowView(
+          f.pool,
           {
             ...f.input,
             sourcePlan: source,
@@ -311,25 +730,22 @@ describe('GPU-driven shadow view owner contract', () => {
     const f = await lodShadowFixture();
     const identity = (index: number) => ({ ...f.identity, index });
     try {
-      const first = f.pool
-        .update(
-          { ...f.input, identity: identity(1), candidatePrimitiveIndices: [0] },
-          f.input.sourcePlan,
-        )
-        .unwrap();
-      const equal = f.pool
-        .update(
-          { ...f.input, identity: identity(2), candidatePrimitiveIndices: new Set([0]) },
-          f.input.sourcePlan,
-        )
-        .unwrap();
+      const first = updateShadowView(
+        f.pool,
+        { ...f.input, identity: identity(1), candidatePrimitiveIndices: [0] },
+        f.input.sourcePlan,
+      ).unwrap();
+      const equal = updateShadowView(
+        f.pool,
+        { ...f.input, identity: identity(2), candidatePrimitiveIndices: new Set([0]) },
+        f.input.sourcePlan,
+      ).unwrap();
       expect(equal.plan).toBe(first.plan);
-      const other = f.pool
-        .update(
-          { ...f.input, identity: identity(3), candidatePrimitiveIndices: [1] },
-          f.input.sourcePlan,
-        )
-        .unwrap();
+      const other = updateShadowView(
+        f.pool,
+        { ...f.input, identity: identity(3), candidatePrimitiveIndices: [1] },
+        f.input.sourcePlan,
+      ).unwrap();
       expect(other.plan).not.toBe(first.plan);
       expect(
         other.plan.batches.flatMap((batch) =>
@@ -342,17 +758,16 @@ describe('GPU-driven shadow view owner contract', () => {
         new Map(f.input.sourcePlan.batches.map((batch) => [batch.batchId, batch.candidates])),
       );
       expect(source.revision).toBe(f.input.sourcePlan.revision);
-      const replaced = f.pool
-        .update(
-          {
-            ...f.input,
-            identity: identity(4),
-            sourcePlan: source,
-            candidatePrimitiveIndices: [0],
-          },
-          source,
-        )
-        .unwrap();
+      const replaced = updateShadowView(
+        f.pool,
+        {
+          ...f.input,
+          identity: identity(4),
+          sourcePlan: source,
+          candidatePrimitiveIndices: [0],
+        },
+        source,
+      ).unwrap();
       expect(replaced.plan).not.toBe(first.plan);
       expect(replaced.sourcePlan).toBe(source);
     } finally {
@@ -371,35 +786,42 @@ describe('GPU-driven shadow view owner contract', () => {
     };
     const other = { ...f.input, identity: { ...f.identity, index: 1 } };
     try {
-      const first = f.pool.update({ ...f.input, ...moved }, f.input.sourcePlan).unwrap();
-      const second = f.pool.update(other, f.input.sourcePlan).unwrap();
+      const first = updateShadowView(f.pool, { ...f.input, ...moved }, f.input.sourcePlan).unwrap();
+      const second = updateShadowView(f.pool, other, f.input.sourcePlan).unwrap();
       expect(second.plan).toBe(first.plan);
       f.pool._commitResourceReplacement();
 
-      f.pool.update({ ...other, ...moved }, f.input.sourcePlan).unwrap();
+      updateShadowView(f.pool, { ...other, ...moved }, f.input.sourcePlan).unwrap();
       f.pool._abortResourceReplacement();
-      const pending = f.pool.update(f.input, f.input.sourcePlan).unwrap();
+      const pending = updateShadowView(f.pool, f.input, f.input.sourcePlan).unwrap();
       expect(pending.plan).toBe(first.plan);
-      const retry = f.pool.update({ ...other, ...moved }, f.input.sourcePlan).unwrap();
+      const retry = updateShadowView(f.pool, { ...other, ...moved }, f.input.sourcePlan).unwrap();
       expect(retry.plan).not.toBe(first.plan);
       expect(retry.plan.batches).toEqual(first.plan.batches);
       expect(retry.view.visibleBuffer).toBe(second.view.visibleBuffer);
       // The aborted view needs a fresh plan and redraw, while the accepted
-      // queue writes already hold these identical candidate and batch rows.
-      expect(retry.view.inspect().candidateUploadBytes).toBe(0);
-      expect(retry.view.inspect().batchUploadBytes).toBe(0);
+      // task bytes remain identical. This low-level subset is a raw array:
+      // its actual read produces one fresh eight-word member node.
+      expect(retry.view.inspect().sharedInputUploadBytes).toBe(8 * 4);
+      expect(retry.view.inspect().batchUploadBytes).toBe(4); // Only the raw member-root word.
       expect(retry.view.inspect().viewConstantsUploadBytes).toBeGreaterThan(0);
       expect(f.pool.invalidationReason(other.identity)).toBe('submit-aborted');
       f.pool._commitResourceReplacement();
-      expect(f.pool.update({ ...other, ...moved }, f.input.sourcePlan).unwrap().cache).toBe('hit');
+      expect(
+        updateShadowView(f.pool, { ...other, ...moved }, f.input.sourcePlan).unwrap().cache,
+      ).toBe('hit');
 
       const visible = retry.view.visibleBuffer;
       retry.view._recoverFromOverflow().unwrap();
       f.pool.invalidate('artifact-changed', other.identity);
-      const recovered = f.pool.update({ ...other, ...moved }, f.input.sourcePlan).unwrap();
+      const recovered = updateShadowView(
+        f.pool,
+        { ...other, ...moved },
+        f.input.sourcePlan,
+      ).unwrap();
       expect(recovered.view.visibleBuffer).not.toBe(visible);
       expect(recovered.plan).not.toBe(retry.plan);
-      expect(recovered.view.inspect().candidateUploadBytes).toBeGreaterThan(0);
+      expect(recovered.view.inspect().sharedInputUploadBytes).toBe(8 * 4);
     } finally {
       f.dispose();
     }
@@ -456,16 +878,16 @@ describe('GPU-driven shadow view owner contract', () => {
       { kind: 'spot', index: 0 },
     ];
     for (const identity of identities) {
-      const input = {
+      let input = {
         identity,
-        sourcePlan: topology.plan(),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined),
         scene: sceneAvailability.scene,
         planes,
         targetSize: 1024,
         graphGeneration: 1,
         candidatePrimitiveIndices: [0],
       } as const;
-      const first = pool.update(input).unwrap();
+      const first = updateShadowView(pool, input).unwrap();
       expect(first.cache).toBe('invalidated');
       expect(first.plan.candidateCount).toBe(1);
       expect(pool.invalidationReason(identity)).toBe('first-publication');
@@ -476,14 +898,16 @@ describe('GPU-driven shadow view owner contract', () => {
       // asking the pool for a hit.
       pool._commitResourceReplacement();
 
-      const hit = pool.update(input).unwrap();
+      const hit = updateShadowView(pool, input).unwrap();
       expect(hit.cache).toBe('hit');
       expect(hit.generation).toBe(first.generation);
       expect(pool.invalidationReason(identity)).toBeUndefined();
       expect(hit.view.inspect().updateCount).toBe(firstInspection.updateCount);
-      const equalCopy = pool
-        .update({ ...input, planes: new Float32Array(planes), candidatePrimitiveIndices: [0] })
-        .unwrap();
+      const equalCopy = updateShadowView(pool, {
+        ...input,
+        planes: new Float32Array(planes),
+        candidatePrimitiveIndices: [0],
+      }).unwrap();
       expect(equalCopy.cache).toBe('hit');
       expect(equalCopy.plan).toBe(hit.plan);
       const acceptedCounters = pool
@@ -511,15 +935,14 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(forced.cache).toBe('hit');
       expect(forced.passNames.length).toBeGreaterThan(0);
 
-      const movedPlanes = new Float32Array(planes);
+      const movedPlanes = frustum.create();
+      movedPlanes.set(planes);
       movedPlanes[0] = (movedPlanes[0] ?? 0) + 0.01;
-      const payloadOnly = pool
-        .update({
-          ...input,
-          planes: movedPlanes,
-          lodProjectedHeights: new Map([[0, 0.25]]),
-        })
-        .unwrap();
+      const payloadOnly = updateShadowView(pool, {
+        ...input,
+        planes: movedPlanes,
+        lodProjectedHeights: new Map([[0, 0.25]]),
+      }).unwrap();
       expect(payloadOnly.cache).toBe('invalidated');
       expect(payloadOnly.plan).toBe(first.plan);
       expect(pool.invalidationReason(identity)).toBe('view-changed');
@@ -531,29 +954,41 @@ describe('GPU-driven shadow view owner contract', () => {
         cacheRebuildReasons: { 'first-publication': 1, 'view-changed': 1 },
       });
       expect(acceptedCounters?.cacheRebuilds).toBe(1);
+      // This raw subset captures a fresh member node and its root word.
       expect(payloadOnly.view.inspect()).toMatchObject({
-        candidateUploadBytes: 0,
-        batchUploadBytes: 0,
+        sharedInputUploadBytes: 32,
+        batchUploadBytes: 4,
       });
       pool._commitResourceReplacement();
+      input = { ...input, planes: movedPlanes };
 
-      const changedMaterial = {
-        ...material,
-        baseColor: new Float32Array([0.25, 1, 1]),
-      } as MaterialSnapshot;
-      const changedDelta = projection.apply([
-        updateSnapshot({
-          ...snapshot(1),
-          material: changedMaterial,
-          materials: [changedMaterial],
-        }),
-      ]);
-      sceneAvailability.scene.sync(changedDelta).unwrap();
-      const contentInvalidated = pool.update(input).unwrap();
+      // Parameter-only adoption keeps the accepted source binding. Replacing
+      // the resource would require a new topology publication and may grow its
+      // physical table, which is a distinct source-change invalidation.
+      material.adopt({
+        ...material.snapshot,
+        baseColor: vec3.create((material.snapshot.baseColor[0] ?? 1) * 0.5, 1, 1),
+      });
+      sceneAvailability.scene
+        .sync({
+          ...projection.apply([]),
+          materialUpdates: [material],
+        })
+        .unwrap();
+      expect(updateShadowView(pool, input).unwrap().cache).toBe('hit');
+      const movedWorld = mat4.identity(mat4.create());
+      movedWorld[12] = 0.01 + (projection.slotAt(0)?.snapshot.transform.world[12] ?? 0);
+      sceneAvailability.scene
+        .sync(projection.apply([{ kind: 'update', worldId: 0, entityKey: 1, world: movedWorld }]))
+        .unwrap();
+      const contentInvalidated = updateShadowView(pool, input).unwrap();
       expect(contentInvalidated.cache).toBe('invalidated');
       expect(pool.invalidationReason(identity)).toBe('content-changed');
       pool._commitResourceReplacement();
-      const membershipChanged = pool.update({ ...input, candidatePrimitiveIndices: [] }).unwrap();
+      const membershipChanged = updateShadowView(pool, {
+        ...input,
+        candidatePrimitiveIndices: [],
+      }).unwrap();
       expect(membershipChanged.cache).toBe('invalidated');
       expect(pool.invalidationReason(identity)).toBe('membership-changed');
       pool._abortResourceReplacement();
@@ -561,25 +996,26 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(
         pool.inspect().find((view) => view.identity.kind === identity.kind)?.invalidationReason,
       ).toBe('submit-aborted');
-      expect(pool.update(input).unwrap().cache).toBe('invalidated');
+      expect(updateShadowView(pool, input).unwrap().cache).toBe('invalidated');
       pool._commitResourceReplacement();
 
-      const regenerated = pool.update({ ...input, graphGeneration: 2 }).unwrap();
+      const regenerated = updateShadowView(pool, { ...input, graphGeneration: 2 }).unwrap();
       expect(regenerated.cache).toBe('invalidated');
       expect(pool.invalidationReason(identity)).toBe('graph-compiled');
       pool._commitResourceReplacement();
-      expect(pool.update({ ...input, graphGeneration: 2 }).unwrap().cache).toBe('hit');
-      const resized = pool.update({ ...input, targetSize: 2048 }).unwrap();
+      expect(updateShadowView(pool, { ...input, graphGeneration: 2 }).unwrap().cache).toBe('hit');
+      const resized = updateShadowView(pool, { ...input, targetSize: 2048 }).unwrap();
       expect(resized.cache).toBe('invalidated');
       expect(pool.invalidationReason(identity)).toBe('configuration-changed');
       pool._commitResourceReplacement();
 
       pool.invalidate('artifact-changed', identity);
-      const invalidated = pool.update(input).unwrap();
+      const invalidated = updateShadowView(pool, input).unwrap();
       expect(invalidated.cache).toBe('invalidated');
       expect(pool.invalidationReason(identity)).toBe('artifact-changed');
       expect(invalidated.generation).toBe(first.generation + 7);
-      expect(invalidated.view.inspect().updateCount).toBe(firstInspection.updateCount + 7);
+      // The earlier forced graph projection refreshed its compute inputs once.
+      expect(invalidated.view.inspect().updateCount).toBe(firstInspection.updateCount + 8);
     }
     expect(pool.invalidationReason({ kind: 'spot', index: 7 })).toBe('uncached');
 
@@ -628,16 +1064,14 @@ describe('GPU-driven shadow view owner contract', () => {
       worldDilation: 0,
     };
     const frame = (identity: ShadowViewIdentity) => {
-      const result = pool
-        .update({
-          identity,
-          sourcePlan: topology.plan(),
-          scene,
-          planes: frustum.fromViewProjection(frustum.create(), matrix),
-          matrix,
-          cameraCull,
-        })
-        .unwrap();
+      const result = updateShadowView(pool, {
+        identity,
+        sourcePlan: topology.query(topology.sourcePlan(), undefined),
+        scene,
+        planes: frustum.fromViewProjection(frustum.create(), matrix),
+        matrix,
+        cameraCull,
+      }).unwrap();
       // A graph that binds the camera pyramid; point views never create the pipeline.
       result.view.cameraCullBound = identity.kind !== 'point';
       pool._commitResourceReplacement();
@@ -691,32 +1125,32 @@ describe('GPU-driven shadow view owner contract', () => {
     const identity: ShadowViewIdentity = { kind: 'spot', index: 0 };
     const input = {
       identity,
-      sourcePlan: topology.plan(),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined),
       scene,
       planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     } as const;
-    pool.update(input).unwrap();
+    updateShadowView(pool, input).unwrap();
     pool._commitResourceReplacement();
 
     // Entity 2 moves from x=50 to x=60: both boxes lie outside the unit clip volume.
     scene.sync(projection.apply([updateSnapshot(at(2, 60))]), undefined, boundsOf).unwrap();
-    expect(pool.update(input).unwrap().cache).toBe('hit');
+    expect(updateShadowView(pool, input).unwrap().cache).toBe('hit');
     expect(scene.changedBoundsSince(scene.contentRevision)).toHaveLength(0);
 
     // Moving into the view is a new box inside it.
     scene.sync(projection.apply([updateSnapshot(at(2, 0.5))]), undefined, boundsOf).unwrap();
-    expect(pool.update(input).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input).unwrap().cache).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('content-changed');
     pool._commitResourceReplacement();
 
     // Leaving the view is an old box inside it.
     scene.sync(projection.apply([updateSnapshot(at(2, 80))]), undefined, boundsOf).unwrap();
-    expect(pool.update(input).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input).unwrap().cache).toBe('invalidated');
     pool._commitResourceReplacement();
 
     // A change without a conservative box stays a miss.
     scene.sync(projection.apply([updateSnapshot(at(2, 90))])).unwrap();
-    expect(pool.update(input).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input).unwrap().cache).toBe('invalidated');
     pool._commitResourceReplacement();
 
     pool.dispose();
@@ -732,8 +1166,11 @@ describe('GPU-driven shadow view owner contract', () => {
       [1, 0.45],
     ]);
     expect(
-      pool.update({ ...input, lodProjectedHeights: nearer, lodSelection: 'near/near*' }).unwrap()
-        .cache,
+      updateShadowView(pool, {
+        ...input,
+        lodProjectedHeights: nearer,
+        lodSelection: 'near/near*',
+      }).unwrap().cache,
     ).toBe('hit');
     // The out-of-view caster drops a level: its shadow texels are outside this view.
     const farOutside = new Map([
@@ -741,8 +1178,11 @@ describe('GPU-driven shadow view owner contract', () => {
       [1, 0.05],
     ]);
     expect(
-      pool.update({ ...input, lodProjectedHeights: farOutside, lodSelection: 'near/far' }).unwrap()
-        .cache,
+      updateShadowView(pool, {
+        ...input,
+        lodProjectedHeights: farOutside,
+        lodSelection: 'near/far',
+      }).unwrap().cache,
     ).toBe('hit');
     // The in-view caster drops a level: the retained raster is stale.
     const farInside = new Map([
@@ -750,8 +1190,11 @@ describe('GPU-driven shadow view owner contract', () => {
       [1, 0.05],
     ]);
     expect(
-      pool.update({ ...input, lodProjectedHeights: farInside, lodSelection: 'far/far' }).unwrap()
-        .cache,
+      updateShadowView(pool, {
+        ...input,
+        lodProjectedHeights: farInside,
+        lodSelection: 'far/far',
+      }).unwrap().cache,
     ).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('lod-changed');
     dispose();
@@ -773,15 +1216,19 @@ describe('GPU-driven shadow view owner contract', () => {
       ]);
     // The reference camera coarsens: the finer retained raster still serves.
     expect(
-      pool
-        .update({ ...input, lodProjectedHeights: heights(0.05), lodSelection: 'far/far' })
-        .unwrap().cache,
+      updateShadowView(pool, {
+        ...input,
+        lodProjectedHeights: heights(0.05),
+        lodSelection: 'far/far',
+      }).unwrap().cache,
     ).toBe('hit');
     // Returning to the retained levels stays a hit.
     expect(
-      pool
-        .update({ ...input, lodProjectedHeights: heights(0.5), lodSelection: 'near/near' })
-        .unwrap().cache,
+      updateShadowView(pool, {
+        ...input,
+        lodProjectedHeights: heights(0.5),
+        lodSelection: 'near/near',
+      }).unwrap().cache,
     ).toBe('hit');
     dispose();
 
@@ -792,9 +1239,11 @@ describe('GPU-driven shadow view owner contract', () => {
       lodSelection: 'far/far',
     });
     expect(
-      coarse.pool
-        .update({ ...coarse.input, lodProjectedHeights: heights(0.5), lodSelection: 'near/near' })
-        .unwrap().cache,
+      updateShadowView(coarse.pool, {
+        ...coarse.input,
+        lodProjectedHeights: heights(0.5),
+        lodSelection: 'near/near',
+      }).unwrap().cache,
     ).toBe('invalidated');
     expect(coarse.pool.invalidationReason(coarse.identity)).toBe('lod-changed');
     coarse.dispose();
@@ -827,24 +1276,24 @@ describe('GPU-driven shadow view owner contract', () => {
     const staticInput = (candidates: readonly number[], dynamic: ReadonlySet<number>) =>
       ({
         identity,
-        sourcePlan: topology.plan(),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined),
         scene: scene.scene,
         planes,
         candidatePrimitiveIndices: candidates,
         ignoredChangeSlots: dynamic,
       }) as const;
-    pool.update(staticInput([0, 1], new Set())).unwrap();
+    updateShadowView(pool, staticInput([0, 1], new Set())).unwrap();
     pool._commitResourceReplacement();
 
     // The out-of-view caster moves and flips to dynamic: no static redraw.
     scene.scene
       .sync(projection.apply([updateSnapshot(placed(2, 60))]), undefined, boundsOf)
       .unwrap();
-    const flippedOut = pool.update(staticInput([0], new Set([1]))).unwrap();
+    const flippedOut = updateShadowView(pool, staticInput([0], new Set([1]))).unwrap();
     expect(flippedOut.cache).toBe('hit');
     expect(flippedOut.plan.candidateCount).toBe(1);
     // It settles and returns to the static layer while still out of view.
-    expect(pool.update(staticInput([0, 1], new Set())).unwrap().cache).toBe('hit');
+    expect(updateShadowView(pool, staticInput([0, 1], new Set())).unwrap().cache).toBe('hit');
 
     // Spawns are dynamic: new plans and new slots, same static members.
     for (let spawn = 3; spawn <= 6; spawn += 1) {
@@ -854,11 +1303,11 @@ describe('GPU-driven shadow view owner contract', () => {
       topology.rebuild(projection.slotsSnapshot());
       const spawned = new Set<number>();
       for (const slot of projection.slotsSnapshot()) if (slot.slot > 1) spawned.add(slot.slot);
-      expect(pool.update(staticInput([0, 1], spawned)).unwrap().cache).toBe('hit');
+      expect(updateShadowView(pool, staticInput([0, 1], spawned)).unwrap().cache).toBe('hit');
     }
 
     // The in-view caster flips to dynamic: its static shadow must disappear.
-    const flippedIn = pool.update(staticInput([1], new Set([0]))).unwrap();
+    const flippedIn = updateShadowView(pool, staticInput([1], new Set([0]))).unwrap();
     expect(flippedIn.cache).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('membership-changed');
     pool.dispose();
@@ -896,13 +1345,13 @@ describe('GPU-driven shadow view owner contract', () => {
     const dynamicSlots = new Set([1]);
     const input = {
       identity,
-      sourcePlan: topology.plan(),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined),
       scene: scene.scene,
       planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
       candidatePrimitiveIndices: [0],
       ignoredChangeSlots: dynamicSlots,
     } as const;
-    pool.update(input).unwrap();
+    updateShadowView(pool, input).unwrap();
     pool._commitResourceReplacement();
     expect(shadowViewIdentityKey(identity)).not.toBe(
       shadowViewIdentityKey({ kind: 'directional', index: 0 }),
@@ -910,16 +1359,19 @@ describe('GPU-driven shadow view owner contract', () => {
 
     // The dynamic caster moves inside the view: the static layer stays cached.
     scene.scene.sync(projection.apply([updateSnapshot(at(2, 0.5))]), undefined, boundsOf).unwrap();
-    expect(pool.update(input).unwrap().cache).toBe('hit');
+    expect(updateShadowView(pool, input).unwrap().cache).toBe('hit');
     expect(scene.scene.changedSlotsSince(scene.scene.contentRevision - 1)).toEqual([1]);
 
     // The static caster moves inside the view: the static layer re-rasters.
     scene.scene.sync(projection.apply([updateSnapshot(at(1, 0.5))]), undefined, boundsOf).unwrap();
-    expect(pool.update(input).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input).unwrap().cache).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('content-changed');
 
     expect(
-      pool.update({ ...input, identity: { kind: 'spot', index: 0, layer: 'final' as never } }).ok,
+      updateShadowView(pool, {
+        ...input,
+        identity: { kind: 'spot', index: 0, layer: 'final' as never },
+      }).ok,
     ).toBe(false);
     pool.dispose();
     scene.scene.dispose();
@@ -930,13 +1382,15 @@ describe('GPU-driven shadow view owner contract', () => {
     projection.apply([updateSnapshot(snapshot(1)), updateSnapshot(snapshot(2))]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const sourcePlan = topology.plan();
+    const sourcePlan = topology.query(topology.sourcePlan(), undefined);
     const moved = new Float32Array(mat4.identity(mat4.create()));
     moved[12] = 4;
     const delta = projection.apply([{ kind: 'update', worldId: 0, entityKey: 1, world: moved }]);
     expect(topology.apply(delta)).toBe(false);
-    expect(topology.plan()).toBe(sourcePlan);
-    expect(topology.plan().batches[0]).toBe(sourcePlan.batches[0]);
+    expect(topology.query(topology.sourcePlan(), undefined)).toBe(sourcePlan);
+    expect(topology.query(topology.sourcePlan(), undefined).batches.at(0)).toBe(
+      sourcePlan.batches.at(0),
+    );
   });
 
   it('retains a static layer for every light kind', () => {
@@ -1019,7 +1473,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const input = (candidates: readonly number[], extra: Partial<{ matrix: Float32Array }> = {}) =>
       ({
         identity,
-        sourcePlan: topology.plan(),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined),
         scene: scene.scene,
         planes: frustum.fromViewProjection(frustum.create(), matrix),
         matrix,
@@ -1029,7 +1483,7 @@ describe('GPU-driven shadow view owner contract', () => {
         ignoredChangeSlots: new Set<number>(),
         ...extra,
       }) as const;
-    pool.update(input([0, 1])).unwrap();
+    updateShadowView(pool, input([0, 1])).unwrap();
     expect(pool.dirtyRects(identity)).toBeUndefined();
     pool._commitResourceReplacement();
 
@@ -1037,7 +1491,7 @@ describe('GPU-driven shadow view owner contract', () => {
     scene.scene
       .sync(projection.apply([updateSnapshot(placed(1, -12))]), undefined, boundsOf)
       .unwrap();
-    expect(pool.update(input([0, 1])).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input([0, 1])).unwrap().cache).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('content-changed');
     const moved = pool.dirtyRects(identity);
     expect(moved).toHaveLength(1);
@@ -1047,7 +1501,7 @@ describe('GPU-driven shadow view owner contract', () => {
     pool._commitResourceReplacement();
 
     // A caster leaves the static layer: its footprint is cleared.
-    expect(pool.update(input([0])).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input([0])).unwrap().cache).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('membership-changed');
     const left = pool.dirtyRects(identity);
     expect(left).toHaveLength(1);
@@ -1057,12 +1511,15 @@ describe('GPU-driven shadow view owner contract', () => {
     // A changed matrix redraws the layer; graph replacement retains its external depth.
     const shifted = new Float32Array(matrix);
     shifted[12] = (shifted[12] as number) + 0.1;
-    expect(pool.update(input([0], { matrix: shifted })).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(pool, input([0], { matrix: shifted })).unwrap().cache).toBe(
+      'invalidated',
+    );
     expect(pool.invalidationReason(identity)).toBe('view-changed');
     expect(pool.dirtyRects(identity)).toBeUndefined();
     pool._commitResourceReplacement();
     expect(
-      pool.update({ ...input([0], { matrix: shifted }), graphGeneration: 2 }).unwrap().cache,
+      updateShadowView(pool, { ...input([0], { matrix: shifted }), graphGeneration: 2 }).unwrap()
+        .cache,
     ).toBe('hit');
     expect(pool.dirtyRects(identity)).toBeUndefined();
     // Content changes still use dirty rectangles across a graph replacement.
@@ -1070,21 +1527,26 @@ describe('GPU-driven shadow view owner contract', () => {
       .sync(projection.apply([updateSnapshot(placed(1, -14))]), undefined, boundsOf)
       .unwrap();
     expect(
-      pool.update({ ...input([0], { matrix: shifted }), graphGeneration: 3 }).unwrap().cache,
+      updateShadowView(pool, { ...input([0], { matrix: shifted }), graphGeneration: 3 }).unwrap()
+        .cache,
     ).toBe('invalidated');
     expect(pool.dirtyRects(identity)).toHaveLength(1);
     pool._commitResourceReplacement();
     expect(
-      pool
-        .update({ ...input([0], { matrix: shifted }), targetSize: 2048, graphGeneration: 4 })
-        .unwrap().cache,
+      updateShadowView(pool, {
+        ...input([0], { matrix: shifted }),
+        targetSize: 2048,
+        graphGeneration: 4,
+      }).unwrap().cache,
     ).toBe('invalidated');
     expect(pool.dirtyRects(identity)).toBeUndefined();
     pool._abortResourceReplacement();
     expect(
-      pool
-        .update({ ...input([0], { matrix: shifted }), targetSize: 2048, graphGeneration: 4 })
-        .unwrap().cache,
+      updateShadowView(pool, {
+        ...input([0], { matrix: shifted }),
+        targetSize: 2048,
+        graphGeneration: 4,
+      }).unwrap().cache,
     ).toBe('invalidated');
     expect(pool.invalidationReason(identity)).toBe('submit-aborted');
     pool.dispose();

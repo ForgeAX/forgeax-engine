@@ -1,3 +1,4 @@
+import type { VolumetricFogLightKind } from './capability';
 export interface VolumeTemporalSignature {
   readonly cameraRevision: number;
   readonly fogRevision: number;
@@ -7,7 +8,7 @@ export interface VolumeTemporalSignature {
   readonly height: number;
   /** World-owned authored-medium time; render frame identity never advances the medium. */
   readonly worldTimeSeconds?: number;
-  readonly lightKind?: 'directional' | 'point' | 'spot';
+  readonly lightKind?: VolumetricFogLightKind;
   readonly lightEntity?: number;
   readonly pointLightEntity?: number;
   readonly spotLightEntity?: number;

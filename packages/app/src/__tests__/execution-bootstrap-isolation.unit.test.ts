@@ -21,12 +21,15 @@ function moduleUrl(source: string): string {
 
 describe('execution bootstrap isolation', () => {
   it('provides source geometry before plugin startup without waiting for child readiness', async () => {
-    const world = new World();
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const world = new World({ assets });
     const mesh = createBoxGeometry(1, 1, 1).unwrap();
-    const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+    const meshHandle = assets.create(mesh).unwrap();
     const source = new SourceRenderWorker(
       world,
-      new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+      assets,
       {
         kind: 'init',
         canvas: {} as OffscreenCanvas,

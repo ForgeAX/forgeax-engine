@@ -22,8 +22,9 @@
 
 import type { AssetError, MeshAsset } from '@forgeax/engine-types';
 import { err, type Result } from '@forgeax/engine-types';
-import { degenerate, FACTORY_FLOATS_PER_VERTEX, meshFromInterleaved } from './box';
+import { degenerate } from './box';
 import { poleGridIndices } from './pole-grid-indices';
+import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
 
 /**
  * Build a procedural capsule geometry aligned with Bevy `Capsule3d` /
@@ -58,7 +59,7 @@ export function createCapsuleGeometry(
   const latRows = 2 * (cs + 1);
   const vertexCount = latRows * (rs + 1);
 
-  const vertices = new Float32Array(vertexCount * FACTORY_FLOATS_PER_VERTEX);
+  const attributes = createPrimitiveAttributes(vertexCount);
 
   let vIdx = 0;
   // Emit rows top -> bottom. `row` in [0, latRows-1]. The first cs+1 rows are
@@ -99,19 +100,18 @@ export function createCapsuleGeometry(
       const ny = y - centerY;
       const nz = z;
       const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-      const base = vIdx * FACTORY_FLOATS_PER_VERTEX;
-      vertices[base + 0] = x;
-      vertices[base + 1] = y;
-      vertices[base + 2] = z;
-      vertices[base + 3] = nx / nlen;
-      vertices[base + 4] = ny / nlen;
-      vertices[base + 5] = nz / nlen;
-      vertices[base + 6] = u;
+      attributes.position[vIdx * 3 + 0] = x;
+      attributes.position[vIdx * 3 + 1] = y;
+      attributes.position[vIdx * 3 + 2] = z;
+      attributes.normal[vIdx * 3 + 0] = nx / nlen;
+      attributes.normal[vIdx * 3 + 1] = ny / nlen;
+      attributes.normal[vIdx * 3 + 2] = nz / nlen;
+      attributes.uv[vIdx * 2 + 0] = u;
       // UV.v uses the WebGPU top-left convention (V=0 = image top).
-      vertices[base + 7] = v;
+      attributes.uv[vIdx * 2 + 1] = v;
       vIdx++;
     }
   }
 
-  return meshFromInterleaved(vertices, poleGridIndices(rs, latRows));
+  return finishPrimitiveMesh(attributes, poleGridIndices(rs, latRows));
 }

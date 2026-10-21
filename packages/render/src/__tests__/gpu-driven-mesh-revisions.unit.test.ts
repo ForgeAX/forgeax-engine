@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4, vec3 } from '@forgeax/engine-math';
@@ -12,56 +14,56 @@ import {
 import { deriveMaterialDynamicInputLayout } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
-import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import {
   BatchTopology,
   buildBatchAlignedSubmission,
   type GpuDrivenBatch,
 } from '../gpu-driven/batch-topology';
-import { collectGpuDrivenMaterialArtifacts } from '../gpu-driven/material-artifacts';
-import * as materialBindings from '../gpu-driven/material-bindings';
-import { materialBindingKey } from '../gpu-driven/material-bindings';
+import { standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import type {
   PreparedBatchRows,
   PreparedProductionPlan,
 } from '../gpu-driven/production-raster-prepare';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
+import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
-import { preparedPbrSnapshot, standardPbrInputs } from './gpu-driven-production-fixture';
+import {
+  admitGpuFixture,
+  snapshot as gpuSnapshot,
+  preparedPbrSnapshot,
+  standardPbrInputs,
+} from './gpu-driven-production-fixture';
+import { duplicateMeshVertices, editResidentMesh } from './managed-mesh-edit';
 
 async function fixture(materialIndices?: readonly number[]) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  const configure = () =>
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('Unused cubemap registration');
-      },
-      device.caps,
-    );
+  const configure = () => store.configureGpuDevice(device, undefined, device.caps);
   configure();
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const pods = [1, 2].map((size) => createBoxGeometry(size, size, size).unwrap());
-  const handles = pods.map((pod) => world.allocSharedRef('MeshAsset', pod));
+  const handles = pods.map((pod) => assets.create(pod).unwrap());
   const meshes = pods.map((pod, index) =>
-    store.ensureResident(defined(handles[index]), pod, world).unwrap(),
+    store.ensureResident(defined(handles[index]), pod, worldRenderResources(world)).unwrap(),
   );
   const projection = new RenderScene();
+  const sharedMaterials = new Map<number, MaterialResource>();
   const snapshots = (materialIndices ?? [0, 1]).map((meshIndex, index): RenderableSnapshot => {
     const handle = defined(handles[meshIndex]);
-    const material = {
+    const material = new MaterialResource({
+      passes: [],
       baseColor: vec3.create(1, 1, 1),
       metallic: 0,
       roughness: 1,
-      materialHandle: (materialIndices === undefined ? index : meshIndex) + 100,
-    };
+      materialHandle: ((materialIndices === undefined ? index : meshIndex) + 100) as never,
+    });
     const matrix = mat4.identity(mat4.create());
     const transforms = new Float32Array(8 * 16);
     for (let ordinal = 0; ordinal < 8; ordinal++) transforms.set(matrix, ordinal * 16);
@@ -77,6 +79,7 @@ async function fixture(materialIndices?: readonly number[]) {
       instances: { transforms, instanceCount: 8, cacheKey: index + 1, archVersion: 1 },
       gpuDrivenDraws: [
         {
+          ...defined(gpuSnapshot(index + 1, Number(handle)).gpuDrivenDraws?.[0]),
           kind: 'indexed',
           first: 0,
           count: defined(pods[meshIndex]?.indices).length,
@@ -88,13 +91,40 @@ async function fixture(materialIndices?: readonly number[]) {
         },
       ],
     });
+    base.material.adopt({
+      ...base.material.snapshot,
+      passes: [
+        ...base.material.snapshot.passes,
+        {
+          name: 'shadow',
+          program: { module: defined(base.material.snapshot.materialShaderId) },
+          renderState: { tags: { LightMode: 'ShadowCaster' } },
+        },
+      ],
+      materialProgramKeys: {
+        ...base.material.snapshot.materialProgramKeys,
+        shadow: defined(base.material.snapshot.materialShaderId),
+      },
+    });
     if (materialIndices === undefined) return base;
     const materialShaderId =
-      meshIndex === 0 ? base.material.materialShaderId : 'fixture::second-material';
+      meshIndex === 0 ? base.material.snapshot.materialShaderId : 'fixture::second-material';
+    let selectedMaterial = sharedMaterials.get(meshIndex);
+    if (selectedMaterial === undefined) {
+      selectedMaterial = new MaterialResource({
+        ...base.material.snapshot,
+        materialShaderId,
+        materialProgramKeys: {
+          forward: defined(materialShaderId),
+          shadow: defined(materialShaderId),
+        },
+      });
+      sharedMaterials.set(meshIndex, selectedMaterial);
+    }
     return {
       ...base,
-      material: { ...base.material, materialShaderId },
-      materials: base.materials.map((material) => ({ ...material, materialShaderId })),
+      material: selectedMaterial,
+      materials: [selectedMaterial],
       gpuDrivenDraws: defined(base.gpuDrivenDraws).map((draw) => ({
         ...draw,
         prepared: {
@@ -118,7 +148,7 @@ async function fixture(materialIndices?: readonly number[]) {
   availability.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  expect(topology.plan().batches).toHaveLength(2);
+  expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
@@ -134,30 +164,29 @@ async function fixture(materialIndices?: readonly number[]) {
     ...standardPbrInputs(device, shader, viewLayout),
     scene: {
       scene: availability.scene,
-      plan: topology.plan(),
+      plan: topology.query(topology.sourcePlan(), undefined),
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
     },
     camera: makeZeroCameraFallbackSnapshot(),
     meshBySlot: bySlot,
     viewBindGroupLayout: viewLayout,
-    meshResidencyEpoch: store.meshResidencyEpoch,
   };
   const prepare = () => {
-    input.meshResidencyEpoch = store.meshResidencyEpoch;
-    const frame = production.prepare(input).unwrap();
+    const frame = production.prepare(admitGpuFixture(input)).unwrap();
     if (frame === undefined) throw new Error('Expected admitted prepared frame');
     frame._commitResourceReplacement();
     return frame;
   };
   const unrelatedUpload = () => {
     const pod = createBoxGeometry(3, 3, 3).unwrap(),
-      handle = world.allocSharedRef('MeshAsset', pod);
-    return store.ensureResident(handle, pod, world).unwrap();
+      handle = assets.create(pod).unwrap();
+    return store.ensureResident(handle, pod, worldRenderResources(world)).unwrap();
   };
   return {
     device,
     store,
+    assets,
     world,
     pods,
     handles,
@@ -175,6 +204,7 @@ async function fixture(materialIndices?: readonly number[]) {
       production.dispose();
       availability.scene.dispose();
       store.destroyAll();
+      assets.dispose();
     },
   };
 }
@@ -214,7 +244,13 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
           encode: ({ pass, resources }) =>
             gpu.encode(viewGroup, pass, resources, {
               ...current.standardPbrFrameResources,
-              materialBindGroups: [materialGroup],
+              prepareMaterialBinding: (
+                (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                (slot: number) => {
+                  const group = groups[slot];
+                  return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                }
+              )([materialGroup]),
             }),
         })
         .unwrap();
@@ -228,12 +264,16 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       encode();
       f.store.trackMeshSubmission(oldCompleted);
       const old = defined(f.meshes[0]);
-      f.store.evictMesh(defined(f.handles[0]), f.world);
+      f.store.evictMesh(defined(f.handles[0]), worldRenderResources(f.world));
       const pod = defined(f.pods[0]);
       const changedVertices = new Float32Array(pod.vertices);
       changedVertices[0] = (changedVertices[0] ?? 0) + 0.125;
       const replacement = f.store
-        .ensureResident(defined(f.handles[0]), { ...pod, vertices: changedVertices }, f.world)
+        .ensureResident(
+          defined(f.handles[0]),
+          { ...pod, vertices: changedVertices },
+          worldRenderResources(f.world),
+        )
         .unwrap();
       expect(replacement.vertexBuffer).not.toBe(old.vertexBuffer);
       expect(old.vertexBuffer.isDestroyed).toBe(false);
@@ -255,16 +295,18 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       expect(old.vertexBuffer.isDestroyed).toBe(true);
       expect(replacement.vertexBuffer.isDestroyed).toBe(false);
       const changedArtifact = {
-        ...defined(f.input.standardPbrArtifact),
+        ...defined(f.input.materialArtifact),
         fragmentEntry: 'changed-entry',
       };
       const changedProgram = defined(
         f.production
-          .prepare({
-            ...f.input,
-            meshResidencyEpoch: f.store.meshResidencyEpoch,
-            standardPbrArtifact: changedArtifact,
-          })
+          .prepare(
+            admitGpuFixture({
+              ...f.input,
+
+              materialArtifact: changedArtifact,
+            }),
+          )
           .unwrap(),
       );
       expect(changedProgram._recordingTopologySignature).not.toBe(recordingSignature);
@@ -279,15 +321,21 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
 
   it('observes stable rows without allocating a live set or rescanning retained batches', async () => {
     const f = await fixture();
-    const retained = f.production as unknown as {
-      preparedBatches: Map<number, { value: PreparedBatchRows }>;
-      preparedCache: { batchRows: readonly PreparedBatchRows[]; value: PreparedProductionPlan };
-    };
+    const retained = (
+      f.production as unknown as {
+        preparations: {
+          forward: {
+            batches: Map<number, { value: PreparedBatchRows }>;
+            cached: { batchRows: readonly PreparedBatchRows[]; value: PreparedProductionPlan };
+          };
+        };
+      }
+    ).preparations.forward;
     try {
       const first = f.prepare();
-      const rows = retained.preparedCache.batchRows;
-      const plan = retained.preparedCache.value;
-      const keys = vi.spyOn(retained.preparedBatches, 'keys');
+      const rows = retained.cached.batchRows;
+      const plan = retained.cached.value;
+      const keys = vi.spyOn(retained.batches, 'keys');
       const sets: unknown[] = [];
       const NativeSet = globalThis.Set;
       class CountedSet<T> extends NativeSet<T> {
@@ -300,34 +348,36 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       for (let index = 0; index < 12; index++) {
         const frame = defined(
           f.production
-            .prepare({
-              ...f.input,
-              profilePhase: (phase, action) => {
-                if (phase !== 'record/gpu-driven-prepare/plan') return action();
-                const every = Array.prototype.every;
-                const repeated = vi.spyOn(Array.prototype, 'every').mockImplementation(function (
-                  this: unknown[],
-                  predicate,
-                  thisArg,
-                ) {
-                  comparisons++;
-                  return every.call(this, predicate, thisArg);
-                });
-                globalThis.Set = CountedSet;
-                try {
-                  return action();
-                } finally {
-                  globalThis.Set = NativeSet;
-                  repeated.mockRestore();
-                }
-              },
-            })
+            .prepare(
+              admitGpuFixture({
+                ...f.input,
+                profilePhase: (phase, action) => {
+                  if (phase !== 'record/gpu-driven-prepare/plan') return action();
+                  const every = Array.prototype.every;
+                  const repeated = vi.spyOn(Array.prototype, 'every').mockImplementation(function (
+                    this: unknown[],
+                    predicate,
+                    thisArg,
+                  ) {
+                    comparisons++;
+                    return every.call(this, predicate, thisArg);
+                  });
+                  globalThis.Set = CountedSet;
+                  try {
+                    return action();
+                  } finally {
+                    globalThis.Set = NativeSet;
+                    repeated.mockRestore();
+                  }
+                },
+              }),
+            )
             .unwrap(),
         );
         frame._commitResourceReplacement();
         expect(frame.topologySignature).toBe(first.topologySignature);
-        expect(retained.preparedCache.batchRows).toBe(rows);
-        expect(retained.preparedCache.value).toBe(plan);
+        expect(retained.cached.batchRows).toBe(rows);
+        expect(retained.cached.value).toBe(plan);
         expect(f.production.inspect().preparedBatchBuilds).toBe(0);
       }
       expect(sets).toHaveLength(0);
@@ -341,16 +391,22 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
 
   it('prunes exactly the retired native batch IDs through reorder, replacement and empty plans', async () => {
     const f = await fixture();
-    const retained = f.production as unknown as {
-      preparedBatches: Map<number, { value: PreparedBatchRows }>;
-      preparedCache: { batchRows: readonly PreparedBatchRows[] };
-    };
+    const retained = (
+      f.production as unknown as {
+        preparations: {
+          forward: {
+            batches: Map<number, { value: PreparedBatchRows }>;
+            cached: { batchRows: readonly PreparedBatchRows[] };
+          };
+        };
+      }
+    ).preparations.forward;
     const snapshots = f.input.scene.slots.map((slot) => slot.snapshot);
     const patch = (changes: Parameters<RenderScene['apply']>[0]) => {
       const delta = f.projection.apply(changes);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.plan();
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
       f.input.scene.slots = f.projection.slotsSnapshot();
       f.bySlot.clear();
       for (const slot of f.input.scene.slots)
@@ -362,27 +418,27 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
         );
     };
     const check = () => {
-      const frame = f.production.prepare(f.input).unwrap();
+      const frame = f.production.prepare(admitGpuFixture(f.input)).unwrap();
       frame?._commitResourceReplacement();
       const ids = f.input.scene.plan.batches.map((batch) => batch.batchId);
       expect(new Set(ids).size).toBe(ids.length);
-      expect([...retained.preparedBatches.keys()].sort()).toEqual([...ids].sort());
-      expect(retained.preparedCache.batchRows.map((row) => row.source.batchId)).toEqual(ids);
+      expect([...retained.batches.keys()].sort()).toEqual([...ids].sort());
+      expect(retained.cached.batchRows.map((row) => row.source.batchId)).toEqual(ids);
       return frame;
     };
     try {
       check();
-      const original = retained.preparedCache.batchRows;
+      const original = retained.cached.batchRows;
       const native = f.input.scene.plan;
       f.input.scene.plan = { ...native, batches: Object.freeze([...native.batches].reverse()) };
       check();
-      expect(retained.preparedCache.batchRows).toEqual([...original].reverse());
+      expect(retained.cached.batchRows).toEqual([...original].reverse());
       expect(original.map((row) => row.source.batchId)).toEqual(
         native.batches.map((batch) => batch.batchId),
       );
       patch([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
       check();
-      expect(retained.preparedBatches.size).toBe(1);
+      expect(retained.batches.size).toBe(1);
       const add = (entityKey: number, source = defined(snapshots[0])) => ({
         kind: 'update' as const,
         worldId: 0,
@@ -391,25 +447,25 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       });
       patch([add(3)]);
       check();
-      expect(retained.preparedBatches.size).toBe(2);
+      expect(retained.batches.size).toBe(2);
       const replaced = f.input.scene.plan.batches;
       patch([{ kind: 'remove', worldId: 0, entityKey: 3 }, add(4)]);
       check();
-      expect(retained.preparedBatches.size).toBe(2);
+      expect(retained.batches.size).toBe(2);
       expect(f.input.scene.plan.batches).not.toEqual(replaced);
       patch([
         { kind: 'remove', worldId: 0, entityKey: 2 },
         { kind: 'remove', worldId: 0, entityKey: 4 },
       ]);
       expect(check()).toBeUndefined();
-      expect(retained.preparedBatches.size).toBe(0);
+      expect(retained.batches.size).toBe(0);
       patch([add(5), add(6, defined(snapshots[1]))]);
       check();
-      expect(retained.preparedBatches.size).toBe(2);
+      expect(retained.batches.size).toBe(2);
       const pod = defined(f.pods[0]);
-      const handle = f.world.allocSharedRef('MeshAsset', pod);
+      const handle = f.assets.create(pod).unwrap();
       f.handles.push(handle);
-      f.meshes.push(f.store.ensureResident(handle, pod, f.world).unwrap());
+      f.meshes.push(f.store.ensureResident(handle, pod, worldRenderResources(f.world)).unwrap());
       patch([add(7, { ...defined(snapshots[0]), assetHandle: Number(handle) })]);
       const full = f.input.scene.plan;
       expect(full.batches).toHaveLength(3);
@@ -420,150 +476,9 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
           new Map(selected.map((batch) => [batch.batchId, batch.candidates])),
         );
         check();
-        expect(retained.preparedBatches.size).toBe(2);
+        expect(retained.batches.size).toBe(2);
       }
     } finally {
-      f.close();
-    }
-  });
-
-  it('keeps row observations and publishes a partially refreshed row after an artifact getter retry', async () => {
-    const f = await fixture([0, 1]);
-    const retained = f.production as unknown as {
-      preparedBatches: Map<number, { value: PreparedBatchRows }>;
-      preparedCache: { batchRows: readonly PreparedBatchRows[]; value: PreparedProductionPlan };
-    };
-    const first = { ...defined(f.input.standardPbrArtifact), fragmentEntry: 'fs-before' };
-    const second = { ...first, material: 'fixture::second-material' };
-    const batches = f.input.scene.plan.batches;
-    const artifacts = new Map([
-      [artifactKey(defined(batches[0])), first],
-      [artifactKey(defined(batches[1])), second],
-    ]);
-    const trace: string[] = [];
-    const failure = new Error('second-artifact-getter-failed');
-    let rejectSecond = false;
-    let observing = false;
-    const readArtifact = artifacts.get.bind(artifacts);
-    const readMesh = f.bySlot.get.bind(f.bySlot);
-    vi.spyOn(artifacts, 'get').mockImplementation((key) => {
-      if (observing) trace.push(`artifact:${key}`);
-      if (rejectSecond && key === artifactKey(defined(batches[1]))) throw failure;
-      return readArtifact(key);
-    });
-    vi.spyOn(f.bySlot, 'get').mockImplementation((slot) => {
-      if (observing) trace.push(`mesh:${slot}`);
-      return readMesh(slot);
-    });
-    const prepare = () =>
-      f.production.prepare({
-        ...f.input,
-        materialArtifacts: artifacts,
-        profilePhase: (phase, action) => {
-          if (phase !== 'record/gpu-driven-prepare/plan') return action();
-          observing = true;
-          try {
-            return action();
-          } finally {
-            observing = false;
-          }
-        },
-      });
-    try {
-      const initial = defined(prepare().unwrap());
-      initial._commitResourceReplacement();
-      const accepted = retained.preparedCache;
-      first.fragmentEntry = 'fs-after';
-      rejectSecond = true;
-      trace.length = 0;
-      expect(prepare).toThrow(failure);
-      expect(trace.at(-1)).toBe(`artifact:${artifactKey(defined(batches[1]))}`);
-      expect(retained.preparedCache).toBe(accepted);
-      const refreshed = defined(retained.preparedBatches.get(defined(batches[0]).batchId)).value;
-      expect(refreshed).not.toBe(accepted.batchRows[0]);
-      rejectSecond = false;
-      trace.length = 0;
-      const retried = defined(prepare().unwrap());
-      retried._commitResourceReplacement();
-      expect(trace).toEqual(
-        batches.flatMap((batch) => [
-          `artifact:${artifactKey(batch)}`,
-          ...[...defined(retained.preparedBatches.get(batch.batchId)).value.meshes.keys()].map(
-            (slot) => `mesh:${slot}`,
-          ),
-        ]),
-      );
-      expect(f.production.inspect().preparedBatchBuilds).toBe(0);
-      expect(retained.preparedCache.batchRows[0]).toBe(refreshed);
-      expect(retained.preparedCache.value).not.toBe(accepted.value);
-      expect(retried.topologySignature).not.toBe(initial.topologySignature);
-      artifacts.delete(artifactKey(defined(batches[1])));
-      const missing = prepare();
-      expect(missing.ok).toBe(false);
-      if (!missing.ok) expect(missing.error.code).toBe('missing-material-receipt');
-      expect(retained.preparedBatches.size).toBe(2);
-      artifacts.set(artifactKey(defined(batches[1])), second);
-      const restored = defined(prepare().unwrap());
-      restored._commitResourceReplacement();
-      expect(restored.topologySignature).toBe(retried.topologySignature);
-      expect(f.production.inspect().preparedBatchBuilds).toBe(1);
-      const full = f.input.scene.plan;
-      const firstBatch = defined(batches[0]);
-      f.input.scene.plan = buildBatchAlignedSubmission(
-        full,
-        new Map([[firstBatch.batchId, firstBatch.candidates]]),
-      );
-      artifacts.delete(artifactKey(firstBatch));
-      const rejectedShrink = prepare();
-      expect(rejectedShrink.ok).toBe(false);
-      if (!rejectedShrink.ok) expect(rejectedShrink.error.code).toBe('missing-material-receipt');
-      expect([...retained.preparedBatches.keys()]).toEqual([firstBatch.batchId]);
-      f.input.scene.plan = full;
-      artifacts.set(artifactKey(firstBatch), first);
-      const recovered = defined(prepare().unwrap());
-      recovered._commitResourceReplacement();
-      expect(retained.preparedBatches.size).toBe(2);
-      expect(recovered.topologySignature).toBe(restored.topologySignature);
-      expect(f.production.inspect().preparedBatchBuilds).toBe(2);
-    } finally {
-      vi.restoreAllMocks();
-      f.close();
-    }
-  });
-
-  it('reuses admitted binding keys while observing in-place consumed class changes', async () => {
-    const f = await fixture();
-    const bindings = new Map<string, string>();
-    const keys = vi.spyOn(materialBindings, 'materialBindingKey');
-    const prepare = () => {
-      const frame = defined(
-        f.production.prepare({ ...f.input, materialBindingClasses: bindings }).unwrap(),
-      );
-      frame._commitResourceReplacement();
-      return frame;
-    };
-    try {
-      const first = prepare();
-      keys.mockClear();
-      const stable = prepare();
-      expect(stable.topologySignature).toBe(first.topologySignature);
-      expect(keys).not.toHaveBeenCalled();
-      const slot = defined(f.input.scene.slots[0]);
-      const key = materialBindingKey(slot.snapshot, slot.snapshot.material.materialHandle ?? -1);
-      bindings.set(key, 'forward|probe:3');
-      const changed = prepare();
-      expect(changed.drawKeys).toEqual(first.drawKeys);
-      expect(f.production.inspect()).toMatchObject({
-        preparedBatchBuilds: 0,
-        filteredBatchBuilds: 1,
-        filteredPlanBuilds: 1,
-      });
-      keys.mockClear();
-      prepare();
-      expect(keys).not.toHaveBeenCalled();
-      expect(f.production.inspect().filteredPlanBuilds).toBe(0);
-    } finally {
-      keys.mockRestore();
       f.close();
     }
   });
@@ -572,13 +487,13 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
     const f = await fixture();
     try {
       const first = f.prepare();
-      expect(f.production.inspect().planRebuildCandidates).toBe(16);
+      expect(f.production.inspect().planRebuildCandidates).toBe(0);
       const epochs = f.meshes.map((entry) => entry.contentEpoch);
       f.unrelatedUpload();
       expect(f.meshes.map((entry) => entry.contentEpoch)).toEqual(epochs);
       const next = f.prepare();
-      expect(next.drawKeys).toEqual(first.drawKeys);
-      expect(next.ownsAllDrawItems).toBe(first.ownsAllDrawItems);
+      expect(next.selection.has(defined(f.input.scene.slots.at(0)).snapshot, 0)).toBe(true);
+      expect(first.selection.has(defined(f.input.scene.slots.at(0)).snapshot, 0)).toBe(true);
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 0,
         planRebuildCandidates: 0,
@@ -592,47 +507,59 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
   it('invalidates only the changed batch for in-place writes and resident replacement', async () => {
     const f = await fixture();
     try {
-      // Acquire private writable buffers before exercising exclusive in-place writes.
-      const source = defined(f.pods[0]);
-      f.store.updateMesh(
-        defined(f.handles[0]),
-        source.vertices,
-        new Uint16Array(defined(source.indices)),
-        f.world,
-      );
-      f.meshes[0] = defined(f.store.getMeshGpuHandles(defined(f.handles[0]), f.world));
-      f.bySlot.set(0, f.meshes[0]);
       f.prepare();
       const handle = defined(f.handles[0]),
         entry = defined(f.meshes[0]),
         pod = defined(f.pods[0]);
       const firstEpoch = entry.contentEpoch;
-      const vertices = new Float32Array(pod.vertices);
-      vertices[0] = (vertices[0] ?? 0) + 0.25;
-      f.store.updateMesh(handle, vertices, new Uint16Array(defined(pod.indices)), f.world);
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBe(entry);
+      const position = pod.attributes.position;
+      if (!(position instanceof Float32Array)) throw new Error('Expected box position attribute');
+      const movedPosition = new Float32Array(position);
+      for (let index = 0; index < movedPosition.length; index += 3)
+        movedPosition[index] = (movedPosition[index] ?? 0) + 0.25;
+      editResidentMesh(
+        f.assets,
+        f.store,
+        handle,
+        () => {
+          f.assets
+            .writeRange(handle, { attribute: 'position', first: 0, values: movedPosition })
+            .unwrap();
+        },
+        worldRenderResources(f.world),
+      );
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBe(entry);
       expect(entry.contentEpoch).toBeGreaterThan(firstEpoch);
       const writtenEpoch = entry.contentEpoch;
       f.prepare();
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 1,
-        planRebuildCandidates: 8,
+        planRebuildCandidates: 0,
       });
-      const expanded = new Float32Array(vertices.length * 2);
-      expanded.set(vertices);
-      expanded.set(vertices, vertices.length);
-      f.store.updateMesh(handle, expanded, new Uint16Array(defined(pod.indices)), f.world);
-      const replacement = defined(f.store.getMeshGpuHandles(handle, f.world));
+      const accepted = runtimeAssets(f.assets)
+        .borrow<import('@forgeax/engine-types').MeshAsset>(handle)
+        .unwrap();
+      editResidentMesh(
+        f.assets,
+        f.store,
+        handle,
+        () => {
+          f.assets.replace(handle, duplicateMeshVertices(accepted)).unwrap();
+        },
+        worldRenderResources(f.world),
+      );
+      const replacement = defined(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world)));
       expect(replacement).not.toBe(entry);
       expect(replacement.contentEpoch).toBeGreaterThan(writtenEpoch);
       expect(replacement.vertexBuffer).not.toBe(entry.vertexBuffer);
       expect(entry.vertexBuffer.isDestroyed).toBe(true);
-      expect(entry.indexBuffer?.isDestroyed).toBe(true);
+      expect(replacement.indexBuffer).toBe(entry.indexBuffer);
+      expect(entry.indexBuffer?.isDestroyed).toBe(false);
       f.bySlot.set(0, replacement);
       f.prepare();
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 1,
-        planRebuildCandidates: 8,
+        planRebuildCandidates: 0,
       });
     } finally {
       f.close();
@@ -644,23 +571,26 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
     try {
       const first = f.prepare();
       const handle = defined(f.handles[0]);
-      const entry = defined(f.store.getMeshGpuHandles(handle, f.world));
+      const entry = defined(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world)));
       f.bySlot.delete(0);
       const missing = f.prepare();
-      expect(defined(missing.drawKeys).size).toBe(defined(first.drawKeys).size / 2);
+      const sources = f.input.scene.slots.map((slot) => slot.snapshot);
+      expect(first.selection.has(defined(sources[0]), 0)).toBe(true);
+      expect(missing.selection.has(defined(sources[0]), 0)).toBe(false);
+      expect(missing.selection.has(defined(sources[1]), 0)).toBe(true);
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 1,
-        planRebuildCandidates: 8,
+        planRebuildCandidates: 0,
       });
       f.unrelatedUpload();
       f.prepare();
       expect(f.production.inspect().preparedBatchBuilds).toBe(0);
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBe(entry);
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBe(entry);
       f.bySlot.set(0, entry);
-      expect(f.prepare().drawKeys).toEqual(first.drawKeys);
+      expect(f.prepare().selection.has(defined(sources[0]), 0)).toBe(true);
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 1,
-        planRebuildCandidates: 8,
+        planRebuildCandidates: 0,
       });
     } finally {
       f.close();
@@ -673,10 +603,12 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       f.prepare();
       const handle = defined(f.handles[0]),
         old = defined(f.meshes[0]);
-      f.store.evictMesh(handle, f.world);
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBeUndefined();
+      f.store.evictMesh(handle, worldRenderResources(f.world));
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBeUndefined();
       expect(old.vertexBuffer.isDestroyed).toBe(true);
-      const reinserted = f.store.ensureResident(handle, defined(f.pods[0]), f.world).unwrap();
+      const reinserted = f.store
+        .ensureResident(handle, defined(f.pods[0]), worldRenderResources(f.world))
+        .unwrap();
       expect(reinserted).not.toBe(old);
       expect(reinserted.contentEpoch).toBeGreaterThan(old.contentEpoch);
       f.bySlot.set(0, reinserted);
@@ -684,20 +616,26 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       expect(f.production.inspect().preparedBatchBuilds).toBe(1);
       const beforeConfigure = reinserted.contentEpoch;
       f.configure();
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBe(reinserted);
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBe(reinserted);
       expect(reinserted.contentEpoch).toBe(beforeConfigure);
       f.prepare();
       expect(f.production.inspect().preparedBatchBuilds).toBe(0);
       const previous = [...f.bySlot.values()];
       f.store.destroyAll();
       for (const ownedHandle of f.handles)
-        expect(f.store.getMeshGpuHandles(ownedHandle, f.world)).toBeUndefined();
+        expect(
+          f.store.getMeshGpuHandles(ownedHandle, worldRenderResources(f.world)),
+        ).toBeUndefined();
       for (const entry of previous) expect(entry.vertexBuffer.isDestroyed).toBe(true);
       f.bySlot.clear();
       f.configure();
       for (let index = 0; index < f.pods.length; index++) {
         const entry = f.store
-          .ensureResident(defined(f.handles[index]), defined(f.pods[index]), f.world)
+          .ensureResident(
+            defined(f.handles[index]),
+            defined(f.pods[index]),
+            worldRenderResources(f.world),
+          )
           .unwrap();
         expect(entry).not.toBe(previous[index]);
         expect(entry.contentEpoch).toBeGreaterThan(defined(previous[index]).contentEpoch);
@@ -706,7 +644,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       f.prepare();
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 2,
-        planRebuildCandidates: 16,
+        planRebuildCandidates: 0,
       });
       f.unrelatedUpload();
       f.prepare();
@@ -718,159 +656,21 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
 });
 
 describe('GPU preparation pass dependencies before partitioning', () => {
-  it('observes custom binding iteration before preparation callbacks on every invocation', async () => {
-    const f = await fixture();
-    try {
-      const trace: string[] = [];
-      const bindings = new Map<string, string>();
-      const iterator = bindings[Symbol.iterator].bind(bindings);
-      const get = bindings.get.bind(bindings);
-      Object.defineProperty(bindings, 'get', {
-        value: (key: string) => {
-          trace.push('get');
-          return get(key);
-        },
-      });
-      Object.defineProperty(bindings, Symbol.iterator, {
-        configurable: true,
-        value: () => {
-          trace.push('iterate');
-          return iterator();
-        },
-      });
-      const prepare = () => {
-        const frame = defined(
-          f.production
-            .prepare({
-              ...f.input,
-              materialBindingClasses: bindings,
-              profilePhase: (phase, action) => {
-                trace.push(phase);
-                return action();
-              },
-            })
-            .unwrap(),
-        );
-        frame._commitResourceReplacement();
-        return frame;
-      };
-      const first = prepare();
-      expect(trace).toContain('get');
-      trace.length = 0;
-      const next = prepare();
-      expect(trace[0]).toBe('iterate');
-      expect(trace.filter((event) => event === 'iterate')).toHaveLength(1);
-      // Legacy warm filtering does not add observations of a caller's get method.
-      expect(trace).not.toContain('get');
-      expect(next.topologySignature).toBe(first.topologySignature);
-      expect(f.production.inspect().filteredPlanBuilds).toBe(0);
-      trace.length = 0;
-      bindings.set('unconsumed', 'changed');
-      const changed = prepare();
-      // Raw collection changes retain the original projection callback path,
-      // while their unused entries remain outside the compiled graph identity.
-      expect(trace).toContain('record/gpu-driven-prepare/filter/main-plan/groups/key');
-      expect(trace).toContain('record/gpu-driven-prepare/filter/shadow-plan');
-      expect(changed.topologySignature).toBe(first.topologySignature);
-      const failure = new Error('first-iterator-error');
-      Object.defineProperty(bindings, Symbol.iterator, {
-        configurable: true,
-        value: () => {
-          throw failure;
-        },
-      });
-      trace.length = 0;
-      expect(prepare).toThrow(failure);
-      expect(trace).toEqual([]);
-    } finally {
-      f.close();
-    }
-  });
-
-  it('keeps compiled raster identity independent of live binding-map order and unconsumed entries', async () => {
-    const f = await fixture();
-    try {
-      const bindings = new Map<string, string>(
-        f.input.scene.slots.map((slot) => [
-          materialBindingKey(slot.snapshot, slot.snapshot.material.materialHandle ?? -1),
-          'forward|probe:2',
-        ]),
-      );
-      const prepare = (materialBindingClasses: ReadonlyMap<string, string>) => {
-        const frame = defined(
-          f.production.prepare({ ...f.input, materialBindingClasses }).unwrap(),
-        );
-        frame._commitResourceReplacement();
-        return frame;
-      };
-      const first = prepare(bindings);
-      const signature = first.topologySignature;
-      const reordered = new Map([...bindings].reverse());
-      reordered.set('99:9999:12345', 'unconsumed-class');
-      const next = prepare(reordered);
-      expect(next.drawKeys).toEqual(first.drawKeys);
-      expect(f.production.inspect()).toMatchObject({
-        preparedBatchBuilds: 0,
-        filteredBatchBuilds: 0,
-        filteredPlanBuilds: 0,
-      });
-      // Unconsumed entries and insertion order affect neither filtering nor
-      // the compiled graph; actual consumed values remain observed.
-      expect(next.topologySignature).toBe(signature);
-      const slot = defined(f.input.scene.slots[0]);
-      reordered.set(
-        materialBindingKey(slot.snapshot, slot.snapshot.material.materialHandle ?? -1),
-        'forward|probe:3',
-      );
-      const changed = prepare(reordered);
-      expect(f.production.inspect().filteredBatchBuilds).toBeGreaterThan(0);
-      expect(changed.topologySignature).toBe(signature);
-      expect(changed.drawKeys).toEqual(first.drawKeys);
-      // Shader/material artifact mutation remains an independent graph fence.
-      const main = { ...defined(f.input.standardPbrArtifact), fragmentEntry: 'changed-entry' };
-      const changedArtifact = defined(
-        f.production
-          .prepare({ ...f.input, standardPbrArtifact: main, materialBindingClasses: reordered })
-          .unwrap(),
-      );
-      expect(changedArtifact.topologySignature).not.toBe(signature);
-      changedArtifact._commitResourceReplacement();
-      const handle = defined(f.handles[0]);
-      f.store.evictMesh(handle, f.world);
-      const replacement = f.store.ensureResident(handle, defined(f.pods[0]), f.world).unwrap();
-      f.bySlot.set(0, replacement);
-      const changedResource = prepare(reordered);
-      expect(changedResource.topologySignature).not.toBe(signature);
-      const failure = new Error('binding-iterator-failure');
-      const throwing = new Map<string, string>();
-      Object.defineProperty(throwing, Symbol.iterator, {
-        value: () => {
-          throw failure;
-        },
-      });
-      let caught: unknown;
-      try {
-        prepare(throwing);
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBe(failure);
-    } finally {
-      f.close();
-    }
-  });
-
   it('observes mutable shadow programs and fails closed on removal without replacing the main graph', async () => {
     const f = await fixture();
     try {
-      const main = defined(f.input.standardPbrArtifact);
+      const main = defined(f.input.materialArtifact);
       const shadow = { ...main, pass: 'shadow', program: createMaterialShaderProgram('shadow-a') };
-      const key = artifactKey(defined(f.input.scene.plan.batches[0]));
+      const key = artifactKey(defined(f.input.scene.plan.batches.at(0)));
       const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>([[key, shadow]]);
       const identity = { kind: 'directional', index: 0, layer: 'static' } as const;
       const views = [{ identity, planes: new Float32Array(24), candidatePrimitiveIndices: [0, 1] }];
       const prepare = () =>
-        defined(f.production.prepare({ ...f.input, shadowMaterialArtifacts }).unwrap());
+        defined(
+          f.production
+            .prepare(admitGpuFixture({ ...f.input, shadowMaterialArtifacts, shadowViews: true }))
+            .unwrap(),
+        );
       const first = prepare();
       first.updateShadowViews?.(views).unwrap();
       const signature = first.topologySignature;
@@ -891,23 +691,19 @@ describe('GPU preparation pass dependencies before partitioning', () => {
         expect(projection).not.toBe(original?.get(batch));
         expect(projection.shadowArtifact.program).toBe(shadow.program);
       }
-      expect(next.drawKeys).toEqual(first.drawKeys);
-      expect(next.ownsAllDrawItems).toBe(first.ownsAllDrawItems);
+      expect(next.selection.has(defined(f.input.scene.slots.at(0)).snapshot, 0)).toBe(true);
+      expect(first.selection.has(defined(f.input.scene.slots.at(0)).snapshot, 0)).toBe(true);
       expect(f.production.inspect()).toMatchObject({
-        preparedBatchBuilds: 0,
+        preparedBatchBuilds: 2,
         filteredPlanBuilds: 0,
       });
       next._commitResourceReplacement();
       shadowMaterialArtifacts.delete(key);
-      const removed = prepare();
-      const rejected = defined(removed.updateShadowViews?.(views));
-      expect(rejected.ok).toBe(false);
-      expect(removed.shadowViewPool?.cacheState(identity)).toBe('invalidated');
-      removed._abortResourceReplacement?.();
+      expect(prepare).toThrowError(expect.objectContaining({ code: 'missing-material-receipt' }));
       shadowMaterialArtifacts.set(key, shadow);
       const retry = prepare();
       retry.updateShadowViews?.(views).unwrap();
-      expect(retry.shadowViewPool?.cacheState(identity)).toBe('invalidated');
+      expect(retry.shadowViewPool?.cacheState(identity)).toBe('hit');
       expect(retry.topologySignature).toBe(signature);
       retry._commitResourceReplacement();
     } finally {
@@ -915,16 +711,13 @@ describe('GPU preparation pass dependencies before partitioning', () => {
     }
   });
 
-  it('still observes mutable main entry metadata and effective binding classes', async () => {
+  it('observes selected program entry changes without rebuilding unchanged geometry', async () => {
     const f = await fixture();
     try {
-      const main = { ...defined(f.input.standardPbrArtifact), fragmentEntry: 'fs-a' };
-      const materialBindingClasses = new Map<string, string>();
+      const main = { ...defined(f.input.materialArtifact), fragmentEntry: 'fs-a' };
       const prepare = () => {
         const frame = defined(
-          f.production
-            .prepare({ ...f.input, standardPbrArtifact: main, materialBindingClasses })
-            .unwrap(),
+          f.production.prepare(admitGpuFixture({ ...f.input, materialArtifact: main })).unwrap(),
         );
         frame._commitResourceReplacement();
         return frame;
@@ -934,20 +727,10 @@ describe('GPU preparation pass dependencies before partitioning', () => {
       expect(f.production.inspect().filteredPlanBuilds).toBe(0);
       main.fragmentEntry = 'fs-b';
       const changed = prepare();
-      expect(changed.drawKeys).toEqual(first.drawKeys);
+      expect(changed.selection.has(defined(f.input.scene.slots.at(0)).snapshot, 0)).toBe(true);
       expect(changed.topologySignature).not.toBe(first.topologySignature);
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 2,
-        filteredPlanBuilds: 1,
-      });
-      const slot = defined(f.input.scene.slots[0]);
-      materialBindingClasses.set(
-        materialBindingKey(slot.snapshot, slot.snapshot.material.materialHandle ?? -1),
-        'forward|probe:2',
-      );
-      prepare();
-      expect(f.production.inspect()).toMatchObject({
-        preparedBatchBuilds: 0,
         filteredPlanBuilds: 1,
       });
     } finally {
@@ -957,13 +740,7 @@ describe('GPU preparation pass dependencies before partitioning', () => {
 });
 
 function artifactKey(batch: GpuDrivenBatch): string {
-  const prepared = defined(batch.prepared);
-  return gpuDrivenMaterialArtifactKey({
-    material: prepared.identity.material,
-    deformation: prepared.identity.deformation,
-    receiptIdentity: prepared.receiptIdentity,
-    receiptGeneration: prepared.receiptGeneration,
-  });
+  return defined(batch.binding?.material.snapshot.materialShaderId);
 }
 
 function projectFacts(frame: PreparedGpuDrivenFrame) {
@@ -999,14 +776,16 @@ describe('selected GPU material graph dependencies', () => {
   it('retains the graph and shadow filtering when unconsumed publication entries change', async () => {
     const f = await fixture();
     try {
-      const artifact = defined(f.input.standardPbrArtifact);
+      const artifact = defined(f.input.materialArtifact);
       const materialArtifacts = new Map(
         f.input.scene.plan.batches.map((batch) => [artifactKey(batch), artifact]),
       );
       const shadowMaterialArtifacts = new Map(materialArtifacts);
       const prepare = () => {
         const frame = defined(
-          f.production.prepare({ ...f.input, materialArtifacts, shadowMaterialArtifacts }).unwrap(),
+          f.production
+            .prepare(admitGpuFixture({ ...f.input, materialArtifacts, shadowMaterialArtifacts }))
+            .unwrap(),
         );
         frame._commitResourceReplacement();
         return frame;
@@ -1038,10 +817,10 @@ describe('selected GPU material graph dependencies', () => {
     }
   });
 
-  it('keeps graph identity when retiring the first receiver changes only the collector fallback', async () => {
+  it('retains shared executions and graph when one repeated material consumer retires', async () => {
     const f = await fixture([0, 1, 0]);
     try {
-      const main = defined(f.input.standardPbrArtifact);
+      const main = defined(f.input.materialArtifact);
       const second = {
         ...main,
         material: 'fixture::second-material',
@@ -1075,7 +854,7 @@ describe('selected GPU material graph dependencies', () => {
         pipeline: f.device
           .createRenderPipeline({
             label: material,
-            layout: defined(f.input.standardPbrPipelineState?.gpuDrivenPbrPipelineLayout),
+            layout: defined(f.input.materialPipelineState?.gpuDrivenPbrPipelineLayout),
             vertex: {
               module: f.shader,
               entryPoint: vertexEntry ?? sceneEntry ?? 'vs_scene',
@@ -1090,25 +869,28 @@ describe('selected GPU material graph dependencies', () => {
           .unwrap(),
       });
       const prepare = () => {
-        const selected = collectGpuDrivenMaterialArtifacts({
-          rows: f.projection
-            .slotsSnapshot()
-            .map((slot, renderableIndex) => ({ source: slot.snapshot, renderableIndex })),
-          dispatch: [],
-          resolve: (material) => (material === main.material ? main : second),
-          clustered: false,
-          reflectionFallback: false,
-          shadowViews: false,
+        const selected = admitGpuFixture({
+          ...f.input,
+          materialArtifacts: new Map([
+            [main.material, main],
+            [second.material, second],
+          ]),
         });
-        expect(selected.materialArtifacts.size).toBe(2);
+        expect(defined(selected.materialArtifacts).size).toBe(2);
         const frame = defined(
           f.production
-            .prepare({
-              ...f.input,
-              materialPipelineFactory,
-              materialArtifacts: selected.materialArtifacts,
-              materialArtifact: defined(selected.firstArtifact),
-            })
+            .prepare(
+              admitGpuFixture({
+                ...f.input,
+                ...selected,
+                materialPipelineFactory,
+                materialArtifacts: new Map([
+                  [main.material, main],
+                  [second.material, second],
+                ]),
+                materialArtifact: defined(selected.materialArtifacts?.values().next().value),
+              }),
+            )
             .unwrap(),
         );
         frame._commitResourceReplacement();
@@ -1126,13 +908,11 @@ describe('selected GPU material graph dependencies', () => {
       const delta = f.projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.plan();
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
       f.input.scene.slots = f.projection.slotsSnapshot();
       const next = prepare();
-      expect(next.selected.firstArtifact?.material).toBe(second.material);
-      expect(first.selected.firstArtifact?.material).toBe(main.material);
-      expect([...next.selected.materialArtifacts.keys()].sort()).toEqual(
-        [...first.selected.materialArtifacts.keys()].sort(),
+      expect([...defined(next.selected.materialArtifacts).keys()].sort()).toEqual(
+        [...defined(first.selected.materialArtifacts).keys()].sort(),
       );
       expect(f.input.scene.plan.candidateCount).toBe(16);
       expect(
@@ -1157,12 +937,12 @@ describe('selected GPU material graph dependencies', () => {
   it('ignores an unconsumed Surface publication with a required dynamic page', async () => {
     const f = await fixture();
     try {
-      const main = defined(f.input.standardPbrArtifact);
+      const main = defined(f.input.materialArtifact);
       const materialArtifacts = new Map(
         f.input.scene.plan.batches.map((batch) => [artifactKey(batch), main]),
       );
       const prepare = () =>
-        defined(f.production.prepare({ ...f.input, materialArtifacts }).unwrap());
+        defined(f.production.prepare(admitGpuFixture({ ...f.input, materialArtifacts })).unwrap());
       const first = prepare(),
         signature = first.topologySignature,
         facts = projectFacts(first);
@@ -1211,21 +991,33 @@ describe('selected GPU material graph dependencies', () => {
     const f = await fixture();
     const allocator = createSkinPaletteAllocator(f.device, 1 << 20);
     try {
-      const main = defined(f.input.standardPbrArtifact);
+      const main = defined(f.input.materialArtifact);
       const receipt = createStandardPbrArtifactReceipt(true);
-      const skinArtifact = { ...main, receipt };
-      const source = defined(f.input.scene.slots[1]).snapshot;
+      const skinArtifact = { ...main, material: 'forgeax::pbr-skin', receipt };
+      const source = defined(f.input.scene.slots.at(1)).snapshot;
       const skin = allocator.allocatePersistentSlice({
         identity: 'fixture-skin',
         generation: 1,
         jointCount: 1,
         bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
       });
+      const material = new MaterialResource({
+        ...source.material.snapshot,
+        materialShaderId: skinArtifact.material,
+        materialProgramKeys: { forward: skinArtifact.material, shadow: skinArtifact.material },
+      });
       const snapshot: RenderableSnapshot = {
         ...source,
+        material,
+        materials: [material],
         skin,
         gpuDrivenDraws: defined(source.gpuDrivenDraws).map((draw) => ({
           ...draw,
+          geometry: {
+            ...draw.geometry,
+            deformation: 'skin',
+            receipt: { ...draw.geometry.receipt, vertexInputs: receipt.vertexInputs },
+          },
           prepared: {
             ...defined(draw.prepared),
             identity: { ...defined(draw.prepared).identity, deformation: 'skin' },
@@ -1239,15 +1031,15 @@ describe('selected GPU material graph dependencies', () => {
       ]);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.plan();
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
       f.input.scene.slots = f.projection.slotsSnapshot();
       const materialArtifacts = new Map(
         f.input.scene.plan.batches.map((batch) => [
           artifactKey(batch),
-          batch.prepared?.identity.deformation === 'skin' ? skinArtifact : main,
+          batch.binding?.geometry.deformation === 'skin' ? skinArtifact : main,
         ]),
       );
-      const state = defined(f.input.standardPbrPipelineState);
+      const state = defined(f.input.materialPipelineState);
       const skinLayout = f.device
         .createBindGroupLayout({
           entries: [
@@ -1256,21 +1048,33 @@ describe('selected GPU material graph dependencies', () => {
           ],
         })
         .unwrap();
-      const standardPbrPipelineState = {
+      const materialPipelineState = {
         ...state,
         skinPaletteAllocator: allocator,
+        gpuDrivenPbrPrograms: new Map([
+          ...defined(state.gpuDrivenPbrPrograms),
+          [
+            defined(standardPbrProgramKey(skinArtifact.material)),
+            {
+              module: defined([...defined(state.gpuDrivenPbrPrograms).values()][0]).module,
+              artifact: skinArtifact,
+            },
+          ],
+        ]),
         gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
         pbrSkinMeshBindGroupLayout: skinLayout,
       };
       const prepare = (materialSkinArtifact: MaterialShaderArtifact) =>
         defined(
           f.production
-            .prepare({
-              ...f.input,
-              materialArtifacts,
-              standardPbrPipelineState,
-              materialSkinArtifact,
-            })
+            .prepare(
+              admitGpuFixture({
+                ...f.input,
+                materialArtifacts,
+                materialPipelineState,
+                materialSkinArtifact,
+              }),
+            )
             .unwrap(),
         );
       const first = prepare({ ...skinArtifact, layoutIdentity: 'unused-invalid-layout' });
@@ -1290,7 +1094,7 @@ describe('selected GPU material graph dependencies', () => {
   it('observes selected shadow programs across unsubmitted replacement, reversal and abort', async () => {
     const f = await fixture();
     try {
-      const main = defined(f.input.standardPbrArtifact);
+      const main = defined(f.input.materialArtifact);
       const a = { ...main, pass: 'shadow', program: createMaterialShaderProgram('shadow-a') };
       const b = {
         ...a,
@@ -1305,7 +1109,9 @@ describe('selected GPU material graph dependencies', () => {
         for (const key of shadowMaterialArtifacts.keys())
           shadowMaterialArtifacts.set(key, artifact);
         const frame = defined(
-          f.production.prepare({ ...f.input, shadowMaterialArtifacts }).unwrap(),
+          f.production
+            .prepare(admitGpuFixture({ ...f.input, shadowMaterialArtifacts, shadowViews: true }))
+            .unwrap(),
         );
         frame
           .updateShadowViews?.([
@@ -1321,9 +1127,9 @@ describe('selected GPU material graph dependencies', () => {
           (byBatch) => [...byBatch.values()],
         );
         expect(projections.length).toBeGreaterThan(0);
-        expect(projections.every((projection) => projection.shadowArtifact === artifact)).toBe(
-          true,
-        );
+        expect(
+          projections.every((projection) => projection.shadowArtifact.program === artifact.program),
+        ).toBe(true);
         return frame;
       };
       const first = prepare(a),
@@ -1334,7 +1140,8 @@ describe('selected GPU material graph dependencies', () => {
       expect(second.shadowViewPool?.cacheState({ kind: 'directional', index: 0 })).toBe(
         'invalidated',
       );
-      expect(f.production.inspect().filteredBatchBuilds).toBe(0);
+      expect(f.production.inspect().filteredBatchBuilds).toBe(2);
+      second._abortResourceReplacement?.();
       const restored = prepare(a);
       expect(restored.topologySignature).toBe(second.topologySignature);
       expect(restored.shadowViewPool?.cacheState({ kind: 'directional', index: 0 })).toBe(
@@ -1362,7 +1169,7 @@ describe('selected GPU material graph dependencies', () => {
     const f = await fixture();
     try {
       const artifact = {
-        ...defined(f.input.standardPbrArtifact),
+        ...defined(f.input.materialArtifact),
         vertexEntry: 'vs-before',
         fragmentEntry: 'fs-before',
       };
@@ -1370,7 +1177,7 @@ describe('selected GPU material graph dependencies', () => {
         f.input.scene.plan.batches.map((batch) => [artifactKey(batch), artifact]),
       );
       const prepare = () =>
-        defined(f.production.prepare({ ...f.input, materialArtifacts }).unwrap());
+        defined(f.production.prepare(admitGpuFixture({ ...f.input, materialArtifacts })).unwrap());
       const first = prepare(),
         signature = first.topologySignature;
       projectFacts(first);

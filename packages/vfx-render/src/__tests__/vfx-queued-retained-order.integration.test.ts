@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -20,6 +22,8 @@ import {
   renderFeaturePlanSignature,
 } from '../../../render/src/features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
+import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 
 const camera = {
@@ -36,7 +40,7 @@ const layout = {
   customLayout: { name: 'VfxCustom', fields: [], size: 0, alignment: 1, stride: 0, lanes: 0 },
   fingerprint: 'sha256:controlled-layout',
 };
-const effect = {
+const rawEffect = {
   guid: 'controlled-layout',
   kind: 'particle-effect',
   schemaVersion: 3,
@@ -90,12 +94,31 @@ const effect = {
     ],
   },
 } as unknown as VfxGpuEffectAsset;
+const effect = await cookedEffectFixture(rawEffect);
 
 function describePlan(plan: RenderFeatureWorkPlan) {
   return {
     resourceOrder: plan.resources.map((r) => r.name),
     passOrder: plan.passes.map((p) => p.name),
     activePassOrder: plan.passes.filter((p) => p.enabled !== false).map((p) => p.name),
+    simulationBindings: plan.passes.flatMap((pass) =>
+      pass.kind === 'compute' && pass.enabled !== false
+        ? pass.dispatches
+            .filter(
+              (dispatch) =>
+                /^forgeax_vfx_update(?:_compact)?_main$/.test(dispatch.entryPoint) &&
+                (dispatch.kind !== 'direct' || dispatch.workgroups[0] > 0),
+            )
+            .map((dispatch) => dispatch.bindings ?? pass.bindings)
+        : [],
+    ),
+    resetParticles: plan.passes.flatMap((pass) =>
+      pass.kind === 'copy' && pass.enabled !== false
+        ? pass.copies
+            .filter((copy) => copy.enabled !== false && copy.destination.endsWith('.particles'))
+            .map((copy) => copy.destination)
+        : [],
+    ),
     rasterDrawOrder: plan.passes.flatMap((p) =>
       p.kind === 'raster' ? p.draws.map((draw) => draw.program) : [],
     ),
@@ -113,8 +136,10 @@ function describePlan(plan: RenderFeatureWorkPlan) {
 }
 
 it('distinguishes actual managed VFX queued/retained ordering from tick-count topology', async () => {
-  const world = new World();
-  const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+  const world = new World({ assets: new AssetRegistry() });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, effect))
+    .unwrap();
   const players = Array.from({ length: 2 }, (_, i) =>
     world
       .spawn({
@@ -180,8 +205,12 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
     world.set(firstPlayer, ParticleEffectPlayer, { timeScale: 0 }).unwrap();
     world.update(1 / 60).unwrap();
     const one = frame(2, 'first-retained-second-queued');
-    expect(both.frame.activePassOrder).toHaveLength(4);
-    expect(one.frame.activePassOrder).toHaveLength(1);
+    expect(both.frame.simulationBindings).toHaveLength(2);
+    expect(new Set(both.frame.simulationBindings).size).toBe(2);
+    expect(both.frame.resetParticles).toHaveLength(2);
+    expect(new Set(both.frame.resetParticles).size).toBe(2);
+    expect(one.frame.simulationBindings).toHaveLength(1);
+    expect(one.frame.resetParticles).toEqual([]);
     expect(one.view.resources).toEqual(both.view.resources);
     expect(one.view.passes).not.toEqual(both.view.passes);
     expect(one.view.rasterDrawOrder).toEqual([...both.view.rasterDrawOrder].reverse());
@@ -221,8 +250,8 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
   }
 });
 
-it('keeps actual managed module admission/retirement snapshots exact with call-local tokens', async () => {
-  const world = new World();
+it('keeps managed module snapshots exact without reserializing shared programs', async () => {
+  const world = new World({ assets: new AssetRegistry() });
   const asset = (tag: string): VfxGpuEffectAsset => ({
     ...effect,
     guid: tag,
@@ -232,12 +261,14 @@ it('keeps actual managed module admission/retirement snapshots exact with call-l
       fingerprint: `sha256:${tag}`,
       emitters: effect.program.emitters.map((emitter) => ({
         ...emitter,
-        wgsl: `// controlled layout ${tag}\n`.repeat(1000),
+        wgsl: `// controlled layout ${tag}\n`.repeat(1000) + emitter.wgsl,
       })),
     },
   });
   const handles = ['first', 'second', 'third'].map((tag) =>
-    world.allocSharedRef('ParticleEffectAsset', asset(tag)),
+    runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, asset(tag)))
+      .unwrap(),
   );
   const sharedHandles = handles.slice(0, 2);
   const thirdHandle = handles[2];
@@ -306,13 +337,17 @@ it('keeps actual managed module admission/retirement snapshots exact with call-l
       batch.frame.onSubmitted();
       for (const view of batch.views.values()) view.onSubmitted();
       batch.onSubmitted();
-      return metrics;
+      // The real host already admitted these immutable programs. Further signature
+      // snapshots must use the owned nodes instead of scanning shader bodies.
+      expect(metrics.serializedCharacters).toBe(0);
+      expect(metrics.hits).toBe(0);
+      return plans[0]?.resources.filter((resource) => resource.kind === 'compute-program').length;
     } finally {
       for (const lease of batch.preparedResourceBatches) lease.release().unwrap();
     }
   };
   try {
-    expect(frame(1).hits).toBe(28);
+    expect(frame(1)).toBe(2);
     const added = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -324,23 +359,27 @@ it('keeps actual managed module admission/retirement snapshots exact with call-l
         },
       })
       .unwrap();
-    expect(frame(2).hits).toBe(0);
+    expect(frame(2)).toBe(3);
     const retired = players[0];
     if (retired === undefined) throw new Error('Missing first managed player');
     world.despawn(retired).unwrap();
-    expect(frame(3).hits).toBe(26);
+    expect(frame(3)).toBe(3);
     world.set(added, ParticleEffectPlayer, { timeScale: 0 }).unwrap();
-    expect(frame(4).hits).toBe(0);
-    const changed = world.allocSharedRef('ParticleEffectAsset', asset('changed-wgsl'));
+    expect(frame(4)).toBe(3);
+    const changed = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, asset('changed-wgsl')))
+      .unwrap();
     world.set(added, ParticleEffectPlayer, { effect: changed, timeScale: 1 }).unwrap();
-    expect(frame(5).hits).toBe(0);
+    expect(frame(5)).toBe(3);
     for (const player of [...players.slice(1), added]) world.despawn(player).unwrap();
     for (let index = 0; index < 16; index++) {
       world
         .spawn({
           component: ParticleEffectPlayer,
           data: {
-            effect: world.allocSharedRef('ParticleEffectAsset', asset(`unique-${index}`)),
+            effect: runtimeAssetRegistry(world.assets)
+              .create(runtimeEffectFixture(world, asset(`unique-${index}`)))
+              .unwrap(),
             playing: true,
             seed: index + 1,
             timeScale: 1,
@@ -348,7 +387,7 @@ it('keeps actual managed module admission/retirement snapshots exact with call-l
         })
         .unwrap();
     }
-    expect(frame(6).hits).toBe(0);
+    expect(frame(6)).toBe(16);
   } finally {
     gpu.dispose().unwrap();
     host.dispose().unwrap();

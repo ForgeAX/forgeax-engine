@@ -46,13 +46,12 @@ export interface NativeCookTransactionOptions<P = unknown, I = unknown> {
   readonly publish?: (draft: NativeCookDraft<P>, generation: number) => void | Promise<void>;
 }
 
-export interface NativeCookTransactionResult<P = unknown> extends NativeCookTransactionSnapshot<P> {
-  readonly status: 'committed' | 'recovered';
-  readonly lastKnownGood: NativeCookDraft<P>;
-  readonly candidateGeneration: number;
-  readonly lastKnownGoodGeneration: number;
-  readonly recoveryHint?: string;
-}
+/** The accepted draft and generation are the sole snapshot, including after recovery. */
+export type NativeCookTransactionResult<P = unknown> = NativeCookTransactionSnapshot<P> &
+  (
+    | { readonly status: 'committed' }
+    | { readonly status: 'recovered'; readonly recoveryHint: string }
+  );
 
 function canonicalize(value: unknown): unknown {
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64');
@@ -117,9 +116,6 @@ function recovered<P>(
   return {
     ...previous,
     status: 'recovered',
-    lastKnownGood: previous.draft,
-    candidateGeneration: previous.generation + 1,
-    lastKnownGoodGeneration: previous.generation,
     recoveryHint: `repair ${key} and submit a new candidate generation`,
   };
 }
@@ -166,9 +162,14 @@ export class NativeCookerRegistry {
       return failure(key, { guid: 'unknown', producer: thrownProducer(error) });
     }
     if (
+      draft === null ||
+      typeof draft !== 'object' ||
+      typeof draft.guid !== 'string' ||
       draft.guid.length === 0 ||
+      typeof draft.inputFingerprint !== 'string' ||
       draft.inputFingerprint.length === 0 ||
       !Array.isArray(draft.refs) ||
+      draft.refs.some((ref) => typeof ref !== 'string') ||
       typeof draft.payload !== 'object' ||
       draft.payload === null ||
       typeof draft.artifacts !== 'object' ||
@@ -182,7 +183,10 @@ export class NativeCookerRegistry {
           !(artifact.bytes instanceof Uint8Array),
       )
     ) {
-      return failure(key, { guid: draft.guid || 'unknown', producer: key });
+      return failure(key, {
+        guid: typeof draft?.guid === 'string' && draft.guid.length > 0 ? draft.guid : 'unknown',
+        producer: key,
+      });
     }
     return ok(draft);
   }
@@ -231,27 +235,24 @@ export class NativeCookerRegistry {
         ? candidate
         : ok(recovered(options.key, options.previous));
     }
-    const invalidReason = options.validate?.(candidate.value);
-    if (invalidReason !== undefined) {
-      return options.previous === undefined
-        ? transactionFailure(options.key, invalidReason)
-        : ok(recovered(options.key, options.previous));
-    }
     const generation = (options.previous?.generation ?? 0) + 1;
     try {
+      const invalidReason = options.validate?.(candidate.value);
+      if (invalidReason !== undefined) {
+        return options.previous === undefined
+          ? transactionFailure(options.key, invalidReason)
+          : ok(recovered(options.key, options.previous));
+      }
       await options.publish?.(candidate.value, generation);
-    } catch {
+    } catch (error) {
       return options.previous === undefined
-        ? transactionFailure(options.key, 'atomic producer publication failed')
+        ? transactionFailure(options.key, thrownProducer(error))
         : ok(recovered(options.key, options.previous));
     }
     return ok({
       draft: candidate.value,
       generation,
       status: 'committed',
-      lastKnownGood: candidate.value,
-      candidateGeneration: generation,
-      lastKnownGoodGeneration: generation,
     });
   }
 }

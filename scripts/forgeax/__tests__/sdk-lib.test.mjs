@@ -1,5 +1,6 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import {
   access,
   chmod,
@@ -11,10 +12,14 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { runInNewContext } from 'node:vm';
+import { gzipSync } from 'node:zlib';
+import ts from 'typescript';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pnpmCommand } from '../../lib/pnpm-command.mjs';
@@ -22,6 +27,7 @@ import { sdkLauncherSource } from '../sdk-launcher.mjs';
 import {
   assertNoRetiredPackageFiles,
   detectPnpmStoreFormat,
+  fetchWithRetry,
   isPnpmSqliteStoreArtifact,
   mapConcurrent,
   normalizeLicenseReport,
@@ -1082,9 +1088,14 @@ describe('SDK verifier template contract', () => {
     expect(candidateWorkflow).toContain('--commit "$sha"');
     expect(candidateWorkflow).toContain('SDK candidates require successful same-commit CI');
     expect(candidateWorkflow).toContain('Build exact SDK candidate seed once');
-    expect(candidateWorkflow).toContain('consumer-gates:');
-    expect(candidateWorkflow).toContain('sdk-candidate-gate-npm-consumer-');
-    expect(candidateWorkflow).toContain('sdk-candidate-gate-archive-browser-');
+    expect(candidateWorkflow).toContain('Aggregate exact npm and archive owner receipts');
+    expect(candidateWorkflow).toContain('--expected-count 4 --merge-multiple');
+    expect(candidateWorkflow).toContain(
+      '--gate npm-consumer=artifacts/gates/consumers/npm-consumer.json',
+    );
+    expect(candidateWorkflow).toContain(
+      '--gate archive-browser=artifacts/gates/consumers/sdk-verify-result.json',
+    );
     expect(candidateWorkflow).toContain('reproducibility:');
     expect(candidateWorkflow).toContain('collision:');
     expect(candidateWorkflow).toContain('sdk-candidate.mjs seal');
@@ -1117,4 +1128,107 @@ describe('SDK verifier template contract', () => {
     expect(browserCheck).not.toContain('page.screenshot');
     expect(browserCheck).not.toContain('toDataURL');
   });
+});
+
+describe('SDK npm registry response lifetime', () => {
+  for (const script of ['build-sdk.mjs', 'check-sdk-npm-consumer.mjs', 'publish-sdk-npm.mjs']) {
+    it(`${script} handles a truncated upstream body and serves the next request`, async () => {
+      const source = await readFile(new URL(`../${script}`, import.meta.url), 'utf8');
+      const file = ts.createSourceFile(
+        script,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS,
+      );
+      let listener;
+      function visit(node) {
+        if (ts.isCallExpression(node) && node.expression.getText(file) === 'createServer') {
+          listener = node.arguments[0]?.getText(file);
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(file);
+      expect(listener).toBeDefined();
+      const accepted = [];
+      const payload = Buffer.from('{"name":"external-package"}');
+      const upstream = createServer((request, response) => {
+        accepted.push(request.headers.accept);
+        if (request.url === '/truncated') {
+          response.writeHead(200, { 'content-length': 100 });
+          response.write('partial');
+          setTimeout(() => response.destroy(), 20);
+        } else {
+          response.writeHead(request.url === '/missing' ? 404 : 200, {
+            'content-type': 'application/json',
+            'content-encoding': 'gzip',
+            'content-length': gzipSync(payload).byteLength,
+            'x-registry-response': 'retained',
+          });
+          response.end(gzipSync(payload));
+        }
+      });
+      const escaped = [];
+      const records = [];
+      let registry;
+      try {
+        await once(upstream.listen(0, '127.0.0.1'), 'listening');
+        // Execute each real CLI listener with only its npm origin redirected.
+        const handler = runInNewContext(`(${listener})`, {
+          Buffer,
+          Error,
+          URL,
+          archives: new Map(),
+          tarballs: new Map(),
+          fetchWithRetry: (input, init) =>
+            fetchWithRetry(
+              `http://127.0.0.1:${upstream.address().port}${new URL(input).pathname}`,
+              init,
+            ),
+          recordRegistryRequest: (_request, status, source) => records.push({ status, source }),
+        });
+        registry = createServer((request, response) => {
+          handler(request, response).catch((cause) => {
+            escaped.push(cause);
+            response.destroy();
+          });
+        });
+        await once(registry.listen(0, '127.0.0.1'), 'listening');
+        const url = `http://127.0.0.1:${registry.address().port}`;
+        const failed = await fetch(`${url}/truncated`).catch(() => undefined);
+        expect(escaped.map((cause) => cause.code ?? cause.message)).toEqual([]);
+        expect(failed?.status).toBe(502);
+        expect(await failed.text()).not.toBe('partial');
+        for (const [path, status] of [
+          ['/complete', 200],
+          ['/missing', 404],
+        ]) {
+          const response = await fetch(`${url}${path}`, {
+            headers: { accept: 'application/vnd.npm.install-v1+json' },
+          });
+          expect(response.status).toBe(status);
+          expect(response.headers.get('content-encoding')).toBeNull();
+          expect(response.headers.get('x-registry-response')).toBe('retained');
+          expect(Buffer.from(await response.arrayBuffer())).toEqual(payload);
+        }
+        expect(accepted.slice(1)).toEqual([
+          'application/vnd.npm.install-v1+json',
+          'application/vnd.npm.install-v1+json',
+        ]);
+        if (script === 'check-sdk-npm-consumer.mjs') {
+          expect(records).toEqual([
+            { status: 502, source: 'upstream-error' },
+            { status: 200, source: 'npmjs-upstream' },
+            { status: 404, source: 'npmjs-upstream' },
+          ]);
+        }
+      } finally {
+        for (const server of [registry, upstream]) {
+          if (server === undefined) continue;
+          server.closeAllConnections();
+          await new Promise((accept) => server.close(accept));
+        }
+      }
+    });
+  }
 });

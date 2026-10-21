@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { samplerContribution } from '@forgeax/engine-render';
 // apps/hello/sprite-lit/scripts/smoke-dawn.mjs
 //
 // feat-20260624-sprite-lit-shading-model-pure-2d-lighting M1' / w7.
@@ -31,6 +32,10 @@
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
@@ -44,7 +49,7 @@ const SPRITE_LIT_PARAMETERS = [
   { name: 'colorTint', type: 'vec4' },
   { name: 'region', type: 'vec4' },
   { name: 'pivotAndSize', type: 'vec4' },
-  { name: 'slicesAndMode', type: 'vec4' },
+  { name: 'slicesAndMode', type: 'vec4', default: [0, 0, 0, 0] },
   { name: 'baseColorTexture', type: 'texture' },
 ];
 
@@ -158,10 +163,7 @@ const {
 } = await import('@forgeax/engine-render');
 const { SPRITE_PREMULTIPLIED_ALPHA_BLEND } = await import('@forgeax/engine-render/authoring');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const CAMERA_PROJECTION_ORTHOGRAPHIC = 1;
 const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
@@ -203,10 +205,12 @@ const SPRITE_SLOTS = [
 ];
 
 let renderer;
+let assets;
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: ENGINE_MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
 } catch (err) {
   console.error(
     `[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -236,20 +240,28 @@ function expectOk(r, label) {
 }
 
 async function buildWorld({ includePoint, includeSpot }) {
-  const world = new World();
-  const textureHandle = world.allocSharedRef('TextureAsset', synthPod);
-  const samplerHandle = world.allocSharedRef('SamplerAsset', {
+  const world = new World({ assets: new AssetRegistry({ shaderRegistry: assets.shaderRegistry }) });
+  world.assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const textureHandle = world.assets.create(synthPod).unwrap();
+  const samplerHandle = world.assets.create({
     kind: 'sampler',
     magFilter: 'linear',
     minFilter: 'linear',
     addressModeU: 'clamp-to-edge',
     addressModeV: 'clamp-to-edge',
-  });
+  }).unwrap();
   // 4 sprite-lit material handles (one per slot for distinct tint).
   const matHandles = [];
   for (const slot of SPRITE_SLOTS) {
     matHandles.push(
-      world.allocSharedRef('MaterialAsset', {
+      world.assets.create({
         kind: 'material',
         passes: [
           {
@@ -270,7 +282,7 @@ async function buildWorld({ includePoint, includeSpot }) {
           region: [0, 0, 1, 1],
           pivotAndSize: [0.5, 0.5, 1, 1],
         },
-      }),
+      }).unwrap(),
     );
   }
 
@@ -329,7 +341,7 @@ async function buildWorld({ includePoint, includeSpot }) {
           data: {
             pos: [slot.pos[0], slot.pos[1], slot.pos[2]], quat: [0, 0, 0, 1], scale: [0.45, 0.45, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        { component: MeshFilter, data: { assetHandle: primitiveQuad } },
         { component: MeshRenderer, data: { materials: [mat] } },
       ),
       `spawn sprite-lit quad ${i}`,
@@ -337,7 +349,7 @@ async function buildWorld({ includePoint, includeSpot }) {
   }
 
   // 1 standard-PBR cube (AC-14 sanity).
-  const cubeMat = world.allocSharedRef('MaterialAsset', {
+  const cubeMat = world.assets.create({
     kind: 'material',
     passes: [
       {
@@ -347,7 +359,7 @@ async function buildWorld({ includePoint, includeSpot }) {
       },
     ],
     values: { baseColor: [0.7, 0.7, 0.75], metallic: 0.0, roughness: 0.8 },
-  });
+  }).unwrap();
   expectOk(
     world.spawn(
       {
@@ -355,7 +367,7 @@ async function buildWorld({ includePoint, includeSpot }) {
         data: {
           pos: [0.0, -0.6, 0.0], quat: [0, 0, 0, 1], scale: [0.3, 0.3, 0.3],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMat] } },
     ),
     'spawn cube',

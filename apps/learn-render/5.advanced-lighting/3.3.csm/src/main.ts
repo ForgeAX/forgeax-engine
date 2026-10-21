@@ -25,7 +25,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 
@@ -42,7 +42,7 @@ import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { replayCapturedFrameInBrowser } from '@forgeax/apps-shared/rhi-debug-browser-replay';
@@ -55,6 +55,8 @@ import {
   setCsmOverlaySplits,
   setCsmOverlayMode,
 } from './cascade-overlay';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Closed MVD profile vocabulary owned by the Engine-facing demo control. */
 export type CsmMvdProfile = 'off' | 'pcf3' | 'pcf5' | 'pcssMedium' | 'pcssHigh';
@@ -401,8 +403,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const renderer = app.renderer;
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   app.onError((error) => {
     console.error('[learn-render 5.3.3 csm] app.onError:', error.code, error.hint);
@@ -432,18 +438,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Wood floor material POJO.
-  const floorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const floorMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr', fragmentEntry: 'fs_main' }, renderState: { tags: { LightMode: 'Forward' }, passKind: 'forward' } },
       { name: 'ShadowCaster', program: { module: 'forgeax::default-shadow-caster' }, renderState: { tags: { LightMode: 'ShadowCaster' }, passKind: 'shadow-caster' } },
     ],
     values: {
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', woodTex)),
+      baseColorTexture: Number(woodTex),
     },
-  });
-  const woodCubeTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', woodTex));
-  const metalCubeTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', metalTex));
+  }).unwrap();
+  const woodCubeTexHandle = Number(woodTex);
+  const metalCubeTexHandle = Number(metalTex);
 
   // Large floor plane.
   const floorRes = createPlaneGeometry(FLOOR_SIZE, FLOOR_SIZE);
@@ -451,7 +457,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.3.3 csm] createPlaneGeometry failed:', floorRes.error);
     return;
   }
-  const floorMesh = world.allocSharedRef('MeshAsset', floorRes.value);
+  const floorMesh = assets.create(floorRes.value).unwrap();
   world.spawn(
     {
       component: Transform,
@@ -463,7 +469,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // 10 cubes spanning 0-40m. Materials rotate through wood / metal / solid.
   for (const c of CUBES) {
-    const matHandle = world.allocSharedRef('MaterialAsset', cubeMaterial(c.tex, woodCubeTexHandle, metalCubeTexHandle));
+    const matHandle = assets.create(cubeMaterial(c.tex, woodCubeTexHandle, metalCubeTexHandle)).unwrap();
     world.spawn(
       {
         component: Transform,
@@ -473,7 +479,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           scale: c.scale,
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     ).unwrap();
   }
@@ -754,13 +760,13 @@ function installCaptureHook(
 async function loadTextureByGuid(
   assets: AssetRegistry,
   guidStr: string,
-): Promise<TextureAsset | null> {
+): Promise<import('@forgeax/engine-types').AssetHandle<'texture'> | null> {
   const guidRes = AssetGuid.parse(guidStr);
   if (!guidRes.ok) {
     console.error('[learn-render 5.3.3 csm] GUID parse failed:', guidStr);
     return null;
   }
-  const texRes = await assets.loadByGuid<TextureAsset>(guidRes.value);
+  const texRes = await assets.load(guidRes.value, 'texture');
   if (!texRes.ok) {
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string | undefined }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: texRes.error.code, hint: texRes.error.hint });

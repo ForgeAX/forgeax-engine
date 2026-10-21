@@ -1,12 +1,13 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
-import { toShared } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
+import { Materials } from '../materials';
 import { extractFrames } from '../render-system-extract-tail';
+import { testAssets } from './helpers/runtime-assets';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -23,47 +24,49 @@ function captureWorldErrors(): Array<{ readonly code: string }> {
   return errors;
 }
 
-function codesForInvalidMaterial(state: number): { hidden: string[]; visible: string[] } {
-  const world = new World();
-  const assets = new AssetRegistry({} as never);
-  const errors = captureWorldErrors();
-  const entity = world
-    .spawn(
-      { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-      { component: MeshRenderer, data: { materials: [toShared<'MaterialAsset'>(999)] } },
-      { component: Visibility, data: { state } },
-    )
-    .unwrap();
-
-  extractFrames([world], 0, assets);
-  const hiddenCodes = errors.map((error) => error.code);
-  world.set(entity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-  const beforeVisible = errors.length;
-  extractFrames([world], 0, assets);
-  return { hidden: hiddenCodes, visible: errors.slice(beforeVisible).map((error) => error.code) };
-}
-
 describe('visibility resource short circuit', () => {
-  it('does not resolve a bad override while hidden, then restores the fallback diagnostic', () => {
-    const codes = codesForInvalidMaterial(VisibilityStateValue.hidden);
-
-    expect(codes.hidden).toEqual([]);
-    expect(codes.visible).toContain('mesh-renderer-material-override-invalid');
+  it.each([
+    VisibilityStateValue.hidden,
+    VisibilityStateValue.visible,
+  ])('rejects an invalid reference at the World write boundary (visibility=%s)', (state) => {
+    const world = new World();
+    const assets = testAssets(world);
+    const errors = captureWorldErrors();
+    const result = world.spawn(
+      { component: Transform, data: {} },
+      {
+        component: MeshFilter,
+        data: { assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() },
+      },
+      { component: MeshRenderer, data: { materials: [999 as never] } },
+      { component: Visibility, data: { state } },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('asset-reference-invalid');
+    expect(extractFrames([world], 0, assets).renderables).toEqual([]);
+    expect(errors).toEqual([]);
   });
 
   it('does not validate override overflow while hidden', () => {
     const world = new World();
-    const assets = new AssetRegistry({} as never);
+    const assets = testAssets(world);
     const errors = captureWorldErrors();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: MeshRenderer,
           data: {
-            materials: [toShared<'MaterialAsset'>(998), toShared<'MaterialAsset'>(999)],
+            materials: [
+              assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap(),
+              assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap(),
+            ],
           },
         },
         { component: Visibility, data: { state: VisibilityStateValue.hidden } },

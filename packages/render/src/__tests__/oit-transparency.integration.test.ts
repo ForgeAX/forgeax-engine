@@ -32,6 +32,7 @@ import {
 import { constructRendererHost } from '../construct-renderer';
 import { Materials } from '../materials';
 import { OIT_ACCUMULATE_PASS, OIT_COMPOSITE_PASS } from '../pipeline/standard-transparency';
+import { testAssets } from './helpers/runtime-assets';
 import { standardPbrFixtureVariants } from './shader-manifest-fixture';
 
 const STRAIGHT_OVER: GPUBlendState = {
@@ -138,7 +139,7 @@ function transparentMaterial(kind: Draw): MaterialAsset {
       ...pass,
       program: { ...pass.program, fragmentEntry: 'fs_custom' },
     })),
-  } as MaterialAsset;
+  } as unknown as MaterialAsset;
 }
 
 async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
@@ -156,6 +157,7 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
   if (!created.ok) throw new Error(JSON.stringify(created.error));
   const { renderer } = created.value;
   const world = new World();
+  const assets = testAssets(world);
   const lease = renderer.attach(world);
   if (!lease.ok) throw new Error(JSON.stringify(lease.error));
   const errors: unknown[] = [];
@@ -174,14 +176,14 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
       },
     )
     .unwrap();
-  const mesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(1, 1).unwrap());
+  const mesh = assets.create(createPlaneGeometry(1, 1).unwrap()).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -1] } },
       { component: MeshFilter, data: { assetHandle: mesh } },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', Materials.unlit([1, 1, 1, 1]))] },
+        data: { materials: [assets.create(Materials.unlit([1, 1, 1, 1])).unwrap()] },
       },
     )
     .unwrap();
@@ -195,7 +197,7 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
           { component: MeshFilter, data: { assetHandle: mesh } },
           {
             component: MeshRenderer,
-            data: { materials: [world.allocSharedRef('MaterialAsset', transparentMaterial(kind))] },
+            data: { materials: [assets.create(transparentMaterial(kind)).unwrap()] },
           },
         ),
       );
@@ -237,6 +239,7 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
       unsubscribe();
       lease.value.dispose();
       renderer.dispose();
+      assets.dispose();
     },
   };
 }

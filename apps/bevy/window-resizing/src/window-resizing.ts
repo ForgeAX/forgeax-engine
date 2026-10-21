@@ -4,12 +4,16 @@ import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
-import { type MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const RESOLUTIONS = {
   small: { w: 640, h: 360 },
@@ -18,25 +22,24 @@ export const RESOLUTIONS = {
 } as const;
 
 export function buildWindowResizingWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // Plane — flat cube scaled to [5, 0.02, 5]
-  const planeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1.0] }),
-  );
+  const planeMat = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1.0] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [5, 0.02, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [planeMat] } },
   );
 
   // Cube at (0, 0.5, 0)
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1.0] }),
-  );
+  const cubeMat = sceneAssets.create(Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1.0] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   );
 

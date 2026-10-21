@@ -1,7 +1,7 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type EquirectAsset } from '@forgeax/engine-types';
+
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildClearcoatWorld } from './clearcoat';
@@ -39,12 +39,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   configureRuntimeAssetCatalog(assets, runtimeBinding);
-  const hdr = await assets.loadByGuid<EquirectAsset>(guid.value);
+  const hdr = await assets.load(guid.value, 'equirect');
   if (!hdr.ok) {
     console.error('[bevy-clearcoat] HDR load failed:', hdr.error.code);
     return;
   }
-  const equirect = app.world.allocSharedRef('EquirectAsset', hdr.value);
+  const equirect = hdr.value;
   await buildClearcoatWorld(app.world, assets, equirect, target.width / Math.max(target.height, 1));
   app.onError((error) => console.error('[bevy-clearcoat] app error:', error.code, error.hint));
   const started = app.start();

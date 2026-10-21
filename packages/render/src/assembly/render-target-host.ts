@@ -9,11 +9,10 @@ import {
   RenderTargetStateInvalidError,
 } from '../errors/render';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
-import type { RenderResult } from '../render-contract';
+import type { Renderer, RenderResult } from '../render-contract';
 import {
   admitRenderTargetDescriptor,
   type FramebufferSnapshotData,
-  type FramebufferSnapshotRequest,
   type FramebufferSnapshotTicket,
   type RenderTarget,
   type RenderTargetAdmissionLimits,
@@ -35,6 +34,7 @@ import {
   createRenderTargetMaterialSource,
   type RenderTargetMaterialSourceBinding,
   resolveRenderTargetMaterialSource,
+  retireRenderTargetMaterialSources,
 } from '../targets/material-source';
 import { createRenderTargetOwner, type RenderTargetOwner } from '../targets/owner';
 import {
@@ -90,7 +90,16 @@ interface ReadbackRecord {
   status: 'pending' | 'encoded' | 'submitted';
 }
 
-export interface RenderTargetHost {
+export interface RenderTargetHost
+  extends Pick<
+    Renderer,
+    | 'createRenderTarget'
+    | 'resizeRenderTarget'
+    | 'createRenderTargetTextureSource'
+    | 'requestTargetReadback'
+    | 'requestFramebufferSnapshot'
+    | 'destroyRenderTarget'
+  > {
   /** The logical owner for every target lifecycle operation. */
   readonly owner: 'renderer';
   /** Logical descriptions for the source publication boundary; no physical state escapes. */
@@ -98,31 +107,14 @@ export interface RenderTargetHost {
     readonly target: RenderTarget;
     readonly descriptor: RenderTargetDescriptor;
   }[];
-  createRenderTarget(descriptor: RenderTargetDescriptor): RenderResult<RenderTarget, RenderError>;
-  resizeRenderTarget(
-    target: RenderTarget,
-    descriptor: RenderTargetDescriptor,
-  ): RenderResult<void, RenderError>;
-  createRenderTargetTextureSource(
-    target: RenderTarget,
-    options: RenderTargetTextureSourceOptions,
-  ): RenderResult<RenderTargetTextureSource, RenderError>;
   /** @internal Resolve a source for the existing material projection path. */
   resolveRenderTargetTextureSource(
     source: RenderTargetTextureSource,
   ): RenderTargetMaterialSourceBinding | undefined;
-  requestTargetReadback(
-    target: RenderTarget,
-    request: RenderTargetReadbackRequest,
-  ): RenderResult<RenderTargetReadbackTicket, RenderError>;
   observeTargetReadbacks(
     receipt: RenderTargetReadbackReceipt,
     tickets: readonly RenderTargetReadbackTicket[],
   ): Promise<RenderResult<readonly RenderTargetReadbackData[], RenderError>>;
-  requestFramebufferSnapshot(
-    target: RenderTarget,
-    request: FramebufferSnapshotRequest,
-  ): RenderResult<FramebufferSnapshotTicket, RenderError>;
   observeFramebufferSnapshots(
     receipt: RenderTargetReadbackReceipt,
     tickets: readonly FramebufferSnapshotTicket[],
@@ -142,7 +134,6 @@ export interface RenderTargetHost {
     encoder: RhiCommandEncoder,
     written?: readonly RenderTargetLayerWrite[],
   ): void;
-  destroyRenderTarget(target: RenderTarget): RenderResult<void, RenderError>;
   /** Called immediately before the existing Standard frame is interpreted. */
   beginFrame(): void;
   /** Called only after the existing Renderer frame submission is accepted. */
@@ -174,7 +165,8 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
   const activePhysical = new WeakMap<object, RenderTargetPhysical>();
   const candidatePhysical = new WeakMap<object, RenderTargetPhysical>();
   const submittedPhysicals = new WeakSet<RenderTargetPhysical>();
-  const sources = new WeakMap<object, RenderTargetMaterialSourceBinding>();
+  const sourceOwner = crypto.randomUUID();
+  let nextSourceId = 1;
   const readbacks = new Map<RenderTargetReadbackTicket, ReadbackRecord>();
   const frameWriters = new Set<RenderTarget>();
   const markTargetSubmitted = (target: RenderTarget, physical: RenderTargetPhysical): void => {
@@ -349,14 +341,21 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       const binding = createRenderTargetMaterialSource(target, inspected.value.descriptor, {
         ...sourceOptions,
         generation: inspected.value.generation,
+        source: Object.freeze({
+          kind: 'render-texture-source',
+          owner: sourceOwner,
+          id: nextSourceId++,
+          source: 'target',
+        }),
       });
       if (!binding.ok) return binding;
-      sources.set(binding.value.source as object, binding.value);
       return { ok: true, value: binding.value.source };
     },
     resolveRenderTargetTextureSource(source: RenderTargetTextureSource) {
-      const binding = sources.get(source as object) ?? resolveRenderTargetMaterialSource(source);
+      if (disposed || source.owner !== sourceOwner || source.source !== 'target') return undefined;
+      const binding = resolveRenderTargetMaterialSource(source);
       if (binding === undefined) return undefined;
+      if (!owner.inspect(binding.target).ok) return undefined;
       const physical = activePhysical.get(binding.target as object);
       if (physical === undefined) return binding;
       const view = physical.mipViews[binding.view.mipLevel] ?? physical.view;
@@ -758,6 +757,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     },
     dispose(): void {
       disposed = true;
+      retireRenderTargetMaterialSources(sourceOwner);
       const failures: RenderError[] = [];
       for (const target of targets) {
         failures.push(...releaseTarget(target));

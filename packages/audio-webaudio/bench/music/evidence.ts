@@ -1,8 +1,8 @@
+import { audioContribution } from '@forgeax/engine-audio';
 import { isExecutionReport } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
 import { createAudioIntentBackend, loadMusicScore, type MusicPreparation, type MusicState, type MusicScore } from '@forgeax/engine/audio';
-import { WebAudioEngine, createHostAudioConsumer, audioLoader } from '@forgeax/engine/audio-webaudio';
-import { ok } from '@forgeax/engine/types';
+import { WebAudioEngine, createHostAudioConsumer } from '@forgeax/engine/audio-webaudio';
 import { ShaderRegistry } from '@forgeax/engine/shader';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { pcmWav } from '../../src/__tests__/support-tone';
@@ -39,7 +39,8 @@ async function observed<T>(probe: string, stage: string, action: () => Promise<T
 }
 const percentile = (raw: readonly number[], fraction: number) => [...raw].sort((a,b) => a-b)[Math.floor((raw.length-1)*fraction)] ?? 0;
 const stats = (raw: readonly number[]) => ({ samples: raw.length, p50: percentile(raw, 0.5), p95: percentile(raw, 0.95), raw });
-const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }), undefined, [audioLoader]);
+const registry = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+registry.installDecoder(audioContribution.kind, audioContribution.decoder);
 registry.configurePackIndex(new URL('/pack-index.json', location.href).href);
 async function load(count: number, base = 2300): Promise<MusicPreparation> {
   return loadSaved(savedScore(count, base));
@@ -50,12 +51,7 @@ async function loadSaved(score: MusicScore, assets = registry): Promise<MusicPre
   assert(response.ok, 'ordinary saved score file must be available');
   const saved = await response.json();
   assert(JSON.stringify(saved) === JSON.stringify(score), 'saved score file differs from its authored declaration');
-  const prepared = await loadMusicScore(saved, async guid => {
-    const result = await assets.loadByGuid(assets.parseGuid(guid));
-    if (!result.ok) return result;
-    assert(result.value.kind === 'audio', 'ordinary catalog item must be audio');
-    return ok(result.value);
-  });
+  const prepared = await loadMusicScore(saved, assets);
   if (!prepared.ok) throw prepared.error;
   return prepared.value;
 }
@@ -103,8 +99,9 @@ async function resampled(commonPhase: boolean) {
 // is used only for functional probes, never to prewarm cost measurements.
 async function inputAmplitudes(context: BaseAudioContext, score: MusicPreparation) {
   return Promise.all(score.stems.map(async (stem,index) => {
-    assert(stem.clip.bytes, 'buffered oracle source bytes missing');
-    const input = await context.decodeAudioData(stem.clip.bytes.slice().buffer as ArrayBuffer);
+    const clip = score.assets.read(stem.clip).unwrap();
+    assert(clip.bytes, 'buffered oracle source bytes missing');
+    const input = await context.decodeAudioData(clip.bytes.slice().buffer as ArrayBuffer);
     return input.getChannelData(0)[index * 32] ?? NaN;
   }));
 }
@@ -162,11 +159,12 @@ async function performanceRound(stems: number, pending: number, round: number) {
   let id = 0;
   try {
     const coldAt = performance.now();
-    const freshAssets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }), undefined, [audioLoader]);
+    const freshAssets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+freshAssets.installDecoder(audioContribution.kind, audioContribution.decoder);
     freshAssets.configurePackIndex(new URL('/pack-index.json', location.href).href);
     const score = await loadSaved(savedScore(stems), freshAssets);
     const catalogMs = performance.now() - coldAt;
-    const hostPreparedBytes = score.stems.reduce((sum, stem) => sum + (stem.clip.bytes?.byteLength ?? 0), 0);
+    const hostPreparedBytes = score.stems.reduce((sum, stem) => sum + (score.assets.read(stem.clip).unwrap().bytes?.byteLength ?? 0), 0);
     const decodeAt = performance.now(); consumer.prepareMusic(++id, score);
     await wait(() => backend.getState().music?.phase === 'ready');
     const decodeMs = performance.now() - decodeAt;

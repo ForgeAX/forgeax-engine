@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, Name, scenePlugin, Transform } from '@forgeax/engine-scene';
@@ -34,7 +36,7 @@ async function spawnAnimatedPair(world: World): Promise<{
   brokenTarget: EntityHandle;
   healthyTarget: EntityHandle;
 }> {
-  const handle = world.allocSharedRef('AnimationClip', clip());
+  const handle = runtimeAssetRegistry(world.assets).create(clip()).unwrap();
   const spawn = (name: string) => {
     const player = world
       .spawn(
@@ -77,7 +79,7 @@ function positionX(world: World, entity: EntityHandle): number {
 
 describe('same-world animation binding recovery', () => {
   it('keeps healthy siblings alive and repairs a missing target binding without rebuilding the world', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [scenePlugin()]);
     await createWorldContext(world, [animationPlugin()]);
     const { brokenPlayer, brokenTarget, healthyTarget } = await spawnAnimatedPair(world);

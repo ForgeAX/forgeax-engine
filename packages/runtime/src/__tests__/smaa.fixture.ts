@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_SMAA,
@@ -22,6 +22,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 
 function value<T>(
   result:
@@ -57,7 +58,9 @@ export async function verifySmaa(
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const white = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 1, 1, 1]));
+  const white = testAssets(world)
+    .create(Materials.unlit([1, 1, 1, 1]))
+    .unwrap();
   for (const [x, y, angle, width, height] of [
     [-0.7, 0.5, 0.27, 1.2, 0.65],
     [0.7, 0.4, -0.63, 0.65, 1.2],
@@ -74,7 +77,12 @@ export async function verifySmaa(
             scale: [width, height, 0.01],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [white] } },
       )
       .unwrap();

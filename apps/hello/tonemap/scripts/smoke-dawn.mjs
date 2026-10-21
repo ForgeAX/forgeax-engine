@@ -157,10 +157,12 @@ const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 let renderer;
+let assets;
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
 } catch (err) {
   console.error(
     `[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -177,14 +179,14 @@ if (!sphereRes.ok) {
   console.error(`[smoke] FAIL - createSphereGeometry: ${sphereRes.error.code}`);
   process.exit(1);
 }
-// w64: mint sphere + material as user-tier shared refs (register deleted M8).
-const world = new World();
+// Create managed sphere and material handles in the World asset registry.
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const sphereHandle = world.allocSharedRef('MeshAsset', sphereRes.value);
+const sphereHandle = assets.create(sphereRes.value).unwrap();
 
 // feat-20260527 M3 / w12: pass-based MaterialAsset via the unified path.
-const materialHandle = world.allocSharedRef('MaterialAsset', {
+const materialHandle = assets.create({
   kind: 'material',
   passes: [
     {
@@ -198,7 +200,7 @@ const materialHandle = world.allocSharedRef('MaterialAsset', {
     metallic: 0.0,
     roughness: 0.4,
   },
-});
+}).unwrap();
 
 void okResult(
   world.spawn(

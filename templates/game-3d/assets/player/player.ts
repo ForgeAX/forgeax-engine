@@ -12,7 +12,6 @@ import { quat, vec3 } from '@forgeax/engine/math';
 import { CharacterController, type PhysicsWorld } from '@forgeax/engine/physics';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { Transform } from '@forgeax/engine/scene';
-import type { AnimationClip } from '@forgeax/engine/types';
 import { cameraRelativeMove, facingYaw } from '../camera/third-person.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { resolveGameEntity, type GameScene } from '../shared/scene-refs.ts';
@@ -179,11 +178,11 @@ async function* installWalkAnimation(
   const parsedWalk = AssetGuid.parse(walk);
   if (!parsedWalk.ok) throw parsedWalk.error;
   const playerWalk = parsedWalk.value;
-  const loaded = await host.assets.loadByGuid<AnimationClip>(playerWalk);
+  const loaded = await host.assets.load(playerWalk, 'animation-clip');
   if (!loaded.ok) throw loaded.error;
-  const clip = world.allocSharedRef('AnimationClip', loaded.value);
+  const clip = loaded.value;
   yield () => {
-    world.sharedRefs.release(clip).unwrap();
+    host.assets.release(clip).unwrap();
   };
   world
     .addComponent(player, {

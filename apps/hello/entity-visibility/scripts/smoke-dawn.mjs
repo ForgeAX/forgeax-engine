@@ -2,6 +2,9 @@
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const primitiveSourceCube = createPrimitiveMesh('cube').unwrap();
+
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -78,12 +81,9 @@ function spawnScene(world, render, scenePackage) {
   } = render;
   const { resolveVisibility, Visibility, VisibilityStateValue } = render;
   const { ChildOf, Transform } = world.scene;
-  const { HANDLE_CUBE } = world.assets;
+  const cube = world.cube;
   const material = (color) =>
-    world.value.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: color, roughness: 0.55 }),
-    );
+    world.assets.create(Materials.standard({ baseColor: color, roughness: 0.55 })).unwrap();
   const floor = material([0.24, 0.28, 0.34, 1]);
   const blue = material([0.08, 0.3, 0.95, 1]);
   const red = material([0.9, 0.12, 0.08, 1]);
@@ -92,7 +92,7 @@ function spawnScene(world, render, scenePackage) {
     world.value
       .spawn(
         { component: Transform, data: { pos: position, quat: [0, 0, 0, 1], scale } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [materialRef] } },
         { component: Visibility, data: { state: VisibilityStateValue.inherited } },
         ...(parent === undefined ? [] : [{ component: ChildOf, data: { parent } }]),
@@ -101,7 +101,7 @@ function spawnScene(world, render, scenePackage) {
   world.value
     .spawn(
       { component: Transform, data: { pos: [0, -1.35, 0], scale: [5, 0.15, 3] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [floor] } },
     )
     .unwrap();
@@ -248,15 +248,12 @@ export async function runVisibilityDawnSmoke({ frames = 60 } = {}) {
     return adapter;
   };
   const canvas = createMockCanvas(sharedDevice, renderTarget);
-  const [{ createWorldContext, World }, render, scenePackage, assets] = await Promise.all([
+  const [{ createWorldContext, World }, render, scenePackage, assetModule] = await Promise.all([
     import('@forgeax/engine-ecs'),
     import('@forgeax/engine-render'),
     import('@forgeax/engine-scene'),
     import('@forgeax/engine-assets-runtime'),
   ]);
-  const world = { value: new World(), scene: scenePackage, assets };
-  await createWorldContext(world.value, [scenePackage.scenePlugin()]);
-  const scene = spawnScene(world, render, scenePackage);
   const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
   const engineManifest = await buildEngineShaderManifest();
   const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(engineManifest)], { type: 'application/json' }));
@@ -265,6 +262,10 @@ export async function runVisibilityDawnSmoke({ frames = 60 } = {}) {
   const created = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
   if (!created.ok) throw new Error(JSON.stringify(describeStructuredError(created.error)));
   const renderer = created.value.renderer;
+  const assets = created.value.assets;
+  const world = { value: new World({ assets }), scene: scenePackage, assets, cube: assets.create(primitiveSourceCube).unwrap() };
+  await createWorldContext(world.value, [scenePackage.scenePlugin()]);
+  const scene = spawnScene(world, render, scenePackage);
   // These are intentionally low-level harness diagnostics; the public
   // Renderer exposes only POD inspection and receipt-bound observation.
   const diagnostics = created.value.debugDrawHost;

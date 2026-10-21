@@ -17,12 +17,9 @@ const forwardSource = readFileSync(
 const recordSource = readFileSync(new URL('../record/frame.ts', import.meta.url), 'utf8');
 
 describe('Standard clustered post color-domain order', () => {
-  it('retains the LUT stage and one output encoder for clustered plans', async () => {
-    const { createStandardOutputPlan, validateStandardOutputPlan } = await import(
-      '../pipeline/standard-output/graph'
-    );
+  it('retains the LUT stage before the single output encoder', async () => {
+    const { createStandardOutputPlan } = await import('../pipeline/standard-output/graph');
     const plan = createStandardOutputPlan({
-      lane: 'clustered',
       temporal: true,
       meter: true,
       bloom: true,
@@ -30,7 +27,6 @@ describe('Standard clustered post color-domain order', () => {
       whiteBalance: true,
       lut: true,
       fxaa: true,
-      outputEncoding: 'explicit-oetf',
     });
     expect(plan.logicalStages).toEqual([
       'temporal',
@@ -42,8 +38,6 @@ describe('Standard clustered post color-domain order', () => {
       'fxaa',
       'output-encoding',
     ]);
-    expect(plan.outputEncodingCount).toBe(1);
-    expect(validateStandardOutputPlan(plan).ok).toBe(true);
   });
 
   it('keeps transparent and bloom work in linear HDR before tone output', () => {

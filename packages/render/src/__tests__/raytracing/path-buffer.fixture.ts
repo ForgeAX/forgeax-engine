@@ -9,7 +9,7 @@ import { assert, expect } from 'vitest';
 import { createRayPathTracer } from '../../raytracing/path-tracer';
 import type { RayPathFixture } from './path-tracer.commands';
 import { readBuffer } from './path-tracer.fixture';
-import { retainedTransportPlane } from './scene-projection.fixture';
+import { retainedPublishedTransportPlane } from './scene-projection.fixture';
 
 const SOURCE = `
 @group(0) @binding(0) var<storage, read_write> rays: array<vec4u>;
@@ -68,11 +68,16 @@ export async function verifyGpuPathSource(fixture: RayPathFixture, graphOwned = 
       })
       .unwrap();
     const material = fixture.materials.find((entry) => entry.name === 'emission');
-    assert(material);
+    assert(material?.cookedPublication);
     const tracer = (
       await createRayPathTracer(device, recorder.backend.createShaderModule, {
         kernel: fixture.kernel,
-        scene: retainedTransportPlane(material.asset).project().scene,
+        scene: (
+          await retainedPublishedTransportPlane({
+            ...material,
+            cookedPublication: material.cookedPublication,
+          })
+        ).project().scene,
         materials: [{ id: 0, ...material }],
         lights: [],
         settings: {

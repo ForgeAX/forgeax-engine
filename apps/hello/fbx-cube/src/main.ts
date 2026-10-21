@@ -5,7 +5,7 @@
 //   (1) configureRuntimeAssetCatalog(assets, runtimeBinding) — scoped dev or static build catalog
 //   (2) createRuntimeAssetImportTransport(runtimeBinding)             — dev-server POST /__import/:guid
 //                                                     dispatches to fbxImporter
-//   (3) loadByGuid<SceneAsset>(sceneGuid)           — runtime resolves the GUID
+//   (3) assets.load(sceneGuid, 'scene')           — runtime resolves the GUID
 //                                                     and instantiates
 //
 // The .fbx fixture lives in forgeax-engine-assets/vendor/fbx-test/ per the
@@ -24,7 +24,7 @@ import { Camera, DirectionalLight } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 
-import { type SceneAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 // Scene GUID from forgeax-engine-assets/vendor/fbx-test/cube.fbx.meta.json.
@@ -73,16 +73,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[fbx-cube] AssetGuid.parse(scene) failed:', sceneGuidRes.error);
     return;
   }
-  const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuidRes.value);
+  const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
   if (!sceneRes.ok) {
-    console.error('[fbx-cube] loadByGuid<SceneAsset> failed:', sceneRes.error);
+    console.error('[fbx-cube] load failed:', sceneRes.error);
     return;
   }
 
-  // feat-20260614 M8 (D-17): loadByGuid returns the payload; mint a user-tier
-  // column handle for instantiate.
-  const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
-  const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+  // Instantiate the managed scene handle returned by load.
+  const sceneHandle = sceneRes.value;
+  const instRes = assets.instantiate(sceneHandle, world);
   if (!instRes.ok) {
     console.error(
       '[fbx-cube] scene instantiate failed:',

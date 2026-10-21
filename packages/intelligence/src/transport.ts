@@ -56,12 +56,11 @@ export function bindIntelligencePort(
   port: IntelligenceMessagePort,
   runtime: IntelligenceRuntime,
 ): IntelligencePortBinding {
-  let closed = false;
   let closeTask: Promise<void> | undefined;
   const listener = (
     event: MessageEvent<IntelligenceHostCommand | IntelligenceRealmMessage>,
   ): void => {
-    if (closed) return;
+    if (closeTask !== undefined) return;
     const message = event.data;
     if (message.kind === 'intelligence-submit') {
       const accepted = runtime.accept(message.submission);
@@ -94,9 +93,7 @@ export function bindIntelligencePort(
   };
   const close = (): Promise<void> => {
     if (closeTask !== undefined) return closeTask;
-    closed = true;
-    port.removeEventListener('message', listener);
-    closeTask = (async () => {
+    closeTask = Promise.resolve().then(async () => {
       await runtime.close();
       try {
         port.postMessage({ kind: 'intelligence-closed' });
@@ -105,7 +102,8 @@ export function bindIntelligencePort(
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       port.close();
-    })();
+    });
+    port.removeEventListener('message', listener);
     return closeTask;
   };
   port.addEventListener('message', listener);
@@ -118,20 +116,15 @@ export class IntelligencePortClient implements IntelligenceService {
   readonly limits: IntelligenceLimits;
   private readonly received: ActivityEvent[] = [];
   private readonly active = new Set<ActivityId>();
-  private readonly rejected = new Map<
-    ActivityId,
-    IntelligenceRealmMessage & { kind: 'intelligence-rejected' }
-  >();
   private readonly createActivityId: () => ActivityId;
   private readonly createSessionId: () => string;
   private readonly listener: (
     event: MessageEvent<IntelligenceHostCommand | IntelligenceRealmMessage>,
   ) => void;
-  private closed = false;
+  private state: 'open' | 'closing' | 'closed' = 'open';
   private pollPending = false;
   private closeTask: Promise<void> | undefined;
   private closeResolve: (() => void) | undefined;
-  private transportReleased = false;
 
   constructor(
     readonly providerId: string,
@@ -144,7 +137,7 @@ export class IntelligencePortClient implements IntelligenceService {
     this.createSessionId = options.createSessionId ?? (() => nextIntelligenceIdentity('session'));
     this.listener = (event) => {
       const message = event.data;
-      if (this.closed && message.kind !== 'intelligence-closed') return;
+      if (this.state !== 'open' && message.kind !== 'intelligence-closed') return;
       if (message.kind === 'intelligence-events') {
         this.pollPending = false;
         for (const item of message.events) {
@@ -153,32 +146,35 @@ export class IntelligencePortClient implements IntelligenceService {
         }
       } else if (message.kind === 'intelligence-rejected') {
         this.active.delete(message.activityId);
-        this.rejected.set(message.activityId, message);
+        this.received.push({
+          type: 'failed',
+          activityId: message.activityId,
+          sequence: 1,
+          error: message.error,
+        });
       } else if (message.kind === 'intelligence-closed') {
-        this.markClosed();
-        this.releaseTransport();
-        this.closeResolve?.();
-        this.closeResolve = undefined;
-        this.closeTask ??= Promise.resolve();
+        this.retireTransport();
       }
     };
     port.addEventListener('message', this.listener);
     port.start?.();
   }
 
-  private markClosed(): void {
-    this.closed = true;
+  private clearPending(): void {
     this.received.length = 0;
     this.active.clear();
-    this.rejected.clear();
     this.pollPending = false;
   }
 
-  private releaseTransport(): void {
-    if (this.transportReleased) return;
-    this.transportReleased = true;
+  private retireTransport(): void {
+    if (this.state === 'closed') return;
+    this.state = 'closed';
+    this.clearPending();
     this.port.removeEventListener('message', this.listener);
     this.port.close();
+    this.closeResolve?.();
+    this.closeResolve = undefined;
+    this.closeTask ??= Promise.resolve();
   }
 
   submit(request: ActivityRequest): Result<ActivityRef, IntelligenceError> {
@@ -186,7 +182,7 @@ export class IntelligencePortClient implements IntelligenceService {
       request,
       this.providerId,
       this.limits.maxInputChars,
-      this.closed,
+      this.state !== 'open',
     );
     if (!validated.ok) return validated;
     if (this.active.size >= this.limits.maxConcurrentActivities) {
@@ -208,34 +204,22 @@ export class IntelligencePortClient implements IntelligenceService {
         submission: { ...ref, input: request.input },
       });
     } catch {
-      this.markClosed();
-      this.releaseTransport();
+      this.retireTransport();
       return err(new IntelligenceError({ code: 'intelligence-closed', detail: {} }));
     }
     return ok(ref);
   }
 
   poll(maxEvents = this.limits.maxPollEvents): readonly ActivityEvent[] {
-    if (this.closed || !Number.isInteger(maxEvents) || maxEvents <= 0) return [];
+    if (this.state !== 'open' || !Number.isInteger(maxEvents) || maxEvents <= 0) return [];
     const count = Math.min(maxEvents, this.limits.maxPollEvents);
     const events = this.received.splice(0, count);
-    for (const [id, rejection] of this.rejected) {
-      if (events.length >= count) break;
-      this.rejected.delete(id);
-      events.push({
-        type: 'failed',
-        activityId: id,
-        sequence: 1,
-        error: rejection.error,
-      });
-    }
     if (!this.pollPending) {
       this.pollPending = true;
       try {
         this.port.postMessage({ kind: 'intelligence-poll', maxEvents: count });
       } catch {
-        this.markClosed();
-        this.releaseTransport();
+        this.retireTransport();
         return [];
       }
     }
@@ -243,7 +227,8 @@ export class IntelligencePortClient implements IntelligenceService {
   }
 
   cancel(id: ActivityId): Result<void, IntelligenceError> {
-    if (this.closed) return err(new IntelligenceError({ code: 'intelligence-closed', detail: {} }));
+    if (this.state !== 'open')
+      return err(new IntelligenceError({ code: 'intelligence-closed', detail: {} }));
     if (!this.active.has(id)) {
       return err(
         new IntelligenceError({
@@ -255,8 +240,7 @@ export class IntelligencePortClient implements IntelligenceService {
     try {
       this.port.postMessage({ kind: 'intelligence-cancel', activityId: id });
     } catch {
-      this.markClosed();
-      this.releaseTransport();
+      this.retireTransport();
       return err(new IntelligenceError({ code: 'intelligence-closed', detail: {} }));
     }
     return ok(undefined);
@@ -264,21 +248,16 @@ export class IntelligencePortClient implements IntelligenceService {
 
   close(): Promise<void> {
     if (this.closeTask !== undefined) return this.closeTask;
-    if (this.closed) {
-      this.closeTask = Promise.resolve();
-      return this.closeTask;
-    }
-    this.markClosed();
+    this.state = 'closing';
+    this.clearPending();
     this.closeTask = new Promise((resolve) => {
       this.closeResolve = resolve;
-      try {
-        this.port.postMessage({ kind: 'intelligence-close' });
-      } catch {
-        this.releaseTransport();
-        this.closeResolve = undefined;
-        resolve();
-      }
     });
+    try {
+      this.port.postMessage({ kind: 'intelligence-close' });
+    } catch {
+      this.retireTransport();
+    }
     return this.closeTask;
   }
 }

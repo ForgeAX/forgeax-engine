@@ -1,4 +1,4 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
@@ -18,15 +18,13 @@ for (const { name, instances, unique } of [
 ]) {
   const geometry = createBoxGeometry(1, 1, 1).unwrap();
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
   const identity = { source: 'publication-workload', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
   const receiver = new RenderPublicationReceiver(identity);
   const scene = new PersistentRenderScene();
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.5, 0.4, 1] }),
-  );
+  const material = assets.create(Materials.standard({ baseColor: [0.6, 0.5, 0.4, 1] })).unwrap();
+  const sharedMesh = assets.create(geometry).unwrap();
   world
     .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {} })
     .unwrap();
@@ -36,7 +34,7 @@ for (const { name, instances, unique } of [
         { component: Transform, data: {} },
         {
           component: MeshFilter,
-          data: { assetHandle: unique ? world.allocSharedRef('MeshAsset', geometry) : HANDLE_CUBE },
+          data: { assetHandle: unique ? assets.create(geometry).unwrap() : sharedMesh },
         },
         { component: MeshRenderer, data: { materials: [material] } },
       )

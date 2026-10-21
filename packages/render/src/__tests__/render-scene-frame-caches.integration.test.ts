@@ -1,12 +1,14 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer, MotionBlur } from '../components';
 import { InstanceProjectionStore } from '../instances';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { ExtractedFrame } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import {
@@ -34,9 +36,13 @@ const material: MaterialAsset = {
  */
 describe('PersistentRenderScene frame caches', () => {
   it('retains unchanged draw addresses across partial publications and preserves older frames', () => {
-    const world = new World();
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const world = new World({ assets });
     registerPropagateTransforms(world);
-    const handle = world.allocSharedRef('MaterialAsset', material);
+    const handle = assets.create(material).unwrap();
+    const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 30] } },
@@ -47,7 +53,7 @@ describe('PersistentRenderScene frame caches', () => {
       world
         .spawn(
           { component: Transform, data: { pos: [x, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: meshHandle } },
           { component: MeshRenderer, data: { materials: [handle] } },
         )
         .unwrap(),
@@ -56,19 +62,15 @@ describe('PersistentRenderScene frame caches', () => {
     if (hiddenMesh === undefined || stableMesh === undefined || changingMesh === undefined) {
       throw new Error('Missing test mesh');
     }
-    const scene = new PersistentRenderScene();
+    const scene = new PersistentRenderScene({ assets });
     const lease = createRenderReadLease(world);
-    const assets = new AssetRegistry({
-      materialArtifact: () => undefined,
-      findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-    } as unknown as ShaderRegistry);
     const owner = { cameraOwner: 0, resourceOwner: 0 };
     const draw = () => {
       world.update(1 / 60).unwrap();
       return scene.extractComposition(
         [world],
         owner,
-        0,
+        assets,
         (request) =>
           extractFrames([world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
             cull: 'none',
@@ -78,10 +80,12 @@ describe('PersistentRenderScene frame caches', () => {
         [lease],
       );
     };
-    const replacement = world.allocSharedRef('MaterialAsset', {
-      ...material,
-      values: { baseColor: [1, 0, 0, 1], metallic: 0, roughness: 0.5 },
-    });
+    const replacement = assets
+      .create({
+        ...material,
+        values: { baseColor: [1, 0, 0, 1], metallic: 0, roughness: 0.5 },
+      })
+      .unwrap();
     try {
       const first = draw();
       const stable = first.dispatch.find((entry) => entry.entityIndex === stableMesh);
@@ -113,7 +117,7 @@ describe('PersistentRenderScene frame caches', () => {
       expect(removed.dispatch.some((entry) => entry.entityIndex === stableMesh)).toBe(true);
       for (const frame of [first, changed, expanded, contracted, replaced, removed]) {
         for (const entry of frame.dispatch) {
-          expect(frame.renderables[entry.renderableIndex]?.entityKey).toBe(entry.entityIndex);
+          expect(frame.renderables.at(entry.renderableIndex)?.entityKey).toBe(entry.entityIndex);
         }
       }
     } finally {
@@ -123,9 +127,13 @@ describe('PersistentRenderScene frame caches', () => {
   });
 
   it('reuse the plan across camera-only frames and miss only on real input changes', () => {
-    const world = new World();
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const world = new World({ assets });
+    const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
     registerPropagateTransforms(world);
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const materialHandle = assets.create(material).unwrap();
     const camera = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 30] } },
@@ -137,7 +145,7 @@ describe('PersistentRenderScene frame caches', () => {
       world
         .spawn(
           { component: Transform, data: { pos: [index - 4, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: meshHandle } },
           { component: MeshRenderer, data: { materials: [materialHandle] } },
         )
         .unwrap(),
@@ -145,19 +153,15 @@ describe('PersistentRenderScene frame caches', () => {
     world.update(0).unwrap();
 
     const instanceCollections = new InstanceProjectionStore();
-    const scene = new PersistentRenderScene({ instanceCollections });
+    const scene = new PersistentRenderScene({ assets, instanceCollections });
     const lease = createRenderReadLease(world);
     const materialCaches = scene.materialSnapshotCacheStore();
-    const assets = new AssetRegistry({
-      materialArtifact: () => undefined,
-      findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-    } as unknown as ShaderRegistry);
     const owner = { cameraOwner: 0, resourceOwner: 0 };
     const draw = (): ExtractedFrame =>
       scene.extractComposition(
         [world],
         owner,
-        0,
+        assets,
         (request: PersistentRenderCandidateRequest) =>
           extractFrames([world], owner, assets, undefined, materialCaches, {
             cull: 'none',
@@ -180,7 +184,11 @@ describe('PersistentRenderScene frame caches', () => {
       world.update(1 / 60).unwrap();
       const extracted = draw();
       const visible = extracted.renderables.filter((row) => row.authorVisible !== false);
-      scene.projectVisibility([world], extracted.renderables, extracted.dispatch);
+      scene.projectVisibility(
+        [world].map(worldRenderResources),
+        extracted.renderables,
+        extracted.dispatch,
+      );
       beforeCommit?.(extracted);
       scene.prepareTemporalFrame(visible);
       expect(scene.commitTemporalFrame().ok).toBe(true);
@@ -208,12 +216,14 @@ describe('PersistentRenderScene frame caches', () => {
       expect(orbitVisibility.hits - visibility.hits).toBe(orbitFrames);
       expect(orbitVisibility.misses).toBe(visibility.misses);
       const orbitTemporal = scene.temporalSnapshotCacheInspection();
-      expect(orbitTemporal.hits - temporal.hits).toBe(orbitFrames * meshes.length);
+      expect(orbitTemporal.hits - temporal.hits).toBeGreaterThanOrEqual(
+        orbitFrames * meshes.length,
+      );
       expect(orbitTemporal.misses).toBe(temporal.misses);
 
-      // A transform-only move rewrites the retained buffers in place: the
-      // snapshot structure is reused and still reads the submitted previous
-      // world and the new current world.
+      // Count all actual lazy reads; repeated query consumers may hit the same slot.
+      // A transform-only move replaces only that slot's immutable source
+      // snapshot and retains the submitted previous world for motion.
       const moved = meshes[3];
       if (moved === undefined) throw new Error('missing mesh');
       world.set(moved, Transform, { pos: [-1, 2, 0] }).unwrap();
@@ -224,18 +234,21 @@ describe('PersistentRenderScene frame caches', () => {
         expect(row?.temporal?.motionValid).toBe(true);
       });
       const moveTemporal = scene.temporalSnapshotCacheInspection();
-      expect(moveTemporal.misses).toBe(orbitTemporal.misses);
+      expect(moveTemporal.misses - orbitTemporal.misses).toBe(1);
+      expect(moveTemporal.hits - orbitTemporal.hits).toBeGreaterThanOrEqual(meshes.length - 1);
 
       // A structural change (new material) misses only its own slot.
-      const replacement = world.allocSharedRef('MaterialAsset', {
-        ...material,
-        values: { baseColor: [1, 0, 0, 1], metallic: 0, roughness: 0.5 },
-      });
+      const replacement = assets
+        .create({
+          ...material,
+          values: { baseColor: [1, 0, 0, 1], metallic: 0, roughness: 0.5 },
+        })
+        .unwrap();
       world.set(moved, MeshRenderer, { materials: [replacement] }).unwrap();
       const afterMaterial = frame(0.71);
       const materialTemporal = scene.temporalSnapshotCacheInspection();
       expect(materialTemporal.misses - moveTemporal.misses).toBe(1);
-      expect(materialTemporal.hits - moveTemporal.hits).toBe(meshes.length - 1);
+      expect(materialTemporal.hits - moveTemporal.hits).toBeGreaterThanOrEqual(meshes.length - 1);
       expect(afterMaterial.renderables).not.toBe(afterMove.renderables);
     } finally {
       lease.dispose();

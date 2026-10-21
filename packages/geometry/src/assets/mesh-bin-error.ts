@@ -1,4 +1,4 @@
-import type { MeshBinHeader } from '@forgeax/engine-pack';
+import type { MeshBinHeader } from '@forgeax/engine-pack/mesh-bin-contract';
 import {
   AssetError,
   type AssetErrorDetail,

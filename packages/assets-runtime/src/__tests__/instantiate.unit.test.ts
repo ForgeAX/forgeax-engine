@@ -6,26 +6,28 @@ import {
   ChildOf,
   Children,
   externalizeSceneAsset,
+  sceneAssetContribution,
   worldDespawnScene,
   worldGetSceneInstanceState,
   worldRemoveSceneOverride,
   worldSetSceneOverride,
 } from '@forgeax/engine-scene';
 import { SkinJointPathUnresolvedError } from '@forgeax/engine-skinning';
-import type { Asset, SceneAsset } from '@forgeax/engine-types';
+import { type Asset, type AssetRef, err, type SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
+import { runtimeAssets } from '../internal/runtime-assets';
 import type { PostSpawnHook } from '../registry/instantiate';
-import { resolveAssetHandle } from '../resolve-asset-handle';
 import { parseScenePayload } from '../scene-payload';
 import { defined } from './assert-defined.js';
+import { publishRuntimeAssets } from './fixtures/runtime-publication';
 
 const T709Tag = defineComponent('T709Tag', { value: 'f32' });
 const T709MaterialCarrier = defineComponent('T709MaterialCarrier', {
-  materials: 'array<shared<MaterialAsset>>',
+  materials: 'array<asset<material>>',
 });
 const SceneInstance = defineComponent('SceneInstance', {
-  source: 'shared<SceneAsset>',
+  source: 'asset<scene>',
   mapping: 'array<entity>',
   state: 'unique<SceneInstanceState>',
 });
@@ -35,26 +37,73 @@ const CHILD_GUID = '22222222-2222-4222-8222-222222222222';
 const PARENT_GUID = '33333333-3333-4333-8333-333333333333';
 
 function makeRegistry(postSpawnHook?: PostSpawnHook): AssetRegistry {
-  return new AssetRegistry(
-    {
+  return new AssetRegistry({
+    shaderRegistry: {
       getMaterialShaderManifest: vi.fn().mockReturnValue(undefined),
       findMaterialArtifact: vi.fn().mockReturnValue({ ok: false, error: new Error('mock') }),
       getPipeline: vi.fn().mockReturnValue(undefined),
       installMaterialArtifact: vi.fn(),
       inspect: vi.fn().mockReturnValue({ materialShaders: [] }),
     } as unknown as import('@forgeax/engine-shader').ShaderRegistry,
-    undefined,
-    undefined,
-    postSpawnHook,
-  );
+    postSpawnHook: postSpawnHook,
+  });
 }
 
-function makeWorld(): World {
-  const world = new World();
+function makeWorld(reg: AssetRegistry): World {
+  const world = new World({ assets: reg });
   for (const component of [T709Tag, T709MaterialCarrier, SceneInstance]) {
     world.components.register(component).unwrap();
   }
+  sourceWorlds.set(reg, world);
   return world;
+}
+
+const sourceWorlds = new WeakMap<AssetRegistry, World>();
+const sources = new WeakMap<
+  AssetRegistry,
+  Map<string, { asset: Asset; refs?: readonly AssetRef[] }>
+>();
+function declareSource<T extends Asset>(
+  reg: AssetRegistry,
+  guid: string,
+  asset: T,
+  refs?: readonly AssetRef[],
+): T {
+  let entries = sources.get(reg);
+  if (entries === undefined) {
+    entries = new Map();
+    sources.set(reg, entries);
+  }
+  entries.set(guid, { asset, ...(refs === undefined ? {} : { refs }) });
+  return asset;
+}
+async function loadPublishedScene(reg: AssetRegistry, guid: string, _kind: 'scene') {
+  try {
+    const entries = [...(sources.get(reg) ?? [])].map(([guid, { asset, refs }]) => {
+      if (asset.kind !== 'scene') return { guid, asset, refs: refs?.map((ref) => ref.guid) ?? [] };
+      if (refs !== undefined) return { guid, asset, refs: refs.map((ref) => ref.guid) };
+      const cooked = externalizeSceneAsset(asset, (name) => {
+        const component = sourceWorlds.get(reg)?.components.resolve(name);
+        return component === undefined ? undefined : componentSchema(component);
+      }).unwrap();
+      return {
+        guid,
+        asset: cooked.payload as SceneAsset,
+        refs: cooked.refs.map((ref) => ref.guid),
+      };
+    });
+    reg.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+    publishRuntimeAssets(reg, entries);
+    return reg.load(guid, 'scene');
+  } catch (error) {
+    return err(error);
+  }
+}
+let sceneSequence = 0;
+async function loadScene(reg: AssetRegistry, scene: SceneAsset, refs?: readonly AssetRef[]) {
+  const guid = `aaaaaaaa-aaaa-4aaa-8aaa-${String(++sceneSequence).padStart(12, '0')}`;
+  declareSource(reg, guid, scene, refs);
+  return loadPublishedScene(reg, guid, 'scene');
 }
 
 function twoEntityScene(): SceneAsset {
@@ -82,66 +131,62 @@ function material(): Asset {
 }
 
 describe('AssetRegistry.instantiate', () => {
-  it('preserves native shared handles in a catalogued Scene without a wire table', () => {
+  it('preserves native asset handles in a code-created Scene', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     const Native = defineComponent('ReflectedNativeHandles', {
-      arbitrary: 'shared<MaterialAsset>',
-      empty: 'shared<MaterialAsset>',
-      fixed: 'array<shared<MaterialAsset>, 2>',
+      arbitrary: 'asset<material>',
+      empty: 'asset<material>',
+      fixed: 'array<asset<material>, 2>',
     });
     world.components.register(Native).unwrap();
     const payload = material();
-    const materialHandle = world.allocSharedRef('MaterialAsset', payload);
-    const scene = reg
-      .catalog(PARENT_GUID, {
-        kind: 'scene',
-        entities: {
-          root: {
-            components: {
-              [Native.name]: {
-                arbitrary: materialHandle,
-                empty: 0,
-                fixed: new Uint32Array([0, materialHandle]),
-              },
+    const materialHandle = reg.create(payload).unwrap();
+    const scene = declareSource(reg, PARENT_GUID, {
+      kind: 'scene',
+      entities: {
+        root: {
+          components: {
+            [Native.name]: {
+              arbitrary: materialHandle,
+              empty: 0,
+              fixed: new Uint32Array([0, materialHandle]),
             },
           },
         },
-      } as SceneAsset)
-      .unwrap();
-    expect(reg.assetCatalog.get(PARENT_GUID)?.refs).toBeUndefined();
-    const handle = world.allocSharedRef('SceneAsset', scene);
+      },
+    } as SceneAsset);
+    const handle = reg.create(scene).unwrap();
     const root = reg.instantiate(handle, world).unwrap();
     const entity = defined(
       [...world.iterDescendants(root)].find((e) => world.hasComponent(e, Native)),
     );
     const row = world.get(entity, Native).unwrap();
-    expect(resolveAssetHandle(world, row.arbitrary).unwrap()).toBe(payload);
+    expect(runtimeAssets(world.assets).resolveAsset(row.arbitrary).unwrap()).toEqual(payload);
     expect(row.empty).toBe(0);
     expect(Array.from(row.fixed)).toEqual([0, materialHandle]);
     worldDespawnScene(world, root).unwrap();
-    world.sharedRefs.release(handle).unwrap();
-    world.sharedRefs.release(materialHandle).unwrap();
+    reg.release(handle).unwrap();
+    reg.release(materialHandle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
 
-  it('rejects an explicit wire index zero against an empty table before spawning', () => {
+  it('rejects an explicit wire index zero against an empty table before spawning', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const Carrier = defineComponent('ReflectedEmptyWireTable', { arbitrary: 'shared<MeshAsset>' });
+    const world = makeWorld(reg);
+    const Carrier = defineComponent('ReflectedEmptyWireTable', { arbitrary: 'asset<mesh>' });
     world.components.register(Carrier).unwrap();
-    const scene = reg
-      .catalog(
-        PARENT_GUID,
-        {
-          kind: 'scene',
-          entities: { root: { components: { [Carrier.name]: { arbitrary: 0 } } } },
-        } as SceneAsset,
-        [],
-      )
-      .unwrap();
-    const handle = world.allocSharedRef('SceneAsset', scene);
-    expect(reg.instantiate(handle, world)).toMatchObject({
+    const scene = declareSource(
+      reg,
+      PARENT_GUID,
+      {
+        kind: 'scene',
+        entities: { root: { components: { [Carrier.name]: { arbitrary: 0 } } } },
+      } as SceneAsset,
+      [],
+    );
+    const result = await loadScene(reg, scene, []);
+    expect(result).toMatchObject({
       ok: false,
       error: {
         code: 'asset-parse-failed',
@@ -156,7 +201,6 @@ describe('AssetRegistry.instantiate', () => {
     });
     expect(world.inspect().entityCount).toBe(0);
     expect(world.execution.fault).toBeNull();
-    world.sharedRefs.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
 
@@ -166,7 +210,7 @@ describe('AssetRegistry.instantiate', () => {
     () => new DataView(new Uint8Array([9, 3, 2, 8]).buffer, 1, 2),
     () => new Uint8Array([0, 255]).buffer,
     () => new SharedArrayBuffer(3),
-  ])('round-trips the exact byte window of every native buffer input', (makeBuffer) => {
+  ])('round-trips the exact byte window of every native buffer input', async (makeBuffer) => {
     const input = makeBuffer();
     const expected = Array.from(
       ArrayBuffer.isView(input)
@@ -177,7 +221,8 @@ describe('AssetRegistry.instantiate', () => {
       bytes: 'buffer',
       fixed: `buffer<${expected.length}>`,
     });
-    const world = makeWorld();
+    const reg = makeRegistry();
+    const world = makeWorld(reg);
     world.components.register(BufferCarrier).unwrap();
     const cooked = externalizeSceneAsset(
       {
@@ -190,8 +235,7 @@ describe('AssetRegistry.instantiate', () => {
     ).unwrap();
     const parsed = parseScenePayload(JSON.parse(JSON.stringify(cooked.payload)), []);
     if (!parsed) throw new Error('expected Scene payload');
-    const reg = makeRegistry();
-    const handle = world.allocSharedRef('SceneAsset', parsed);
+    const handle = (await loadScene(reg, parsed)).unwrap();
     const root = reg.instantiate(handle, world).unwrap();
     const entity = defined(
       [...world.iterDescendants(root)].find((e) => world.hasComponent(e, BufferCarrier)),
@@ -200,25 +244,25 @@ describe('AssetRegistry.instantiate', () => {
     expect(Array.from(row.bytes)).toEqual(expected);
     expect(Array.from(row.fixed)).toEqual(expected);
     worldDespawnScene(world, root).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    reg.release(handle).unwrap();
   });
 
-  it('uses each nested Scene reference table and the parent table for instance overrides', () => {
+  it('uses each nested Scene reference table and the parent table for instance overrides', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     world.components.register(ChildOf).unwrap();
     world.components.register(Children).unwrap();
     const Carrier = defineComponent('ReflectedNestedCarrier', {
-      arbitrary: 'shared<MaterialAsset>',
-      choices: 'array<shared<MaterialAsset>, 2>',
+      arbitrary: 'asset<material>',
+      choices: 'array<asset<material>, 2>',
       density: 'f32',
     });
     world.components.register(Carrier).unwrap();
     const otherGuid = '44444444-4444-4444-8444-444444444444';
     const a = material(),
       b = material();
-    reg.catalog(MATERIAL_GUID, a).unwrap();
-    reg.catalog(otherGuid, b).unwrap();
+    declareSource(reg, MATERIAL_GUID, a);
+    declareSource(reg, otherGuid, b);
     const publish = (guid: string, source: SceneAsset) => {
       const cooked = externalizeSceneAsset(source, (name) => {
         const token = world.components.resolve(name);
@@ -229,9 +273,9 @@ describe('AssetRegistry.instantiate', () => {
         cooked.refs.map((ref) => ref.guid),
       );
       if (!parsed || !('kind' in parsed)) throw new Error('expected Scene');
-      return reg.catalog(guid, parsed, cooked.refs).unwrap();
+      return declareSource(reg, guid, parsed, cooked.refs);
     };
-    const child = publish(CHILD_GUID, {
+    publish(CHILD_GUID, {
       kind: 'scene',
       entities: {
         body: {
@@ -241,7 +285,7 @@ describe('AssetRegistry.instantiate', () => {
         },
       },
     });
-    const parent = publish(PARENT_GUID, {
+    publish(PARENT_GUID, {
       kind: 'scene',
       entities: {
         child: {
@@ -260,57 +304,59 @@ describe('AssetRegistry.instantiate', () => {
         },
       },
     });
-    for (const [scene, expected, index] of [
-      [parent, a, 0],
-      [child, b, 1],
+    for (const [guid, expected, index] of [
+      [PARENT_GUID, a, 0],
+      [CHILD_GUID, b, 1],
     ] as const) {
-      const handle = world.allocSharedRef('SceneAsset', scene);
+      const handle = (await loadPublishedScene(reg, guid, 'scene')).unwrap();
       const root = reg.instantiate(handle, world).unwrap();
       const entity = defined(
         [...world.iterDescendants(root)].find((e) => world.hasComponent(e, Carrier)),
       );
       const row = world.get(entity, Carrier).unwrap();
-      expect(resolveAssetHandle(world, row.arbitrary as never).unwrap()).toBe(expected);
-      expect(resolveAssetHandle(world, row.choices[index] as never).unwrap()).toBe(expected);
+      expect(
+        runtimeAssets(world.assets)
+          .resolveAsset(row.arbitrary as never)
+          .unwrap(),
+      ).toEqual(expected);
+      expect(
+        runtimeAssets(world.assets)
+          .resolveAsset(row.choices[index] as never)
+          .unwrap(),
+      ).toEqual(expected);
       expect(row.choices[1 - index]).toBe(0);
       expect(row.density).toBe(1);
       worldDespawnScene(world, root).unwrap();
-      world.sharedRefs.release(handle).unwrap();
+      reg.release(handle).unwrap();
       expect(world.sharedRefs._liveCount()).toBe(0);
     }
   });
 
   it.each([
-    -1,
-    1,
-    0.5,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-  ])('rejects a malformed custom shared reference %s before any entity survives', (index) => {
+    -1, 1, 0.5,
+  ])('rejects a malformed custom shared reference %s before any entity survives', async (index) => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const Custom = defineComponent('ReflectedInvalidIndex', { custom: 'shared<MaterialAsset>' });
+    const world = makeWorld(reg);
+    const Custom = defineComponent('ReflectedInvalidIndex', { custom: 'asset<material>' });
     world.components.register(Custom).unwrap();
-    reg.catalog(MATERIAL_GUID, material()).unwrap();
-    const scene = reg
-      .catalog(
-        PARENT_GUID,
-        {
-          kind: 'scene',
-          entities: {
-            root: {
-              components: {
-                T709MaterialCarrier: { materials: [MATERIAL_GUID] },
-                [Custom.name]: { custom: index },
-              },
+    declareSource(reg, MATERIAL_GUID, material());
+    const scene = declareSource(
+      reg,
+      PARENT_GUID,
+      {
+        kind: 'scene',
+        entities: {
+          root: {
+            components: {
+              T709MaterialCarrier: { materials: [MATERIAL_GUID] },
+              [Custom.name]: { custom: index },
             },
           },
-        } as SceneAsset,
-        [{ guid: MATERIAL_GUID }],
-      )
-      .unwrap();
-    const handle = world.allocSharedRef('SceneAsset', scene);
-    const result = reg.instantiate(handle, world);
+        },
+      } as SceneAsset,
+      [{ guid: MATERIAL_GUID }],
+    );
+    const result = await loadScene(reg, scene, [{ guid: MATERIAL_GUID }]);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected rejected reference');
     expect(result.error).toMatchObject({
@@ -324,7 +370,29 @@ describe('AssetRegistry.instantiate', () => {
       },
     });
     expect(world.inspect().entityCount).toBe(0);
-    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+  });
+
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects a nonfinite native reference %s before JSON transport', (reference) => {
+    const reg = makeRegistry();
+    const world = makeWorld(reg);
+    const Custom = defineComponent('NonfiniteNativeReference', { custom: 'asset<material>' });
+    world.components.register(Custom).unwrap();
+    const result = reg.create({
+      kind: 'scene',
+      entities: {
+        root: {
+          components: {
+            [Custom.name]: { custom: reference },
+          },
+        },
+      },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
+    expect(world.inspect().entityCount).toBe(0);
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
 
@@ -338,33 +406,35 @@ describe('AssetRegistry.instantiate', () => {
     ['vector', [1, 2]],
     ['fixedRefs', []],
     ['fixedEntities', ['target']],
-  ])('rejects invalid reflected %s input without spawning', (field, value) => {
+  ])('rejects invalid reflected %s input without spawning', async (field, value) => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     const Custom = defineComponent('ReflectedInvalidArray', {
       bytes: 'buffer',
       fixedBytes: 'buffer<3>',
       vector: 'array<f32, 3>',
-      fixedRefs: 'array<shared<MaterialAsset>, 2>',
+      fixedRefs: 'array<asset<material>, 2>',
       fixedEntities: 'array<entity, 2>',
     });
     world.components.register(Custom).unwrap();
-    const handle = world.allocSharedRef('SceneAsset', {
-      kind: 'scene',
-      entities: {
-        source: { components: { [Custom.name]: { [field as string]: value } } },
-        target: { components: { T709Tag: { value: 1 } } },
-      },
-    } as SceneAsset);
+    const handle = (
+      await loadScene(reg, {
+        kind: 'scene',
+        entities: {
+          source: { components: { [Custom.name]: { [field as string]: value } } },
+          target: { components: { T709Tag: { value: 1 } } },
+        },
+      } as SceneAsset)
+    ).unwrap();
     expect(reg.instantiate(handle, world).ok).toBe(false);
     expect(world.inspect().entityCount).toBe(0);
-    world.sharedRefs.release(handle).unwrap();
+    reg.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
 
-  it('round-trips every ECS storage family using custom component schema reflection', () => {
+  it('round-trips every ECS storage family using custom component schema reflection', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     const scalars = {
       f32: 0.25,
       f64: 0.5,
@@ -399,16 +469,16 @@ describe('AssetRegistry.instantiate', () => {
       optionalTarget: { type: 'entity', shape: 'optional', default: null },
       targets: 'array<entity>',
       fixedTargets: 'array<entity, 2>',
-      arbitraryAsset: 'shared<MaterialAsset>',
-      arbitraryAssets: 'array<shared<MaterialAsset>>',
-      fixedAssets: 'array<shared<MaterialAsset>, 2>',
-      emptyAssets: 'array<shared<MaterialAsset>, 2>',
+      arbitraryAsset: 'asset<material>',
+      arbitraryAssets: 'array<asset<material>>',
+      fixedAssets: 'array<asset<material>, 2>',
+      emptyAssets: 'array<asset<material>, 2>',
       vector: { type: 'array<f32, 3>', shape: 'vector' },
       quaternion: { type: 'array<f32, 4>', shape: 'quaternion' },
     });
     world.components.register(All).unwrap();
     const payload = material();
-    reg.catalog(MATERIAL_GUID, payload).unwrap();
+    declareSource(reg, MATERIAL_GUID, payload);
     const nested = { count: 3, values: [1, 2] };
     const owned = world.allocUniqueRef('SceneNestedFixture', nested);
     Object.assign(values, {
@@ -457,8 +527,8 @@ describe('AssetRegistry.instantiate', () => {
     if (!parsed || !('kind' in parsed)) throw new Error('expected a structural Scene payload');
     // The loader owns no World and must not guess component reference fields.
     expect(parsed.entities.source?.components[All.name]?.arbitraryAsset).toBe(0);
-    reg.catalog(PARENT_GUID, parsed, cooked.refs).unwrap();
-    const handle = world.allocSharedRef('SceneAsset', reg.lookup(PARENT_GUID) as SceneAsset);
+    declareSource(reg, PARENT_GUID, parsed, cooked.refs);
+    const handle = (await loadPublishedScene(reg, PARENT_GUID, 'scene')).unwrap();
     const root = reg.instantiate(handle, world).unwrap();
     const members = [...world.iterDescendants(root)];
     const source = defined(members.find((entity) => world.hasComponent(entity, All)));
@@ -483,24 +553,28 @@ describe('AssetRegistry.instantiate', () => {
     expect(data.optionalTarget).toBeNull();
     expect(Array.from(data.targets as Uint32Array)).toEqual([target]);
     expect(Array.from(data.fixedTargets as Uint32Array)).toEqual([target, target]);
-    expect(resolveAssetHandle(world, data.arbitraryAsset as never).unwrap()).toBe(payload);
+    expect(
+      runtimeAssets(world.assets)
+        .resolveAsset(data.arbitraryAsset as never)
+        .unwrap(),
+    ).toEqual(payload);
     expect(Array.from(data.arbitraryAssets as Uint32Array)).toEqual([data.arbitraryAsset, 0]);
     expect(Array.from(data.fixedAssets as Uint32Array)).toEqual([0, data.arbitraryAsset]);
     expect(Array.from(data.emptyAssets as Uint32Array)).toEqual([0, 0]);
     expect(Array.from(data.vector as Float32Array)).toEqual([1, 2, 3]);
     expect(Array.from(data.quaternion as Float32Array)).toEqual([0, 0, 0, 1]);
     worldDespawnScene(world, root).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    reg.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
   it.each([
     'anchor',
     'flat',
-  ] as const)('keeps Result helpers and the original %s post-spawn failure', (mode) => {
+  ] as const)('keeps Result helpers and the original %s post-spawn failure', async (mode) => {
     const failure = new SkinJointPathUnresolvedError(0, ['missing'], 0);
     const reg = makeRegistry(() => ({ ok: false, error: failure }));
-    const world = makeWorld();
-    const handle = world.allocSharedRef('SceneAsset', twoEntityScene());
+    const world = makeWorld(reg);
+    const handle = (await loadScene(reg, twoEntityScene())).unwrap();
     const result =
       mode === 'anchor' ? reg.instantiate(handle, world) : reg.instantiateFlat(handle, world);
     expect(result.ok).toBe(false);
@@ -515,27 +589,25 @@ describe('AssetRegistry.instantiate', () => {
       expect(cause).toBe(failure);
     }
     expect(world.inspect().entityCount).toBe(0);
-    expect(world.sharedRefs._liveCount()).toBe(1);
-    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+    reg.release(handle).unwrap();
   });
 
   it.each([
     'anchor',
     'flat',
-  ] as const)('rejects a stale authored %s instance override before spawning its child', (mode) => {
+  ] as const)('rejects a stale authored %s instance override before spawning its child', async (_mode) => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     world.components.register(ChildOf).unwrap();
     world.components.register(Children).unwrap();
-    const stale = world.allocSharedRef('MaterialAsset', material());
-    world.sharedRefs.release(stale).unwrap();
-    reg
-      .catalog(CHILD_GUID, {
-        kind: 'scene',
-        entities: { child: { components: { T709Tag: { value: 1 } } } },
-      })
-      .unwrap();
-    const handle = world.allocSharedRef('SceneAsset', {
+    const stale = reg.create(material()).unwrap();
+    reg.release(stale).unwrap();
+    declareSource(reg, CHILD_GUID, {
+      kind: 'scene',
+      entities: { child: { components: { T709Tag: { value: 1 } } } },
+    });
+    const result = await loadScene(reg, {
       kind: 'scene',
       entities: {
         nested: {
@@ -550,45 +622,42 @@ describe('AssetRegistry.instantiate', () => {
       },
     } as SceneAsset);
     const baseline = world.inspect().entityCount;
-    expect(
-      mode === 'anchor' ? reg.instantiate(handle, world) : reg.instantiateFlat(handle, world),
-    ).toMatchObject({ ok: false, error: { code: 'shared-ref-stale' } });
+    expect(result).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
     expect(world.inspect().entityCount).toBe(baseline);
-    expect(world.sharedRefs._liveCount()).toBe(1);
-    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
   });
   it.each([
     'anchor',
     'flat',
-  ] as const)('applies authored %s array overrides that add a component without leaking grants', (mode) => {
+  ] as const)('applies authored %s array overrides that add a component without leaking grants', async (mode) => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     world.components.register(ChildOf).unwrap();
     world.components.register(Children).unwrap();
-    reg.catalog(MATERIAL_GUID, material()).unwrap();
-    reg
-      .catalog(CHILD_GUID, {
-        kind: 'scene',
-        entities: { child: { components: { T709Tag: { value: 7 } } } },
-      })
-      .unwrap();
-    const handle = world.allocSharedRef('SceneAsset', {
+    declareSource(reg, MATERIAL_GUID, material());
+    declareSource(reg, CHILD_GUID, {
       kind: 'scene',
-      entities: {
-        nested: {
-          components: {},
-          instance: {
-            source: CHILD_GUID,
-            overrides: [
-              {
-                target: ['child'],
-                components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } },
-              },
-            ],
+      entities: { child: { components: { T709Tag: { value: 7 } } } },
+    });
+    const handle = (
+      await loadScene(reg, {
+        kind: 'scene',
+        entities: {
+          nested: {
+            components: {},
+            instance: {
+              source: CHILD_GUID,
+              overrides: [
+                {
+                  target: ['child'],
+                  components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } },
+                },
+              ],
+            },
           },
         },
-      },
-    } as SceneAsset);
+      } as SceneAsset)
+    ).unwrap();
     for (let cycle = 0; cycle < 3; cycle++) {
       const roots =
         mode === 'anchor'
@@ -601,30 +670,30 @@ describe('AssetRegistry.instantiate', () => {
       expect(world.get(member, T709Tag).unwrap().value).toBe(7);
       const refs = world.get(member, T709MaterialCarrier).unwrap().materials;
       expect(refs.length).toBe(1);
-      expect(world.sharedRefs.resolve(refs[0] as never).ok).toBe(true);
+      expect(reg.read(refs[0] as never).ok).toBe(true);
       for (const root of roots) worldDespawnScene(world, root).unwrap();
-      expect(world.sharedRefs._liveCount()).toBe(1);
+      expect(world.sharedRefs._liveCount()).toBe(0);
       expect(world.inspect().entityCount).toBe(0);
     }
-    world.sharedRefs.release(handle).unwrap();
+    reg.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
   it.each([
     'anchor',
     'flat',
-  ] as const)('releases each %s acquisition when GUID aliases share one payload handle', (mode) => {
+  ] as const)('keeps independent source identities for equal payloads across %s instances', async (mode) => {
     const reg = makeRegistry();
-    const world = makeWorld();
+    const world = makeWorld(reg);
     const payload = material();
-    reg.catalog(MATERIAL_GUID, payload).unwrap();
-    reg.catalog(CHILD_GUID, payload).unwrap();
+    declareSource(reg, MATERIAL_GUID, payload);
+    declareSource(reg, CHILD_GUID, payload);
     const scene: SceneAsset = {
       kind: 'scene',
       entities: {
         box: { components: { T709MaterialCarrier: { materials: [MATERIAL_GUID, CHILD_GUID] } } },
       },
     };
-    const handle = world.allocSharedRef('SceneAsset', scene);
+    const handle = (await loadScene(reg, scene)).unwrap();
     for (let cycle = 0; cycle < 3; cycle++) {
       const roots =
         mode === 'anchor'
@@ -634,23 +703,21 @@ describe('AssetRegistry.instantiate', () => {
         mode === 'anchor'
           ? [reg.instantiate(handle, world).unwrap()]
           : reg.instantiateFlat(handle, world).unwrap();
-      const first = reg._resolveSceneGuids(scene, world).unwrap();
+      const first = reg.read(handle).unwrap();
       const fields = first.entities.box?.components.T709MaterialCarrier as { materials: number[] };
-      expect(fields.materials[0]).toBe(fields.materials[1]);
-      // Direct resolver calls also own one temporary grant for each GUID acquisition.
-      for (const ref of fields.materials) world.sharedRefs.release(ref as never).unwrap();
+      expect(fields.materials[0]).not.toBe(fields.materials[1]);
       for (const root of roots) worldDespawnScene(world, root).unwrap();
-      expect(world.sharedRefs.resolve(fields.materials[0] as never).ok).toBe(true);
+      expect(reg.read(fields.materials[0] as never).ok).toBe(true);
       for (const root of sibling) worldDespawnScene(world, root).unwrap();
-      expect(world.sharedRefs._liveCount()).toBe(1);
+      expect(world.sharedRefs._liveCount()).toBe(0);
     }
-    world.sharedRefs.release(handle).unwrap();
+    reg.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
   it.each([
     'anchor',
     'flat',
-  ] as const)('keeps nested %s source references available for override removal and releases them on failure/close', (mode) => {
+  ] as const)('keeps nested %s source references available for override removal and releases them on failure/close', async (mode) => {
     let failing = false;
     const reg = makeRegistry(() =>
       failing
@@ -660,22 +727,22 @@ describe('AssetRegistry.instantiate', () => {
           }
         : { ok: true },
     );
-    const world = makeWorld();
+    const world = makeWorld(reg);
     world.components.register(ChildOf).unwrap();
     world.components.register(Children).unwrap();
-    reg.catalog(MATERIAL_GUID, material()).unwrap();
-    reg
-      .catalog(CHILD_GUID, {
-        kind: 'scene',
-        entities: {
-          child: { components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } } },
-        },
-      })
-      .unwrap();
-    const handle = world.allocSharedRef('SceneAsset', {
+    declareSource(reg, MATERIAL_GUID, material());
+    declareSource(reg, CHILD_GUID, {
       kind: 'scene',
-      entities: { nested: { components: {}, instance: { source: CHILD_GUID } } },
-    } as SceneAsset);
+      entities: {
+        child: { components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } } },
+      },
+    });
+    const handle = (
+      await loadScene(reg, {
+        kind: 'scene',
+        entities: { nested: { components: {}, instance: { source: CHILD_GUID } } },
+      } as SceneAsset)
+    ).unwrap();
     const roots =
       mode === 'anchor'
         ? [reg.instantiate(handle, world).unwrap()]
@@ -697,119 +764,167 @@ describe('AssetRegistry.instantiate', () => {
     );
     const original = world.get(member, T709MaterialCarrier).unwrap().materials[0];
     worldSetSceneOverride(world, nested, member, T709MaterialCarrier, 'materials', []).unwrap();
-    expect(world.sharedRefs.resolve(original as never).ok).toBe(true);
+    expect(reg.read(original as never).ok).toBe(true);
     worldRemoveSceneOverride(world, nested, member, T709MaterialCarrier, 'materials').unwrap();
     expect(world.get(member, T709MaterialCarrier).unwrap().materials[0]).toBe(original);
     for (const root of roots) worldDespawnScene(world, root).unwrap();
-    expect(world.sharedRefs._liveCount()).toBe(1);
+    expect(world.sharedRefs._liveCount()).toBe(0);
     failing = true;
     expect(
       mode === 'anchor' ? reg.instantiate(handle, world).ok : reg.instantiateFlat(handle, world).ok,
     ).toBe(false);
-    expect(world.sharedRefs._liveCount()).toBe(1);
-    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+    reg.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
-  it('materialises keyed entities and returns a synthetic root', () => {
+  it('materialises keyed entities and returns a synthetic root', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const handle = world.allocSharedRef('SceneAsset', twoEntityScene());
+    const world = makeWorld(reg);
+    const handle = (await loadScene(reg, twoEntityScene())).unwrap();
     const result = reg.instantiate(handle, world);
     expect(result.ok).toBe(true);
     if (result.ok) expect(typeof result.value).toBe('number');
   });
 
-  it('materialises keyed entities flat for authoring', () => {
+  it('materialises keyed entities flat for authoring', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const handle = world.allocSharedRef('SceneAsset', twoEntityScene());
+    const world = makeWorld(reg);
+    const handle = (await loadScene(reg, twoEntityScene())).unwrap();
     const result = reg.instantiateFlat(handle, world);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.length).toBe(2);
   });
 
-  it('releases temporary scene grants across repeated flat playback', () => {
+  it('releases temporary scene grants across repeated flat playback', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const handle = world.allocSharedRef('SceneAsset', twoEntityScene());
+    const world = makeWorld(reg);
+    const handle = (await loadScene(reg, twoEntityScene())).unwrap();
     const baseline = world.sharedRefs._liveCount();
     for (let cycle = 0; cycle < 20; cycle++) {
       const entities = reg.instantiateFlat(handle, world).unwrap();
       for (const entity of entities) world.despawn(entity).unwrap();
       expect(world.sharedRefs._liveCount()).toBe(baseline);
     }
-    expect(world.sharedRefs.resolve(handle).ok).toBe(true);
+    expect(reg.read(handle).ok).toBe(true);
   });
 });
 
-describe('keyed SceneAsset GUID production', () => {
-  it('resolves shared fields without changing entity keys', () => {
+describe('Scene runtime admission', () => {
+  it('loads component references before publication without changing entity keys', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    expect(reg.catalog(MATERIAL_GUID, material()).ok).toBe(true);
-    const scene: SceneAsset = {
-      kind: 'scene',
-      entities: {
-        player: {
-          components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } },
+    makeWorld(reg);
+    declareSource(reg, MATERIAL_GUID, material());
+    const handle = (
+      await loadScene(reg, {
+        kind: 'scene',
+        entities: {
+          player: { components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } } },
         },
-      },
-    };
-
-    const result = reg._resolveSceneGuids(scene, world);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(Object.keys(result.value.entities)).toEqual(['player']);
-    const values = result.value.entities.player?.components.T709MaterialCarrier as {
-      materials: number[];
-    };
+      })
+    ).unwrap();
+    const value = reg.read(handle).unwrap();
+    expect(Object.keys(value.entities)).toEqual(['player']);
+    const values = value.entities.player?.components.T709MaterialCarrier as { materials: number[] };
     expect(values.materials).toHaveLength(1);
-    expect(values.materials[0]).toBeGreaterThanOrEqual(1024);
-    expect(resolveAssetHandle<Asset>(world, values.materials[0] as never).unwrap()).toBe(
-      reg.assetCatalog.get(MATERIAL_GUID)?.payload,
-    );
+    expect(reg.read(values.materials[0] as never).unwrap()).toEqual(material());
+    reg.dispose();
   });
 
-  it('resolves nested keyed instances and rejects recursive identity', () => {
+  it('links nested runtime identities and rejects dependency cycles atomically', () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const child: SceneAsset = { kind: 'scene', entities: { root: { components: {} } } };
-    const parent: SceneAsset = {
-      kind: 'scene',
-      entities: {
-        room: {
-          components: {},
-          instance: { source: CHILD_GUID, overrides: [{ target: ['root'], components: {} }] },
-        },
-      },
-    };
-    expect(reg.catalog(CHILD_GUID, child).ok).toBe(true);
-    const resolved = reg._resolveSceneGuids(parent, world, PARENT_GUID);
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.value.entities.room?.instance?.source).toBe(CHILD_GUID);
-    expect(world.sharedRefs._liveCount()).toBe(1);
-
-    expect(reg.catalog(PARENT_GUID, parent).ok).toBe(true);
-    const cycle = reg._resolveSceneGuids(
-      { kind: 'scene', entities: { loop: { components: {}, instance: { source: PARENT_GUID } } } },
-      world,
-      PARENT_GUID,
-    );
-    expect(cycle).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
+    makeWorld(reg);
+    const child = reg.create({ kind: 'scene', entities: { root: { components: {} } } }).unwrap();
+    const parent = reg
+      .create({
+        kind: 'scene',
+        entities: { room: { components: {}, instance: { source: child } } },
+      })
+      .unwrap();
+    expect(reg.read(parent).unwrap().entities.room?.instance?.source).toBe(child);
+    const fixed = reg.snapshot(child).unwrap();
+    expect(
+      reg.replace(child, {
+        kind: 'scene',
+        entities: { loop: { components: {}, instance: { source: parent } } },
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
+    expect(fixed.matchesCurrent()).toBe(true);
+    reg.release(child).unwrap();
+    expect(reg.validate(child).ok).toBe(true);
+    reg.release(parent).unwrap();
+    expect(reg.validate(child).ok).toBe(false);
+    fixed.dispose();
+    reg.dispose();
   });
 
-  it('reports the keyed entity when a shared GUID cannot be resolved', () => {
+  it('reports a missing source and leaves no partially adopted runtime identities', async () => {
     const reg = makeRegistry();
-    const world = makeWorld();
-    const scene: SceneAsset = {
+    const world = makeWorld(reg);
+    const result = await loadScene(reg, {
       kind: 'scene',
       entities: {
         missingMesh: { components: { T709MaterialCarrier: { materials: [MATERIAL_GUID] } } },
       },
-    };
-    const result = reg._resolveSceneGuids(scene, world);
+    });
     expect(result).toMatchObject({ ok: false, error: { code: 'asset-not-found' } });
-    if (!result.ok) expect(result.error.hint).toContain('missingMesh');
+    expect(world.inspect().entityCount).toBe(0);
+    expect(runtimeAssets(reg).inspect().assets).toBe(0);
+    reg.dispose();
   });
+});
+
+it('keeps existing instance restoration values while template edits affect future instances, with exact dependency release', () => {
+  const reg = makeRegistry();
+  const world = makeWorld(reg);
+  world.components.register(ChildOf).unwrap();
+  world.components.register(Children).unwrap();
+  const red = reg.create(material()).unwrap();
+  const green = reg.create(material()).unwrap();
+  const child = reg
+    .create({
+      kind: 'scene',
+      entities: { child: { components: { T709MaterialCarrier: { materials: [red] } } } },
+    })
+    .unwrap();
+  const parent = reg
+    .create({
+      kind: 'scene',
+      entities: { nested: { components: {}, instance: { source: child } } },
+    })
+    .unwrap();
+  reg.release(child).unwrap();
+  reg.release(red).unwrap();
+  const first = reg.instantiate(parent, world).unwrap();
+  const nested = defined(worldGetSceneInstanceState(world, first).unwrap().mountRoots[0]);
+  const state = worldGetSceneInstanceState(world, nested).unwrap();
+  const member = defined(
+    [...state.entityToLocalId.keys()].find((entity) =>
+      world.hasComponent(entity, T709MaterialCarrier),
+    ),
+  );
+  const before = runtimeAssets(reg).refcount(red);
+  worldSetSceneOverride(world, nested, member, T709MaterialCarrier, 'materials', []).unwrap();
+  expect(runtimeAssets(reg).refcount(red)).toBe(before - 1);
+  reg
+    .update(child, {
+      entities: { child: { components: { T709MaterialCarrier: { materials: [green] } } } },
+    })
+    .unwrap();
+  reg.release(green).unwrap();
+  expect(reg.validate(red).ok).toBe(true);
+  worldRemoveSceneOverride(world, nested, member, T709MaterialCarrier, 'materials').unwrap();
+  expect(world.get(member, T709MaterialCarrier).unwrap().materials[0]).toBe(red);
+  const second = reg.instantiate(parent, world).unwrap();
+  const next = defined(
+    [...world.iterDescendants(second)].find((entity) =>
+      world.hasComponent(entity, T709MaterialCarrier),
+    ),
+  );
+  expect(world.get(next, T709MaterialCarrier).unwrap().materials[0]).toBe(green);
+  reg.release(parent).unwrap();
+  worldDespawnScene(world, first).unwrap();
+  expect(reg.validate(red).ok).toBe(false);
+  worldDespawnScene(world, second).unwrap();
+  expect(runtimeAssets(reg).inspect().assets).toBe(0);
+  reg.dispose();
 });

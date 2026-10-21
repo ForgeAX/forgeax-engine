@@ -37,11 +37,11 @@ const EQUIRECT_GUID = guid('019ffa97-3000-7000-8000-000000000005');
 const sceneComponents = [
   {
     name: 'ScriptablePackTestMeshFilter',
-    fields: { assetHandle: 'shared<MeshAsset>' },
+    fields: { assetHandle: 'asset<mesh>' },
   },
   {
     name: 'ScriptablePackTestMeshRenderer',
-    fields: { materials: 'array<shared<MaterialAsset>>' },
+    fields: { materials: 'array<asset<material>>' },
   },
 ] satisfies readonly ScriptablePackSceneComponent[];
 
@@ -261,7 +261,7 @@ describe('standard ScriptablePack output producers', () => {
       font: 'ordinary-pod/1',
       'ies-profile': 'ordinary-pod/1',
       material: 'material-pack/2',
-      mesh: 'mesh-binary/6',
+      mesh: 'mesh-binary/7',
       'particle-effect': 'particle-effect/4',
       plugin: 'plugin-definition/1',
       'render-pipeline': 'ordinary-pod/1',
@@ -438,8 +438,8 @@ describe('standard ScriptablePack output producers', () => {
   it('deduplicates one shared scene GUID across multiple component fields', async () => {
     const registry = createStandardAssetOutputProducerRegistry([
       ...sceneComponents,
-      { name: 'Skylight', fields: { equirect: 'shared<EquirectAsset>' } },
-      { name: 'SkyboxBackground', fields: { equirect: 'shared<EquirectAsset>' } },
+      { name: 'Skylight', fields: { equirect: 'asset<equirect>' } },
+      { name: 'SkyboxBackground', fields: { equirect: 'asset<equirect>' } },
     ]);
     const producer = registry.get('scene');
     expect(producer).toBeDefined();

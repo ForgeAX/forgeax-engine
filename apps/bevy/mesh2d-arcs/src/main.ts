@@ -1,7 +1,7 @@
 import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle, type TextureAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   buildMesh2dArcsWorld,
@@ -22,13 +22,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const appResult = await createApp(target, {}, forgeaxBundlerAdapter());
   if (!appResult.ok) return console.error('[bevy-mesh2d-arcs] createApp failed:', appResult.error);
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   if (!app.debugDraw) return console.error('[bevy-mesh2d-arcs] debug-draw is unavailable');
 
   const pixels = makeTexturePixels();
   const texture = makeTextureAsset(pixels);
-  const textureHandle = app.world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', texture);
+  const textureHandle = assets.create(texture).unwrap();
 
-  const scene = buildMesh2dArcsWorld(app.world, unwrapHandle(textureHandle));
+  const scene = buildMesh2dArcsWorld(app.world, textureHandle);
   const debugDraw = app.debugDraw;
   app.world.addSystem(Update, {
     name: 'draw-mesh2d-arcs-bounds',

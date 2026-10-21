@@ -3,6 +3,7 @@ import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import {
   type AnyScriptablePackDefinition,
   AssetGuid,
+  executePackBuild,
   isScriptablePackAssetKind,
   isValidPackSourceKey,
   type PackAuthoringError,
@@ -20,6 +21,7 @@ import type {
   Asset,
   AssetGuid as AssetGuidType,
   AssetPublicationEnvelope,
+  AssetPublicationExternalEvidence,
   AssetRef,
   ImportedAsset,
   Result,
@@ -37,7 +39,6 @@ import type {
   PackBuildProduct,
   ScriptablePackAssetSnapshotSource,
   ScriptablePackDomainError,
-  ScriptablePackExternalEvidence,
   ScriptablePackSourceClosureEntry,
   ScriptablePackStagedOutput,
 } from './scriptable-pack.js';
@@ -328,7 +329,7 @@ export async function buildScriptablePack(
   let built: Result<PackOutputMap, unknown> | Promise<Result<PackOutputMap, unknown>>;
   try {
     const context = buildContext(subjectPackageId, effectiveValues, observed.reader);
-    built = options.definition.build(context as never);
+    built = executePackBuild(options.definition, context);
     built = await built;
   } catch (cause) {
     if (record(cause)) {
@@ -400,6 +401,16 @@ export async function buildScriptablePack(
     if (!isValidPackSourceKey(sourceKey))
       return err(sourceKeyFailure(options.sourcePath, sourceKey));
     const asset = ownedOutputs[sourceKey];
+    const raw: unknown = asset;
+    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true)
+      return err(
+        outputValueError(
+          options.sourcePath,
+          '$.plugins',
+          'plugins: true on a Pack producing plugin assets',
+          options.definition.plugins,
+        ),
+      );
     const customSource = record(asset) && 'execution' in asset && asset.execution === 'cooked';
     if (
       customSource &&
@@ -660,10 +671,10 @@ export async function buildScriptablePack(
       return err(referenceError('pack-output-reference-missing', options.sourcePath, missing));
   }
 
-  const externalEvidence: ScriptablePackExternalEvidence[] = [...observed.reads.values()]
+  const externalEvidence: AssetPublicationExternalEvidence[] = [...observed.reads.values()]
     .sort((left, right) => left.guid.localeCompare(right.guid))
     .map(
-      (read): ScriptablePackExternalEvidence => ({
+      (read): AssetPublicationExternalEvidence => ({
         guid: read.guid,
         usage: referenced.has(read.guid) ? 'both' : 'content',
         generation: read.generation,
@@ -692,6 +703,15 @@ export async function buildScriptablePack(
             left.localeCompare(right),
           ),
         });
+  if (options.definition.plugins !== true && imported.some((asset) => asset.kind === 'plugin'))
+    return err(
+      outputValueError(
+        options.sourcePath,
+        '$.plugins',
+        'plugins: true on a Pack producing plugin assets',
+        options.definition.plugins,
+      ),
+    );
   const refs = imported.flatMap((asset) => asset.refs);
   const artifacts = Object.fromEntries(
     imported.flatMap((asset) =>
@@ -849,8 +869,20 @@ export async function buildScriptablePackWorklist(
         report('cache');
         const cached = await options.cache?.read(subject);
         if (cached === undefined) report('cook', 'miss');
-        const result =
-          cached === undefined
+        const pluginCapabilityMissing =
+          cached !== undefined &&
+          subject.definition.plugins !== true &&
+          cached.product.assets.some((asset) => asset.kind === 'plugin');
+        const result = pluginCapabilityMissing
+          ? err(
+              outputValueError(
+                subject.sourcePath,
+                '$.plugins',
+                'plugins: true on a Pack producing plugin assets',
+                subject.definition.plugins,
+              ),
+            )
+          : cached === undefined
             ? await buildScriptablePack({
                 definition: subject.definition,
                 sourcePath: subject.sourcePath,

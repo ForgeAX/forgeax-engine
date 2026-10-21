@@ -257,3 +257,8 @@ In `'always'` mode, depth is never tested -- bias is irrelevant. In `'less-equal
 | Exceeding `maxVertexCapacity` | Truncation warning; vertices up to the limit are flushed |
 | Consecutive `flush()` calls with no shape in between | First flush resets staging to 0; second flush returns `ok(undefined)` immediately |
 | Massive `segments` on `sphere()` (e.g., `segments=10000`) | Produces $3 \times 2 \times 10000 = 60000$ vertices; may trigger capacity resize but otherwise works correctly |
+
+Creation owns its vertex and uniform buffers until it transfers one complete
+resource set to `DebugDraw`. Every failure or exception before transfer releases
+both acquired buffers. Destroy retires that set once; capacity growth replaces
+its vertex buffer, and encoding uses only the live set.

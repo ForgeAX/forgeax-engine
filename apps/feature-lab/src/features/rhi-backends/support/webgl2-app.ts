@@ -1,7 +1,8 @@
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import type { App } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
-import { MESH, spawnCamera, spawnMesh, spawnSun, standard } from '../../../lab/stage';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+import { spawnCamera, spawnMesh, spawnSun, standard } from '../../../lab/stage';
 
 export type Webgl2App =
   | { readonly ok: true; readonly app: App }
@@ -29,9 +30,13 @@ export async function bootWebgl2App(): Promise<Webgl2App> {
         reason: `createApp failed: ${String((created.error as { code?: unknown }).code ?? created.error)}`,
       };
     const app = created.value;
+    const assets = app.assets;
+    if (assets === undefined) throw new Error('App asset service is unavailable');
+    const stageCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnCamera(app.world, { eye: [0, 1.5, 4], target: [0, 0.5, 0] });
     spawnSun(app.world);
-    spawnMesh(app.world, MESH.cube, standard(app.world, { baseColor: [1, 0.2, 0.1, 1] }), {
+    spawnMesh(app.world, stageCube, standard(app.world, { baseColor: [1, 0.2, 0.1, 1] }), {
       pos: [0, 0.5, 0],
     });
     const started = app.start();

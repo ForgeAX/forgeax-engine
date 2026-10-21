@@ -39,6 +39,7 @@ import type {
 } from '@forgeax/engine-types';
 import './multi-uv-demo.wgsl';
 import './multi-uv-demo-false.wgsl';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import inheritancePackUrl from './multi-uv-inheritance.pack.json?url';
 import depthFalsifierShader from './post-depth-falsifier.wgsl';
 import depthOverlayShader from './post-depth-overlay.wgsl';
@@ -260,6 +261,10 @@ if (!app.ok) {
   reportError(app.error);
 } else {
   const world = app.value.world;
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const assets = app.value.assets;
   if (assets === undefined) {
     throw new Error('hello-multi-uv: asset owner unavailable');
@@ -458,10 +463,7 @@ if (!app.ok) {
     colorSpace: 'linear',
     mips: { kind: 'none' },
   };
-  const baseColorTextureHandle = world.allocSharedRef<'TextureAsset', TextureAsset>(
-    'TextureAsset',
-    baseColorTexture,
-  );
+  const baseColorTextureHandle = sceneAssets.create(baseColorTexture).unwrap();
   const detailTexture: TextureAsset = {
     kind: 'texture',
     shape: {
@@ -475,10 +477,7 @@ if (!app.ok) {
     colorSpace: 'linear',
     mips: { kind: 'none' },
   };
-  const detailTextureHandle = world.allocSharedRef<'TextureAsset', TextureAsset>(
-    'TextureAsset',
-    detailTexture,
-  );
+  const detailTextureHandle = sceneAssets.create(detailTexture).unwrap();
   const liveBaseColorTexture: TextureAsset = {
     ...baseColorTexture,
     data: new Uint8Array([
@@ -491,18 +490,8 @@ if (!app.ok) {
       255, 64, 192, 255, 255, 64, 192, 255, 255, 64, 192, 255, 255, 64, 192, 255,
     ]),
   };
-  const liveBaseColorTextureHandle = world.allocSharedRef<'TextureAsset', TextureAsset>(
-    'TextureAsset',
-    liveBaseColorTexture,
-  );
-  const liveDetailTextureHandle = world.allocSharedRef<'TextureAsset', TextureAsset>(
-    'TextureAsset',
-    liveDetailTexture,
-  );
-  assets.catalog('guid:3d3d3d3d-0000-0000-0000-3d3d3d3d3d3d', baseColorTexture);
-  assets.catalog('guid:4e4e4e4e-0000-0000-0000-4e4e4e4e4e4e', detailTexture);
-  assets.catalog('guid:5f5f5f5f-0000-0000-0000-5f5f5f5f5f5f', liveBaseColorTexture);
-  assets.catalog('guid:6a6a6a6a-0000-0000-0000-6a6a6a6a6a6a', liveDetailTexture);
+  const liveBaseColorTextureHandle = sceneAssets.create(liveBaseColorTexture).unwrap();
+  const liveDetailTextureHandle = sceneAssets.create(liveDetailTexture).unwrap();
   const textureStatus = document.createElement('span');
   textureStatus.id = 'texture-status';
   textureStatus.textContent = 'M3_TEXTURE_BINDING=baseColorTexture+detailTexture';
@@ -586,8 +575,8 @@ if (!app.ok) {
       baseColor?: readonly [number, number, number, number];
       baseColorUvTransform?: readonly [number, number, number, number];
     } = {},
-  ) => ({
-    kind: 'material' as const,
+  ): MaterialAsset => ({
+    kind: 'material',
     passes: [
       {
         name: 'Forward',
@@ -653,25 +642,18 @@ if (!app.ok) {
       )
     : undefined;
 
-  // catalog acquires the GUID -> payload mapping (for loadByGuid fast-path);
-  // allocSharedRef mints the ECS column handles needed by MeshFilter.assetHandle
-  // / MeshRenderer.materials[] (Handle<'MeshAsset','shared'> and
-  // Handle<'MaterialAsset','shared'> respectively).
-  assets.catalog('guid:0a0a0a0a-0000-0000-0000-0a0a0a0a0a0a', meshAsset);
-  assets.catalog('guid:1b1b1b1b-0000-0000-0000-1b1b1b1b1b1b', defaultMaterial);
-  assets.catalog('guid:2c2c2c2c-0000-0000-0000-2c2c2c2c2c2c', falseMaterial);
-  const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-  const defaultMatHandle = world.allocSharedRef('MaterialAsset', defaultMaterial);
-  const falseMatHandle = world.allocSharedRef('MaterialAsset', falseMaterial);
-  const liveMatHandle = world.allocSharedRef('MaterialAsset', liveMaterial);
+  const meshHandle = sceneAssets.create(meshAsset).unwrap();
+  const defaultMatHandle = sceneAssets.create(defaultMaterial).unwrap();
+  const falseMatHandle = sceneAssets.create(falseMaterial).unwrap();
+  const liveMatHandle = sceneAssets.create(liveMaterial).unwrap();
   const inheritedDerivedMaterialHandle = inheritedDerivedMaterial
-    ? world.allocSharedRef('MaterialAsset', inheritedDerivedMaterial)
+    ? sceneAssets.create(inheritedDerivedMaterial).unwrap()
     : null;
   const inheritedReplacementMaterialHandle = inheritedReplacementMaterial
-    ? world.allocSharedRef('MaterialAsset', inheritedReplacementMaterial)
+    ? sceneAssets.create(inheritedReplacementMaterial).unwrap()
     : null;
   const inheritedSwitchedMaterialHandle = inheritedSwitchedMaterial
-    ? world.allocSharedRef('MaterialAsset', inheritedSwitchedMaterial)
+    ? sceneAssets.create(inheritedSwitchedMaterial).unwrap()
     : null;
   const initialMaterialHandle = inheritanceLiveMaterial
     ? inheritedDerivedMaterialHandle

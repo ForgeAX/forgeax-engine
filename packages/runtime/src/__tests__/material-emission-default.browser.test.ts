@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
@@ -30,8 +31,9 @@ it.each([
   const stop = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const world = new World();
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 2).unwrap());
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const mesh = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -55,15 +57,17 @@ it.each([
     const profile = renderer.setProfile({ ...renderer.inspect().profile, renderPath, ssao: false });
     if (!profile.ok) throw profile.error;
     for (const intensity of [undefined, 0]) {
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({
-          baseColor: [0, 0, 0, 1],
-          emissive: [0.25, 0.5, 0.75],
-          ...(intensity === undefined ? {} : { emissiveIntensity: intensity }),
-        }),
-      );
+      const material = assets
+        .create(
+          Materials.standard({
+            baseColor: [0, 0, 0, 1],
+            emissive: [0.25, 0.5, 0.75],
+            ...(intensity === undefined ? {} : { emissiveIntensity: intensity }),
+          }),
+        )
+        .unwrap();
       world.set(entity, MeshRenderer, { materials: [material] }).unwrap();
+      assets.release(material).unwrap();
       let receipt: FrameReceipt | undefined;
       for (let frame = 0; frame < 60; frame++) {
         world.update(1 / 60).unwrap();
@@ -100,6 +104,7 @@ it.each([
     stop();
     lease.dispose();
     await renderer.dispose();
+    assets.dispose();
     canvas.remove();
   }
 });

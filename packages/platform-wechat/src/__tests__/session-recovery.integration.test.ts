@@ -10,7 +10,7 @@ import {
   NetSession,
 } from '@forgeax/engine-net';
 import { listenWebSocketEndpoint } from '@forgeax/engine-net-websocket/node';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   createWechatSocketConnector,
   type WechatSocketSource,
@@ -249,13 +249,15 @@ it('recovers real WeChat socket replication through NetSession and rejects retir
     // An old epoch delivered over the new real socket must not roll back the World.
     const remotePeer = authoritySession.getPeerSnapshot().peerIds[0];
     if (remotePeer === undefined) throw new Error('Missing resumed authority peer');
+    const apply = vi.spyOn(replica, 'apply');
     listener.send(remotePeer, delta).unwrap();
     await expect
       .poll(() => {
         receive();
-        return replica.lastPacketOutcome;
+        return apply.mock.results.at(-1)?.value.unwrap();
       })
       .toBe('ignored-old-epoch');
+    apply.mockRestore();
     expect(x()).toBe(23);
     expect(replicaSession.getRecoverySnapshot().state).toMatchObject({
       kind: 'active',

@@ -1,9 +1,10 @@
 import {chromium} from 'playwright';
+import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import {mkdirSync,writeFileSync,readFileSync,appendFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {decodeTape,buildFrameModel} from '../../../rhi-debug/dist/index.mjs';
 const out=new URL('../../../../artifacts/roi-navigation/browser/',import.meta.url);mkdirSync(out,{recursive:true});
-const browser=await chromium.launch({channel:'chrome',headless:true,args:['--enable-unsafe-webgpu'], chromiumSandbox: true});const page=await browser.newPage({viewport:{width:1180,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+const browser=await chromium.launch({...browserLaunch,headless:true,args:[...browserLaunch.args,...(process.platform==='linux'?['--use-angle=swiftshader']:[])],chromiumSandbox:true});const page=await browser.newPage({viewport:{width:1180,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 try{await page.goto('http://127.0.0.1:5799/',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>window.navigationReady===true,null,{timeout:120000});await page.screenshot({path:new URL('overview.png',out).pathname});const worker=await page.evaluate(()=>window.runNavigationWorker());console.log('worker',JSON.stringify(worker));writeFileSync(new URL('worker.json',out),JSON.stringify(worker,null,2));const featureChecks=await page.evaluate(async({featurePath,runnerPath})=>{
  const [{default:feature},{runHeadless}]=await Promise.all([import('/@fs'+featurePath),import('/@fs'+runnerPath)]);
  return await runHeadless(feature);
@@ -43,4 +44,4 @@ await page.waitForFunction(()=>window.navigationState?.tick>=900,null,{timeout:1
  }
  console.log('replay',JSON.stringify({browser:replay.browser,works:replay.model.works.length,resources:replay.model.resources.length,inspections:Object.fromEntries(Object.entries(replay.inspections).map(([name,r])=>[name,{workIndex:r.value.workIndex,attachment:r.value.attachment}]))}));
 
-}catch(error){writeFileSync(new URL('failure.json',out),JSON.stringify({message:error.message,errors,url:page.url()},null,2));await page.screenshot({path:new URL('failure.png',out).pathname});throw error;}finally{await browser.close();}
+}catch(error){writeFileSync(new URL('failure.json',out),JSON.stringify({message:error.message,errors,url:page.url(),state:await page.evaluate(()=>window.navigationState)},null,2));await page.screenshot({path:new URL('failure.png',out).pathname});throw error;}finally{await browser.close();}

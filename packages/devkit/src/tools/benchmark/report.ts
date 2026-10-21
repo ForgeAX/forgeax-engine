@@ -12,9 +12,12 @@ export interface BenchmarkRecipe {
   readonly digest: string;
 }
 
+export const BENCHMARK_MODES = Object.freeze(['private', 'service'] as const);
+export const BENCHMARK_PHASES = Object.freeze(['cold', 'warm'] as const);
+
 export interface BenchmarkSample {
-  readonly mode: 'private' | 'service';
-  readonly phase: 'cold' | 'warm';
+  readonly mode: (typeof BENCHMARK_MODES)[number];
+  readonly phase: (typeof BENCHMARK_PHASES)[number];
   readonly durationMs: number;
   readonly peakRssBytes: number;
   readonly exclusivePhasesMs: Readonly<Record<string, number>>;
@@ -107,9 +110,17 @@ export function createAdmissionReport(
   const privateReport = summarizeBenchmarkSamples(privateSamples);
   const serviceReport = summarizeBenchmarkSamples(serviceSamples);
   const reasons: string[] = [];
-  const expectedSamples = thresholds.sampleCountPerPhase * 2;
+  const expectedSamples = thresholds.sampleCountPerPhase * BENCHMARK_PHASES.length;
   const complete =
-    privateSamples.length === expectedSamples && serviceSamples.length === expectedSamples;
+    privateSamples.length === expectedSamples &&
+    serviceSamples.length === expectedSamples &&
+    [privateSamples, serviceSamples].every((modeSamples) =>
+      BENCHMARK_PHASES.every(
+        (phase) =>
+          modeSamples.filter((sample) => sample.phase === phase).length ===
+          thresholds.sampleCountPerPhase,
+      ),
+    );
   if (!complete) {
     reasons.push('sample count is incomplete');
   }

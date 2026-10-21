@@ -4,9 +4,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   _setBasisTranscoderImporter,
   initBasisTranscoder,
+  transcodeBasis,
   transcodeKtx2,
 } from '../basis-transcoder.js';
 import { parseKtx2 } from '../ktx2.js';
+import { selectTranscodeTarget } from '../transcode.js';
 import type { BasisEncoderModule, BasisModuleFactory } from '../wasm/basis-types.js';
 
 /**
@@ -57,11 +59,11 @@ function makeRgba(w: number, h: number): Uint8Array {
 }
 
 /** Encode a WxH RGBA image into a UASTC KTX2 container (Basis payload). */
-async function encodeUastcKtx2(w: number, h: number): Promise<Uint8Array> {
+async function encodeUastcKtx2(w: number, h: number, ktx2 = true): Promise<Uint8Array> {
   const enc = await loadEncoder();
   const encoder = new enc.BasisEncoder();
   encoder.setSliceSourceImage(0, makeRgba(w, h), w, h, 0);
-  encoder.setCreateKTX2File(true);
+  encoder.setCreateKTX2File(ktx2);
   encoder.setKTX2UASTCSupercompression(true);
   encoder.setFormatMode(enc.basis_tex_format.cUASTC_LDR_4x4.value);
   encoder.setPerceptual(true);
@@ -148,4 +150,58 @@ describe.skipIf(!pkgBuilt)('transcodeKtx2 — real UASTC -> BC7 (w14)', () => {
     await transcodeKtx2(parsed.value, 'bc7-rgba-unorm');
     expect(await initBasisTranscoder()).toBe(firstModule);
   });
+});
+
+describe.skipIf(!pkgBuilt)('selected targets carry their declared pixel or block bytes', () => {
+  for (const container of ['ktx2', 'basis'] as const) {
+    describe(container, () => {
+      let transcode: (format: GPUTextureFormat) => ReturnType<typeof transcodeBasis>;
+      beforeAll(async () => {
+        const bytes = await encodeUastcKtx2(16, 16, container === 'ktx2');
+        const parsed = container === 'ktx2' ? parseKtx2(bytes) : undefined;
+        if (parsed !== undefined && !parsed.ok) throw new Error(parsed.error.code);
+        transcode = (format) =>
+          parsed?.ok ? transcodeKtx2(parsed.value, format) : transcodeBasis(bytes, format);
+      });
+      it.each(['r8unorm', 'rg8unorm'] as const)('%s returns packed channels', async (format) => {
+        const reference = await transcode('rgba8unorm');
+        const result = await transcode(format);
+        if (!reference.ok || !result.ok) throw new Error('transcode failed');
+        const rgba = reference.value.mips[0]?.data;
+        const actual = result.value.mips[0]?.data;
+        if (rgba === undefined || actual === undefined) throw new Error('missing base mip');
+        const channels = format === 'r8unorm' ? 1 : 2;
+        expect(actual.length).toBe(16 * 16 * channels);
+        expect([...actual]).toEqual([...rgba].filter((_, index) => index % 4 < channels));
+      });
+      it('transcodes every LDR capability and channel selection', async () => {
+        const targets = new Set<GPUTextureFormat>();
+        for (let mask = 0; mask < 8; mask++) {
+          for (const model of ['etc1s', 'uastc-ldr'] as const) {
+            for (const channels of ['rgba', 'rg', 'r'] as const) {
+              for (const srgb of [false, true]) {
+                targets.add(
+                  selectTranscodeTarget(
+                    { model, channels, srgb },
+                    {
+                      bc: (mask & 1) !== 0,
+                      etc2: (mask & 2) !== 0,
+                      astc: (mask & 4) !== 0,
+                    },
+                  ),
+                );
+              }
+            }
+          }
+        }
+        for (const target of targets) {
+          const result = await transcode(target);
+          expect(result.ok, target).toBe(true);
+          if (!result.ok) continue;
+          expect(result.value.format).toBe(target);
+          expect(result.value.mips[0]?.data.byteLength, target).toBeGreaterThan(0);
+        }
+      });
+    });
+  }
 });

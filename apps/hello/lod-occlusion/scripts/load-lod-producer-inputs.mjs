@@ -59,6 +59,8 @@ export async function loadLodProducerInputs(directory, options = {}) {
     )
   )
     throw new Error('E03 producer public module SHA256 does not match this checkout');
+  if (shaderClosure.status !== 'cpu-publication-verified')
+    throw new Error('E03 GPU input loader requires a verified shader publication');
   const publication = shaderClosure.publication;
   const shaderBytes = await readFile(resolve(inputRoot, publication.path));
   if (

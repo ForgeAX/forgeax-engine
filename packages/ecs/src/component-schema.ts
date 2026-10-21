@@ -1,8 +1,5 @@
-import type { Component, FieldReflection } from './component';
+import type { Component, ComponentStorage, FieldReflection } from './component';
 import type { RelationshipRole } from './relationship-index';
-
-/** The complete storage placement vocabulary owned by ECS schema. */
-export type ComponentStorageKind = 'table' | 'sparse';
 
 /**
  * Serialization facts owned beside schema registration, not carried by the
@@ -144,7 +141,7 @@ export function deepFreeze<T>(value: T): Readonly<T> {
   return Object.freeze(value) as Readonly<T>;
 }
 
-export function assertComponentStorage(value: string): asserts value is ComponentStorageKind {
+export function assertComponentStorage(value: string): asserts value is ComponentStorage {
   if (value !== 'table' && value !== 'sparse') {
     throw new Error(`Unsupported component storage '${value}'. Expected 'table' or 'sparse'.`);
   }

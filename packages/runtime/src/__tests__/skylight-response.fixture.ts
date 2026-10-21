@@ -11,6 +11,7 @@ import {
   TONEMAP_LINEAR,
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { testAssets } from './helpers/runtime-assets';
 import { unwrap } from './specular-aa.fixture';
 
 export const RESPONSE_SIZE = 256;
@@ -72,15 +73,13 @@ export function responsePanorama(source: 'panorama' | 'studio') {
 
 export function responseWorld(source: EnvironmentSource, rotation = 0) {
   const world = new World();
-  const sphere = world.allocSharedRef(
-    'MeshAsset',
-    createSphereGeometry(RESPONSE_RADIUS, 96, 64).unwrap(),
-  );
+  const sphere = testAssets(world)
+    .create(createSphereGeometry(RESPONSE_RADIUS, 96, 64).unwrap())
+    .unwrap();
   for (const { color, metallic, roughness, center } of RESPONSE_SPHERES) {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: color, metallic, roughness }),
-    );
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: color, metallic, roughness }))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: center } },
@@ -98,12 +97,14 @@ export function responseWorld(source: EnvironmentSource, rotation = 0) {
           rotation: [0, Math.sin(rotation / 2), 0, Math.cos(rotation / 2)],
           ...(source === 'panorama' || source === 'studio'
             ? {
-                equirect: world.allocSharedRef('EquirectAsset', {
-                  kind: 'equirect',
-                  ...responsePanorama(source),
-                  format: 'rgba16float',
-                  colorSpace: 'linear',
-                }),
+                equirect: testAssets(world)
+                  .create({
+                    kind: 'equirect',
+                    ...responsePanorama(source),
+                    format: 'rgba16float',
+                    colorSpace: 'linear',
+                  })
+                  .unwrap(),
               }
             : {}),
         },

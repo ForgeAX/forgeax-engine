@@ -354,6 +354,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -400,6 +403,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -437,6 +443,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -489,6 +498,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -532,6 +544,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -572,6 +587,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -664,6 +682,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -762,6 +783,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -811,6 +835,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -915,6 +942,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -973,6 +1003,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -1031,6 +1064,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -1215,6 +1251,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -1258,6 +1297,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -1301,6 +1343,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -1347,6 +1392,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -1390,6 +1438,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -1525,6 +1576,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -1562,6 +1616,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -1599,6 +1656,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -1633,6 +1693,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -1728,6 +1791,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -1780,6 +1846,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -1823,6 +1892,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -1903,6 +1975,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -2020,6 +2095,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -2063,6 +2141,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2106,6 +2187,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -2143,6 +2227,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -2192,6 +2279,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -2232,6 +2322,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2272,6 +2365,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -2309,6 +2405,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -2346,6 +2445,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2555,6 +2657,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -2601,6 +2706,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -2638,6 +2746,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-debug-draw':
         specifier: workspace:*
         version: link:../../../packages/debug-draw
@@ -2693,6 +2804,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -2730,6 +2844,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2776,6 +2893,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2819,6 +2939,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../packages/image
@@ -2877,6 +3000,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2917,6 +3043,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -2960,6 +3089,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3009,6 +3141,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3245,6 +3380,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3297,6 +3435,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -3340,6 +3481,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -3383,6 +3527,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3420,6 +3567,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -3463,6 +3613,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -3512,6 +3665,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -3705,6 +3861,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -3751,6 +3910,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3812,6 +3974,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3873,6 +4038,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -3986,6 +4154,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4029,6 +4200,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4072,6 +4246,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4115,6 +4292,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4161,6 +4341,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4204,6 +4387,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4247,6 +4433,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4333,6 +4522,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4370,6 +4562,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4462,6 +4657,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4508,6 +4706,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4551,6 +4752,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4677,6 +4881,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -4714,6 +4921,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4754,6 +4964,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -4794,6 +5007,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -4846,6 +5062,9 @@ importers:
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:../../../packages/runtime
+      '@forgeax/engine-scene':
+        specifier: workspace:*
+        version: link:../../../packages/scene
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../../../packages/types
@@ -4932,6 +5151,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -4984,6 +5206,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -5362,6 +5587,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -5411,6 +5639,9 @@ importers:
       '@forgeax/engine-pack':
         specifier: workspace:*
         version: link:../../../packages/pack
+      '@forgeax/engine-render':
+        specifier: workspace:*
+        version: link:../../../packages/render
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:../../../packages/runtime
@@ -5552,6 +5783,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -5762,6 +5996,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -5878,6 +6115,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -6028,6 +6268,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-pack':
         specifier: workspace:^
         version: link:../../../packages/pack
@@ -6190,6 +6433,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../packages/plugin
@@ -6227,6 +6473,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -6429,6 +6678,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -6496,6 +6748,9 @@ importers:
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:../../../packages/runtime
+      '@forgeax/engine-scene':
+        specifier: workspace:*
+        version: link:../../../packages/scene
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../../../packages/types
@@ -6719,6 +6974,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-gltf':
         specifier: workspace:*
         version: link:../../../packages/gltf
@@ -6771,6 +7029,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -6811,6 +7072,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-intelligence':
         specifier: workspace:*
         version: link:../../../packages/intelligence
@@ -6854,9 +7118,15 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../../../packages/pack
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -6891,6 +7161,9 @@ importers:
       '@forgeax/apps-shared':
         specifier: workspace:*
         version: link:../../shared
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -6949,6 +7222,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -6958,6 +7234,9 @@ importers:
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../packages/plugin
+      '@forgeax/engine-render':
+        specifier: workspace:*
+        version: link:../../../packages/render
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:../../../packages/runtime
@@ -7185,6 +7464,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -7286,6 +7568,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -7326,6 +7611,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -7476,6 +7764,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -7645,6 +7936,9 @@ importers:
       '@forgeax/engine-animation':
         specifier: workspace:*
         version: link:../../../packages/animation
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
@@ -7694,6 +7988,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -7825,6 +8122,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../packages/input
@@ -7880,6 +8180,12 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../../../packages/pack
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -7926,6 +8232,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -8030,6 +8339,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../packages/image
@@ -8397,6 +8709,9 @@ importers:
       '@forgeax/engine-scene':
         specifier: workspace:*
         version: link:../../../packages/scene
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../../../packages/types
     devDependencies:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
@@ -8511,6 +8826,12 @@ importers:
       '@forgeax/engine-assets-runtime':
         specifier: workspace:*
         version: link:../../../packages/assets-runtime
+      '@forgeax/engine-ecs':
+        specifier: workspace:*
+        version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -8548,6 +8869,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-graphics-extras':
         specifier: workspace:*
         version: link:../../../packages/graphics-extras
@@ -8624,6 +8948,9 @@ importers:
       '@forgeax/engine-skinning':
         specifier: workspace:*
         version: link:../../../packages/skinning
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../../../packages/types
     devDependencies:
       '@forgeax/engine-animation':
         specifier: workspace:*
@@ -8689,6 +9016,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../../packages/render
@@ -8720,6 +9050,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../../packages/render
@@ -8754,6 +9087,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../../packages/image
@@ -8809,6 +9145,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../../packages/image
@@ -8861,6 +9200,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../../packages/image
@@ -8913,6 +9255,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../../packages/image
@@ -8971,6 +9316,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../../packages/input
@@ -9102,6 +9450,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../../packages/input
@@ -9160,6 +9511,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../../packages/image
@@ -9303,6 +9657,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../../../../packages/image
@@ -9434,6 +9791,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -9495,6 +9855,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../../../packages/input
@@ -9559,9 +9922,15 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../../../../packages/pack
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../../packages/render
@@ -9614,6 +9983,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -9663,6 +10035,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -9721,6 +10096,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -9788,6 +10166,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -9846,6 +10227,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -10020,6 +10404,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -10276,6 +10663,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../../packages/math
@@ -10538,6 +10928,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../../packages/render
@@ -10596,6 +10989,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../../packages/geometry
       '@forgeax/engine-gltf':
         specifier: workspace:*
         version: link:../../../../packages/gltf
@@ -10651,6 +11047,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
@@ -10730,6 +11129,9 @@ importers:
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../../packages/app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../../../../packages/assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../../packages/ecs
@@ -10919,6 +11321,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../packages/geometry
       '@forgeax/engine-host':
         specifier: workspace:*
         version: link:../../packages/host
@@ -11047,6 +11452,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -11087,6 +11495,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -11224,6 +11635,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -11267,6 +11681,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-profiler':
         specifier: workspace:*
         version: link:../../../packages/profiler
@@ -11319,6 +11736,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../../../packages/math
@@ -11438,6 +11858,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../packages/geometry
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../../packages/input
@@ -11924,6 +12347,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../../packages/ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../packages/geometry
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../packages/render
@@ -11933,6 +12359,9 @@ importers:
       '@forgeax/engine-scene':
         specifier: workspace:*
         version: link:../../packages/scene
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../../packages/types
     devDependencies:
       '@forgeax/apps-shared':
         specifier: workspace:*
@@ -12151,6 +12580,9 @@ importers:
 
   packages/audio:
     dependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -12206,6 +12638,9 @@ importers:
       '@bokuweb/zstd-wasm':
         specifier: 0.0.27
         version: 0.0.27
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../types
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.2.0
@@ -12317,6 +12752,9 @@ importers:
       '@forgeax/engine-mesh-io':
         specifier: workspace:*
         version: link:../mesh-io
+      '@forgeax/engine-naga':
+        specifier: workspace:*
+        version: link:../naga
       '@forgeax/engine-pack':
         specifier: workspace:*
         version: link:../pack
@@ -12967,6 +13405,9 @@ importers:
         specifier: 1.1.1
         version: 1.1.1
     devDependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.40
@@ -13023,6 +13464,9 @@ importers:
 
   packages/interaction:
     dependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -13105,6 +13549,9 @@ importers:
 
   packages/navigation:
     dependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -13240,6 +13687,9 @@ importers:
 
   packages/physics:
     dependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -13259,9 +13709,6 @@ importers:
         specifier: workspace:*
         version: link:../types
     devDependencies:
-      '@forgeax/engine-assets-runtime':
-        specifier: workspace:*
-        version: link:../assets-runtime
       '@forgeax/engine-physics-rapier2d':
         specifier: workspace:*
         version: link:../physics-rapier2d
@@ -13317,6 +13764,9 @@ importers:
       '@forgeax/engine-scene':
         specifier: workspace:*
         version: link:../scene
+      '@forgeax/engine-terrain':
+        specifier: workspace:*
+        version: link:../terrain
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
@@ -13333,9 +13783,6 @@ importers:
       '@forgeax/engine-shader':
         specifier: workspace:*
         version: link:../shader
-      '@forgeax/engine-terrain':
-        specifier: workspace:*
-        version: link:../terrain
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
@@ -13354,6 +13801,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
+      '@forgeax/engine-graphics-extras':
+        specifier: workspace:*
+        version: link:../graphics-extras
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../math
@@ -13558,6 +14008,9 @@ importers:
       '@forgeax/engine-audio-webaudio':
         specifier: workspace:*
         version: link:../audio-webaudio
+      '@forgeax/engine-codec':
+        specifier: workspace:*
+        version: link:../codec
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -13604,9 +14057,6 @@ importers:
         specifier: ^2.2.0
         version: 2.2.0
     devDependencies:
-      '@forgeax/engine-codec':
-        specifier: workspace:*
-        version: link:../codec
       '@forgeax/engine-image':
         specifier: workspace:*
         version: link:../image
@@ -13747,6 +14197,9 @@ importers:
       '@forgeax/engine-assets-runtime':
         specifier: workspace:*
         version: link:../assets-runtime
+      '@forgeax/engine-audio':
+        specifier: workspace:*
+        version: link:../audio
       '@forgeax/engine-audio-webaudio':
         specifier: workspace:*
         version: link:../audio-webaudio
@@ -13777,6 +14230,9 @@ importers:
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../math
+      '@forgeax/engine-navigation':
+        specifier: workspace:*
+        version: link:../navigation
       '@forgeax/engine-pack':
         specifier: workspace:^
         version: link:../pack
@@ -13871,6 +14327,10 @@ importers:
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
 
   packages/shader:
     dependencies:
@@ -13942,6 +14402,10 @@ importers:
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
 
   packages/terrain:
     dependencies:
@@ -13951,9 +14415,6 @@ importers:
       '@forgeax/engine-geometry':
         specifier: workspace:*
         version: link:../geometry
-      '@forgeax/engine-math':
-        specifier: workspace:*
-        version: link:../math
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
@@ -13996,6 +14457,12 @@ importers:
       '@forgeax/engine-scene':
         specifier: workspace:*
         version: link:../scene
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../shader-compiler
+      '@forgeax/engine-skinning':
+        specifier: workspace:*
+        version: link:../skinning
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
@@ -14009,9 +14476,6 @@ importers:
       '@forgeax/engine':
         specifier: workspace:*
         version: link:../engine
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../shader-compiler
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
@@ -14105,6 +14569,9 @@ importers:
         specifier: workspace:*
         version: link:../vfx
     devDependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@forgeax/engine-naga':
         specifier: workspace:*
         version: link:../naga
@@ -14552,21 +15019,18 @@ importers:
 
   tools/view/packages/view-plugin-asset-references:
     dependencies:
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../../packages/engine
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../../packages/plugin
-      '@forgeax/engine-tool-runtime':
-        specifier: workspace:*
-        version: link:../../../../packages/tool-runtime
       '@forgeax/view-workspace-core':
         specifier: workspace:*
         version: link:../view-workspace-core
 
   tools/view/packages/view-plugin-content-browser:
     dependencies:
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../../../../packages/pack
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../../packages/plugin
@@ -14660,6 +15124,9 @@ importers:
 
   tools/view/packages/view-plugin-inspector:
     dependencies:
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../../../../packages/pack
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../../packages/plugin

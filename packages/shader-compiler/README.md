@@ -9,6 +9,11 @@ includes both the binding interface and depth version, so identical shader
 bytes with different declared resource semantics cannot alias one selection.
 Unused reflected resources may disappear; declarations remain authoritative.
 
+Each direct and scene-index artifact carries its own Naga `entryPoints` read
+contract. Cook, inline engine modules and authored Vite modules use the same
+compiler result; no shader-name list or manually maintained material revision
+stands in for entry dependencies.
+
 Build-time consumers use `getShaderCompilerFingerprint()` for the public compiler,
 native adapter code and verified native payload identity. It returns a structured
 failure when identity cannot be verified. Consumers do not need a direct Naga
@@ -452,6 +457,8 @@ Renderer Card capture, GI or a hardware query pipeline.
 ## Terrain raster context
 
 Both `forgeax_material::terrain_surface` and `forgeax_material::terrain_id_surface` select Terrain geometry from resolved pass slots. The ID surface is an explicit Cook specialization, including inherited materials, rather than a runtime shader switch. All direct raster contexts retain the same shared vertex kernel and direct ABI receipt.
+
+`terrainProgramSource` gives the fixed `forgeax::standard-terrain[-ids][-shadow]` entries their Standard/shadow template, Surface slot and fixed geometry defines. The built-in Vite manifest and material compiler use that same description; packaged Terrain materials therefore resolve the same source composition as runtime-created Terrain. Expansion is private to compilation: authored and resolved material publications retain the fixed Terrain pass identities required by runtime closure admission.
 
 The terrain material context emits an ordinary cooked Standard artifact with the direct scene ABI receipt. It shares the terrain vertex kernel with shadow/depth/temporal and GBuffer contexts. Terrain's exclusion from SceneIndex never removes its direct ABI admission fact. Artifact request identity includes the visible-surface context, preventing a cached no-surface variant from satisfying a surface request. Runtime only resolves cooked artifacts; it does not compile terrain WGSL.
 

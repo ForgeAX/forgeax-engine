@@ -25,7 +25,7 @@ describe('material derived built-in integration contract', () => {
     const sprite = readFileSync(resolve(import.meta.dirname, '../sprite-lit.wgsl'), 'utf8');
     expect(sprite).toContain('evaluateStandardClusterLights');
     expect(sprite).toContain('CLUSTER_FORWARD_AVAILABLE');
-    expect(sprite).toContain('ndc, viewZ, worldPos');
+    expect(sprite).toContain('ndc, pixel, viewZ, worldPos');
     expect(sprite).not.toContain('forgeax_hdrp');
     expect(sprite).not.toContain('forgeax_urp');
 

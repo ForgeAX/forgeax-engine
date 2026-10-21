@@ -8,25 +8,32 @@ import { registerPropagateTransforms } from '../systems/propagate-transforms';
 const COUNTS = [10_000, 100_000] as const;
 const MOVERS = [1, 100, 10_000] as const;
 
-function spawnFlatWorld(count: number): { world: World; entities: EntityHandle[] } {
+function spawnFlatWorld(
+  count: number,
+  captureHandles = true,
+): { world: World; entities: EntityHandle[] } {
   const world = new World();
-  const entities = Array.from({ length: count }, (_, index) =>
-    world.spawn({ component: Transform, data: { pos: [index, 0, 0] } }).unwrap(),
-  );
+  const entities: EntityHandle[] = [];
+  for (let index = 0; index < count; index++) {
+    const entity = world.spawn({ component: Transform, data: { pos: [index, 0, 0] } }).unwrap();
+    if (captureHandles) entities.push(entity);
+  }
   registerPropagateTransforms(world);
   return { world, entities };
 }
 
 describe('flat Transform propagation contract', () => {
   it.each(COUNTS)('keeps %s independent rows on the simple lane', (count) => {
-    const { world } = spawnFlatWorld(count);
+    const { world } = spawnFlatWorld(count, false);
     expect(world.update(0).ok).toBe(true);
 
     const query = world.query({ read: [Transform, GlobalTransform] }).unwrap();
     const spans = query.spans();
     expect(spans.ok).toBe(true);
     expect([...spans.unwrap()]).toHaveLength(1);
-    expect([...query]).toHaveLength(count);
+    let rows = 0;
+    for (const _row of query) rows++;
+    expect(rows).toBe(count);
   });
 
   it.each(MOVERS)('publishes a same-tick world checksum for %s movers', (movers) => {

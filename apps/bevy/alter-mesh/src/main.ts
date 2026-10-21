@@ -11,13 +11,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
-  const state = buildAlterMeshWorld(app.world);
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('asset owner unavailable');
+  const state = buildAlterMeshWorld(app.world, assets);
   app.world.addSystem(Update, {
     name: 'bevy-alter-mesh-input',
     after: [FRAME_START_SCAN_SYSTEM_NAME],
     queries: [],
     fn: (world) => stepAlterMesh(
       world,
+      assets,
       state,
       world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY),
     ),

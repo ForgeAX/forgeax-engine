@@ -1,106 +1,11 @@
-// @ts-nocheck — merged file: cross-source type narrowing failures from blocks originally outside src/ rootDir
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
-// biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
-//
-// Source files (N=33):
-//   - packages/runtime/__tests__/asset-registry.test.ts
-//   - packages/runtime/__tests__/loader-registry.test.ts
-//   - packages/runtime/__tests__/wire-default-loaders.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-aabb.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-builtin-nineslice.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-d9-tile-sampler-soft-warn.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-guid.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-material-validate.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-mesh-fail-fast.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-scene.test.ts
-//   - packages/runtime/src/__tests__/asset-registry-sprite-slices-validate.test.ts
-//   - packages/runtime/src/__tests__/auto-select.test.ts
-//   - packages/runtime/src/__tests__/bindgroup-resize-invalidation.test.ts
-//   - packages/runtime/src/__tests__/builtin-guid-ssot.test.ts
-//   - packages/runtime/src/__tests__/builtin-pack.test.ts
-//   - packages/runtime/src/__tests__/cube-texture-narrowing.test.ts
-//   - packages/runtime/src/__tests__/cubemap-upload.test.ts
-//   - packages/runtime/src/__tests__/dev-import-transport.test.ts
-//   - packages/runtime/src/__tests__/font-asset-load.test.ts
-//   - packages/runtime/src/__tests__/handle-quad.test.ts
-//   - packages/runtime/src/__tests__/lazy-catalog.test.ts
-//   - packages/runtime/src/__tests__/load-by-guid-hdr.test.ts
-//   - packages/runtime/src/__tests__/load-by-guid-prod-material-parent.test.ts
-//   - packages/runtime/src/__tests__/load-by-guid-prod.test.ts
-//   - packages/runtime/src/__tests__/mipmap-formula.test.ts
-//   - packages/runtime/src/__tests__/mipmap-pipeline-cache.test.ts
-//   - packages/runtime/src/__tests__/parse-asset-payload-material.test.ts
-//   - packages/runtime/src/__tests__/parse-asset-payload-texture.test.ts
-//   - packages/runtime/src/__tests__/parse-scene-payload-refs.test.ts
-//   - packages/runtime/src/__tests__/register-with-guid-rgba16float.test.ts
-//   - packages/runtime/src/__tests__/resolve-scene-guids.test.ts
-//   - packages/runtime/src/__tests__/upload-texture-consistency.test.ts
-//   - packages/runtime/src/__tests__/verify-revisions.test.ts
-//
-// Paradigm: each block-scope wraps a source file. ancestorTitles[0] is the
-// source-preserved inner describe (NOT the source filename for these 3 files
-// — recovery path: vitest report ancestorTitles -> grep this file -> upstream
-// `// ─── from <name>.test.ts ───` block separator -> source filename).
-// Top-level imports merged + deduped.
-
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import * as assetRegistryModule from '@forgeax/engine-assets-runtime';
-import {
-  AssetRegistry,
-  animationClipLoader,
-  buildSceneChildContext,
-  fontLoader,
-  getOrCreateMipmapPipeline,
-  HANDLE_CUBE,
-  HANDLE_CYLINDER,
-  HANDLE_QUAD,
-  HANDLE_SPHERE,
-  HANDLE_TRIANGLE,
-  INLINE_PACK_LOADERS,
-  LoaderRegistry,
-  materialLoader,
-  meshLoader,
-  mipmapCacheSize,
-  PACK_ARTIFACT_LOADERS,
-  resolveAssetHandle,
-  sceneLoader,
-  skeletonLoader,
-  skinLoader,
-  textureLoader,
-  walkMaterialPassesOverSharedRefs,
-  wireDefaultLoaders,
-} from '@forgeax/engine-assets-runtime';
-import { audioLoader } from '@forgeax/engine-audio-webaudio';
-import { defineComponent, World } from '@forgeax/engine-ecs';
-import {
-  createBoxGeometry,
-  createPlaneGeometry,
-  meshFromInterleaved,
-  PROCEDURAL_FLOATS_PER_VERTEX,
-} from '@forgeax/engine-geometry';
+// @ts-nocheck — remaining legacy assertions are migrated separately.
+// biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { ok, ok as rhiOk } from '@forgeax/engine-rhi';
-import { rhi } from '@forgeax/engine-rhi-null';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import type {
-  EquirectAsset,
-  Handle,
-  MaterialAsset,
-  MaterialPass,
-  SamplerAsset,
-} from '@forgeax/engine-types';
-import { AssetError, numMipLevels, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { deriveBuiltin } from '../../../pack/src/builtin';
-import { DeviceScope } from '../../../render/src/device/device-scope';
-import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
-import { createEngineMetrics } from '../../../render/src/engine-metrics';
-import { createRenderer as createRuntimeRenderer } from '../createRenderer';
-import { createDevImportTransport, type ImportTransport } from '../dev-import-transport';
-import { EngineEnvironmentError } from '../errors/environment';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
-import { requireRenderer } from './renderer-test-utils';
+import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetError } from '@forgeax/engine-types';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@forgeax/engine-rhi-webgpu', async () => {
   spies.webgpuImportCount += 1;
@@ -282,123 +187,6 @@ function makeFakeRhiDevice(): Record<string, unknown> {
     }),
   };
 }
-function makeMockCanvas(opts: { webgpu?: 'context' | 'null'; webgl2?: 'context' | 'null' }) {
-  return {
-    width: 800,
-    height: 600,
-    getContext(kind: string): unknown {
-      if (kind === 'webgpu') {
-        if (opts.webgpu === 'context') {
-          return {
-            __mockTag: 'webgpu-canvas-context',
-            configure: () => undefined,
-            unconfigure: () => undefined,
-            getCurrentTexture: () => ({ createView: () => ({}) }),
-          };
-        }
-        return null;
-      }
-      if (kind === 'webgl2') {
-        if (opts.webgl2 === 'context') {
-          return {
-            __mockTag: 'webgl2',
-            getExtension: () => null,
-            getParameter: () => 1,
-            isContextLost: () => false,
-          };
-        }
-        return null;
-      }
-      return null;
-    },
-    addEventListener() {},
-    removeEventListener() {},
-  } as unknown as HTMLCanvasElement;
-}
-function _makeStubGPU(): unknown {
-  return {
-    requestAdapter: async () => ({
-      features: new Set<string>(),
-      limits: {},
-      requestDevice: async () => makeFakeRhiDevice(),
-    }),
-    getPreferredCanvasFormat: () => 'bgra8unorm',
-  };
-}
-
-void [
-  AssetError,
-  AssetGuid,
-  AssetRegistry,
-  DeviceScope,
-  EngineEnvironmentError,
-  GpuResidencyCache,
-  HANDLE_CUBE,
-  HANDLE_CYLINDER,
-  HANDLE_QUAD,
-  HANDLE_SPHERE,
-  HANDLE_TRIANGLE,
-  INLINE_PACK_LOADERS,
-  LoaderRegistry,
-  PACK_ARTIFACT_LOADERS,
-  PROCEDURAL_FLOATS_PER_VERTEX,
-  ShaderRegistry,
-  World,
-  _makeStubGPU,
-  afterEach,
-  animationClipLoader,
-  assetRegistryModule,
-  audioLoader,
-  beforeEach,
-  buildSceneChildContext,
-  createBoxGeometry,
-  createDevImportTransport,
-  createEngineMetrics,
-  createPlaneGeometry,
-  createRuntimeRenderer,
-  defineComponent,
-  deriveBuiltin,
-  describe,
-  expect,
-  expectTypeOf,
-  fileURLToPath,
-  fontLoader,
-  getOrCreateMipmapPipeline,
-  it,
-  makeFakeRhiDevice,
-  makeMockCanvas,
-  makeMockShaderRegistry,
-  materialLoader,
-  meshFromInterleaved,
-  meshLoader,
-  mipmapCacheSize,
-  numMipLevels,
-  ok,
-  readFileSync,
-  requireRenderer,
-  resolveAssetHandle,
-  rhi,
-  rhiOk,
-  sceneLoader,
-  skeletonLoader,
-  skinLoader,
-  spies,
-  textureLoader,
-  toShared,
-  toUnique,
-  unwrapHandle,
-  vi,
-  walkMaterialPassesOverSharedRefs,
-  wireDefaultLoaders,
-];
-type __MergedKeep =
-  | EquirectAsset
-  | Handle
-  | ImportTransport
-  | MaterialAsset
-  | MaterialPass
-  | SamplerAsset;
-
 {
   // --- from asset-registry-sprite-slices-validate.test.ts ---
   function makeShaderRegistryWithSprite(): ShaderRegistry {
@@ -451,7 +239,7 @@ type __MergedKeep =
 
   describe.skip('validateSpriteSlices fail-fast (moved to material cook)', () => {
     it('(1) slices contains a negative number -> AssetError(asset-invalid-value)', () => {
-      const reg = new AssetRegistry(makeShaderRegistryWithSprite());
+      const reg = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
       const asset = spriteAssetWithSlices([-0.1, 0.2, 0.2, 0.2]);
       const r = reg.catalog<MaterialAsset>(AssetGuid.random(), asset);
       expect(r.ok).toBe(false);
@@ -466,7 +254,7 @@ type __MergedKeep =
     });
 
     it('(2) slices.x + slices.z >= region.zw[0] -> AssetError(asset-invalid-value)', () => {
-      const reg = new AssetRegistry(makeShaderRegistryWithSprite());
+      const reg = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
       // region.zw[0] = 1.0 ; left + right = 0.6 + 0.6 = 1.2 >= 1.0
       const asset = spriteAssetWithSlices([0.6, 0, 0.6, 0]);
       const r = reg.catalog<MaterialAsset>(AssetGuid.random(), asset);
@@ -483,7 +271,7 @@ type __MergedKeep =
     });
 
     it('(3) slices.y + slices.w >= region.zw[1] -> AssetError(asset-invalid-value)', () => {
-      const reg = new AssetRegistry(makeShaderRegistryWithSprite());
+      const reg = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
       // region.zw[1] = 1.0 ; top + bottom = 0.6 + 0.5 = 1.1 >= 1.0
       const asset = spriteAssetWithSlices([0, 0.6, 0, 0.5]);
       const r = reg.catalog<MaterialAsset>(AssetGuid.random(), asset);
@@ -497,7 +285,7 @@ type __MergedKeep =
     });
 
     it('(4) slices contains NaN -> AssetError(asset-invalid-value)', () => {
-      const reg = new AssetRegistry(makeShaderRegistryWithSprite());
+      const reg = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
       const asset = spriteAssetWithSlices([Number.NaN, 0.1, 0.1, 0.1]);
       const r = reg.catalog<MaterialAsset>(AssetGuid.random(), asset);
       expect(r.ok).toBe(false);
@@ -509,7 +297,7 @@ type __MergedKeep =
     });
 
     it('(5) slices contains Infinity -> AssetError(asset-invalid-value)', () => {
-      const reg = new AssetRegistry(makeShaderRegistryWithSprite());
+      const reg = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
       const asset = spriteAssetWithSlices([0.1, Number.POSITIVE_INFINITY, 0.1, 0.1]);
       const r = reg.catalog<MaterialAsset>(AssetGuid.random(), asset);
       expect(r.ok).toBe(false);
@@ -521,7 +309,7 @@ type __MergedKeep =
     });
 
     it('(6) slices length !== 4 -> AssetError(asset-invalid-value)', () => {
-      const reg = new AssetRegistry(makeShaderRegistryWithSprite());
+      const reg = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
       const asset = spriteAssetWithSlices([0.1, 0.1, 0.1]);
       const r = reg.catalog<MaterialAsset>(AssetGuid.random(), asset);
       expect(r.ok).toBe(false);

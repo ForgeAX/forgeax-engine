@@ -3,7 +3,7 @@ import { textureFormatBlock } from '@forgeax/engine-types';
 export const DEFERRED_COLOR_FORMATS = [
   'rgba16float',
   'r32uint',
-  'r32uint',
+  'rg32uint',
   'r32uint',
   'r32uint',
   'rg32uint',

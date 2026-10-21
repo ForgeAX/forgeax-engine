@@ -1,4 +1,4 @@
-export type CarrierPhase = 'offered' | 'leased' | 'started' | 'exited' | 'expired' | 'fallback';
+export type CarrierPhase = CarrierState['state'];
 
 export type CarrierErrorCode =
   | 'carrier-consumer-mismatch'
@@ -42,10 +42,9 @@ export interface CarrierLease {
   readonly state: 'leased';
 }
 
-export interface CarrierState {
-  readonly state: CarrierPhase;
-  readonly leaseId?: string;
-}
+export type CarrierState =
+  | { readonly state: 'offered' | 'expired' | 'fallback' }
+  | { readonly state: 'leased' | 'started' | 'exited'; readonly leaseId: string };
 
 export interface CarrierStateMachine {
   readonly offer: CarrierOffer;
@@ -145,7 +144,6 @@ export function createCarrierStateMachine(
     state: 'offered',
   };
   let state: CarrierState = { state: 'offered' };
-  let lease: CarrierLease | undefined;
 
   const leaseOffer = (
     requestOrId: CarrierLeaseRequest | string,
@@ -233,7 +231,18 @@ export function createCarrierStateMachine(
         ),
       };
     }
-    if (request.now >= offer.expiresAt) {
+    if (state.state === 'fallback') {
+      return {
+        ok: false,
+        error: carrierError(
+          'carrier-lease-required',
+          'an active offer before leasing',
+          'Request a fresh offer after choosing fallback.',
+          {},
+        ),
+      };
+    }
+    if (state.state === 'expired' || request.now >= offer.expiresAt) {
       state = { state: 'expired' };
       return {
         ok: false,
@@ -245,7 +254,10 @@ export function createCarrierStateMachine(
         ),
       };
     }
-    if (requestedLeaseId !== undefined && requestedLeaseId !== lease?.leaseId) {
+    if (
+      requestedLeaseId !== undefined &&
+      (state.state !== 'leased' || requestedLeaseId !== state.leaseId)
+    ) {
       return {
         ok: false,
         error: carrierError(
@@ -256,7 +268,7 @@ export function createCarrierStateMachine(
         ),
       };
     }
-    lease = {
+    const lease: CarrierLease = {
       leaseId: `lease:${token()}`,
       offerId: offer.offerId,
       consumerId: request.consumerId,
@@ -267,7 +279,7 @@ export function createCarrierStateMachine(
   };
 
   const started = (leaseId: string): CarrierResult<CarrierState> => {
-    if (lease?.leaseId !== leaseId) {
+    if ((state.state !== 'leased' && state.state !== 'started') || state.leaseId !== leaseId) {
       return {
         ok: false,
         error: carrierError(
@@ -283,7 +295,7 @@ export function createCarrierStateMachine(
   };
 
   const exit = (leaseId: string): CarrierResult<CarrierState> => {
-    if (lease?.leaseId !== leaseId || state.state !== 'started') {
+    if (state.state !== 'started' || state.leaseId !== leaseId) {
       return {
         ok: false,
         error: carrierError(

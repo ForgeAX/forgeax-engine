@@ -52,3 +52,44 @@ for (const x of [-2,1]) it(`deletes and refills the complete chunk at ${x} witho
     world.step();
   } finally {world.free();}
 });
+
+it('copies the latest shared voxel root and detaches only the edited instance', () => {
+  const world = new R.World(zero);
+  try {
+    const shape = (min: number, max: number) =>
+      R.Voxels.fromRegions(new Int32Array([min, 0, 0, max, 1, 1]), size);
+    const geometry = world.colliders.createSharedGeometry(shape(0, 3));
+    const desc = () => new R.ColliderDesc({ type: 'shared', geometry, scale: size });
+    const source = world.createCollider(desc());
+    const sibling = world.createCollider(desc());
+    expect(world.colliders.replaceSharedGeometry(geometry, shape(0, 4))).toBe(true);
+    const latest = ['0/0/0', '1/0/0', '2/0/0', '3/0/0'];
+    expect(occupied(source)).toEqual(latest);
+
+    // The descriptor contributes policy; the source and edits own the copied geometry.
+    const copy = world.createColliderFromVoxelEdits(
+      desc().setEnabled(false), source,
+      new Int32Array([0, 0, 0]), new Int32Array([5, 0, 0]),
+    );
+    const copied = ['1/0/0', '2/0/0', '3/0/0', '5/0/0'];
+    expect(occupied(copy)).toEqual(copied);
+    expect(copy.isEnabled()).toBe(false);
+    expect(occupied(source)).toEqual(latest);
+    expect(source.setVoxels(new Int32Array([1, 0, 0]), false)).toBe(1);
+    expect(occupied(source)).toEqual(['0/0/0', '2/0/0', '3/0/0']);
+    expect(occupied(sibling)).toEqual(latest);
+
+    expect(world.colliders.replaceSharedGeometry(geometry, shape(8, 9))).toBe(true);
+    expect(occupied(sibling)).toEqual(['8/0/0']);
+    expect(occupied(source)).toEqual(['0/0/0', '2/0/0', '3/0/0']);
+    expect(occupied(copy)).toEqual(copied);
+    world.removeCollider(source, false);
+    world.removeCollider(sibling, false);
+    expect(world.colliders.removeSharedGeometry(geometry)).toBe(true);
+    copy.setEnabled(true);
+    world.step();
+    expect(occupied(copy)).toEqual(copied);
+  } finally {
+    world.free();
+  }
+});

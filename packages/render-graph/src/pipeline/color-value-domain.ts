@@ -1,4 +1,4 @@
-import { err, ok, RenderGraphError, type Result } from '../errors.js';
+import { RenderGraphError } from '../errors.js';
 
 export const COLOR_VALUE_DOMAINS = ['linear-hdr', 'linear-ldr', 'display-encoded'] as const;
 
@@ -8,11 +8,6 @@ export type ColorDomainConversion =
   | { readonly kind: 'encode-srgb' }
   | { readonly kind: 'decode-srgb' }
   | { readonly kind: 'tone-map' };
-
-export interface ColorResourceDescriptor {
-  readonly domain: ColorValueDomain;
-  readonly format: string;
-}
 
 export interface ColorDomainConnection {
   readonly source: string;
@@ -37,57 +32,13 @@ function invalidDomain(value: unknown): RenderGraphError {
   });
 }
 
-function missingDomain(resourceKey?: string): RenderGraphError {
+function missingDomain(resourceKey: 'source' | 'destination'): RenderGraphError {
   return new RenderGraphError({
     code: 'missing-color-domain',
     expected: 'every connected color resource has an explicit domain',
-    hint: `add domain to the color resource descriptor${resourceKey === undefined ? '' : ` '${resourceKey}'`}`,
-    detail: { resourceKey: resourceKey ?? '<descriptor>' },
+    hint: `add domain to the color resource descriptor '${resourceKey}'`,
+    detail: { resourceKey },
   });
-}
-
-export function serializeColorValueDomain(domain: ColorValueDomain): string {
-  if (!isColorValueDomain(domain)) throw invalidDomain(domain);
-  return JSON.stringify(domain);
-}
-
-export function deserializeColorValueDomain(
-  value: unknown,
-): Result<ColorValueDomain, RenderGraphError> {
-  let candidate = value;
-  if (typeof value === 'string') {
-    try {
-      candidate = JSON.parse(value) as unknown;
-    } catch {
-      candidate = value;
-    }
-  }
-  return isColorValueDomain(candidate) ? ok(candidate) : err(invalidDomain(candidate));
-}
-
-export function serializeColorResourceDescriptor(descriptor: ColorResourceDescriptor): string {
-  if (!isColorValueDomain(descriptor.domain)) throw invalidDomain(descriptor.domain);
-  return JSON.stringify(descriptor);
-}
-
-export function deserializeColorResourceDescriptor(
-  value: unknown,
-): Result<ColorResourceDescriptor, RenderGraphError> {
-  if (typeof value !== 'object' || value === null) return err(missingDomain());
-  const candidate = value as { domain?: unknown; format?: unknown };
-  if (candidate.domain === undefined) return err(missingDomain());
-  if (!isColorValueDomain(candidate.domain)) return err(invalidDomain(candidate.domain));
-  if (typeof candidate.format !== 'string' || candidate.format.length === 0) {
-    return err(
-      new RenderGraphError({
-        code: 'invalid-color-domain',
-        expected: 'color resource descriptor includes a non-empty format',
-        hint: 'set format separately from the explicit color domain',
-        detail: { value: String(candidate.format) },
-      }),
-    );
-  }
-  return ok({ domain: candidate.domain, format: candidate.format });
 }
 
 function conversionMatches(
@@ -135,5 +86,3 @@ export function validateColorDomainConnection(
     }),
   };
 }
-
-export { invalidDomain, missingDomain };

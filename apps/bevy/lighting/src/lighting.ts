@@ -24,7 +24,7 @@
 // types (PointLight, SpotLight, DirectionalLight, Skylight) compose correctly.
 
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_QUAD, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -33,8 +33,11 @@ import { Materials, Skylight } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 import { SpotLight } from '@forgeax/engine-render';
 
-import type { MaterialAsset } from '@forgeax/engine-runtime';;
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // ── Light colors (Bevy RED / LIME / BLUE) ───────────────────────────────
 const RED = [1, 0, 0] as const;
@@ -46,27 +49,30 @@ const LIME4: [number, number, number, number] = [0, 1, 0, 1];
 const BLUE4: [number, number, number, number] = [0, 0, 1, 1];
 
 export function buildLightingWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   // ── Ground plane (flat cube), white PBR ─────────────────────────────────
-  const whiteMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
+  const whiteMat = sceneAssets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [10, 0.02, 10] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [whiteMat] } },
   );
 
   // ── Left wall (cuboid 5.0×0.15×5.0, rotated Z=90°), indigo ────────────
-  const indigoMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [75 / 255, 0, 130 / 255, 1] }),
-  );
+  const indigoMat = sceneAssets.create(Materials.standard({ baseColor: [75 / 255, 0, 130 / 255, 1] })).unwrap();
   const leftWallQuat = quat.create();
   quat.fromAxisAngle(leftWallQuat, [0, 0, 1], Math.PI / 2);
   world.spawn(
     { component: Transform, data: { pos: [2.5, 2.5, 0], quat: leftWallQuat, scale: [5, 0.15, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [indigoMat] } },
   );
 
@@ -75,65 +81,50 @@ export function buildLightingWorld(world: World): void {
   quat.fromAxisAngle(backWallQuat, [1, 0, 0], Math.PI / 2);
   world.spawn(
     { component: Transform, data: { pos: [0, 2.5, -2.5], quat: backWallQuat, scale: [5, 0.15, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [indigoMat] } },
   );
 
   // ── Logo quad (unlit white, no logo texture asset) ──────────────────────
-  const logoMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([1, 1, 1, 1]),
-  );
+  const logoMat = sceneAssets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
   const logoQuat = quat.create();
   quat.fromAxisAngle(logoQuat, [0, 1, 0], Math.PI / 8);
   world.spawn(
     { component: Transform, data: { pos: [-2.2, 0.5, 1], quat: logoQuat, scale: [2, 0.5, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [logoMat] } },
   );
 
   // ── Pink cube (Bevy DEEP_PINK) ─────────────────────────────────────────
-  const pinkMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 20 / 255, 147 / 255, 1] }),
-  );
+  const pinkMat = sceneAssets.create(Materials.standard({ baseColor: [1, 20 / 255, 147 / 255, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [pinkMat] } },
   );
 
   // ── Green sphere (Bevy LIMEGREEN) ──────────────────────────────────────
-  const greenMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [50 / 255, 205 / 255, 50 / 255, 1] }),
-  );
+  const greenMat = sceneAssets.create(Materials.standard({ baseColor: [50 / 255, 205 / 255, 50 / 255, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [1.5, 1, 1.5], quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [greenMat] } },
   );
 
   // ── Red PointLight with emissive sphere child ───────────────────────────
-  const redEmissiveMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: RED4, emissive: [4, 0, 0] }),
-  );
+  const redEmissiveMat = sceneAssets.create(Materials.standard({ baseColor: RED4, emissive: [4, 0, 0] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [1, 2, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: PointLight, data: { color: RED, intensity: 400, range: 20 } },
   );
   world.spawn(
     { component: Transform, data: { pos: [1, 2, 0], quat: [0, 0, 0, 1], scale: [0.1, 0.1, 0.1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [redEmissiveMat] } },
   );
 
   // ── Green SpotLight with emissive sphere child ──────────────────────────
-  const greenEmissiveMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: LIME4, emissive: [0, 4, 0] }),
-  );
+  const greenEmissiveMat = sceneAssets.create(Materials.standard({ baseColor: LIME4, emissive: [0, 4, 0] })).unwrap();
   world.spawn(
     {
       component: Transform,
@@ -156,22 +147,19 @@ export function buildLightingWorld(world: World): void {
       component: Transform,
       data: { pos: [-1, 2, 0], quat: [0, 0, 0, 1], scale: [0.1, 0.1, 0.1] },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [greenEmissiveMat] } },
   );
 
   // ── Blue PointLight with emissive sphere child ──────────────────────────
-  const blueEmissiveMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: BLUE4, emissive: [0, 0, 4] }),
-  );
+  const blueEmissiveMat = sceneAssets.create(Materials.standard({ baseColor: BLUE4, emissive: [0, 0, 4] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 4, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: PointLight, data: { color: BLUE, intensity: 400, range: 20 } },
   );
   world.spawn(
     { component: Transform, data: { pos: [0, 4, 0], quat: [0, 0, 0, 1], scale: [0.1, 0.1, 0.1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [blueEmissiveMat] } },
   );
 

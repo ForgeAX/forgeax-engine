@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { readShaderManifestPublication } from '../../../packages/shader/src/manifest-publication.ts';
+import {
+  readShaderManifestPublication,
+  SHADER_MANIFEST_PUBLICATION_VERSION,
+} from '../../../packages/shader/src/manifest-publication.ts';
 import { publishShaderManifest } from '../../../packages/vite-plugin-shader/src/manifest-publication.ts';
 import {
   APP_SHADER_MANIFEST_DELTA,
@@ -95,16 +98,35 @@ test('app-owned rows replace a same-identity shared material row', () => {
 const sharedReceipt = { layout: 'shared' };
 const customReceipt = { layout: 'custom' };
 const variantReceipt = { layout: 'variant' };
-const compactSharedMaterial = { ...sharedMaterial, receipt: sharedReceipt };
+const sharedReads = [
+  { name: 'vertex_main', stage: 'vertex', bindings: [{ group: 2, binding: 0, fields: ['model'] }] },
+];
+const customReads = [
+  {
+    name: 'fragment_main',
+    stage: 'fragment',
+    bindings: [{ group: 1, binding: 0, fields: ['color', 'roughness'] }],
+  },
+];
+const variantReads = [
+  { name: 'fragment_main', stage: 'fragment', bindings: [{ group: 1, binding: 0 }] },
+];
+const compactSharedMaterial = {
+  ...sharedMaterial,
+  receipt: sharedReceipt,
+  entryPoints: sharedReads,
+};
 const compactCustomMaterial = {
   ...customMaterial,
   receipt: customReceipt,
+  entryPoints: customReads,
   variants: [
     {
       defines: { MODE: '1' },
       definesKey: 'MODE=1',
       composedWgsl: 'variant',
       receipt: variantReceipt,
+      entryPoints: variantReads,
     },
   ],
 };
@@ -119,7 +141,7 @@ test('a source-less empty app delta preserves the compact shared publication', (
   );
 });
 
-test('compact app deltas preserve source bytes and receipt facts through materialization', async () => {
+test('compact app deltas preserve source bytes, receipts and exact entry reads through materialization', async () => {
   const engine = publishShaderManifest([sharedEntry], [compactSharedMaterial]);
   // The custom material changes every shared receipt index in the app pool.
   const app = publishShaderManifest(
@@ -127,12 +149,17 @@ test('compact app deltas preserve source bytes and receipt facts through materia
     [compactCustomMaterial, compactSharedMaterial],
   );
   assert.notEqual(engine.materialShaders[0].receiptIndex, app.materialShaders[1].receiptIndex);
+  assert.notEqual(
+    engine.materialShaders[0].entryPointsIndex,
+    app.materialShaders[1].entryPointsIndex,
+  );
   const delta = projectAppShaderManifest(app, engine);
   assert.deepEqual(
     delta.materialShaders.map((row) => row.identifier),
     [customMaterial.identifier],
   );
   assert.deepEqual(delta.receipts, [customReceipt, variantReceipt]);
+  assert.deepEqual(delta.entryPoints, [customReads, variantReads]);
   assert.deepEqual(projectAppShaderManifest(delta, engine), delta);
   assert.deepEqual(await readShaderManifestPublication(delta), {
     entries: [customEntry],
@@ -146,7 +173,7 @@ test('compact app deltas preserve source bytes and receipt facts through materia
   });
 });
 
-test('replacing a compact material prunes unused sources and receipts', async () => {
+test('replacing a compact material prunes unused sources, receipts and entry reads', async () => {
   const engine = publishShaderManifest([], [compactSharedMaterial]);
   const replacement = {
     ...compactCustomMaterial,
@@ -156,6 +183,7 @@ test('replacing a compact material prunes unused sources and receipts', async ()
   const app = publishShaderManifest([], [replacement]);
   const merged = mergeAppShaderManifest(engine, projectAppShaderManifest(app, engine));
   assert.deepEqual(merged.receipts, [customReceipt, variantReceipt]);
+  assert.deepEqual(merged.entryPoints, [customReads, variantReads]);
   assert.deepEqual(await readShaderManifestPublication(merged), {
     entries: [],
     materialShaders: [replacement],
@@ -206,7 +234,8 @@ test('compact app delta retains custom shader sources through materialization', 
     variants: [],
   };
   const engine = {
-    schemaVersion: '4.0.0',
+    schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    entryPoints: [],
     fragments: [sharedSource],
     sources: { [sharedDigest]: [0] },
     receipts: [sharedReceipt],
@@ -214,7 +243,8 @@ test('compact app delta retains custom shader sources through materialization', 
     materialShaders: [sharedMaterial],
   };
   const app = {
-    schemaVersion: '4.0.0',
+    schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    entryPoints: [],
     fragments: [sharedSource, 'fn custom() {}\n'],
     sources: { [sharedDigest]: [0], [customDigest]: [0, 1] },
     receipts: [customReceipt, sharedReceipt],
@@ -240,11 +270,11 @@ test('compact app delta retains custom shader sources through materialization', 
   assert.deepEqual(projectAppShaderManifest(delta, engine), delta);
   assert.equal(app.materialShaders[0].receiptIndex, 1, 'projection preserves producer indices');
   const merged = mergeAppShaderManifest(engine, delta);
-  assert.equal(delta.schemaVersion, '4.0.0');
+  assert.equal(delta.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
   assert.deepEqual(delta.receipts, [customReceipt]);
   assert.equal(delta.materialShaders[0].receiptIndex, 0);
   assert.equal(delta.materialShaders[0].variants[0].receiptIndex, 0);
-  assert.equal(merged.schemaVersion, '4.0.0');
+  assert.equal(merged.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
   assert.deepEqual(merged.receipts, [sharedReceipt, customReceipt]);
   assert.equal(merged.materialShaders[1].receiptIndex, 1);
   assert.equal(merged.materialShaders[1].variants[0].receiptIndex, 1);
@@ -269,7 +299,8 @@ test('compact app overrides discard replaced receipts and remap the surviving ma
   const key = { identifier: 'forgeax::default-standard-pbr', sourcePath: 'engine/standard.wgsl' };
   const merged = mergeAppShaderManifest(
     {
-      schemaVersion: '4.0.0',
+      schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+      entryPoints: [],
       fragments: [sharedSource],
       sources: { [sharedDigest]: [0] },
       receipts: [sharedReceipt],
@@ -278,7 +309,8 @@ test('compact app overrides discard replaced receipts and remap the surviving ma
     },
     {
       forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
-      schemaVersion: '4.0.0',
+      schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+      entryPoints: [],
       fragments: [customSource],
       sources: { [customDigest]: [0] },
       receipts: [customReceipt],
@@ -293,7 +325,7 @@ test('compact app overrides discard replaced receipts and remap the surviving ma
   assert.equal(merged.materialShaders[0].receiptIndex, 0);
 });
 
-test('schema 4 app deltas close source and receipt tables after projection and merge', () => {
+test('schema 5 app deltas close source and receipt tables after projection and merge', () => {
   const engineEntrySource = 'fn engine_entry() {}\n';
   const sharedMaterialSource = 'fn shared_material() {}\n';
   const engineEntryDigest = compactV4Digest([engineEntrySource]);
@@ -347,7 +379,8 @@ test('schema 4 app deltas close source and receipt tables after projection and m
   };
   const sharedReceipts = [{ owner: 'shared-material' }, { owner: 'shared-variant' }];
   const engine = {
-    schemaVersion: '4.0.0',
+    schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    entryPoints: [],
     fragments: [engineEntrySource, sharedMaterialSource],
     sources: { [engineEntryDigest]: [0], [sharedMaterialDigest]: [1] },
     receipts: sharedReceipts,
@@ -355,7 +388,8 @@ test('schema 4 app deltas close source and receipt tables after projection and m
     materialShaders: [sharedMaterial],
   };
   const app = {
-    schemaVersion: '4.0.0',
+    schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    entryPoints: [],
     fragments: [
       engineEntrySource,
       sharedMaterialSource,
@@ -381,7 +415,7 @@ test('schema 4 app deltas close source and receipt tables after projection and m
   };
 
   const delta = projectAppShaderManifest(app, engine);
-  assert.equal(delta.schemaVersion, '4.0.0');
+  assert.equal(delta.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
   assert.deepEqual(delta.entries, [customEntry]);
   assert.deepEqual(delta.receipts, [
     { owner: 'app-replacement' },
@@ -398,7 +432,7 @@ test('schema 4 app deltas close source and receipt tables after projection and m
   assert.deepEqual(projectAppShaderManifest(delta, engine), delta);
 
   const merged = mergeAppShaderManifest(engine, delta);
-  assert.equal(merged.schemaVersion, '4.0.0');
+  assert.equal(merged.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
   assert.deepEqual(
     merged.entries.map((entry) => entry.hash),
     ['engine-entry', 'app-entry'],
@@ -434,7 +468,8 @@ test('same row and receipt index with different receipt bytes remains an app ove
   const source = 'fn main() {}';
   const digest = compactV4Digest([source]);
   const shared = {
-    schemaVersion: '4.0.0',
+    schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    entryPoints: [],
     receipts: [{ binding: 1 }],
     fragments: [source],
     sources: { [digest]: [0] },
@@ -461,7 +496,8 @@ test('rejects invalid delta receipt indices before concatenating receipt tables'
   const source = 'fn main() {}';
   const digest = compactV4Digest([source]);
   const shared = {
-    schemaVersion: '4.0.0',
+    schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    entryPoints: [],
     receipts: [],
     fragments: [],
     sources: {},
@@ -471,7 +507,8 @@ test('rejects invalid delta receipt indices before concatenating receipt tables'
   for (const receiptIndex of [-1, 1, 0.5, '0']) {
     const delta = {
       forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
-      schemaVersion: '4.0.0',
+      schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+      entryPoints: [],
       receipts: [{}],
       fragments: [source],
       sources: { [digest]: [0] },
@@ -481,5 +518,197 @@ test('rejects invalid delta receipt indices before concatenating receipt tables'
       ],
     };
     assert.throws(() => mergeAppShaderManifest(shared, delta), /receipt is missing/);
+  }
+});
+
+test('entry-read pool order does not change shared rows or producer-owned publications', async () => {
+  const utility = { ...sharedEntry, entryPoints: sharedReads };
+  const customUtility = { ...customEntry, entryPoints: customReads };
+  const shared = publishShaderManifest([utility], [compactSharedMaterial]);
+  const app = publishShaderManifest(
+    [customUtility, utility],
+    [compactCustomMaterial, compactSharedMaterial],
+  );
+  assert.notEqual(shared.entries[0].entryPointsIndex, app.entries[1].entryPointsIndex);
+  const original = JSON.stringify({ app, shared });
+  const delta = projectAppShaderManifest(app, shared);
+  assert.deepEqual(
+    delta.entries.map((row) => row.hash),
+    [customEntry.hash],
+  );
+  assert.deepEqual(delta.entryPoints, [customReads, variantReads]);
+  assert.equal(delta.entries[0].entryPointsIndex, delta.materialShaders[0].entryPointsIndex);
+  assert.notEqual(
+    delta.materialShaders[0].entryPointsIndex,
+    delta.materialShaders[0].variants[0].entryPointsIndex,
+  );
+  const merged = mergeAppShaderManifest(shared, delta);
+  assert.deepEqual(await readShaderManifestPublication(merged), {
+    entries: [utility, customUtility],
+    materialShaders: [compactSharedMaterial, compactCustomMaterial],
+  });
+  assert.equal(JSON.stringify({ app, shared }), original);
+});
+
+test('same utility and material indices with different entry reads remain app overrides', async () => {
+  const utility = { ...sharedEntry, entryPoints: sharedReads };
+  const material = {
+    ...compactSharedMaterial,
+    variants: [{ definesKey: '', composedWgsl: 'engine', entryPoints: sharedReads }],
+  };
+  const shared = publishShaderManifest([utility], [material]);
+  const app = { ...shared, entryPoints: [customReads] };
+  const delta = projectAppShaderManifest(app, shared);
+  assert.equal(delta.entries.length, 1);
+  assert.equal(delta.materialShaders.length, 1);
+  const merged = mergeAppShaderManifest(shared, delta);
+  assert.deepEqual(merged.entryPoints, [customReads]);
+  const decoded = await readShaderManifestPublication(merged);
+  assert.deepEqual(decoded.entries[0].entryPoints, customReads);
+  assert.deepEqual(decoded.materialShaders[0].entryPoints, customReads);
+  assert.deepEqual(decoded.materialShaders[0].variants[0].entryPoints, customReads);
+});
+
+test('transport preserves unknown reflection, known empty entries and complete-resource reads', async () => {
+  const variants = [
+    { definesKey: 'unknown', composedWgsl: 'unknown' },
+    { definesKey: 'empty', composedWgsl: 'empty', entryPoints: [] },
+    { definesKey: 'complete', composedWgsl: 'complete', entryPoints: variantReads },
+    {
+      definesKey: 'no-fields',
+      composedWgsl: 'no-fields',
+      entryPoints: [
+        {
+          name: 'fragment_main',
+          stage: 'fragment',
+          bindings: [{ group: 1, binding: 0, fields: [] }],
+        },
+      ],
+    },
+  ];
+  const material = { ...customMaterial, entryPoints: [], variants };
+  const shared = publishShaderManifest([], [customMaterial]);
+  const app = publishShaderManifest([], [material]);
+  const delta = projectAppShaderManifest(app, shared);
+  assert.equal(delta.materialShaders.length, 1);
+  assert.equal(delta.entryPoints.length, 3);
+  assert.equal(delta.materialShaders[0].variants[0].entryPointsIndex, undefined);
+  assert.equal(
+    delta.materialShaders[0].variants[1].entryPointsIndex,
+    delta.materialShaders[0].entryPointsIndex,
+  );
+  const merged = mergeAppShaderManifest(shared, delta);
+  assert.deepEqual(await readShaderManifestPublication(merged), {
+    entries: [],
+    materialShaders: [material],
+  });
+  const removed = mergeAppShaderManifest(app, projectAppShaderManifest(shared, app));
+  assert.deepEqual(removed.entryPoints, []);
+  assert.deepEqual(await readShaderManifestPublication(removed), {
+    entries: [],
+    materialShaders: [customMaterial],
+  });
+});
+
+const reflectedPublication = () =>
+  publishShaderManifest(
+    [{ ...sharedEntry, entryPoints: sharedReads }],
+    [
+      {
+        ...compactSharedMaterial,
+        variants: [{ definesKey: '', composedWgsl: 'engine', entryPoints: sharedReads }],
+      },
+    ],
+  );
+const reflectedRows = (publication) => [
+  publication.entries[0],
+  publication.materialShaders[0],
+  publication.materialShaders[0].variants[0],
+];
+
+test('all row entry-read indices are checked against their original pool before filtering or rebasing', () => {
+  const shared = reflectedPublication();
+  for (let rowIndex = 0; rowIndex < 3; rowIndex++) {
+    for (const entryPointsIndex of [
+      -1,
+      1,
+      0.5,
+      '0',
+      null,
+      undefined,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      const invalid = reflectedPublication();
+      reflectedRows(invalid)[rowIndex].entryPointsIndex = entryPointsIndex;
+      assert.throws(() => projectAppShaderManifest(invalid, shared), /entry reads is missing/);
+      assert.throws(() => projectAppShaderManifest(shared, invalid), /entry reads is missing/);
+      assert.throws(
+        () =>
+          mergeAppShaderManifest(shared, {
+            ...invalid,
+            forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
+          }),
+        /entry reads is missing/,
+      );
+      assert.throws(
+        () =>
+          mergeAppShaderManifest(invalid, {
+            ...shared,
+            forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
+          }),
+        /entry reads is missing/,
+      );
+    }
+  }
+});
+
+test('compact transport rejects absent or malformed entry-read pools and inline facts', () => {
+  const shared = reflectedPublication();
+  const malformed = [
+    undefined,
+    {},
+    [null],
+    [{}],
+    [[{ name: 'bad', stage: 'geometry', bindings: [] }]],
+    [
+      [
+        {
+          name: 'bad',
+          stage: 'fragment',
+          bindings: [{ group: 0, binding: 0, fields: ['x', 'x'] }],
+        },
+      ],
+    ],
+  ];
+  for (const entryPoints of malformed) {
+    const invalid = { ...shared, entryPoints };
+    assert.throws(
+      () => projectAppShaderManifest(invalid, shared),
+      /missing entryPoints|entry reads is invalid/,
+    );
+    assert.throws(
+      () =>
+        mergeAppShaderManifest(shared, { ...invalid, forgeaxTransport: APP_SHADER_MANIFEST_DELTA }),
+      /missing entryPoints|entry reads is invalid/,
+    );
+  }
+  for (let rowIndex = 0; rowIndex < 3; rowIndex++) {
+    const invalid = reflectedPublication();
+    reflectedRows(invalid)[rowIndex].entryPoints = sharedReads;
+    assert.throws(() => projectAppShaderManifest(invalid, shared), /inline entry reads/);
+    assert.throws(
+      () =>
+        mergeAppShaderManifest(shared, { ...invalid, forgeaxTransport: APP_SHADER_MANIFEST_DELTA }),
+      /inline entry reads/,
+    );
+  }
+});
+
+test('delta source fragments are checked before adding the shared fragment offset', () => {
+  const shared = publishShaderManifest([sharedEntry], []);
+  for (const index of [-1, 1, 0.5, '0', null]) {
+    const delta = projectAppShaderManifest(publishShaderManifest([customEntry], []), shared);
+    delta.sources[delta.entries[0].sourceDigest] = [index];
+    assert.throws(() => mergeAppShaderManifest(shared, delta), /invalid source fragment/);
   }
 });

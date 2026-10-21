@@ -3,6 +3,10 @@ import { componentId, defineComponent } from '../component';
 import { ChangeEpochExhaustedError } from '../errors';
 import { getDerivedWriter } from '../internal';
 import { createStateProjection } from '../projection/state-projection';
+import {
+  beginDerivedRangeAllocationTrace,
+  endDerivedRangeAllocationTrace,
+} from '../query/derived-range-writer';
 import type { Query } from '../query/query';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -28,6 +32,190 @@ function fixture(): {
 }
 
 describe('package-internal derived range writer contract', () => {
+  it('rejects nested writers on the same World without overwriting deferred runs', () => {
+    const { world, query } = fixture();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const other = getDerivedWriter(
+      world.query({ read: [Input], write: [Value] }).unwrap(),
+      Value,
+    ).unwrap();
+    const projection = createStateProjection(world, [Value]);
+    projection.read().accept();
+    let nestedCalled = false;
+    const result = writer.probeAndCommitRange(
+      0,
+      0,
+      0,
+      4,
+      (_binding, row) => row === 0 || row === 2,
+      (binding, row) => {
+        binding.write.value[row] = row + 10;
+        if (row === 2) {
+          for (const nested of [writer, other]) {
+            const rejected = nested.writeRange(
+              0,
+              0,
+              3,
+              1,
+              () => {
+                nestedCalled = true;
+              },
+              undefined,
+            );
+            expect(rejected.ok).toBe(false);
+            if (!rejected.ok) expect(rejected.error.code).toBe('derived-write-active');
+          }
+        }
+      },
+      undefined,
+    );
+    expect(result.ok).toBe(true);
+    expect(nestedCalled).toBe(false);
+    expect(world.execution.health).toBe('healthy');
+    expect(projection.read().indices).toEqual([0, 2]);
+  });
+
+  it('rejects change reads and cursor acceptance until the World write is published', () => {
+    const { world, query } = fixture();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const projection = createStateProjection(world, [Value]);
+    projection.read().accept();
+    const pending = projection.read();
+    const changed = world.query({ read: [Value], changed: [Value] }).unwrap();
+    const spans = world.query({ read: [Value], changed: [Value] }).unwrap();
+    Array.from(changed);
+    Array.from(spans.spans().unwrap());
+    const held = changed[Symbol.iterator]();
+    const result = writer.writeRange(
+      0,
+      0,
+      0,
+      1,
+      (binding) => {
+        binding.write.value[0] = 7;
+        expect(projection.isCurrent()).toBe(false);
+        for (const read of [
+          () => projection.read(),
+          () => pending.validate(),
+          () => pending.accept(),
+          () => held.next(),
+          () => Array.from(spans.spans().unwrap()),
+        ]) {
+          expect(read).toThrowError(expect.objectContaining({ code: 'derived-write-active' }));
+        }
+      },
+      undefined,
+    );
+    expect(result.ok).toBe(true);
+    expect(projection.read().indices).toEqual([0]);
+    expect(Array.from(changed, (row) => row.entity)).toHaveLength(1);
+    expect(
+      Array.from(spans.spans().unwrap()).flatMap((span) => Array.from(span.entities)),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    'staging',
+    'invalid-pair',
+    'odd-pair',
+  ])('poisons unexpected %s failure after producer writes', (kind) => {
+    const { world, query } = fixture();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const projection = createStateProjection(world, [Value]);
+    projection.read().accept();
+    const rows: number[] = [];
+    if (kind === 'staging')
+      Object.defineProperty(rows, 'push', {
+        value: () => {
+          throw new Error('staging allocation fault');
+        },
+      });
+    const result = writer.writeRows(rows, () => {
+      const binding = writer.bindings[0];
+      if (binding === undefined) throw new Error('missing binding');
+      binding.write.value[0] = 7;
+      if (kind === 'odd-pair') rows.push(0);
+      else rows.push(0, kind === 'invalid-pair' ? 999 : 0);
+    });
+    expect(result.ok).toBe(false);
+    expect(world.execution.health).toBe('poisoned');
+    expect(world[worldInternal].isDerivedWriteActive()).toBe(false);
+    expect(() => projection.read()).toThrowError(
+      expect.objectContaining({ code: 'world-poisoned' }),
+    );
+  });
+
+  it('preserves newer callback mutations while poisoning an invalid numeric producer', () => {
+    const { world, query } = fixture();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const first = Array.from(world.query({ read: [Value] }).unwrap(), (row) => row.entity)[0];
+    if (first === undefined) throw new Error('missing entity');
+    const before = world[worldInternal].getMutationEpoch();
+    let nestedEpoch = 0;
+    const result = writer.writeRange(
+      0,
+      0,
+      2,
+      1,
+      (binding) => {
+        binding.write.value[2] = 7;
+        world.set(first, Value, { value: 99 }).unwrap();
+        nestedEpoch = world[worldInternal].getMutationEpoch();
+      },
+      undefined,
+    );
+    expect(result.ok).toBe(false);
+    expect(nestedEpoch).toBeGreaterThan(before);
+    expect(world[worldInternal].getMutationEpoch()).toBe(nestedEpoch);
+    expect(world.execution.health).toBe('poisoned');
+  });
+  it('preserves unrelated bindings and refreshes only the column owner that grew', () => {
+    const { world, query } = fixture();
+    const Extra = defineComponent('DerivedBindingExtra', {});
+    const Other = defineComponent('DerivedBindingOther', {});
+    world
+      .spawn(
+        { component: Input, data: {} },
+        { component: Value, data: {} },
+        { component: Extra, data: {} },
+      )
+      .unwrap();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const first = writer.bindings[0];
+    const second = writer.bindings[1];
+    if (first === undefined || second === undefined) throw new Error('missing bound owners');
+    const firstRead = first.read;
+    const secondRead = second.read;
+    const unrelated = world.spawn().unwrap();
+    beginDerivedRangeAllocationTrace();
+    world.addComponent(unrelated, { component: Other, data: {} }).unwrap();
+    expect(writer.bindings[0]).toBe(first);
+    expect(writer.bindings[1]).toBe(second);
+    expect(first.read).toBe(firstRead);
+    expect(second.read).toBe(secondRead);
+    expect(endDerivedRangeAllocationTrace().bindingRebuilds).toBe(0);
+    for (let i = 0; i < 70; i++)
+      world.spawn({ component: Input, data: {} }, { component: Value, data: {} }).unwrap();
+    beginDerivedRangeAllocationTrace();
+    expect(writer.bindings[0]).toBe(first);
+    expect(first.rowCapacity).toBe(74);
+    expect(first.read === firstRead).toBe(false);
+    expect(second.read).toBe(secondRead);
+    expect(endDerivedRangeAllocationTrace().bindingRebuilds).toBe(1);
+    writer
+      .writeRange(
+        0,
+        0,
+        73,
+        1,
+        (binding, _base, start) => {
+          binding.write.value[start] = 42;
+        },
+        undefined,
+      )
+      .unwrap();
+    expect(first.write.value[73]).toBe(42);
+  });
   it('publishes only the exact span-relative range with one component epoch', () => {
     const { world, query } = fixture();
     const writer = getDerivedWriter(query, Value).unwrap();
@@ -57,12 +245,11 @@ describe('package-internal derived range writer contract', () => {
     expect(values).toEqual([0, 11, 12, 3]);
     const candidate = projection.read();
     expect(candidate.indices).toEqual([1, 2]);
-    expect(candidate.scannedRows).toBe(4);
+    expect(candidate.scannedRows).toBe(2);
+    expect(candidate.checkedBlocks).toBe(0);
 
-    const graph = world[worldInternal].getGraph();
-    const record = world[worldInternal].getRecords()[0];
-    const table = graph.tables[graph.archetypes[record?.archetypeId ?? -1]?.tableId ?? -1];
-    const epochs = table?.storage.get(componentId(Value))?.epochs.changed;
+    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
     expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, beforeEpoch + 1, beforeEpoch + 1, 4]));
   });
 
@@ -115,10 +302,8 @@ describe('package-internal derived range writer contract', () => {
     const values: number[] = [];
     for (const row of world.query({ read: [Value] }).unwrap()) values.push(row.get(Value).value);
     expect(values).toEqual([0, 11, 2, 13]);
-    const graph = world[worldInternal].getGraph();
-    const record = world[worldInternal].getRecords()[0];
-    const table = graph.tables[graph.archetypes[record?.archetypeId ?? -1]?.tableId ?? -1];
-    const epochs = table?.storage.get(componentId(Value))?.epochs.changed;
+    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
     expect(epochs?.[1]).toBe(beforeEpoch + 1);
     expect(epochs?.[3]).toBe(beforeEpoch + 1);
   });
@@ -189,10 +374,8 @@ describe('package-internal derived range writer contract', () => {
       expect(world.execution.health).toBe('healthy');
       expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
       expect(world.get(firstEntity, Value).unwrap().value).toBe(0);
-      const graph = world[worldInternal].getGraph();
-      const record = world[worldInternal].getRecords()[0];
-      const table = graph.tables[graph.archetypes[record?.archetypeId ?? -1]?.tableId ?? -1];
-      const epochs = table?.storage.get(componentId(Value))?.epochs.changed;
+      const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
+      const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
       expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, 2, 3, 4]));
     } finally {
       Object.defineProperty(world[worldInternal], 'nextMutationEpoch', {
@@ -245,10 +428,8 @@ describe('package-internal derived range writer contract', () => {
     expect(world.execution.health).toBe('poisoned');
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
     expect(world.get(firstEntity, Value).unwrap().value).toBe(10);
-    const graph = world[worldInternal].getGraph();
-    const record = world[worldInternal].getRecords()[0];
-    const table = graph.tables[graph.archetypes[record?.archetypeId ?? -1]?.tableId ?? -1];
-    const epochs = table?.storage.get(componentId(Value))?.epochs.changed;
+    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
     expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, 2, 3, 4]));
     expect(
       writer.probeAndCommitRange(

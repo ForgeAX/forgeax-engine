@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { DebugDraw } from '@forgeax/engine-debug-draw';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import {
@@ -8,8 +9,10 @@ import {
 import { vec3 } from '@forgeax/engine-math';
 import { Camera, MeshFilter, MeshRenderer, orthographic, Materials } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
-import type { Handle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import type { MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 const NUM_SLICES = 8;
 const RADIUS = 40;
@@ -74,17 +77,20 @@ function meshResult(result: ReturnType<typeof create2dGeometry>, label: string):
 
 function spawnArc(
   world: World,
-  material: Handle<'MaterialAsset', 'shared'>,
+  material: AssetHandle<'material'>,
   shape: Shape2d,
   position: readonly [number, number],
   rotation: number,
   label: string,
 ): ArcInstance {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const mesh = meshResult(
     create2dGeometry(shape, { uv: { kind: 'circular-mask', angle: rotation } }),
     label,
   );
-  const meshHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
+  const meshHandle = sceneAssets.create(mesh).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: { pos: [position[0], position[1], 0], quat: [0, 0, 0, 1] } },
@@ -96,14 +102,14 @@ function spawnArc(
 }
 
 export function buildMesh2dArcsWorld(world: World, texture: number): Mesh2dArcsScene {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([1, 1, 1, 1], {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const material = sceneAssets.create(Materials.unlit([1, 1, 1, 1], {
       alphaCutoff: 0.1,
       baseColorTexture: texture,
       renderState: { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
-    }),
-  );
+    })).unwrap();
   const instances: ArcInstance[] = [];
   for (let i = 0; i < NUM_SLICES; i += 1) {
     const fraction = (i + 1) / NUM_SLICES;

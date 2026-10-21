@@ -81,8 +81,7 @@ fn viewDistance(depth : f32) -> f32 {
 }
 
 fn ssrLatticeCoordinate(uv : vec2<f32>, fullSize : vec2<u32>) -> vec2<f32> {
-  // Half-resolution centers correspond to full pixels 2*p + 0.5.
-  return (uv * vec2<f32>(fullSize) - vec2<f32>(0.5)) * 0.5;
+  return uv * vec2<f32>(fullSize) - vec2<f32>(0.5);
 }
 
 struct SsrHistorySample {
@@ -139,8 +138,8 @@ struct SsrCurrentSample {
 // A tap carries confidence-premultiplied color until the footprint is summed.
 fn ssrCurrentTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, footprintWeight : f32) -> SsrCurrentSample {
   if (footprintWeight <= 0.0) { return SsrCurrentSample(vec4<f32>(0.0), 0.0); }
-  let sourceNormal = loadStandardNormalRoughness(currentNormal, pixel * 2).xyz;
-  let sourceDepth = viewDistance(textureLoad(currentDepth, pixel * 2, 0));
+  let sourceNormal = loadStandardNormalRoughness(currentNormal, pixel).xyz;
+  let sourceDepth = viewDistance(textureLoad(currentDepth, pixel, 0));
   if (depthReject(expectedDepth, sourceDepth) || normalReject(normal, sourceNormal)) {
     return SsrCurrentSample(vec4<f32>(0.0), 0.0);
   }
@@ -345,8 +344,7 @@ fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
   if (any(globalId.xy >= size)) { return; }
   let pixel = vec2<i32>(globalId.xy);
   let fullSize = textureDimensions(currentDepth, 0);
-  let sourcePixel = floor(vec2<f32>(globalId.xy) * vec2<f32>(fullSize) / vec2<f32>(size));
-  let uv = (sourcePixel + vec2<f32>(0.5)) / vec2<f32>(fullSize);
+  let uv = (vec2<f32>(globalId.xy) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
   let history = resolveSsrAt(uv, fullSize);
   textureStore(historyOutput, pixel, vec4<f32>(history.color.rgb, select(history.depth, -history.depth, history.missing)));
   // Presentation remains on the current raster lattice expected by material

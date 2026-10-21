@@ -20,6 +20,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
 import { createBarrelRendererFixture } from './barrel-distortion-gpu-fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import { error, json, save } from './taa-maturity.fixture';
 
@@ -76,7 +77,7 @@ it.each([
   const imported = renderValue(
     await renderer.importTexture({ kind: 'gpu-texture', texture: height }),
   );
-  const source = world.allocSharedRef('ExternalTextureSource', imported.source);
+  const source = { source: imported.source };
   let geometry = createPlaneGeometry(2, 2, 8, 8).unwrap();
   const rotation = [0, Math.sin(0.4), 0, Math.cos(0.4)];
   if (skin) {
@@ -95,18 +96,20 @@ it.each([
   const object = world
     .spawn(
       { component: Transform, data: { quat: rotation } },
-      { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', geometry) } },
+      { component: MeshFilter, data: { assetHandle: testAssets(world).create(geometry).unwrap() } },
       { component: MeshRenderer, data: { materials: [] } },
     )
     .unwrap();
   if (skin) {
     const joint = world.spawn({ component: Transform, data: { quat: rotation } }).unwrap();
-    const skeleton = world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 1,
-      inverseBindMatrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
-      bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-    });
+    const skeleton = testAssets(world)
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+        bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
+      })
+      .unwrap();
     world
       .addComponent(object, {
         component: Skin,
@@ -139,7 +142,7 @@ it.each([
       material = { ...material, passes: [pass(first), ...rest.map(pass)] };
     }
     world
-      .set(object, MeshRenderer, { materials: [world.allocSharedRef('MaterialAsset', material)] })
+      .set(object, MeshRenderer, { materials: [testAssets(world).create(material).unwrap()] })
       .unwrap();
   };
   setMaterial(0.5, 0);

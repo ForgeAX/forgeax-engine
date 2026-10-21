@@ -1,5 +1,6 @@
 #define_import_path forgeax_material::terrain_surface
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
+#import forgeax_material::terrain_layer_sampling::{terrain_layer}
 #import forgeax_pbr::tbn::{applyTBN}
 
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
@@ -14,10 +15,9 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   var emissions: array<vec4<f32>,4>;
   var heightBlend=false;
   for(var i=0;i<4;i++) {
-    colors[i]=textureSample(terrainColorLayers,terrainColorLayers_sampler,uv,i);
-    normals[i]=textureSample(terrainNormalHeightLayers,terrainNormalHeightLayers_sampler,uv,i);
-    orm[i]=textureSample(terrainOrmLayers,terrainOrmLayers_sampler,uv,i);
-    emissions[i]=textureSample(terrainEmissionLayers,terrainEmissionLayers_sampler,uv,i);
+    let layer=terrain_layer(i32(material.terrainLayerIndices[i]),input);
+    colors[i]=layer.color; normals[i]=layer.normalHeight;
+    orm[i]=vec4<f32>(layer.orm,0.0); emissions[i]=vec4<f32>(layer.emission,0.0);
     if(material.terrainLayerModes[i] == 1.0) {
       w[i]=clamp(authored[i]*2.0-1.0+normals[i].w,0.0001,1.0);
       heightBlend=true;

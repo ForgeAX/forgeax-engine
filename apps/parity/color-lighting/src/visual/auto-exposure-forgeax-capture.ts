@@ -1,6 +1,5 @@
 import { srgbChannelToLinear } from '@forgeax/engine/types';
 import { halfFloat } from '@forgeax/engine/math';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
@@ -30,6 +29,10 @@ import {
   type AutoExposureAc27ForgeaxProvenance,
 } from '../evidence/auto-exposure-ac27-join';
 import { normalizeCanvasReadbackBytes } from './vertex-color-capture';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Bundler payload accepted by the Runtime renderer host in Browser and Dawn. */
 export interface AutoExposureForgeaxBundler {
@@ -183,14 +186,16 @@ function createCanvas(width: number, height: number): CaptureCanvas {
   return { canvas, destroy: () => texture?.destroy() };
 }
 
-function setupWorld(): World {
-  const world = new World();
+function setupWorld(assets: AssetRegistry): World {
+  const world = new World({ assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const fixture = AUTO_EXPOSURE_THREE_R184_FIXTURE;
   for (const { offset, color } of fixture.asset.barLayout) {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit(color),
-    );
+    const material = sceneAssets.create(Materials.unlit(color)).unwrap();
     world.spawn(
       {
         component: Transform,
@@ -200,7 +205,7 @@ function setupWorld(): World {
           scale: fixture.asset.transform.scale,
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     ).unwrap();
   }
@@ -407,7 +412,7 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
     readonly perFramePassNames?: readonly string[];
     readonly renderFeatureDiagnostics?: () => readonly unknown[];
   };
-  const world = setupWorld();
+  const world = setupWorld(constructed.value.assets);
   const attached = renderer.attach(world);
   if (!attached.ok) {
     await renderer.dispose();

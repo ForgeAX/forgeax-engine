@@ -17,6 +17,7 @@ export interface ExecutionFrameMessage {
   readonly kind: 'frame';
   readonly musicState?: MusicState;
   readonly audioPreparation?: import('@forgeax/engine-audio').AudioPreparationReceipt;
+  readonly rejectedAudioPublications?: readonly import('@forgeax/engine-audio').AudioClipIdentity[];
   readonly worldIdentity: string;
   readonly frameId: number;
   readonly deltaSeconds: number;
@@ -30,6 +31,7 @@ export interface ExecutionFrameMessage {
 }
 
 export interface ExecutionFrameCompletion {
+  readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly kind: 'frame-complete';
   readonly worldIdentity: string;
   readonly frameId: number;

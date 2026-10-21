@@ -44,12 +44,11 @@ import { fileURLToPath } from 'node:url';
 import { World } from '@forgeax/engine-ecs';
 import { decodeImageFromFile } from '@forgeax/engine-image/decode-image-from-file';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -154,7 +153,11 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
 
     let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>>;
     try {
-      host = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: ENGINE_MANIFEST_URL });
+      host = await constructRuntimeRendererHost(
+        mockCanvas,
+        {},
+        { shaderManifestUrl: ENGINE_MANIFEST_URL },
+      );
     } finally {
       globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
     }
@@ -166,12 +169,15 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
     //    world.allocSharedRef (M8 D-17; the registry holds no handle map).
     //    Skips the pack-index fetch path -- the dawn harness has no vite
     //    middleware behind it, so we mint the column directly.
-    const world = new World();
+    const world = new World({ assets });
+    const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const decodeRes = await decodeImageFromFile(CONTAINER_SRC_PATH);
-    expect(decodeRes.ok, `decodeImageFromFile failed: ${decodeRes.ok ? '' : decodeRes.error.code}`)
-      .toBe(true);
+    expect(
+      decodeRes.ok,
+      `decodeImageFromFile failed: ${decodeRes.ok ? '' : decodeRes.error.code}`,
+    ).toBe(true);
     if (!decodeRes.ok) return;
     const { decoded: woodDecoded, meta: woodMeta } = decodeRes.value;
     const woodGuidRes = AssetGuid.parse(woodMeta.guid);
@@ -188,15 +194,22 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
       colorSpace: woodDecoded.colorSpace,
       mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
     };
-    assets.catalog<TextureAsset>(woodMeta.guid, woodTexAsset);
-    const woodHandle = world.allocSharedRef('TextureAsset', woodTexAsset);
+    const woodHandle = assets.create(woodTexAsset).unwrap();
 
     // 2. Build material referencing the wood handle.
-    const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
-      values: { baseColor: [1, 1, 1, 1], baseColorTexture: unwrapHandle(woodHandle) },
-    });
+    const matHandle = assets
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-unlit' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: { baseColor: [1, 1, 1, 1], baseColorTexture: woodHandle },
+      })
+      .unwrap();
 
     // 3. Spawn cube + camera (axis-aligned, no rotation -- AC-08f / g
     //    are about the front-face wood color + UV variation, AC-08h is
@@ -209,16 +222,22 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
       {
         component: Transform,
         data: {
-          pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
+          pos: [0, 0, 0],
+          quat: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+        },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     );
     world.spawn(
       {
         component: Transform,
         data: {
-          pos: [0, 0, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
+          pos: [0, 0, 3],
+          quat: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+        },
       },
       {
         component: Camera,
@@ -297,10 +316,10 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
     // so every fragment's uv was (0,0) -> single-texel sample -> uniform
     // colour. With proper 12F UVs the wood-grain JPG samples vary.
     const sites: ReadonlyArray<[number, number, number]> = [
-      readRgba(Math.floor(WIDTH * 0.40), Math.floor(HEIGHT * 0.40)),
-      readRgba(Math.floor(WIDTH * 0.60), Math.floor(HEIGHT * 0.40)),
-      readRgba(Math.floor(WIDTH * 0.40), Math.floor(HEIGHT * 0.60)),
-      readRgba(Math.floor(WIDTH * 0.60), Math.floor(HEIGHT * 0.60)),
+      readRgba(Math.floor(WIDTH * 0.4), Math.floor(HEIGHT * 0.4)),
+      readRgba(Math.floor(WIDTH * 0.6), Math.floor(HEIGHT * 0.4)),
+      readRgba(Math.floor(WIDTH * 0.4), Math.floor(HEIGHT * 0.6)),
+      readRgba(Math.floor(WIDTH * 0.6), Math.floor(HEIGHT * 0.6)),
     ];
     const allEqual = sites.every(
       (s) => s[0] === sites[0]![0] && s[1] === sites[0]![1] && s[2] === sites[0]![2],
@@ -314,10 +333,10 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
     // back-face cull the side / back faces over-paint past the projected
     // front-face footprint and the rim picks up wood pixels.
     const rimSites: ReadonlyArray<[number, number, number, string]> = [
-      [...readRgba(Math.floor(WIDTH * 0.10), Math.floor(HEIGHT * 0.5)), 'left'],
-      [...readRgba(Math.floor(WIDTH * 0.90), Math.floor(HEIGHT * 0.5)), 'right'],
-      [...readRgba(Math.floor(WIDTH * 0.5), Math.floor(HEIGHT * 0.10)), 'top'],
-      [...readRgba(Math.floor(WIDTH * 0.5), Math.floor(HEIGHT * 0.90)), 'bottom'],
+      [...readRgba(Math.floor(WIDTH * 0.1), Math.floor(HEIGHT * 0.5)), 'left'],
+      [...readRgba(Math.floor(WIDTH * 0.9), Math.floor(HEIGHT * 0.5)), 'right'],
+      [...readRgba(Math.floor(WIDTH * 0.5), Math.floor(HEIGHT * 0.1)), 'top'],
+      [...readRgba(Math.floor(WIDTH * 0.5), Math.floor(HEIGHT * 0.9)), 'bottom'],
     ];
     for (const [r, g, b, name] of rimSites) {
       expect(

@@ -59,13 +59,18 @@
 // resolves to 'unlit').
 import { World } from '@forgeax/engine-ecs';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
-import { HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime';
-import type { MaterialAsset } from '@forgeax/engine-types';
+import { EngineEnvironmentError } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import playShaderSrc from './shaders/play.wgsl?raw';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // Reference the WGSL source so the rolldown / esbuild dev transform
 // keeps it in the import graph (a bare `import '... ?raw'` would also
@@ -95,6 +100,11 @@ import playShaderSrc from './shaders/play.wgsl?raw';
 const PLAY_BASE_COLOR = [1.0, 0.5, 0.2, 1.0] as const;
 
 function spawnPulseScene(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
   // Camera entity: identity orientation + pos z=3 (LO 1.1 / 1.3 cam
   // baseline) so the triangle sits inside the perspective frustum.
   world.spawn(
@@ -108,13 +118,13 @@ function spawnPulseScene(world: World): void {
   // Pass-based MaterialAsset: the passes array with forgeax::default-unlit
   // routes the MeshRenderer through the engine's unlit pipeline; the
   // `baseColor` RGBA quadruple is the LO 1.3 orange triangle teaching colour.
-  const playMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const playMaterial = sceneAssets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
     ],
     values: { baseColor: PLAY_BASE_COLOR },
-  });
+  }).unwrap();
   // Triangle entity: builtin HANDLE_TRIANGLE mesh + MeshRenderer
   // pointing at the unlit MaterialAsset above. The triangle sits at
   // origin / identity rotation / unit scale (M0 SSOT lock).
@@ -124,7 +134,7 @@ function spawnPulseScene(world: World): void {
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+    { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
     {
       component: MeshRenderer,
       data: { materials: [playMaterial] },
@@ -159,12 +169,12 @@ void bootstrap(canvas);
 
 async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   try {
-    const created = await createRenderer(target, {}, forgeaxBundlerAdapter());
+    const created = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
     if (!created.ok) {
       console.error('[learn-render 1.3 shaders] renderer construction failed:', created.error);
       return;
     }
-    const renderer = created.value;
+    const { renderer, assets } = created.value;
     renderer.subscribe((event) => {
       if (event.kind !== 'error') return;
       const e = event.error;
@@ -172,7 +182,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
       if (bus !== undefined) bus.push({ code: e.code, hint: e.hint });
     });
-    const world = new World();
+    const world = new World({ assets });
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     spawnPulseScene(world);

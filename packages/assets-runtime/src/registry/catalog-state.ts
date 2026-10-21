@@ -1,20 +1,25 @@
-import { ok, type Result } from '@forgeax/engine-rhi';
+import { err, ok, type Result } from '@forgeax/engine-rhi';
 import type {
-  AssetError,
+  AssetLoadError,
   CatalogDelta,
   CatalogDiagnostic,
   CatalogEntry,
+  CatalogRevisionPoint,
   ResourceRevision,
   RuntimeAssetBinding,
 } from '@forgeax/engine-types';
-import { checkCatalogRevisionContinuity } from '@forgeax/engine-types';
+import { AssetError, checkCatalogRevisionContinuity } from '@forgeax/engine-types';
 import type { CatalogSource } from '../catalog-source';
+import { type RuntimeCatalogRow, validateRuntimeRow } from '../internal/validate-runtime-row';
+import { waitForAsset } from '../internal/wait-for-asset';
+import { resolveCatalogAssetUrl } from './catalog';
 
 export interface CatalogReplicaSnapshot {
   readonly version: number;
   readonly entries: readonly CatalogEntry[];
   readonly stale: boolean;
   readonly diagnostics: readonly CatalogDiagnostic[];
+  readonly revisions: readonly CatalogRevisionPoint[];
 }
 
 type SnapshotResult = Result<CatalogReplicaSnapshot, AssetError>;
@@ -33,16 +38,8 @@ function freezeSnapshot(snapshot: CatalogReplicaSnapshot): CatalogReplicaSnapsho
     ...snapshot,
     entries: Object.freeze(snapshot.entries.map(freezeEntry)),
     diagnostics: Object.freeze([...snapshot.diagnostics]),
+    revisions: Object.freeze(snapshot.revisions.map((point) => Object.freeze({ ...point }))),
   });
-}
-
-function revisionIsOlder(
-  incoming: ResourceRevision | undefined,
-  current: ResourceRevision | undefined,
-): boolean {
-  return (
-    incoming !== undefined && current !== undefined && incoming.observedAt < current.observedAt
-  );
 }
 
 function sameRevision(left: ResourceRevision, right: ResourceRevision): boolean {
@@ -84,11 +81,44 @@ function hasIdentityChanges(delta: CatalogDelta): boolean {
 function rowRevisionDiagnostic(
   entries: ReadonlyMap<string, CatalogEntry>,
   delta: CatalogDelta,
+  ordered = false,
 ): CatalogDiagnostic | undefined {
   for (const entry of [...delta.added, ...delta.changed]) {
     const prior = entries.get(guidKey(entry.guid));
-    if (prior?.revision === undefined) continue;
     if (prior !== undefined && sameValue(prior, entry)) continue;
+    const previous = prior?.publication;
+    const incoming = entry.publication;
+    if (previous !== undefined) {
+      const stale = !ordered && incoming !== undefined && incoming.generation < previous.generation;
+      if (
+        incoming === undefined ||
+        stale ||
+        (incoming.generation === previous.generation &&
+          (incoming.sourcePath !== previous.sourcePath ||
+            incoming.sourceRevision !== previous.sourceRevision ||
+            incoming.digest !== previous.digest ||
+            incoming.outputSetDigest !== previous.outputSetDigest ||
+            entry.packageUrl !== prior?.packageUrl))
+      )
+        return {
+          code: stale ? 'catalog-revision-stale' : 'catalog-revision-conflict',
+          severity: 'blocking',
+          expected: 'changed runtime output to advance its publication generation',
+          actual: `${previous.generation} -> ${incoming?.generation ?? 'missing'}`,
+          hint: 'retain the accepted publication and request the current producer output',
+          authority: 'catalog',
+        };
+      // A dependency-only rebuild can leave the author file timestamp unchanged.
+      if (ordered || incoming.generation > previous.generation) continue;
+    }
+    if (prior?.revision === undefined) continue;
+    if (
+      incoming !== undefined &&
+      previous === undefined &&
+      entry.revision !== undefined &&
+      sameRevision(prior.revision, entry.revision)
+    )
+      continue;
     if (entry.revision === undefined) {
       return {
         code: 'catalog-revision-conflict',
@@ -157,6 +187,8 @@ export class CatalogReplica {
   private readonly source: CatalogSource;
   private readonly listeners = new Set<CatalogDeltaListener>();
   private readonly entries = new Map<string, CatalogEntry>();
+  private readonly revisions = new Map<string, number>();
+  private readonly changedAt = new Map<string, number>();
   private pendingBeforeBaseline: CatalogDelta[] = [];
   private pendingDuringReconcile: CatalogDelta[] | undefined;
   private unsubscribe: (() => void) | undefined;
@@ -166,16 +198,39 @@ export class CatalogReplica {
   private stale = false;
   private diagnostics: readonly CatalogDiagnostic[] = [];
   private currentSnapshot: CatalogReplicaSnapshot | undefined;
-  private readonly expectedScope: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'> | undefined;
+  private readonly configuredScope: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'> | undefined;
+  private get expectedScope() {
+    return this.configuredScope ?? this.source.expectedScope;
+  }
+  get scopeId(): string {
+    return this.expectedScope?.scopeId ?? 'asset-runtime';
+  }
+  get generation(): number {
+    return this.expectedScope?.generation ?? 0;
+  }
+  private readonly lifetime = new AbortController();
+  private readonly reads = new Map<string, Promise<Result<RuntimeCatalogRow, AssetLoadError>>>();
+  private reconcilePromise: Promise<SnapshotResult> | undefined;
+  private disposed = false;
 
-  constructor(source: CatalogSource) {
+  constructor(
+    source: CatalogSource,
+    options: { readonly scopeId?: string; readonly generation?: number } = {},
+  ) {
     this.source = source;
-    this.expectedScope = source.expectedScope;
+    this.configuredScope =
+      options.scopeId === undefined && options.generation === undefined
+        ? source.expectedScope
+        : {
+            scopeId: options.scopeId ?? source.expectedScope?.scopeId ?? 'asset-runtime',
+            generation: options.generation ?? source.expectedScope?.generation ?? 0,
+          };
     this.currentSnapshot = freezeSnapshot({
       version: 0,
       entries: [],
       stale: false,
       diagnostics: [],
+      revisions: [],
     });
   }
 
@@ -193,6 +248,156 @@ export class CatalogReplica {
     return this.entries.get(guidKey(guid));
   }
 
+  get isStale(): boolean {
+    return this.stale;
+  }
+
+  discontinuity(): AssetLoadError | undefined {
+    return this.stale
+      ? {
+          code: 'catalog-discontinuous',
+          expected: 'an authoritative, contiguous Catalog publication',
+          hint: 'reconcile the Catalog before loading the current publication',
+          detail: {
+            scopeId: this.scopeId,
+            expectedGeneration: this.generation,
+            actualGeneration: this.generation,
+          },
+        }
+      : undefined;
+  }
+
+  /** Demand admission and explicit refresh fold only the requested producer rows. */
+  require(guid: string, refresh = false): Promise<Result<RuntimeCatalogRow, AssetLoadError>> {
+    if (this.disposed) return Promise.resolve(err(this.disposedError()));
+    const id = guidKey(guid);
+    const row = this.get(id);
+    const produce = this.source.get?.bind(this.source);
+    if (!row)
+      return Promise.resolve(
+        err({
+          code: 'asset-not-found',
+          expected: 'a declared Catalog GUID',
+          hint: 'inspect the producer Catalog',
+          detail: { guid },
+        }),
+      );
+    if (
+      produce === undefined ||
+      (!refresh && (row.lifecycle !== 'missing' || row.publication !== undefined))
+    )
+      return Promise.resolve(validateRuntimeRow(row));
+    const prior = this.reads.get(id);
+    if (prior) return prior;
+    const startedAt = this.version;
+    const request = Promise.resolve().then(
+      async (): Promise<Result<RuntimeCatalogRow, AssetLoadError>> => {
+        const imported = await waitForAsset(
+          Promise.resolve()
+            .then(() => produce(guid))
+            .then((result) =>
+              result.ok ? ok(result.value) : err(this.sourceError(guid, result.error.code)),
+            )
+            .catch((cause: unknown) =>
+              err(this.sourceError(guid, cause instanceof Error ? cause.message : String(cause))),
+            ),
+          this.lifetime.signal,
+          guid,
+        );
+        if (this.disposed) return err(this.disposedError());
+        if (this.reads.get(id) !== request) return err(this.superseded(guid));
+        const discontinuity = this.discontinuity();
+        if (discontinuity) return err(discontinuity);
+        if (!imported.ok) return imported;
+        const rows: RuntimeCatalogRow[] = [];
+        for (const candidate of imported.value) {
+          const checked = validateRuntimeRow(this.resolveRow(candidate));
+          if (!checked.ok) return checked;
+          const key = guidKey(candidate.guid);
+          const current = this.get(key);
+          if (
+            (this.changedAt.get(key) ?? 0) > startedAt &&
+            (current === undefined || !sameValue(current, checked.value))
+          )
+            return err(this.superseded(candidate.guid));
+          // A demand response covers only one publication's rows. It cannot
+          // advance a root stream past updates to other assets under that root.
+          if (this.revisions.size > 0 && !sameValue(current, checked.value))
+            return err(
+              this.sourceError(
+                candidate.guid,
+                'sequenced demand must publish its complete Catalog window before returning rows',
+              ),
+            );
+          rows.push(checked.value);
+        }
+        const published = rows.find((candidate) => guidKey(candidate.guid) === id);
+        if (!published) return err(this.sourceError(guid, 'producer omitted the requested GUID'));
+        this.fold(
+          {
+            added: rows,
+            changed: [],
+            removed: [],
+            scopeId: this.scopeId,
+            generation: this.generation,
+          },
+          true,
+        );
+        const failed = this.discontinuity();
+        return failed ? err(failed) : ok(published);
+      },
+    );
+    this.reads.set(id, request);
+    void request.finally(() => {
+      if (this.reads.get(id) === request) this.reads.delete(id);
+      if (this.reads.size === 0) this.changedAt.clear();
+    });
+    return request;
+  }
+
+  private resolveRow(row: CatalogEntry): CatalogEntry {
+    if (this.source.url === undefined) return row;
+    const packageUrl = resolveCatalogAssetUrl({ packIndexUrl: this.source.url }, row.packageUrl);
+    return packageUrl === row.packageUrl ? row : { ...row, packageUrl };
+  }
+
+  private sourceError(guid: string, reason: string): AssetLoadError {
+    return {
+      code: 'asset-package-invalid',
+      expected: 'a verified Catalog source',
+      hint: 'repair the source and retry',
+      detail: { guid, reason },
+    };
+  }
+
+  private superseded(guid: string): AssetLoadError {
+    return {
+      code: 'asset-superseded',
+      expected: 'the same declared source until publication completes',
+      hint: 'retry the current Catalog publication',
+      detail: { guid, generation: this.generation },
+    };
+  }
+
+  private retired(): SnapshotResult {
+    return err(
+      new AssetError({
+        code: 'asset-invalidated',
+        expected: 'the active Catalog source',
+        hint: 'obtain the current runtime owner after source retirement',
+      }),
+    );
+  }
+
+  private disposedError(): AssetLoadError {
+    return {
+      code: 'asset-runtime-disposed',
+      expected: 'an active asset source',
+      hint: 'obtain the current runtime owner',
+      detail: { scopeId: this.scopeId },
+    };
+  }
+
   /**
    * Adopt an already accepted baseline without reading the source again.
    *
@@ -207,6 +412,7 @@ export class CatalogReplica {
       this.unsubscribe = this.source.subscribe((delta) => this.receive(delta));
     }
     this.entries.clear();
+    this.revisions.clear();
     for (const entry of entries) this.entries.set(guidKey(entry.guid), freezeEntry(entry));
     this.stale = false;
     this.diagnostics = [];
@@ -219,6 +425,11 @@ export class CatalogReplica {
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.lifetime.abort();
+    this.reads.clear();
+    this.changedAt.clear();
+    this.revisions.clear();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.startPromise = undefined;
@@ -228,6 +439,7 @@ export class CatalogReplica {
   }
 
   async start(): Promise<SnapshotResult> {
+    if (this.disposed) return this.retired();
     if (this.startPromise !== undefined) return this.startPromise;
     // `reconcile()` accepts a fresh baseline without populating startPromise.
     // Once that baseline is ready, a later consumer start is only another
@@ -250,15 +462,36 @@ export class CatalogReplica {
   }
 
   async reconcile(): Promise<SnapshotResult> {
+    if (this.disposed) return this.retired();
+    if (this.reconcilePromise) return this.reconcilePromise;
     if (this.unsubscribe === undefined) {
       this.unsubscribe = this.source.subscribe((delta) => this.receive(delta));
     }
     this.pendingDuringReconcile = [];
-    return this.loadBaseline(true);
+    this.reads.clear();
+    this.changedAt.clear();
+    const promise = this.loadBaseline(true);
+    this.reconcilePromise = promise;
+    void promise.finally(() => {
+      if (this.reconcilePromise === promise) this.reconcilePromise = undefined;
+    });
+    return promise;
   }
 
   private async loadBaseline(isReconcile: boolean): Promise<SnapshotResult> {
-    const result = await this.source.enumerate();
+    let result: Awaited<ReturnType<CatalogSource['enumerate']>>;
+    try {
+      result = await this.source.enumerate();
+    } catch (cause) {
+      result = err(
+        new AssetError({
+          code: 'asset-fetch-failed',
+          expected: 'a Catalog source that resolves a Result',
+          hint: cause instanceof Error ? cause.message : String(cause),
+        }),
+      );
+    }
+    if (this.disposed) return this.retired();
     if (!result.ok) {
       this.stale = true;
       this.currentSnapshot = this.makeSnapshot();
@@ -267,35 +500,109 @@ export class CatalogReplica {
       return result;
     }
 
+    const previous = new Map(this.entries);
+    const previousRevisions = [...this.revisions].map(([rootId, revision]) => ({
+      rootId,
+      revision,
+    }));
     this.entries.clear();
-    for (const entry of result.value) this.entries.set(guidKey(entry.guid), freezeEntry(entry));
+    this.revisions.clear();
+    for (const point of result.revisions ?? []) this.revisions.set(point.rootId, point.revision);
+    const changed: CatalogEntry[] = [];
+    for (const input of result.value) {
+      const entry = this.resolveRow(input);
+      const key = guidKey(entry.guid);
+      const old = previous.get(key);
+      const equal = old !== undefined && sameValue(old, entry);
+      this.entries.set(key, equal ? old : freezeEntry(entry));
+      if (!equal) {
+        changed.push(entry);
+        if (this.reads.size > 0) this.changedAt.set(key, this.version + 1);
+      }
+      previous.delete(key);
+    }
+    for (const key of previous.keys())
+      if (this.reads.size > 0) this.changedAt.set(key, this.version + 1);
+    if (changed.length || previous.size) this.version += 1;
     this.stale = false;
     this.diagnostics = [];
     this.baselineReady = true;
     const pending = isReconcile ? (this.pendingDuringReconcile ?? []) : this.pendingBeforeBaseline;
     this.pendingBeforeBaseline = [];
     this.pendingDuringReconcile = undefined;
-    for (const delta of pending) this.fold(delta, false);
+    const baselineRevisions = new Map(this.revisions);
+    const reconciledGuids = new Set([
+      ...changed.map((entry) => guidKey(entry.guid)),
+      ...previous.keys(),
+    ]);
+    for (const delta of pending) {
+      // The enumeration can already include commits observed while it was in flight.
+      if (
+        delta.authority !== 'degraded' &&
+        (this.expectedScope === undefined ||
+          (delta.scopeId === this.scopeId && delta.generation === this.generation)) &&
+        delta.revisions !== undefined &&
+        delta.revisions.current.length > 0 &&
+        checkCatalogRevisionContinuity(delta.revisions, hasIdentityChanges(delta)) === undefined &&
+        delta.revisions.current.every(
+          (point) => point.revision <= (baselineRevisions.get(point.rootId) ?? -1),
+        ) &&
+        (delta.revisions.current.every(
+          (point) => point.revision < (baselineRevisions.get(point.rootId) ?? -1),
+        ) ||
+          this.matchesDelta(delta))
+      )
+        continue;
+      this.fold(delta, false);
+      if (isReconcile) {
+        for (const entry of [...delta.added, ...delta.changed])
+          reconciledGuids.add(guidKey(entry.guid));
+        for (const guid of delta.removed) reconciledGuids.add(guidKey(guid));
+      }
+    }
     this.currentSnapshot = this.makeSnapshot();
+    if (isReconcile) {
+      const current: CatalogEntry[] = [];
+      const removed: string[] = [];
+      for (const guid of reconciledGuids) {
+        const entry = this.entries.get(guid);
+        if (entry) current.push(entry);
+        else removed.push(guid);
+      }
+      this.publish({
+        scopeId: this.scopeId,
+        generation: this.generation,
+        added: [],
+        changed: current,
+        removed,
+        ...(previousRevisions.length || this.revisions.size
+          ? { revisions: { baseline: previousRevisions, current: this.currentSnapshot.revisions } }
+          : {}),
+      });
+    }
     return ok(this.currentSnapshot);
   }
 
   private receive(delta: CatalogDelta): void {
+    if (this.disposed) return;
     if (!this.baselineReady) {
       if (this.pendingDuringReconcile !== undefined) this.pendingDuringReconcile.push(delta);
       else this.pendingBeforeBaseline.push(delta);
-      this.publish(this.safeDelta(delta));
       return;
     }
     if (this.pendingDuringReconcile !== undefined) {
       this.pendingDuringReconcile.push(delta);
-      this.publish(this.safeDelta(delta));
       return;
     }
     this.fold(delta, true);
   }
 
   private fold(delta: CatalogDelta, publish: boolean): void {
+    delta = {
+      ...delta,
+      added: delta.added.map((entry) => this.resolveRow(entry)),
+      changed: delta.changed.map((entry) => this.resolveRow(entry)),
+    };
     const safeDelta = this.safeDelta(delta);
     const degraded = safeDelta.authority === 'degraded';
     this.stale = this.stale || degraded;
@@ -339,17 +646,23 @@ export class CatalogReplica {
     }
 
     if (!degraded) {
+      for (const point of safeDelta.revisions?.current ?? [])
+        this.revisions.set(point.rootId, point.revision);
       let changed = false;
       for (const entry of [...safeDelta.added, ...safeDelta.changed]) {
         const key = guidKey(entry.guid);
         const prior = this.entries.get(key);
-        if (revisionIsOlder(entry.revision, prior?.revision)) continue;
         if (prior !== undefined && sameValue(prior, entry)) continue;
         this.entries.set(key, freezeEntry(entry));
+        if (this.reads.size > 0) this.changedAt.set(key, this.version + 1);
         changed = true;
       }
       for (const guid of safeDelta.removed) {
-        if (this.entries.delete(guidKey(guid))) changed = true;
+        this.reads.delete(guidKey(guid));
+        if (this.entries.delete(guidKey(guid))) {
+          if (this.reads.size > 0) this.changedAt.set(guidKey(guid), this.version + 1);
+          changed = true;
+        }
       }
       if (changed) this.version += 1;
     }
@@ -361,15 +674,38 @@ export class CatalogReplica {
   }
 
   private safeDelta(delta: CatalogDelta): CatalogDelta {
+    const window = delta.revisions;
+    const ordered =
+      window !== undefined &&
+      window.baseline.length > 0 &&
+      window.baseline.every((point) => this.revisions.get(point.rootId) === point.revision);
+    const duplicate =
+      window !== undefined &&
+      window.current.length > 0 &&
+      window.current.every((point) => this.revisions.get(point.rootId) === point.revision) &&
+      this.matchesDelta(delta);
+    const discontinuous = window?.baseline.find((point) => {
+      const accepted = this.revisions.get(point.rootId);
+      return accepted !== undefined && accepted !== point.revision;
+    });
     const diagnostic =
       this.expectedScope !== undefined &&
       (delta.scopeId !== this.expectedScope.scopeId ||
         delta.generation !== this.expectedScope.generation)
         ? diagnosticForScopeMismatch()
-        : delta.revisions === undefined
+        : window === undefined
           ? rowRevisionDiagnostic(this.entries, delta)
-          : (checkCatalogRevisionContinuity(delta.revisions, hasIdentityChanges(delta)) ??
-            rowRevisionDiagnostic(this.entries, delta));
+          : (checkCatalogRevisionContinuity(window, hasIdentityChanges(delta)) ??
+            (!duplicate && discontinuous !== undefined
+              ? {
+                  code: 'catalog-revision-stale',
+                  severity: 'blocking' as const,
+                  authority: 'catalog' as const,
+                  expected: 'the delta baseline to match the accepted producer revision',
+                  actual: `${this.revisions.get(discontinuous.rootId)} -> ${discontinuous.revision}`,
+                  hint: 'retain the accepted catalog and reconcile the producer snapshot',
+                }
+              : rowRevisionDiagnostic(this.entries, delta, ordered || duplicate)));
     const degradedRows = delta.authority === 'degraded' && hasIdentityChanges(delta);
     if (diagnostic === undefined && !degradedRows) return delta;
     return {
@@ -398,6 +734,14 @@ export class CatalogReplica {
     }
   }
 
+  private matchesDelta(delta: CatalogDelta): boolean {
+    return (
+      [...delta.added, ...delta.changed].every((entry) =>
+        sameValue(this.entries.get(guidKey(entry.guid)), this.resolveRow(entry)),
+      ) && delta.removed.every((guid) => !this.entries.has(guidKey(guid)))
+    );
+  }
+
   private makeSnapshot(): CatalogReplicaSnapshot {
     const entries = [...this.entries.values()].sort((left, right) =>
       guidKey(left.guid).localeCompare(guidKey(right.guid)),
@@ -407,6 +751,7 @@ export class CatalogReplica {
       entries,
       stale: this.stale,
       diagnostics: this.diagnostics,
+      revisions: [...this.revisions].map(([rootId, revision]) => ({ rootId, revision })),
     });
     return this.currentSnapshot;
   }

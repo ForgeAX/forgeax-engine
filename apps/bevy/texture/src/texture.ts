@@ -15,11 +15,15 @@
 //   - camera at (0,0,5) looking along -Z at the quads
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const CHECKER_SIZE = 64;
 export const CHECKER_TILES = 8;
@@ -47,26 +51,31 @@ export function makeCheckerboardPixels(): Uint8Array {
  * Build the texture demo world from the World-owned TextureAsset shared ref.
  */
 export function buildTextureWorld(world: World, texId: number): void {
-  const normalMat = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 1, 1, 1], { baseColorTexture: texId }));
-  const redMat = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 0.5], { baseColorTexture: texId }));
-  const blueMat = world.allocSharedRef('MaterialAsset', Materials.unlit([0, 0, 1, 0.5], { baseColorTexture: texId }));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const normalMat = sceneAssets.create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: texId })).unwrap();
+  const redMat = sceneAssets.create(Materials.unlit([1, 0, 0, 0.5], { baseColorTexture: texId })).unwrap();
+  const blueMat = sceneAssets.create(Materials.unlit([0, 0, 1, 0.5], { baseColorTexture: texId })).unwrap();
 
   // Normal quad at z=1.5
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 1.5], quat: [0, 0, 0, 1], scale: [4, 1, 0.01] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [normalMat] } },
   );
   // Red-tinted quad at z=0
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [4, 1, 0.01] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [redMat] } },
   );
   // Blue-tinted quad at z=-1.5
   world.spawn(
     { component: Transform, data: { pos: [0, 0, -1.5], quat: [0, 0, 0, 1], scale: [4, 1, 0.01] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [blueMat] } },
   );
 

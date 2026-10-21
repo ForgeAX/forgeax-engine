@@ -38,6 +38,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 // --- ENV knobs (default-aligned with hello-triangle smoke for SSOT consistency) ---
 
@@ -175,21 +178,48 @@ const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Name, Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
-const world = new World();
+
+// feat-20260518-pbr-direct-lighting-mvp M5 / w22.9: build a real manifest
+// from the engine's shipped pbr/unlit WGSL via @forgeax/engine-vite-plugin-shader's
+// buildEngineShaderManifest helper (same composition path the plugin emits
+// at vite build time, charter P5 — the runtime no longer ships an inline
+// fallback shader so the manifest must carry both entries).
+const here = dirname(fileURLToPath(import.meta.url));
+const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+
+let renderer;
+let assets;
+let renderDiagnostics;
+try {
+  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  if (!constructed.ok) throw constructed.error;
+  renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
+  renderDiagnostics = constructed.value.debugDrawHost;
+} catch (err) {
+  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+} finally {
+  // Restore the original ambient requestAdapter; the navigator.gpu wrap was
+  // installed solely to capture sharedDevice during the engine's first
+  // adapter.requestDevice call.
+  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
+}
+const world = new World({ assets });
+const cube = assets.create(BUILTIN_CUBE).unwrap();
 world.spawn(
   {
     component: Transform,
     data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: cube } },
   {
     component: MeshRenderer,
     data: {},
   },
-);
+).unwrap();
+assets.release(cube).unwrap();
 world.spawn(
   {
     component: Transform,
@@ -218,31 +248,6 @@ world.spawn({
   console.log('[hello-cube] Name despawned, slot freed');
 }
 
-// feat-20260518-pbr-direct-lighting-mvp M5 / w22.9: build a real manifest
-// from the engine's shipped pbr/unlit WGSL via @forgeax/engine-vite-plugin-shader's
-// buildEngineShaderManifest helper (same composition path the plugin emits
-// at vite build time, charter P5 — the runtime no longer ships an inline
-// fallback shader so the manifest must carry both entries).
-const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
-
-let renderer;
-let renderDiagnostics;
-try {
-  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
-  if (!constructed.ok) throw constructed.error;
-  renderer = constructed.value.renderer;
-  renderDiagnostics = constructed.value.debugDrawHost;
-} catch (err) {
-  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-} finally {
-  // Restore the original ambient requestAdapter; the navigator.gpu wrap was
-  // installed solely to capture sharedDevice during the engine's first
-  // adapter.requestDevice call.
-  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
-}
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 

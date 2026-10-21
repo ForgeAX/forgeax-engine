@@ -12,7 +12,7 @@
 
 import type { World } from '@forgeax/engine-ecs';
 import type { StateToken } from './define-state';
-import { stateResourceKey } from './resources';
+import { type StatePayload, stateResourceKey } from './resources';
 
 /**
  * Create a run-condition predicate that passes when the state machine
@@ -54,7 +54,7 @@ export function inState(token: StateToken, variant: string): (world: World) => b
   }
   return (world: World) => {
     if (!world.hasResource(key)) return false;
-    const currentIdx = world.getResource<number>(key);
+    const currentIdx = world.getResource<StatePayload>(key).current;
     return currentIdx === expectedIdx;
   };
 }

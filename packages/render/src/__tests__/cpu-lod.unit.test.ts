@@ -1,29 +1,27 @@
-import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import { createBoxGeometry, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { MeshGpuHandles } from '../device/gpu-residency';
+import { GpuResidencyCache, type MeshGpuHandles } from '../device/gpu-residency';
+import { ShadowMeshReads } from '../device/mesh-changes';
 import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_INDEX, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
-import {
-  cpuLodLevel,
-  lodLevelHistogram,
-  projectValidatedRows,
-  selectCpuLodRows,
-} from '../record/cpu-lod';
+import { MaterialResource } from '../material-resource';
+import { cpuLodLevel, lodLevelHistogram, selectCpuLodRows } from '../record/cpu-lod';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../record/frame-snapshot';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 
 const LOD_MESH_GUID = '00000000-0000-7000-8000-000000000001' as never;
 
 function source(overrides: Partial<RenderableSnapshot> = {}): RenderableSnapshot {
-  const material = {
-    baseColor: new Float32Array([1, 1, 1]),
+  const material = new MaterialResource({
+    passes: [],
+    baseColor: vec3.create(1, 1, 1),
     metallic: 0,
     roughness: 1,
     materialShaderId: 'forgeax::default-unlit',
-  } as MaterialSnapshot;
+  });
   const world = new Float32Array(16);
   world[0] = 1;
   world[5] = 1;
@@ -91,6 +89,7 @@ function row(snapshot: RenderableSnapshot, handles: MeshGpuHandles): ValidatedRe
     source: snapshot,
     mesh: handles,
     renderableIndex: 0,
+    meshSlot: 0,
     renderState: undefined,
     stencilReference: undefined,
   };
@@ -145,63 +144,103 @@ describe('CPU-lane LOD selection', () => {
   });
 });
 
-describe('validated primary-view projection', () => {
-  it('returns the retained rows when source identity, order and index already match', () => {
+describe('actual Direct-shadow LOD query output', () => {
+  it('changes only the level witness while returning current transform rows', () => {
+    const selection = { values: [] as readonly number[], token: {} };
     const handles = mesh();
-    const sources = Array.from({ length: 744 }, (_, entityKey) => source({ entityKey }));
-    const rows = Object.freeze(
-      sources.map((snapshot, index) =>
-        Object.freeze({
-          ...row(snapshot, handles),
-          renderableIndex: index,
-        }),
+    const rows = [row(source(), handles)];
+    selectCpuLodRows(rows, cameraAt(40), selection);
+    const a = selection.token,
+      numbers = selection.values;
+    const moved = source();
+    moved.transform.world[12] = 1;
+    const currentRows = [row(moved, handles)];
+    const same = selectCpuLodRows(currentRows, cameraAt(40), selection);
+    expect(selection.token).toBe(a);
+    expect(selection.values).toBe(numbers);
+    expect(same[0]?.source).toBe(moved);
+    expect(same[0]?.source.transform.world[12]).toBe(1);
+    selectCpuLodRows(currentRows, cameraAt(5), selection);
+    expect(selection.token).not.toBe(a);
+    expect(selection.values).toEqual([0, 1, 0]);
+    expect(numbers).toEqual([0, 1, 1]);
+  });
+
+  it('keeps only authored LOD results and detects shorter matching prefixes', () => {
+    const selection = { values: [] as readonly number[], token: {} };
+    const handles = mesh();
+    const a = row(source(), handles),
+      b = row(source({ entityKey: 2 }), handles);
+    const plain = row(source({ entityKey: 3, lods: [] }), handles);
+    selectCpuLodRows([a, plain, b], cameraAt(40), selection);
+    const numbers = selection.values,
+      token = selection.token;
+    expect(numbers).toEqual([0, 1, 1, 0, 2, 1]);
+    selectCpuLodRows([a, b], cameraAt(40), selection);
+    expect(selection.token).toBe(token); // non-LOD members have no numeric copies
+    selectCpuLodRows([a], cameraAt(40), selection);
+    expect(selection.token).not.toBe(token);
+    expect(selection.values).toEqual([0, 1, 1]);
+    expect(numbers).toEqual([0, 1, 1, 0, 2, 1]);
+    selectCpuLodRows([plain], cameraAt(40), selection);
+    const empty = selection.token;
+    expect(selection.values).toEqual([]);
+    selectCpuLodRows([], cameraAt(40), selection);
+    expect(selection.token).toBe(empty);
+  });
+
+  it('never publishes a partial numeric result after a query throws', () => {
+    const selection = { values: [] as readonly number[], token: {} };
+    const handles = mesh();
+    const a = row(source(), handles),
+      b = row(source({ entityKey: 2 }), handles);
+    selectCpuLodRows([a, b], cameraAt(40), selection);
+    const numbers = selection.values,
+      token = selection.token;
+    const failing = source({ entityKey: 4 });
+    Object.defineProperty(failing, 'lodHysteresis', {
+      get() {
+        throw new Error('LOD query failed');
+      },
+    });
+    expect(() =>
+      selectCpuLodRows(
+        [row(source({ entityKey: 3 }), handles), row(failing, handles)],
+        cameraAt(5),
+        selection,
       ),
-    );
-    expect(projectValidatedRows(rows, sources)).toBe(rows);
-    const moved = sources[371];
-    if (moved === undefined) throw new Error('missing retained row');
-    moved.transform.world[12] = 5;
-    expect(projectValidatedRows(rows, sources)).toBe(rows);
-    expect(rows[371]?.source.transform.world[12]).toBe(5);
-    const empty = Object.freeze([]);
-    expect(projectValidatedRows(empty, [])).toBe(empty);
+    ).toThrow('LOD query failed');
+    expect(selection.token).toBe(token);
+    expect(selection.values).toBe(numbers);
+    selectCpuLodRows([a, b], cameraAt(40), selection);
+    expect(selection.token).toBe(token);
   });
 
-  it('remaps reordered equal entity IDs from distinct Worlds and preserves their resolved facts', () => {
-    const left = source({ worldId: 0, entityKey: 7 });
-    const right = source({ worldId: 1, entityKey: 7 });
-    const rows = [
-      { ...row(left, mesh()), stencilReference: 11 },
-      { ...row(right, mesh()), renderableIndex: 1, stencilReference: 22 },
-    ];
-    const projected = projectValidatedRows(rows, [right, left]);
-    expect(projected).not.toBe(rows);
-    expect(projected).toEqual([
-      { ...rows[1], source: right, renderableIndex: 0 },
-      { ...rows[0], source: left, renderableIndex: 1 },
-    ]);
-    expect(projected[0]?.mesh).toBe(rows[1]?.mesh);
-    expect(projected[1]?.mesh).toBe(rows[0]?.mesh);
-    expect(rows.map((value) => value.renderableIndex)).toEqual([0, 1]);
-  });
-
-  it('keeps source replacement, subset gaps, missing records and index repair on the remap path', () => {
-    const first = source({ entityKey: 1 });
-    const second = source({ entityKey: 2 });
-    const handles = mesh();
-    const firstRow = row(first, handles);
-    const rows = [firstRow, { ...row(second, handles), renderableIndex: 1 }];
-    const replacement = { ...second, transform: { world: second.transform.world.slice() } };
-    const replaced = projectValidatedRows(rows, [first, replacement]);
-    expect(replaced).not.toBe(rows);
-    expect(replaced[1]?.source).toBe(replacement);
-    expect(replaced[1]?.mesh).toBe(handles);
-    const subset = projectValidatedRows(rows, [source({ entityKey: 99 }), second]);
-    expect(subset).toEqual([{ ...rows[1], renderableIndex: 1 }]);
-    const wrongIndex = [{ ...firstRow, renderableIndex: 9 }];
-    expect(projectValidatedRows(wrongIndex, [first])).toEqual([
-      { ...firstRow, renderableIndex: 0 },
-    ]);
-    expect(wrongIndex[0]?.renderableIndex).toBe(9);
+  it('keeps same-level query output while actual lower-chain replacement retires its physical token', () => {
+    const store = new GpuResidencyCache();
+    store.configureGpuDevice(device, undefined, device.caps);
+    const shape = createBoxGeometry(2, 2, 2).unwrap();
+    const lowerA = createBoxGeometry(1, 1, 1).unwrap();
+    const lowerB = createBoxGeometry(0.5, 0.5, 0.5).unwrap();
+    const handle = 9 as import('@forgeax/engine-types').AssetHandle<'mesh'>;
+    const a = store.ensureResident(handle, shape, 0, [lowerA]).unwrap();
+    const reads = new ShadowMeshReads(store.meshChanges);
+    reads.add(a.changeToken);
+    const upper = store.meshChanges.epoch;
+    const selection = { values: [] as readonly number[], token: {} };
+    selectCpuLodRows([row(source(), a)], cameraAt(40), selection);
+    const token = selection.token;
+    expect(selection.values).toEqual([0, 1, 1]);
+    try {
+      const b = store.ensureResident(handle, shape, 0, [lowerB]).unwrap();
+      expect(b).not.toBe(a);
+      selectCpuLodRows([row(source(), b)], cameraAt(40), selection);
+      expect(selection.token).toBe(token);
+      expect(a.changeToken?.retired).toBe(true);
+      expect(store.meshChanges.query(upper, reads.generation, reads.tokens)).toBe('invalidated');
+    } finally {
+      reads.release();
+      store.destroyAll();
+    }
   });
 });

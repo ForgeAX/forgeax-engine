@@ -11,6 +11,18 @@ import { EngineWorkspaceError } from './workspace';
 import { createObservationInspection, observationEntity } from './workspace-target-inspection';
 
 type Inspection = ReturnType<typeof createObservationInspection>;
+export interface EngineWorkspaceEntitySource {
+  readonly guid: string;
+  readonly sourcePath: string;
+  readonly sourceKey: string;
+  readonly address: import('@forgeax/engine-types').SceneEntityAddress;
+  /** Existing nested overrides that author this entity's fields in the root source. */
+  readonly fieldPaths?: readonly {
+    readonly component: string;
+    readonly field: string;
+    readonly path: readonly string[];
+  }[];
+}
 /** The same capability can be local or carried across a Host transport. */
 export interface EngineWorkspaceTargetTools {
   tree(
@@ -18,7 +30,11 @@ export interface EngineWorkspaceTargetTools {
   ): ReturnType<Inspection['tree']> | Promise<ReturnType<Inspection['tree']>>;
   inspect(
     input: Parameters<Inspection['inspect']>[0],
-  ): ReturnType<Inspection['inspect']> | Promise<ReturnType<Inspection['inspect']>>;
+  ):
+    | (ReturnType<Inspection['inspect']> & { readonly source?: EngineWorkspaceEntitySource })
+    | Promise<
+        ReturnType<Inspection['inspect']> & { readonly source?: EngineWorkspaceEntitySource }
+      >;
   focus(input: { entityId: string }): unknown | Promise<unknown>;
   pick?: (input: { x: number; y: number }) => unknown | Promise<unknown>;
   highlight?: (input: { entityId?: string }) => unknown | Promise<unknown>;
@@ -49,7 +65,11 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
     if (!options?.targetId?.trim()) throw new TypeError('Target tools require a target identity');
     const display = options.display;
     const boundary = options.input;
-    const inspection = createObservationInspection(ctx.world, options.targetId);
+    const inspection = createObservationInspection(
+      ctx.world,
+      options.targetId,
+      () => ctx.get('assets', false) || undefined,
+    );
     let highlight: EntityHandle | undefined;
     const highlightSystem = `workspace-highlight:${ctx.fiber.uid}`;
     let syncing = false;

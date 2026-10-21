@@ -1,9 +1,12 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import { mat4 } from '@forgeax/engine-math';
-import { type MeshAsset, toShared } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
+import { meshDrawSnapshot } from '../scene/mesh-draw';
+import type { MeshFrame } from '../scene/mesh-frame';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { buildRaySurfaceScene, type RaySurfaceInstance } from './attributes';
 import { rayReferenceFailure } from './scene';
@@ -11,17 +14,22 @@ import { projectVisibleSurfaces } from './visible-surface';
 
 /** One frozen query projection of the complete retained scene, including offscreen sources. */
 export function projectRayScene(
-  slots: readonly RenderSceneSlot[],
+  slots: FrameList<RenderSceneSlot>,
   worlds: readonly RenderResourceScope[],
   maxSurfaceRecords: number,
+  frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ) {
-  for (const { snapshot } of slots) {
+  const sources =
+    frame === undefined
+      ? slots
+      : slots.map((slot) => ({ ...slot, snapshot: meshDrawSnapshot(slot.snapshot, frame.meshes) }));
+  for (const { snapshot } of sources) {
     if (snapshot.authorVisible !== false && (snapshot.gpuDrivenDraws?.length ?? 0) === 0)
       return rayReferenceFailure(
         'transport contributor has no admitted geometry; missing representation is not a ray miss',
       ).unwrap();
   }
-  const surfaces = projectVisibleSurfaces(slots, maxSurfaceRecords).unwrap();
+  const surfaces = projectVisibleSurfaces(sources, maxSurfaceRecords).unwrap();
   const instances: RaySurfaceInstance[] = [];
   // These dense material addresses belong only to this snapshot. World handles
   // and retained surface rows remain the source identity; no identity allocator.
@@ -31,14 +39,16 @@ export function projectRayScene(
     readonly snapshot: MaterialSnapshot;
   }[] = [];
   const materialIds = new Map<number, Map<number, number>>();
-  for (const slot of [...slots].sort((a, b) => a.slot - b.slot)) {
+  for (const slot of [...sources].sort((a, b) => a.slot - b.slot)) {
     const base = surfaces.slotBases.get(slot.slot);
     if (base === undefined) continue;
     const source = slot.snapshot;
+    if (source.assetHandle === undefined)
+      return rayReferenceFailure('retained transport source has no Mesh identity').unwrap();
     const world = worlds[slot.worldId];
     if (world === undefined)
       return rayReferenceFailure('retained transport slot has no matching resource World').unwrap();
-    const mesh = resolveAssetHandle<MeshAsset>(world, toShared(source.assetHandle)).unwrap();
+    const mesh = world.resolveAsset<MeshAsset>(source.assetHandle).unwrap();
     if (mesh.kind !== 'mesh')
       return rayReferenceFailure('retained transport source must resolve to a MeshAsset').unwrap();
     const read = (key: keyof MeshAsset['attributes']) => {
@@ -73,7 +83,11 @@ export function projectRayScene(
     for (const [drawIndex, draw] of (source.gpuDrivenDraws ?? []).entries()) {
       if (draw.count === 0) continue;
       const drawItemIndex = gpuDrivenSourceDrawItemIndex(draw, drawIndex);
-      const material = source.materials[draw.materialSlot];
+      const resource = source.materials[draw.materialSlot];
+      if (resource === undefined)
+        return rayReferenceFailure('transport draw has no published material handle').unwrap();
+      const material =
+        frame === undefined ? resource.snapshot : frame.materials.get(resource)?.snapshot;
       const handle = material?.materialHandle;
       if (material === undefined || handle === undefined)
         return rayReferenceFailure('transport draw has no published material handle').unwrap();

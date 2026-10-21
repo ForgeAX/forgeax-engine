@@ -20,6 +20,7 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { collectWebGpuValidationErrors } from './webgpu-validation.fixture';
 
 const SIZE = 64;
@@ -74,16 +75,22 @@ it.each([
   });
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const density = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '3d', extent: { width: 2, height: 2, depth: 2 } },
-    format: 'rgba8unorm',
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-    data: new Uint8Array(Array.from({ length: 8 }, () => [64, 128, 255, 255]).flat()),
-  });
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(8, 8, 1).unwrap());
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0, 0, 0, 1]));
+  const density = testAssets(world)
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '3d', extent: { width: 2, height: 2, depth: 2 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: new Uint8Array(Array.from({ length: 8 }, () => [64, 128, 255, 255]).flat()),
+    })
+    .unwrap();
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(8, 8, 1).unwrap())
+    .unwrap();
+  const material = testAssets(world)
+    .create(Materials.unlit([0, 0, 0, 1]))
+    .unwrap();
   try {
     const camera = world
       .spawn(
@@ -217,9 +224,9 @@ it.each([
     off();
     value(await renderer.dispose());
     await scene.fiber.dispose();
-    world.sharedRefs.release(mesh).unwrap();
-    world.sharedRefs.release(material).unwrap();
-    world.sharedRefs.release(density).unwrap();
+    testAssets(world).release(mesh).unwrap();
+    testAssets(world).release(material).unwrap();
+    testAssets(world).release(density).unwrap();
     (await recorder.dispose()).unwrap();
     canvas.remove();
   }

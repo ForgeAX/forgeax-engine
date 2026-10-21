@@ -17,7 +17,6 @@ function batchFacts(batch: GpuDrivenBatch) {
 function admittedFacts(value: FilteredProductionPlan) {
   const { visibleCapacity: _capacity, ...plan } = value.plan;
   return {
-    ...value,
     plan: { ...plan, batches: plan.batches.map(batchFacts) },
     batches: value.batches.map((row) => ({ ...row, batch: batchFacts(row.batch) })),
     materialBatches: value.materialBatches.map((row) => ({ ...row, batch: batchFacts(row.batch) })),
@@ -34,9 +33,9 @@ export function expectFilteredPlan(
   expect(admittedFacts(value)).toEqual(admittedFacts(reference));
   expect(value.batches).toHaveLength(value.plan.batches.length);
   for (const [index, row] of value.batches.entries()) {
-    expect(row.batch).toBe(value.plan.batches[index]);
-    expect(row.mesh).toBe(reference.batches[index]?.mesh);
-    expect(row.artifact).toBe(reference.batches[index]?.artifact);
+    expect(row.batch).toBe(value.plan.batches.at(index));
+    expect(row.mesh).toBe(reference.batches.at(index)?.mesh);
+    expect(row.artifact).toBe(reference.batches.at(index)?.artifact);
   }
   // Representatives must reference the same prepared rows at the same first
   // occurrence; stripping addresses must not hide a misrouted material batch.

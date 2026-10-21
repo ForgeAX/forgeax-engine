@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Transform } from '@forgeax/engine/scene';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const SHAPED: readonly (readonly [number, number, number])[] = [
   [1.6, 0.5, 0.9],
@@ -18,6 +20,12 @@ export default defineFeature({
   expect:
     'ON: three spheres with non-uniform and mirrored (negative) scale - flattened, tall and elongated - each lit smoothly with the highlight facing the sun, no inverted or faceted shading. OFF: the same spheres at uniform scale.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.6, 6], target: [0, 0.8, 0] });
     const colors: readonly (readonly [number, number, number, number])[] = [
       [1, 0.3, 0.2, 1],
@@ -27,7 +35,7 @@ export default defineFeature({
     const spheres: EntityHandle[] = SHAPED.map((_, index) =>
       spawnMesh(
         world,
-        MESH.sphere,
+        stageSphere,
         standard(world, { baseColor: colors[index] ?? [1, 1, 1, 1], roughness: 0.3 }),
         {
           pos: [(index - 1) * 1.8, 0.9, 0],

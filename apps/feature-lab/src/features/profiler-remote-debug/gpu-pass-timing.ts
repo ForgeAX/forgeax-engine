@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'GPU pass timing',
@@ -11,8 +13,14 @@ export default defineFeature({
   expect:
     'Timings resolve to one of complete/partial/unavailable/failed with a consistent payload; without include, timings stay undefined.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.8, 0.3, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.8, 0.3, 1] }), {
       pos: [0, 0.6, 0],
     });
     type Receipt = Parameters<typeof app.renderer.observe>[0];

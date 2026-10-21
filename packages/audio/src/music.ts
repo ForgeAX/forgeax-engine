@@ -1,4 +1,12 @@
-import { type AudioClipAsset, err, type GuidString, ok, type Result } from '@forgeax/engine-types';
+import type { AssetRegistry, RuntimeAssetError } from '@forgeax/engine-assets-runtime';
+import {
+  type AssetHandle,
+  type AssetReferenceOwner,
+  err,
+  type GuidString,
+  ok,
+  type Result,
+} from '@forgeax/engine-types';
 
 /** Saved author data. Clips use the ordinary asset catalogue, not a music registry. */
 export interface MusicScore {
@@ -11,8 +19,15 @@ export interface MusicScore {
 
 /** Host-only preparation. Encoded clips do not enter Worker music intents. */
 export interface MusicPreparation extends Omit<MusicScore, 'stems'> {
-  readonly stems: readonly { readonly clip: AudioClipAsset; readonly offsetSeconds?: number }[];
+  readonly assets: AssetReferenceOwner;
+  readonly stems: readonly {
+    readonly clip: AssetHandle<'audio'>;
+    readonly offsetSeconds?: number;
+  }[];
 }
+
+/** Shared production and report-admission capacities for one music transport. */
+export const MUSIC_LIMITS = { stems: 16, pending: 128, receipts: 256 } as const;
 
 const MUSIC_FAILURE_CODES = [
   'invalid-score',
@@ -96,45 +111,45 @@ export interface MusicState {
   readonly receipts: readonly MusicReceipt[];
 }
 
-export function validMusicTiming(
-  score: Pick<MusicScore, 'bpm' | 'beatsPerBar' | 'loopBeats'>,
-): boolean {
+export function validMusicBpm(bpm: number): boolean {
+  return Number.isFinite(bpm) && bpm >= 20 && bpm <= 400;
+}
+
+/** Timing and offsets have the same contract before and after GUID resolution. */
+export function validMusicScore(score: MusicScore | MusicPreparation): boolean {
   return (
-    Number.isFinite(score.bpm) &&
-    score.bpm >= 20 &&
-    score.bpm <= 400 &&
+    validMusicBpm(score.bpm) &&
     Number.isSafeInteger(score.beatsPerBar) &&
     score.beatsPerBar >= 1 &&
     score.beatsPerBar <= 16 &&
     Number.isSafeInteger(score.loopBeats) &&
     score.loopBeats >= 1 &&
-    score.loopBeats <= 1024
+    score.loopBeats <= 1024 &&
+    score.stems.length >= 1 &&
+    score.stems.length <= MUSIC_LIMITS.stems &&
+    score.stems.every(
+      (stem) => Number.isFinite(stem.offsetSeconds ?? 0) && (stem.offsetSeconds ?? 0) >= 0,
+    )
   );
 }
 
-/** Resolve ordinary GUIDs through the caller's existing Assets.loadByGuid route. */
-export async function loadMusicScore<E>(
+/** Resolve ordinary GUIDs in the existing asset owner; preparation samples their current values. */
+export async function loadMusicScore(
   score: MusicScore,
-  load: (guid: GuidString) => Promise<Result<AudioClipAsset, E>>,
-): Promise<Result<MusicPreparation, E | MusicFailure>> {
-  if (
-    !validMusicTiming(score) ||
-    score.stems.length < 1 ||
-    score.stems.length > 16 ||
-    score.stems.some(
-      (stem) => !Number.isFinite(stem.offsetSeconds ?? 0) || (stem.offsetSeconds ?? 0) < 0,
-    )
-  )
+  assets: AssetRegistry,
+): Promise<Result<MusicPreparation, RuntimeAssetError | MusicFailure>> {
+  if (!validMusicScore(score))
     return err(musicFailure('invalid-score', 'tempo, meter, loop or stem bound is invalid'));
   const stems: MusicPreparation['stems'][number][] = [];
   for (const stem of score.stems) {
-    const clip = await load(stem.clip);
-    if (!clip.ok) return clip;
-    if (clip.value.stream)
-      return err(musicFailure('unsupported-stream', 'music requires prepared buffered clips'));
+    const clip = await assets.load(stem.clip, 'audio');
+    if (!clip.ok) {
+      for (const loaded of stems) assets.release(loaded.clip);
+      return clip;
+    }
     stems.push({ ...stem, clip: clip.value });
   }
-  return ok({ ...score, stems });
+  return ok({ ...score, assets, stems });
 }
 
 /** Result-report admission uses the same bounded vocabulary as the transport. */
@@ -158,10 +173,10 @@ export function isMusicState(value: unknown): value is MusicState {
     typeof state.beat !== 'number' ||
     !Number.isFinite(state.beat) ||
     state.beat < 0 ||
-    (state.pending as number) > 128 ||
-    (state.nodes as number) > 32 ||
+    (state.pending as number) > MUSIC_LIMITS.pending ||
+    (state.nodes as number) > MUSIC_LIMITS.stems * 2 ||
     !Array.isArray(state.receipts) ||
-    state.receipts.length > 256
+    state.receipts.length > MUSIC_LIMITS.receipts
   )
     return false;
   return state.receipts.every((receipt: unknown) => {

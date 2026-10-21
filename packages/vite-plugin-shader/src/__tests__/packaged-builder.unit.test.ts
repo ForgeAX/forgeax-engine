@@ -6,7 +6,7 @@ import { publishShaderManifest } from '../manifest-publication.js';
 // Prepare the mocked module graph during collection; cases still reset module state.
 import '../index.js';
 
-const fixtures = vi.hoisted(() => ({ packaged: vi.fn(), source: vi.fn(), compile: vi.fn() }));
+const fixtures = vi.hoisted(() => ({ packaged: vi.fn(), source: vi.fn() }));
 const packaged = (entries: { hash: string; wgsl: string; bindings: string }[]) => ({
   entries,
   materialShaders: [],
@@ -24,17 +24,12 @@ vi.mock('../engine-inputs/load-engine-shader-entries.js', async (original) => ({
   ...(await original<typeof import('../engine-inputs/load-engine-shader-entries.js')>()),
   loadEngineShaderEntries: fixtures.source,
 }));
-vi.mock('../material/cook-adapter.js', async (original) => ({
-  ...(await original<typeof import('../material/cook-adapter.js')>()),
-  cookMaterialSource: fixtures.compile,
-}));
 
 beforeEach(() => {
   vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', undefined);
   vi.resetModules();
   fixtures.packaged.mockReset();
   fixtures.source.mockReset().mockRejectedValue(new Error('source compiler selected'));
-  fixtures.compile.mockReset().mockRejectedValue(new Error('engine source recompiled'));
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -209,7 +204,6 @@ describe('standalone builder input ownership', () => {
         materialPackages: [packagePath],
       });
       expect(fixtures.packaged).toHaveBeenCalledWith(pointShadows, true);
-      expect(fixtures.compile).not.toHaveBeenCalled();
       expect(manifest.entries[0]?.hash).toBe('profile');
       expect(manifest.entries).toHaveLength(2);
       expect(manifest.materialShaders[0]?.identifier).toBe('profile_test::custom');

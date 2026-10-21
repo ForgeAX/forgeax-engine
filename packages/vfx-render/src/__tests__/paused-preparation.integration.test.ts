@@ -1,12 +1,15 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
+import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
 import {
   gpuParticleRenderFeature,
   planPasses,
   planResources,
-  vfxTestIntent,
+  vfxTestEmitter,
 } from './vfx-frame-fixture';
 
 const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -20,7 +23,7 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
     up: new Float32Array([0, 1, 0]),
     viewProjection: identity(),
   };
-  const emitter = {
+  const input = {
     id: 'prepare',
     capacity: 16,
     space: 'world',
@@ -36,11 +39,16 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
     },
     renderers: [{ kind: 'billboard', material: 'material' }],
   };
-  const effect = vfxTestIntent({ emitter, programFingerprint: 'actual-prepare' } as never).effect;
-  const reference = {
-    id: emitter.id,
-    effect: world.internSharedRef('ParticleEffectAsset', effect),
-  };
+  const emitter = (await cookedEffectFixture({ program: { emitters: [input] } })).program
+    .emitters[0];
+  if (emitter === undefined) throw new Error('missing cooked emitter');
+  const reference = vfxTestEmitter(world, emitter as never, 'actual-prepare');
+  const fingerprint = runtimeAssets(world.assets)
+    .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAsset>(
+      reference.effect,
+      reference.revision,
+    )
+    .unwrap().program.fingerprint;
   const entry = {
     sourceWorldIndex: 0,
     worldId: 0,
@@ -59,10 +67,11 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
         {
           player,
           emitter: reference,
+
           enabled: true,
           prepareOnly: true,
           preparePipelines: true,
-          programFingerprint: 'actual-prepare',
+          programFingerprint: fingerprint,
           localToWorld: identity(),
         },
       ],
@@ -77,7 +86,8 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
           generation,
           caps: {},
           targets: [],
-          resolveAsset: (_index: number, handle: never) => world.sharedRefs.resolve(handle),
+          resolveAsset: (_index: number, handle: number, revision: number) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
         } as never,
       )
       .unwrap();
@@ -120,17 +130,22 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
     session.commitFrame();
   };
   prepare(prepared);
-  expect(compute).toHaveBeenCalledTimes(2);
+  expect(compute).toHaveBeenCalledTimes(
+    program?.kind === 'compute-program' ? program.program.entryPoints.length : 0,
+  );
   const createdBuffers = buffer.mock.calls.length;
   expect(createdBuffers).toBeGreaterThan(8);
   prepare(frame(2));
-  expect(compute).toHaveBeenCalledTimes(2);
+  expect(compute).toHaveBeenCalledTimes(
+    program?.kind === 'compute-program' ? program.program.entryPoints.length : 0,
+  );
   expect(buffer).toHaveBeenCalledTimes(createdBuffers);
   entry.intents.push({
     sequence: 1,
     player,
     emitter: reference,
-    programFingerprint: 'actual-prepare',
+
+    programFingerprint: fingerprint,
     reset: true,
     fixedDelta: 1 / 60,
     phaseTick: 0,
@@ -147,18 +162,17 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
   const source = entry.emitterState.values().next().value;
   if (source === undefined) throw new Error('missing emitter source');
   const obsoleteEmitter = { ...emitter, id: 'replaced-emitter' };
-  const obsoleteEffect = vfxTestIntent({
-    emitter: obsoleteEmitter,
-    programFingerprint: 'obsolete',
-  } as never).effect;
+  const obsoleteReference = vfxTestEmitter(world, obsoleteEmitter as never, 'obsolete');
   entry.intents.push({
     ...(entry.intents[0] as object),
     sequence: 2,
-    programFingerprint: 'obsolete',
-    emitter: {
-      id: obsoleteEmitter.id,
-      effect: world.internSharedRef('ParticleEffectAsset', obsoleteEffect),
-    },
+    programFingerprint: runtimeAssets(world.assets)
+      .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAsset>(
+        obsoleteReference.effect,
+        obsoleteReference.revision,
+      )
+      .unwrap().program.fingerprint,
+    emitter: obsoleteReference,
   });
   const parked = frame(3);
   expect(planPasses(parked)).toEqual([]);
@@ -171,7 +185,9 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
   const active = frame(4);
   expect(planPasses(active).some((pass) => pass.kind === 'compute')).toBe(true);
   prepare(active);
-  expect(compute).toHaveBeenCalledTimes(2);
+  expect(compute).toHaveBeenCalledTimes(
+    program?.kind === 'compute-program' ? program.program.entryPoints.length : 0,
+  );
   expect(buffer).toHaveBeenCalledTimes(createdBuffers);
   entry.intents.length = 0;
   source.prepareOnly = true;
@@ -179,6 +195,8 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
   entry.preparationPlayers = [player];
   expect(planPasses(frame(5))).toEqual([]);
   prepare(frame(6, 1), 1);
-  expect(compute).toHaveBeenCalledTimes(4);
+  expect(compute).toHaveBeenCalledTimes(
+    program?.kind === 'compute-program' ? program.program.entryPoints.length * 2 : 0,
+  );
   owner.dispose().unwrap();
 });

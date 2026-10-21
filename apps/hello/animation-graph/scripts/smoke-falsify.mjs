@@ -24,6 +24,7 @@
 
 import process from 'node:process';
 
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { animationPlugin, defineAnimationGraph, AnimationPlayer } = await import('@forgeax/engine-animation');
 
@@ -31,26 +32,24 @@ let failCount = 0;
 let unexpectedPassCount = 0;
 
 async function makeWorld() {
-  const clips = new Map();
-  const world = new World();
-  await createWorldContext(world, [animationPlugin((guid) => clips.get(guid))]);
-  return { world, clips };
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  await createWorldContext(world, [animationPlugin()]);
+  return { world, assets };
 }
 
-function registerClip(clips, duration) {
-  const guid = `test/animation-clip-${clips.size}`;
-  clips.set(guid, { kind: 'animation-clip', duration, channels: [] });
-  return guid;
+function createClip(assets, duration) {
+  return assets.create({ kind: 'animation-clip', duration, channels: [] }).unwrap();
 }
 
 function readWeights(world, ent) {
   return world.get(ent, AnimationPlayer).unwrap().weights;
 }
 
-function buildFullDag(world, clips) {
-  const survey = registerClip(clips, 8);
-  const walk = registerClip(clips, 12);
-  const run = registerClip(clips, 7);
+function buildFullDag(world, assets) {
+  const survey = createClip(assets, 8);
+  const walk = createClip(assets, 12);
+  const run = createClip(assets, 7);
   const gr = defineAnimationGraph((b) => {
     const surveyBase = b.clip(survey);
     const walkLeaf = b.clip(walk);
@@ -61,7 +60,7 @@ function buildFullDag(world, clips) {
     return b.add(baseBlend, [overlayLeaf]);
   });
   if (!gr.ok) throw new Error(`buildFullDag failed: ${gr.error.code}`);
-  return world.allocSharedRef('AnimationGraph', gr.value);
+  return assets.create(gr.value).unwrap();
 }
 
 // Intentional wrong assertion: expects `value` to equal `wrong` (which it should NOT).
@@ -87,8 +86,8 @@ function assertWrong(label, value, wrong, tolerance = 0.01) {
 // --- Variant A: overlay OFF, assert sum IS 1.3 (wrong: actual = 1.0) ---
 
 {
-  const { world, clips } = await makeWorld();
-  const graphH = buildFullDag(world, clips);
+  const { world, assets } = await makeWorld();
+  const graphH = buildFullDag(world, assets);
   const ent = world
     .spawn({
       component: AnimationPlayer,
@@ -106,7 +105,7 @@ function assertWrong(label, value, wrong, tolerance = 0.01) {
       },
     })
     .unwrap();
-  world.update();
+  world.update().unwrap();
   const w = readWeights(world, ent);
   const total = [...w].reduce((a, v) => a + v, 0);
   // WRONG assertion: sum should be 1.3 (but overlay is off -> actual = 1.0)
@@ -116,8 +115,8 @@ function assertWrong(label, value, wrong, tolerance = 0.01) {
 // --- Variant B: locomotion=0, assert Walk=0.25 and Run=0.25 (wrong: actual = 0, 0) ---
 
 {
-  const { world, clips } = await makeWorld();
-  const graphH = buildFullDag(world, clips);
+  const { world, assets } = await makeWorld();
+  const graphH = buildFullDag(world, assets);
   const ent = world
     .spawn({
       component: AnimationPlayer,
@@ -135,7 +134,7 @@ function assertWrong(label, value, wrong, tolerance = 0.01) {
       },
     })
     .unwrap();
-  world.update();
+  world.update().unwrap();
   const w = readWeights(world, ent);
   const walkWeight = w[1] ?? 0;
   const runWeight = w[2] ?? 0;

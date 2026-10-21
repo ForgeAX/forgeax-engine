@@ -426,3 +426,11 @@ Gesture recognition keeps one per-pointer record for its long-press timer and
 swipe history. Every frame copies that record before processing events; release
 and cancel retire it together. The browser backend reads continuous gesture
 values from the returned recognizer state and forwards the separate frame events.
+
+Snapshot construction owns copies of gamepad collections, pointer and gesture
+events, virtual axes, and action values. Later producer writes cannot alter any
+reader in an accepted frame. Action edge derivation reads the previous snapshot
+through its action readpoint; snapshots carry no hidden action-state payload.
+
+A long press consumes the pointer’s arming state. Movement outside the slop and
+a delivered long press both disarm it; only a new down rearms it.

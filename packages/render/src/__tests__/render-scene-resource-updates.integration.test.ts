@@ -1,6 +1,7 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import {
@@ -21,7 +22,9 @@ import {
 } from '../scene/render-scene';
 
 it('refreshes frame resources without rebuilding retained geometry, including mixed edits', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const world = new World({ assets });
   registerPropagateTransforms(world);
   const camera = world
     .spawn(
@@ -32,7 +35,7 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
   const mesh = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
@@ -55,14 +58,14 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
   const requests: PersistentRenderCandidateRequest[] = [];
   const build = (request: PersistentRenderCandidateRequest) => {
     requests.push(request);
-    return extractFrames([world], 0, undefined, undefined, scene.materialSnapshotCacheStore(), {
+    return extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
     });
   };
   const draw = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [lease]);
+    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
   try {
     draw();
     requests.length = 0;
@@ -102,7 +105,9 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
 });
 
 it('retries consumed transforms when a mixed source publication fails', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const world = new World({ assets });
   registerPropagateTransforms(world);
   world
     .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {} })
@@ -111,7 +116,7 @@ it('retries consumed transforms when a mixed source publication fails', () => {
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();
@@ -126,14 +131,14 @@ it('retries consumed transforms when a mixed source publication fails', () => {
       failPartial = false;
       throw new Error('source publication failed');
     }
-    return extractFrames([world], 0, undefined, undefined, scene.materialSnapshotCacheStore(), {
+    return extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
     });
   };
   const draw = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [lease]);
+    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
   try {
     draw();
     world.set(moved, Transform, { pos: [2, 0, 0] }).unwrap();
@@ -142,7 +147,7 @@ it('retries consumed transforms when a mixed source publication fails', () => {
     failPartial = true;
     expect(draw).toThrow('source publication failed');
     const recovered = draw();
-    const oracle = extractFrames([world], 0, undefined, undefined, undefined, {
+    const oracle = extractFrames([world], 0, assets, undefined, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -167,13 +172,18 @@ it('retries consumed transforms when a mixed source publication fails', () => {
 });
 
 it('keeps untouched World hidden reports during partial edits and removals', () => {
-  const worlds = [new World(), new World()];
-  const entities = worlds.map((world) => {
+  const owners = [new AssetRegistry(), new AssetRegistry()] as const;
+  const assets = owners[0];
+  const worlds = owners.map((assets) => new World({ assets }));
+  const entities = worlds.map((world, index) => {
+    const owner = owners[index];
+    if (owner === undefined) throw new Error('expected a World asset owner');
+    const meshHandle = owner.create(createPrimitiveMesh('cube').unwrap()).unwrap();
     registerPropagateTransforms(world);
     const entity = world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
         { component: MeshRenderer, data: {} },
         { component: Visibility, data: { state: VisibilityStateValue.hidden } },
       )
@@ -194,7 +204,7 @@ it('keeps untouched World hidden reports during partial edits and removals', () 
   const scene = new PersistentRenderScene();
   const options = { cull: 'none', retainHidden: true } as const;
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames(worlds, 0, undefined, undefined, scene.materialSnapshotCacheStore(), {
+    extractFrames(worlds, 0, assets, undefined, scene.materialSnapshotCacheStore(), {
       ...options,
       renderables: request,
     });
@@ -202,11 +212,11 @@ it('keeps untouched World hidden reports during partial edits and removals', () 
     const frame = scene.extractComposition(
       worlds,
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       build,
       leases,
     );
-    const oracle = extractFrames(worlds, 0, undefined, undefined, undefined, options);
+    const oracle = extractFrames(worlds, 0, assets, undefined, undefined, options);
     const hidden = (value: typeof frame) =>
       value.hiddenEntityReports.map((report) => `${report.world.identity}:${report.entity}`).sort();
     expect(hidden(frame)).toEqual(hidden(oracle));

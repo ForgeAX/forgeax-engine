@@ -5,7 +5,9 @@ import { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } from 
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { ChildOf, Name, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { MaterialAsset, MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
+import type { MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 interface Rig {
   readonly upper: EntityHandle;
@@ -50,11 +52,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 }
 
 export function buildWorld(world: World): readonly Rig[] {
-  const mesh = world.allocSharedRef('MeshAsset', createWeightedRibbon());
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const mesh = sceneAssets.create(createWeightedRibbon()).unwrap();
   // Skin extraction is intentionally fail-fast when the first pass is not the
   // skin shader. Materials.standard is the static-PBR constructor, so a
   // hand-authored skinned mesh must name the public skin shader explicitly.
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const material = sceneAssets.create({
     kind: 'material',
     passes: [
       {
@@ -64,7 +69,7 @@ export function buildWorld(world: World): readonly Rig[] {
       },
     ],
     values: { baseColor: [0.15, 0.7, 1, 1], metallic: 0, roughness: 0.35 },
-  });
+  }).unwrap();
   const skeleton: SkeletonAsset = {
     kind: 'skeleton',
     jointCount: 2,
@@ -73,7 +78,7 @@ export function buildWorld(world: World): readonly Rig[] {
       1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 0, 1,
     ]),
   };
-  const skeletonHandle = world.allocSharedRef('SkeletonAsset', skeleton);
+  const skeletonHandle = sceneAssets.create(skeleton).unwrap();
   const rigs: Rig[] = [];
   for (let i = 0; i < 6; i++) {
     const x = (i - 2.5) * 1.25;

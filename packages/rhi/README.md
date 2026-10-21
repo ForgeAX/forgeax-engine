@@ -484,3 +484,8 @@ with their existing callers. Queue texture uploads do not use this alignment.
 uploads, native copy descriptors and recorder observations. It preserves nonzero
 coordinates and supplies zero for omitted axes; backend validation still owns
 coordinate bounds and texture format restrictions.
+
+The WebGPU and wgpu adapter shells share `projectAdapterCapabilities` to snapshot
+feature sets and numeric enumerable limits, including inherited native accessors.
+Absent facts yield empty collections; device request and error handling stay with
+the backend shells.

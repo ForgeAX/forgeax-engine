@@ -67,7 +67,7 @@ demo 端独立 scroll system 维护 `fovDeg`（度数 LO 教学单位）累加�
 
 ```mermaid
 flowchart LR
-  Disk["forgeax-engine-assets/learn-opengl/meshes/cube-mesh.stub.meta.json<br/>(GUID -> HANDLE_CUBE)"] --> RT["loadByGuid<MeshAsset>"]
+  Geometry["createBoxGeometry(1, 1, 1)"] --> RT["assets.create(mesh)"]
   RT --> Reg["AssetRegistry"]
   Reg --> SpawnCube["world.spawn cube<br/>Transform + MeshFilter(cubeHandleRes.value) + MeshRenderer"]
   Reg --> SpawnCam["world.spawn camera<br/>Transform(0,0,3) + Camera(perspective)"]
@@ -90,111 +90,28 @@ flowchart LR
 
 ## 引擎用法
 
+资产调用摘自 [src/index.ts](src/index.ts) 的启动流程；`assets` 和 `world` 来自已经创建的 App，`textureGuid` 是已校验的纹理 GUID，`materialEntry.payload` 是示例 Pack 中的材质声明。
+
 ```ts
-// 来自 src/index.ts 的关键片段（三段式注释 AC-06）。
-
-// 1. engine usage - 引擎公开符号集
-import { createApp } from '@forgeax/engine-app';
-import { Time, Update } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { Camera, MeshRenderer, MeshFilter } from '@forgeax/engine-render';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
-import {
-  CAMERA_SPEED_PER_SECOND, computeWasdDisplacement, createScrollFovAccumulator,
-} from './first-person-controls';
 
-// 2. example-specific glue - LO §1.7 first-person tuning + GUID literals
-const CUBE_MESH_GUID     = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e2cc7-3a01-7c22-8f70-501bd9e74206';
-const CAMERA_PROJECTION_PERSPECTIVE = 0;
-const CAMERA_FOV_RADIANS = Math.PI / 4;
-const PITCH_CLAMP_RAD    = (89 * Math.PI) / 180;
-const MOUSE_SENSITIVITY  = 0.002; // radians per pixel
-
-// 3. bootstrap - createApp + loadByGuid + spawn cube + camera + first-person + scroll systems
-const appRes = await createApp(canvas, { clearColor: [0.2, 0.3, 0.3, 1.0] });
-if (!appRes.ok) { /* report + return */ }
-const app = appRes.value;
-const renderer = app.renderer;
-const world = app.world;
-
-const assets = renderer.assets;
-assets.registerWithGuid<MeshAsset>(cubeGuid, cubeAsset.value);
-assets.registerWithGuid<MaterialAsset>(matGuid, { kind: 'material', shadingModel: 'unlit', baseColor: [1.0, 0.5, 0.2, 1.0] });
-const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuid);
-const matHandleRes  = await assets.loadByGuid<MaterialAsset>(matGuid);
-
-// MeshFilter binds cubeHandleRes.value (GUID-derived user-handle); the
-// engine pipelineState.meshes alias map covers user-handle (>=1024) ids
-// (V-3 punt removed in feat-20260519, plan-decisions D-3).
+configureRuntimeAssetCatalog(assets, runtimeBinding);
+const texture = (await assets.load(textureGuid, 'texture')).unwrap();
+const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+const material = assets.create({
+  ...materialEntry.payload,
+  values: { ...materialEntry.payload.values, baseColorTexture: texture },
+}).unwrap();
 world.spawn(
-  { component: Transform,  data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: MeshFilter, data: { assetHandle: cubeHandleRes.value } },
-  { component: MeshRenderer, data: { material: matHandleRes.value } },
-);
-world.spawn(
-  { component: Transform, data: { pos: [0, 0, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: Camera,    data: { fov: CAMERA_FOV_RADIANS, aspect: canvas.width / canvas.height, near: 0.1, far: 100, projection: CAMERA_PROJECTION_PERSPECTIVE, left: -1, right: 1, bottom: -1, top: 1 } },
-);
-
-// First-person camera system: dt-driven WASD + mouse yaw/pitch.
-let yaw = 0, pitch = 0;
-world.addSystem(Update, {
-  name: 'learn-render-camera-first-person',
-  after: ['input-frame-start-scan'],
-  queries: [{ write: [Transform], with: [Camera] }],
-  fn: (world, queries) => {
-    const snap = renderer.input.snapshot(world);
-    if (snap === undefined) return;
-    const dt = world.getResource(Time).delta;
-    const dx = snap.mouse.movementDelta.x;
-    const dy = snap.mouse.movementDelta.y;
-    yaw   += dx * MOUSE_SENSITIVITY;
-    pitch -= dy * MOUSE_SENSITIVITY;
-    if (pitch >  PITCH_CLAMP_RAD) pitch =  PITCH_CLAMP_RAD;
-    if (pitch < -PITCH_CLAMP_RAD) pitch = -PITCH_CLAMP_RAD;
-    const cy = Math.cos(yaw),   sy = Math.sin(yaw);
-    const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const fwdX = cy * cp, fwdY = sp, fwdZ = sy * cp;
-    const rightX = fwdZ,  rightZ = -fwdX;
-    const held = {
-      w: snap.keyboard.down('KeyW'), s: snap.keyboard.down('KeyS'),
-      a: snap.keyboard.down('KeyA'), d: snap.keyboard.down('KeyD'),
-    } as const;
-    const disp = computeWasdDisplacement(dt, { x: fwdX, y: fwdY, z: fwdZ }, { x: rightX, y: 0, z: rightZ }, held);
-    for (const row of queries[0]) {
-      const transform = row.mut(Transform);
-      transform.pos.set([
-        (transform.pos[0] ?? 0) + disp.x,
-        (transform.pos[1] ?? 0) + disp.y,
-        (transform.pos[2] ?? 0) + disp.z,
-      ]);
-      // Encode forward direction into transform.quat (Tait-Bryan Y * X).
-    }
-  },
-});
-
-// Scroll-wheel FoV zoom system (independent addSystem, plan-decisions D-4).
-const scrollAcc = createScrollFovAccumulator();
-world.addSystem(Update, {
-  name: 'learn-render-camera-scroll-fov',
-  after: ['input-frame-start-scan'],
-  queries: [{ write: [Camera] }],
-  fn: (world, queries) => {
-    const snap = renderer.input.snapshot(world);
-    if (snap === undefined) return;
-    scrollAcc.apply(snap.mouse.wheelDelta);
-    for (const row of queries[0]) row.mut(Camera).fov = scrollAcc.fovRad;
-  },
-});
-
-app.start();
+  { component: Transform, data: { pos: [0, 0, 0] } },
+  { component: MeshFilter, data: { assetHandle: cube } },
+  { component: MeshRenderer, data: { materials: [material] } },
+).unwrap();
 ```
 
-`forgeax-engine-assets/learn-opengl/meshes/cube-mesh.stub.meta.json` 是一个空文件 `cube-mesh.stub` 的同名 sidecar（同 §1.4 / §1.5 / §1.6 同型 procedural 形态）；`subAssets[0].guid` 由 `forgeax asset import` 一次性铸造（reimport byte-identical）。runtime 阶段 `loadByGuid` 不感知物理路径——它只认 GUID，pack-index 把 GUID 翻译成 URL 或回落到 `registerWithGuid` 的内存表。
+纹理通过 Catalog 的 GUID 加载；几何与材质直接由 `assets.create` 建立运行时身份。相机和 Update 系统保持在示例自己的 ECS 装配中，最后由 `app.start()` 驱动帧循环。运行时修改材质使用 `assets.update(material, { values: { baseColor: [1, 0.5, 0.2, 1] } }).unwrap()`，版本和渲染更新由资产 owner 维护。
 
 ## 与 LO 原版的差异
 
@@ -219,7 +136,6 @@ app.start();
 | 文件 | 行数 | 角色 |
 |:--|---:|:--|
 | `src/index.ts` | ~430 | 三段式（引擎使用 + 示例胶水 + 启动）+ cube + camera spawn + first-person system fn + capture hook + 测试 harness 自动安装 |
-| `assets/cube-mesh.stub.meta.json` | ~15 | cube 别名 sidecar（GUID 映射到引擎内置 HANDLE_CUBE） |
 | `src/__tests__/camera.browser.test.ts` | ~230 | vitest browser e2e（AC-04 + AC-05 + AC-06 + AC-07 + AC-22 四段断言：3-section markers + InputSnapshot consumption / cube-mesh.stub.meta.json schema / Engine WebGPU path / yaw-pitch +/- 89 deg clamp + sphere -> Cartesian） |
 | `src/__tests__/camera-input.dawn.test.ts` | ~140 | vitest dawn e2e（AC-07 frame-start scan 4 项行为：Resource write / WASD held keys / mouse delta per-frame / up-edge collapse） |
 | `scripts/smoke-dawn.mjs` | ~430 | dawn-node 端到端 smoke：build + 启动 + 加载 cube + synthetic InputBackend 驱动 first-person 序列（前 60 帧 W 前进 + 60 帧 D 横移 + 80 帧鼠标 yaw + 80 帧鼠标 pitch）+ 300 帧 + pixel readback ε ≤ 0.05 |

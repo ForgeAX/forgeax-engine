@@ -118,8 +118,8 @@ try {
     const assets = globalThis.__forgeaxPreviewInspection.assets;
     const loaded = await Promise.all(rows.map(async (entry) => {
       const guid = assets.parseGuid(entry.guid);
-      assets.invalidate(entry.guid);
-      return { entry, result: await assets.loadByGuid(guid) };
+      const loaded = await assets.load(guid, entry.kind);
+      return { entry, result: loaded.ok ? assets.read(loaded.value) : loaded };
     }));
     const loadedKinds = loaded.map(({ result }) => result.ok ? result.value.kind : null);
     const loadedMembers = loaded.map(({ result }) => {
@@ -128,7 +128,7 @@ try {
         case 'scene': return { ok: true, member: 'entities', count: Object.keys(result.value.entities).length };
         case 'mesh': return { ok: true, member: 'vertices', count: result.value.vertices.length };
         case 'material': return { ok: true, member: 'passes', count: result.value.passes?.length ?? 0 };
-        case 'texture': return { ok: true, member: 'width', count: result.value.width };
+        case 'texture': return { ok: true, member: 'width', count: result.value.shape.extent.width };
         case 'equirect': return { ok: true, member: 'width', count: result.value.width };
         case 'sampler': return { ok: true, member: 'magFilter', count: result.value.magFilter === undefined ? 0 : 1 };
         case 'font': return { ok: true, member: 'glyphs', count: Object.keys(result.value.glyphs).length };
@@ -143,7 +143,7 @@ try {
         case 'particle-effect': return { ok: true, member: 'program.emitters', count: result.value.program.emitters.length };
       }
     });
-    const missing = await assets.loadByGuid(assets.parseGuid('019ffa97-9000-7000-8000-000000009999'));
+    const missing = await assets.load('019ffa97-9000-7000-8000-000000009999', 'mesh');
     const pack = packageUrls.length === 0
       ? { assets: [] }
       : await fetch(packageUrls[0]).then((response) => response.json());

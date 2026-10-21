@@ -3,6 +3,7 @@ import type { RendererGenerationFence } from '../assembly/renderer-frame-transac
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import type { StandardScreenProbeGi } from '../pipeline/standard-profile';
 import type { RenderSystemInternals } from '../record/render-context';
+import { findPublishedKernel } from './published-kernel';
 import type {
   IrradianceFieldInspection,
   PreparedIrradianceField,
@@ -220,15 +221,10 @@ export class RendererScreenProbe {
       const compile = runtime.createShaderModule;
       if (shaders === undefined || compile === undefined)
         throw new Error('screen-probe GI requires the ordinary shader registry and compiler');
-      const matched = [...shaders.entries()].filter((entry) =>
-        entry.wgsl.includes('fn integrateScreenProbes('),
-      );
-      const entry = matched[0];
-      if (matched.length !== 1 || entry === undefined)
-        throw new Error('expected one published screen-probe module');
+      const source = findPublishedKernel(shaders.entries(), 'integrateScreenProbes');
+      if (source === undefined) throw new Error('expected one published screen-probe module');
       const [module, worldModule] = await Promise.all([
-        (async () =>
-          (await compile(device, { label: 'screen-probe', code: entry.wgsl })).unwrap())(),
+        (async () => (await compile(device, { label: 'screen-probe', code: source })).unwrap())(),
         (async () =>
           (
             await compile(device, {

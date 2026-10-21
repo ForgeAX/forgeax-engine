@@ -70,6 +70,8 @@ async function start() {
       forgeaxBundlerAdapter(),
     )
   ).unwrap();
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const subjects = await buildTerrainWorld(app, rootGuid);
   const errors: unknown[] = [];
   const rejections: unknown[] = [];
@@ -163,13 +165,10 @@ async function start() {
     if (errors.length > 0 || rejections.length > 0)
       throw new Error('terrain runtime errors fail capture preparation');
     window.__transmissionFrameCount = 60;
-    const source = app.world.sharedRefs
-      .resolve<'TerrainAsset', import('@forgeax/engine-types').TerrainAsset>(
-        app.world.get(subjects.terrain, Terrain).unwrap().asset,
-      )
-      .unwrap();
-    if (app.assets?.lookup(AssetGuid.format(rootGuid)) !== source)
-      throw new Error('capture must retain the selected Catalog root');
+    const root = app.world.get(subjects.terrain, Terrain).unwrap().asset;
+    const source = app.assets!.read(root).unwrap();
+    if (app.assets!.source(root).unwrap()?.guid !== AssetGuid.format(rootGuid))
+      throw new Error('capture must retain the selected source root');
     const sha = async (bytes: Uint8Array) =>
       Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.slice().buffer)))
         .map((b) => b.toString(16).padStart(2, '0'))

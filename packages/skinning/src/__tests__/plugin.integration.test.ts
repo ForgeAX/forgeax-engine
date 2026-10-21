@@ -8,12 +8,7 @@ describe('skinningPlugin', () => {
     const context = await createWorldContext(world, [skinningPlugin()]);
 
     expect([...world.components.entries()].map(([name]) => name)).toEqual(['Skin']);
-    const skeleton = world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 0,
-      inverseBindMatrices: new Float32Array(),
-    });
-    const entity = world.spawn({ component: Skin, data: { skeleton, joints: [] } }).unwrap();
+    const entity = world.spawn({ component: Skin, data: { joints: [] } }).unwrap();
     expect(world.get(entity, Skin).ok).toBe(true);
 
     world.despawn(entity).unwrap();

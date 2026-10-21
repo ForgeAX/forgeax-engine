@@ -1,5 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { buildMeshAttributeMapForUvSets } from '@forgeax/engine-geometry';
+import {
+  buildMeshAttributeMapForUvSets,
+  deriveVertexLayoutProjection,
+  unpackInterleavedVertexAttributes,
+} from '@forgeax/engine-geometry';
 import { buildProfileModel, createProfiler } from '@forgeax/engine-profiler';
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -22,8 +27,10 @@ import { admitPointsLines } from '../admission';
 import { PointsLinesExpansionCache } from '../expansion-cache';
 import { type PointsLinesGpuResourceAdapter, PointsLinesPreparation } from '../prepare';
 import { createPointsLinesLaneContract, createPointsLinesRecordPlan } from '../record';
-import { createPointsLinesSnapshot } from '../snapshot';
+import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 
+const VERTEX_LAYOUT = deriveVertexLayoutProjection(buildMeshAttributeMapForUvSets(1));
+const FLOATS_PER_VERTEX = VERTEX_LAYOUT.arrayStride / Float32Array.BYTES_PER_ELEMENT;
 const POINT_COUNT = 10_000;
 const SEGMENT_COUNT = 10_000;
 const SAMPLE_COUNT = 30;
@@ -31,10 +38,9 @@ const BENCH_OPTIONS = { iterations: SAMPLE_COUNT } as const;
 
 function buildMesh(topology: 'point-list' | 'line-list'): MeshAsset {
   const vertexCount = topology === 'point-list' ? POINT_COUNT : SEGMENT_COUNT * 2;
-  const vertices = new Float32Array(vertexCount * 3);
-  const attributes = new Float32Array(vertices);
+  const vertices = new Float32Array(vertexCount * FLOATS_PER_VERTEX);
   for (let index = 0; index < vertexCount; index += 1) {
-    const offset = index * 3;
+    const offset = index * FLOATS_PER_VERTEX;
     vertices[offset] = (index % 100) / 50 - 1;
     vertices[offset + 1] = Math.floor(index / 100) / 100 - 1;
     vertices[offset + 2] = 0;
@@ -43,11 +49,13 @@ function buildMesh(topology: 'point-list' | 'line-list'): MeshAsset {
   if (indices !== undefined) {
     for (let index = 0; index < indices.length; index += 1) indices[index] = index;
   }
+  const attributes = unpackInterleavedVertexAttributes(vertices, VERTEX_LAYOUT);
+  if (attributes === undefined) throw new Error('Benchmark vertices must match their layout');
   return {
     kind: 'mesh',
     vertices,
     ...(indices === undefined ? {} : { indices }),
-    attributes: { ...buildMeshAttributeMapForUvSets(1), position: attributes },
+    attributes,
     aabb: new Float32Array([-1, -1, 0, 1, 1, 0]),
     submeshes: [
       {
@@ -90,19 +98,21 @@ function manifestUrl(): string {
 }
 
 function buildDirectMesh(): MeshAsset {
-  const vertices = new Float32Array(POINT_COUNT * 3);
+  const vertices = new Float32Array(POINT_COUNT * FLOATS_PER_VERTEX);
   for (let index = 0; index < POINT_COUNT; index += 1) {
-    const offset = index * 3;
+    const offset = index * FLOATS_PER_VERTEX;
     vertices[offset] = (index % 100) / 50 - 1;
     vertices[offset + 1] = Math.floor(index / 100) / 100 - 1;
   }
   const indices = new Uint32Array(Math.floor(POINT_COUNT / 3) * 3);
   for (let index = 0; index < indices.length; index += 1) indices[index] = index;
+  const attributes = unpackInterleavedVertexAttributes(vertices, VERTEX_LAYOUT);
+  if (attributes === undefined) throw new Error('Benchmark vertices must match their layout');
   return {
     kind: 'mesh',
     vertices,
     indices,
-    attributes: { ...buildMeshAttributeMapForUvSets(1), position: new Float32Array(vertices) },
+    attributes,
     aabb: new Float32Array([-1, -1, 0, 1, 1, 0]),
     submeshes: [
       {
@@ -135,11 +145,12 @@ function makeRealScene(
   meshes: { readonly points: MeshAsset; readonly lines: MeshAsset },
   component: 'points-lines' | 'direct',
 ): RealRoute['pointsLines'] {
-  const world = new World();
-  const materialHandle = world.allocSharedRef('MaterialAsset', MATERIAL);
+  const assets = new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry });
+  const world = new World({ assets });
+  const materialHandle = assets.create(MATERIAL).unwrap();
   if (component === 'points-lines') {
-    const pointMeshHandle = world.allocSharedRef('MeshAsset', meshes.points);
-    const lineMeshHandle = world.allocSharedRef('MeshAsset', meshes.lines);
+    const pointMeshHandle = assets.create(meshes.points).unwrap();
+    const lineMeshHandle = assets.create(meshes.lines).unwrap();
     world
       .spawn(
         {
@@ -160,7 +171,7 @@ function makeRealScene(
       )
       .unwrap();
   } else {
-    const meshHandle = world.allocSharedRef('MeshAsset', meshes.points);
+    const meshHandle = assets.create(meshes.points).unwrap();
     for (const x of [-0.5, 0.5]) {
       world
         .spawn(

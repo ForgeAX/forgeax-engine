@@ -14,9 +14,9 @@ export default defineFeature({
   catalog: 'KTX2/Basis transcode',
   kind: 'visual',
   summary:
-    'A UASTC-LDR KTX2 texture body is transcoded at load time by the Basis WASM transcoder to the best format the registry transcode caps allow (BC7, ASTC, ETC2, else RGBA8), then sampled by a Standard material.',
+    'A UASTC-LDR KTX2 texture keeps its encoded source in the asset registry; each renderer derives the best format its device allows (BC7, ASTC, ETC2, else RGBA8) and samples it through a Standard material.',
   expect:
-    'ON: the quad shows the red/blue checker transcoded from KTX2. OFF: plain white. Checks: selectTranscodeTarget picks bc7 with BC caps, astc with ASTC only, rgba8 with none, and the loaded texture is 16x16 in a format matching registry.transcodeCaps.',
+    'ON: the quad shows the red/blue checker transcoded from KTX2. OFF: plain white. Checks: selectTranscodeTarget picks bc7 with BC caps, astc with ASTC only, rgba8 with none, and the loaded asset preserves the 16x16 KTX2 source bytes while the rendered checker differs from the white control.',
   async setup({ app, world }) {
     spawnStage(world);
     const checks: FeatureCheck[] = [];
@@ -35,7 +35,7 @@ export default defineFeature({
     const assets = app.assets;
     if (assets === undefined) checks.push({ name: 'app.assets present', ok: false });
     else {
-      installMemoryPack(
+      await installMemoryPack(
         assets,
         [
           {
@@ -61,11 +61,16 @@ export default defineFeature({
       );
       texture = await loadTexture(assets, TEXTURE, checks);
       if (texture !== undefined) {
-        const expected = selectTranscodeTarget(source, assets.transcodeCaps);
+        const payload = assets.read(texture).unwrap();
+        const encoded = base64Bytes(CHECKER_KTX2_BASE64);
         checks.push({
-          name: 'transcoded to the caps-selected format',
-          ok: texture.shape.extent.width === 16 && texture.format === expected,
-          detail: `${texture.shape.extent.width}x${texture.shape.extent.height} ${texture.format} (caps ${JSON.stringify(assets.transcodeCaps)})`,
+          name: 'asset preserves the encoded texture source',
+          ok:
+            payload.shape.extent.width === 16 &&
+            payload.encoding === 'ktx2' &&
+            payload.data.length === encoded.length &&
+            payload.data.every((byte, index) => byte === encoded[index]),
+          detail: `${payload.shape.extent.width}x${payload.shape.extent.height} ${payload.encoding} ${payload.data.length}B`,
         });
       }
     }

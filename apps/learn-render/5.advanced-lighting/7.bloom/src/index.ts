@@ -31,7 +31,7 @@ import { type App } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { quat } from '@forgeax/engine/math';
-import { HANDLE_CUBE } from '@forgeax/engine/assets-runtime';
+
 import { Transform } from '@forgeax/engine/scene';
 
 import {
@@ -46,8 +46,8 @@ import {
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine/render';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine/types';
-import { unwrapHandle } from '@forgeax/engine/types';
+
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
@@ -55,6 +55,8 @@ import {
   exposeLearnRenderTestApp,
   trackLearnRenderTestBootstrap,
 } from '../../../../shared/src/learn-render-test-lifecycle';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+
 
 // 2. example-specific glue
 
@@ -183,8 +185,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   exposeLearnRenderTestApp(app, target);
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     const record = toLearnRenderError(error);
     console.error('[learn-render 5.7 bloom] app.onError:', record);
@@ -213,8 +219,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const [woodTexRes, container2TexRes] = await Promise.all([
-    assets.loadByGuid<TextureAsset>(woodGuidRes.value),
-    assets.loadByGuid<TextureAsset>(container2GuidRes.value),
+    assets.load(woodGuidRes.value, 'texture'),
+    assets.load(container2GuidRes.value, 'texture'),
   ]);
   if (!woodTexRes.ok || !container2TexRes.ok) {
     const failures = [
@@ -225,29 +231,23 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       __learnRenderErrors?: LearnRenderErrorRecord[];
     }).__learnRenderErrors;
     if (bus !== undefined) failures.forEach((failure) => bus.push(failure));
-    console.error(`[learn-render 5.7 bloom] loadByGuid failed: ${JSON.stringify({ failures })}`);
+    console.error(`[learn-render 5.7 bloom] load failed: ${JSON.stringify({ failures })}`);
     return;
   }
   const woodTex = woodTexRes.value;
   const container2Tex = container2TexRes.value;
 
   // Wood floor + container boxes: standard PBR lit by the point lights.
-  const floorMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const floorMatHandle = assets.create(Materials.standard({
       baseColor: [1.0, 1.0, 1.0, 1.0],
       roughness: 0.9,
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', woodTex)),
-    }),
-  );
-  const containerMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+      baseColorTexture: Number(woodTex),
+    })).unwrap();
+  const containerMatHandle = assets.create(Materials.standard({
       baseColor: [1.0, 1.0, 1.0, 1.0],
       roughness: 0.8,
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', container2Tex)),
-    }),
-  );
+      baseColorTexture: Number(container2Tex),
+    })).unwrap();
 
   // Spawn wood floor.
   world
@@ -257,7 +257,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [0, FLOOR_POS_Y, 0], scale: [FLOOR_SCALE_X, FLOOR_SCALE_Y, FLOOR_SCALE_Z],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [floorMatHandle] } },
     )
     .unwrap();
@@ -273,7 +273,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           data: {
             pos: [box.pos[0], box.pos[1], box.pos[2]], quat: [rot[0] ?? 0, rot[1] ?? 0, rot[2] ?? 0, rot[3] ?? 1], scale: [box.scale, box.scale, box.scale],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [containerMatHandle] } },
       )
       .unwrap();
@@ -305,10 +305,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       .unwrap();
 
     // Bright light-box cube (unlit, HDR light colour -> bloom source).
-    const lightBoxMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.unlit([color[0], color[1], color[2], 1.0]),
-    );
+    const lightBoxMat = assets.create(Materials.unlit([color[0], color[1], color[2], 1.0])).unwrap();
     world
       .spawn(
         {
@@ -316,7 +313,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           data: {
             pos: [pos[0], pos[1], pos[2]], scale: [LIGHT_BOX_SCALE, LIGHT_BOX_SCALE, LIGHT_BOX_SCALE],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [lightBoxMat] } },
       )
       .unwrap();

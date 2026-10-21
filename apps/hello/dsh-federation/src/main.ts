@@ -1,6 +1,6 @@
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { enginePreviewPlugin } from '@forgeax/engine-dsh/engine-preview';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import {
@@ -12,6 +12,10 @@ import {
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (canvas === null) throw new Error('dsh-federation: missing canvas');
@@ -44,10 +48,15 @@ if (!result.ok) throw result.error;
 
 app = result.value;
 const world = result.value.world;
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 cube = world
   .spawn(
     { component: Transform, data: { pos: [-0.75, 0, 0], scale: [0.8, 0.8, 0.8] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: {} },
   )
   .unwrap();

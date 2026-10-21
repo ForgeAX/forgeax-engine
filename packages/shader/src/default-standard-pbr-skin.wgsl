@@ -1,4 +1,5 @@
 #pragma material_slot surface
+#import forgeax_material::alpha_hash::{materialOutputAlpha, materialOutputColor}
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
 #import forgeax_material::displacement::{displaceVertex, displacedNormal}
 #endif
@@ -8,14 +9,14 @@
 
 #import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
-#import forgeax_view::common::{lightingChannelsMatch, View, Mesh, meshMotionValid, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture}
+#import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, View, Mesh, meshMotionValid, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture}
 #ifdef TRANSMISSION_AVAILABLE
 #import forgeax_view::fog::{translucent_fog_transmission}
 #else
 #import forgeax_view::fog::{translucent_fog}
 #endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw}
+#import forgeax_view::common::{sceneIndexDraw, sceneInstances}
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
@@ -327,12 +328,12 @@ fn materialTextureFilteringWitness() {
 #ifdef DIRECT_DFG_LUT_AVAILABLE
 @group(1) @binding(72) var directDfgLut: texture_2d<f32>;
 #endif
-@group(1) @binding(19) var prefilterMap         : texture_cube<f32>;
+@group(1) @binding(19) var prefilterMap         : texture_2d<f32>;
 @group(1) @binding(20) var prefilterSampler     : sampler;
 @group(1) @binding(21) var brdfLut              : texture_2d<f32>;
 @group(1) @binding(22) var<uniform> skylight    : SkylightUniforms;
 // Global specular remains resident when the per-draw prefilter slot holds a probe.
-@group(1) @binding(47) var skylightPrefilterMap : texture_cube<f32>;
+@group(1) @binding(47) var skylightPrefilterMap : texture_2d<f32>;
 
 #ifdef PROBE_BLEND_AVAILABLE
 @group(3) @binding(1) var<storage, read> probeBlendRecords : array<vec4<f32>>;
@@ -578,7 +579,7 @@ fn standardViewZ(in : VsOut) -> f32 {
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 fn sceneIndexVertex(in : VsIn, idx : u32) -> VsOut {
-  // visible = (scene instance row, material row, palette base, LOD fade).
+  // visible = (scene instance row, material row, candidate row, LOD fade).
   // The palette already carries world space; the scene rows only name the
   // probe identity and keep the shared scene bindings referenced.
   let visible = visibleItems[idx];
@@ -587,7 +588,7 @@ fn sceneIndexVertex(in : VsIn, idx : u32) -> VsOut {
   // Scene material rows never reach bit 31; it carries the receive opt-out.
   var out = vs_main_impl(
     in,
-    visible.z,
+    sceneInstances[visible.x].customDataStart,
     vec3<u32>(visible.y | select(STANDARD_NO_RECEIVE_BIT, 0u, draw.receivesShadows), draw.probe),
     draw.temporal,
   );
@@ -737,7 +738,7 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
 #ifdef STANDARD_STOCK_SURFACE_AVAILABLE
   let viewDirectionWS = vec3<f32>(0.0);
 #else
-  let viewDirectionWS = normalize(view.cameraPos - in.worldPos);
+  let viewDirectionWS = viewDirectionToCamera(in.worldPos);
 #endif
 #ifndef STANDARD_TANGENT_INPUT_UNUSED
   let surfaceTangent = in.worldTangent;
@@ -838,7 +839,7 @@ fn standardForwardFogged(in : VsOut, lit : StandardForwardLit) -> StandardPbrOut
 #endif
 }
 
-fn standardSurfaceF0(in : VsOut, surface : SurfaceData, dielectricF0 : f32) -> vec3<f32> {
+fn standardSurfaceSpecular(in : VsOut, surface : SurfaceData, dielectricF0 : f32) -> vec4<f32> {
   let albedo = surface.baseColor;
   let metallic = clamp(finiteScalar(surface.metallic, 0.0), 0.0, 1.0);
   var specularColor = material.specularColor;
@@ -873,7 +874,7 @@ fn standardSurfaceF0(in : VsOut, surface : SurfaceData, dielectricF0 : f32) -> v
   ).a;
   }
 #endif
-  return standardOpaqueF0FromDielectric(albedo, metallic, specularColor, specularWeight, dielectricF0);
+  return vec4<f32>(min(vec3<f32>(dielectricF0) * specularColor, vec3<f32>(1.0)) * specularWeight, mix(specularWeight, 1.0, metallic));
 }
 
 // The lighting-owned fallback alpha carries this same material admission to
@@ -900,15 +901,19 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   let receiverNormal = surfaceGeometryNormal(dpdx(in.worldPos), dpdy(in.worldPos),
     in.worldNormal * select(-1.0, 1.0, frontFacing));
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
-  let normalSpread = geometricNormalSpread(in.worldNormal);
+  var normalSpread = geometricNormalSpread(in.worldNormal);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+#ifdef FLAT_SHADING_AVAILABLE
+  // Derivatives above precede discard; Surface has now selected the GPU Scene material row.
+  normalSpread = select(normalSpread, 0.0, material.flatShading != 0u);
+#endif
   // Surface evaluation installs the selected scene-material row before reading its mode.
   var useDirectDfgLut = false;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   useDirectDfgLut = material.directMultiscatteringLut != 0u;
 #endif
   alphaTestSurface(surface);
-  let alpha = surface.opacity;
+  let alpha = materialOutputAlpha(surface.opacity, standardAlphaMode());
   let albedo = surface.baseColor;
   let metallic = clamp(finiteScalar(surface.metallic, 0.0), 0.0, 1.0);
   let iblRoughness = specularAntiAliasedRoughness(
@@ -920,10 +925,13 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   let n = normalize(surface.normalWS);
 #endif
 
-  let v = normalize(view.cameraPos - in.worldPos);
+  let v = viewDirectionToCamera(in.worldPos);
   let safeIor = max(finiteScalar(material.ior, 1.5), 1.0);
   let dielectricF0 = standardDielectricF0(safeIor);
-  var f0 = standardSurfaceF0(in, surface, dielectricF0);
+  let surfaceSpecular = standardSurfaceSpecular(in, surface, dielectricF0);
+  var dielectricSpecular = surfaceSpecular;
+  var metallicF0 = albedo;
+  var f0 = mix(surfaceSpecular.rgb, albedo, metallic);
   var physicalNormal = n;
 #ifdef ANISOTROPY_AVAILABLE
   var anisotropyStrength = finiteScalar(material.anisotropyStrength, 0.0);
@@ -1003,6 +1011,10 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
     finiteScalar(material.iridescenceIor, 1.3),
     filmThickness,
   );
+  dielectricSpecular = vec4<f32>(evaluateIridescenceFresnel(dielectricSpecular.rgb,
+    iridescenceStrength, finiteScalar(material.iridescenceIor, 1.3), filmThickness), dielectricSpecular.a);
+  metallicF0 = evaluateIridescenceFresnel(metallicF0,
+    iridescenceStrength, finiteScalar(material.iridescenceIor, 1.3), filmThickness);
 #endif
   var diffuseAlbedo = albedo;
 #ifdef TRANSMISSION_AVAILABLE
@@ -1130,7 +1142,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   }
 #endif
   let environment = evaluateStandardEnvironment(in.worldPos, physicalNormal, v,
-    diffuseAlbedo, transmissionAlbedo, metallic, iblRoughness, f0, skylight, irradianceMap, irradianceSampler,
+    diffuseAlbedo, transmissionAlbedo, metallic, iblRoughness, f0, dielectricSpecular, metallicF0, skylight, irradianceMap, irradianceSampler,
     prefilterMap, prefilterSampler, brdfLut, skylightPrefilterMap,
     probeShPreblend, probeLocalBlendFraction);
   let ao = surface.occlusion;
@@ -1232,7 +1244,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
     pow(safeAttenuationColor, vec3<f32>(attenuationExponent)),
     safeAttenuationDistance > 1e-6 && worldThickness > 0.0,
   );
-  transmittedCoefficient=transmittedEnergy*beerAttenuation;
+  transmittedCoefficient=transmittedEnergy*albedo*beerAttenuation;
   transmittedContribution=finiteColor(transmittedBackdrop,vec3<f32>(0.0))*transmittedCoefficient;
   color+=transmittedContribution;
 #endif
@@ -1260,14 +1272,14 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
 #endif
   if (receiveShadows && needsDirectionalShadow) {
     directionalShadow = evalDirectionalShadowFactorAtPixel(
-      directionalShadowNormal,
+      select(directionalShadowNormal, physicalNormal, view.splitPlanes[0].w > 0.5),
       in.worldPos,
       standardViewZ(in),
       0u,
       in.clip.xy,
     );
   }
-  color += evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in),
+  color += evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,
     physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow,
     receiveShadows, in.surfaceData.z, false,
     useDirectDfgLut,
@@ -1340,12 +1352,16 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   }
 #endif
   clearcoatRoughnessValue = specularAntiAliasedRoughness(clearcoatRoughnessValue, normalSpread);
-  var clearcoatNormalValue = in.worldNormal;
+  var clearcoatBaseNormal = in.worldNormal;
+#ifdef FLAT_SHADING_AVAILABLE
+  clearcoatBaseNormal = select(clearcoatBaseNormal, geometricNormal, material.flatShading != 0u);
+#endif
+  var clearcoatNormalValue = normalize(clearcoatBaseNormal);
 #ifdef CLEARCOAT_NORMAL_TEXTURE_AVAILABLE
   if (standardUsesClearcoatNormalTexture()) {
   let clearcoatNormalUv = transformedMaterialUv(material.clearcoatNormalTextureCoordinatesTransform, material.clearcoatNormalTextureCoordinatesMetadata, material.clearcoatNormalTextureCoordinatesRotation, in);
   clearcoatNormalValue = applyTBN(
-    in.worldNormal,
+    clearcoatBaseNormal,
     in.worldTangent,
     scaleTangentSpaceNormal(
       decodeTangentSpaceNormalRg(sampleMaterialTexture(
@@ -1359,6 +1375,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   );
   }
 #endif
+  clearcoatNormalValue *= select(-1.0, 1.0, frontFacing);
   var clearcoatIbl = vec3<f32>(0.0);
   if (skylight.intensity < 0.0) {
     clearcoatIbl = sampleReflectionProbeSpecular(
@@ -1426,7 +1443,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   );
 #endif
   var lit : StandardForwardLit;
-  lit.color = color;
+  lit.color = materialOutputColor(color, alpha, standardAlphaMode());
   lit.alpha = alpha;
 #ifdef TRANSMISSION_AVAILABLE
   lit.transmittedContribution = transmittedContribution;
@@ -1469,7 +1486,7 @@ fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool) -> GBufferO
 struct SkinUncoveredGBufferOutput {
   @location(0) scene_color : vec4<f32>,
   @location(1) normal_roughness : u32,
-  @location(2) f0_occlusion : u32,
+  @location(2) f0_occlusion : vec2<u32>,
   @location(3) albedo_metallic : u32,
   @location(4) lighting_context : vec2<u32>,
   @location(5) receiver_geometry : vec2<u32>,
@@ -1491,8 +1508,12 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   let receiverNormal = select(in.worldNormal * select(-1.0, 1.0, frontFacing), rawGeometry,
     dot(rawGeometry, rawGeometry) > 0.0);
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
-  let normalSpread = geometricNormalSpread(in.worldNormal);
+  var normalSpread = geometricNormalSpread(in.worldNormal);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+#ifdef FLAT_SHADING_AVAILABLE
+  // Derivatives above precede discard; Surface has now selected the GPU Scene material row.
+  normalSpread = select(normalSpread, 0.0, material.flatShading != 0u);
+#endif
   // Surface evaluation installs the selected scene-material row before reading its mode.
   var useDirectDfgLut = false;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
@@ -1516,10 +1537,11 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
 #ifdef SUBSURFACE_DIFFUSION_AVAILABLE
   subsurface = vec4<f32>(material.subsurfaceRadius, material.subsurfaceWeight);
 #endif
+  let specular = standardSurfaceSpecular(in, surface, standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
   var output = encodeStandardGBuffer(surface.normalWS, receiverNormal,
     specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread),
-    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), standardSurfaceF0(in, surface, standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0))),
-    surface.occlusion, surface.emissive, surface.opacity, u32(skylight.diffuseScale.w), probeRow,
+    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), mix(specular.rgb, surface.baseColor, clamp(surface.metallic, 0.0, 1.0)), specular,
+    surface.occlusion, surface.emissive, materialOutputAlpha(surface.opacity, standardAlphaMode()), u32(skylight.diffuseScale.w), probeRow,
     standardReceivesShadows(in), in.surfaceData.z, subsurface,
     useDirectDfgLut,
   );
@@ -1528,7 +1550,7 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   let temporal = unpackSceneTemporalV1(vec4<f32>(0.0, 0.0, 0.0, bitcast<f32>(in.surfaceData.y)));
   // Alpha hashing already commits a binary Surface mask; its sampling alpha
   // must not become source reactivity. Share the standalone producer policy.
-  var reactive = resolvePbrTemporalReactive(temporal.reactive, surface.opacity, 1.0);
+  var reactive = resolvePbrTemporalReactive(temporal.reactive, materialOutputAlpha(surface.opacity, standardAlphaMode()), 1.0);
 #ifdef ALPHA_HASH_AVAILABLE
   if (material.alphaHash > 0.5) { reactive = temporal.reactive; }
 #endif
@@ -1584,10 +1606,10 @@ struct TemporalVsOut {
 fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
   let localPosition = standardVertexPosition(in);
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
-  // Scene-index draws bind the frame-global palette arena and carry the
-  // producer-owned slice in the visible item, exactly like vs_scene_index.
+  // Scene-index draws bind the frame-global palette arena. The captured
+  // Instance row owns the same current/previous slice as vs_scene_index.
   let visible = visibleItems[idx];
-  let paletteBase = visible.z;
+  let paletteBase = sceneInstances[visible.x].customDataStart;
   let materialIndex = visible.y;
   let temporalFlags = sceneIndexDraw(visible.x).temporal;
 #else
@@ -1642,6 +1664,14 @@ fn temporalVertexAlpha(in : TemporalVsOut) -> f32 {
 #endif
 }
 
+fn standardAlphaMode() -> f32 {
+#ifdef ALPHA_MODE_AVAILABLE
+  return material.alphaMode;
+#else
+  return 0.0;
+#endif
+}
+
 @fragment
 fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
@@ -1669,6 +1699,11 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
     material.baseColor.a * temporalVertexAlpha(in),
 #ifdef ALPHA_CLIPPING_AVAILABLE
     material.alphaCutoff,
+#else
+    0.0,
+#endif
+#ifdef ALPHA_TO_COVERAGE_AVAILABLE
+    material.alphaToCoverage,
 #else
     0.0,
 #endif

@@ -3,14 +3,14 @@
 > [!NOTE]
 > **LO original chapter**: [LearnOpenGL 4.1 Depth Testing](https://learnopengl.com/Advanced-OpenGL/Depth-testing)
 >
-> **Engine surface**: `createApp` + `MeshRenderer` with `depthCompare`/`depthWriteEnabled` in `MaterialRenderState` + `configureRuntimeAssetCatalog` + `loadByGuid<TextureAsset>` + custom `registerMaterialShader` (depth-viz).
+> **Engine surface**: `createApp` + `MeshRenderer` with `depthCompare`/`depthWriteEnabled` in `MaterialRenderState` + `configureRuntimeAssetCatalog` + `assets.load(guid, 'texture')` + custom `registerMaterialShader` (depth-viz).
 
 ## Hit-rate index (AI user fast-locate)
 
 | Engine capability | grep anchor | Where |
 |:--|:--|:--|
 | `depthCompare` / `depthWriteEnabled` pipeline state | `renderState: {` | `src/index.ts` (pass-based `MaterialAsset.renderState`) |
-| `loadByGuid<TextureAsset>` GUID texture loading | `loadByGuid<TextureAsset>` | `src/index.ts` (bootstrap section) |
+| `assets.load(guid, 'texture')` GUID texture loading | `assets.load(guid, 'texture')` | `src/index.ts` (bootstrap section) |
 | Runtime catalog wiring | `configureRuntimeAssetCatalog` | `src/index.ts` (bootstrap section) |
 | `registerMaterialShader` custom shader | `registerMaterialShader` | `src/index.ts` (depth-viz shader registration) |
 | Custom WGSL material shader (`@builtin(position).z`) | `depth-viz.wgsl` | `src/depth-viz.wgsl` |
@@ -25,7 +25,7 @@ In forgeax, this example expresses the same concepts through two rendering paths
 
 2. **Depth-viz path** (`USE_DEPTH_VIZ = true`): Same scene geometry, but all entities use a custom depth-viz material shader registered via `registerMaterialShader`. The fragment shader reads `@builtin(position).z` (clip-space depth), applies the standard `linearizeDepth` formula (near=0.1, far=100.0), and outputs grayscale where near pixels are dark and far pixels are light.
 
-Textures are loaded through the GUID asset pipeline (`configureRuntimeAssetCatalog(assets, runtimeBinding)` + `loadByGuid<TextureAsset>`). The helper selects the scoped Vite catalog in development and the emitted `/pack-index.json` in a production build.
+Textures are loaded through the GUID asset pipeline (`configureRuntimeAssetCatalog(assets, runtimeBinding)` + `assets.load(guid, 'texture')`). The helper selects the scoped Vite catalog in development and the emitted `/pack-index.json` in a production build.
 
 ## Run
 
@@ -49,10 +49,10 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-1-depth-testing" type
 |:--|:--|:--|
 | Depth test | `glEnable(GL_DEPTH_TEST)` + `glDepthFunc(GL_LESS)` | Engine default `depthCompare: 'less'` in MaterialRenderState (opt-in per-pass via `renderState`) |
 | Depth buffer visualization | `gl_FragCoord.z` in GLSL + `LinearizeDepth()` function | `@builtin(position).z` in WGSL + inline `linearizeDepth` formula in `depth-viz.wgsl` |
-| Floor plane | Custom 6-vertex plane at Y=-0.5 with texcoord=2.0 | `HANDLE_QUAD` (engine-builtin 1x1 quad) rotated -90 deg around X, scaled 5x5 at Y=-0.5 |
-| Cube geometry | 1x1x1 CCW cube, 36 vertices | `HANDLE_CUBE` (engine-builtin CCW cube) |
+| Floor plane | Custom 6-vertex plane at Y=-0.5 with texcoord=2.0 | `createPrimitiveMesh('quad')` (engine-builtin 1x1 quad) rotated -90 deg around X, scaled 5x5 at Y=-0.5 |
+| Cube geometry | 1x1x1 CCW cube, 36 vertices | `createPrimitiveMesh('cube')` (engine-builtin CCW cube) |
 | Cube transforms | `glm::translate((-1,0,-1))` / `glm::translate((2,0,0))` | ECS `Transform` component: `pos=[-1, 0, -1]` / `pos=[2, 0, 0]` |
-| Texture loading | `stb_image.h` + `loadTexture(path)` with `GL_REPEAT` | `configureRuntimeAssetCatalog` + `loadByGuid<TextureAsset>` with sidecar `.meta.json` `importSettings.addressMode: 'repeat'` |
+| Texture loading | `stb_image.h` + `loadTexture(path)` with `GL_REPEAT` | `configureRuntimeAssetCatalog` + `assets.load(guid, 'texture')` with sidecar `.meta.json` `importSettings.addressMode: 'repeat'` |
 | Camera | LO `Camera` class at (0,0,3), Zoom=45 deg | `Transform` (at (0,0,3)) + `Camera` (fov=PI/4, near=0.1, far=100) |
 | Custom shader | Separate GLSL program for depth-viz | `registerMaterialShader('learn_render::depth_viz', entry)` + pass-based MaterialAsset |
 | Window + loop | `glfwCreateWindow` + `while(!glfwWindowShouldClose)` | `createApp(canvas, opts)` from `@forgeax/engine-app` |
@@ -62,7 +62,7 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-1-depth-testing" type
 | Dimension | LO original (C++ / GLSL / GLFW) | forgeax here (TS / WGSL / WebGPU) |
 |:--|:--|:--|
 | Shading model | Phong / untextured for depth-viz | PBR microfacet for normal path; custom WGSL for depth-viz |
-| Floor texcoord | 6 custom vertices, texcoord=2.0 on edges for REPEAT tiling | `HANDLE_QUAD` [0,1] texcoords; metal.png tiles 1x across 5-unit quad (same tiling frequency as LO's 2x across 10 units) |
+| Floor texcoord | 6 custom vertices, texcoord=2.0 on edges for REPEAT tiling | `createPrimitiveMesh('quad')` [0,1] texcoords; metal.png tiles 1x across 5-unit quad (same tiling frequency as LO's 2x across 10 units) |
 | Depth-viz FS input | `gl_FragCoord.z` (window-space depth, [0,1] in NDC) | `@builtin(position).z` (clip-space depth, [0,1] after perspective divide) |
 | Depth-test toggle | Separate `.cpp` files (1.1 vs 1.2) | Compile-time `USE_DEPTH_VIZ` constant toggle in `index.ts` |
 | Render loop | `glfwSwapBuffers` + `glfwPollEvents` | `createApp` rAF frame-loop with `Time` resource + auto input |
@@ -78,7 +78,7 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-1-depth-testing" type
 | `src/index.ts` | ~250 | Three-section bootstrap -- spawns floor, 2 cubes, light, camera; loads textures via GUID; registers depth-viz shader |
 | `src/depth-viz.wgsl` | ~70 | Custom WGSL material shader: vertex pass-through + fragment depth-to-grayscale |
 | `src/depth-viz.wgsl.meta.json` | ~10 | Sidecar required by `vite-plugin-shader`: declares `.wgsl` file as `kind: 'material-shader'`; omitting it causes vite build to ignore the shader |
-| `scripts/smoke-dawn.mjs` | ~340 | Dawn-node pixel-readback smoke: decode textures via `decodeImageFromFile`, register with `registerWithGuid`, draw 60 frames, verify >=1 mesh site exceeds clear-color threshold |
+| `scripts/smoke-dawn.mjs` | ~340 | Dawn-node pixel-readback smoke: decode textures via `decodeImageFromFile`, admit decoded textures with `assets.create`, draw 60 frames, verify >=1 mesh site exceeds clear-color threshold |
 | `package.json` | ~50 | Workspace metadata + dependencies (`engine-app`, `engine-runtime`, `engine-ecs`, `engine-pack`, `engine-types`) |
 
 ## AI user discoverability

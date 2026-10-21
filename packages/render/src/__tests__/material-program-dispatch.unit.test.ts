@@ -17,7 +17,6 @@ it('retains the shared Surface identity across distinct cooked raster programs',
     7,
     0,
     0,
-    {},
     0,
     { Forward: 'sha256:forward', Deferred: 'sha256:deferred' },
   );
@@ -54,7 +53,7 @@ it('dispatches each Pass with its published program, including an Engine-authore
     },
   ];
   const dispatch: DispatchEntry[] = [];
-  appendMaterialDispatchEntries(dispatch, passes, 1 as EntityHandle, 7, 0, 0, { amount: 0 }, 0, {
+  appendMaterialDispatchEntries(dispatch, passes, 1 as EntityHandle, 7, 0, 0, 0, {
     Forward: 'cooked-toon',
     ShadowCaster: 'cooked-shadow',
   });
@@ -64,9 +63,8 @@ it('dispatches each Pass with its published program, including an Engine-authore
     ['cooked-toon', 'vs_main', 'fs_toon'],
     ['cooked-shadow', 'vs_shadow', undefined],
   ]);
-  expect(
-    dispatch.every((entry) => entry.materialHandle === 7 && entry.paramSnapshot?.amount === 0),
-  ).toBe(true);
+  expect(dispatch.every((entry) => entry.materialHandle === 7)).toBe(true);
+  for (const entry of dispatch) expect(entry).not.toHaveProperty('paramSnapshot');
 });
 
 it('refuses an incomplete published Pass map instead of using an authored shader', () => {
@@ -78,7 +76,6 @@ it('refuses an incomplete published Pass map instead of using an authored shader
       7,
       0,
       0,
-      {},
       0,
       { Forward: 'cooked-toon' },
     ),

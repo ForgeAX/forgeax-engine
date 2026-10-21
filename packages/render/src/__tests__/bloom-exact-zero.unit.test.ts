@@ -110,7 +110,8 @@ describe('Standard Bloom exact-zero topology', () => {
     ['on', 'none', 1, true],
     ['on', 'aces-filmic', 1, true],
   ] as const)('uses one effective admission for %s/%s/%s', (bloom, tonemap, intensity, expected) => {
-    expect(standardBloomAdmitted({ bloom, tonemap, bloomIntensity: intensity })).toBe(expected);
+    const camera = { bloom, tonemap, bloomIntensity: intensity };
+    expect(standardBloomAdmitted(camera)).toBe(expected);
   });
 
   it('Bloom off declares no Bloom targets or passes', () => {

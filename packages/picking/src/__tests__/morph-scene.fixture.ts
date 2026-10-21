@@ -14,16 +14,17 @@ export function morphScene(skinned = false, indexed = true) {
     world
       .set(entity, MeshRenderer, {
         materials: [
-          world.allocSharedRef(
-            'MaterialAsset',
-            Materials.standard({
-              baseColor: [0, 0, 0, 1],
-              specular: 0,
-              emissive: [1, 0.15, 0.03],
-              emissiveIntensity: 1,
-              renderState: { cullMode: 'none' },
-            }),
-          ),
+          scene.assets
+            .create(
+              Materials.standard({
+                baseColor: [0, 0, 0, 1],
+                specular: 0,
+                emissive: [1, 0.15, 0.03],
+                emissiveIntensity: 1,
+                renderState: { cullMode: 'none' },
+              }),
+            )
+            .unwrap(),
         ],
       })
       .unwrap();
@@ -75,7 +76,7 @@ export function morphScene(skinned = false, indexed = true) {
     morphTargets: [{ position: delta }],
     morphWeights: new Float32Array([1]),
   };
-  world.set(entity, MeshFilter, { assetHandle: world.allocSharedRef('MeshAsset', mesh) }).unwrap();
+  world.set(entity, MeshFilter, { assetHandle: scene.assets.create(mesh).unwrap() }).unwrap();
   world
     .addComponent(entity, { component: MorphWeights, data: { weights: new Float32Array([1]) } })
     .unwrap();

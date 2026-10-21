@@ -1,8 +1,4 @@
-import {
-  type AnimationPayloadLookup,
-  animationPayloadsPlugin,
-  animationRuntimePlugin,
-} from '@forgeax/engine-animation';
+import { animationPlugin } from '@forgeax/engine-animation';
 import type { DebugDraw } from '@forgeax/engine-debug-draw';
 import {
   type ActionConfig,
@@ -14,7 +10,6 @@ import type { Plugin } from '@forgeax/engine-plugin';
 import { renderComponentsPlugin } from '@forgeax/engine-render';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { statePlugin } from '@forgeax/engine-state';
-import type { AssetRuntimeAssembly } from '../assets-runtime-assembly';
 import { inputMapPlugin } from '../input-map-plugin';
 import { inputPlugin } from '../input-plugin';
 import {
@@ -22,19 +17,12 @@ import {
   type RenderFeatureHost,
   renderFeatureHostPlugin,
 } from '../renderer-plugin';
-import {
-  assetRegistryPlugin,
-  assetsWorldPlugin,
-  rendererAssetsPlugin,
-} from './assets-world-plugin';
 import { createDebugDrawOnReady, type RendererDebugDrawHost, releaseDebugDraw } from './debug-draw';
-import type { EngineProfileBase } from './engine-profile-common';
+import { assetProfilePlugins, type EngineProfileBase } from './engine-profile-common';
 
-export interface MainEngineProfileOptions extends EngineProfileBase {
-  readonly assetAssembly?: AssetRuntimeAssembly;
+interface MainEngineProfileOptions extends EngineProfileBase {
   readonly rendererDebugDrawHost?: RendererDebugDrawHost;
   readonly rendererFeatureHost?: RenderFeatureHost;
-  readonly animationPayloads: AnimationPayloadLookup;
   readonly onDebugDrawReady?: (debugDraw: DebugDraw) => void;
   readonly input?: InputBackend;
   readonly inputDispose?: () => void;
@@ -67,10 +55,7 @@ export function mainEngineProfile(options: MainEngineProfileOptions): Plugin[] {
     ...(options.rendererFeatureHost === undefined
       ? []
       : [renderFeatureHostPlugin(options.rendererFeatureHost)]),
-    ...(options.assetAssembly === undefined
-      ? [rendererAssetsPlugin(options.assets)]
-      : [assetRegistryPlugin(options.assetAssembly, options.pluginPrograms, options.runtimePacks)]),
-    assetsWorldPlugin(),
+    ...assetProfilePlugins(options),
     ...(options.input === undefined
       ? []
       : [
@@ -79,8 +64,7 @@ export function mainEngineProfile(options: MainEngineProfileOptions): Plugin[] {
             : ownedInputBackendPlugin(options.input, options.inputDispose),
         ]),
     scenePlugin(),
-    animationPayloadsPlugin(options.animationPayloads),
-    animationRuntimePlugin(options.animation),
+    animationPlugin(options.animation),
     statePlugin(),
     ...(options.onDebugDrawReady === undefined || options.rendererDebugDrawHost === undefined
       ? []

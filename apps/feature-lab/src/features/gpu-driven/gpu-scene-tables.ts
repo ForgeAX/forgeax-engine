@@ -2,16 +2,16 @@ import { GlobalTransform, Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { inspect, spawnGrid } from './support/scene';
 
-const TABLES = ['primitive', 'instance', 'transform', 'drawTemplate', 'material'] as const;
+const TABLES = ['primitive', 'instance', 'transform', 'material'] as const;
 
 export default defineFeature({
   title: 'GPU Scene tables',
   catalog: 'GPU Scene tables',
   kind: 'probe',
   summary:
-    'With storage buffers, the renderer derives Primitive, Instance, Transform, DrawTemplate, and Material tables from its persistent CPU Render Scene and uploads only changed ranges.',
+    'With storage buffers, the renderer derives Primitive, Instance, Transform, and Material tables from its persistent CPU Render Scene and uploads only changed ranges.',
   expect:
-    "All checks pass: GPU Scene status is 'resident' with all five tables sized, a still scene counts noChangeFrames upward with zero table upload, and moving one cube adds a range-scoped delta upload without a full rebuild.",
+    "All checks pass: GPU Scene status is 'resident' with all four tables sized, a still scene counts noChangeFrames upward with zero table upload, and moving one cube adds a range-scoped delta upload without a full rebuild.",
   async setup({ app, world, frames }) {
     const { visible } = spawnGrid(world);
     await frames(20);

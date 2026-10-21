@@ -33,6 +33,7 @@ it('applies pre-play bus control and latest pending volume through native decodi
     consumer.consume({ kind: 'set-bus-volume', bus: 'sfx', volume: 0.4 });
     consumer.consume({ kind: 'set-bus-mute', bus: 'sfx', muted: true });
     consumer.consume({
+      asset: { owner: 'silence', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'silence',
@@ -59,6 +60,7 @@ it('retires consumer publications and active native sources when its supplied Co
   const consumer = createHostAudioConsumer(engine);
   try {
     consumer.consume({
+      asset: { owner: 'closed-publication', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 21,
       sourceKey: 'closed-publication',
@@ -70,6 +72,7 @@ it('retires consumer publications and active native sources when its supplied Co
     expect(consumer.state().activeSourceCount).toBe(0);
     expect(destroy).toHaveBeenCalledTimes(1);
     consumer.consume({
+      asset: { owner: 'after-close', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 22,
       sourceKey: 'after-close',
@@ -113,6 +116,7 @@ it('fences a real native decode publication still pending when the supplied Cont
   const consumer = createHostAudioConsumer(engine);
   try {
     consumer.consume({
+      asset: { owner: 'pending-close', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 31,
       sourceKey: 'pending-close',
@@ -133,6 +137,7 @@ it('fences a real native decode publication still pending when the supplied Cont
     expect(consumer.state().activeSourceCount).toBe(0);
     expect(consumer.state().lastError).toBeNull();
     consumer.consume({
+      asset: { owner: 'new-after-close', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 32,
       sourceKey: 'new-after-close',

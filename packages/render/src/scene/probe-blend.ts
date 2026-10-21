@@ -89,8 +89,6 @@ export interface ProbeAdmissionResult {
 export interface ProbeSceneProjectionInput {
   readonly objects: readonly ProbeSceneObjectInput[];
   readonly probes: readonly ProbeSceneProbeInput[];
-  /** Keep explicit zero-local rows for consumers whose published ABI always reads this page. */
-  readonly retainSkyResidualRecords?: boolean;
   /** Optional analytic oracle input; records never store or replace Sky. */
   readonly skyIrradiance?: readonly [number, number, number];
   readonly sky?: {
@@ -589,6 +587,11 @@ export class ProbeBlendSceneProjection {
     return this.records.get(objectKey);
   }
 
+  captureRecordLookup(): (objectKey: number) => ProbeBlendRecord | undefined {
+    const records = this.records;
+    return (objectKey) => records.get(objectKey);
+  }
+
   hasRecords(): boolean {
     return this.records.size > 0;
   }
@@ -663,7 +666,6 @@ export class ProbeBlendSceneProjection {
       previous !== undefined &&
       previous.objects === input.objects &&
       input.worldRevision === previous.worldRevision &&
-      input.retainSkyResidualRecords === previous.retainSkyResidualRecords &&
       sameProbeFacts(input.probes, previous.probes) &&
       sameSkyFacts(input, previous)
     ) {
@@ -692,11 +694,7 @@ export class ProbeBlendSceneProjection {
     }
     if (previous !== undefined && input.worldRevision !== previous.worldRevision)
       dirtyReasons.push('world');
-    if (
-      previous !== undefined &&
-      (!sameProbeFacts(input.probes, previous.probes) ||
-        input.retainSkyResidualRecords !== previous.retainSkyResidualRecords)
-    )
+    if (previous !== undefined && !sameProbeFacts(input.probes, previous.probes))
       dirtyReasons.push('probe-fact');
     if (previous !== undefined && !sameSkyFacts(input, previous)) dirtyReasons.push('sky');
     const previousObjects = new Map(previous?.objects.map((object) => [object.objectKey, object]));
@@ -777,7 +775,7 @@ export class ProbeBlendSceneProjection {
       let record: ProbeBlendRecord;
       if (admission.error !== undefined) firstError ??= admission.error;
       if (admission.admitted.length === 0) {
-        if (input.probes.length === 0 && input.retainSkyResidualRecords !== true) {
+        if (input.probes.length === 0) {
           nextRecords.delete(object.objectKey);
           this.recordFacts.delete(object.objectKey);
           continue;

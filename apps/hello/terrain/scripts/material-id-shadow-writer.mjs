@@ -1,4 +1,5 @@
 import { encodePng } from '@forgeax/engine-image/png';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -75,24 +76,15 @@ try {
       const lights = [...h.app.world.query({ read: [DirectionalLight] }).unwrap()];
       assert.equal(lights.length, 1);
       h.app.world.set(lights[0].entity, DirectionalLight, { cascadeCount: 4 }).unwrap();
-      const mesh = h.app.world.sharedRefs.acquire(
-        'MeshAsset',
-        createSphereGeometry(2, 16, 12).unwrap(),
-      );
+      const mesh = h.app.world.assets.create(createSphereGeometry(2, 16, 12).unwrap()).unwrap();
       // The settled static producer requires the real cooked scene-index
       // Standard program. An uncooked Materials.standard shared ref falls back
       // to a CPU draw and cannot establish conservation of GPU static depth.
       const staticMaterialGuid = AssetGuid.derive(materialPackageId, 'static-caster-material');
-      const staticMaterial = (await h.app.assets.loadByGuid(staticMaterialGuid)).unwrap();
-      assert.equal(staticMaterial.kind, 'material');
-      const readiness = h.app.assets.getMaterialReadiness(AssetGuid.format(staticMaterialGuid));
-      assert.equal(
-        readiness?.status,
-        'Ready',
-        'the static material must complete native shader cook',
-      );
-      assert.equal(readiness.receipt.schemaVersion, 'material-cook/4');
-      const projection = h.app.assets.getMaterialProjection(AssetGuid.format(staticMaterialGuid));
+      const staticMaterial = (await h.app.assets.load(staticMaterialGuid, 'material')).unwrap();
+      assert.equal(h.app.assets.read(staticMaterial).unwrap().kind, 'material');
+      const acceptedMaterial = runtimeAssets(h.app.assets).borrow(staticMaterial).unwrap();
+      const projection = h.app.assets.getMaterialProjectionForPayload(acceptedMaterial);
       assert(
         projection?.passes.some(
           (pass) =>
@@ -103,7 +95,7 @@ try {
         ),
         'the static shadow material must publish its scene-index program',
       );
-      const material = h.app.world.sharedRefs.acquire('MaterialAsset', staticMaterial);
+      const material = staticMaterial;
       const staticCaster = h.app.world
         .spawn(
           { component: Transform, data: { pos: [60, 30, 60] } },
@@ -113,8 +105,8 @@ try {
           { component: ShadowParticipation, data: { cast: true } },
         )
         .unwrap();
-      h.app.world.sharedRefs.release(mesh).unwrap();
-      h.app.world.sharedRefs.release(material).unwrap();
+      h.app.world.assets.release(mesh).unwrap();
+      h.app.world.assets.release(material).unwrap();
       const eye = [20, 30, 135];
       h.app.world
         .set(h.subjects.camera, Transform, {
@@ -199,10 +191,9 @@ try {
         writeFileSync(resolve(dir, `${name}-capture.png`), encodePng(960, 540, live));
         const tape = decodeTape(artifact.bytes).unwrap();
         const model = buildFrameModel(tape);
-        const asset = h.app.world.sharedRefs
-          .resolve(h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset)
+        const asset = h.app.assets.read(h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset)
           .unwrap();
-        const parameters = h.app.assets.lookup(asset.sections[0].material).parameters;
+        const parameters = h.app.assets.read(asset.sections[0].material).unwrap().parameters;
         const abi = derive(
           projectMaterialParameterSchema(
             parameters,

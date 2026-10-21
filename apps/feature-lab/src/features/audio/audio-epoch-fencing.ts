@@ -1,4 +1,4 @@
-import type { AudioPlayOptions } from '@forgeax/engine/audio';
+import { type AudioPlayOptions, createAudioIntentBackend } from '@forgeax/engine/audio';
 import { createHostAudioConsumer, WebAudioEngine } from '@forgeax/engine/audio-webaudio';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnCamera } from '../../lab/stage';
@@ -11,44 +11,42 @@ export default defineFeature({
   catalog: 'Audio entity epoch fencing',
   kind: 'probe',
   summary:
-    'Decode is asynchronous. A stale decode completion is fenced by the entity play epoch and the current source-key content, so stop, a newer play, or republished bytes win over an older in-flight decode.',
+    'Decode is asynchronous. Entity play epochs and asset revisions fence stale completions, so stop, a newer play, or an asset edit wins over older in-flight decoding.',
   expect:
     'All checks pass: play-then-stop before decode resolves never starts a node, a second play for the same entity with a different clip plays only the newer clip, and republished bytes under one key play only the new content.',
-  async setup({ world, frames }) {
+  async setup({ app, world, frames }) {
     const checks = new CheckList();
+    const assets = app.assets;
+    if (assets === undefined) throw new Error('App asset service is unavailable');
     spawnCamera(world);
     // The audio tick runs inside the App frame, so start it before polling the backend.
     await frames(1);
     const trace = traceAudioGraph();
     const consumer = createHostAudioConsumer(new WebAudioEngine());
+    const backend = createAudioIntentBackend({ emit: (intent) => consumer.consume(intent) });
+    const clip = (sourceKey: string, duration: number) =>
+      assets
+        .create({
+          kind: 'audio',
+          sourceKey,
+          mediaType: 'audio/wav',
+          bytes: makeWav(300, duration),
+        })
+        .unwrap();
+    const a = clip('a', 0.1);
+    const b = clip('b', 0.3);
+    const c = clip('c', 0.6);
+    const d = clip('d', 0.2);
     try {
-      consumer.consume({
-        kind: 'play',
-        entityId: 1,
-        sourceKey: 'a',
-        bytes: makeWav(300, 0.1),
-        options,
-      });
-      consumer.consume({ kind: 'stop', entityId: 1 });
+      backend.play(1, assets, a, options);
+      backend.stop(1);
       await waitFor(() => trace.decodes === 1);
       await sleep(150);
       checks.equal('stop before decode completes starts nothing', trace.started.length, 0);
       checks.equal('no active source after fenced play', consumer.state().activeSourceCount, 0);
 
-      consumer.consume({
-        kind: 'play',
-        entityId: 2,
-        sourceKey: 'b',
-        bytes: makeWav(300, 0.3),
-        options,
-      });
-      consumer.consume({
-        kind: 'play',
-        entityId: 2,
-        sourceKey: 'c',
-        bytes: makeWav(300, 0.6),
-        options,
-      });
+      backend.play(2, assets, b, options);
+      backend.play(2, assets, c, options);
       await sleep(150);
       checks.equal(
         'newer play for the same entity wins',
@@ -56,20 +54,9 @@ export default defineFeature({
         [6],
       );
 
-      consumer.consume({
-        kind: 'play',
-        entityId: 3,
-        sourceKey: 'd',
-        bytes: makeWav(300, 0.2),
-        options,
-      });
-      consumer.consume({
-        kind: 'play',
-        entityId: 3,
-        sourceKey: 'd',
-        bytes: makeWav(300, 0.4),
-        options,
-      });
+      backend.play(3, assets, d, options);
+      assets.update(d, { bytes: makeWav(300, 0.4) }).unwrap();
+      backend.play(3, assets, d, options);
       await waitFor(() => trace.started.length >= 2);
       await sleep(150);
       checks.equal(
@@ -79,8 +66,10 @@ export default defineFeature({
       );
       checks.equal('two live sources remain', consumer.state().activeSourceCount, 2);
     } finally {
+      backend.destroy();
       consumer.dispose();
       trace.restore();
+      for (const handle of [a, b, c, d]) assets.release(handle).unwrap();
     }
     return { checks: () => checks.items };
   },

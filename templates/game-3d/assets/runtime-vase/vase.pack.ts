@@ -5,7 +5,7 @@ import { definePack } from '@forgeax/engine/pack/source';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { ChildOf, Name, Transform } from '@forgeax/engine/scene';
-import { ok, type MaterialAsset, type MeshAsset } from '@forgeax/engine/types';
+import { ok } from '@forgeax/engine/types';
 import { assetGuid, guidText, PACKAGE_IDS } from '../shared/asset-refs.ts';
 import type {} from '../shared/scene-refs.ts';
 import {
@@ -34,41 +34,45 @@ export const vase: Plugin.Object<{ readonly material: string }> = {
     };
     const generate = async (requested: VaseValues) => {
       const values = { ...VASE_DEFAULTS, ...requested };
-      state = { ...state, busy: true, error: undefined };
+      const { error: _error, ...previous } = state;
+      state = { ...previous, busy: true };
       publish();
       try {
         const generated = (await producer.generate({
           schemaVersion: '3.0.0', packageId: PackageId.format(VASE_INSTANCE), parent: PackageId.format(VASE_GENERATOR), values,
         }, lifetime.signal)).unwrap();
         if (lifetime.signal.aborted) return;
-        const mesh = (await assets.loadByGuid<MeshAsset>(guid)).unwrap();
-        if (lifetime.signal.aborted) return;
-        const material = (await assets.loadByGuid<MaterialAsset>(assets.parseGuid(config.material))).unwrap();
-        if (lifetime.signal.aborted) return;
-        const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-        const materialHandle = world.allocSharedRef('MaterialAsset', material);
+        const meshHandle = (await assets.load(guid, 'mesh', { signal: lifetime.signal })).unwrap();
         try {
-          if (entity === undefined) {
-            entity = world.spawn(
-              { component: Transform, data: { pos: [0, 0, 4] } },
-              { component: Name, data: { value: 'Runtime Vase' } },
-              { component: ChildOf, data: { parent: ctx.gameScene.root } },
-              { component: MeshFilter, data: { assetHandle: meshHandle } },
-              { component: MeshRenderer, data: { materials: [materialHandle] } },
-            ).unwrap();
-          } else {
-            world.set(entity, MeshFilter, { assetHandle: meshHandle }).unwrap();
+          if (lifetime.signal.aborted) return;
+          if (entity !== undefined) {
+            (await assets.reload(meshHandle, { conflict: 'reject', signal: lifetime.signal })).unwrap();
+          }
+          const materialHandle = (await assets.load(assets.parseGuid(config.material), 'material', { signal: lifetime.signal })).unwrap();
+          try {
+            if (lifetime.signal.aborted) return;
+            if (entity === undefined) {
+              entity = world.spawn(
+                { component: Transform, data: { pos: [0, 0, 4] } },
+                { component: Name, data: { value: 'Runtime Vase' } },
+                { component: ChildOf, data: { parent: ctx.gameScene.root } },
+                { component: MeshFilter, data: { assetHandle: meshHandle } },
+                { component: MeshRenderer, data: { materials: [materialHandle] } },
+              ).unwrap();
+            }
+            const mesh = assets.read(meshHandle).unwrap();
+            state = {
+              busy: true, guid: guidText(guid), values: { ...values }, entity,
+              generation: generated.publication!.generation,
+              vertexCount: mesh.submeshes[0]!.vertexCount,
+              aabb: Array.from(mesh.aabb!),
+            };
+          } finally {
+            assets.release(materialHandle).unwrap();
           }
         } finally {
-          world.sharedRefs.release(meshHandle).unwrap();
-          world.sharedRefs.release(materialHandle).unwrap();
+          assets.release(meshHandle).unwrap();
         }
-        state = {
-          busy: true, guid: guidText(guid), values: { ...values }, entity,
-          generation: generated.publication!.generation,
-          vertexCount: mesh.submeshes[0]!.vertexCount,
-          aabb: Array.from(mesh.aabb!),
-        };
       } catch (cause) {
         state = { ...state, error: cause instanceof Error ? cause.message : JSON.stringify(cause) };
       } finally {
@@ -114,7 +118,7 @@ export const vase: Plugin.Object<{ readonly material: string }> = {
 };
 
 export default definePack({
-  schemaVersion: '2.0.0', packageId: VASE_PLUGIN,
+  schemaVersion: '2.0.0', plugins: true, packageId: VASE_PLUGIN,
   build: () => ok({
     'plugin/vase': {
       kind: 'plugin', module: { specifier: './vase.pack.ts', export: 'vase' },

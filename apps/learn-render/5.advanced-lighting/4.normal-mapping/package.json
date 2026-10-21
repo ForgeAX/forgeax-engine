@@ -38,7 +38,9 @@
       }
     },
     "rhiDebug": {
-      "riskFamilies": ["materials-textures"]
+      "riskFamilies": [
+        "materials-textures"
+      ]
     }
   },
   "dependencies": {
@@ -52,7 +54,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

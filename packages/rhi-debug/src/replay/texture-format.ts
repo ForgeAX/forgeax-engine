@@ -2,26 +2,6 @@
 
 import { textureFormatBlock } from '@forgeax/engine-types';
 
-interface TextureReadbackDescriptor {
-  readonly format: string;
-  readonly dimension: string;
-  readonly aspect?: GPUTextureAspect | undefined;
-}
-
-type TextureReadbackPlan =
-  | {
-      readonly supported: true;
-      readonly format: string;
-      readonly bytesPerTexel: number;
-      readonly blockWidth: 1;
-      readonly blockHeight: 1;
-    }
-  | {
-      readonly supported: false;
-      readonly format: string;
-      readonly reason: string;
-    };
-
 const READBACK_COLOR_FORMATS = new Set<string>([
   'r8unorm',
   'rg8unorm',
@@ -56,31 +36,6 @@ export function isDepthTextureFormat(format: string): boolean {
 
 export function isDepthStencilTextureFormat(format: string): boolean {
   return format.endsWith('-stencil8');
-}
-
-export function getTextureReadbackPlan(descriptor: TextureReadbackDescriptor): TextureReadbackPlan {
-  if (/^(bc|etc2|eac|astc)-/.test(descriptor.format)) {
-    return {
-      supported: false,
-      format: descriptor.format,
-      reason: 'compressed texture readback has no core decoder',
-    };
-  }
-  const bytesPerTexel = textureBytesPerTexel(descriptor.format);
-  if (bytesPerTexel === undefined) {
-    return {
-      supported: false,
-      format: descriptor.format,
-      reason: 'texture format is not in the v7 readback matrix',
-    };
-  }
-  return {
-    supported: true,
-    format: descriptor.format,
-    bytesPerTexel,
-    blockWidth: 1,
-    blockHeight: 1,
-  };
 }
 
 export function textureBytesPerTexel(format: string): number | undefined {

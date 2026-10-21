@@ -1,4 +1,5 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { RenderFeaturePlan, RenderFeatureSubmission } from '@forgeax/engine-render';
 import type { ParticleEffectAsset } from '@forgeax/engine-types';
@@ -16,6 +17,7 @@ import {
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureSnapshotEquals,
 } from '../../../render/src/features/plan';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 import {
   createCameraProvider,
@@ -92,7 +94,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       },
     )
   ).unwrap();
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   const asset: ParticleEffectAsset = {
     kind: 'particle-effect',
     schemaVersion: 3,
@@ -100,7 +102,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     emitters: [{ id: 'shared', capacity: 8 }],
     program: { ...cooked.program, fingerprint: cooked.fingerprint },
   };
-  const effect = world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'shared-effect' });
+  const effect = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, { ...asset, guid: 'shared-effect' }))
+    .unwrap();
   world
     .spawn({
       component: ParticleEffectPlayer,
@@ -134,7 +138,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       .unwrap();
     const plan = consumer
       .plan(structuredClone(extracted), {
-        resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+        resolveAsset: (_index, handle, revision) =>
+          runtimeAssets(world.assets).resolveAsset(handle, revision),
         caps: {} as never,
         generation: 0,
         frame: { frameNumber },
@@ -272,7 +277,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     // An unacknowledged successor publication must not consume the same simulation again.
     const repeated = consumer
       .plan(structuredClone(retry.extracted), {
-        resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+        resolveAsset: (_index, handle, revision) =>
+          runtimeAssets(world.assets).resolveAsset(handle, revision),
         caps: {} as never,
         generation: 0,
         frame: { frameNumber: number },

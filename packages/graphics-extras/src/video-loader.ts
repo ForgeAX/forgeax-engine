@@ -1,23 +1,9 @@
-// @forgeax/engine-graphics-extras - video loader (feat-20260623-world-space-video-asset M2 / w4).
-//
-// Descriptor-only loader for the 'video' asset kind. VideoAsset is a pure
-// `{ url }` descriptor (no pixel decode, no import/cook pipeline — OOS-1);
-// the runtime resolves it into an HTMLVideoElement via the host-provided
-// `VideoSourceProvider` World Resource (plan-strategy D-1).
-//
-// The loader returns the payload as VideoAsset synchronously — no fetch or
-// decode. Audio differs because its renderer-injected catalog-entry loader
-// fetches and decodes a Web Audio payload before cataloguing it.
-//
-// Registered in wireDefaultLoaders alongside the other 10 default kinds
-// (plan-strategy D-7: engine-own kind goes in the default set so AI users
-// don't have to manually register it).
+// VideoAsset is a URL descriptor; the Host provider owns media decoding and playback.
 
 import {
   type AssetDecoderContribution,
   type AssetKind,
   err,
-  type Loader,
   ok,
   type VideoAsset,
 } from '@forgeax/engine-types';
@@ -33,7 +19,7 @@ function hasVideoUrlControlCharacter(value: string): boolean {
   return false;
 }
 
-function isBrowserResolvableVideoUrl(value: unknown): value is string {
+export function isBrowserResolvableVideoUrl(value: unknown): value is string {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
@@ -53,22 +39,17 @@ function isBrowserResolvableVideoUrl(value: unknown): value is string {
   }
 }
 
-export const videoLoader: Loader<VideoAsset> = {
-  kind: 'video',
-  load(payload: Record<string, unknown>): VideoAsset | undefined {
-    if (!isBrowserResolvableVideoUrl(payload.url)) return undefined;
-    return { kind: 'video', url: payload.url };
-  },
-};
-
 export const videoContribution: AssetDecoderContribution<VideoAsset, 'video'> = {
   kind: { kind: 'video' } as AssetKind<VideoAsset, 'video'>,
   consumer: 'VideoSourceProvider',
   decoder: {
     async decode({ envelope }) {
       const payload = envelope.payload;
-      return payload.kind === 'video' && isBrowserResolvableVideoUrl(payload.url)
-        ? ok(payload)
+      return payload !== null &&
+        typeof payload === 'object' &&
+        (payload.kind === undefined || payload.kind === 'video') &&
+        isBrowserResolvableVideoUrl(payload.url)
+        ? ok({ kind: 'video', url: payload.url })
         : err({
             code: 'asset-package-invalid',
             expected: 'a browser-resolvable video URL descriptor',

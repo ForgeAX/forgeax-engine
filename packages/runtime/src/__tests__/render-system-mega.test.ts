@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 // Consolidated by feat-20260608-ci-time-cut M5 w13/w14: merges
 //   - render-system.test.ts
 //   - render-system-skylight.test.ts
@@ -5,7 +7,6 @@
 // Each original file body sits in its own block-scope so helper names
 // cannot collide; describe() inside still registers globally with vitest.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import type { World as WorldType } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
 import type { Renderer as RendererType } from '@forgeax/engine-render';
@@ -17,7 +18,6 @@ import {
   MeshRenderer,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
@@ -334,36 +334,15 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     return (await import(ENGINE)) as never;
   }
 
-  async function importEcs(): Promise<{
-    World: new () => {
-      spawn: (...componentDatas: unknown[]) => unknown;
-      update: () => void;
-      inspect: () => { systemCount: number };
-      allocSharedRef: (target: string, payload: unknown) => Handle<string, 'shared'>;
-    };
-  }> {
-    return (await import('@forgeax/engine-ecs')) as never;
+  async function importEcs() {
+    return import('@forgeax/engine-ecs');
   }
 
-  async function importComponents(): Promise<{
-    Transform: unknown;
-    MeshFilter: unknown;
-    MeshRenderer: unknown;
-    Camera: unknown;
-    DirectionalLight: unknown;
-    // w22 - HANDLE_CUBE / HANDLE_TRIANGLE narrow from plain `number` to
-    // `Handle<MeshAsset>` (AC-09 / D-P1). The brand is a phantom over `number`
-    // at runtime; test code typings reflect the narrow so `tsc -b` catches any
-    // cross-brand assignment mistakes (e.g. passing HANDLE_CUBE where a
-    // Handle<TextureAsset> is expected).
-    HANDLE_CUBE: Handle<'MeshAsset', 'shared'>;
-    HANDLE_TRIANGLE: Handle<'MeshAsset', 'shared'>;
-  }> {
+  async function importComponents() {
     return {
       ...(await import('@forgeax/engine-render')),
       ...(await import('@forgeax/engine-scene')),
-      ...(await import('@forgeax/engine-assets-runtime')),
-    } as never;
+    };
   }
 
   interface TestSetup {
@@ -424,7 +403,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         },
       });
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -503,7 +487,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Renderable entity with ONLY MeshFilter (no Transform, no
       // MeshRenderer) - default values are used; charter proposition 4
       // softening per D-Q7 case A.
-      world.spawn({ component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } });
+      world.spawn({
+        component: C.MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      });
 
       const errors: { code: string }[] = [];
       subscribeRendererErrors(renderer, (e) => errors.push(e));
@@ -525,7 +514,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const world = new World();
       // No camera; one renderable entity.
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -622,7 +616,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         { component: C.Transform, data: cameraTransform() },
       );
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -685,7 +684,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         { component: C.Transform, data: identityTransform() },
       );
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -742,7 +746,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         data: { ...directionalLight(), intensity: 2 },
       });
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -765,7 +774,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   });
 
   describe('RenderSystem asset-not-registered + internal exception (.detail F-3 contract)', () => {
-    it('asset-not-registered fires an error event with .detail = { assetHandle } and skips entity', async () => {
+    it('rejects released mesh references before publication and still clears the empty frame', async () => {
       const { createRenderer, log } = await setupWebGPU();
       const canvas = makeMockCanvas({ webgl2: 'context', webgpu: 'context' });
       const renderer = await createRenderer(
@@ -793,8 +802,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         },
         { component: C.Transform, data: cameraTransform() },
       );
-      const BAD_HANDLE = 99999;
-      world.spawn(
+      const assets = testAssets(world);
+      const BAD_HANDLE = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+      assets.release(BAD_HANDLE).unwrap();
+      const rejected = world.spawn(
         { component: C.MeshFilter, data: { assetHandle: BAD_HANDLE } },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
@@ -804,12 +815,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       subscribeRendererErrors(renderer, (e) => errors.push(e));
       drawPublished(renderer, world as WorldType);
 
-      const assetErr = errors.find((e) => e.code === 'asset-not-registered');
-      expect(assetErr).toBeDefined();
-      expect(assetErr?.detail).toBeDefined();
-      expect((assetErr?.detail as { assetHandle?: number } | undefined)?.assetHandle).toBe(
-        BAD_HANDLE,
-      );
+      expect(rejected.ok).toBe(false);
+      if (rejected.ok) throw new Error('released mesh was admitted');
+      expect(rejected.error.code).toBe('asset-reference-invalid');
+      expect(errors).toEqual([]);
       // The bad entity is skipped; no draw recorded for it (only entity).
       expect(log.drawIndexedCount).toBe(0);
       // Case E secondary-fix: even when every renderable fails asset
@@ -866,7 +875,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         { component: C.Transform, data: cameraTransform() },
       );
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -980,7 +994,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Register a MaterialAsset with a Transparent-queue pass so the
       // extract stage produces dispatch entries tagged with
       // queue=RenderQueue.Transparent for the record-stage distance sort.
-      const matAsset = {
+      const matAsset: import('@forgeax/engine-types').MaterialAsset = {
         kind: 'material',
         passes: [
           {
@@ -992,7 +1006,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         values: { baseColor: [1, 1, 1, 1] },
       };
       const world = new World();
-      const matHandle = world.allocSharedRef('MaterialAsset', matAsset) as unknown;
+      const matHandle = testAssets(world).create(matAsset).unwrap();
 
       world.spawn(
         {
@@ -1033,7 +1047,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const farTx = { ...identityTransform(), pos: [0, 0, -7] };
 
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: C.MeshRenderer,
           data: { materials: [matHandle] },
@@ -1041,7 +1060,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         { component: C.Transform, data: nearTx },
       );
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: C.MeshRenderer,
           data: { materials: [matHandle] },
@@ -1049,7 +1073,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         { component: C.Transform, data: midTx },
       );
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: C.MeshRenderer,
           data: { materials: [matHandle] },
@@ -1122,7 +1151,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       );
 
       // Register a MaterialAsset with Geometry-queue pass.
-      const matAsset = {
+      const matAsset: import('@forgeax/engine-types').MaterialAsset = {
         kind: 'material',
         passes: [
           {
@@ -1134,7 +1163,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         values: { baseColor: [1, 1, 1, 1] },
       };
       const world = new World();
-      const matHandle = world.allocSharedRef('MaterialAsset', matAsset) as unknown;
+      const matHandle = testAssets(world).create(matAsset).unwrap();
 
       world.spawn(
         {
@@ -1169,12 +1198,22 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const farOpaque = { ...identityTransform(), pos: [0, 0, -10] };
 
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: { materials: [matHandle] } },
         { component: C.Transform, data: nearOpaque },
       );
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: { materials: [matHandle] } },
         { component: C.Transform, data: farOpaque },
       );
@@ -1214,7 +1253,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Register a MaterialAsset with stencilReference=1 on its pass so
       // the extract stage folds it into the DispatchEntry for the record
       // stage to consume via setStencilReference.
-      const matAsset = {
+      const matAsset: import('@forgeax/engine-types').MaterialAsset = {
         kind: 'material',
         passes: [
           {
@@ -1230,7 +1269,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         values: { baseColor: [1, 1, 1, 1] },
       };
       const world = new World();
-      const matHandle = world.allocSharedRef('MaterialAsset', matAsset) as unknown;
+      const matHandle = testAssets(world).create(matAsset).unwrap();
 
       world.spawn(
         {
@@ -1261,7 +1300,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
       // Spawn one entity with a material that carries stencilReference=1.
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: C.MeshRenderer,
           data: { materials: [matHandle] },
@@ -1325,7 +1369,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
       // Spawn entity WITHOUT stencilReference on any pass.
       world.spawn(
-        { component: C.MeshFilter, data: { assetHandle: C.HANDLE_CUBE } },
+        {
+          component: C.MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: C.MeshRenderer, data: defaultMaterial() },
         { component: C.Transform, data: identityTransform() },
       );
@@ -1568,7 +1617,9 @@ describe('RenderSystem Skylight extract + record phase contract (plan-strategy D
         { component: Transform, data: makeIdentityTransform() },
         {
           component: MeshFilter,
-          data: { assetHandle: HANDLE_CUBE },
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
         },
         {
           component: MeshRenderer,

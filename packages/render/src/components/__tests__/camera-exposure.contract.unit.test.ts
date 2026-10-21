@@ -34,7 +34,7 @@ describe('CameraExposure contract', () => {
     expect(Camera.fields.rates.default).toEqual(new Float32Array([3, 1]));
     expect(Camera.fields.temperature.default).toBe(6504);
     expect(Camera.fields.tint.default).toBe(0);
-    expect(Camera.fields.colorLut.type).toBe('shared<TextureAsset>');
+    expect(Camera.fields.colorLut.type).toBe('asset<texture>');
     expect(Camera.fields.colorLutStrength.default).toBe(1);
   });
 

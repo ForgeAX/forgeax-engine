@@ -6,7 +6,7 @@ import { createCatalogSource } from '../catalog-source';
 import { parseCatalog } from '../registry/catalog';
 
 function registry(): AssetRegistry {
-  return new AssetRegistry({} as never);
+  return new AssetRegistry({ shaderRegistry: {} as never });
 }
 
 const packageRow = {
@@ -32,9 +32,8 @@ it('reads current source keys by GUID without enumerating the Catalog', async ()
     },
   });
   (await assets.enumerateCatalog()).unwrap();
-  const index = assets.packIndexCache;
-  if (index === undefined || notify === undefined) throw new Error('Catalog was not admitted');
-  const enumerate = vi.spyOn(index, Symbol.iterator);
+  if (notify === undefined) throw new Error('Catalog was not admitted');
+  const enumerate = vi.spyOn(assets, 'enumerateCatalog');
   const snapshots = vi.spyOn(assets, 'listCatalog');
   for (let i = 0; i < 100; i++) {
     expect(assets.sourceKeyOf(entry.guid.toUpperCase())).toBe('mesh/main');
@@ -49,7 +48,7 @@ it('reads current source keys by GUID without enumerating the Catalog', async ()
   expect(assets.sourceKeyOf(entry.guid)).toBeUndefined();
   notify({ added: [entry], changed: [], removed: [] });
   expect(assets.sourceKeyOf(entry.guid)).toBe('mesh/main');
-  assets.invalidateAll();
+  assets.clearCatalogSource();
   expect(assets.sourceKeyOf(entry.guid)).toBeUndefined();
   expect(snapshots).not.toHaveBeenCalled();
 });

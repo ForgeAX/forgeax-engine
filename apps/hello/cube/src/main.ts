@@ -16,7 +16,7 @@
 //
 // Four-step recipe AI users discover via @forgeax/engine-runtime
 // (charter proposition 1 progressive disclosure):
-//   (1) import 5-component schemas + HANDLE_CUBE.
+//   (1) import component schemas + the host AssetRegistry.
 //   (2) world.spawn(...) cube + Camera + DirectionalLight.
 //   (3) await host initialization (D-S3 manifest -> pipeline -> assets serial).
 //   (4) raf -> renderer.draw(world) (D-S2 RenderSystem internal phase).
@@ -97,7 +97,8 @@ if (!app.ok) {
   reportError(app.error);
 } else {
   const world = app.value.world;
-  populateDemoWorld(world);
+  if (app.value.assets === undefined) throw new Error('Demo requires the host AssetRegistry');
+  populateDemoWorld(world, app.value.assets);
 
   // M7 browser/driver device-loss probe. Keep this opt-in so the normal Hello
   // Cube surface remains unchanged; the probe still calls only public Renderer

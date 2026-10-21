@@ -1,25 +1,36 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { GlobalTransform } from '@forgeax/engine-scene';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { audioContribution } from '../assets/audio-decoder';
 import * as audio from '../index';
 
 const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 it('releases its automatic layer when the World projection is reset', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: audio.AudioIntent[] = [];
-  const backend = audio.createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
+  const backend = audio.createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
+  });
   world
     .spawn(
       { component: audio.AcousticRegion, data: { sourceBus: 'room', listenerWetBus: 'room' } },
       { component: GlobalTransform, data: { world: identity() } },
     )
     .unwrap();
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'reset',
-    bytes: Uint8Array.of(1),
-  });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'reset',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   world
     .spawn(
       { component: audio.AudioSource, data: { clip, playing: true } },
@@ -47,14 +58,23 @@ it('releases its automatic layer when the World projection is reset', () => {
 
 it('routes a source through a saved region and restores the latest base bus after removal', () => {
   expect(audio).toHaveProperty('AcousticRegion');
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: audio.AudioIntent[] = [];
-  const backend = audio.createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'region',
-    bytes: Uint8Array.of(1),
+  const backend = audio.createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
   });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'region',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   const region = world
     .spawn(
       { component: audio.AcousticRegion, data: { sourceBus: 'room', blendDistance: 1 } },
@@ -113,14 +133,23 @@ function localPoint(matrix: Float32Array, point: number[]): number[] {
 }
 
 it('matches an independent geometric oracle for rotated, sheared and scaled boxes/spheres', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: audio.AudioIntent[] = [];
-  const backend = audio.createAudioIntentBackend({ emit: (i) => intents.push(i) });
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'geometry',
-    bytes: Uint8Array.of(1),
+  const backend = audio.createAudioIntentBackend({
+    emit: (i) => {
+      intents.push(i);
+    },
   });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'geometry',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   const source = world
     .spawn(
       { component: audio.AudioSource, data: { clip, playing: true } },
@@ -165,14 +194,23 @@ it('matches an independent geometric oracle for rotated, sheared and scaled boxe
 });
 
 it('normalizes equal-priority overlap deterministically and separates source and listener selection', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: audio.AudioIntent[] = [];
-  const backend = audio.createAudioIntentBackend({ emit: (i) => intents.push(i) });
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'overlap',
-    bytes: Uint8Array.of(1),
+  const backend = audio.createAudioIntentBackend({
+    emit: (i) => {
+      intents.push(i);
+    },
   });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'overlap',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   world
     .spawn(
       { component: audio.AudioSource, data: { clip, playing: true } },
@@ -231,9 +269,15 @@ it('normalizes equal-priority overlap deterministically and separates source and
 });
 
 it('rejects invalid transforms and capacity atomically, and recovers after fixing the authored region', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: audio.AudioIntent[] = [];
-  const backend = audio.createAudioIntentBackend({ emit: (i) => intents.push(i) });
+  const backend = audio.createAudioIntentBackend({
+    emit: (i) => {
+      intents.push(i);
+    },
+  });
   const region = world
     .spawn(
       { component: audio.AcousticRegion, data: { sourceBus: 'room' } },
@@ -277,9 +321,15 @@ it('rejects invalid transforms and capacity atomically, and recovers after fixin
 });
 
 it('rejects an oversized derived listener batch before any spatial publication and recovers', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: audio.AudioIntent[] = [];
-  const backend = audio.createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
+  const backend = audio.createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
+  });
   world
     .spawn(
       { component: audio.AudioListener, data: {} },
@@ -307,4 +357,62 @@ it('rejects an oversized derived listener batch before any spatial publication a
   expect(intents).toMatchObject([
     { kind: 'set-acoustic-environment', environment: expect.any(Array) },
   ]);
+});
+
+it('samples only selected playing voices when 1000 inactive assets share a regional source', () => {
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      sourceKey: 'regional',
+      mediaType: 'audio/wav',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
+  world
+    .spawn(
+      { component: audio.AcousticRegion, data: { sourceBus: 'room' } },
+      { component: GlobalTransform, data: { world: identity() } },
+    )
+    .unwrap();
+  const entities = Array.from({ length: 1000 }, () =>
+    world.spawn({ component: audio.AudioSource, data: { clip } }).unwrap(),
+  );
+  const selected = entities[500];
+  if (selected === undefined) throw new Error('missing selected source');
+  const backend = audio.createAudioIntentBackend({ emit() {} });
+  const tick = audio.createAcousticRegionSystem();
+  const query = vi.spyOn(world, 'query');
+  try {
+    tick.update(world, backend).unwrap();
+    const sourceQuery = query.mock.calls.findIndex(([descriptor]) =>
+      descriptor.read?.includes(audio.AudioSource),
+    );
+    const at = vi.spyOn(query.mock.results[sourceQuery]?.value.unwrap(), 'at');
+    query.mockClear();
+    assets.update(clip, { bytes: Uint8Array.of(2) }).unwrap();
+    for (let frame = 0; frame < 60; frame++) tick.update(world, backend).unwrap();
+    expect(
+      query.mock.calls.filter(([descriptor]) => descriptor.read?.includes(audio.AudioSource)),
+    ).toEqual([]);
+    expect(at).not.toHaveBeenCalled();
+    world.set(selected, audio.AudioSource, { playing: true }).unwrap();
+    tick.update(world, backend).unwrap();
+    expect(at).toHaveBeenCalledTimes(2); // selected membership, then the actual active route
+    at.mockClear();
+    tick.update(world, backend).unwrap();
+    expect(at).toHaveBeenCalledTimes(1);
+    world.set(selected, audio.AudioSource, { playing: false }).unwrap();
+    tick.update(world, backend).unwrap();
+    at.mockClear();
+    tick.update(world, backend).unwrap();
+    expect(at).not.toHaveBeenCalled();
+  } finally {
+    query.mockRestore();
+    tick.reset(backend);
+    backend.destroy();
+    assets.dispose();
+  }
 });

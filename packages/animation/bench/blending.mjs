@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { animationClipContribution } from '../dist/index.mjs';
 // Kernel throughput, real World playback, and an optional same-workload baseline.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -42,11 +44,13 @@ measure('2D-9-samples-8-triangles-10000-evaluations', (frame) => {
 }, 16.67);
 
 async function preparePlayback(api, masked) {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+  const world = new World({ assets });
   const context = await createWorldContext(world, [scenePlugin(), api.animationPlugin()]);
   const ids = Array.from({ length: 16 }, (_, i) => api.deriveAnimationTargetId(['Rig', String(i)]));
   const clip = (value) => ({ kind: 'animation-clip', duration: 2, channels: ids.map((targetId) => ({ targetId, property: 'translation', sampler: { input: new Float32Array([0]), output: new Float32Array([value, 0, 0]), interpolation: 'STEP' } })) });
-  const clips = [0, 10].map((value) => world.allocSharedRef('AnimationClip', clip(value)));
+  const clips = [0, 10].map((value) => assets.create(clip(value)).unwrap());
   const mask = masked ? world.allocSharedRef('AnimationMask', api.defineAnimationMask(ids.slice(8).map((targetId) => ({ targetId, weight: 1 }))).unwrap()) : 0;
   let first, last;
   for (let i = 0; i < 100; i++) {
@@ -61,7 +65,7 @@ async function preparePlayback(api, masked) {
       assert.equal(world.get(first, Transform).unwrap().pos[0], masked ? 0 : 5);
       assert.equal(world.get(last, Transform).unwrap().pos[0], 5);
     },
-    dispose: () => context.fiber.dispose(),
+    async dispose() { await context.fiber.dispose(); assets.dispose(); },
   };
 }
 // Four independent Worlds share the same ECS/Scene build. Pair each measurement

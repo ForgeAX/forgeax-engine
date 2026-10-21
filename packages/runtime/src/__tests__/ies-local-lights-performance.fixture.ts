@@ -13,6 +13,7 @@ import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { toShared } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 import { type IesLightKind, localIesProfile } from './ies-local-lights.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -24,13 +25,12 @@ export async function measureLocalIes(renderer: Renderer, kind: IesLightKind, co
     const profile = localIesProfile('uniform');
     // Distinct payloads avoid measuring only repeated bindings to one cache line.
     new DataView(profile.data.buffer).setUint16(i * 2, 0x3800, true);
-    return world.allocSharedRef('IesProfileAsset', profile);
+    return testAssets(world).create(profile).unwrap();
   });
-  const mesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(6, 6).unwrap());
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], roughness: 0.5 }),
-  );
+  const mesh = testAssets(world).create(createPlaneGeometry(6, 6).unwrap()).unwrap();
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], roughness: 0.5 }))
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: {} },

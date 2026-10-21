@@ -27,7 +27,6 @@ export { type PickTileError, type PickTileHit, pickTile } from './pick-tile';
 export {
   pickTriangle,
   type TriangleHit,
-  type TrianglePickOptions,
   type TrianglePickResult,
   type TrianglePickUnavailableReason,
 } from './pick-triangle';

@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import {
   AssetRegistry,
-  resolveAssetHandle,
   scenePublicationFenceFromCatalog,
   validateAssetPublication,
 } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { prepareRuntimePackAnchor, RuntimePackProducer } from '@forgeax/engine-import';
 import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import {
@@ -19,6 +19,7 @@ import {
 } from '@forgeax/engine-pack/source';
 import { MeshFilter, SceneInstance } from '@forgeax/engine-render';
 import {
+  sceneAssetContribution,
   scenePlugin,
   Transform,
   worldDespawnScene,
@@ -48,24 +49,16 @@ const source = new RuntimePackProducer({
       state.rows,
       fetcher,
       { catalog: source.catalog, fetcher: source.fetch },
-      { dependencies },
+      { dependencies, decoders: [meshAssetContribution, sceneAssetContribution] },
     ),
 });
 
 // This fixture is a game consumer. All entity/handle work uses the existing Scene owner.
 async function consumer() {
-  const world = new World();
-  const context = await createWorldContext(world, [scenePlugin()]);
-  const leases = [MeshFilter, SceneInstance].map((component) =>
-    world.components.register(component).unwrap(),
-  );
-  const bystander = world.spawn({ component: Transform, data: { pos: [99, 0, 0] } }).unwrap();
   let preparationFails = false;
-  const assets = new AssetRegistry(
-    new ShaderRegistry({ manifestUrl: undefined }),
-    undefined,
-    undefined,
-    () =>
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    postSpawnHook: () =>
       preparationFails
         ? err(
             new AssetError({
@@ -75,7 +68,15 @@ async function consumer() {
             }),
           )
         : { ok: true },
+  });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  assets.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+  const world = new World({ assets });
+  const context = await createWorldContext(world, [scenePlugin()]);
+  const leases = [MeshFilter, SceneInstance].map((component) =>
+    world.components.register(component).unwrap(),
   );
+  const bystander = world.spawn({ component: Transform, data: { pos: [99, 0, 0] } }).unwrap();
   assets.setCatalogSource(source.catalog, source.fetch);
   let binding;
   return {
@@ -92,13 +93,13 @@ async function consumer() {
       const row = rows.find((row) => row.guid === guid);
       assert(row);
       const fence = scenePublicationFenceFromCatalog(rows, guid).unwrap();
-      const scene = (await assets.loadByGuid(assets.parseGuid(guid))).unwrap();
-      const grant = world.allocSharedRef('SceneAsset', scene);
+      const grant = (await assets.load(guid, 'scene')).unwrap();
+      (await assets.reload(grant, { conflict: 'reject' })).unwrap();
       let root;
       try {
         root = assets.instantiateWithPublicationFence(grant, world, undefined, fence).unwrap();
       } finally {
-        world.sharedRefs.release(grant);
+        assets.release(grant).unwrap();
       }
       if (binding) worldDespawnScene(world, binding.root).unwrap();
       binding = { root, guid, fence, packageId: row.packageId, sourceKey: row.sourceKey };
@@ -112,7 +113,7 @@ async function consumer() {
       );
       assert(meshEntity);
       const handle = world.get(meshEntity, MeshFilter).unwrap().assetHandle;
-      const positions = resolveAssetHandle(world, handle).unwrap().attributes.position;
+      const positions = assets.read(handle).unwrap().attributes.position;
       const xs = Array.from(positions).filter((_, index) => index % 3 === 0);
       return Math.max(...xs) - Math.min(...xs);
     },
@@ -131,7 +132,7 @@ async function consumer() {
       );
       assert(member);
       const original = world.get(member, MeshFilter).unwrap().assetHandle;
-      const override = world.allocSharedRef('MeshAsset', createBoxGeometry(5, 2, 3).unwrap());
+      const override = assets.create(createBoxGeometry(5, 2, 3).unwrap()).unwrap();
       worldSetSceneOverride(
         world,
         binding.root,
@@ -140,7 +141,7 @@ async function consumer() {
         'assetHandle',
         override,
       ).unwrap();
-      world.sharedRefs.release(override).unwrap();
+      assets.release(override).unwrap();
       assert.equal(this.width(), 5);
       worldRemoveSceneOverride(world, binding.root, member, MeshFilter, 'assetHandle').unwrap();
       assert.equal(world.get(member, MeshFilter).unwrap().assetHandle, original);
@@ -150,8 +151,8 @@ async function consumer() {
       if (binding) worldDespawnScene(world, binding.root).unwrap();
       binding = undefined;
       world.despawn(bystander).unwrap();
-      assert.equal(world.sharedRefs._liveCount(), 0);
-      assets.clearCatalogSource();
+      assets.dispose(); // Retire the source cache with its owning game scope.
+      assert.equal(runtimeAssets(assets).inspect().assets, 0);
       for (const lease of leases.reverse()) lease.dispose();
       await context.fiber.dispose();
     },
@@ -182,7 +183,7 @@ try {
       export: 'build',
       imports: { geometry: 'engine-test', pack: 'engine-test' },
       modules: {
-        [entry]: `import { createBoxGeometry } from 'geometry';
+        [entry]: `import { createBoxGeometry, meshAssetContribution } from 'geometry';
           import { AssetGuid } from 'pack';
           export function build({ packageId, values }${language === 'ts' ? ': any' : ''}) {
             return { ok: true, value: {
@@ -252,8 +253,8 @@ try {
   assert.deepEqual(first.position(), [7, 8, 9]);
   assert.deepEqual(second.position(), [7, 8, 9]);
   first.overrideAndRevert();
-  const firstCount = first.world.sharedRefs._liveCount();
-  const secondCount = second.world.sharedRefs._liveCount();
+  const firstCount = runtimeAssets(first.assets).inspect().assets;
+  const secondCount = runtimeAssets(second.assets).inspect().assets;
   const initial = second.binding;
   const row = source.rows().find((row) => row.guid === guid);
   const output = row?.publication.outputs.find((output) => output.guid === guid);
@@ -294,11 +295,14 @@ try {
   await first.replace(guid);
   await assert.rejects(second.replace(guid));
   assert.equal(first.width(), 4);
-  assert.equal(second.width(), 2);
+  // Reload already committed shared asset content before scene replacement.
+  // Failed scene preparation retains the old entity/layout binding, while
+  // those entities consume the explicitly accepted Mesh revision.
+  assert.equal(second.width(), 4);
   assert.equal(second.binding, initial);
   assert.notEqual(first.binding.fence.outputDigest, second.binding.fence.outputDigest);
-  assert.equal(first.world.sharedRefs._liveCount(), firstCount);
-  assert.equal(second.world.sharedRefs._liveCount(), secondCount);
+  assert.equal(runtimeAssets(first.assets).inspect().assets, firstCount);
+  assert.equal(runtimeAssets(second.assets).inspect().assets, secondCount);
   second.setPreparationFailure(false);
   await second.replace(guid);
   assert.equal(second.width(), 4);
@@ -311,7 +315,7 @@ try {
     (await source.generate(instance(instanceId, width))).unwrap();
     await first.replace(guid);
     assert.equal(first.width(), width);
-    assert.equal(first.world.sharedRefs._liveCount(), firstCount);
+    assert.equal(runtimeAssets(first.assets).inspect().assets, firstCount);
   }
   await second.close();
   assert.equal(first.width(), 2);
@@ -319,7 +323,7 @@ try {
   assert.equal(first.width(), 2);
   await first.close();
   process.stdout.write(
-    `${JSON.stringify({ independentConsumers: true, inheritedAnchor: true, recovered: restoring, sharedRefsAfterClose: 0 })}\n`,
+    `${JSON.stringify({ independentConsumers: true, inheritedAnchor: true, recovered: restoring, assetsAfterClose: 0 })}\n`,
   );
 } finally {
   source.dispose();

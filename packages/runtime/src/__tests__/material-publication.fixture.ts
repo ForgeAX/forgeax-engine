@@ -1,4 +1,4 @@
-import { loadMaterialReadyByGuid, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
@@ -6,9 +6,14 @@ import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
+import type {
+  AssetHandle,
+  MaterialAsset,
+  PackIndexEntry,
+  RuntimeAssetBinding,
+} from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
-import { ParticleEffectPlayer, type VfxGpuEffectAsset } from '@forgeax/engine-vfx';
+import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect } from 'vitest';
 import { loadBackendPack } from '../backend-selection';
@@ -97,7 +102,9 @@ export async function verifyMaterialPublication(options: {
     if (event.kind === 'error') errors.push(event.error);
   });
   assets.configureRuntimeBinding(options.binding);
-  const world = new World();
+  const world = new World({ assets });
+  const materialContent = (handle: AssetHandle<'material'>) =>
+    runtimeAssets(assets).borrow<MaterialAsset>(handle).unwrap();
   try {
     const catalog = async () => {
       const response = await fetch(options.binding.catalogUrl);
@@ -200,20 +207,15 @@ export async function verifyMaterialPublication(options: {
     const load = async (guid: string) => {
       const parsed = AssetGuid.parse(guid);
       if (!parsed.ok) throw parsed.error;
-      const loaded = await assets.loadByGuid<MaterialAsset>(parsed.value);
+      const loaded = await assets.load(parsed.value, 'material');
       if (!loaded.ok) throw loaded.error;
       return loaded.value;
     };
     const first = await load(firstGuid);
-    const info = assets.getMaterialReadiness(firstGuid);
-    expect(info, inspect(info)).toMatchObject({ status: 'Ready' });
-    if (info?.status !== 'Ready') throw new Error(inspect(info));
-    const readiness = await loadMaterialReadyByGuid(assets, {
-      guid: firstGuid,
-      specializationKey: info.specializationKey,
-    });
-    if (readiness.status !== 'Ready') throw new Error(inspect(readiness));
-    const cooked = validateCookedMaterialRecord(readiness.record).unwrap();
+    const firstContent = materialContent(first);
+    const cooked = validateCookedMaterialRecord(
+      (firstContent as MaterialAsset & { cooked?: unknown }).cooked,
+    ).unwrap();
     // Every native and downlevel View layout selects three independent passes;
     // identical WGSL bytes retain one content-addressed transport artifact.
     const contexts = [
@@ -262,7 +264,7 @@ export async function verifyMaterialPublication(options: {
     }
     const inherited = await load(childGuid);
     const other = await load(otherGuid);
-    const firstProjection = assets.getMaterialProjectionForPayload(first);
+    const firstProjection = assets.getMaterialProjectionForPayload(materialContent(first));
     if (firstProjection === undefined) throw new Error('missing first material projection');
     const shadow = assets.shaderRegistry.findMaterialArtifact('forgeax::default-shadow-caster');
     if (!shadow.ok) throw shadow.error;
@@ -283,23 +285,23 @@ export async function verifyMaterialPublication(options: {
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap()),
+            assetHandle: assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap(),
           },
         },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', first)] },
+          data: { materials: [first] },
         },
       )
       .unwrap();
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
-    const sample = async (material?: MaterialAsset) => {
+    const sample = async (material?: AssetHandle<'material'>) => {
       if (material !== undefined)
         world
           .set(entity, MeshRenderer, {
-            materials: [world.internSharedRef('MaterialAsset', material)],
+            materials: [material],
           })
           .unwrap();
       for (let frame = 0; frame < 15; frame++) {
@@ -351,37 +353,28 @@ export async function verifyMaterialPublication(options: {
         buffer.destroy();
       }
     };
+    const originalFactor = assets.read(first).unwrap().values?.factor ?? 1;
     const red = await sample(first);
     expect(red[0]).toBeGreaterThan(150);
     expect(red[2]).toBeLessThan(5);
-    const content = world
-      .spawn({
-        component: RuntimeMaterialValue,
-        data: {
-          asset: world.internSharedRef('MaterialAsset', first),
-          parameter: 'factor',
-          kind: 0,
-          value: [0.25],
-        },
-      })
-      .unwrap();
+    assets.update(first, { values: { factor: 0.25 } }).unwrap();
     const dimmed = await sample(first);
     expect(dimmed[0]).toBeGreaterThan(20);
     expect(dimmed[0]).toBeLessThan((red[0] ?? 0) * 0.8);
     expect(dimmed[2]).toBeLessThan(5);
-    world.despawn(content).unwrap();
+    assets.update(first, { values: { factor: originalFactor } }).unwrap();
     expect(await sample(first)).toEqual(red);
     expect(await sample(inherited)).toEqual(red);
-    const overlay = first.passes?.find((pass) => pass.name === 'Overlay');
+    const overlay = firstContent.passes?.find((pass) => pass.name === 'Overlay');
     if (overlay === undefined) throw new Error('missing independent Overlay pass');
-    const projection = assets.getMaterialProjectionForPayload(first);
+    const projection = assets.getMaterialProjectionForPayload(materialContent(first));
     const overlayProgram = projection?.passes.find((pass) => pass.name === overlay.name)
       ?.programs[0];
     if (overlayProgram === undefined) throw new Error('missing published Overlay program');
-    if (first.parent !== undefined)
+    if (firstContent.parent !== undefined)
       throw new Error('expected the published first material to be a root material');
     const overlayMaterial: MaterialAsset = {
-      ...first,
+      ...firstContent,
       passes: [
         {
           ...overlay,
@@ -390,7 +383,8 @@ export async function verifyMaterialPublication(options: {
         },
       ],
     };
-    const green = await sample(overlayMaterial);
+    const overlayHandle = assets.create(overlayMaterial).unwrap();
+    const green = await sample(overlayHandle);
     expect(green[0]).toBeLessThan(5);
     expect(green[1]).toBeGreaterThan(150);
     expect(green[2]).toBeLessThan(5);
@@ -436,23 +430,27 @@ export async function verifyMaterialPublication(options: {
     const changedCookedGenerations = await cookedGenerationsFor(changedFirstRow);
     expect(changedCookedGenerations.publicationGeneration).toBe(changedPublication.generation);
     expect(changedCookedGenerations.cookGeneration).toBe(changedPublication.generation);
-    assets.invalidate(firstGuid);
+    const previousFirst = assets.copy(first).unwrap();
+    {
+      const reloaded = await assets.reload(first, { conflict: 'overwrite' });
+      reloaded.unwrap();
+    }
     const revised = await load(firstGuid);
     expect(await load(otherGuid)).toBe(other);
-    const revisedProjection = assets.getMaterialProjectionForPayload(revised);
+    const revisedProjection = assets.getMaterialProjectionForPayload(materialContent(revised));
     if (revisedProjection === undefined) throw new Error('missing revised material projection');
     // Authored pass modules remain stable semantic identities. Dependency
     // invalidation is observed through the immutable cooked publication key,
     // which is what the renderer selects for the new payload generation.
     expect(revisedProjection.specializationKey).not.toBe(firstProjection.specializationKey);
-    expect(revised.passes?.find((pass) => pass.name === 'Overlay')?.program.module).toBe(
-      overlay.program.module,
-    );
+    expect(
+      materialContent(revised).passes?.find((pass) => pass.name === 'Overlay')?.program.module,
+    ).toBe(overlay.program.module);
     const blue = await sample(revised);
     expect(blue[2]).toBeGreaterThan(150);
     expect(blue[0]).toBeLessThan(5);
-    expect(await sample(first)).toEqual(red); // Previous live program remains owned.
-    expect(await sample(overlayMaterial)).toEqual(green);
+    expect(await sample(previousFirst)).toEqual(red); // An explicit copy retains the previous live program.
+    expect(await sample(overlayHandle)).toEqual(green);
     expect(assets.shaderRegistry.findMaterialArtifact('forgeax::default-shadow-caster')).toEqual(
       shadow,
     );
@@ -502,7 +500,10 @@ export async function verifyMaterialPublication(options: {
     expect(repairedCookedGenerations.publicationGeneration).toBeGreaterThan(
       changedCookedGenerations.publicationGeneration,
     );
-    assets.invalidate(firstGuid);
+    {
+      const reloaded = await assets.reload(first, { conflict: 'overwrite' });
+      reloaded.unwrap();
+    }
     expect(await sample(await load(firstGuid))).toEqual(red);
     expect(await load(otherGuid)).toBe(other);
     // The particle material crosses the same real Cook / HTTP / GUID path.
@@ -515,17 +516,17 @@ export async function verifyMaterialPublication(options: {
     const vfxAttached = await vfx.attachWorld({ world, assets });
     if (!vfxAttached.ok) throw vfxAttached.error;
     const particleMaterial = await load(particleGuid);
-    expect(assets.getMaterialProjectionForPayload(particleMaterial)).toBeDefined();
+    expect(assets.getMaterialProjectionForPayload(materialContent(particleMaterial))).toBeDefined();
     expect(assets.shaderRegistry.findMaterialArtifact('game::published-particle').ok).toBe(false);
     const parsedEffectGuid = AssetGuid.parse(effectGuid);
     if (!parsedEffectGuid.ok) throw parsedEffectGuid.error;
-    const loadedEffect = await assets.loadByGuid<VfxGpuEffectAsset>(parsedEffectGuid.value);
+    const loadedEffect = await assets.load(parsedEffectGuid.value, 'particle-effect');
     if (!loadedEffect.ok) throw loadedEffect.error;
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
         data: {
-          effect: world.allocSharedRef('ParticleEffectAsset', loadedEffect.value),
+          effect: loadedEffect.value,
           playing: true,
           seed: 1,
           timeScale: 1,

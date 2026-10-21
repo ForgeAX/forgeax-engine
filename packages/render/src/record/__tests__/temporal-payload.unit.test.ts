@@ -1,13 +1,33 @@
 import { vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
 import type { CameraSnapshot } from '../../render-contract';
-import type { RenderableSnapshot } from '../../render-system-extract';
+import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
 import { materialSurfaceModel } from '../../render-system-extract';
 import type { TemporalView } from '../../temporal/temporal-view';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { MESH_PER_ENTITY_STRIDE, uploadMeshSsboBatch } from '../mesh-ssbo';
 import { VIEW_UNIFORM_BYTES, writeViewUbo } from '../view-ubo';
+
+function uploadEntries(
+  queue: RhiQueue,
+  storage: Parameters<typeof uploadMeshSsboBatch>[1],
+  main: readonly ValidatedRenderable[],
+  fold: Parameters<typeof uploadMeshSsboBatch>[3],
+  shadow: readonly ValidatedRenderable[] = [],
+): number {
+  return uploadMeshSsboBatch(queue, storage, main, fold, shadow);
+}
+
+function emptyMaterial(): MaterialResource {
+  return new MaterialResource({
+    passes: [],
+    baseColor: vec3.create(1, 1, 1),
+    metallic: 0,
+    roughness: 0.5,
+  });
+}
 
 function identityMatrix(): Float32Array {
   const matrix = new Float32Array(16);
@@ -295,20 +315,21 @@ describe('temporal GPU payloads', () => {
     const second = translatedMatrix(6);
     const makeEntry = (world: Float32Array, temporal?: object) =>
       ({
+        meshSlot: 0,
         source: {
           transform: { world },
-          materials: [{ transparent: false }],
+          materials: [new MaterialResource({ ...emptyMaterial().snapshot, transparent: false })],
           ...(temporal === undefined ? {} : { temporal }),
         } as unknown as RenderableSnapshot,
       }) as unknown as ValidatedRenderable;
     const firstRecording = recordingQueue();
-    uploadMeshSsboBatch(firstRecording.queue, { buffer: {} as Buffer }, [makeEntry(first)], null);
+    uploadEntries(firstRecording.queue, { buffer: {} as Buffer }, [makeEntry(first)], null);
     const firstPayload = new Float32Array(firstRecording.uploads[0]?.buffer ?? new ArrayBuffer(0));
     expect(firstPayload[12]).toBe(4);
     expect(firstPayload[16 + 12]).toBe(4);
 
     const secondRecording = recordingQueue();
-    uploadMeshSsboBatch(
+    uploadEntries(
       secondRecording.queue,
       { buffer: {} as Buffer },
       [
@@ -359,46 +380,57 @@ describe('temporal GPU payloads', () => {
         materialProgramKeys: { forward: 'sha256:program' },
         transparent: true,
       },
-      reactive: 1,
+      reactive: 0,
     },
-    { label: 'unpublished custom', material: { materialShaderId: 'game::custom' }, reactive: 1 },
+    { label: 'unpublished custom', material: { materialShaderId: 'game::custom' }, reactive: 0 },
     {
       label: 'published unknown custom',
       material: {
         materialShaderId: 'sha256:program',
         materialProgramKeys: { forward: 'sha256:program' },
       },
-      reactive: 1,
+      reactive: 0,
     },
-  ])('classifies $label by the Surface contract instead of its program hash', ({
-    material,
-    reactive,
-  }) => {
+  ])('keeps $label material classification out of instance rows', ({ material, reactive }) => {
     const recording = recordingQueue();
     const entry = {
-      source: { transform: { world: identityMatrix() }, materials: [material] },
+      meshSlot: 0,
+      source: {
+        transform: { world: identityMatrix() },
+        materials: [
+          new MaterialResource({ ...emptyMaterial().snapshot, ...material } as MaterialSnapshot),
+        ],
+      },
     } as unknown as ValidatedRenderable;
-    uploadMeshSsboBatch(recording.queue, { buffer: {} as Buffer }, [entry], null);
+    uploadEntries(recording.queue, { buffer: {} as Buffer }, [entry], null);
     expect(new Float32Array(recording.uploads[0]?.buffer ?? new ArrayBuffer(0))[32]).toBe(reactive);
   });
-  it('clears old payload and writes identity/temporal lanes for a folded draw', () => {
+  it('keeps the source payload beside a separate folded identity slot', () => {
     const recording = recordingQueue();
     const entry = {
-      source: { transform: { world: translatedMatrix(7) }, materials: [] },
+      meshSlot: 0,
+      foldedMeshSlot: 1,
+      source: {
+        transform: { world: translatedMatrix(7) },
+        material: emptyMaterial(),
+        materials: [],
+      },
     } as unknown as ValidatedRenderable;
-    uploadMeshSsboBatch(recording.queue, { buffer: {} as Buffer }, [entry], null);
-    uploadMeshSsboBatch(recording.queue, { buffer: {} as Buffer }, [entry], {
+    uploadEntries(recording.queue, { buffer: {} as Buffer }, [entry], null);
+    uploadEntries(recording.queue, { buffer: {} as Buffer }, [entry], {
       headBuckets: new Map([[0, {} as never]]),
       skipIndices: new Set(),
       foldedBucketCount: 1,
     });
-    const payload = new Float32Array(recording.uploads[1]?.buffer ?? new ArrayBuffer(0));
+    const bytes = recording.uploads[1]?.buffer ?? new ArrayBuffer(0);
+    expect(new Float32Array(bytes)[12]).toBe(7);
+    const payload = new Float32Array(bytes, MESH_PER_ENTITY_STRIDE);
     expect(Array.from(payload.slice(0, 16))).toEqual(Array.from(identityMatrix()));
     expect(Array.from(payload.slice(16, 32))).toEqual(Array.from(identityMatrix()));
     expect(Array.from(payload.slice(32, 36))).toEqual([1, 1, 0, 0]);
-    expect(Array.from(new Uint32Array(payload.buffer).slice(36, 40))).toEqual([
-      0, 0, 0xffffffff, 0,
-    ]);
+    expect(
+      Array.from(new Uint32Array(payload.buffer, payload.byteOffset, payload.length).slice(36, 40)),
+    ).toEqual([0, 0, 0xffffffff, 0]);
     expect(Array.from(payload.slice(40))).toEqual(new Array(24).fill(0));
   });
 
@@ -406,11 +438,16 @@ describe('temporal GPU payloads', () => {
     const recording = recordingQueue();
     const buffer = {} as Buffer;
     const entries = Array.from({ length: 24 }, (_, index) => ({
-      source: { transform: { world: translatedMatrix(index) }, materials: [] },
+      meshSlot: index,
+      source: {
+        transform: { world: translatedMatrix(index) },
+        material: emptyMaterial(),
+        materials: [],
+      },
     })) as unknown as ValidatedRenderable[];
     const main = entries.slice(0, 16);
     const shadow = entries.slice(16);
-    expect(uploadMeshSsboBatch(recording.queue, { buffer }, main, null, shadow)).toBe(1);
+    expect(uploadEntries(recording.queue, { buffer }, main, null, shadow)).toBe(1);
     expect(recording.offsets).toEqual([0]);
     expect(recording.uploads[0]?.byteLength).toBe(24 * MESH_PER_ENTITY_STRIDE);
     const shadowSlot = new Float32Array(
@@ -420,25 +457,41 @@ describe('temporal GPU payloads', () => {
     );
     expect(shadowSlot[12]).toBe(20);
 
-    expect(uploadMeshSsboBatch(recording.queue, { buffer }, main, null, shadow)).toBe(0);
+    expect(uploadEntries(recording.queue, { buffer }, main, null, shadow)).toBe(0);
+    expect(recording.uploads).toHaveLength(1);
+    expect(
+      uploadEntries(recording.queue, { buffer }, [...main].reverse(), null, [...shadow].reverse()),
+    ).toBe(0);
     expect(recording.uploads).toHaveLength(1);
 
     const moved = [...main];
-    moved[2] = { source: { transform: { world: translatedMatrix(40) }, materials: [] } } as never;
+    moved[2] = {
+      meshSlot: 2,
+      source: {
+        transform: { world: translatedMatrix(40) },
+        material: emptyMaterial(),
+        materials: [],
+      },
+    } as never;
     const movedShadow = [...shadow];
     movedShadow[6] = {
-      source: { transform: { world: translatedMatrix(41) }, materials: [] },
+      meshSlot: 22,
+      source: {
+        transform: { world: translatedMatrix(41) },
+        material: emptyMaterial(),
+        materials: [],
+      },
     } as never;
-    expect(uploadMeshSsboBatch(recording.queue, { buffer }, moved, null, movedShadow)).toBe(2);
+    expect(uploadEntries(recording.queue, { buffer }, moved, null, movedShadow)).toBe(2);
     expect(recording.offsets.slice(1)).toEqual([
       2 * MESH_PER_ENTITY_STRIDE,
       22 * MESH_PER_ENTITY_STRIDE,
     ]);
     expect(new Float32Array(recording.uploads[2]?.buffer ?? new ArrayBuffer(0))[12]).toBe(41);
 
-    expect(
-      uploadMeshSsboBatch(recording.queue, { buffer: {} as Buffer }, moved, null, movedShadow),
-    ).toBe(1);
+    expect(uploadEntries(recording.queue, { buffer: {} as Buffer }, moved, null, movedShadow)).toBe(
+      1,
+    );
     expect(recording.uploads[3]?.byteLength).toBe(24 * MESH_PER_ENTITY_STRIDE);
   });
 });

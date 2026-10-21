@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-random-sampling headless dawn smoke — proves Bevy math/random_sampling:
 // wireframe cube + randomly sampled points inside.
@@ -114,7 +116,9 @@ const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MA
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -129,7 +133,7 @@ const { buildRandomSamplingWorld, spawnSamplePoint } = await import(
   resolve(here, '..', 'src', 'random-sampling.ts')
 );
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const { wireframeHalf, pointMat } = buildRandomSamplingWorld(world);

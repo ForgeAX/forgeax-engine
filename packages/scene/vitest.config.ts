@@ -7,6 +7,10 @@ export default defineProject({
     name: '@forgeax/engine-scene',
     environment: 'node',
     include: ['src/**/*.test.ts'],
-    typecheck: { enabled: true, tsconfig: './tsconfig.json' },
+    typecheck: {
+      enabled: true,
+      tsconfig: './tsconfig.test.json',
+      include: ['src/**/*.test.ts', 'src/**/*.test-d.ts'],
+    },
   },
 });

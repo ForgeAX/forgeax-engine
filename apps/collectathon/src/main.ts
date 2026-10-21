@@ -4,6 +4,7 @@ import {
   runtimeBinding,
 } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/collectathon — 3D third-person collectathon showcase game.
 //
 // Bootstrap: createApp(canvas, {plugins}, { ...bundler, importTransport })
@@ -18,6 +19,7 @@ import { Update } from '@forgeax/engine-ecs';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createApp } from '@forgeax/engine-app/browser';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AudioListener, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
@@ -34,7 +36,6 @@ import {
   Skylight,
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine-render';
-
 import { Transform } from '@forgeax/engine-scene';
 import { skinningPlugin } from '@forgeax/engine-skinning';
 import {
@@ -47,14 +48,6 @@ import {
   setNextState,
   setNextStateForce,
 } from '@forgeax/engine-state';
-import type {
-  AnimationClip,
-  EquirectAsset,
-  FontAsset,
-  Handle,
-  SceneAsset,
-} from '@forgeax/engine-types';
-
 import { createHUD, hideHUD, showHUD } from './hud';
 import { createGameProgress, GAME_PROGRESS_KEY, resetProgress } from './resources';
 import { CORE_POSITIONS, spawnCore } from './spawn/spawn-core';
@@ -101,18 +94,13 @@ const RUN_CLIP_GUID = '019ecd87-179b-71f7-b9f8-4c8518326b65';
 
 // sky.hdr IBL source (F-05): demo-assets/template-game-default/sky.hdr (Apache-2.0,
 // commercial-compatible). pluginPack scans that directory (added to vite roots)
-// and surfaces it via the binding's scoped catalog -> loadByGuid<EquirectAsset>, the same
+// and surfaces it through the binding's scoped Catalog, the same
 // declarative equirect IBL path the learn-render PBR demos + templates/game-3d
 // use (Skylight/SkyboxBackground hold the equirect handle; projection is internal).
 const SKY_HDR_GUID = '81eec382-392f-5a93-8998-0ecf11ef7990';
 
-// DejaVu Sans Mono MSDF font (AC-12): pre-baked atlas + font.pack.json in
-// forgeax-engine-assets/dejavu-fonts/. The font GUID + sampler GUID are SSOT
-// from DejaVuSansMono.font.pack.json + DejaVuSansMono.atlas.png.meta.json
-// (reused from apps/hello/text). The sampler must be catalogued before
-// loadByGuid<FontAsset> so fontLoader can resolve the `samplerGuid` ref.
+// DejaVu Sans Mono MSDF font; its source publication includes the sampler closure.
 const FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
-const FONT_SAMPLER_GUID = '019eb276-4d96-7313-b4f0-f5d55536acd2';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('collectathon: missing <canvas id="game"> in index.html');
@@ -188,27 +176,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // gameplay state and re-arming on each replay is the cue system's job.
   const cues = await loadAudioCues(world, assets);
 
-  // AC-12 MSDF font: register the shared sampler + load the pre-baked DejaVu
-  // Sans Mono FontAsset. The sampler GUID must be catalogued before loadByGuid
-  // so fontLoader can resolve the FontAsset's `samplerGuid` ref. Mirrors
-  // apps/hello/text/src/main.ts registerSharedSampler pattern.
   const fontGuidParsed = AssetGuid.parse(FONT_GUID);
-  const samplerGuidParsed = AssetGuid.parse(FONT_SAMPLER_GUID);
-  let fontHandle: Handle<'FontAsset', 'shared'> | undefined;
-  if (fontGuidParsed.ok && samplerGuidParsed.ok) {
-    assets.catalog<import('@forgeax/engine-types').SamplerAsset>(samplerGuidParsed.value, {
-      kind: 'sampler',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-      addressModeW: 'clamp-to-edge',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      mipmapFilter: 'nearest',
-    });
-    const fontRes = await assets.loadByGuid<FontAsset>(fontGuidParsed.value);
-    if (fontRes.ok) {
-      fontHandle = world.allocSharedRef('FontAsset', fontRes.value);
-    }
+  let fontHandle: AssetHandle<'font'> | undefined;
+  if (fontGuidParsed.ok) {
+    const fontRes = await assets.load(fontGuidParsed.value, 'font');
+    if (fontRes.ok) fontHandle = fontRes.value;
   }
 
   // Camera: spawned ONCE for the app lifetime (not state-scoped). Like the audio
@@ -285,12 +257,12 @@ function installSmokeHook(world: World): void {
 function wireStates(
   app: import('@forgeax/engine-app').App,
   assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
-  sceneHandle: Handle<'SceneAsset', 'shared'>,
-  runClip: Handle<'AnimationClip', 'shared'>,
+  sceneHandle: AssetHandle<'scene'>,
+  runClip: AssetHandle<'animation-clip'>,
   debugEnabled: boolean,
   hud: import('./hud').HudHandles,
   cues: AudioCueEntities,
-  fontHandle: Handle<'FontAsset', 'shared'> | undefined,
+  fontHandle: AssetHandle<'font'> | undefined,
   camera: EntityHandle,
 ): void {
   // Title -> Play. On every Title entry (initial + each Win/Lose replay) reset
@@ -546,23 +518,23 @@ function spawnSkylight(world: World): EntityHandle {
  * SkyboxBackground (F-05 / AC-08). Async: returns the SkyboxBackground entity
  * (or undefined) so the caller state-scopes it.
  *
- * Declarative path (no manual cubemap upload, no WebKit UA guard): loadByGuid
- * yields the EquirectAsset payload, allocSharedRef mints a user-tier handle, and
- * the Skylight/SkyboxBackground hold that handle. The engine record arm projects
- * the equirect->cubemap + IBL lazily, gated solely by caps.rgba16floatRenderable
- * -- WebKit/WKWebView lacking that feature keeps the white fallback cube (solid
- * ambient, no skybox) automatically, without poisoning the device.
+ * The loaded source handle drives both lighting and the background. The renderer
+ * projects the equirect source according to the device capabilities.
  */
 async function attachSkyEquirect(
   world: World,
   assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
   skylight: EntityHandle,
 ): Promise<EntityHandle | undefined> {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry) || sceneAssets !== assets)
+    throw new Error('Scene requires its runtime asset owner');
+
   const guidRes = AssetGuid.parse(SKY_HDR_GUID);
   if (!guidRes.ok) return undefined;
-  const podRes = await assets.loadByGuid<EquirectAsset>(guidRes.value);
+  const podRes = await assets.load(guidRes.value, 'equirect');
   if (!podRes.ok) return undefined;
-  const equirect = world.allocSharedRef('EquirectAsset', podRes.value);
+  const equirect = podRes.value;
 
   // Attach the equirect to the Skylight for image-based lighting (neutral tint
   // lets the HDR drive the color); the same handle feeds the visible
@@ -585,25 +557,29 @@ async function attachSkyEquirect(
 async function loadSceneHandle(
   world: World,
   assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
-): Promise<Handle<'SceneAsset', 'shared'> | undefined> {
+): Promise<AssetHandle<'scene'> | undefined> {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry) || sceneAssets !== assets)
+    throw new Error('Scene requires its runtime asset owner');
+
   const guidRes = AssetGuid.parse(HUMANOID_SCENE_GUID);
   if (!guidRes.ok) return undefined;
-  const res = await assets.loadByGuid<SceneAsset>(guidRes.value);
+  const res = await assets.load(guidRes.value, 'scene');
   if (!res.ok) return undefined;
-  return world.allocSharedRef('SceneAsset', res.value);
+  return res.value;
 }
 
 async function loadClipHandle(
   world: World,
   assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
-): Promise<Handle<'AnimationClip', 'shared'> | undefined> {
+): Promise<AssetHandle<'animation-clip'> | undefined> {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry) || sceneAssets !== assets)
+    throw new Error('Scene requires its runtime asset owner');
+
   const guidRes = AssetGuid.parse(RUN_CLIP_GUID);
   if (!guidRes.ok) return undefined;
-  const res = await assets.loadByGuid<AnimationClip>(guidRes.value);
+  const res = await assets.load(guidRes.value, 'animation-clip');
   if (!res.ok) return undefined;
-  // Strip the humanoid.fbx Camera/Light authoring channels (symptom2 fix, m6-3):
-  // they animate nodes absent from the player Skin and otherwise trip the D-10
-  // gate with channel-leaf-mismatch warnings. The handle is minted from the
-  // stripped clip so the AnimationPlayer never sees the non-skeleton channels.
-  return world.allocSharedRef('AnimationClip', res.value);
+  return res.value;
 }

@@ -52,7 +52,8 @@
     "@forgeax/engine-skinning": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-animation": "workspace:*",
-    "@forgeax/engine-scene": "workspace:*"
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

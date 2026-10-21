@@ -14,6 +14,7 @@
 // A kinematic body carries the sensor (same rationale as Core: a sensor needs a
 // body, and the Portal does not fall or get pushed).
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { createCylinderGeometry } from '@forgeax/engine-geometry';
 import {
@@ -25,7 +26,6 @@ import {
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-
 import { PORTAL_GROUPS } from '../collision-groups';
 import { Portal, PortalState } from '../components';
 
@@ -67,15 +67,16 @@ export function spawnPortal(
   world: World,
   position: { readonly x: number; readonly z: number },
 ): EntityHandle {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const cylRes = createCylinderGeometry(PORTAL_RADIUS, PORTAL_RADIUS, PORTAL_HEIGHT, 24, 1);
   if (!cylRes.ok) {
     throw new Error(`collectathon: createCylinderGeometry failed: ${cylRes.error.code}`);
   }
-  const portalMesh = world.allocSharedRef('MeshAsset', cylRes.value);
-  const portalMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    inactivePortalMaterial(),
-  );
+  const portalMesh = sceneAssets.create(cylRes.value).unwrap();
+  const portalMat = sceneAssets.create(inactivePortalMaterial()).unwrap();
   return world
     .spawn(
       {

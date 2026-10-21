@@ -1,4 +1,5 @@
-import { createAudioIntentBackend } from '@forgeax/engine-audio';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { audioContribution, createAudioIntentBackend } from '@forgeax/engine-audio';
 import { describe, expect, it, vi } from 'vitest';
 import { createHostAudioConsumer } from '../host-audio-consumer';
 import { WebAudioEngine } from '../web-audio-engine';
@@ -11,8 +12,7 @@ const PLAY_OPTIONS = {
 };
 
 async function flushDecode(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 12; i++) await Promise.resolve();
 }
 
 function deferred<T>() {
@@ -35,6 +35,7 @@ describe('HostAudioConsumer', () => {
     const consumer = createHostAudioConsumer(engine);
     for (const entityId of [1, 2]) {
       consumer.consume({
+        asset: { owner: 'seek', handle: 1, revision: 1 },
         kind: 'play',
         entityId,
         sourceKey: 'seek',
@@ -66,6 +67,7 @@ describe('HostAudioConsumer', () => {
     const consumer = createHostAudioConsumer(engine);
 
     consumer.consume({
+      asset: { owner: 'typed', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 7,
       sourceKey: 'typed',
@@ -86,6 +88,7 @@ describe('HostAudioConsumer', () => {
     const consumer = createHostAudioConsumer(engine);
 
     consumer.consume({
+      asset: { owner: 'laser', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'laser',
@@ -93,6 +96,7 @@ describe('HostAudioConsumer', () => {
       options: PLAY_OPTIONS,
     });
     consumer.consume({
+      asset: { owner: 'laser', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 2,
       sourceKey: 'laser',
@@ -104,7 +108,7 @@ describe('HostAudioConsumer', () => {
     expect(play).toHaveBeenCalledTimes(2);
   });
 
-  it('invalidates stale decode authority when same sourceKey bytes churn', async () => {
+  it('retains older pending voices when later versions of the same asset are published', async () => {
     const engine = new WebAudioEngine();
     const decodeA = deferred<AudioBuffer>();
     const decodeB = deferred<AudioBuffer>();
@@ -121,6 +125,7 @@ describe('HostAudioConsumer', () => {
     const consumer = createHostAudioConsumer(engine);
 
     consumer.consume({
+      asset: { owner: 'laser', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'laser',
@@ -128,6 +133,7 @@ describe('HostAudioConsumer', () => {
       options: PLAY_OPTIONS,
     });
     consumer.consume({
+      asset: { owner: 'laser', handle: 1, revision: 2 },
       kind: 'play',
       entityId: 2,
       sourceKey: 'laser',
@@ -140,13 +146,14 @@ describe('HostAudioConsumer', () => {
 
     decodeA.resolve(bufferA);
     await flushDecode();
-    expect(play).not.toHaveBeenCalled();
+    expect(play).toHaveBeenCalledWith(1, bufferA, PLAY_OPTIONS);
 
     decodeB.reject(new Error('unsupported replacement bytes'));
     await flushDecode();
     expect(consumer.state().lastError?.code).toBe('decode-failed');
 
     consumer.consume({
+      asset: { owner: 'laser', handle: 1, revision: 3 },
       kind: 'play',
       entityId: 3,
       sourceKey: 'laser',
@@ -158,7 +165,7 @@ describe('HostAudioConsumer', () => {
     decodeC.resolve(bufferC);
     await flushDecode();
 
-    expect(play).toHaveBeenCalledTimes(1);
+    expect(play).toHaveBeenCalledTimes(2);
     expect(play).toHaveBeenCalledWith(3, bufferC, PLAY_OPTIONS);
     expect(consumer.state().lastError).toBeNull();
   });
@@ -176,6 +183,7 @@ describe('HostAudioConsumer', () => {
     const consumer = createHostAudioConsumer(engine);
 
     consumer.consume({
+      asset: { owner: 'slow', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'slow',
@@ -196,6 +204,7 @@ describe('HostAudioConsumer', () => {
 
     expect(() =>
       consumer.consume({
+        asset: { owner: 'broken', handle: 1, revision: 1 },
         kind: 'play',
         entityId: 1,
         sourceKey: 'broken',
@@ -215,6 +224,7 @@ describe('HostAudioConsumer', () => {
   it('keeps a missing Host publication as a recoverable capability error', () => {
     const consumer = createHostAudioConsumer(new WebAudioEngine());
     consumer.consume({
+      asset: { owner: 'not-published', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 8,
       sourceKey: 'not-published',
@@ -243,25 +253,31 @@ describe('Host lifecycle budgets and error ownership', () => {
       emit: (intent) => consumer.consume(intent),
       state: () => consumer.state(),
     });
-    const clipA = {
-      kind: 'audio' as const,
-      sourceKey: 'A',
-      mediaType: 'audio/wav' as const,
-      bytes: Uint8Array.of(1),
-    };
-    const clipB = {
-      kind: 'audio' as const,
-      sourceKey: 'B',
-      mediaType: 'audio/wav' as const,
-      bytes: Uint8Array.of(2),
-    };
+    const assets = new AssetRegistry();
+    assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+    const clipA = assets
+      .create({
+        kind: 'audio' as const,
+        sourceKey: 'A',
+        mediaType: 'audio/wav' as const,
+        bytes: Uint8Array.of(1),
+      })
+      .unwrap();
+    const clipB = assets
+      .create({
+        kind: 'audio' as const,
+        sourceKey: 'B',
+        mediaType: 'audio/wav' as const,
+        bytes: Uint8Array.of(2),
+      })
+      .unwrap();
 
-    backend.play(1, clipA, PLAY_OPTIONS);
-    backend.play(2, clipB, PLAY_OPTIONS);
+    backend.play(1, assets, clipA, PLAY_OPTIONS);
+    backend.play(2, assets, clipB, PLAY_OPTIONS);
     firstDecode.resolve(bufferA);
     await flushDecode();
     backend.stop(1);
-    backend.play(2, clipB, PLAY_OPTIONS);
+    backend.play(2, assets, clipB, PLAY_OPTIONS);
     await flushDecode();
 
     expect(decode).toHaveBeenCalledTimes(2);
@@ -278,6 +294,7 @@ describe('Host lifecycle budgets and error ownership', () => {
     vi.spyOn(engine, 'play').mockImplementation(() => {});
     const consumer = createHostAudioConsumer(engine);
     consumer.consume({
+      asset: { owner: 'A', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'A',
@@ -287,6 +304,7 @@ describe('Host lifecycle budgets and error ownership', () => {
     await vi.waitFor(() => expect(consumer.state().lastError?.code).toBe('decode-failed'));
     const failure = consumer.state().lastError;
     consumer.consume({
+      asset: { owner: 'B', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 2,
       sourceKey: 'B',
@@ -295,7 +313,13 @@ describe('Host lifecycle budgets and error ownership', () => {
     });
     await flushDecode();
     expect(consumer.state().lastError).toBe(failure);
-    consumer.consume({ kind: 'play', entityId: 3, sourceKey: 'A', options: PLAY_OPTIONS });
+    consumer.consume({
+      asset: { owner: 'A', handle: 1, revision: 1 },
+      kind: 'play',
+      entityId: 3,
+      sourceKey: 'A',
+      options: PLAY_OPTIONS,
+    });
     await vi.waitFor(() => expect(consumer.state().lastError).toBeNull());
     consumer.dispose();
   });
@@ -313,6 +337,7 @@ describe('Host lifecycle budgets and error ownership', () => {
     });
     for (let entityId = 0; entityId < 100; entityId++) {
       consumer.consume({
+        asset: { owner: 'clip', handle: 1, revision: 1 },
         kind: 'play',
         entityId,
         sourceKey: 'clip',
@@ -325,6 +350,7 @@ describe('Host lifecycle budgets and error ownership', () => {
     }
     expect(decode).toHaveBeenCalledTimes(1);
     consumer.consume({
+      asset: { owner: 'other', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 101,
       sourceKey: 'other',
@@ -347,6 +373,7 @@ describe('Host lifecycle budgets and error ownership', () => {
     const play = vi.spyOn(engine, 'play').mockImplementation(() => {});
     const consumer = createHostAudioConsumer(engine, { maxCachedBytes: 32 });
     consumer.consume({
+      asset: { owner: 'large', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'large',

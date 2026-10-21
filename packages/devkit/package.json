@@ -47,6 +47,7 @@
     "@forgeax/engine-host": "workspace:*",
     "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-naga": "workspace:*",
     "@forgeax/engine-input": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-profiler": "workspace:*",

@@ -30,10 +30,9 @@ import {
 } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import {
-  createAssetRegistry,
+  AssetRegistry,
   createCatalogHotSubscription,
   createCatalogSource,
-  defineAssetKind,
 } from '@forgeax/engine-assets-runtime';
 import { audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
@@ -43,7 +42,7 @@ import { buildProfileModel, createProfiler } from '@forgeax/engine-profiler';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { skinningPlugin } from '@forgeax/engine-skinning';
 import { type CatalogEntry, ImportError } from '@forgeax/engine-types';
-import { createUiLoader, type UiAsset } from '@forgeax/engine-ui';
+import { uiAssetContribution } from '@forgeax/engine-ui';
 import { createPreviewInspection } from './preview-inspection';
 import { capturePreviewStartupRhi } from './startup-rhi-capture';
 import { captureSurfaceStandardEvidence } from './surface-standard-evidence';
@@ -158,6 +157,7 @@ const app = await createApp(
   previewCanvas,
   {
     uiRoot: previewRun.uiRoot,
+    assetDecoders: [uiAssetContribution],
     ...(slug === 'game-3d' && runtimeBinding !== undefined
       ? { runtimePacks: { scopeId: runtimeBinding.scopeId } }
       : {}),
@@ -216,7 +216,9 @@ async function startPreview(app: App, previewRun: PreviewUiRun): Promise<void> {
 
   if (!app.pluginContext.runtimePacks) configureRuntimeAssetCatalog(assets, runtimeBinding);
   tracePreviewStartup('catalog:refreshing');
-  await assets.refreshCatalog();
+  const catalog = await assets.catalogSource?.enumerate();
+  if (catalog === undefined) throw new Error('Preview requires a Catalog source');
+  if (!catalog.ok) throw catalog.error;
   tracePreviewStartup('catalog:ready');
   if (disposed) return;
   previewRun.authoring.bind(createPreviewUiAssetGateway(assets, runtimeBinding, import.meta.hot));
@@ -286,7 +288,7 @@ async function startPreview(app: App, previewRun: PreviewUiRun): Promise<void> {
           : {}),
         ...(importTransport === undefined ? {} : { importTransport }),
       });
-      const reader = createAssetRegistry({ catalog, scopeId: runtimeBinding.scopeId });
+      const reader = new AssetRegistry({ catalog, scopeId: runtimeBinding.scopeId });
       const hostPrograms = host.createPrograms(
         crypto.randomUUID(),
         `preview:${slug}:host`,
@@ -445,8 +447,12 @@ function createPreviewUiAssetGateway(
           }),
         };
       }
-      const loaded = await assets.loadByGuid<UiAsset>(parsed);
-      if (loaded.ok) return loaded;
+      const loaded = await assets.load(parsed, uiAssetContribution.kind);
+      if (loaded.ok) {
+        const read = assets.read(loaded.value);
+        assets.release(loaded.value).unwrap();
+        if (read.ok) return read;
+      }
       const imported = await readPreviewImportFailure(guid, binding);
       return {
         ok: false,
@@ -456,7 +462,7 @@ function createPreviewUiAssetGateway(
             code: 'import-internal-error',
             expected: 'the catalogued UI asset to load through the runtime registry',
             hint: 'Inspect the asset loading error and retry after repairing the source.',
-            detail: { reason: loaded.error.code },
+            detail: { reason: loaded.ok ? 'ui-read-failed' : loaded.error.code },
           }),
       };
     },
@@ -493,7 +499,6 @@ async function createPreviewUiCatalogGateway(
   hot: ImportMeta['hot'],
 ): Promise<UiAuthoringAssetGateway> {
   let entries = await fetchCatalogEntries(binding.catalogUrl);
-  const loader = createUiLoader();
   const findEntry = (guid: string): CatalogEntry | undefined =>
     entries.find((entry) => entry.guid.toLowerCase() === guid.toLowerCase());
 
@@ -535,15 +540,14 @@ async function createPreviewUiCatalogGateway(
         for (const row of imported) byGuid.set(row.guid.toLowerCase(), row);
         entries = [...byGuid.values()];
       }
-      const reader = createAssetRegistry({
+      const reader = new AssetRegistry({
         catalog: createCatalogSource({ url: binding.catalogUrl, entries, expectedScope: binding }),
         scopeId: binding.scopeId,
       });
-      const kind = defineAssetKind<UiAsset, 'ui'>('ui');
-      reader.installDecoder(kind, loader);
+      reader.installDecoder(uiAssetContribution.kind, uiAssetContribution.decoder);
       try {
-        const loaded = await reader.load(guid, kind);
-        if (loaded.ok) return { ok: true, value: loaded.value };
+        const loaded = await reader.load(guid, uiAssetContribution.kind);
+        if (loaded.ok) return { ok: true, value: reader.read(loaded.value).unwrap() };
         return {
           ok: false,
           error: new ImportError({

@@ -34,6 +34,47 @@ function producers() {
 }
 
 describe('ScriptablePack import bridge with optional parameters', () => {
+  it('rejects plugin output without its explicit capability before producer dispatch', async () => {
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId: id('01900000-0000-7000-8000-000000000077'),
+      build: () => ok({ 'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } } }),
+    });
+    const result = await buildScriptablePack({
+      definition,
+      sourcePath: 'unmarked.pack.ts',
+      outputs: producers(),
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'pack-parameter-invalid', detail: { sourceKey: '$.plugins' } },
+    });
+  });
+  it('rejects cached plugin output without its explicit capability', async () => {
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId: id('01900000-0000-7000-8000-000000000078'),
+      build: () => ok({}),
+    });
+    const result = await buildScriptablePackWorklist({
+      subjects: [{ definition, sourcePath: 'cached.pack.ts' }],
+      outputs: producers(),
+      cache: {
+        read: async () =>
+          ({
+            product: { assets: [{ kind: 'plugin' }] },
+            stagedOutputs: [],
+            externalEvidence: [],
+            inputFingerprint: 'cached',
+          }) as never,
+        write: async () => {},
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'pack-parameter-invalid', detail: { sourceKey: '$.plugins' } },
+    });
+  });
   it('refills an idle lane before a slow earlier subject completes, with bounded lookahead', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

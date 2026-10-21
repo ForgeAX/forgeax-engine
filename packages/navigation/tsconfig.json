@@ -13,6 +13,9 @@
   ],
   "references": [
     {
+      "path": "../assets-runtime"
+    },
+    {
       "path": "../ecs"
     },
     {

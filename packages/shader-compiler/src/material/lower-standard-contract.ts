@@ -65,6 +65,14 @@ export function standardMaterialDefines(
     defines.SUBSURFACE_DIFFUSION_AVAILABLE = true;
   if (schema.some((parameter) => parameter.name === 'alphaCutoff'))
     defines.ALPHA_CLIPPING_AVAILABLE = true;
+  if (schema.some((parameter) => parameter.name === 'alphaToCoverage'))
+    defines.ALPHA_TO_COVERAGE_AVAILABLE = true;
+  if (schema.some((parameter) => parameter.name === 'alphaMode'))
+    defines.ALPHA_MODE_AVAILABLE = true;
+  if (schema.some((parameter) => parameter.name === 'flatShading'))
+    defines.FLAT_SHADING_AVAILABLE = true;
+  if (schema.some((parameter) => parameter.name === 'shadowAlphaMode'))
+    defines.SHADOW_ALPHA_MODE_AVAILABLE = true;
   if (schema.some((parameter) => parameter.name === 'alphaHash'))
     defines.ALPHA_HASH_AVAILABLE = true;
   if (schema.some((parameter) => parameter.name === 'triplanarSpace'))

@@ -1,4 +1,6 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from './helpers/runtime-assets';
 // point-light-shadow.browser.test.ts
 // feat-20260612-point-light-shadows-urp-hdrp M0 / T-M0-2.
 //
@@ -11,7 +13,6 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 // This file is scoped to the 'browser' vitest project (file-naming convention
 // *.browser.test.ts); the 'dawn' and 'unit' projects exclude it.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   Camera,
@@ -216,18 +217,24 @@ const browserReady = typeof navigator !== 'undefined' && navigator.gpu !== undef
 const REAL_CANVAS_SIZE = 96;
 
 function spawnPointShadowScene(world: World, withShadow: boolean): void {
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.78, 0.26, 0.08, 1],
-      metallic: 0,
-      roughness: 0.45,
-    }),
-  );
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.78, 0.26, 0.08, 1],
+        metallic: 0,
+        roughness: 0.45,
+      }),
+    )
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0], scale: [1.3, 1.3, 1.3] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -238,7 +245,12 @@ function spawnPointShadowScene(world: World, withShadow: boolean): void {
       // miss the shadow entirely at the fixed camera pose and make a valid
       // shadow pass look identical to the no-shadow baseline.
       { component: Transform, data: { pos: [0, 0, -0.65], scale: [5, 5, 0.1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();

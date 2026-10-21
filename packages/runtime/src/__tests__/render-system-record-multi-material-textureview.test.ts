@@ -1,3 +1,4 @@
+import { testAssets } from './helpers/runtime-assets';
 // @perf-budget-skip: intentional full mock-GPU render regression smoke gate.
 
 // bug-20260610-sponza-per-submesh-bg-textureviews D2 regression test (M3 / m3-1).
@@ -401,10 +402,9 @@ async function spawnPbrMultiMaterialScene(): Promise<unknown> {
   const world = new World();
 
   // Mint the 3-submesh mesh as a user-tier column handle.
-  const meshHandle = world.allocSharedRef('MeshAsset', threeSubmeshMesh()) as unknown as Handle<
-    'MeshAsset',
-    'shared'
-  >;
+  const meshHandle = testAssets(world as WorldType)
+    .create(threeSubmeshMesh())
+    .unwrap() as unknown as Handle<'MeshAsset', 'shared'>;
 
   // Mint 3 distinct texture assets, each producing a unique GPU textureView
   // sentinel via the createTexture mock. allocSharedRef returns the bare
@@ -413,10 +413,9 @@ async function spawnPbrMultiMaterialScene(): Promise<unknown> {
   const textureHandles: Handle<'TextureAsset', 'shared'>[] = [];
   for (let i = 0; i < 3; i++) {
     textureHandles.push(
-      world.allocSharedRef('TextureAsset', makeChequerTexture()) as unknown as Handle<
-        'TextureAsset',
-        'shared'
-      >,
+      testAssets(world as WorldType)
+        .create(makeChequerTexture())
+        .unwrap() as unknown as Handle<'TextureAsset', 'shared'>,
     );
   }
   // Use numeric handles directly in values. Strings are not resolved
@@ -431,22 +430,24 @@ async function spawnPbrMultiMaterialScene(): Promise<unknown> {
   // label 'pbr-material-skylight-bg'.
   const materialHandles: Handle<'MaterialAsset', 'shared'>[] = [];
   for (let i = 0; i < 3; i++) {
-    const matHandle = world.allocSharedRef('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-standard-pbr' },
-          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+    const matHandle = testAssets(world as WorldType)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-standard-pbr' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: {
+          baseColor: [1, 1, 1],
+          metallic: 0,
+          roughness: 0.5,
+          baseColorTexture: textureHandles[i] as unknown as number,
         },
-      ],
-      values: {
-        baseColor: [1, 1, 1],
-        metallic: 0,
-        roughness: 0.5,
-        baseColorTexture: textureHandles[i] as unknown as number,
-      },
-    } as unknown as MaterialAsset) as unknown as Handle<'MaterialAsset', 'shared'>;
+      } as unknown as MaterialAsset)
+      .unwrap() as unknown as Handle<'MaterialAsset', 'shared'>;
     materialHandles.push(matHandle);
   }
 
@@ -581,10 +582,9 @@ async function spawnPbrMissingTextureScene(): Promise<unknown> {
 
     materialSlots: [{ slotName: 'Default' }],
   };
-  const meshHandle = world.allocSharedRef('MeshAsset', oneSubmeshMesh) as unknown as Handle<
-    'MeshAsset',
-    'shared'
-  >;
+  const meshHandle = testAssets(world as WorldType)
+    .create(oneSubmeshMesh)
+    .unwrap() as unknown as Handle<'MeshAsset', 'shared'>;
 
   // A baseColorTexture handle that IS a registered TextureAsset (so it survives
   // extract's kind==='texture' check and is carried onto the snapshot) but whose
@@ -601,27 +601,28 @@ async function spawnPbrMissingTextureScene(): Promise<unknown> {
     colorSpace: 'srgb',
     mips: { kind: 'none' },
   } as unknown as TextureAsset;
-  const badTexHandle = world.allocSharedRef('TextureAsset', unresidentTexture) as unknown as Handle<
-    'TextureAsset',
-    'shared'
-  >;
+  const badTexHandle = testAssets(world as WorldType)
+    .create(unresidentTexture)
+    .unwrap() as unknown as Handle<'TextureAsset', 'shared'>;
   const badTexHandleId = badTexHandle as unknown as number;
-  const matHandle = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+  const matHandle = testAssets(world as WorldType)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: {
+        baseColor: [1, 1, 1],
+        metallic: 0,
+        roughness: 0.5,
+        baseColorTexture: badTexHandleId,
       },
-    ],
-    values: {
-      baseColor: [1, 1, 1],
-      metallic: 0,
-      roughness: 0.5,
-      baseColorTexture: badTexHandleId,
-    },
-  } as unknown as MaterialAsset) as unknown as Handle<'MaterialAsset', 'shared'>;
+    } as unknown as MaterialAsset)
+    .unwrap() as unknown as Handle<'MaterialAsset', 'shared'>;
 
   world.spawn(
     {

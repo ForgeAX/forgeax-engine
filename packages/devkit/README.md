@@ -1,5 +1,43 @@
 # @forgeax/engine-devkit
 
+## Pack authoring sessions
+
+`forgeax asset inspect <source.pack.ts> --parameters-only --json` is the quick
+authoring check. It reads and validates only that source, reports parameter
+modes, bindings and default locations, and bypasses project inventory, old
+output, module execution and generation. Use the Engine installation serving
+the selected View and the same project root. This confirms editable declarations;
+actual target validity and application require the owning preview.
+
+`engine.asset.source.draft` accepts an explicit `projectId`, owning `targetId`,
+optional `previewTargetId`, and a `request` (`open`, `get`, `edit`, `generate`,
+`save`, `refresh`, `undo`, `redo`, `discard`, `close`). Open addresses `sourcePath`;
+subsequent operations address the returned `draftId`. Pack owns editing semantics;
+DevKit owns source access, captured Worker inputs and the exact preview binding.
+No browser is required to edit, save or generate a draft. Preview attachment
+replays only its current author fields.
+
+Live requests use `engine.workspace.pack-draft.changed` field deltas instead of
+workspace/Catalog publication. They do not parse source, compile, cook, enumerate
+assets or query entities. Generation fixes dependency publication bytes, prepares
+normal runtime content privately, then adopts current live values through App.
+Draft generations never publish into the saved-source Catalog. Source events use
+reverse dependency edges; only the explicitly bound author session suppresses
+its generic restart. Ordinary builds, CLI and unrelated sessions retain their
+existing hot-reload behavior. Closing the project cancels Workers and releases
+documents and preview preparations.
+
+Save waits for the serving producer's publication before replying. Saved source
+events still rebuild the serving Catalog in place, including when
+an attached draft consumes the preview update. Suppressing a document restart
+must not suppress saved publication: subsequent scene opens and fresh browser
+realms consume the saved defaults, while live draft edits remain private.
+
+If a bound preview's first draft open rejects a legacy TS declaration, its next
+source event retries declaration parsing. A repaired literal declaration opens
+the draft and publishes its fields to the existing preview without generation
+or page replacement. Still-unsupported source retains ordinary hot reload.
+
 ## CLI producer lifetime
 
 Doctor follows the pnpm installation that selected a verified `workspace:`
@@ -51,7 +89,11 @@ owns rendering, RHI events, replay backends, and preview execution.
 The generated development-server owner invalidates compiled module payloads
 after server close, including the retired environment of a Vite restart.
 Serving plugins release their own caches through Vite lifecycle hooks; this
-cleanup does not change project, run, or browser ownership.
+cleanup does not change project, run, or browser ownership. The accepted compiler
+input scope excludes that Host-owned generated directory. Retiring a failed Host
+therefore preserves its original startup failure instead of triggering another
+reload; edits to authored files and observed external dependencies still invalidate
+the session.
 
 ## Independent backend startup
 
@@ -75,6 +117,13 @@ and releases their native sockets without waiting for a browser close handshake;
 independent runs keep their own `engine run stop` lifecycle.
 
 The CLI waits up to 120 seconds for the backend to become ready by default.
+`package.json#forgeax.frameTimeoutMs` configures subsequent Worker frame admissions
+independently: omit for the Engine default of 2 seconds, use a positive timer-safe
+integer for a bounded wait, or `null` to wait for completion or explicit disposal.
+A project with its own progress/cancellation policy can avoid terminating a slow
+loading frame. Actual execution faults remain terminal. Both development and
+production Hosts use this policy. This does not change startup or GPU recovery deadlines.
+
 `package.json#forgeax.startupTimeoutMs` overrides that wait for a project; set
 it to `null` to wait until startup completes or the backend process exits.
 
@@ -497,6 +546,8 @@ ownership](../pack/README.md) for source evidence and lease cleanup.
 | LKG | Treat `lastKnownGood` as read-only evidence while repairing the producer, then retry the same GUID. |
 
 The authority map and executable audit are [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json) and [`check-asset-authority-audit.mjs`](../../scripts/forgeax/check-asset-authority-audit.mjs). A failed command should expose its structured `code`, `expected`, `hint`, and `detail` so the named producer can be repaired without guessing from messages.
+
+Procedural plugin Packs declare `plugins: true`; ordinary resource Packs omit it and are not executed during plugin discovery. Direct JSON plugin definitions keep their existing representation.
 
 Plugin definitions are Pack outputs with `kind: 'plugin'`, a module/export locator, and serializable configuration. `forge.json.roots` selects one asset per realm: Node `host`, browser `frontend`, World `engine`, and isolated `build`. DevKit compiles literal program tables and `plugin-program-inventory.json`; it never discovers runtime modules by scanning installed packages.
 
@@ -1424,6 +1475,8 @@ The [input-boundary measurement report](docs/plugin-input-boundary-performance.m
 includes fixed-workload before/after samples, correctness gates and remaining
 browser and memory qualification limits.
 
+Browser delivery groups project modules only when their static entry reachability is identical. Portable plugin entries retain strict export signatures; internal page/bootstrap entries allow additional exports. Grouping preserves native identity and lazy boundaries.
+
 The provider's `programHost` reuses the delivered native URLs only when the
 complete archived graph and actual Host binding URLs match. Changing the selected
 entry or export preserves module identity; changing bytes, graph membership or
@@ -1734,7 +1787,8 @@ Runtime state lives under `FORGEAX_RUNS_DIR` or `~/.local/share/ForgeaX/runs`,
 outside the authored project. Snapshot inputs omit Git metadata, `node_modules`
 (rebuilt as a copied dependency graph), `.forgeax` state (local Engine binding is
 resolved into that graph), harness/worktrees, agent tooling mounts (`.agents`,
-`.claude`, `.codex`) and generated artifact/coverage folders. These reserved
+`.claude`, `.codex`), TypeScript `.tsbuildinfo` compiler caches (including dependency
+payloads) and generated artifact/coverage folders. These reserved
 folders must not contain authored runtime inputs. File copying and hashing stream
 through bounded buffers; cancellation stops preparation and removes partial output.
 Snapshots are read-only input files, not a security sandbox or a guarantee of
@@ -1821,6 +1875,12 @@ bounded live queries, never an authored SceneAsset mirror or panel filter rules.
 A preview execution failure rejects that target's operations; a document loss
 retires all resource previews in that document before replacement readiness.
 A preview failure requires explicit cleanup; neither path replays operations.
+
+Resource Mesh previews whose slots all use Engine's neutral default material
+use a contrasting opaque camera background while retaining canonical environment
+lighting. Authored material slots retain the environment backdrop. Explicit
+transparent output takes precedence. This presentation belongs to the resource
+preview owner and does not change Scene or game rendering.
 
 Editor Play starts a distinct game session from the current project root on the
 same BackendHost. Its authenticated connection receives a game projection
@@ -1926,6 +1986,9 @@ to the migration roster. Operations without a verifiable digest remain absent:
 `resolveMigration` rechecks target realm, catalog digest, RHI backend, and
 evidence before selecting a service. Service admission is optional; absent or
 invalid admission selects the private executor.
+Executor options derive their workload identity from ToolRuntime's
+`ServiceAdmissionExpectation`; the contribution supplies the tool ID and the
+service adapter supplies the backend.
 
 `createCarrierProviderService` owns an authenticated, ephemeral provider
 process. It exposes only POD carrier routes and keeps no provider registry after
@@ -2011,9 +2074,10 @@ with a receipt for its own bytes remains valid.
 External frontend modules are trusted immutable product artifacts. Their `program`
 is opaque; `frontendModule.specifier/export` is the compile input, and the supplier
 owns the closure's asserted `codeRevision`. Changing that code requires a new
-binding and page. This first version rejects every client HMR event outside the
-generated directory while an external frontend module is bound, including ordinary
-project source edits; rebind and replace the page to apply them. Actual delivered-byte
+binding and page. While an external frontend module is bound, client HMR rejects
+changes to project program inputs or modules in the active Vite graph; rebind and
+replace the page to apply them. Unrelated watcher events, including dependency
+compiler caches, do not invalidate the frontend. Actual delivered-byte
 integrity belongs to the normal build inventory. A selected project frontend root
 and an external frontend root are rejected together. Resident host source changes
 require backend restart before dependent browser candidates can replace sessions.
@@ -2115,3 +2179,14 @@ Browser capture uses `BrowserCaptureOptions.backend` (`auto`, `software`, or
 that choice while `backend` reports the observed adapter. Software rendering uses
 the same `browserCaptureCommand` / `createBrowserCapture` APIs and
 `browser-capture-*` failures; there is no separate software option or facade.
+
+The tool-service benchmark harness and admission report share their ordered mode
+and phase vocabulary and default thresholds. Completeness requires the configured
+sample count for each mode in each phase; balanced totals cannot substitute for
+missing cold or warm measurements. Timing thresholds and alternation remain
+independent admission checks.
+
+Direct JSON discovery uses Scene schemas for common transform, name, camera,
+light and mesh components. Scalar and short-vector fields can preview directly;
+asset references and unknown component fields remain generation inputs.
+Explicit TS bindings are checked against the preview World's actual vocabulary.

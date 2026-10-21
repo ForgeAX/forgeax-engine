@@ -1,5 +1,6 @@
-import { encodeBase64 } from '@forgeax/engine/types';
+import { type AssetKind, encodeBase64 } from '@forgeax/engine/types';
 import type { App } from '@forgeax/engine-app';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -10,6 +11,7 @@ import {
   MeshRenderer,
   perspective,
 } from '@forgeax/engine-render';
+import { defaultAssetDecoderContributions } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
 import {
   assetGuid,
@@ -150,8 +152,8 @@ export async function captureSurfaceStandardEvidence(
   options: SurfaceStandardEvidenceOptions = {},
 ): Promise<Record<string, unknown>> {
   const resumeApp = options.resumeApp ?? true;
-  const assets = app.assets;
-  if (assets === undefined) {
+  const appAssets = app.assets;
+  if (appAssets === undefined) {
     return {
       status: 'unavailable',
       blocker: { code: 'asset-registry-unavailable', stage: 'load' },
@@ -185,7 +187,7 @@ export async function captureSurfaceStandardEvidence(
       cells: [],
     };
   }
-  const catalog = assets.listCatalog() as readonly {
+  const catalog = appAssets.listCatalog() as readonly {
     guid: string;
     sourceKey?: string;
     packageUrl: string;
@@ -234,350 +236,444 @@ export async function captureSurfaceStandardEvidence(
       cells: [],
     };
   }
-  const loaded = await Promise.all(
-    CELLS.map(async (cell) => ({
-      cell,
-      result: await assets.loadByGuid(assets.parseGuid(cell.guid)),
-    })),
-  );
-  const missing = loaded.find((entry) => !entry.result.ok);
-  if (missing !== undefined) {
-    return {
-      status: 'unavailable',
-      blocker: { code: 'surface-pack-load-failed', stage: 'load', detail: missing.cell.id },
-      cells: [],
-    };
-  }
-  const world =
-    new URLSearchParams(location.search).get('rhiCapture') === '1' ? app.world : new World();
-  const stopped = resumeApp ? app.stop() : undefined;
-  if (stopped !== undefined && !stopped.ok) {
-    return {
-      status: 'unavailable',
-      blocker: { code: 'surface-preview-stop-failed', stage: 'setup' },
-      cells: [],
-    };
-  }
-  const attached = app.renderer.attach(world);
-  if (!attached.ok) {
-    if (resumeApp) app.start();
-    return {
-      status: 'unavailable',
-      blocker: {
-        code: 'surface-renderer-attach-failed',
-        stage: 'attach',
-        detail: attached.error.code,
-      },
-      cells: [],
-    };
-  }
-  const renderErrors: unknown[] = [];
-  const unsubscribeRenderErrors = app.renderer.subscribe((event) => {
-    if (event.kind !== 'error') return;
-    renderErrors.push({
-      code: event.error.code,
-      expected: event.error.expected,
-      hint: event.error.hint,
-      ...('detail' in event.error ? { detail: event.error.detail } : {}),
-    });
-  });
-  const lease = attached.value;
+  const captureInAppWorld = new URLSearchParams(location.search).get('rhiCapture') === '1';
+  const assets = captureInAppWorld
+    ? appAssets
+    : new AssetRegistry({
+        shaderRegistry: appAssets.shaderRegistry,
+        ...(appAssets.catalogSource === undefined ? {} : { catalog: appAssets.catalogSource }),
+        fetcher: appAssets.fetchAsset,
+      });
   try {
-    const plane = createPlaneGeometry(1.3, 1.3);
-    if (!plane.ok)
+    if (!captureInAppWorld) {
+      for (const contribution of defaultAssetDecoderContributions)
+        assets.installDecoder(contribution.kind as AssetKind<unknown>, contribution.decoder);
+    }
+    const loaded = await Promise.all(
+      CELLS.map(async (cell) => ({
+        cell,
+        result: await assets.load(cell.guid, 'material'),
+      })),
+    );
+    const missing = loaded.find((entry) => !entry.result.ok);
+    if (missing !== undefined) {
       return {
         status: 'unavailable',
-        blocker: { code: 'surface-geometry-failed', stage: 'setup' },
+        blocker: { code: 'surface-pack-load-failed', stage: 'load', detail: missing.cell.id },
         cells: [],
       };
-    const mesh = world.allocSharedRef('MeshAsset', plane.value);
-    for (let index = 0; index < loaded.length; index += 1) {
-      const entry = loaded[index];
-      if (entry === undefined || !entry.result.ok) continue;
-      const x = (index - 1.5) * 1.45;
-      const material = world.allocSharedRef('MaterialAsset', entry.result.value);
+    }
+    const world = captureInAppWorld ? app.world : new World({ assets });
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stopped = resumeApp ? app.stop() : undefined;
+    if (stopped !== undefined && !stopped.ok) {
+      return {
+        status: 'unavailable',
+        blocker: { code: 'surface-preview-stop-failed', stage: 'setup' },
+        cells: [],
+      };
+    }
+    const attached = app.renderer.attach(world);
+    if (!attached.ok) {
+      if (resumeApp) app.start();
+      return {
+        status: 'unavailable',
+        blocker: {
+          code: 'surface-renderer-attach-failed',
+          stage: 'attach',
+          detail: attached.error.code,
+        },
+        cells: [],
+      };
+    }
+    const renderErrors: unknown[] = [];
+    const unsubscribeRenderErrors = app.renderer.subscribe((event) => {
+      if (event.kind !== 'error') return;
+      renderErrors.push({
+        code: event.error.code,
+        expected: event.error.expected,
+        hint: event.error.hint,
+        ...('detail' in event.error ? { detail: event.error.detail } : {}),
+      });
+    });
+    const lease = attached.value;
+    try {
+      const plane = createPlaneGeometry(1.3, 1.3);
+      if (!plane.ok)
+        return {
+          status: 'unavailable',
+          blocker: { code: 'surface-geometry-failed', stage: 'setup' },
+          cells: [],
+        };
+      const mesh = sceneAssets.create(plane.value).unwrap();
+      for (let index = 0; index < loaded.length; index += 1) {
+        const entry = loaded[index];
+        if (entry === undefined || !entry.result.ok) continue;
+        const x = (index - 1.5) * 1.45;
+        const material = entry.result.value;
+        world
+          .spawn(
+            { component: Transform, data: { pos: [x, 0, 0] } },
+            { component: MeshFilter, data: { assetHandle: mesh } },
+            { component: MeshRenderer, data: { materials: [material] } },
+          )
+          .unwrap();
+      }
       world
         .spawn(
-          { component: Transform, data: { pos: [x, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: mesh } },
-          { component: MeshRenderer, data: { materials: [material] } },
+          { component: Transform, data: { pos: [0, 0, 4] } },
+          {
+            component: Camera,
+            data: {
+              ...perspective({
+                fov: Math.PI / 4,
+                aspect: SURFACE_WIDTH / SURFACE_HEIGHT,
+                near: 0.1,
+                far: 20,
+              }),
+              clearColor: [0, 0, 0, 1],
+            },
+          },
         )
         .unwrap();
-    }
-    world
-      .spawn(
-        { component: Transform, data: { pos: [0, 0, 4] } },
-        {
-          component: Camera,
-          data: {
-            ...perspective({
-              fov: Math.PI / 4,
-              aspect: SURFACE_WIDTH / SURFACE_HEIGHT,
-              near: 0.1,
-              far: 20,
-            }),
-            clearColor: [0, 0, 0, 1],
-          },
-        },
-      )
-      .unwrap();
-    world
-      .spawn({
-        component: DirectionalLight,
-        data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
-      })
-      .unwrap();
-    // Authored Surface PSOs are compiled lazily on first use. Submit the same
-    // world through the real Renderer until those immutable pipelines are
-    // ready, matching the Browser/Dawn evidence lanes instead of treating a
-    // first-touch skip-draw as a backend failure.
-    const frameInspections: unknown[] = [];
-    const completedFrameTarget = 60;
-    const captureFrames = new Set([0, completedFrameTarget - 1]);
-    const isWebGpuCapture = new URLSearchParams(location.search).get('surfaceCapture') === '1';
-    for (let frame = 0; frame < completedFrameTarget; frame += 1) {
-      world.update(1 / 60).unwrap();
-      if (isWebGpuCapture && frame === completedFrameTarget - 1) {
-        const armed = app.renderer.requestObservation?.(['final-display']);
-        if (armed !== undefined && !armed.ok) {
-          Object.assign(globalThis, {
-            __forgeaxWebGpuFinalReadback: {
-              ok: false,
-              error: armed.error.code,
-              detail: 'detail' in armed.error ? armed.error.detail : undefined,
-            },
-          });
-        }
-      }
-      const draw = app.renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      });
-      if (!draw.ok)
-        return {
-          status: 'unavailable',
-          blocker: {
-            code: 'surface-render-failed',
-            stage: 'draw',
-            detail: {
-              code: draw.error.code,
-              message: draw.error.message,
-              expected: 'expected' in draw.error ? draw.error.expected : undefined,
-              hint: 'hint' in draw.error ? draw.error.hint : undefined,
-              cause: 'cause' in draw.error ? String(draw.error.cause) : undefined,
-              detail: 'detail' in draw.error ? draw.error.detail : undefined,
-              renderErrors,
-            },
-          },
-          cells: [],
-        };
-      if (isWebGpuCapture && frame === completedFrameTarget - 1) {
-        const native = app.renderer.nativeDevice();
-        const canvas = document.querySelector<HTMLCanvasElement>('#app');
-        const context = canvas?.getContext('webgpu');
-        if (
-          native.ok &&
-          canvas !== null &&
-          canvas !== undefined &&
-          context !== null &&
-          context !== undefined
-        ) {
-          let buffer: GPUBuffer | undefined;
-          try {
-            const width = canvas.width;
-            const height = canvas.height;
-            const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
-            buffer = native.value.createBuffer({
-              size: bytesPerRow * height,
-              usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-            });
-            const encoder = native.value.createCommandEncoder();
-            encoder.copyTextureToBuffer(
-              { texture: context.getCurrentTexture() },
-              { buffer, bytesPerRow, rowsPerImage: height },
-              { width, height, depthOrArrayLayers: 1 },
-            );
-            native.value.queue.submit([encoder.finish()]);
-            await buffer.mapAsync(GPUMapMode.READ);
-            const bytes = new Uint8Array(buffer.getMappedRange()).slice();
-            buffer.unmap();
-            let signalPixels = 0;
-            for (let offset = 0; offset < bytes.length; offset += 4) {
-              if ((bytes[offset] ?? 0) + (bytes[offset + 1] ?? 0) + (bytes[offset + 2] ?? 0) > 0)
-                signalPixels += 1;
-            }
+      world
+        .spawn({
+          component: DirectionalLight,
+          data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
+        })
+        .unwrap();
+      // Authored Surface PSOs are compiled lazily on first use. Submit the same
+      // world through the real Renderer until those immutable pipelines are
+      // ready, matching the Browser/Dawn evidence lanes instead of treating a
+      // first-touch skip-draw as a backend failure.
+      const frameInspections: unknown[] = [];
+      const completedFrameTarget = 60;
+      const captureFrames = new Set([0, completedFrameTarget - 1]);
+      const isWebGpuCapture = new URLSearchParams(location.search).get('surfaceCapture') === '1';
+      for (let frame = 0; frame < completedFrameTarget; frame += 1) {
+        world.update(1 / 60).unwrap();
+        if (isWebGpuCapture && frame === completedFrameTarget - 1) {
+          const armed = app.renderer.requestObservation?.(['final-display']);
+          if (armed !== undefined && !armed.ok) {
             Object.assign(globalThis, {
-              __forgeaxWebGpuSwapchainReadback: { ok: true, width, height, signalPixels },
+              __forgeaxWebGpuFinalReadback: {
+                ok: false,
+                error: armed.error.code,
+                detail: 'detail' in armed.error ? armed.error.detail : undefined,
+              },
             });
-            await exportPixels(
-              'webgpu-swapchain',
-              bytes,
-              width,
-              height,
-              bytesPerRow,
-              'bgra8unorm',
-              'top-left',
-            );
-          } catch (cause) {
-            Object.assign(globalThis, {
-              __forgeaxWebGpuSwapchainReadback: { ok: false, cause: String(cause) },
-            });
-          } finally {
-            buffer?.destroy();
           }
         }
-      }
-      const completion = await draw.value.completed;
-      if (!completion.ok)
-        return {
-          status: 'unavailable',
-          blocker: {
-            code: 'surface-render-completion-failed',
-            stage: 'draw',
-            detail: completion.error.code,
-          },
-          cells: [],
-        };
-      if (isWebGpuCapture && captureFrames.has(frame)) {
-        const inspection = app.renderer.inspect();
-        frameInspections.push({
-          frame,
-          observation: inspection.observation,
-          renderScene: inspection.renderScene,
-          frustumStats: inspection.frustumStats,
-          passes: inspection.perFramePassNames,
-          renderErrors,
+        const draw = app.renderer.draw({
+          leases: [lease],
+          camera: { lease },
+          environment: { lease },
+          geometryLane: 'direct',
         });
-        if (frame === completedFrameTarget - 1) {
-          const readback = await app.renderer.observe(draw.value, { include: ['final-display'] });
-          const display = readback.ok
-            ? readback.value.observations?.find((entry) => entry.domain === 'final-display')
-            : undefined;
-          const bytes = display?.bytes;
-          let signalPixels = 0;
-          if (bytes !== undefined)
-            for (let offset = 0; offset < bytes.length; offset += 4) {
-              if ((bytes[offset] ?? 0) + (bytes[offset + 1] ?? 0) + (bytes[offset + 2] ?? 0) > 0)
-                signalPixels += 1;
-            }
-          Object.assign(globalThis, {
-            __forgeaxWebGpuFinalReadback: {
-              ok: readback.ok,
-              error: readback.ok ? undefined : readback.error.code,
-              detail: readback.ok
-                ? undefined
-                : 'detail' in readback.error
-                  ? readback.error.detail
-                  : undefined,
-              metadata: display?.metadata,
-              signalPixels,
+        if (!draw.ok)
+          return {
+            status: 'unavailable',
+            blocker: {
+              code: 'surface-render-failed',
+              stage: 'draw',
+              detail: {
+                code: draw.error.code,
+                message: draw.error.message,
+                expected: 'expected' in draw.error ? draw.error.expected : undefined,
+                hint: 'hint' in draw.error ? draw.error.hint : undefined,
+                cause: 'cause' in draw.error ? String(draw.error.cause) : undefined,
+                detail: 'detail' in draw.error ? draw.error.detail : undefined,
+                renderErrors,
+              },
             },
-          });
-          if (bytes !== undefined && display !== undefined) {
-            await exportPixels(
-              'webgpu',
-              bytes,
-              display.metadata.width,
-              display.metadata.height,
-              display.metadata.bytesPerRow,
-              display.metadata.format,
-              'top-left',
-            );
+            cells: [],
+          };
+        if (isWebGpuCapture && frame === completedFrameTarget - 1) {
+          const native = app.renderer.nativeDevice();
+          const canvas = document.querySelector<HTMLCanvasElement>('#app');
+          const context = canvas?.getContext('webgpu');
+          if (
+            native.ok &&
+            canvas !== null &&
+            canvas !== undefined &&
+            context !== null &&
+            context !== undefined
+          ) {
+            let buffer: GPUBuffer | undefined;
+            try {
+              const width = canvas.width;
+              const height = canvas.height;
+              const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+              buffer = native.value.createBuffer({
+                size: bytesPerRow * height,
+                usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+              });
+              const encoder = native.value.createCommandEncoder();
+              const swapchainTexture = context.getCurrentTexture();
+              encoder.copyTextureToBuffer(
+                { texture: swapchainTexture },
+                { buffer, bytesPerRow, rowsPerImage: height },
+                { width, height, depthOrArrayLayers: 1 },
+              );
+              native.value.queue.submit([encoder.finish()]);
+              await buffer.mapAsync(GPUMapMode.READ);
+              const bytes = new Uint8Array(buffer.getMappedRange()).slice();
+              buffer.unmap();
+              let signalPixels = 0;
+              for (let offset = 0; offset < bytes.length; offset += 4) {
+                if ((bytes[offset] ?? 0) + (bytes[offset + 1] ?? 0) + (bytes[offset + 2] ?? 0) > 0)
+                  signalPixels += 1;
+              }
+              Object.assign(globalThis, {
+                __forgeaxWebGpuSwapchainReadback: {
+                  ok: true,
+                  width,
+                  height,
+                  format: swapchainTexture.format,
+                  signalPixels,
+                },
+              });
+              await exportPixels(
+                'webgpu-swapchain',
+                bytes,
+                width,
+                height,
+                bytesPerRow,
+                swapchainTexture.format,
+                'top-left',
+              );
+            } catch (cause) {
+              Object.assign(globalThis, {
+                __forgeaxWebGpuSwapchainReadback: { ok: false, cause: String(cause) },
+              });
+            } finally {
+              buffer?.destroy();
+            }
           }
         }
+        const completion = await draw.value.completed;
+        if (!completion.ok)
+          return {
+            status: 'unavailable',
+            blocker: {
+              code: 'surface-render-completion-failed',
+              stage: 'draw',
+              detail: {
+                code: completion.error.code,
+                expected: completion.error.expected,
+                hint: completion.error.hint,
+                detail: 'detail' in completion.error ? completion.error.detail : undefined,
+                renderErrors,
+              },
+            },
+            cells: [],
+          };
+        if (isWebGpuCapture && captureFrames.has(frame)) {
+          const inspection = app.renderer.inspect();
+          frameInspections.push({
+            frame,
+            observation: inspection.observation,
+            renderScene: inspection.renderScene,
+            frustumStats: inspection.frustumStats,
+            passes: inspection.perFramePassNames,
+            renderErrors,
+          });
+          if (frame === completedFrameTarget - 1) {
+            const readback = await app.renderer.observe(draw.value, { include: ['final-display'] });
+            const display = readback.ok
+              ? readback.value.observations?.find((entry) => entry.domain === 'final-display')
+              : undefined;
+            const bytes = display?.bytes;
+            let signalPixels = 0;
+            if (bytes !== undefined)
+              for (let offset = 0; offset < bytes.length; offset += 4) {
+                if ((bytes[offset] ?? 0) + (bytes[offset + 1] ?? 0) + (bytes[offset + 2] ?? 0) > 0)
+                  signalPixels += 1;
+              }
+            Object.assign(globalThis, {
+              __forgeaxWebGpuFinalReadback: {
+                ok: readback.ok,
+                error: readback.ok ? undefined : readback.error.code,
+                detail: readback.ok
+                  ? undefined
+                  : 'detail' in readback.error
+                    ? readback.error.detail
+                    : undefined,
+                metadata: display?.metadata,
+                signalPixels,
+              },
+            });
+            if (bytes !== undefined && display !== undefined) {
+              await exportPixels(
+                'webgpu',
+                bytes,
+                display.metadata.width,
+                display.metadata.height,
+                display.metadata.bytesPerRow,
+                display.metadata.format,
+                'top-left',
+              );
+            }
+          }
+          const captureCanvas = (
+            globalThis as { __forgeaxCaptureCanvas?: (frame: number) => Promise<void> }
+          ).__forgeaxCaptureCanvas;
+          await captureCanvas?.(frame);
+        }
+      }
+      Object.assign(globalThis, { __forgeaxSurfaceFrameInspections: frameInspections });
+      if (isWebGpuCapture) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         const captureCanvas = (
           globalThis as { __forgeaxCaptureCanvas?: (frame: number) => Promise<void> }
         ).__forgeaxCaptureCanvas;
-        await captureCanvas?.(frame);
+        await captureCanvas?.(completedFrameTarget);
       }
-    }
-    Object.assign(globalThis, { __forgeaxSurfaceFrameInspections: frameInspections });
-    if (isWebGpuCapture) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const captureCanvas = (
-        globalThis as { __forgeaxCaptureCanvas?: (frame: number) => Promise<void> }
-      ).__forgeaxCaptureCanvas;
-      await captureCanvas?.(completedFrameTarget);
-    }
-    let rhiDebugCapture: unknown;
-    let preCapturePixels: Uint8Array | undefined;
-    if (new URLSearchParams(location.search).get('rhiCapture') === '1') {
-      const canvasBeforeCapture = document.querySelector<HTMLCanvasElement>('#app');
-      const glBeforeCapture = canvasBeforeCapture?.getContext('webgl2');
-      if (
-        canvasBeforeCapture !== null &&
-        canvasBeforeCapture !== undefined &&
-        glBeforeCapture !== null &&
-        glBeforeCapture !== undefined
-      ) {
-        preCapturePixels = new Uint8Array(
-          canvasBeforeCapture.width * canvasBeforeCapture.height * 4,
-        );
-        glBeforeCapture.readPixels(
-          0,
-          0,
-          canvasBeforeCapture.width,
-          canvasBeforeCapture.height,
-          glBeforeCapture.RGBA,
-          glBeforeCapture.UNSIGNED_BYTE,
-          preCapturePixels,
-        );
-      }
-      const captureProbe = (phase: string): void => {
-        Object.assign(globalThis, { __forgeaxRhiCapturePhase: { phase, at: Date.now() } });
-      };
-      captureProbe('app-start');
-      const started = app.start();
-      if (!started.ok) {
-        rhiDebugCapture = { code: 'app-start-failed', detail: started.error.code };
-      } else {
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        captureProbe('capture-frame');
-        const controller = new AbortController();
-        const seedBytes = Number(new URLSearchParams(location.search).get('rhiSeedBytes') ?? '0');
-        const snapshotTimeoutMs = Number(
-          new URLSearchParams(location.search).get('rhiSnapshotTimeoutMs') ?? '10000',
-        );
-        const timeout = setTimeout(() => controller.abort(), snapshotTimeoutMs + 20_000);
-        const captured = await app.rhiCapture?.captureFrame({
-          snapshotTimeoutMs,
-          seed: { maxResourceBytes: seedBytes },
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        if (captured === undefined) {
-          rhiDebugCapture = { code: 'capture-unavailable' };
-        } else if (!captured.ok) {
-          rhiDebugCapture = { code: captured.error.code, detail: captured.error.detail };
-        } else {
-          captureProbe('upload');
-          const uploaded = await app.rhiCapture?.upload(captured.value, {
-            runId: `webgl2-surface-${crypto.randomUUID().replaceAll('-', '')}`,
-          });
-          rhiDebugCapture = uploaded?.ok
-            ? {
-                path: uploaded.value.path,
-                digest: captured.value.digest,
-                bytes: captured.value.byteLength,
-              }
-            : {
-                code: uploaded?.error.code ?? 'upload-unavailable',
-                detail: uploaded?.error.detail,
-              };
+      let rhiDebugCapture: unknown;
+      let preCapturePixels: Uint8Array | undefined;
+      if (new URLSearchParams(location.search).get('rhiCapture') === '1') {
+        const canvasBeforeCapture = document.querySelector<HTMLCanvasElement>('#app');
+        const glBeforeCapture = canvasBeforeCapture?.getContext('webgl2');
+        if (
+          canvasBeforeCapture !== null &&
+          canvasBeforeCapture !== undefined &&
+          glBeforeCapture !== null &&
+          glBeforeCapture !== undefined
+        ) {
+          preCapturePixels = new Uint8Array(
+            canvasBeforeCapture.width * canvasBeforeCapture.height * 4,
+          );
+          glBeforeCapture.readPixels(
+            0,
+            0,
+            canvasBeforeCapture.width,
+            canvasBeforeCapture.height,
+            glBeforeCapture.RGBA,
+            glBeforeCapture.UNSIGNED_BYTE,
+            preCapturePixels,
+          );
         }
-        app.stop();
-        captureProbe('done');
+        const captureProbe = (phase: string): void => {
+          Object.assign(globalThis, { __forgeaxRhiCapturePhase: { phase, at: Date.now() } });
+        };
+        captureProbe('app-start');
+        const started = app.start();
+        if (!started.ok) {
+          rhiDebugCapture = { code: 'app-start-failed', detail: started.error.code };
+        } else {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          captureProbe('capture-frame');
+          const controller = new AbortController();
+          const seedBytes = Number(new URLSearchParams(location.search).get('rhiSeedBytes') ?? '0');
+          const snapshotTimeoutMs = Number(
+            new URLSearchParams(location.search).get('rhiSnapshotTimeoutMs') ?? '10000',
+          );
+          const timeout = setTimeout(() => controller.abort(), snapshotTimeoutMs + 20_000);
+          const captured = await app.rhiCapture?.captureFrame({
+            snapshotTimeoutMs,
+            seed: { maxResourceBytes: seedBytes },
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (captured === undefined) {
+            rhiDebugCapture = { code: 'capture-unavailable' };
+          } else if (!captured.ok) {
+            rhiDebugCapture = { code: captured.error.code, detail: captured.error.detail };
+          } else {
+            captureProbe('upload');
+            const uploaded = await app.rhiCapture?.upload(captured.value, {
+              runId: `webgl2-surface-${crypto.randomUUID().replaceAll('-', '')}`,
+            });
+            rhiDebugCapture = uploaded?.ok
+              ? {
+                  path: uploaded.value.path,
+                  digest: captured.value.digest,
+                  bytes: captured.value.byteLength,
+                }
+              : {
+                  code: uploaded?.error.code ?? 'upload-unavailable',
+                  detail: uploaded?.error.detail,
+                };
+          }
+          app.stop();
+          captureProbe('done');
+        }
+        Object.assign(globalThis, { __forgeaxRhiCaptureResult: rhiDebugCapture });
       }
-      Object.assign(globalThis, { __forgeaxRhiCaptureResult: rhiDebugCapture });
-    }
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    const canvas = document.querySelector<HTMLCanvasElement>('#app');
-    const gl = canvas?.getContext('webgl2');
-    const inspection = app.renderer.inspect();
-    if (isWebGpuCapture && inspection.capabilities.backendKind === 'webgpu') {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      const canvas = document.querySelector<HTMLCanvasElement>('#app');
+      const gl = canvas?.getContext('webgl2');
+      const inspection = app.renderer.inspect();
+      if (isWebGpuCapture && inspection.capabilities.backendKind === 'webgpu') {
+        if (renderErrors.length > 0) {
+          return {
+            status: 'unavailable',
+            blocker: {
+              code: 'surface-render-errors',
+              stage: 'draw',
+              detail: { errors: renderErrors },
+            },
+            cells: [],
+          };
+        }
+        return {
+          status: 'pass',
+          backend: 'browser-webgpu',
+          completedFrames: completedFrameTarget,
+          cells: CELLS.map((cell) => {
+            const publication = publicationRows.find(
+              ({ cell: candidate }) => candidate.id === cell.id,
+            );
+            return {
+              id: cell.id,
+              materialGuid: cell.guid,
+              sourceKey: publication?.row?.sourceKey ?? cell.sourceKey,
+              publicationGeneration: publication?.publicationGeneration,
+              publicationDigest: publication?.publicationDigest,
+              sourceClosure: sourceClosureFor(cell),
+            };
+          }),
+        };
+      }
+      if (
+        gl === null ||
+        gl === undefined ||
+        canvas === null ||
+        inspection.capabilities.backendKind !== 'wgpu-webgl2'
+      ) {
+        return {
+          status: 'unavailable',
+          blocker: {
+            code: 'surface-webgl2-readback-unavailable',
+            stage: 'readback',
+            detail: inspection.capabilities.backendKind,
+          },
+          cells: [],
+        };
+      }
+      const pixels = preCapturePixels ?? new Uint8Array(canvas.width * canvas.height * 4);
+      if (preCapturePixels === undefined)
+        gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      if (new URLSearchParams(location.search).get('pixelExport') === '1') {
+        // The wgpu-wasm GL surface presents readPixels row zero as the canvas
+        // top row; exporting it with a second flip reverses authored textures.
+        await exportPixels(
+          'webgl2',
+          pixels,
+          canvas.width,
+          canvas.height,
+          canvas.width * 4,
+          'rgba8unorm',
+          'top-left',
+        );
+      }
+      const cellReadbacks = CELLS.map((_, index) =>
+        sampleWebgl2Cell(pixels, canvas.width, canvas.height, index),
+      );
       if (renderErrors.length > 0) {
         return {
           status: 'unavailable',
@@ -589,159 +685,94 @@ export async function captureSurfaceStandardEvidence(
           cells: [],
         };
       }
-      return {
-        status: 'pass',
-        backend: 'browser-webgpu',
-        completedFrames: completedFrameTarget,
-        cells: CELLS.map((cell) => {
-          const publication = publicationRows.find(
-            ({ cell: candidate }) => candidate.id === cell.id,
-          );
-          return {
-            id: cell.id,
+      const missingSignal = cellReadbacks.findIndex((cell) => cell.signalPixels === 0);
+      if (missingSignal >= 0) {
+        return {
+          status: 'unavailable',
+          blocker: {
+            code: 'surface-webgl2-readback-empty',
+            stage: 'readback',
+            detail: {
+              expected: 'every Surface cell has non-clear RGB after the custom Renderer draw',
+              observed: `cell ${CELLS[missingSignal]?.id ?? missingSignal} has no non-clear samples`,
+              readbackKind: 'webgl2-readPixels',
+              readbackFormat: 'rgba8unorm',
+              readbackWidth: canvas.width,
+              readbackHeight: canvas.height,
+              signalPixels: cellReadbacks.map((cell) => cell.signalPixels),
+            },
+          },
+          cells: [],
+        };
+      }
+      const cells = CELLS.map((cell, index) => {
+        const publication = publicationRows.find(({ cell: candidate }) => candidate.id === cell.id);
+        const loadedEntry = loaded.find(({ cell: candidate }) => candidate.id === cell.id);
+        const material = loadedEntry?.result.ok
+          ? assets.read(loadedEntry.result.value).unwrap()
+          : undefined;
+        const program = material?.passes?.[0]?.program;
+        const actualPasses = material?.passes?.map((entry) => entry.name) ?? [];
+        const readback = cellReadbacks[index];
+        const sample = readback?.sample ?? [0, 0, 0, 0];
+        return {
+          id: cell.id,
+          record: {
+            backend: 'chromium-webgl2',
+            adapter: 'wgpu-webgl2',
+            lane: 'direct',
+            status: 'pass',
+            pass: cell.pass,
+            actualPasses,
             materialGuid: cell.guid,
             sourceKey: publication?.row?.sourceKey ?? cell.sourceKey,
             publicationGeneration: publication?.publicationGeneration,
             publicationDigest: publication?.publicationDigest,
-            sourceClosure: sourceClosureFor(cell),
-          };
-        }),
-      };
-    }
-    if (
-      gl === null ||
-      gl === undefined ||
-      canvas === null ||
-      inspection.capabilities.backendKind !== 'wgpu-webgl2'
-    ) {
-      return {
-        status: 'unavailable',
-        blocker: {
-          code: 'surface-webgl2-readback-unavailable',
-          stage: 'readback',
-          detail: inspection.capabilities.backendKind,
-        },
-        cells: [],
-      };
-    }
-    const pixels = preCapturePixels ?? new Uint8Array(canvas.width * canvas.height * 4);
-    if (preCapturePixels === undefined)
-      gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-    if (new URLSearchParams(location.search).get('pixelExport') === '1') {
-      // The wgpu-wasm GL surface presents readPixels row zero as the canvas
-      // top row; exporting it with a second flip reverses authored textures.
-      await exportPixels(
-        'webgl2',
-        pixels,
-        canvas.width,
-        canvas.height,
-        canvas.width * 4,
-        'rgba8unorm',
-        'top-left',
-      );
-    }
-    const cellReadbacks = CELLS.map((_, index) =>
-      sampleWebgl2Cell(pixels, canvas.width, canvas.height, index),
-    );
-    if (renderErrors.length > 0) {
-      return {
-        status: 'unavailable',
-        blocker: {
-          code: 'surface-render-errors',
-          stage: 'draw',
-          detail: { errors: renderErrors },
-        },
-        cells: [],
-      };
-    }
-    const missingSignal = cellReadbacks.findIndex((cell) => cell.signalPixels === 0);
-    if (missingSignal >= 0) {
-      return {
-        status: 'unavailable',
-        blocker: {
-          code: 'surface-webgl2-readback-empty',
-          stage: 'readback',
-          detail: {
-            expected: 'every Surface cell has non-clear RGB after the custom Renderer draw',
-            observed: `cell ${CELLS[missingSignal]?.id ?? missingSignal} has no non-clear samples`,
-            readbackKind: 'webgl2-readPixels',
-            readbackFormat: 'rgba8unorm',
-            readbackWidth: canvas.width,
-            readbackHeight: canvas.height,
-            signalPixels: cellReadbacks.map((cell) => cell.signalPixels),
-          },
-        },
-        cells: [],
-      };
-    }
-    const cells = CELLS.map((cell, index) => {
-      const publication = publicationRows.find(({ cell: candidate }) => candidate.id === cell.id);
-      const loadedEntry = loaded.find(({ cell: candidate }) => candidate.id === cell.id);
-      const program =
-        loadedEntry?.result.ok && loadedEntry.result.value.kind === 'material'
-          ? loadedEntry.result.value.passes?.[0]?.program
-          : undefined;
-      const actualPasses =
-        loadedEntry?.result.ok && loadedEntry.result.value.kind === 'material'
-          ? loadedEntry.result.value.passes?.map((entry) => entry.name)
-          : [];
-      const readback = cellReadbacks[index];
-      const sample = readback?.sample ?? [0, 0, 0, 0];
-      return {
-        id: cell.id,
-        record: {
-          backend: 'chromium-webgl2',
-          adapter: 'wgpu-webgl2',
-          lane: 'direct',
-          status: 'pass',
-          pass: cell.pass,
-          actualPasses,
-          materialGuid: cell.guid,
-          sourceKey: publication?.row?.sourceKey ?? cell.sourceKey,
-          publicationGeneration: publication?.publicationGeneration,
-          publicationDigest: publication?.publicationDigest,
-          closure: 'forgeax_material::surface_v1',
-          cookIdentity: publication?.publicationDigest,
-          programIdentity: program?.module ?? 'unavailable',
-          pipelineIdentity: `${cell.pass}:${cell.rootPlan}:${program?.module ?? 'unavailable'}`,
-          sourceClosure: sourceClosureFor(cell),
-          rootPlan: cell.rootPlan,
-          samples: sample,
-          signalPixels: readback?.signalPixels ?? 0,
-          observed: `rgba8unorm readback ${sample.join(',')}`,
-          verdict: 'pixel',
-          confidence: 1,
-          provenance: {
-            sourceSha: EVIDENCE_SOURCE_SHA,
-            buildId: EVIDENCE_BUILD_ID,
-            frameId: inspection.frame.frameId,
-            artifact: `${publication?.row?.packageUrl ?? 'catalog-unavailable'}#${cell.guid}`,
-            sourceClosure: sourceClosureFor(cell),
-            readbackKind: 'webgl2-readPixels',
-            readbackFormat: 'rgba8unorm',
-            readbackWidth: canvas.width,
-            readbackHeight: canvas.height,
-            readbackOrigin: 'bottom-left',
-            readbackSample: { x: readback?.x ?? 0, y: readback?.y ?? 0 },
-            clearColor: [0, 0, 0, 1],
-            actualPasses,
+            closure: 'forgeax_material::surface_v1',
             cookIdentity: publication?.publicationDigest,
             programIdentity: program?.module ?? 'unavailable',
             pipelineIdentity: `${cell.pass}:${cell.rootPlan}:${program?.module ?? 'unavailable'}`,
+            sourceClosure: sourceClosureFor(cell),
+            rootPlan: cell.rootPlan,
+            samples: sample,
+            signalPixels: readback?.signalPixels ?? 0,
+            observed: `rgba8unorm readback ${sample.join(',')}`,
+            verdict: 'pixel',
+            confidence: 1,
+            provenance: {
+              sourceSha: EVIDENCE_SOURCE_SHA,
+              buildId: EVIDENCE_BUILD_ID,
+              frameId: inspection.frame.frameId,
+              artifact: `${publication?.row?.packageUrl ?? 'catalog-unavailable'}#${cell.guid}`,
+              sourceClosure: sourceClosureFor(cell),
+              readbackKind: 'webgl2-readPixels',
+              readbackFormat: 'rgba8unorm',
+              readbackWidth: canvas.width,
+              readbackHeight: canvas.height,
+              readbackOrigin: 'bottom-left',
+              readbackSample: { x: readback?.x ?? 0, y: readback?.y ?? 0 },
+              clearColor: [0, 0, 0, 1],
+              actualPasses,
+              cookIdentity: publication?.publicationDigest,
+              programIdentity: program?.module ?? 'unavailable',
+              pipelineIdentity: `${cell.pass}:${cell.rootPlan}:${program?.module ?? 'unavailable'}`,
+            },
           },
-        },
+        };
+      });
+      return {
+        status: 'pass',
+        backend: 'chromium-webgl2',
+        completedFrames: completedFrameTarget,
+        cells,
+        rhiDebugCapture,
       };
-    });
-    return {
-      status: 'pass',
-      backend: 'chromium-webgl2',
-      completedFrames: completedFrameTarget,
-      cells,
-      rhiDebugCapture,
-    };
+    } finally {
+      lease.dispose();
+      unsubscribeRenderErrors();
+      if (resumeApp) app.start();
+    }
   } finally {
-    lease.dispose();
-    unsubscribeRenderErrors();
-    if (resumeApp) app.start();
+    if (!captureInAppWorld) assets.dispose();
   }
 }

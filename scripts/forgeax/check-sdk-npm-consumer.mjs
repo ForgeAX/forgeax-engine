@@ -186,9 +186,10 @@ const registry = createServer(async (request, response) => {
           header !== 'transfer-encoding',
       ),
     );
+    const body = Buffer.from(await upstream.arrayBuffer());
     recordRegistryRequest(request, upstream.status, 'npmjs-upstream');
     response.writeHead(upstream.status, headers);
-    response.end(Buffer.from(await upstream.arrayBuffer()));
+    response.end(body);
   } catch (cause) {
     recordRegistryRequest(request, 502, 'upstream-error');
     response.writeHead(502).end(cause instanceof Error ? cause.message : String(cause));

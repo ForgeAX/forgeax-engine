@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "learn-render LearnOpenGL section 2.4 lighting maps \u2014 diffuse + specular texture maps on StandardMaterialAsset with single directional light and first-person camera.",
+  "description": "learn-render LearnOpenGL section 2.4 lighting maps — diffuse + specular texture maps on StandardMaterialAsset with single directional light and first-person camera.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -57,7 +57,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

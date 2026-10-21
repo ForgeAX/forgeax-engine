@@ -2,7 +2,7 @@ import type { FrameReceipt, Renderer, RenderFrameInput } from '@forgeax/engine-r
 
 /** Wait for one ready scene submission; the caller retains World/time ownership. */
 export function drawReadyFrame(
-  renderer: Pick<Renderer, 'draw' | 'requestObservation'>,
+  renderer: Pick<Renderer, 'draw' | 'requestObservation' | 'observe'>,
   request: RenderFrameInput,
   observation?: Parameters<NonNullable<Renderer['requestObservation']>>[0],
 ): Promise<FrameReceipt>;

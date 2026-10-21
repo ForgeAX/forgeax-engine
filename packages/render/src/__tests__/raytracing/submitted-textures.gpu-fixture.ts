@@ -1,21 +1,19 @@
-import {
-  AssetRegistry,
-  createMaterialLoader,
-  HANDLE_CUBE,
-  RuntimeMaterialValue,
-  resolveAssetHandle,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { ok, type TextureAsset } from '@forgeax/engine-types';
+import { type MaterialAsset, ok, type TextureAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { samplerContribution } from '../../assets/asset-decoders';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
+import { renderMaterialContext } from '../../extract/material-context';
 import { renderPublicationTransfers } from '../../publication/contract';
 import { installPublicationPrograms } from '../../publication/programs';
 import { createRenderPublisher } from '../../publication/publisher';
@@ -24,21 +22,31 @@ import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import { prepareSurfaceMaterialTextures } from '../../raytracing/material-residency';
 import { createSubmittedRayPathTracer } from '../../raytracing/path-tracer';
 import { rayReferenceFailure } from '../../raytracing/scene';
+import { PersistentRenderScene } from '../../scene/render-scene';
 import type { RayPublicationFixture } from './path-tracer.commands';
 import { plane, readBuffer } from './path-tracer.fixture';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 /** Texture/sampler publication, Renderer residency and dynamic MASK meet in actual ray hits. */
 export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
   const material = fixture.material;
+  const materialGuid = material.guid;
   assert(material.name === 'cutout');
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const received = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const received = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  received.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   const record = validateCookedMaterialRecord(
     JSON.parse(material.cookedPublication.record),
   ).unwrap();
   const ready = await createMaterialLoader({
     loadPublication: async () => ({
-      guid: material.name,
+      guid: materialGuid,
       record,
       artifacts: Object.fromEntries(
         Object.entries(material.cookedPublication.artifacts).map(([path, bytes]) => [
@@ -47,12 +55,10 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
         ]),
       ),
     }),
-  }).load({ guid: material.name, specializationKey: record.specializationKey ?? '' });
+  }).load({ guid: materialGuid, specializationKey: record.specializationKey ?? '' });
   assert(ready.status === 'Ready', JSON.stringify(ready));
-  assets.catalog(material.name, material.asset).unwrap();
-  assets.recordMaterialReadiness(material.name, ready);
-  assets
-    .catalog('coverage', {
+  const coverage = assets
+    .create({
       kind: 'texture',
       shape: { viewDimension: '2d', extent: { width: 2, height: 1 } },
       format: 'rgba8unorm',
@@ -61,29 +67,35 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
       data: new Uint8Array([255, 255, 255, 0, 255, 255, 255, 255]),
     })
     .unwrap();
-  assets
-    .catalog('nearest', { kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' })
+  const nearest = assets
+    .create({ kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' })
     .unwrap();
-  const world = new World();
-  const handle = world.internSharedRef('MaterialAsset', material.asset);
+  publishRuntimeAssets(assets, [
+    ...ready.record.refs.textures.map((guid) => ({ guid, asset: assets.read(coverage).unwrap() })),
+    ...ready.record.refs.samplers.map((guid) => ({ guid, asset: assets.read(nearest).unwrap() })),
+    {
+      guid: materialGuid,
+      refs: [...ready.record.refs.textures, ...ready.record.refs.samplers],
+      asset: {
+        kind: 'material',
+        ...ready.record.resolved,
+        cooked: JSON.parse(serializeCookedMaterialRecord(ready.record)),
+      } as unknown as MaterialAsset,
+    },
+  ]);
+  const handle = (await assets.load(materialGuid, 'material')).unwrap();
+  assets
+    .update(handle, { values: { baseColorTexture: { texture: coverage, sampler: nearest } } })
+    .unwrap();
+  const world = new World({ assets });
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: { materials: [handle] } },
     )
     .unwrap();
-  const value = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: {
-        asset: handle,
-        parameter: 'alphaCutoff',
-        kind: 0,
-        value: [0.5],
-      },
-    })
-    .unwrap();
+  assets.update(handle, { values: { alphaCutoff: 0.5 } }).unwrap();
   const recorder = attachRecorder(gpu).unwrap();
   const device = (
     await (await recorder.backend.rhi.requestAdapter()).unwrap().requestDevice()
@@ -93,35 +105,35 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
   const errors: string[] = [];
   raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('cube publication is outside this texture fixture');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const defaultSampler = device
     .createSampler({ minFilter: 'linear', magFilter: 'linear' })
     .unwrap();
   const identity = { source: 'submitted-ray-textures', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity, device.caps);
   const receiver = new RenderPublicationReceiver(identity);
+  const scene = new PersistentRenderScene({ assets: received });
+  scene.materialSnapshotCacheStore(renderMaterialContext(device.caps).materialContext);
   const outputs: Uint8Array[] = [];
   const facts: { cutoff: number; preparationCpuMs: number; values: number[] }[] = [];
   try {
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     for (const cutoff of [0.5, 0, 0.5]) {
-      world.set(value, RuntimeMaterialValue, { value: [cutoff] }).unwrap();
+      assets.update(handle, { values: { alphaCutoff: cutoff } }).unwrap();
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet, {
         transfer: renderPublicationTransfers(candidate.packet),
       });
       candidate.accept();
       installPublicationPrograms(received, packet.programs);
-      const accepted = receiver.accept(packet).unwrap();
-      const snapshot = accepted.frame.renderables[0]?.material;
+      const accepted = receiver.accept(packet, received).unwrap();
+      const frame = scene.consumePublication(accepted);
+      const resource = frame.renderables.at(0)?.material;
+      const snapshot =
+        resource === undefined
+          ? undefined
+          : scene.shadowCasterProjection()?.content.materials.get(resource)?.snapshot;
       assert(snapshot?.materialSurfacePrograms?.['ray-hit']);
       expect(snapshot.materialSurfacePrograms?.['ray-hit'].evaluateCoverage).toBe(cutoff > 0);
       const schema = received.shaderRegistry
@@ -166,10 +178,7 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
       assert(textureHandle);
       const retainedTexture = store._getTextureGpuTexture(textureHandle, accepted.resources);
       assert(retainedTexture);
-      const textureAsset = resolveAssetHandle<TextureAsset>(
-        accepted.resources,
-        textureHandle,
-      ).unwrap();
+      const textureAsset = accepted.resources.resolveAsset<TextureAsset>(textureHandle).unwrap();
       expect(store.evictTexture(textureHandle, accepted.resources).freed).toBe(0);
       expect(store.releaseUnreferenced(new Set()).freed).toBe(0);
       expect(retainedTexture.isDestroyed).toBe(false);
@@ -185,15 +194,7 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
               (
                 await store.uploadTexture(
                   textureHandle,
-                  textureAsset,
-                  {
-                    bytes: new Uint8Array([255, 255, 255, 0, 255, 255, 255, 255]),
-                    width: 2,
-                    height: 1,
-                    mime: 'image/png',
-                    colorSpace: 'linear',
-                    mipmap: false,
-                  },
+                  { ...textureAsset, data: new Uint8Array([255, 255, 255, 0, 255, 255, 255, 255]) },
                   accepted.resources,
                 )
               ).unwrap();

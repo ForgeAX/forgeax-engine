@@ -543,6 +543,61 @@ describe('display Frontend Fiber surface ownership', () => {
     assert.deepEqual(registry.getClaims(), []);
   });
 
+  it('resizes the native Scene renderer with its viewport instead of retaining the initial canvas extent', async () => {
+    const previous = globalThis.ResizeObserver;
+    const observers = [];
+    globalThis.ResizeObserver = class {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe(element) { this.element = element; }
+      disconnect() { this.disconnected = true; }
+    };
+    const { document } = fakeDocument();
+    document.defaultView.devicePixelRatio = 2;
+    const requests = [];
+    const context = new Context();
+    let container;
+    let detached = false;
+    context.provide('viewOperationClient', {
+      subscribe: () => () => {}, getState: async () => ({}),
+      async resizePreview(input) { requests.push(input); },
+    });
+    context.provide('viewNativePreviewPresentation', {
+      surfacePlacement: 'owner', createSurface: () => undefined,
+      attachScene(input) {
+        container = input.container;
+        Object.assign(container, { clientWidth: 640, clientHeight: 800 });
+        return () => { detached = true; };
+      },
+    });
+    context.provide('viewScenePage', { typeId: 'scene' });
+    try {
+      await context.plugin(viewPlayPresentationPlugin, { document });
+      const fiber = context.plugin(viewportFrontendPlugin, { document, panelHost: {
+        claim: () => () => {}, waitForSlot: async () => {}, mount: () => () => {},
+      } });
+      await fiber.await();
+      const shell = context.get('viewWorkspaceShell');
+      const toolbar = shell.element.parentNode.parentNode.children[0];
+      assert.equal(toolbar.className, 'fx-toolbar fx-toolbar--viewport');
+      assert.equal(shell.element.contains(toolbar), false, 'Toolbar height must stay outside the render resize container');
+      const remove = await shell.presentation.workspace.attach({ target: { targetId: 'scene', generation: 2 }, element: {} });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(requests.map(({ width, height }) => [width, height]), [[1280, 1600]]);
+      assert.equal(requests[0].targetGeneration, 2);
+      container.clientHeight = 1000;
+      observers.filter(observer => observer.element === container).forEach(observer => observer.callback());
+      await new Promise(resolve => setTimeout(resolve, 130));
+      assert.deepEqual(requests.map(({ width, height }) => [width, height]), [[1280, 1600], [1280, 2000]]);
+      remove();
+      assert.equal(requests[0].signal.aborted, true);
+      assert.equal(detached, true);
+      assert.ok(observers.some(observer => observer.element === container && observer.disconnected));
+    } finally {
+      await context.fiber.dispose();
+      globalThis.ResizeObserver = previous;
+    }
+  });
+
   it('submits the starting Play extent through Engine before readiness and revokes detached requests', async () => {
     const previous = globalThis.ResizeObserver;
     globalThis.ResizeObserver = class {

@@ -10,6 +10,7 @@ import {
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import { json, quantile, save, scene } from './taa-maturity.fixture';
 
@@ -63,14 +64,14 @@ it.skipIf(process.env.TAA_MATURITY !== 'performance')(
       if (width === undefined || height === undefined) throw new Error('missing extent');
       const carrier = await scene(width, height, { timing: true });
       const { world, renderer, camera } = carrier;
-      const geometry = world.allocSharedRef(
-        'MeshAsset',
-        createPlaneGeometry(4, 3, 16, 16).unwrap(),
-      );
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({ baseColor: [0.3, 0.5, 0.7, 1], roughness: 0.35, metallic: 0.3 }),
-      );
+      const geometry = testAssets(world)
+        .create(createPlaneGeometry(4, 3, 16, 16).unwrap())
+        .unwrap();
+      const material = testAssets(world)
+        .create(
+          Materials.standard({ baseColor: [0.3, 0.5, 0.7, 1], roughness: 0.35, metallic: 0.3 }),
+        )
+        .unwrap();
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, -0.1] } },

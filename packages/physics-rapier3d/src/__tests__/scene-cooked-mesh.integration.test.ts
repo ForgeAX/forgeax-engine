@@ -1,10 +1,4 @@
-import {
-  AssetRegistry,
-  LoaderRegistry,
-  meshLoader,
-  parseScenePayload,
-  resolveAssetHandle,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import { componentSchema } from '@forgeax/engine-ecs/internal';
 import { buildMeshCollision, createBoxGeometry } from '@forgeax/engine-geometry';
@@ -22,19 +16,20 @@ import {
   Children,
   externalizeSceneAsset,
   GlobalTransform,
+  sceneAssetContribution,
   Transform,
   worldDespawnScene,
 } from '@forgeax/engine-scene';
-import type { ShaderRegistry } from '@forgeax/engine-shader';
-import type { MeshAsset } from '@forgeax/engine-types';
 import { expect, test } from 'vitest';
+import { importedSource } from '../../../import/src/__tests__/fixtures/runtime-import';
 
 test('Pack JSON Scene and binary Mesh retain the exact Collider source through native collision', async () => {
   const rapier = await loadRapier3D();
   if ('code' in rapier) throw rapier;
-  const world = new World();
+  const registry = new AssetRegistry({ scopeId: 'import-fixture' });
+  const world = new World({ assets: registry });
   const SceneInstance = defineComponent('SceneInstance', {
-    source: 'shared<SceneAsset>',
+    source: 'asset<scene>',
     mapping: 'array<entity>',
     state: 'unique<SceneInstanceState>',
   });
@@ -42,35 +37,10 @@ test('Pack JSON Scene and binary Mesh retain the exact Collider source through n
     world.components.register(token).unwrap();
   }
   registerPhysicsComponents(world);
-  // Shader preparation is not involved in cataloguing or simulating this Mesh.
-  const registry = new AssetRegistry({} as ShaderRegistry);
   const meshGuid = '11111111-1111-4111-8111-111111111111';
   const sceneGuid = '22222222-2222-4222-8222-222222222222';
   const mesh = createBoxGeometry(3, 2, 4).unwrap();
   const source = { ...mesh, collision: buildMeshCollision(mesh).unwrap() };
-  const loaders = new LoaderRegistry();
-  loaders.register(meshLoader);
-  const loaded = await loaders.loadPack(
-    {
-      guid: meshGuid,
-      kind: 'mesh',
-      payload: {},
-      refs: [],
-      artifacts: {
-        body: {
-          bytes: packMeshBin(source, 'ground', []).unwrap(),
-          descriptor: {
-            path: 'ground.mesh',
-            mediaType: 'application/x-forgeax-mesh',
-            assetCodec: { name: 'mesh-binary', version: '5' },
-          },
-        },
-      },
-    },
-    {} as never,
-  );
-  if (!loaded.ok) throw loaded.error;
-  const accepted = registry.catalog(meshGuid, loaded.value as MeshAsset).unwrap();
   const cooked = externalizeSceneAsset(
     {
       kind: 'scene',
@@ -88,18 +58,42 @@ test('Pack JSON Scene and binary Mesh retain the exact Collider source through n
       return token === undefined ? undefined : componentSchema(token);
     },
   ).unwrap();
-  const scene = parseScenePayload(
-    JSON.parse(JSON.stringify(cooked.payload)),
-    cooked.refs.map((r) => r.guid),
+  registry.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+  importedSource(
+    {
+      assets: [
+        {
+          guid: meshGuid,
+          kind: 'mesh',
+          payload: { kind: 'mesh' },
+          refs: [],
+          artifacts: {
+            body: {
+              mediaType: 'application/x-forgeax-mesh',
+              assetCodec: { name: 'mesh-binary', version: '5' },
+              bytes: packMeshBin(source, 'ground', []).unwrap(),
+            },
+          },
+        },
+        {
+          guid: sceneGuid,
+          kind: 'scene',
+          payload: cooked.payload as unknown as Record<string, unknown>,
+          refs: cooked.refs.map((ref) => ref.guid),
+          artifacts: {},
+        },
+      ],
+    },
+    registry,
   );
-  if (!scene) throw new Error('expected Scene payload');
-  registry.catalog(sceneGuid, scene, cooked.refs).unwrap();
-  const handle = world.allocSharedRef('SceneAsset', scene);
+  const accepted = (await registry.load(meshGuid, 'mesh')).unwrap();
+  const handle = (await registry.load(sceneGuid, 'scene')).unwrap();
   const root = registry.instantiate(handle, world).unwrap();
   const ground = [...world.iterDescendants(root)].find((e) => world.hasComponent(e, Collider));
   if (ground === undefined) throw new Error('missing ground Collider');
   const actualHandle = world.get(ground, Collider).unwrap().mesh;
-  expect(resolveAssetHandle(world, actualHandle).unwrap()).toBe(accepted);
+  expect(actualHandle).toBe(accepted);
+  expect(registry.read(accepted).unwrap().collision).toEqual(source.collision);
   const ball = world
     .spawn(
       { component: Transform, data: { pos: [0, 3, 0] } },
@@ -119,7 +113,7 @@ test('Pack JSON Scene and binary Mesh retain the exact Collider source through n
     physics.dispose();
     world.despawn(ball).unwrap();
     worldDespawnScene(world, root).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    registry.release(handle).unwrap();
   }
-  expect(world.sharedRefs._liveCount()).toBe(0);
+  registry.dispose();
 });

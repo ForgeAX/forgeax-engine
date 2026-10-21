@@ -1,5 +1,7 @@
 # @forgeax/engine-image
 
+Texture source descriptors derive layout, format, color space and mip policy from `TextureAsset`, with source version and sibling path kept local. `PixelSurface` and its construction options derive image metadata from `DecodedImage`; Image owns mutable pixel bytes and painting operations.
+
 ## 3D density source contract
 
 体积密度仍由 image producer 生成标准 `TextureAsset`：`shape.viewDimension: '3d'`、
@@ -27,14 +29,37 @@ The image importer is a producer: its source meta declares the GUID and import s
 
 For an image with no receipt, report `notCooked`; a matching input fingerprint is `ready/current`, and a changed fingerprint is `ready/stale`. Missing source, receipt, or runtime capability is `unknown`. Package and artifact checks are explicit `notChecked`, `passed`, or `failed`. Recover by fixing the source meta or recooking, then rerunning the offline `lookup/verify --guid --project --catalog --json` probe; do not substitute a runtime placeholder.
 
+## Runtime image content
+
+`equirectContribution` uses the same Image-owned dimension, format, color-space
+and byte-layout checks for source decode and synchronous runtime edits. Engine
+installs the contribution; a standalone `AssetRegistry` must install its decoder
+before creating or editing Equirect content. Invalid writes leave current content
+and its revision unchanged.
+
+Runtime Texture assets retain one byte source. `encoding: 'basis' | 'ktx2'`
+means `data` contains the complete encoded image; absent `encoding` means native
+texel/block bytes. Image validates container shape, mip chain, color space and
+HDR profile. `prepareRuntimeTexture` performs synchronous source validation;
+it neither initializes WASM nor copies pixels. Encoded images support complete
+replacement; pixel-region writes require native texel/block content.
+For `image/ktx2` and `image/basis` artifacts, the codec hint is optional: Image
+reads the profile from the validated container and rejects a conflicting hint.
+
+Renderer derives a format from the consuming device's BC/ASTC/ETC capabilities
+on first use, while source content stays device-neutral across Workers. No
+compressed source means no runtime transcoder initialization. Pending preparation
+is observable through ordinary material readiness. Terrain's CPU image pages
+request an RGBA derivative only when they consume that image.
+
 ## PixelSurface authoring
 
 `PixelSurface` is the small image-owned CPU authoring surface for generated
-RGBA8 content. `createPixelSurface(width, height)` returns a validated POD
+RGBA8 content. `createPixelSurface({ width, height })` returns a validated POD
 backed by `Uint8Array`; `setPixel`, `fillRect`, `fillCircle`, `blit`, and the
-deterministic `noise` operation mutate that surface, while `toDecodedImage`,
-`toTextureAsset`, and `toAssetPack` project it into existing image/Pack
-contracts. It does not create GPU handles or duplicate the runtime texture
+deterministic `noise` operation mutate that surface, while `toDecodedImage` and
+`toTextureAsset` project its pixels into existing image contracts. Pack metadata
+is created separately with `toAssetPack(meta)`. It does not create GPU handles or duplicate the runtime texture
 upload owner. Invalid dimensions, coordinates, rectangles, and source extents
 return the closed `image-surface-invalid` error with `operation`, `field`,
 `value`, and `expected` in `detail`; branch on `error.code`, never on message
@@ -125,7 +150,7 @@ with no timestamp or random seed, guaranteeing DDC cache safety.
 
 | Entry | Surface | Browser-safe? |
 |:--|:--|:--|
-| `@forgeax/engine-image` (main) | `decodeImageInBrowser` (createImageBitmap path), `toAssetPack`, `subAssetKey` / `subAssetKeyEqual`, `reimportReuseMeta`, `imageError` / error types, `loadJpeg` / `loadUpng` (legacy lazy loaders) | yes — no `jpeg-js` / `upng-js` / `node:fs` |
+| `@forgeax/engine-image` (main) | `decodeImageInBrowser` (createImageBitmap path), `toAssetPack`, `subAssetKey` / `subAssetKeyEqual`, `reimportReuseMeta`, `imageError` / error types | yes — no `jpeg-js` / `upng-js` / `node:fs` |
 | `@forgeax/engine-image/parse-image` | `parseImage(bytes, mime, opts?)` — synchronous Node decoder using `jpeg-js` / `upng-js` | **Node-only** (`exports['./parse-image']` carries `node` condition + `default: null`) |
 | `@forgeax/engine-image/decode-image-from-file` | `decodeImageFromFile(path)` — async `node:fs` reader + sidecar resolver | **Node-only** (same `node` + `default: null` shape) |
 | `@forgeax/engine-image/hdr-decoder` | `decodeHdr` — Radiance .hdr decoder | browser-safe (no Node-only deps) |
@@ -167,7 +192,7 @@ HDR equirectangular sources (`.hdr`) are decoded at build-time by `imageImporter
 3. Converts f32 -> f16 bytes via `halfFloat.f32ToF16Bytes` (`@forgeax/engine-math`)
 4. Produces an `EquirectAsset` POD: `format: 'rgba16float'`, `colorSpace: 'linear'`
 
-The sidecar (`.hdr.meta.json`) declares `subAssets[0].kind: 'equirect'` (a dedicated asset kind; the prior `cube-texture` kind + its `importSettings.cubeFaceSize`/`specularMipLevels` are removed -- the equirect-to-cubemap projection params are decided internally by the render-system). At build-catalog time, the `.hdr` extension passes through as a `kind: 'equirect'` catalog row with `ImageMetadata(format: 'rgba16float')`. The `vite-plugin-pack` import step stores the f16 payload as an asset-local Pack v2 artifact. At runtime, `loadByGuid<EquirectAsset>` loads that local artifact through `equirectLoader` -- transparent to the consumer. The loaded `EquirectAsset` binds declaratively to `Skylight.equirect` / `SkyboxBackground.equirect`; the equirect-to-cubemap projection + IBL precompute run engine-internally.
+The sidecar (`.hdr.meta.json`) declares `subAssets[0].kind: 'equirect'` (a dedicated asset kind; the prior `cube-texture` kind + its `importSettings.cubeFaceSize`/`specularMipLevels` are removed -- the equirect-to-cubemap projection params are decided internally by the render-system). At build-catalog time, the `.hdr` extension passes through as a `kind: 'equirect'` catalog row with `ImageMetadata(format: 'rgba16float')`. The `vite-plugin-pack` import step stores the f16 payload as an asset-local Pack v2 artifact. At runtime, `assets.load(guid, 'equirect')` loads that local artifact through `equirectContribution` -- transparent to the consumer. The loaded `EquirectAsset` binds declaratively to `Skylight.equirect` / `SkyboxBackground.equirect`; the equirect-to-cubemap projection + IBL precompute run engine-internally.
 
 ## 4 步 recipe
 
@@ -201,9 +226,8 @@ const pack = toAssetPack(r.value.meta);
 //    import` produces a byte-identical file (AC-16 idempotent reimport)
 await fs.writeFile('wood-container.jpg.meta.json', JSON.stringify(pack, null, 2));
 
-// 4. runtime consumes the sidecar via loadByGuid<TextureAsset>(guid) +
-//    AssetRegistry.uploadTexture(handle, decoded) (M3, runtime side; image
-//    package never imports `device.queue.writeTexture`)
+// 4. runtime loads the cooked source via assets.load(guid, 'texture').
+//    Renderer derives GPU residency from that asset; image owns no GPU upload.
 ```
 
 ## Base importer errors (charter P3 explicit failure)
@@ -211,7 +235,7 @@ await fs.writeFile('wood-container.jpg.meta.json', JSON.stringify(pack, null, 2)
 | code | trigger | detail shape |
 |:--|:--|:--|
 | `'image-decode-failed'` | UPNG / jpeg-js decoder threw on the byte stream | `{ path, reason }` |
-| `'image-format-unsupported'` | mime not in `['image/png', 'image/jpeg']`, or format <-> colorSpace mismatch on uploadTexture entry | `{ actualMime, path, formatColorSpaceConflict? }` |
+| `'image-format-unsupported'` | mime not in `['image/png', 'image/jpeg']` | `{ actualMime, path, formatColorSpaceConflict? }` |
 | `'image-dimension-out-of-bounds'` | width / height exceed device caps (or hard 16k cap when caps absent) | `{ requested, limit }` |
 | `'image-meta-missing'` | source file exists but no `<source>.meta.json` sidecar in the same directory | `{ sourcePath, expectedSidecarPath }` |
 
@@ -224,7 +248,7 @@ function's documented result path.
 
 ## 形态铁律
 
-- **二态分离** -- 本包仅做磁盘 -> 内存翻译；GPU 上传 (`copyExternalImageToTexture` / `writeTexture`) 全部在 `@forgeax/engine-runtime` 内，本包 grep `device.queue.writeTexture` 零命中（CI 闸门）
+- **二态分离** -- 本包仅做磁盘 -> 内存翻译；GPU 上传 (`copyExternalImageToTexture` / `writeTexture`) 全部在 `@forgeax/engine-render` 内，本包 grep `device.queue.writeTexture` 零命中（CI 闸门）
 - **同型镜像 in-flight gltf loader** -- `subAssetKey { kind, name?, indexFallback }` 与 `feat-20260515-gltf-loader-via-asset-system` 完全等价（image 单子资产场景退化为 `kind='image'` / `indexFallback='images/0'`）
 - **disk schema 复用 meta.schema.json** -- `*.meta.json` 走 `external-asset-package` kind，不新增 schema kind（plan-strategy D-4）
 - **byte-identical reimport** -- 第二次 `forgeax asset import` 产出与第一次 `git diff` 输出空（AC-16）
@@ -234,9 +258,12 @@ function's documented result path.
 
 - [`@forgeax/engine-types`](../types) -- `ImageErrorCode` / `ImageErrorDetail` / `IMAGE_ERROR_HINTS` / `ImageMeta` / `DecodedImage` POD SSOT (math-free)
 - [`@forgeax/engine-pack`](../pack) -- `AssetGuid.random()` UUIDv7 生成 + `external-asset-package` schema + scanner 6-step fail-fast (本包不修改 scanner 行为)
-- [`@forgeax/engine-runtime`](../runtime) -- `AssetRegistry.uploadTexture(handle, decoded)` GPU 上传入口 (M3 落地，本包 M2 仅 producer)
+- [`@forgeax/engine-render`](../render) -- Renderer-owned texture residency and GPU upload from the managed asset.
 
 The image sidecar producer emits one texture. `toAssetPack(meta)` depends only on sidecar facts, and `reimportReuseMeta(existing)` depends only on persisted identity. Neither operation requires decoded pixel bytes. Reuse preserves the first matching source key or unnamed legacy texture at source index zero.
+
+`deriveImageSourceKey(role)` accepts only the semantic output role. Source paths
+and indices remain locators on the sidecar, outside the identity function.
 
 Binary16 output uses the Math codec, including rounded mantissa carry into the
 next exponent. Source parsing, LUT channel order, IES normalization and GUIDs

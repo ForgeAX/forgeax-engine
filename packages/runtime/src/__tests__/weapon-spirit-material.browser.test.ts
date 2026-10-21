@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   DirectionalLight,
@@ -14,6 +15,7 @@ import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
+import { testAssets } from './helpers/runtime-assets';
 
 async function readPresentedPixels(canvas: HTMLCanvasElement) {
   const shot = await page.elementLocator(canvas).screenshot({ base64: true });
@@ -107,16 +109,13 @@ it.each([
         ? '/__weapon-spirit-engine-shadow/pack-index.json'
         : '/__weapon-spirit/pack-index.json',
     );
-    const child = await assets.loadByGuid<MaterialAsset>(
+    const child = await assets.load(
       assets.parseGuid('4846fa5b-8f80-57c0-9cdc-e345102fdb6c'),
+      'material',
     );
     if (!child.ok) throw child.error;
-    const readiness = assets.getMaterialReadiness('4846fa5b-8f80-57c0-9cdc-e345102fdb6b');
-    expect(
-      readiness,
-      `root material must publish one complete Ready generation: ${JSON.stringify(readiness)}`,
-    ).toMatchObject({ status: 'Ready' });
-    const projection = assets.getMaterialProjectionForPayload(child.value);
+    const childContent = runtimeAssets(assets).borrow<MaterialAsset>(child.value).unwrap();
+    const projection = assets.getMaterialProjectionForPayload(childContent);
     const shadowProgram = projection?.passes.find((pass) => pass.name === 'ShadowCaster')
       ?.programs[0];
     if (shadowProgram === undefined) throw new Error('published shadow program missing');
@@ -124,18 +123,17 @@ it.each([
     if (shadowArtifact === undefined) throw new Error('installed shadow artifact missing');
     const expectedShadowSource = new TextDecoder().decode(shadowArtifact.bytes);
     expect(projection?.specializationKey).toBeTruthy();
-    expect(child.value.values).toMatchObject({
+    expect(childContent.values).toMatchObject({
       emissionStrength: 0,
       pigmentStrength: 0,
       surfaceMetallic: 0,
       sideShade: 0.84,
     });
-    const world = new World();
-    const toon = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', child.value);
-    const standard = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1] }),
-    );
+    const world = new World({ assets });
+    const toon = child.value;
+    const standard = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1] }))
+      .unwrap();
     const transform = (
       pos: readonly [number, number, number],
       scale: readonly [number, number, number] = [1, 1, 1],
@@ -171,7 +169,12 @@ it.each([
     world
       .spawn(
         { component: Transform, data: transform([0, 5, 5], [10, 0.1, 10]) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [standard] } },
       )
       .unwrap();
@@ -179,7 +182,12 @@ it.each([
       world
         .spawn(
           { component: Transform, data: transform([(index - 1) * 2, 6, 5]) },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          {
+            component: MeshFilter,
+            data: {
+              assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+            },
+          },
           { component: MeshRenderer, data: { materials: [material] } },
         )
         .unwrap();

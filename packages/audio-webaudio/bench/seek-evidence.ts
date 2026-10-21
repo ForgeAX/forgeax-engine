@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AudioSource, audioTickSystem, createAudioIntentBackend } from '@forgeax/engine-audio';
 import { World, type EntityHandle } from '@forgeax/engine-ecs';
 import { WebAudioEngine } from '../src/web-audio-engine';
@@ -70,14 +71,15 @@ async function workload(sourceCount: number, mode: 'active' | 'paused' | 'unchan
   await context.resume();
   const engine = new WebAudioEngine({ context });
   const consumer = createHostAudioConsumer(engine);
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   let createdSources = 0, createdGains = 0, decodes = 0, intents = 0;
   const sourceFactory = context.createBufferSource.bind(context), gainFactory = context.createGain.bind(context), decode = engine.decode.bind(engine);
   context.createBufferSource = () => { createdSources++; return sourceFactory(); };
   context.createGain = () => { createdGains++; return gainFactory(); };
   engine.decode = bytes => { decodes++; return decode(bytes); };
   const backend = createAudioIntentBackend({ emit: intent => { intents++; consumer.consume(intent); } });
-  const clip = world.allocSharedRef('AudioClipAsset', { kind: 'audio', sourceKey: 'seek-bench', bytes: toneWav() });
+  const clip = assets.create({ kind: 'audio', mediaType: 'audio/wav', sourceKey: 'seek-bench', bytes: toneWav() }).unwrap();
   const entities: EntityHandle[] = [];
   try {
     for (let i = 0; i < sourceCount; i++) entities.push(world.spawn({ component: AudioSource, data: {
@@ -109,7 +111,7 @@ async function workload(sourceCount: number, mode: 'active' | 'paused' | 'unchan
     const cleanup = { active: engine.getActiveSourceCount(), retained: entities.filter(entity => engine.getPlaybackPosition(entity as number) !== undefined).length };
     assert(cleanup.active === 0 && cleanup.retained === 0, 'despawn leaked sources');
     return { sourceCount, mode, warmupBatches: 20, measuredBatches: 120, cpuMs: { p50: percentile(times, 0.5), p95: percentile(times, 0.95), p99: percentile(times, 0.99) }, rawMs: times, delta, cleanup };
-  } finally { backend.destroy(); await context.close(); }
+  } finally { backend.destroy(); assets.dispose(); await context.close(); }
 }
 
 async function run() {

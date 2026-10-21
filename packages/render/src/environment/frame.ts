@@ -1,5 +1,9 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { EnvironmentSourceConflictError, FogCardinalityError } from '../errors/render';
+import {
+  type AtmosphereInvalidParameterError,
+  EnvironmentSourceConflictError,
+  FogCardinalityError,
+} from '../errors/render';
 import type {
   EnvironmentCandidate,
   EnvironmentFrame,
@@ -33,7 +37,6 @@ export interface EnvironmentSelectionInput {
   readonly environments: readonly EnvironmentCandidate[];
   readonly fogs: readonly FogCandidate[];
   readonly suns: readonly SunCandidate[];
-  readonly lane: 'direct' | 'clustered';
 }
 
 export interface EnvironmentSelectionParameterDetail {
@@ -74,32 +77,15 @@ export class SunCardinalityError extends Error {
   }
 }
 
-export interface EnvironmentSelectionErrorDetail {
-  readonly owners?: readonly {
-    readonly kind: 'image' | 'atmosphere';
-    readonly entityKey: number;
-    readonly sourceKey: string;
-  }[];
-  readonly field?: string;
-  readonly value?: number;
-  readonly count?: number;
-}
-
-export interface EnvironmentSelectionError {
-  readonly code:
-    | 'environment-source-conflict'
-    | 'fog-cardinality'
-    | 'environment-selection-invalid'
-    | 'atmosphere-invalid-parameter'
-    | 'sun-cardinality';
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: EnvironmentSelectionErrorDetail;
-}
+export type EnvironmentSelectionError =
+  | EnvironmentSourceConflictError
+  | FogCardinalityError
+  | EnvironmentSelectionParameterError
+  | AtmosphereInvalidParameterError
+  | SunCardinalityError;
 
 export interface SelectedEnvironmentFrame extends EnvironmentFrame {
   readonly sun: SunCandidate | undefined;
-  readonly lane: 'direct' | 'clustered';
 }
 
 function freezeCandidate<T extends object>(candidate: T): T {
@@ -113,7 +99,7 @@ function freezeFog(candidate: FogCandidate): FogFrame {
   });
 }
 
-/** Select one immutable frame fact set for both Standard lighting lanes. */
+/** Select one immutable frame fact set for every Standard lighting path. */
 export function selectEnvironment(
   input: EnvironmentSelectionInput,
 ): Result<SelectedEnvironmentFrame, EnvironmentSelectionError> {
@@ -172,6 +158,5 @@ export function selectEnvironment(
     revision: 0,
     sun,
   } as SelectedEnvironmentFrame;
-  Object.defineProperty(result, 'lane', { value: input.lane, enumerable: false });
   return ok(Object.freeze(result));
 }

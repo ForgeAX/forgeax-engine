@@ -9,6 +9,16 @@
     "facts": "网格事实",
     "slots": "材质槽",
     "resetView": "重置视角",
-    "navigationHint": "WASD/QE move · Shift boost · RMB look/fly · wheel speed · F focus"
+    "viewModeDescription": "在材质与线框预览之间切换。",
+    "showDescription": "设置碰撞、包围盒和统计信息的显示。",
+    "resetViewDescription": "恢复此网格预览打开时的视角。",
+    "previewOptions": "网格预览选项", "viewMode": "视图模式", "materialMode": "材质", "wireframe": "仅线框",
+    "show": "显示", "collision": "碰撞", "bounds": "包围盒", "statistics": "统计信息",
+    "valueUnavailable": "不可用", "present": "已包含", "none": "无", "noCollision": "此网格未包含碰撞数据。",
+    "stats": {
+      "triangles": "三角形", "vertices": "顶点", "uvChannels": "UV 通道", "submeshes": "子网格",
+      "materialSlots": "材质槽", "dimensions": "本地尺寸", "declaredLods": "声明的 LOD 数量",
+      "collisionData": "碰撞数据", "collisionTriangles": "碰撞三角形"
+    }
   }
 }

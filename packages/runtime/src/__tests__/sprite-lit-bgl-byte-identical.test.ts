@@ -141,7 +141,7 @@ describe('sprite-lit BGL byte-identical to sprite (AC-07, w4/w5 close)', () => {
           visibility: 0x1 | 0x2,
           buffer: { type: 'read-only-storage', hasDynamicOffset: false },
         },
-        { binding: 47, visibility: 0x2, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 47, visibility: 0x2, texture: { sampleType: 'float', viewDimension: '2d' } },
       ];
       expect(merged.entries).toEqual(expected);
     });

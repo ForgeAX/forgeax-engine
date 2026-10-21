@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { materialToggle } from './lib/swap';
 import { pixels, texture } from './lib/textures';
 
@@ -12,6 +14,12 @@ export default defineFeature({
   expect:
     'ON: the blue cube is cut into horizontal slats (alphaTexture + alphaCutoff 0.5) with alternating glossy/matte columns. OFF: the same cube without the maps is solid and uniformly lit.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [2.5, 2, 3.5], target: [0, 0.8, 0] });
     const slats = texture(
       world,
@@ -35,7 +43,7 @@ export default defineFeature({
       renderState: { cullMode: 'none' },
     });
     const plain = standard(world, base);
-    const cube = spawnMesh(world, MESH.cube, mapped, { pos: [0, 0.8, 0], scale: [1.5, 1.5, 1.5] });
+    const cube = spawnMesh(world, stageCube, mapped, { pos: [0, 0.8, 0], scale: [1.5, 1.5, 1.5] });
     return { toggle: materialToggle(world, cube, mapped, plain) };
   },
 });

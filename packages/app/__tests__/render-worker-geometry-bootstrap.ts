@@ -1,6 +1,5 @@
 import { rendererCrashProbe } from './render-worker-recovery-fixture';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
-import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import {
   Camera,
   DirectionalLight,
@@ -15,7 +14,7 @@ import {
 } from '@forgeax/engine-render';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import { ok, type MeshAsset, type MaterialAsset } from '@forgeax/engine-types';
+import { ok, type MaterialAsset } from '@forgeax/engine-types';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
 
 /** Identical authoring for co-located and published rendering; updates are explicit. */
@@ -56,8 +55,10 @@ const entry: ExecutionBootstrapEntry = (data) => {
     plugins: [
       {
         name: 'publication-geometry-fixture',
-        inject: ['world', 'executionBootstrapHost'],
+        inject: ['world', 'assets', 'executionBootstrapHost'],
         apply(ctx) {
+          const assets = ctx.assets;
+          if (assets === undefined) throw new Error('Missing runtime asset owner');
           const world = ctx.world;
           world
             .spawn(
@@ -78,7 +79,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
               data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3], color: [1, 1, 1] },
             })
             .unwrap();
-          let mesh = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE).unwrap();
+          let mesh = createBoxGeometry(2, 2, 2).unwrap();
           const skinned = mode === 'skin';
           if (skinned) {
             const count = (mesh.attributes.position as Float32Array).length / 3;
@@ -107,7 +108,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
               })),
             };
           }
-          const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+          const meshHandle = assets.create(mesh).unwrap();
           const material: MaterialAsset = {
             kind: 'material',
             passes: [
@@ -125,12 +126,9 @@ const entry: ExecutionBootstrapEntry = (data) => {
             ],
             values: { baseColor: [0.8, 0.3, 0.1, 1], metallic: 0, roughness: 0.8 },
           };
-          const materialHandle = world.allocSharedRef(
-            'MaterialAsset',
-            mode === 'points' || mode === 'lines'
+          const materialHandle = assets.create(mode === 'points' || mode === 'lines'
               ? Materials.unlit([0.8, 0.3, 0.1, 1])
-              : material,
-          );
+              : material).unwrap();
           const entity = world
             .spawn(
               { component: Transform, data: {} },
@@ -141,11 +139,11 @@ const entry: ExecutionBootstrapEntry = (data) => {
           const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
           const joint = world.spawn({ component: Transform, data: {} }).unwrap();
           if (skinned) {
-            const skeleton = world.allocSharedRef('SkeletonAsset', {
+            const skeleton = assets.create({
               kind: 'skeleton',
               jointCount: 1,
               inverseBindMatrices: matrix,
-            });
+            }).unwrap();
             world
               .addComponent(entity, {
                 component: Skin,

@@ -45,7 +45,7 @@ describe('direct punctual lighting shader contract', () => {
 
     expect(source).toContain('let lightLocal = fromLight;');
     expect(source).not.toContain('vec3<f32>(fromLight.x, fromLight.y, -fromLight.z)');
-    expect(source).toContain('let fromLight = offsetPos - lightPos;');
+    expect(source).toContain('let fromLight = offsetPos - shadowPosition;');
   });
 
   it('leaves spot direction normalization to extract instead of HDRP', async () => {
@@ -62,7 +62,7 @@ describe('direct punctual lighting shader contract', () => {
     ]);
     const cube = pcf.slice(pcf.indexOf('fn sample_shadow_cube_hw2x2('));
     expect(cube.slice(0, cube.indexOf('}'))).not.toContain('shadow_biased_receiver_depth');
-    expect(source).toContain('- depthBias, near);');
+    expect(source).toContain('largest - select(depthBias, 0.0, constantBias), near);');
     expect(source).toContain('facing * (normalBias * distanceToLight)');
   });
 
@@ -146,7 +146,7 @@ describe('direct punctual lighting shader contract', () => {
     );
     const shared = await readFile(new URL('../standard-lighting.wgsl', import.meta.url), 'utf8');
     expect(shared).toMatch(
-      /evaluateStandardClusterLights\(ndc, viewZ, worldPosition, normal, direction,\s*albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,\s*useDirectDfgLut,/u,
+      /evaluateStandardClusterLights\(ndc, pixel, viewZ, worldPosition, normal, direction,\s*albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,\s*useDirectDfgLut,/u,
     );
     expect(source).toContain('clearcoatAlpha,');
     expect(source).toContain('vec3<f32>(0.04),');
@@ -175,8 +175,10 @@ describe('direct punctual lighting shader contract', () => {
       expect(source).toContain('transmission * (max(-signedNDotL, 0.0) / 3.14159265)');
     }
     // Back-lit receivers still need a finite shadow bias on the far hemisphere:
-    // spot folds nDotL, point pushes its world offset toward the lit side.
-    expect(punctual.match(/let nDotL = abs\(dot\(normal, normalize\(/g)).toHaveLength(1);
+    // Point and Spot offset the receiver toward its lit hemisphere.
+    expect(punctual).toContain(
+      'let receiver = worldPos + select(facing, normal, shadowControls.y > 0.5) * normalBias;',
+    );
     expect(punctual).toContain('select(-normal, normal, dot(normal, toLight) >= 0.0)');
     expect(shared).toContain('if (any(transmission > vec3<f32>(0.0)))');
     expect(shared).toContain(

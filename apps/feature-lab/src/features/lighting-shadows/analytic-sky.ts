@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   Atmosphere,
   DirectionalLight,
@@ -5,7 +7,7 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Analytic Sky',
@@ -16,6 +18,12 @@ export default defineFeature({
   expect:
     'ON: a blue daylight sky that brightens toward the horizon and the low sun, with a small sun disc; the sphere picks up blue ambient light. OFF: Atmosphere is despawned; the background is the clear color and the sphere loses its sky ambient.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnCamera(world, {
       eye: [0, 0.3, 4],
       target: [0, 1, -4],
@@ -32,7 +40,7 @@ export default defineFeature({
       .unwrap();
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [0.9, 0.9, 0.9, 1], roughness: 0.6 }),
       { pos: [0, 0.3, 0], scale: [0.5, 0.5, 0.5] },
     );

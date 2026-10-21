@@ -112,6 +112,8 @@ struct Material {
   // because slicesAndMode is never sampled in the vertex / fragment paths
   // when slices=[0,0,0,0] (zero-branch GPU path).
   slicesAndMode : vec4<f32>,
+  flipX : f32,
+  flipY : f32,
   baseColorTextureCoordinatesTransform : vec4<f32>,
   baseColorTextureCoordinatesMetadata : vec4<f32>,
   baseColorTextureCoordinatesRotation : vec4<f32>,
@@ -167,6 +169,19 @@ fn resolveSpriteVertex(in : VsIn, idx : u32, vertex_index : u32) -> SpriteVertex
   // position, triangle winding (cull:back, frontFace:ccw), and atlas sampling
   // are byte-identical. We define uv_eff = (in.uv.x, 1 - in.uv.y) and consume
   // it in BOTH pos_local and uv_atlas below.
+  var selectedRegion = material.region;
+  if (meshes[0].surface.w != 0u) { selectedRegion = meshes[0].spriteRegion; }
+#if PER_INSTANCE_REGION == true
+  selectedRegion = instances[idx].region;
+#endif
+  if (material.flipX != 0.0) {
+    selectedRegion.x += selectedRegion.z;
+    selectedRegion.z = -selectedRegion.z;
+  }
+  if (material.flipY != 0.0) {
+    selectedRegion.y += selectedRegion.w;
+    selectedRegion.w = -selectedRegion.w;
+  }
   let pivot = material.pivotAndSize.xy;
 
   // feat-20260527-sprite-nineslice M3 / w15 (plan-strategy section D-3 + D-4):
@@ -222,35 +237,11 @@ fn resolveSpriteVertex(in : VsIn, idx : u32, vertex_index : u32) -> SpriteVertex
     let uv_u = u_uv_arr[i];
     let uv_v_top = v_uv_arr[j];
     let uv_v_eff = 1.0 - uv_v_top;
-    uv_atlas = vec2<f32>(uv_u, uv_v_eff) * material.region.zw + material.region.xy;
+    uv_atlas = vec2<f32>(uv_u, uv_v_eff) * selectedRegion.zw + selectedRegion.xy;
   } else {
     let uv_eff = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
     pos_local = vec3<f32>(uv_eff - pivot, 0.0);
-    // Q7 single-mad uv_atlas = uv * region.zw + region.xy. host folds
-    // flipX / flipY by negating region.zw + offsetting region.xy so this
-    // formula handles every flip case without a per-fragment branch.
-    //
-    // M2 compensation note: uv_eff restores the pre-M1 bottom-left V
-    // convention for the vertex stage. The host fold of flipY into region
-    // operates on atlas-space coordinates independently — no double-flip
-    // risk, because the region adjustment is a linear transform applied
-    // after uv_eff and neither path depends on the other's sign convention.
-    //
-    // feat-20260625-sprite-instances-and-tilemap-terrain-static-batch M2 /
-    // w7 (plan-strategy §2 D-5 + research §Q-R-4.4): when the sprite
-    // pipeline composes this module with PER_INSTANCE_REGION=true the
-    // region source is the per-instance value carried in
-    // `instances[idx].region` (host-uploaded 80 B-per-instance interleaved
-    // buffer; D-1 + D-9). When PER_INSTANCE_REGION is unset (legacy
-    // sprite-atlas / non-SpriteInstances entities) the region still comes
-    // from the material UBO. The 9-slice branch above keeps reading
-    // `material.region` regardless — 9-slice config is material-level by
-    // construction (OOS-3 + D-5) and the two region semantics do not mix.
-    var region_src = material.region;
-#if PER_INSTANCE_REGION == true
-    region_src = instances[idx].region;
-#endif
-    uv_atlas = uv_eff * region_src.zw + region_src.xy;
+    uv_atlas = uv_eff * selectedRegion.zw + selectedRegion.xy;
   }
 
   // feat-20260604-instances-per-instance-transform-shader-group3-bin M2 / w8:

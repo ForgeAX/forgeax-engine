@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { serial } from './support/serial';
 
 export default defineFeature({
@@ -12,10 +14,16 @@ export default defineFeature({
   expect:
     'PASS when 8 cubes placed behind the camera are counted as culled, and moving them into view drops the culled count by 8.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.5, 6], target: [0, 0.5, 0] });
     const mat = standard(world, { baseColor: [0.2, 0.7, 1, 1] });
     const cubes = Array.from({ length: 8 }, (_, i) =>
-      spawnMesh(world, MESH.cube, mat, { pos: [(i - 3.5) * 0.5, 0.5, 20], scale: [0.3, 0.3, 0.3] }),
+      spawnMesh(world, stageCube, mat, { pos: [(i - 3.5) * 0.5, 0.5, 20], scale: [0.3, 0.3, 0.3] }),
     );
     const place = (z: number) => {
       for (const [i, cube] of cubes.entries())

@@ -29,7 +29,7 @@ import type { Mat4 } from '@forgeax/engine-math';
 import { box3, mat4, quat, vec3 } from '@forgeax/engine-math';
 import type {
   AssetGuid,
-  Handle,
+  AssetHandle,
   LocalEntityId,
   MaterialAsset,
   MaterialError,
@@ -418,9 +418,9 @@ export function meshIrToMeshAsset(
 
 export interface GltfBridgeContext {
   /** glTF mesh index -> registry MeshAsset handle (multi-submesh). */
-  readonly meshHandles: ReadonlyMap<number, Handle<'MeshAsset', 'shared'>>;
+  readonly meshHandles: ReadonlyMap<number, AssetHandle<'mesh'>>;
   /** glTF material index -> registry MaterialAsset handle. */
-  readonly materialHandles: ReadonlyMap<number, Handle<'MaterialAsset', 'shared'>>;
+  readonly materialHandles: ReadonlyMap<number, AssetHandle<'material'>>;
   /**
    * glTF skin index -> SkeletonAsset GUID (string form). When a GltfNodeIr carries
    * a skin reference, the bridge emits `Skin: { skeleton: <guid-string> }` on
@@ -430,7 +430,7 @@ export interface GltfBridgeContext {
    * (or omit the field) and the bridge does not emit Skin.
    *
    * tweak-20260611 M6 / D-7: emitting Skin from the bridge means the standard
-   * loadByGuid<SceneAsset> + instantiate path Just Works for skinned glTF;
+   * source Scene loading + instantiate path Just Works for skinned glTF;
    * demos no longer need to runtime-parseGlb + post-load patch the SceneAsset.
    * postSpawnResolveJoints (called from AssetRegistry.instantiate) walks the
    * matching SkinAsset.jointPaths against the spawn subtree to fill Skin.joints[].
@@ -753,9 +753,9 @@ export function gltfDocToSceneAsset(doc: GltfDoc, ctx: GltfBridgeContext): Scene
 
 export interface MaterialBridgeContext {
   /** glTF texture index -> registry TextureAsset handle. */
-  readonly textureHandles?: ReadonlyMap<number, Handle<'TextureAsset', 'shared'>>;
+  readonly textureHandles?: ReadonlyMap<number, MaterialTextureValue['texture']>;
   /** glTF sampler index -> registry SamplerAsset handle. */
-  readonly samplerHandles?: ReadonlyMap<number, Handle<'SamplerAsset', 'shared'>>;
+  readonly samplerHandles?: ReadonlyMap<number, NonNullable<MaterialTextureValue['sampler']>>;
   /** Built-in standard MaterialAsset GUID supplied by the importing project. */
   readonly standardRootGuid?: AssetGuid;
   /**
@@ -789,10 +789,8 @@ function textureValue(
           ...(binding.transform === undefined ? {} : { transform: binding.transform }),
         };
   const value = {
-    texture: textureHandle as unknown as MaterialTextureValue['texture'],
-    ...(samplerHandle === undefined
-      ? {}
-      : { sampler: samplerHandle as unknown as NonNullable<MaterialTextureValue['sampler']> }),
+    texture: textureHandle,
+    ...(samplerHandle === undefined ? {} : { sampler: samplerHandle }),
     ...(coordinates === undefined ? {} : { coordinates }),
   };
   if (slot === 'occlusionTexture') {
@@ -856,7 +854,7 @@ function standardRootParameterNames(mat: GltfMaterialIr): {
   if (diffuseTransmission) addLayer('diffuseTransmission');
   if (clearcoat && mat.clearcoatNormalTexture !== undefined) names.add('clearcoatNormalScale');
 
-  for (const slot of GLTF_MATERIAL_TEXTURE_SLOTS) {
+  for (const { slot } of GLTF_MATERIAL_TEXTURE_SLOTS) {
     if (mat[slot] !== undefined) names.add(slot);
   }
 
@@ -905,7 +903,7 @@ export function validateMaterialUvSets(
   availableSets: readonly number[],
 ): Result<void, MaterialError> {
   const available = new Set(availableSets);
-  for (const slot of GLTF_MATERIAL_TEXTURE_SLOTS) {
+  for (const { slot } of GLTF_MATERIAL_TEXTURE_SLOTS) {
     const binding = materialTextureBinding(mat[slot]);
     if (binding === undefined) continue;
     const requestedSet = binding.texCoord ?? 0;
@@ -994,7 +992,7 @@ export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext
     values.emissive = mat.emissiveFactor;
     values.emissiveIntensity = mat.emissiveStrength ?? 1;
   }
-  for (const slot of GLTF_MATERIAL_TEXTURE_SLOTS) {
+  for (const { slot } of GLTF_MATERIAL_TEXTURE_SLOTS) {
     const value = textureValue(mat[slot], slot, ctx);
     if (value !== undefined) values[slot] = value;
   }

@@ -265,7 +265,10 @@ it.each([
         });
         page.on('load', () => record('load', page.url()));
         page.on('domcontentloaded', () => record('domcontentloaded', page.url()));
-        page.on('pageerror', (error) => errors.push(error.message));
+        page.on('pageerror', (error) => {
+          errors.push(error.message);
+          record('pageerror', error.message);
+        });
         page.on('requestfailed', (request) =>
           errors.push(`${request.url()}: ${request.failure()?.errorText}`),
         );
@@ -321,7 +324,7 @@ it.each([
       const generated = await call(page, 'generate', [2]);
       expect(generated, JSON.stringify(generated)).toMatchObject({ ok: true });
       const original = (await call(page, 'replace')) as {
-        refs: number;
+        assets: number;
         positions: number[];
         indices: number[];
       };
@@ -351,8 +354,8 @@ it.each([
       expect(await call(page, 'generate', [4])).toMatchObject({ ok: true });
       expect(await call(page, 'buildCalls')).toBe(beforeCache + 1);
       expect(await call(page, 'inspect')).toMatchObject({ width: 2 });
-      const replaced = (await call(page, 'replace')) as { refs: number };
-      expect(replaced).toMatchObject({ width: 4, typed: true, refs: original.refs });
+      const replaced = (await call(page, 'replace')) as { assets: number };
+      expect(replaced).toMatchObject({ width: 4, typed: true, assets: original.assets });
       expect(await call(page, 'generate', [6])).toMatchObject({ ok: false });
       expect(await call(page, 'buildCalls')).toBe(beforeCache + 1);
       expect(await call(page, 'inspect')).toEqual(replaced);
@@ -368,7 +371,7 @@ it.each([
       const closed = {
         effectRemoved: true,
         markerRemoved: true,
-        refs: 0,
+        assets: 0,
         catalogDetached: true,
         programs: 0,
         renderer: 'disposed',

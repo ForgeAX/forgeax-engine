@@ -200,7 +200,7 @@ const errors = [];
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
 
-const world = new World();
+const world = new World({ assets: assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;

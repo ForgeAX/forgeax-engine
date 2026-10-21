@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ANTIALIAS_NONE, ANTIALIAS_TAA, Camera } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'TAA inspection and recovery',
@@ -11,8 +13,14 @@ export default defineFeature({
   expect:
     'All checks pass: TAA reports stable history with non-zero bytes and coverage; switching TAA off releases the history (status off); switching back rebuilds it to stable.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { data: { antialias: ANTIALIAS_TAA } });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [0.2, 0.7, 1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [0.2, 0.7, 1, 1] }), {
       pos: [0, 0.6, 0],
       scale: [0.6, 0.6, 0.6],
     });

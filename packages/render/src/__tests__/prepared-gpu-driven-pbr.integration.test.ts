@@ -13,8 +13,9 @@ import { resolveRendererMaterialShaderArtifact } from '../assembly/material/pipe
 import {
   buildGpuDrivenDraws,
   gpuDrivenMaterialArtifactKey,
-  resolvePreparedGpuDrivenDraw,
+  prepareGpuDrivenDraw,
 } from '../extract/gpu-driven';
+import { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 
 const textureNames = [
@@ -30,6 +31,7 @@ const textureNames = [
 
 function material(): MaterialSnapshot {
   return {
+    passes: [],
     baseColor: vec3.create(1, 1, 1),
     metallic: 0,
     roughness: 0.5,
@@ -52,12 +54,24 @@ function snapshot(
     topology: 'triangle-list' as const,
     pipelineClass: 'standard-pbr',
     materialResourceClass: 'standard-pbr-resources',
+    geometry: {
+      receipt: geometry({ receipt: createStandardPbrArtifactReceipt() }),
+      draw: {
+        kind: 'indexed' as const,
+        first: 0,
+        count: 36,
+        baseVertex: 0,
+        topology: 'triangle-list' as const,
+      },
+      deformation: 'rigid' as const,
+    },
   };
+  const resource = new MaterialResource(materialSnapshot);
   return {
     assetHandle: 1,
     transform: { world: new Float32Array(16) },
-    material: materialSnapshot,
-    materials: [materialSnapshot],
+    material: resource,
+    materials: [resource],
     materialBindingSources: [],
     worldId: 0,
     entityKey: 1,
@@ -126,7 +140,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh: createBoxGeometry(1, 1, 1).unwrap(),
       materials: [source],
       fallbackMaterial: source,
-      baseSnapshot: snapshot(source),
+      deformation: 'rigid',
       getMaterialShaderArtifact: () => undefined,
     });
     expect(draws).toHaveLength(1);
@@ -143,7 +157,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh: createBoxGeometry(1, 1, 1).unwrap(),
       materials: [direct],
       fallbackMaterial: direct,
-      baseSnapshot: snapshot(direct),
+      deformation: 'rigid',
       getMaterialShaderArtifact: () => ({ ...program, receipt }),
     });
     expect(draws).toHaveLength(1);
@@ -165,7 +179,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh: createBoxGeometry(1, 1, 1).unwrap(),
       materials: [source],
       fallbackMaterial: source,
-      baseSnapshot: snapshot(source),
+      deformation: 'rigid',
       getMaterialShaderArtifact: (key) => {
         requested.push(key);
         return undefined;
@@ -178,8 +192,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
 
   it('prepares a COLOR_0 geometry with the matching published receipt', () => {
     const source = artifact(true);
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: snapshot(),
+    const result = prepareGpuDrivenDraw({
+      material: material(),
+      deformation: 'rigid',
       artifact: source,
       geometry: geometry(source),
       generation: source.receipt.generation,
@@ -200,8 +215,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
 
   it('admits geometry attributes that the selected material does not consume', () => {
     const source = artifact();
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: snapshot(),
+    const result = prepareGpuDrivenDraw({
+      material: material(),
+      deformation: 'rigid',
       artifact: source,
       geometry: {
         ...geometry(source),
@@ -248,7 +264,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh: coloredMesh,
       materials: [material()],
       fallbackMaterial: material(),
-      baseSnapshot: snapshot(),
+      deformation: 'rigid',
       getMaterialShaderArtifact: (_materialShaderId, request) => {
         selectedColorFacts.push(request?.vertexColorAvailable === true);
         return coloredSource;
@@ -298,7 +314,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh: { ...mesh, attributes },
       materials: [material()],
       fallbackMaterial: material(),
-      baseSnapshot: snapshot(),
+      deformation: 'rigid',
       getMaterialShaderArtifact: () => source,
     });
     expect(draws).toHaveLength(1);
@@ -335,7 +351,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh: coloredMesh,
       materials: [plain],
       fallbackMaterial: plain,
-      baseSnapshot: snapshot(plain),
+      deformation: 'rigid',
       getMaterialShaderArtifact: (key, request) =>
         resolveRendererMaterialShaderArtifact(key, registry, undefined, request),
     });
@@ -346,6 +362,29 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       false,
     );
     expect(draws[0]?.prepared?.receiptIdentity).toBe(program.receipt.receiptIdentity);
+  });
+
+  it('shares geometry input tables by immutable layout while observing authored layout changes', () => {
+    const base = createBoxGeometry(1, 1, 1).unwrap();
+    const attributes = { ...base.attributes };
+    const mesh = { ...base, attributes };
+    const project = (source: MeshAsset) =>
+      buildGpuDrivenDraws({
+        mesh: source,
+        materials: [],
+        fallbackMaterial: material(),
+        deformation: 'rigid',
+      })[0]?.geometry.receipt.vertexInputs;
+    const first = project(mesh);
+    expect(first).toBeDefined();
+    expect(project(createBoxGeometry(2, 2, 2).unwrap())).toBe(first);
+    // Raw author maps may change in place; their identity never owns this cache.
+    Object.assign(attributes, { color: new Float32Array(96) });
+    const changed = project(mesh);
+    expect(changed).not.toBe(first);
+    expect(first?.some((input) => input.semantic === 'color')).toBe(false);
+    expect(changed?.some((input) => input.semantic === 'color')).toBe(true);
+    expect(project(mesh)).toBe(changed);
   });
 
   it('keeps colored and colorless receipts on distinct production identities', () => {
@@ -378,8 +417,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
 
   it('carries one producer receipt to direct and scene-index preparation', () => {
     const source = artifact();
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: snapshot(),
+    const result = prepareGpuDrivenDraw({
+      material: material(),
+      deformation: 'rigid',
       artifact: source,
       geometry: geometry(source),
       generation: source.receipt.generation,
@@ -402,26 +442,17 @@ describe('prepared Standard PBR producer-to-record integration', () => {
   ])('fails before recording for %s', (_label, generation) => {
     const source = artifact();
     const baseSnapshot = snapshot();
-    const drawSnapshot =
+    const drawMaterial =
       _label === 'missing resources'
         ? {
-            ...baseSnapshot,
-            material: {
-              ...baseSnapshot.material,
-              textureHandles: undefined,
-              authoredTextureFields: new Set(['baseColorTexture']),
-            },
-            materials: [
-              {
-                ...baseSnapshot.material,
-                textureHandles: undefined,
-                authoredTextureFields: new Set(['baseColorTexture']),
-              },
-            ],
+            ...baseSnapshot.material.snapshot,
+            textureHandles: undefined,
+            authoredTextureFields: new Set(['baseColorTexture']),
           }
-        : baseSnapshot;
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: drawSnapshot,
+        : baseSnapshot.material.snapshot;
+    const result = prepareGpuDrivenDraw({
+      material: drawMaterial,
+      deformation: 'rigid',
       artifact: source,
       geometry: geometry(source),
       generation: generation(source),
@@ -441,36 +472,33 @@ describe('prepared Standard PBR producer-to-record integration', () => {
 
   it('prepares every extracted submesh draw from its own range and material receipt', () => {
     const source = artifact();
+    const box = createBoxGeometry(1, 1, 1).unwrap();
+    if (box.indices === undefined) throw new Error('Expected indexed box');
     const draws = buildGpuDrivenDraws({
-      submeshes: [
-        {
-          vertexCount: 36,
-          indexCount: 36,
-          indexOffset: 0,
-          materialSlot: 0,
-          topology: 'triangle-list',
-        },
-        {
-          vertexCount: 12,
-          indexCount: 12,
-          indexOffset: 36,
-          materialSlot: 0,
-          topology: 'triangle-list',
-        },
-      ],
-      indexed: true,
+      mesh: {
+        ...box,
+        indices: new Uint16Array([...box.indices, ...box.indices.slice(0, 12)]),
+        submeshes: [
+          {
+            vertexCount: 24,
+            indexCount: 36,
+            indexOffset: 0,
+            materialSlot: 0,
+            topology: 'triangle-list',
+          },
+          {
+            vertexCount: 24,
+            indexCount: 12,
+            indexOffset: 36,
+            materialSlot: 0,
+            topology: 'triangle-list',
+          },
+        ],
+      },
+      deformation: 'rigid',
       materials: [material()],
       fallbackMaterial: material(),
-      prepare(draw, _drawMaterial) {
-        const result = resolvePreparedGpuDrivenDraw({
-          snapshot: snapshot(),
-          artifact: source,
-          geometry: geometry(source),
-          generation: source.receipt.generation,
-          draw,
-        });
-        return result.ok ? result.value : undefined;
-      },
+      getMaterialShaderArtifact: () => source,
     });
 
     expect(draws).toHaveLength(2);
@@ -478,7 +506,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     expect(draws.map((draw) => draw.prepared?.count)).toEqual([36, 12]);
     expect(draws.every((draw) => draw.prepared?.topology === draw.topology)).toBe(true);
     expect(
-      draws.every((draw) => draw.prepared?.identity.geometry === 'canonical-pbr-geometry'),
+      draws.every(
+        (draw) => draw.prepared?.identity.geometry === draws[0]?.geometry?.receipt.identity,
+      ),
     ).toBe(true);
   });
 
@@ -488,8 +518,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     const draw = base.gpuDrivenDraws?.[0] as NonNullable<
       RenderableSnapshot['gpuDrivenDraws']
     >[number];
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: base,
+    const result = prepareGpuDrivenDraw({
+      material: base.material.snapshot,
+      deformation: 'rigid',
       artifact: (() => {
         const { receipt: _receipt, ...withoutReceipt } = source;
         return withoutReceipt;
@@ -511,8 +542,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     const { sceneIndexEntry: _entry, ...directReceipt } = source.receipt;
     const draw = base.gpuDrivenDraws?.[0];
     if (draw === undefined) throw new Error('missing fixture draw');
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: base,
+    const result = prepareGpuDrivenDraw({
+      material: base.material.snapshot,
+      deformation: 'rigid',
       artifact: { ...source, receipt: directReceipt },
       geometry: geometry(source),
       generation: directReceipt.generation,
@@ -529,8 +561,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       samplerHandles: undefined,
     };
     const baseSnapshot = snapshot(numericMaterial);
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: baseSnapshot,
+    const result = prepareGpuDrivenDraw({
+      material: baseSnapshot.material.snapshot,
+      deformation: 'rigid',
       artifact: source,
       geometry: geometry(source),
       generation: source.receipt.generation,
@@ -553,14 +586,14 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       mesh,
       materials: [staticMaterial],
       fallbackMaterial: staticMaterial,
-      baseSnapshot: snapshot(staticMaterial),
+      deformation: 'rigid',
       getMaterialShaderArtifact: () => source,
     });
     const videoDraws = buildGpuDrivenDraws({
       mesh,
       materials: [videoMaterial],
       fallbackMaterial: videoMaterial,
-      baseSnapshot: snapshot(videoMaterial),
+      deformation: 'rigid',
       getMaterialShaderArtifact: () => source,
     });
 
@@ -583,8 +616,9 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       samplerHandles: undefined,
     };
     const baseSnapshot = snapshot(customMaterial);
-    const result = resolvePreparedGpuDrivenDraw({
-      snapshot: baseSnapshot,
+    const result = prepareGpuDrivenDraw({
+      material: baseSnapshot.material.snapshot,
+      deformation: 'rigid',
       artifact: source,
       geometry: geometry(source),
       generation: source.receipt.generation,

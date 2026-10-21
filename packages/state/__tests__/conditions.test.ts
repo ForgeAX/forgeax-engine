@@ -27,7 +27,7 @@ describe('conditions.test.ts', () => {
       const pred = inState(S, 'A');
 
       const world = new World();
-      world.insertResource('__state__AC06_Basic', 0); // idx 0 = 'A'
+      registerStatesPlugin(world);
 
       expect(pred(world)).toBe(true);
     });
@@ -38,7 +38,9 @@ describe('conditions.test.ts', () => {
 
       // Current idx = 1 ('Y'), but predicate checks for 'X' (idx 0).
       const world = new World();
-      world.insertResource('__state__AC06_Mismatch', 1);
+      registerStatesPlugin(world);
+      setNextState(world, S, 'Y').unwrap();
+      world.update(1 / 60).unwrap();
 
       expect(pred(world)).toBe(false);
     });
@@ -58,7 +60,7 @@ describe('conditions.test.ts', () => {
       const pred = inState(S, 'Blue'); // Blue not in ['Red', 'Green']
 
       const world = new World();
-      world.insertResource('__state__AC06_UnknownVariant', 0);
+      registerStatesPlugin(world);
 
       // Unknown variant: predicate always returns false.
       expect(pred(world)).toBe(false);

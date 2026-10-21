@@ -12,7 +12,11 @@
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { foldDispatchBuckets } from '../../../render/src/record/mesh-ssbo';
-import type { DispatchEntry } from '../../../render/src/render-system-extract';
+import {
+  type DispatchEntry,
+  defaultMaterialSnapshot,
+  type MaterialSnapshot,
+} from '../../../render/src/render-system-extract';
 import { TRANSPARENT_SORT_MODE_LAYER_Z } from '../../../render/src/systems/transparent-sort-config';
 
 function mockEntry(opts: {
@@ -20,7 +24,6 @@ function mockEntry(opts: {
   materialHandle: number;
   layer: number;
   materialShaderId?: string;
-  paramSnapshot?: DispatchEntry['paramSnapshot'];
 }): DispatchEntry {
   return {
     entityIndex: opts.renderableIndex,
@@ -35,13 +38,12 @@ function mockEntry(opts: {
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: opts.materialShaderId,
-    paramSnapshot: opts.paramSnapshot,
   };
 }
 
 function mockRenderable(tz: number): {
   transform: { world: Float32Array };
-  material: { transparent?: true | undefined };
+  material: MaterialSnapshot;
 } {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -53,7 +55,14 @@ function mockRenderable(tz: number): {
   // fold-eligible behavior these material-keyed tests exercise. The
   // discriminator migrated from `shadingModel === 'sprite'` to
   // `transparent === true` (M3 / w15 collapsed the sprite union member).
-  return { transform: { world }, material: { transparent: true } };
+  return {
+    transform: { world },
+    material: {
+      ...defaultMaterialSnapshot(),
+      transparent: true,
+      passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+    },
+  };
 }
 
 describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
@@ -169,28 +178,33 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
   });
 
   it('same material with per-entity region snapshots -> one bucket per distinct snapshot', () => {
-    // A bucket draws with its head's material slot. Extraction gives sprites
-    // with SpriteRegionOverride their own paramSnapshot, so a shared material
-    // must not fold them into the head's atlas region.
+    // A bucket draws one selected region. Per-entity atlas regions must keep
+    // distinct runs even when their shared material is the same.
     const shared = { region: [0, 0, 1, 1] };
     const red = { region: [0, 0, 0.5, 0.5] };
     const green = { region: [0.5, 0, 0.5, 0.5] };
     const snapshots = [shared, shared, red, green];
-    const entries = snapshots.map((paramSnapshot, renderableIndex) =>
+    const entries = snapshots.map((_, renderableIndex) =>
       mockEntry({
         renderableIndex,
         materialHandle: 11,
         layer: 0,
         materialShaderId: 'forgeax::sprite',
-        paramSnapshot,
       }),
     );
-    const renderables = snapshots.map(() => mockRenderable(0));
+    const renderables = snapshots.map((values) => ({
+      ...mockRenderable(0),
+      spriteRegion: values.region as [number, number, number, number],
+    }));
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
     expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([2, 1, 1]);
-    expect(buckets.map((bucket) => bucket.entries[0]?.paramSnapshot)).toEqual([shared, red, green]);
+    expect(
+      buckets.map(
+        (bucket) => renderables[bucket.entries.at(0)?.renderableIndex ?? -1]?.spriteRegion,
+      ),
+    ).toEqual([shared.region, red.region, green.region]);
   });
 
   it('equal region values in distinct snapshot objects still fold into one bucket', () => {
@@ -202,10 +216,12 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
         materialHandle: 11,
         layer: 0,
         materialShaderId: 'forgeax::sprite',
-        paramSnapshot: { region: [0, 0, 0.5, 0.5], tint: 1 },
       }),
     );
-    const renderables = entries.map(() => mockRenderable(0));
+    const renderables = entries.map(() => ({
+      ...mockRenderable(0),
+      spriteRegion: [0, 0, 0.5, 0.5] as const,
+    }));
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 

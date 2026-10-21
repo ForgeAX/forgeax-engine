@@ -1,46 +1,79 @@
-import { err, ok } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { assert, expect, it, vi } from 'vitest';
+import { audioContribution } from '../assets/audio-decoder';
 import { type AudioIntent, createAudioIntentBackend } from '../audio-intent';
 import { isMusicState, loadMusicScore, type MusicState } from '../music';
 
-it('resolves saved ordinary GUIDs without a second registry and preserves importer failure', async () => {
+function musicAssets(sourceKey: string) {
+  const guid = 'aaaaaaaa-aaaa-4aaa-8aaa-000000002300';
+  const packageUrl = 'https://music.invalid/score.pack.json';
+  const { pack, publication } = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath: 'score',
+    sourceRevision: '1',
+    packageUrl,
+    pack: {
+      assets: [
+        {
+          guid,
+          kind: 'audio',
+          payload: { kind: 'audio', sourceKey, bytes: [1], mediaType: 'audio/wav' },
+          refs: [],
+          artifacts: {},
+        },
+      ],
+    },
+  });
+  const assets = new AssetRegistry({
+    catalog: createCatalogSource({
+      entries: [{ guid, kind: 'audio', sourcePath: 'score', packageUrl, publication }],
+      fetch: async () => Response.json(pack),
+    }),
+  });
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  return assets;
+}
+
+it('resolves saved GUIDs into the existing owner and keeps handles for preparation', async () => {
+  const assets = musicAssets('ordinary-guid-content');
   const saved = JSON.parse(
     '{"bpm":120,"beatsPerBar":4,"loopBeats":4,"stems":[{"clip":"aaaaaaaa-aaaa-4aaa-8aaa-000000002300","offsetSeconds":0.125}]}',
   );
-  const visited: string[] = [];
-  const result = await loadMusicScore(saved, async (guid) => {
-    visited.push(guid);
-    return ok({
-      kind: 'audio' as const,
-      sourceKey: 'ordinary-guid-content',
-      bytes: new Uint8Array([1]),
-      mediaType: 'audio/wav',
-    });
-  });
-  expect(visited).toEqual([saved.stems[0].clip]);
+  const result = await loadMusicScore(saved, assets);
+  expect(result.ok && result.value.assets).toBe(assets);
   expect(result.ok && result.value.stems[0]?.offsetSeconds).toBe(0.125);
-  const failure = { code: 'asset-not-found', hint: 'repair the source GUID' };
-  expect(await loadMusicScore(saved, async () => err(failure))).toEqual(err(failure));
+  assert(result.ok);
+  const stem = result.value.stems[0];
+  assert(stem);
+  expect(assets.read(stem.clip).unwrap().sourceKey).toBe('ordinary-guid-content');
+  assets.dispose();
 });
 
-it('refuses an invalid score before asset IO and refuses streaming as a structured result', async () => {
-  let calls = 0;
-  const score = { bpm: 0, beatsPerBar: 4, loopBeats: 4, stems: [{ clip: 'ordinary-guid' }] };
-  const invalid = await loadMusicScore<never>(score, async () => {
-    calls++;
-    throw new Error('must not load');
-  });
+it('refuses invalid music timing before asset IO', async () => {
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const load = vi.spyOn(assets, 'load');
+  const invalid = await loadMusicScore({ bpm: 0, beatsPerBar: 4, loopBeats: 4, stems: [] }, assets);
   expect(!invalid.ok && invalid.error.code).toBe('invalid-score');
-  expect(calls).toBe(0);
-  const stream = await loadMusicScore<never>({ ...score, bpm: 120 }, async () =>
-    ok({
-      kind: 'audio' as const,
-      sourceKey: 'stream',
-      mediaType: 'audio/wav' as const,
-      stream: {} as never,
-    }),
+  expect(load).not.toHaveBeenCalled();
+  assets.dispose();
+});
+
+it('returns a structured failure when the asset owner closes between awaited stem loads', async () => {
+  const assets = musicAssets('closing');
+  const guid = 'aaaaaaaa-aaaa-4aaa-8aaa-000000002300';
+  const handle = (await assets.load(guid, 'audio')).unwrap();
+  assets.release(handle).unwrap();
+  const loading = loadMusicScore(
+    { bpm: 120, beatsPerBar: 4, loopBeats: 4, stems: [{ clip: guid }, { clip: guid }] },
+    assets,
   );
-  expect(!stream.ok && stream.error.code).toBe('unsupported-stream');
+  assets.dispose();
+  await expect(loading).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'asset-owner-closed' },
+  });
 });
 
 it('admits a bounded Worker receipt projection and rejects malformed evidence without throwing', () => {
@@ -70,23 +103,30 @@ it('admits a bounded Worker receipt projection and rejects malformed evidence wi
 it('keeps music preparation bytes out of Worker intents while admitting ordered controls', () => {
   const emitted: AudioIntent[] = [];
   const backend = createAudioIntentBackend({
-    emit: (intent) => emitted.push(structuredClone(intent)),
+    emit: (intent) => {
+      emitted.push(structuredClone(intent));
+    },
   });
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
   backend.music({
     kind: 'prepare',
     requestId: 1,
     score: {
+      assets,
       bpm: 120,
       beatsPerBar: 4,
       loopBeats: 4,
       stems: [
         {
-          clip: {
-            kind: 'audio',
-            sourceKey: 'host-only',
-            mediaType: 'audio/wav',
-            bytes: new Uint8Array([1, 2, 3]),
-          },
+          clip: assets
+            .create({
+              kind: 'audio',
+              sourceKey: 'host-only',
+              mediaType: 'audio/wav',
+              bytes: new Uint8Array([1, 2, 3]),
+            })
+            .unwrap(),
         },
       ],
     },
@@ -108,11 +148,15 @@ it('keeps music preparation bytes out of Worker intents while admitting ordered 
 it('keeps invalid Host-only preparation IDs inside a valid Worker failure projection', () => {
   for (const requestId of [NaN, Infinity, -1, 0, Number.MAX_SAFE_INTEGER + 1]) {
     const emitted: AudioIntent[] = [];
-    const backend = createAudioIntentBackend({ emit: (intent) => emitted.push(intent) });
+    const backend = createAudioIntentBackend({
+      emit: (intent) => {
+        emitted.push(intent);
+      },
+    });
     backend.music({
       kind: 'prepare',
       requestId,
-      score: { bpm: 120, beatsPerBar: 4, loopBeats: 4, stems: [] },
+      score: { assets: new AssetRegistry(), bpm: 120, beatsPerBar: 4, loopBeats: 4, stems: [] },
     });
     const state = backend.getState().music;
     expect(emitted).toEqual([]);

@@ -144,13 +144,13 @@ export function ssrCoordinateErrors(words: readonly number[], recessedSource = f
     );
   };
   const errors: number[] = [];
-  for (let y = 0; y < SSR_GPU_PROBE_HEIGHT / 2; y++) {
-    for (let x = 0; x < SSR_GPU_PROBE_WIDTH / 2; x++) {
+  for (let y = 0; y < SSR_GPU_PROBE_HEIGHT; y++) {
+    for (let x = 0; x < SSR_GPU_PROBE_WIDTH; x++) {
       // The copy uses the full-width, 256-byte-aligned readback row stride.
       const p = (y * SSR_GPU_PROBE_WIDTH + x) * 4;
       if (half(words[p + 3] ?? 0) <= 0.2) continue;
-      const dx = ((((x * 2 + 0.5) / SSR_GPU_PROBE_WIDTH) * 2 - 1) * 2) / Math.sqrt(3);
-      const dy = (1 - ((y * 2 + 0.5) / SSR_GPU_PROBE_HEIGHT) * 2) / Math.sqrt(3);
+      const dx = ((((x + 0.5) / SSR_GPU_PROBE_WIDTH) * 2 - 1) * 2) / Math.sqrt(3);
+      const dy = (1 - ((y + 0.5) / SSR_GPU_PROBE_HEIGHT) * 2) / Math.sqrt(3);
       const z = 6 / (1 - dx);
       const wallX = recessedSource && Math.abs(dy * 8) < 0.5 ? 2.12 : 2;
       const targetDepth = z + dx * (wallX - dx * z);
@@ -303,7 +303,7 @@ export function admittedSsrSpatial() {
   });
 }
 
-function runtimeFor(device: RhiDevice) {
+function runtimeFor(device: RhiDevice, createModule: typeof createShaderModuleImmediate) {
   const errorRegistry = new RhiErrorListenerRegistry();
   return {
     device,
@@ -311,14 +311,18 @@ function runtimeFor(device: RhiDevice) {
       device,
       errorRegistry,
       undefined,
-      createShaderModuleImmediate,
+      createModule,
       'immediate',
     ),
     errorRegistry,
   };
 }
 
-function seedSceneState(device: RhiDevice, options: SsrGpuDispatchOptions) {
+function seedSceneState(
+  device: RhiDevice,
+  options: SsrGpuDispatchOptions,
+  createModule: typeof createShaderModuleImmediate,
+) {
   let source = SSR_GPU_SCENE_SEED_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options));
   if (options.coordinateSource)
     source = source.replace('vec3<f32>(0.9, 0.18, 0.04)', 'vec3<f32>(uv, 0.5)');
@@ -334,7 +338,7 @@ function seedSceneState(device: RhiDevice, options: SsrGpuDispatchOptions) {
       'vec4<f32>(0.10, 0.10, 0.10, 1.0)',
       'vec4<f32>(0.10, 0.10, 0.10, select(0.0, 1.0, wall))',
     );
-  const module = createShaderModuleImmediate(device, {
+  const module = createModule(device, {
     code: source,
     label: 'ssr-scene-seed',
   });
@@ -379,8 +383,12 @@ function seedSceneState(device: RhiDevice, options: SsrGpuDispatchOptions) {
   return { layout, pipeline };
 }
 
-function seedOccluderPipeline(device: RhiDevice, options: SsrGpuDispatchOptions) {
-  const module = createShaderModuleImmediate(device, {
+function seedOccluderPipeline(
+  device: RhiDevice,
+  options: SsrGpuDispatchOptions,
+  createModule: typeof createShaderModuleImmediate,
+) {
+  const module = createModule(device, {
     code: SSR_GPU_OCCLUDER_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options)),
     label: 'ssr-occluder-seed',
   });
@@ -407,6 +415,7 @@ export async function runSsrGpuDispatch(
   shaders: SsrProbeShaderSources,
   frameCount = 1,
   options: SsrGpuDispatchOptions = {},
+  createModule = createShaderModuleImmediate,
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const depthTexture = graph
@@ -483,14 +492,14 @@ export async function runSsrGpuDispatch(
       () => viewUniformBuffer,
     )
     .unwrap();
-  const halfExtent = {
-    width: Math.max(1, Math.floor(SSR_GPU_PROBE_WIDTH / 2)),
-    height: Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2)),
+  const traceExtent = {
+    width: SSR_GPU_PROBE_WIDTH,
+    height: SSR_GPU_PROBE_HEIGHT,
   };
-  const previousHistory = color('ssr-history-previous', halfExtent);
-  const outputHistory = color('ssr-history-output', halfExtent);
-  const previousSurface = color('ssr-history-previous-surface', halfExtent, 'rgba8unorm');
-  const outputSurface = color('ssr-history-output-surface', halfExtent, 'rgba8unorm');
+  const previousHistory = color('ssr-history-previous', traceExtent);
+  const outputHistory = color('ssr-history-output', traceExtent);
+  const previousSurface = color('ssr-history-previous-surface', traceExtent, 'rgba8unorm');
+  const outputSurface = color('ssr-history-output-surface', traceExtent, 'rgba8unorm');
   const seed = graph.addRasterPass('seed-inputs', {
     accesses: [
       { resource: depthAttachment, usage: 'depth-stencil-write' },
@@ -549,7 +558,7 @@ export async function runSsrGpuDispatch(
       stencilStoreOp: 'store',
     },
     encode: ({ pass }) => {
-      occluderPipeline ??= seedOccluderPipeline(device, options);
+      occluderPipeline ??= seedOccluderPipeline(device, options, createModule);
       pass.setPipeline(occluderPipeline);
       pass.draw(6, 1, 0, 0);
     },
@@ -564,7 +573,7 @@ export async function runSsrGpuDispatch(
       { resource: currentTemporal.view, usage: 'storage-write' },
     ],
     encode: ({ pass, frame, resources: resolver }) => {
-      sceneSeedState ??= seedSceneState(device, options);
+      sceneSeedState ??= seedSceneState(device, options, createModule);
       const bindGroup = device
         .createBindGroup({
           layout: sceneSeedState.layout,
@@ -730,7 +739,7 @@ export async function runSsrGpuDispatch(
   const traceReadbackBuffer = device
     .createBuffer({
       label: 'ssr-trace-readback',
-      size: bytesPerRow * Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2)),
+      size: bytesPerRow * SSR_GPU_PROBE_HEIGHT,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
@@ -777,7 +786,7 @@ export async function runSsrGpuDispatch(
     .importBuffer(
       'ssr-trace-readback',
       {
-        size: bytesPerRow * Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2)),
+        size: bytesPerRow * SSR_GPU_PROBE_HEIGHT,
         usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
       },
       () => traceReadbackBuffer,
@@ -794,11 +803,11 @@ export async function runSsrGpuDispatch(
         {
           buffer: resolver.buffer(traceReadback).unwrap(),
           bytesPerRow,
-          rowsPerImage: Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2)),
+          rowsPerImage: SSR_GPU_PROBE_HEIGHT,
         },
         {
-          width: Math.max(1, Math.floor(SSR_GPU_PROBE_WIDTH / 2)),
-          height: Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2)),
+          width: SSR_GPU_PROBE_WIDTH,
+          height: SSR_GPU_PROBE_HEIGHT,
           depthOrArrayLayers: 1,
         },
       );
@@ -841,7 +850,7 @@ export async function runSsrGpuDispatch(
   if (!pyramidCopy.ok) throw pyramidCopy.error;
   const surfaceReadbackBuffer = device
     .createBuffer({
-      size: bytesPerRow * halfExtent.height,
+      size: bytesPerRow * traceExtent.height,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
@@ -849,7 +858,7 @@ export async function runSsrGpuDispatch(
     .importBuffer(
       'ssr-surface-readback',
       {
-        size: bytesPerRow * halfExtent.height,
+        size: bytesPerRow * traceExtent.height,
         usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
       },
       () => surfaceReadbackBuffer,
@@ -867,9 +876,9 @@ export async function runSsrGpuDispatch(
           {
             buffer: resolver.buffer(surfaceReadback).unwrap(),
             bytesPerRow,
-            rowsPerImage: halfExtent.height,
+            rowsPerImage: traceExtent.height,
           },
-          { width: halfExtent.width, height: halfExtent.height, depthOrArrayLayers: 1 },
+          { width: traceExtent.width, height: traceExtent.height, depthOrArrayLayers: 1 },
         );
       },
     })
@@ -885,7 +894,7 @@ export async function runSsrGpuDispatch(
   const pyramidPixels: number[][] = [];
   let surfacePixels: number[] = [];
   const bindGroupCounts = { createBindGroup: 0, keys: [] as string[] };
-  const runtime = runtimeFor(device);
+  const runtime = runtimeFor(device, createModule);
   for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
     const encoder = device.createCommandEncoder({ label: `ssr-gpu-probe-${frameIndex}` }).unwrap();
     const frame = {
@@ -927,7 +936,7 @@ export async function runSsrGpuDispatch(
     const traceRange = traceMapped.value.getMappedRange();
     if (!traceRange.ok) throw traceRange.error;
     const traceWords = new Uint16Array(
-      traceRange.value.slice(0, bytesPerRow * Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2))),
+      traceRange.value.slice(0, bytesPerRow * SSR_GPU_PROBE_HEIGHT),
     );
     tracePixels.push([...traceWords]);
     traceMapped.value.unmap();
@@ -951,8 +960,8 @@ export async function runSsrGpuDispatch(
     if (frameIndex === frameCount - 1) {
       const mapped = (await surfaceReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();
       const bytes = new Uint8Array(mapped.getMappedRange().unwrap().slice(0));
-      surfacePixels = Array.from({ length: halfExtent.height }, (_, y) => [
-        ...bytes.slice(y * bytesPerRow, y * bytesPerRow + halfExtent.width * 4),
+      surfacePixels = Array.from({ length: traceExtent.height }, (_, y) => [
+        ...bytes.slice(y * bytesPerRow, y * bytesPerRow + traceExtent.width * 4),
       ]).flat();
       mapped.unmap();
     }

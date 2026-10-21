@@ -1,3 +1,4 @@
+import { isShaderEntryPointReads, type ShaderEntryPointReads } from '@forgeax/engine-types';
 // @forgeax/engine-naga — TS-only thin shell over @forgeax/engine-wgpu-wasm raw naga bindings.
 //
 // Form invariants (locked by plan-strategy D-P3 / D-P4 + research F-4):
@@ -78,6 +79,26 @@ interface ModuleHandle {
  */
 export type ParsedModule = ModuleHandle;
 
+/** Build-time Naga projection of the complete reachable closure of a compute entry. */
+export async function specializeComputeEntries(
+  source: string,
+  entryPoints: readonly string[],
+): Promise<
+  Result<readonly { readonly entryPoint: string; readonly source: string }[], ShaderError>
+> {
+  try {
+    const wasm = await ensureReady();
+    const specialize = (
+      wasm as {
+        specialize_compute_entries: (source: string, entries: string) => string;
+      }
+    ).specialize_compute_entries;
+    return ok(JSON.parse(specialize(source, JSON.stringify(entryPoints))));
+  } catch (error) {
+    return err(wrapShaderError(error));
+  }
+}
+
 /**
  * Handle for the `validate` output (Module + ModuleInfo); pass through to
  * `emit_reflection` for the reflection JSON emit. Free it after the last borrowed
@@ -107,6 +128,7 @@ export interface ShaderReflectionBoundGlobal {
 }
 
 export interface ShaderReflection {
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly schemaVersion: 'shader-reflection/2';
   readonly boundGlobals: readonly ShaderReflectionBoundGlobal[];
   readonly uvSetCount: number;
@@ -251,7 +273,17 @@ export function parseReflectionWire(json: string): ShaderReflection {
       throw reflectionMalformed(`duplicate bound-global coordinate ${coordinate}`);
     coordinates.add(coordinate);
   }
-  return { schemaVersion: 'shader-reflection/2', boundGlobals, uvSetCount: parsed.uvSetCount };
+  const entryPoints = parsed.entryPoints;
+  if (entryPoints !== undefined && !isShaderEntryPointReads(entryPoints))
+    throw reflectionMalformed('entryPoints must contain reflected stage and binding reads');
+  return {
+    schemaVersion: 'shader-reflection/2',
+    boundGlobals,
+    uvSetCount: parsed.uvSetCount,
+    ...(entryPoints === undefined
+      ? {}
+      : { entryPoints: entryPoints as unknown as readonly ShaderEntryPointReads[] }),
+  };
 }
 
 /** Result-form reader for callers that need an explicit unavailable/malformed branch. */

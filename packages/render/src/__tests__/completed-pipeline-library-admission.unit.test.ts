@@ -40,7 +40,7 @@ describe('physical-device completion is consumed in the first preparation frame'
         await source.device.createRenderPipelineAsync?.({
           label,
           layout: 'auto',
-          vertex: { module: vertexModule, entryPoint: 'vs' },
+          vertex: { module: vertexModule, entryPoint: 'vs', buffers: [] },
           fragment: {
             module: fragmentModule,
             entryPoint: 'fs',
@@ -66,7 +66,9 @@ describe('physical-device completion is consumed in the first preparation frame'
       const vertex = registry.materialProgram(codes[0]);
       const fragment = registry.materialProgram(codes[1]);
       expect(analyze).toHaveBeenCalledTimes(2);
-      const recovered = registry.forkForDevice(target.device);
+      const recovered = registry.forkForDevice({
+        createShaderModule: (descriptor) => createShaderModuleImmediate(target.device, descriptor),
+      });
       await prepareDevicePipelineLibrary(target.device, manifest, recovered);
       expect(recovered.materialProgram(codes[0])).toBe(vertex);
       expect(recovered.materialProgram(codes[1])).toBe(fragment);

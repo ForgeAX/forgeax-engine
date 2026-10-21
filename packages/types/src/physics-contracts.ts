@@ -82,11 +82,22 @@ export interface PhysicsBackendNotRegisteredDetail {
   readonly attemptedBackend: string;
 }
 
+/**
+ * RigidBody motion type — 3-state discriminant mirroring Rapier's
+ * Dynamic / Fixed / KinematicPositionBased triplet.
+ *
+ * `'static'`: infinite mass, never moves (Rapier Fixed).
+ * `'dynamic'`: driven by forces, gravity, collisions (Rapier Dynamic).
+ * `'kinematic'`: user-controlled position, velocity derived by engine
+ *                (Rapier KinematicPositionBased).
+ */
+export type RigidBodyType = 'static' | 'dynamic' | 'kinematic';
+
 /** `controller-requires-kinematic` payload: carries the entity + actual body type. */
 export interface PhysicsControllerRequiresKinematicDetail {
   readonly code: 'controller-requires-kinematic';
   readonly entity: number;
-  readonly bodyType: string;
+  readonly bodyType: RigidBodyType;
 }
 
 /**

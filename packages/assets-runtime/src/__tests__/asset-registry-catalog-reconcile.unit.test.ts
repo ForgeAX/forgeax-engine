@@ -17,7 +17,7 @@ const currentEntry = {
 } as const satisfies CatalogEntry;
 
 function registry(): AssetRegistry {
-  return new AssetRegistry({} as never);
+  return new AssetRegistry({ shaderRegistry: {} as never });
 }
 
 describe('AssetRegistry.reconcileCatalog public contract', () => {

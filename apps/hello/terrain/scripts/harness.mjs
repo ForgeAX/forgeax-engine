@@ -170,7 +170,7 @@ export async function terrainHarness({
   };
   const verify = async (receipt, view) => {
     const current = app.world.get(subjects.terrain, Terrain).unwrap();
-    const root = app.world.sharedRefs.resolve(current.asset).unwrap();
+    const root = app.assets.read(current.asset).unwrap();
     assert.equal(root.kind, 'terrain');
     const hit = app.physics.raycast(vec3.create(62, 50, 62), vec3.create(0, -1, 0), 100);
     assert(hit, 'actual heightfield must intersect the downward ray');

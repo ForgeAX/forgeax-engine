@@ -22,9 +22,31 @@ import { registerStatesPlugin } from '../src/register-plugin';
 import { setNextState, setNextStateForce, getState, getPreviousState } from '../src/set-next-state';
 import { despawnOnExit, despawnOnEnter } from '../src/scoped-component';
 import { addOnEnter, addOnExit } from '../src/on-enter-on-exit';
-import { nextStateResourceKey } from '../src/resources';
+import { type StatePayload, stateResourceKey } from '../src/resources';
 
 const LevelId = defineState('LevelId', ['main-menu', 'tutorial', 'street-a'] as const);
+
+it('preserves a same-value forced request issued by the active transition callback', () => {
+  const token = defineState('ReentrantForcedTransition', ['idle', 'running'] as const);
+  const world = makeWorld();
+  let entered = 0;
+  const remove = addOnEnter(token, 'running', () => {
+    entered++;
+    if (entered === 1) setNextStateForce(world, token, 'running').unwrap();
+  });
+  try {
+    setNextStateForce(world, token, 'running').unwrap();
+    world.update(1 / 60).unwrap();
+    expect(entered).toBe(1);
+    world.update(1 / 60).unwrap();
+    expect(entered).toBe(2);
+    world.update(1 / 60).unwrap();
+    expect(entered).toBe(2);
+    expect(getPreviousState(world, token).unwrap()).toBe('running');
+  } finally {
+    remove();
+  }
+});
 
 function makeWorld(): World {
   const world = new World();
@@ -117,8 +139,8 @@ describe('force vs soft same-state transitions', () => {
     world.update(1 / 60).unwrap();
 
     // NextState should be cleared after same-state no-op
-    const nsKey = nextStateResourceKey(LevelId);
-    const ns = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(LevelId);
+    const ns = world.getResource<StatePayload>(nsKey).next;
     expect(ns).toBeUndefined();
   });
 });

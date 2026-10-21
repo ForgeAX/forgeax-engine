@@ -6,6 +6,7 @@ import type {
 } from '@forgeax/engine-types';
 import {
   createPluginPackFailure,
+  PLUGIN_PACK_FAILURE_STAGES,
   type PluginPackFailure,
   type PluginPackFailureStage,
   projectFailureCause,
@@ -76,29 +77,13 @@ export interface DevSession {
 }
 
 function failureStage(error: unknown): PluginPackFailureStage {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'detail' in error &&
-    typeof (error as { detail?: unknown }).detail === 'object' &&
-    (error as { detail?: { stage?: unknown } }).detail?.stage !== undefined
-  ) {
-    const stage = (error as { detail: { stage?: unknown } }).detail.stage;
-    if (
-      stage === 'config' ||
-      stage === 'scan' ||
-      stage === 'produce' ||
-      stage === 'finalize' ||
-      stage === 'commit' ||
-      stage === 'emit' ||
-      stage === 'watch' ||
-      stage === 'route' ||
-      stage === 'cleanup'
-    ) {
-      return stage;
-    }
-  }
-  return 'scan';
+  const stage =
+    typeof error === 'object' && error !== null && 'detail' in error
+      ? (error as { detail?: { stage?: unknown } }).detail?.stage
+      : undefined;
+  return (PLUGIN_PACK_FAILURE_STAGES as readonly unknown[]).includes(stage)
+    ? (stage as PluginPackFailureStage)
+    : 'scan';
 }
 
 function asFailure(error: unknown, subject: string): PluginPackFailure {
@@ -114,14 +99,7 @@ function asFailure(error: unknown, subject: string): PluginPackFailure {
   }
   const stage = failureStage(error);
   return createPluginPackFailure({
-    code:
-      stage === 'scan'
-        ? 'scan-failed'
-        : stage === 'watch'
-          ? 'watch-failed'
-          : stage === 'route'
-            ? 'route-failed'
-            : 'produce-failed',
+    code: `${stage}-failed`,
     expected: 'a dev session startup or rebuild that produces an accepted snapshot',
     hint: 'inspect the diagnostic, repair the source or watcher, rebuild, verify, and retry',
     detail: { stage, subject },

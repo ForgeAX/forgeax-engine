@@ -63,7 +63,7 @@ describe('preview capture determinism', () => {
     document.body.append(root);
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: { invalidate: () => {}, loadByGuid: async () => ({ ok: true, value: asset }) },
+      readAsset: async () => ({ ok: true, value: asset }),
       root,
       rect: { width: 320, height: 180 },
       scenario: createDomPartScenario({ requiredParts: ['root', 'button'] }),

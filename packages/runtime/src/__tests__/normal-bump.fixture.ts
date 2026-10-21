@@ -23,6 +23,7 @@ import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { derive, type TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type StandardOptions = Parameters<typeof Materials.standard>[0];
@@ -56,20 +57,24 @@ export async function verifyNormalBump(
     ...geometry.attributes,
     uv1: Float32Array.from(uv0, (v, i) => (i % 2 === 0 ? 1 - v : v)),
   };
-  const mesh = world.allocSharedRef('MeshAsset', {
-    ...geometry,
-    attributes,
-    vertices: packInterleavedVertexAttributes(attributes, uv0.length / 2).unwrap().vertices,
-  });
+  const mesh = testAssets(world)
+    .create({
+      ...geometry,
+      attributes,
+      vertices: packInterleavedVertexAttributes(attributes, uv0.length / 2).unwrap().vertices,
+    })
+    .unwrap();
   const texture = (data: Uint8Array, width: number, height: number) =>
-    world.allocSharedRef('TextureAsset', {
-      kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width, height } },
-      format: 'rgba8unorm',
-      colorSpace: 'linear',
-      mips: { kind: 'none' },
-      data,
-    } satisfies TextureAsset);
+    testAssets(world)
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width, height } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data,
+      } satisfies TextureAsset)
+      .unwrap();
   const normalTexture = { texture: texture(new Uint8Array([191, 159, 234, 255]), 1, 1) };
   // Independent Three r184 packed-normal oracle: reconstruct original Z,
   // scale XY, normalize, then encode a unit-strength reference map.
@@ -171,7 +176,7 @@ export async function verifyNormalBump(
           renderState: { cullMode: 'none' },
           ...entry.options,
         } as StandardOptions);
-        const material = world.allocSharedRef('MaterialAsset', authored);
+        const material = testAssets(world).create(authored).unwrap();
         world.set(receiver, MeshRenderer, { materials: [material] }).unwrap();
         const draw = async () => {
           world.update(1 / 60).unwrap();

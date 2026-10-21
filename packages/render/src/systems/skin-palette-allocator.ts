@@ -80,6 +80,8 @@ function alignedPaletteBytes(jointCount: number): number {
 }
 
 export interface SkinPaletteAllocator {
+  /** The current storage arena shared by admitted GPU skin batches. */
+  readonly storageBuffer: Buffer | null;
   /** Monotonic successful GPU content writes, independent of allocation identity. */
   readonly contentRevision: number;
   /**
@@ -720,6 +722,9 @@ export function createSkinPaletteAllocator(
   }
 
   return {
+    get storageBuffer() {
+      return storageBuffer;
+    },
     get contentRevision() {
       return contentRevision;
     },

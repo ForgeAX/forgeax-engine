@@ -150,6 +150,7 @@ fn evaluate_cluster_light(
   transmission : vec3<f32>,
   flat_2d    : bool,
   receive_shadows : bool,
+  pixel: vec2<f32>,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -177,6 +178,7 @@ fn evaluate_cluster_light(
         shadow.x,
         shadow.y,
         shadow.z, shadow.w,
+        shadowParams[4 + layer], shadowParams[12 + layer].xyz, pixel,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -229,8 +231,12 @@ fn evaluate_cluster_light(
         light.colorTimesIntensity.w, light.direction.w, light.position.w,
           world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
         view.spotLightViewProj[tile], tile, light.auxiliary.x, light.auxiliary.y,
-        f32(max(light.metadata.x >> PCF_SHIFT, 1u)),
-        light.auxiliary.z,
+#ifdef POINT_SHADOW_AVAILABLE
+        shadowParams[8 + tile],
+#else
+        vec4<f32>(f32(max(light.metadata.x >> PCF_SHIFT, 1u)), 0.0, 6.0, 1.0),
+#endif
+        light.auxiliary.z, pixel,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -291,6 +297,7 @@ fn evaluate_cluster_light(
 
 fn evaluateStandardClusterLights(
   ndc        : vec3<f32>,
+  pixel      : vec2<f32>,
   view_z     : f32,
   world_pos  : vec3<f32>,
   normal     : vec3<f32>,
@@ -340,6 +347,7 @@ fn evaluateStandardClusterLights(
     total_radiance += evaluate_cluster_light(
       light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
       transmission, flat_2d, receive_shadows,
+      pixel,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,

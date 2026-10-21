@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { LoadContext } from '@forgeax/engine-types';
-import { isImmutableVfxGpuEffect, vfxGpuEffectPackLoader } from '@forgeax/engine-vfx';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { particleEffectContribution, prepareVfxGpuEffect } from '@forgeax/engine-vfx';
 import { expect, it } from 'vitest';
 import { cookParticleCodeEffect } from '../code-program.js';
 
@@ -23,21 +24,13 @@ const source = {
     },
   ],
 };
-const context: LoadContext = {
-  fetchBinary: async () => {
-    throw Error('unexpected fetch');
-  },
-  resolveRef: async () => ({ ok: true, value: 0 }),
-  transcodeCaps: { bc: false, etc2: false, astc: false },
-  device: undefined,
-};
 const cook = (text = entry, capacity = 128) =>
   cookParticleCodeEffect(
     { ...source, emitters: [{ ...source.emitters[0], capacity }] },
     { spark: { entry: text } },
   );
 
-it('cooks an explicit validated job program and freezes it at the genuine loader boundary', async () => {
+it('cooks an explicit validated job program and freezes its retained runtime version', async () => {
   const result = await cook();
   expect(result.ok).toBe(true);
   if (!result.ok) return;
@@ -61,36 +54,62 @@ it('cooks an explicit validated job program and freezes it at the genuine loader
       },
     },
   };
-  const loaded = await vfxGpuEffectPackLoader.load(input, context);
+  const loaded = await prepareVfxGpuEffect(input);
   expect(loaded.ok).toBe(true);
   if (!loaded.ok) return;
-  expect(isImmutableVfxGpuEffect(loaded.value)).toBe(true);
-  const loadedJob = loaded.value.program.emitters[0]?.instanceCompute;
-  expect(loadedJob).toEqual(job);
-  expect(Object.isFrozen(loadedJob)).toBe(true);
-  expect(Object.isFrozen(loadedJob?.bindings[0]?.entries)).toBe(true);
+  const assets = new AssetRegistry();
+  assets.installDecoder(particleEffectContribution.kind, particleEffectContribution.decoder);
+  const material = assets
+    .create({
+      kind: 'material',
+      passes: [{ name: 'forward', program: { module: 'forgeax::unlit' } }],
+      values: { baseColor: [1, 1, 1, 1] },
+    })
+    .unwrap();
+  const handle = assets
+    .create({
+      ...loaded.value,
+      program: {
+        ...loaded.value.program,
+        emitters: loaded.value.program.emitters.map((emitter) => ({
+          ...emitter,
+          renderers: emitter.renderers.map((renderer) => ({ ...renderer, material })),
+        })),
+      },
+    })
+    .unwrap();
+  const retained = runtimeAssets(assets).pin<typeof loaded.value>(handle).unwrap();
+  try {
+    const loadedJob = retained.value.program.emitters[0]?.instanceCompute;
+    expect(loadedJob).toEqual(job);
+    expect(Object.isFrozen(loadedJob)).toBe(true);
+    expect(Object.isFrozen(loadedJob?.bindings[0]?.entries)).toBe(true);
+  } finally {
+    retained.dispose();
+    assets.dispose();
+  }
   const invalid = JSON.parse(new TextDecoder().decode(artifact.bytes));
   invalid.emitters[0].instanceCompute.bindings[0].entries[1].buffer.type = 'uniform';
   const bytes = new TextEncoder().encode(JSON.stringify(invalid)),
     fingerprint = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  const rejected = await vfxGpuEffectPackLoader.load(
-    {
-      ...input,
-      payload: {
-        ...asset,
-        programFingerprint: fingerprint,
-        program: { ...asset.program, fingerprint },
-      },
-      artifacts: {
-        'particle-effect/program.json': {
-          ...input.artifacts['particle-effect/program.json'],
-          bytes,
-        },
+  const rejected = await prepareVfxGpuEffect({
+    ...input,
+    payload: {
+      ...asset,
+      programFingerprint: fingerprint,
+      program: { ...asset.program, fingerprint },
+    },
+    artifacts: {
+      'particle-effect/program.json': {
+        ...input.artifacts['particle-effect/program.json'],
+        bytes,
       },
     },
-    context,
-  );
-  expect(rejected.ok).toBe(false);
+  });
+  expect(rejected).toMatchObject({
+    ok: false,
+    error: { code: 'vfx-asset-v3-invalid', detail: { guid: input.guid, path: 'program' } },
+  });
 });
 it('keeps unsupported capacity and parameter/data-interface programs on the ordinary ABI', async () => {
   for (const [text, capacity] of [
@@ -132,23 +151,20 @@ it('retains the original program for legacy and unknown optional job formats', a
       programFingerprint: fingerprint,
       program: { ...program, fingerprint },
     };
-    const loaded = await vfxGpuEffectPackLoader.load(
-      {
-        guid: '019e2cc6-0c86-79da-aa76-b0984c86d45c',
-        kind: 'particle-effect',
-        payload,
-        artifacts: {
-          'particle-effect/program.json': {
-            descriptor: {
-              path: 'program.json',
-              mediaType: 'application/vnd.forgeax.vfx-program+json',
-            },
-            bytes,
+    const loaded = await prepareVfxGpuEffect({
+      guid: '019e2cc6-0c86-79da-aa76-b0984c86d45c',
+      kind: 'particle-effect',
+      payload,
+      artifacts: {
+        'particle-effect/program.json': {
+          descriptor: {
+            path: 'program.json',
+            mediaType: 'application/vnd.forgeax.vfx-program+json',
           },
+          bytes,
         },
       },
-      context,
-    );
+    });
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.program.emitters[0]?.instanceCompute?.format).toBe(format);

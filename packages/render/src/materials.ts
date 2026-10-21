@@ -1,11 +1,11 @@
 import { color } from '@forgeax/engine-math';
 import { DEFAULT_STANDARD_PBR_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import type {
-  MaterialAsset,
   MaterialColorSpace,
   MaterialParameter,
   MaterialPass,
   MaterialRenderState,
+  MaterialRootAsset,
   MaterialStaticSwitches,
   MaterialValue,
 } from '@forgeax/engine-types';
@@ -22,12 +22,7 @@ import {
 } from './assembly/material/surface-projection';
 import { shadowCasterRenderState } from './material-render-state';
 
-export type MaterialTransmissionValidationReason =
-  | 'non-finite'
-  | 'range'
-  | 'shape'
-  | 'blend'
-  | 'depth-write';
+export type MaterialTransmissionValidationReason = 'non-finite' | 'range' | 'shape';
 
 export type MaterialAuthoringValidationReason = 'non-finite' | 'range' | 'shape' | 'conflict';
 
@@ -101,6 +96,7 @@ export class MaterialAuthoringContractError extends Error {
       | 'displacementBias'
       | 'triplanar'
       | 'normalMapSpace'
+      | 'flatShading'
       | 'directMultiscattering'
       | 'subsurfaceRadius'
       | 'subsurfaceWeight';
@@ -320,6 +316,9 @@ function standardParameters(
     'occlusionStrength',
     'alphaCutoff',
     'alphaHash',
+    'shadowAlphaMode',
+    'alphaMode',
+    'alphaToCoverage',
     'normalScale',
     'bumpScale',
     'displacementScale',
@@ -335,6 +334,7 @@ function standardParameters(
     // consumes this scalar for the base reflection path.
     'ior',
   ]);
+  if (opts.flatShading !== undefined) baseNames.add('flatShading');
   if (opts.specularTexture !== undefined) baseNames.add('specularTexture');
   if (opts.directMultiscattering === 'lut') baseNames.add('directMultiscatteringLut');
   if (opts.specularColorTexture !== undefined) baseNames.add('specularColorTexture');
@@ -431,17 +431,24 @@ function pass(
 
 interface UnlitOpts {
   readonly baseColorTexture?: MaterialValue;
+  /** Independent coverage; green by default, like Standard alphaTexture. */
+  readonly alphaTexture?: MaterialValue;
+  readonly alphaChannel?: number;
   readonly alphaCutoff?: number;
   /** Object-space stochastic coverage. Keep blending disabled and depth writes enabled. */
   readonly alphaHash?: boolean;
+  /** Texture-only shadow coverage ignores scalar opacity, vertex alpha and stochastic coverage. */
+  readonly shadowAlphaMode?: 'material' | 'texture';
+  /** Output alpha is independent of the sampled coverage used by depth/shadows. */
+  readonly alphaMode?: 'preserve' | 'opaque' | 'premultiplied';
   readonly renderState?: MaterialRenderState;
   readonly queue?: number;
 }
 
 /** Unlit shading modes; the value is the `shading` scalar the unlit module reads. */
-const UNLIT_SHADING = { color: 0, normal: 1, matcap: 2 } as const;
+const UNLIT_SHADING = { color: 0, normal: 1, matcap: 2, displayNormal: 3 } as const;
 
-function unlit(rgba: MaterialColorInput4, opts?: UnlitOpts): MaterialAsset {
+function unlit(rgba: MaterialColorInput4, opts?: UnlitOpts): MaterialRootAsset {
   return unlitMaterial('unlit', rgba, UNLIT_SHADING.color, opts);
 }
 
@@ -450,15 +457,21 @@ function unlitMaterial(
   rgba: MaterialColorInput4,
   shading: (typeof UNLIT_SHADING)[keyof typeof UNLIT_SHADING],
   opts?: UnlitOpts,
-): MaterialAsset {
+): MaterialRootAsset {
   if (opts?.alphaCutoff !== undefined && (opts.alphaCutoff < 0 || opts.alphaCutoff > 1)) {
     throw new Error(`Materials.${factory}: alphaCutoff must be in [0, 1], got ${opts.alphaCutoff}`);
   }
   const values: Record<string, MaterialValue> = { baseColor: linearColorFromInput(rgba, 4) };
   if (shading !== UNLIT_SHADING.color) values.shading = shading;
   if (opts?.baseColorTexture !== undefined) values.baseColorTexture = opts.baseColorTexture;
+  if (opts?.alphaTexture !== undefined) values.alphaTexture = opts.alphaTexture;
+  validateChannel('alphaChannel', opts?.alphaChannel);
+  if (opts?.alphaChannel !== undefined) values.alphaChannel = opts.alphaChannel;
+  values.shadowAlphaMode = opts?.shadowAlphaMode === 'texture' ? 1 : 0;
   if (opts?.alphaCutoff !== undefined) values.alphaCutoff = opts.alphaCutoff;
   if (opts?.alphaHash !== undefined) values.alphaHash = Number(opts.alphaHash);
+  values.alphaMode = opts?.alphaMode === 'opaque' ? 1 : opts?.alphaMode === 'premultiplied' ? 2 : 0;
+  values.alphaToCoverage = Number(opts?.renderState?.alphaToCoverageEnabled ?? false);
   const passes: [MaterialPass, ...MaterialPass[]] = [
     pass('forward', UNLIT_MODULE, opts?.renderState, undefined, opts?.queue),
   ];
@@ -482,7 +495,7 @@ interface MatcapOpts extends Omit<UnlitOpts, 'baseColorTexture'> {
  * Three.js `MeshMatcapMaterial`: the sphere image is looked up by the
  * view-space normal, so shading follows the camera without any light.
  */
-function matcap(matcapTexture: MaterialValue, opts?: MatcapOpts): MaterialAsset {
+function matcap(matcapTexture: MaterialValue, opts?: MatcapOpts): MaterialRootAsset {
   return unlitMaterial('matcap', opts?.color ?? [1, 1, 1, 1], UNLIT_SHADING.matcap, {
     ...opts,
     baseColorTexture: matcapTexture,
@@ -492,14 +505,21 @@ function matcap(matcapTexture: MaterialValue, opts?: MatcapOpts): MaterialAsset 
 interface NormalOpts extends Omit<UnlitOpts, 'baseColorTexture'> {
   /** Only alpha is read; the color is the encoded view-space normal. */
   readonly opacity?: number;
+  /** Data writes packed values directly; display decodes them before the sRGB finishing pass. */
+  readonly encoding?: 'data' | 'display';
 }
 
 /**
  * Three.js `MeshNormalMaterial`: writes `viewNormal * 0.5 + 0.5`. Pair it with
  * a camera whose tonemap is `'none'` when the encoded value must read back exactly.
  */
-function normal(opts?: NormalOpts): MaterialAsset {
-  return unlitMaterial('normal', [1, 1, 1, opts?.opacity ?? 1], UNLIT_SHADING.normal, opts);
+function normal(opts?: NormalOpts): MaterialRootAsset {
+  return unlitMaterial(
+    'normal',
+    [1, 1, 1, opts?.opacity ?? 1],
+    opts?.encoding === 'display' ? UNLIT_SHADING.displayNormal : UNLIT_SHADING.normal,
+    opts,
+  );
 }
 
 export interface StandardTriplanarOptions {
@@ -509,6 +529,8 @@ export interface StandardTriplanarOptions {
 }
 
 interface StandardOpts {
+  /** Shade with each triangle's geometric normal; defaults to smooth vertex normals. */
+  readonly flatShading?: boolean;
   readonly staticSwitches?: MaterialStaticSwitches;
   /** Numeric tuples are linear; Hex/CSS strings and numbers are sRGB inputs. */
   readonly baseColor: MaterialColorInput4;
@@ -597,6 +619,10 @@ interface StandardOpts {
   readonly alphaCutoff?: number;
   /** Object-space stochastic coverage. Keep blending disabled and depth writes enabled. */
   readonly alphaHash?: boolean;
+  /** Texture-only shadow coverage ignores scalar opacity, vertex alpha and stochastic coverage. */
+  readonly shadowAlphaMode?: 'material' | 'texture';
+  /** Output alpha is independent of the sampled coverage used by depth/shadows. */
+  readonly alphaMode?: 'preserve' | 'opaque' | 'premultiplied';
   readonly transmission?: number;
   readonly transmissionTexture?: MaterialValue;
   readonly ior?: number;
@@ -753,7 +779,7 @@ function validateProjection(opts: StandardOpts): void {
   }
 }
 
-function standardDefault(opts: DefaultStandardOptions): MaterialAsset {
+function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   if (
     opts.directMultiscattering !== undefined &&
     opts.directMultiscattering !== 'fit' &&
@@ -829,12 +855,6 @@ function standardDefault(opts: DefaultStandardOptions): MaterialAsset {
   ) {
     throw new MaterialTransmissionContractError('attenuationColor', 'shape', attenuationColor);
   }
-  if (transmission > 0 && opts.renderState?.blend !== undefined) {
-    throw new MaterialTransmissionContractError('transmission', 'blend', opts.renderState.blend);
-  }
-  if (transmission > 0 && opts.renderState?.depthWriteEnabled === true) {
-    throw new MaterialTransmissionContractError('transmission', 'depth-write', true);
-  }
   const values: Record<string, MaterialValue> = {
     subsurfaceRadius: [...subsurfaceRadius],
     subsurfaceWeight,
@@ -852,6 +872,7 @@ function standardDefault(opts: DefaultStandardOptions): MaterialAsset {
     thickness,
     attenuationColor,
   };
+  if (opts.flatShading !== undefined) values.flatShading = Number(opts.flatShading);
   if (opts.metallicChannel !== undefined) values.metallicChannel = opts.metallicChannel;
   if (opts.roughnessChannel !== undefined) values.roughnessChannel = opts.roughnessChannel;
   if (opts.clearcoat !== undefined) values.clearcoat = opts.clearcoat;
@@ -927,12 +948,15 @@ function standardDefault(opts: DefaultStandardOptions): MaterialAsset {
   }
   if (opts.alphaCutoff !== undefined) values.alphaCutoff = opts.alphaCutoff;
   if (opts.alphaHash !== undefined) values.alphaHash = Number(opts.alphaHash);
+  values.shadowAlphaMode = opts.shadowAlphaMode === 'texture' ? 1 : 0;
+  values.alphaMode = opts.alphaMode === 'opaque' ? 1 : opts.alphaMode === 'premultiplied' ? 2 : 0;
+  values.alphaToCoverage = Number(opts.renderState?.alphaToCoverageEnabled ?? false);
   if (opts.directMultiscattering === 'lut') values.directMultiscatteringLut = 1;
   if (opts.transmissionTexture !== undefined) values.transmissionTexture = opts.transmissionTexture;
   if (opts.thicknessTexture !== undefined) values.thicknessTexture = opts.thicknessTexture;
   if (opts.attenuationDistance !== undefined) values.attenuationDistance = opts.attenuationDistance;
   const forwardRenderState =
-    transmission > 0 ? { ...(opts.renderState ?? {}), depthWriteEnabled: false } : opts.renderState;
+    transmission > 0 ? { depthWriteEnabled: false, ...opts.renderState } : opts.renderState;
   const parameters = standardSurfaceParameters(standardParameters('linear', opts));
   const declaredNames = new Set(parameters.map((parameter) => parameter.name));
   for (const name of Object.keys(values)) {
@@ -963,7 +987,7 @@ function standardDefault(opts: DefaultStandardOptions): MaterialAsset {
   };
 }
 
-function standardCustom(opts: CustomStandardSurfaceOptions): MaterialAsset {
+function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
   const layerPlan = deriveStandardLayerPlan(
     opts.parameters.filter((parameter) => parameter.optional !== true),
     undefined,
@@ -988,7 +1012,7 @@ function standardCustom(opts: CustomStandardSurfaceOptions): MaterialAsset {
   };
 }
 
-export function standard(options: StandardOptions): MaterialAsset {
+export function standard(options: StandardOptions): MaterialRootAsset {
   return options.surfaceModule === undefined ? standardDefault(options) : standardCustom(options);
 }
 
@@ -1002,6 +1026,7 @@ export type LambertOptions = Pick<
   | 'normalTexture'
   | 'normalScale'
   | 'normalMapSpace'
+  | 'flatShading'
   | 'bumpTexture'
   | 'bumpScale'
   | 'emissive'
@@ -1022,7 +1047,7 @@ export type LambertOptions = Pick<
  * from F0, so the grazing Fresnel lobe vanishes and only diffuse remains;
  * shadows, IBL irradiance, clustered lights and deferred shading stay shared.
  */
-function lambert(options: LambertOptions): MaterialAsset {
+function lambert(options: LambertOptions): MaterialRootAsset {
   return standardDefault({ ...options, metallic: 0, roughness: 1, specular: 0 });
 }
 

@@ -15,6 +15,7 @@ export const FORGEAX_FRAME_COMPLETED_DATASET = 'forgeaxFrameCompleted';
 export const FORGEAX_FRAME_COMPLETED_EVENT = 'forgeax:frame-completed';
 
 export interface BrowserFrameSubmitted {
+  readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly frameId: number;
   readonly deviceGeneration: number;
   /** Compiled graph identity paired with this submitted picture. */
@@ -37,6 +38,7 @@ export interface BrowserFrameSubmitted {
 }
 
 export interface BrowserFrameCompleted {
+  readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly frameId: number;
   readonly deviceGeneration: number;
   /** World/session identity owned by the active App execution. */

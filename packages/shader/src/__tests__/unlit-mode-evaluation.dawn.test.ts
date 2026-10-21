@@ -22,9 +22,9 @@ function countedSource(): string {
   return `${text}\nvar<private> modeCalls: vec3<u32>;`;
 }
 
-async function program(): Promise<string> {
+async function program(extra = ''): Promise<string> {
   const catalog: Record<string, string> = {};
-  for (const file of readdirSync(root, { recursive: true }).filter(
+  for (const file of readdirSync(root, { recursive: true, encoding: 'utf8' }).filter(
     (file) => file.endsWith('.wgsl') && !file.split(/[\\/]/).includes('__tests__'),
   )) {
     if (file === 'unlit.wgsl') continue;
@@ -64,7 +64,8 @@ struct TestOutput { @location(0) color: vec4<f32>, @location(1) calls: vec4<f32>
 @fragment fn testBackFragment(input: VsOut) -> TestOutput {
   let color = unlitColor(input, false);
   return TestOutput(color, vec4(vec3<f32>(modeCalls), 1.0));
-}`,
+}
+${extra}`,
     modules,
     {
       STORAGE_BUFFER_AVAILABLE: true,
@@ -75,6 +76,91 @@ struct TestOutput { @location(0) color: vec4<f32>, @location(1) calls: vec4<f32>
     },
   );
 }
+
+it('Unlit consumes the native per-slot UV set and TRS on the real shader', async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('Unlit coordinates require a Dawn adapter');
+  const device = await adapter.requestDevice();
+  const errors: string[] = [];
+  device.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
+  const layout = derive(DEFAULT_UNLIT_PARAM_SCHEMA);
+  const coordinates = layout.coordinateRecords.find(
+    (record) => record.parameter === 'baseColorTexture',
+  );
+  if (!coordinates) throw new Error('Missing Unlit coordinates');
+  const inputs = Array.from({ length: 8 }, (_, i) => [i / 8, 1 - i / 10]);
+  const material = device.createBuffer({
+    size: layout.totalBytes,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const result = device.createBuffer({
+    size: 8,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    size: 8,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+  try {
+    const module = device.createShaderModule({
+      code: await program(`
+@group(0) @binding(31) var<storage, read_write> coordinateResult: vec2<f32>;
+@compute @workgroup_size(1) fn testCoordinates() {
+  var input: VsIn;
+  ${inputs.map(([u, v], i) => `input.uv${i === 0 ? '' : i} = vec2<f32>(${u}, ${v});`).join('\n')}
+  coordinateResult = unlitUv(input, material.baseColorTextureCoordinatesMetadata.x, material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesRotation);
+}`),
+    });
+    expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(
+      [],
+    );
+    const pipeline = await device.createComputePipelineAsync({
+      layout: 'auto',
+      compute: { module, entryPoint: 'testCoordinates' },
+    });
+    const outputGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 31, resource: { buffer: result } }],
+    });
+    const materialGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(1),
+      entries: [{ binding: 0, resource: { buffer: material } }],
+    });
+    for (const [set, input] of inputs.entries()) {
+      const params = new Float32Array(layout.totalBytes / 4);
+      const angle = Math.fround(0.37),
+        cosine = Math.fround(Math.cos(angle)),
+        sine = Math.fround(Math.sin(angle));
+      params.set(
+        [0.2, -0.3, -2, 0.5, set, angle, 1, 1, cosine, sine, 0, 0],
+        coordinates.offset / 4,
+      );
+      device.queue.writeBuffer(material, 0, params);
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, outputGroup);
+      pass.setBindGroup(1, materialGroup);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      encoder.copyBufferToBuffer(result, 0, readback, 0, 8);
+      device.queue.submit([encoder.finish()]);
+      await readback.mapAsync(GPUMapMode.READ);
+      const actual = new Float32Array(readback.getMappedRange());
+      const x = (input[0] ?? 0) * -2,
+        y = (input[1] ?? 0) * 0.5;
+      expect(actual[0]).toBeCloseTo(0.2 + x * cosine - y * sine, 6);
+      expect(actual[1]).toBeCloseTo(-0.3 + x * sine + y * cosine, 6);
+      readback.unmap();
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    readback.destroy();
+    result.destroy();
+    material.destroy();
+    device.destroy();
+  }
+});
 
 // Instrument the real shader's helper reachability, not GPU execution time:
 // these observable counters deliberately prevent dead-call elimination.
@@ -130,7 +216,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
       materialLayout.totalBytes,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     );
-    const mesh = buffer(160, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+    const mesh = buffer(176, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
     const instance = buffer(144, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
     const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     device.queue.writeBuffer(mesh, 0, identity);
@@ -147,6 +233,12 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
       { bytesPerRow: 8 },
       [2, 2],
     );
+    const alpha = texture({
+      size: [1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture({ texture: alpha }, new Uint8Array([255, 255, 255, 255]), {}, [1, 1]);
     const targets = [0, 1].map(() =>
       texture({
         size: [16, 4],
@@ -166,6 +258,8 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
           { binding: 0, resource: { buffer: material } },
           { binding: 1, resource: device.createSampler() },
           { binding: 2, resource: tex.createView() },
+          { binding: 3, resource: device.createSampler() },
+          { binding: 4, resource: alpha.createView() },
         ],
       }),
       device.createBindGroup({
@@ -193,7 +287,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
           values.set([0, 0.75, composition, 0], 288);
           device.queue.writeBuffer(view, 0, values);
           const params = new Float32Array(materialLayout.totalBytes / 4);
-          params.set([0.8, 0.6, 0.4, 0.8, cutoff, 0, mode]);
+          params.set([0.8, 0.6, 0.4, 0.8, cutoff, 0, 0, 0, 0, mode, 1]);
           params.set([0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0], coordinates.offset / 4);
           device.queue.writeBuffer(material, 0, params);
           for (const draw of draws) {

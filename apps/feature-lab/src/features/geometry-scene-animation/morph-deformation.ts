@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import { createSphereGeometry } from '@forgeax/engine/geometry';
 import { MorphWeights } from '@forgeax/engine/scene';
@@ -33,13 +34,17 @@ export default defineFeature({
   expect:
     'ON: weights [1, 1] - the green sphere is stretched into a wide egg with a raised top. OFF: weights [0, 0] - a plain round sphere.',
   setup({ world, hud }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0, 1.4, 5], target: [0, 0.8, 0] });
     const sphere = createSphereGeometry(0.5, 32, 24);
     if (!sphere.ok) {
       hud.status(`sphere failed: ${sphere.error.code}`);
       return {};
     }
-    const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', withMorph(sphere.value));
+    const mesh = sceneAssets.create(withMorph(sphere.value)).unwrap();
     const entity: EntityHandle = spawnMesh(
       world,
       mesh,

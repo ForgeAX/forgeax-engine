@@ -524,7 +524,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
         (selection) => selection.pass === 'ShadowCaster' && selection.address === 'scene-index',
       );
     expect(shadow?.abi).toMatchObject({
-      materialRow: { byteLength: 112 },
+      materialRow: { byteLength: 128 },
       sceneIndexEntry: 'vs_scene_index',
     });
     expect(

@@ -22,6 +22,20 @@ function packageId(value: string) {
 }
 
 describe('ScriptablePack and Pack authoring', () => {
+  it('preserves explicit plugin production and rejects other capability values', () => {
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      plugins: true,
+      packageId: definePackageId('01900000-0000-7000-8000-000000000076'),
+      build: () => ok({}),
+    });
+    expect(definition.plugins).toBe(true);
+    expect(projectScriptablePackMeta(definition, 'source.pack.ts')).toMatchObject({
+      plugins: true,
+    });
+    for (const plugins of [false, 'true', 1, null])
+      expect(validatePackDefinition({ ...definition, plugins }).ok).toBe(false);
+  });
   it('preserves explicit runtime capability without evaluating its build', () => {
     const dependency = '01900000-0000-7000-8000-000000000033';
     const dependencies = [dependency];

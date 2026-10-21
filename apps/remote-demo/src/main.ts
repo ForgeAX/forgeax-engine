@@ -53,7 +53,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Populate the engine-owned World with the 3-entity demo scene (cube +
   // camera + directional light). Must happen after createApp because
   // createApp creates its own World internally.
-  populateDemoWorld(app.world);
+  if (app.assets === undefined) throw new Error('Demo requires the host AssetRegistry');
+  populateDemoWorld(app.world, app.assets);
 
   // app.remote is auto-wired by createApp in dev mode — zero manual assembly.
   // When present, app.remote.port is the OS-assigned ephemeral port, and

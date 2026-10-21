@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { ProfileComparisonProjection } from './compare.js';
+import type { ProfileComparisonError, ProfileComparisonProjection } from './compare.js';
 import { compareProfileCaptures } from './compare.js';
 import type { ProfileModel } from './model.js';
 import { buildProfileModel } from './model.js';
@@ -17,6 +17,8 @@ type CliCommand =
   | { readonly kind: 'frame'; readonly frameId: number }
   | { readonly kind: 'phase'; readonly source: ProfileSource; readonly phase: string }
   | { readonly kind: 'compare' };
+
+type CompareArtifactSide = ProfileComparisonError['detail']['side'];
 
 type CliArguments = {
   readonly command: CliCommand;
@@ -37,7 +39,7 @@ type CliError = {
   readonly detail: {
     readonly argument?: string;
     readonly path?: string;
-    readonly side?: 'left' | 'right';
+    readonly side?: CompareArtifactSide;
     readonly message: string;
   };
 };
@@ -68,7 +70,7 @@ function parsePositiveSafeInteger(value: string, argument: string): number | Cli
 }
 
 type ParseState = {
-  kind: 'summary' | 'frame' | 'phase' | 'compare';
+  kind: CliCommand['kind'];
   frameId: number | undefined;
   source: ProfileSource | undefined;
   phase: string | undefined;
@@ -276,11 +278,11 @@ function readArtifact(filePath: string | undefined, stdin: string): string | Cli
   return stdin;
 }
 
-function withSide(side: 'left' | 'right', error: CliError): CliError {
+function withSide(side: CompareArtifactSide, error: CliError): CliError {
   return { ...error, detail: { ...error.detail, side } };
 }
 
-function readCompareArtifact(filePath: string, side: 'left' | 'right'): unknown | CliError {
+function readCompareArtifact(filePath: string, side: CompareArtifactSide): unknown | CliError {
   const input = readArtifact(filePath, '');
   if (typeof input !== 'string') return withSide(side, input);
   const artifact = parseArtifact(input);
@@ -324,7 +326,7 @@ function projectModel(
       captureId: model.summary.captureId,
       timeUnit: model.summary.timeUnit,
       frameId: command.frameId,
-      completeness: model.completeness,
+      completeness: model.summary.completeness,
       frame: model.frames.find((entry) => entry.frameId === command.frameId) ?? null,
     };
   }
@@ -338,7 +340,7 @@ function projectModel(
     timeUnit: model.summary.timeUnit,
     source: command.source,
     phase: command.phase,
-    completeness: model.completeness,
+    completeness: model.summary.completeness,
     phaseSummary: phaseSummary ?? null,
     children: model.phases.filter(
       (entry) => entry.parentSource === command.source && entry.parentPhase === command.phase,

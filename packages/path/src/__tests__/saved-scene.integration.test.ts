@@ -29,13 +29,10 @@ it('saves and reloads ordinary SceneAsset path declarations and instance-local f
       },
     },
   };
-  const world = new World(),
+  const registry = new AssetRegistry();
+  const world = new World({ assets: registry }),
     context = await createWorldContext(world, [pathPlugin(), renderComponentsPlugin()]);
-  const registry = new AssetRegistry({} as never);
-  const handle = world.allocSharedRef(
-    'SceneAsset',
-    JSON.parse(JSON.stringify(source)) as SceneAsset,
-  );
+  const handle = registry.create(JSON.parse(JSON.stringify(source)) as SceneAsset).unwrap();
   const first = worldInstantiateSceneFlat(world, handle).unwrap();
   const second = worldInstantiateSceneFlat(world, handle).unwrap();
   const followers = Array.from(world.query({ read: [PathFollower] }).unwrap(), (row) => row.entity);
@@ -53,12 +50,10 @@ it('saves and reloads ordinary SceneAsset path declarations and instance-local f
   expect(
     Object.values(saved.entities).some((entity) => 'DesiredPathPose' in entity.components),
   ).toBe(false);
-  const third = new World(),
+  const thirdRegistry = new AssetRegistry();
+  const third = new World({ assets: thirdRegistry }),
     thirdContext = await createWorldContext(third, [pathPlugin(), renderComponentsPlugin()]);
-  const reload = third.allocSharedRef(
-    'SceneAsset',
-    JSON.parse(JSON.stringify(saved)) as SceneAsset,
-  );
+  const reload = thirdRegistry.create(JSON.parse(JSON.stringify(saved)) as SceneAsset).unwrap();
   worldInstantiateSceneFlat(third, reload).unwrap();
   third.update(1 / 60).unwrap();
   const reloaded = Array.from(
@@ -73,6 +68,10 @@ it('saves and reloads ordinary SceneAsset path declarations and instance-local f
   expect(Array.from(world.query({ read: [PathFollower] }).unwrap())).toHaveLength(0);
   await context.fiber.dispose();
   await thirdContext.fiber.dispose();
+  world.despawnAll().unwrap();
+  third.despawnAll().unwrap();
+  thirdRegistry.dispose();
+  registry.dispose();
 });
 
 it('reloads saved desired-motion configuration while its motor reinstalls transient pose output', async () => {
@@ -88,17 +87,14 @@ it('reloads saved desired-motion configuration while its motor reinstalls transi
       },
     },
   };
-  const registry = new AssetRegistry({} as never);
   let saved = source;
   for (let round = 0; round < 2; round++) {
-    const world = new World();
+    const registry = new AssetRegistry();
+    const world = new World({ assets: registry });
     const context = await createWorldContext(world, [pathPlugin(), renderComponentsPlugin()]);
-    const handle = world.allocSharedRef(
-      'SceneAsset',
-      JSON.parse(JSON.stringify(saved)) as SceneAsset,
-    );
+    const handle = registry.create(JSON.parse(JSON.stringify(saved)) as SceneAsset).unwrap();
     const instance = worldInstantiateSceneFlat(world, handle).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    registry.release(handle).unwrap();
     const follower = Array.from(
       world.query({ read: [PathFollower] }).unwrap(),
       (row) => row.entity,
@@ -120,6 +116,8 @@ it('reloads saved desired-motion configuration while its motor reinstalls transi
     expect(authored?.components.DesiredPathPose).toBeUndefined();
     for (const entity of instance.roots) world.despawn(entity).unwrap();
     await context.fiber.dispose();
+    world.despawnAll().unwrap();
+    registry.dispose();
   }
 });
 
@@ -136,7 +134,8 @@ it.each([
   ['null distance', 'PathFollower', { distance: null }],
   ['string pause', 'PathFollower', { paused: 'false' }],
 ] as const)('rejects %s in ordinary authored Scene JSON before storage coercion', async (_label, component, patch) => {
-  const world = new World();
+  const registry = new AssetRegistry();
+  const world = new World({ assets: registry });
   const context = await createWorldContext(world, [pathPlugin(), renderComponentsPlugin()]);
   const source: SceneAsset = {
     kind: 'scene',
@@ -153,10 +152,7 @@ it.each([
       },
     },
   };
-  const handle = world.allocSharedRef(
-    'SceneAsset',
-    JSON.parse(JSON.stringify(source)) as SceneAsset,
-  );
+  const handle = registry.create(JSON.parse(JSON.stringify(source)) as SceneAsset).unwrap();
   const result = worldInstantiateSceneFlat(world, handle);
   try {
     expect(result.ok).toBe(false);
@@ -165,13 +161,16 @@ it.each([
     expect(Array.from(world.query({ read: [PathFollower] }).unwrap())).toHaveLength(0);
   } finally {
     if (result.ok) for (const entity of result.value.roots) world.despawn(entity).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    registry.release(handle).unwrap();
     await context.fiber.dispose();
+    world.despawnAll().unwrap();
+    registry.dispose();
   }
 });
 
 it('projects typed author controls by numeric value rather than reinterpreting their bytes', async () => {
-  const world = new World();
+  const registry = new AssetRegistry();
+  const world = new World({ assets: registry });
   const context = await createWorldContext(world, [pathPlugin(), renderComponentsPlugin()]);
   const source: SceneAsset = {
     kind: 'scene',
@@ -184,7 +183,7 @@ it('projects typed author controls by numeric value rather than reinterpreting t
       follower: { components: { PathFollower: { path: 'rail', distance: 3, speed: 0 } } },
     },
   };
-  const handle = world.allocSharedRef('SceneAsset', source);
+  const handle = registry.create(source).unwrap();
   const instance = worldInstantiateSceneFlat(world, handle).unwrap();
   world.update(1 / 60).unwrap();
   const follower = Array.from(
@@ -196,6 +195,6 @@ it('projects typed author controls by numeric value rather than reinterpreting t
     0, 0, 3,
   ]);
   for (const entity of instance.roots) world.despawn(entity).unwrap();
-  world.sharedRefs.release(handle).unwrap();
+  registry.release(handle).unwrap();
   await context.fiber.dispose();
 });

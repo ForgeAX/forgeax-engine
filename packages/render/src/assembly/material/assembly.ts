@@ -1,13 +1,17 @@
 import {
   createStandardPbrArtifactReceipt,
   type MaterialShaderArtifact,
-  type MaterialShaderArtifactReceipt,
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
   type ShaderRegistry,
 } from '@forgeax/engine-shader';
-import type { MaterialProgramAddress } from '@forgeax/engine-types';
+import type { MaterialProgramAbi, MaterialProgramAddress } from '@forgeax/engine-types';
+import {
+  isCanonicalStandardPbrMaterialShader,
+  isStandardPbrSkinMaterialShader,
+  SHADOW_CASTER_SHADER_ID,
+} from '../../pbr-pipeline';
 
 type ProgramEntry = MaterialShaderEntry & { readonly program: MaterialShaderProgram };
 
@@ -33,10 +37,8 @@ export function assembleStandardPbrArtifact(
   shaderEntryOrProgram: ProgramEntry | MaterialShaderProgram,
   optionsOrVertexColor: MaterialShaderArtifactRequest | boolean = {},
 ): MaterialShaderArtifact | undefined {
-  const skinned =
-    materialShaderId === 'forgeax::pbr-skin' ||
-    materialShaderId === 'forgeax::default-standard-pbr-skin';
-  if (materialShaderId !== 'forgeax::default-standard-pbr' && !skinned) return undefined;
+  if (!isCanonicalStandardPbrMaterialShader(materialShaderId)) return undefined;
+  const skinned = isStandardPbrSkinMaterialShader(materialShaderId);
 
   const options =
     typeof optionsOrVertexColor === 'boolean'
@@ -109,11 +111,11 @@ export interface MaterialShaderArtifactRequest {
   readonly pass?: 'forward' | 'shadow' | 'depth';
 }
 
-function receiptHasVertexColor(receipt: MaterialShaderArtifactReceipt): boolean {
+function receiptHasVertexColor(receipt: MaterialProgramAbi): boolean {
   return receipt.vertexInputs.some((input) => input.semantic === 'color');
 }
 
-function receiptUvSetCount(receipt: MaterialShaderArtifactReceipt): number {
+function receiptUvSetCount(receipt: MaterialProgramAbi): number {
   let count = 0;
   for (const input of receipt.vertexInputs) {
     if (input.semantic === 'uv') count = Math.max(count, 1);
@@ -165,7 +167,7 @@ function assemblePublishedArtifact(
 function selectedMaterialShaderEntry(
   entry: Pick<MaterialShaderEntry, 'paramSchema'>,
   program: MaterialShaderProgram,
-  receipt: MaterialShaderArtifactReceipt | undefined,
+  receipt: MaterialProgramAbi | undefined,
 ): ProgramEntry {
   return {
     source: program.source,
@@ -176,14 +178,7 @@ function selectedMaterialShaderEntry(
 }
 
 function selectPublishedVariant(
-  entry: {
-    readonly variants: readonly {
-      readonly definesKey: string;
-      readonly defines: Readonly<Record<string, boolean>>;
-      readonly composedWgsl: string;
-      readonly receipt?: MaterialShaderArtifactReceipt;
-    }[];
-  },
+  entry: Pick<MaterialShaderManifestEntry, 'variants'>,
   options: MaterialShaderArtifactRequest,
 ): (typeof entry.variants)[number] | undefined {
   const desiredColor = options.vertexColorAvailable;
@@ -261,16 +256,6 @@ function selectPublishedVariant(
   return ranked[0]?.variant;
 }
 
-const STANDARD_SHADOW_CASTER_ID = 'forgeax::default-shadow-caster';
-
-function isBuiltinStandardPbrMaterialShader(materialShaderId: string): boolean {
-  return (
-    materialShaderId === 'forgeax::default-standard-pbr' ||
-    materialShaderId === 'forgeax::default-standard-pbr-skin' ||
-    materialShaderId === 'forgeax::pbr-skin'
-  );
-}
-
 // Registry entries and manifest publications are immutable. Replace the projection
 // when either owner identity changes; old registrations remain weakly held.
 const publishedArtifacts = new WeakMap<
@@ -312,8 +297,8 @@ export function resolveMaterialShaderArtifact(
   options: MaterialShaderArtifactRequest = {},
 ): MaterialShaderArtifact | undefined {
   const shadowLookup =
-    options.pass === 'shadow' && isBuiltinStandardPbrMaterialShader(materialShaderId);
-  const firstLookupId = shadowLookup ? STANDARD_SHADOW_CASTER_ID : materialShaderId;
+    options.pass === 'shadow' && isCanonicalStandardPbrMaterialShader(materialShaderId);
+  const firstLookupId = shadowLookup ? SHADOW_CASTER_SHADER_ID : materialShaderId;
   const fallbackLookupId = shadowLookup
     ? undefined
     : materialShaderId === 'forgeax::pbr-skin'
@@ -374,11 +359,14 @@ export function resolveMaterialShaderArtifact(
         ? lookup.value
         : selectedMaterialShaderEntry(
             lookup.value,
-            shader.materialProgram(selected.composedWgsl),
+            shader.materialProgram(
+              selected.composedWgsl,
+              selected.entryPoints ?? selected.receipt?.entryPoints,
+            ),
             selected.receipt,
           );
     const artifact = assemblePublishedArtifact(
-      lookupId === STANDARD_SHADOW_CASTER_ID ? lookupId : materialShaderId,
+      lookupId === SHADOW_CASTER_SHADER_ID ? lookupId : materialShaderId,
       selectedEntry,
       options,
       manifestEntry?.uvSetCount,

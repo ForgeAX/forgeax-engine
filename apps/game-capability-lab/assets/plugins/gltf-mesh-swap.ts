@@ -1,8 +1,8 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import type { Handle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 
 /** Khronos BoxTextured binary and external-buffer glTF sub-assets. */
 export const GAME_DEFAULT_GLB_MESH_GUID = '019ea7c7-4eb7-7b5c-8195-c14c7a0e258c';
@@ -11,14 +11,14 @@ export const GAME_DEFAULT_GLTF_MESH_GUID = '019ea7c7-4ed4-74d6-ba47-2e215e31f6b0
 export const GAME_DEFAULT_GLTF_MATERIAL_GUID = '019ea7c7-4ed5-7780-8fc1-901400a5945f';
 
 export type GltfMeshVariant = {
-  readonly mesh: Handle<'MeshAsset', 'shared'>;
-  readonly material: Handle<'MaterialAsset', 'shared'>;
+  readonly mesh: AssetHandle<'mesh'>;
+  readonly material: AssetHandle<'material'>;
 };
 
 export type GltfMeshSwap = {
   readonly entity: EntityHandle;
-  readonly original: Handle<'MeshAsset', 'shared'>;
-  readonly originalMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
+  readonly original: AssetHandle<'mesh'>;
+  readonly originalMaterials: readonly AssetHandle<'material'>[];
   readonly glb?: GltfMeshVariant;
   readonly gltf?: GltfMeshVariant;
   active: 'original' | 'glb' | 'gltf';
@@ -30,7 +30,7 @@ async function loadVariant(
   label: 'GLB' | 'glTF',
   meshGuidText: string,
   materialGuidText: string,
-): Promise<{ mesh: MeshAsset; material: MaterialAsset } | undefined> {
+): Promise<{ mesh: AssetHandle<'mesh'>; material: AssetHandle<'material'> } | undefined> {
   const meshGuid = AssetGuid.parse(meshGuidText);
   const materialGuid = AssetGuid.parse(materialGuidText);
   if (!meshGuid.ok || !materialGuid.ok) {
@@ -38,14 +38,16 @@ async function loadVariant(
     return undefined;
   }
   const [meshResult, materialResult] = await Promise.all([
-    assets.loadByGuid<MeshAsset>(meshGuid.value),
-    assets.loadByGuid<MaterialAsset>(materialGuid.value),
+    assets.load(meshGuid.value, 'mesh'),
+    assets.load(materialGuid.value, 'material'),
   ]);
   if (!meshResult.ok) {
+    if (materialResult.ok) assets.release(materialResult.value).unwrap();
     console.warn(`[game] ${label} mesh unavailable: ${meshResult.error.code} — ${meshResult.error.hint}`);
     return undefined;
   }
   if (!materialResult.ok) {
+    assets.release(meshResult.value).unwrap();
     console.warn(`[game] ${label} material unavailable: ${materialResult.error.code} — ${materialResult.error.hint}`);
     return undefined;
   }
@@ -71,8 +73,8 @@ export async function createGltfMeshSwap(
     entity,
     original: original.value.assetHandle,
     originalMaterials: [...originalRenderer.value.materials],
-    ...(glb === undefined ? {} : { glb: { mesh: world.allocSharedRef('MeshAsset', glb.mesh), material: world.allocSharedRef('MaterialAsset', glb.material) } }),
-    ...(gltf === undefined ? {} : { gltf: { mesh: world.allocSharedRef('MeshAsset', gltf.mesh), material: world.allocSharedRef('MaterialAsset', gltf.material) } }),
+    ...(glb === undefined ? {} : { glb: { mesh: glb.mesh, material: glb.material } }),
+    ...(gltf === undefined ? {} : { gltf: { mesh: gltf.mesh, material: gltf.material } }),
     active: 'original',
     swaps: 0,
   };

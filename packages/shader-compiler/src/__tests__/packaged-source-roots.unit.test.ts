@@ -28,6 +28,8 @@ it('cooks from the resolved package when the SDK cwd also contains shader source
           { name: 'region', type: 'vec4' },
           { name: 'pivotAndSize', type: 'vec4' },
           { name: 'slicesAndMode', type: 'vec4' },
+          { name: 'flipX', type: 'f32' },
+          { name: 'flipY', type: 'f32' },
           { name: 'baseColorTexture', type: 'texture' },
         ],
       },

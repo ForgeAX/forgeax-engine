@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><link rel="icon" href="data:,">
+<title>Point / Spot 阴影对照</title>
+<style>body{margin:32px;background:#111820;color:#e4eaf2;font:16px system-ui}p{max-width:1000px;line-height:1.6}main{display:flex;gap:24px;flex-wrap:wrap}figure{margin:0}canvas{width:384px;height:384px}button,select{padding:8px;margin:4px}pre{white-space:pre-wrap}</style>
+<h1>Point / Spot 阴影：同场景、同参数</h1>
+<p>同一立方体投影到墙面。阴影开关两次渲染相除，分离 BRDF 与阴影可见度。默认过滤宽度 3 对应 Three.js 半径 1 的五次 Vogel 采样；宽度 1 使用单次硬件 PCF。可改变相机、光源距离与法线偏移。</p>
+<p><select id="kind"><option>point</option><option>spot</option></select><select id="path"><option>forward</option><option>deferred</option></select><label>过滤宽度 <select id="kernel"><option>1</option><option selected>3</option><option>5</option></select></label> <label>相机 X <input id="cameraX" type="number" value="0" step="0.1" min="-1" max="1"></label> <label>光源距离 <input id="distance" type="number" value="1" step="0.5" min="1" max="3"></label> <label>法线偏移 <input id="normalBias" type="number" value="0" step="0.05" min="0" max="0.5"></label> <button id="run">重新对照</button></p>
+<p>基准将 bias 设为 0，以单独观察过滤与投影面。墙面和方块内部误差分别统计；Point 的非零 bias 单位与 Three 不同。</p><main><figure><canvas id="three" width="256" height="256"></canvas><figcaption>Three.js r184 WebGPU</figcaption></figure><figure><canvas id="forgeax" width="256" height="256"></canvas><figcaption>Forgeax</figcaption></figure></main>
+<pre id="status">Rendering…</pre><script type="module" src="/src/shadow-response.mjs"></script></html>

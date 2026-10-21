@@ -14,7 +14,9 @@ import type { ColorLike, Mat4, Vec3 } from '@forgeax/engine-math';
 import type {
   BindGroup,
   Buffer,
+  RenderPassDescriptor,
   RenderPipeline,
+  RenderPipelineDescriptor,
   RhiCommandEncoder,
   RhiDevice,
   RhiRenderPassEncoder,
@@ -104,6 +106,13 @@ function normalizeCapacity(value: number, fallback: number): number {
 // DebugDraw (w12 / w13 / w14)
 // ==========================================================================
 
+interface DebugDrawResources {
+  vbo: Buffer;
+  readonly uniformBuffer: Buffer;
+  readonly bindGroup: BindGroup;
+  readonly pipeline: RenderPipeline;
+}
+
 export class DebugDraw implements DebugDrawInterface {
   private stagingArr: Float32Array;
   private stagingLen = 0;
@@ -112,9 +121,7 @@ export class DebugDraw implements DebugDrawInterface {
 
   private capVal: number;
 
-  private gpuVbo: Buffer | null = null;
-
-  private gpuPipeline: RenderPipeline | null = null;
+  private resources: DebugDrawResources | undefined;
 
   // Graph targets can differ from the creation format (e.g. rgba16float post input on
   // raw-only WebGL2 surfaces), so encode() resolves one PSO per attachment format.
@@ -122,15 +129,9 @@ export class DebugDraw implements DebugDrawInterface {
 
   private readonly pipelinesByFormat = new Map<TextureFormat, RenderPipeline>();
 
-  private gpuUniformBuffer: Buffer | null = null;
-
-  private gpuBindGroup: BindGroup | null = null;
-
   private maxCapVal: number;
 
   private readonly rhiDevice: RhiDevice;
-
-  private isDestroyed = false;
 
   // Whether the destroy-after-shape warning has been emitted (plan-strategy D-11).
   // private (no underscore, no @internal) — purely class-internal state, not part of
@@ -167,12 +168,9 @@ export class DebugDraw implements DebugDrawInterface {
       boundedMaxCapacity,
     );
     this.rhiDevice = device;
-    this.gpuPipeline = pipeline;
+    this.resources = { vbo, uniformBuffer, bindGroup, pipeline };
     this.pipelineSource = pipelineSource;
     if (pipelineSource !== undefined) this.pipelinesByFormat.set(pipelineSource.format, pipeline);
-    this.gpuVbo = vbo;
-    this.gpuUniformBuffer = uniformBuffer;
-    this.gpuBindGroup = bindGroup;
     this.capVal = boundedInitialCapacity;
     this.maxCapVal = boundedMaxCapacity;
     this.stagingArr = new Float32Array(boundedInitialCapacity * (VERTEX_STRIDE_BYTES / 4));
@@ -194,12 +192,12 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   hasWork(): boolean {
-    return !this.isDestroyed && this.stagingLen > 0;
+    return this.resources !== undefined && this.stagingLen > 0;
   }
 
   /** @internal Whether destroy() has been called. */
   get _destroyed(): boolean {
-    return this.isDestroyed;
+    return this.resources === undefined;
   }
 
   /**
@@ -254,7 +252,7 @@ export class DebugDraw implements DebugDrawInterface {
     bc: number,
     ac: number,
   ): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -293,7 +291,8 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   private ensureCapacity(needed: number): void {
-    if (this.isDestroyed) return;
+    const resources = this.resources;
+    if (resources === undefined) return;
     if (needed <= this.capVal) return;
 
     // Warn for hard-cap truncation once for this frame, before any vertex drops.
@@ -330,8 +329,8 @@ export class DebugDraw implements DebugDrawInterface {
         return;
       }
       console.warn(`[DebugDraw] Resizing vertex buffer from ${this.capVal} to ${newCap} vertices.`);
-      if (this.gpuVbo !== null) this.rhiDevice.destroyBuffer(this.gpuVbo);
-      this.gpuVbo = newVbo.value;
+      this.rhiDevice.destroyBuffer(resources.vbo);
+      resources.vbo = newVbo.value;
       this.capVal = newCap;
       const newStaging = new Float32Array(newCap * (VERTEX_STRIDE_BYTES / 4));
       newStaging.set(this.stagingArr.subarray(0, this.stagingLen * 4));
@@ -350,7 +349,7 @@ export class DebugDraw implements DebugDrawInterface {
   // -- Public shape API --
 
   line(a: Vec3, b: Vec3, color: ColorLike): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -362,7 +361,7 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   aabb(min: Vec3, max: Vec3, color: ColorLike): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -375,7 +374,7 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   sphere(center: Vec3, radius: number, color: ColorLike, segments = 16): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -388,7 +387,7 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   frustum(viewProj: Mat4, color: ColorLike): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -407,7 +406,7 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   arrow(start: Vec3, end: Vec3, color: ColorLike, tipLength?: number): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -420,7 +419,7 @@ export class DebugDraw implements DebugDrawInterface {
   }
 
   axes(worldMat: Mat4, length: number): void {
-    if (this.isDestroyed) {
+    if (this.resources === undefined) {
       this.postDestroyWarnOnce();
       return;
     }
@@ -442,7 +441,7 @@ export class DebugDraw implements DebugDrawInterface {
     view: TextureView,
     viewProj: Mat4,
   ): Result<void, DebugDrawError> {
-    if (this.isDestroyed) return flushedAfterDestroy();
+    if (this.resources === undefined) return flushedAfterDestroy();
     if (viewProj === undefined || viewProj === null) return viewProjRequired();
     if (this.stagingLen === 0) {
       this.lastFlushedVertexCount = 0;
@@ -450,17 +449,13 @@ export class DebugDraw implements DebugDrawInterface {
     }
 
     // Begin render pass with loadOp='load' to preserve scene content.
-    // forgeax TextureView is an opaque RHI handle; the underlying WebGPU
-    // GPURenderPassDescriptor expects raw GPUTextureView.
     // When depthMode is 'less-equal', a depthStencilAttachment is required
     // matching the PSO's depth format. The caller must provide depthView
     // for less-equal mode; without it, the render pass will fail validation.
-    // biome-ignore lint/suspicious/noExplicitAny: opaque RHI descriptor (color + optional depth)
-    const passDesc: Record<string, any> = {
+    const passDesc: RenderPassDescriptor = {
       colorAttachments: [
         {
-          // biome-ignore lint/suspicious/noExplicitAny: opaque RHI handle
-          view: view as any,
+          view,
           loadOp: 'load',
           storeOp: 'store',
         },
@@ -468,14 +463,12 @@ export class DebugDraw implements DebugDrawInterface {
     };
     if (this.depthView !== null) {
       passDesc.depthStencilAttachment = {
-        // biome-ignore lint/suspicious/noExplicitAny: opaque depth view
-        view: this.depthView as any,
+        view: this.depthView,
         depthLoadOp: 'load',
         depthStoreOp: 'store',
       };
     }
-    // biome-ignore lint/suspicious/noExplicitAny: opaque RHI descriptor
-    const pass = encoder.beginRenderPass(passDesc as any);
+    const pass = encoder.beginRenderPass(passDesc);
 
     const encoded = this.encode(pass, viewProj);
     pass.end();
@@ -487,20 +480,19 @@ export class DebugDraw implements DebugDrawInterface {
     viewProj: Mat4,
     colorFormat?: TextureFormat,
   ): Result<void, DebugDrawError> {
-    if (this.isDestroyed) return flushedAfterDestroy();
+    const resources = this.resources;
+    if (resources === undefined) return flushedAfterDestroy();
     if (viewProj === undefined || viewProj === null) return viewProjRequired();
     if (this.stagingLen === 0) {
       this.lastFlushedVertexCount = 0;
       return ok(undefined as void);
     }
-    const resolved = this.pipelineFor(colorFormat);
+    const resolved = this.pipelineFor(resources.pipeline, colorFormat);
     if (!resolved.ok) return resolved;
     const pipeline = resolved.value;
 
     const vertexCount = Math.min(this.stagingLen, this.maxCapVal);
-    const vbo = this.gpuVbo as Buffer;
-    const uniformBuf = this.gpuUniformBuffer as Buffer;
-    const bindGroup = this.gpuBindGroup as BindGroup;
+    const { vbo, uniformBuffer: uniformBuf, bindGroup } = resources;
     const byteCount = vertexCount * VERTEX_STRIDE_BYTES;
     this.rhiDevice.queue.writeBuffer(
       vbo,
@@ -526,9 +518,12 @@ export class DebugDraw implements DebugDrawInterface {
     return ok(undefined as void);
   }
 
-  private pipelineFor(format: TextureFormat | undefined): Result<RenderPipeline, DebugDrawError> {
+  private pipelineFor(
+    fallback: RenderPipeline,
+    format: TextureFormat | undefined,
+  ): Result<RenderPipeline, DebugDrawError> {
     const source = this.pipelineSource;
-    if (format === undefined || source === undefined) return ok(this.gpuPipeline as RenderPipeline);
+    if (format === undefined || source === undefined) return ok(fallback);
     const cached = this.pipelinesByFormat.get(format);
     if (cached !== undefined) return ok(cached);
     const created = source.create(format);
@@ -539,21 +534,11 @@ export class DebugDraw implements DebugDrawInterface {
   // -- destroy (w14) --
 
   destroy(): void {
-    if (this.isDestroyed) return;
-    this.isDestroyed = true;
-
-    if (this.gpuVbo) {
-      this.rhiDevice.destroyBuffer(this.gpuVbo);
-      this.gpuVbo = null;
-    }
-    if (this.gpuUniformBuffer) {
-      this.rhiDevice.destroyBuffer(this.gpuUniformBuffer);
-      this.gpuUniformBuffer = null;
-    }
-    // BindGroup / Pipeline: WebGPU spec destroys them when the JS reference is lost;
-    // we null them to drop GPU resource references.
-    this.gpuBindGroup = null;
-    this.gpuPipeline = null;
+    const resources = this.resources;
+    if (resources === undefined) return;
+    this.resources = undefined;
+    this.rhiDevice.destroyBuffer(resources.vbo);
+    this.rhiDevice.destroyBuffer(resources.uniformBuffer);
     this.pipelinesByFormat.clear();
     this.stagingArr = new Float32Array(0);
     this.stagingLen = 0;
@@ -569,7 +554,7 @@ export async function createDebugDraw(
   opts: DebugDrawOptions,
 ): Promise<Result<DebugDraw, DebugDrawError>> {
   const device = opts.device;
-  const fmt = (opts.format ?? 'bgra8unorm') as TextureFormat;
+  const fmt = opts.format ?? 'bgra8unorm';
   const depthFormat = opts.depthFormat;
   const depthMode = opts.depthMode ?? 'always';
   const maxCap = normalizeCapacity(
@@ -598,161 +583,146 @@ export async function createDebugDraw(
     );
   }
   const vbo = vboResult.value;
+  let uniformBuf: Buffer | undefined;
+  let transferred = false;
+  try {
+    const uniformBufResult = device.createBuffer({
+      size: 64,
+      usage: 64 | 8,
+      label: 'debug-draw-uniform',
+    });
+    if (!uniformBufResult.ok) {
+      return bufferAllocationFailed(
+        `createBuffer(UNIFORM|COPY_DST, 64B): ${uniformBufResult.error.code}`,
+      );
+    }
+    uniformBuf = uniformBufResult.value;
 
-  // Allocate uniform buffer for viewProj (mat4x4<f32> = 64 bytes)
-  // GPUBufferUsage.UNIFORM=64 (0x0040), COPY_DST=8 (0x0008)
-  const uniformBufResult = device.createBuffer({
-    size: 64,
-    usage: 64 | 8, // UNIFORM | COPY_DST
-    label: 'debug-draw-uniform',
-  });
-  if (!uniformBufResult.ok) {
-    device.destroyBuffer(vbo);
-    return bufferAllocationFailed(
-      `createBuffer(UNIFORM|COPY_DST, 64B): ${uniformBufResult.error.code}`,
-    );
-  }
-  const uniformBuf = uniformBufResult.value;
+    // Compile WGSL shader modules via injected factory
+    const vsResult = await opts.createShaderModule(device, {
+      label: 'debug-draw-vs',
+      code: VERTEX_SHADER,
+    });
+    if (!vsResult.ok) {
+      return pipelineCreateFailed(`createShaderModule(vertex): ${vsResult.error.code}`);
+    }
+    const vsModule = vsResult.value;
 
-  // Compile WGSL shader modules via injected factory
-  const vsResult = await opts.createShaderModule(device, {
-    label: 'debug-draw-vs',
-    code: VERTEX_SHADER,
-  });
-  if (!vsResult.ok) {
-    device.destroyBuffer(vbo);
-    return pipelineCreateFailed(`createShaderModule(vertex): ${vsResult.error.code}`);
-  }
-  const vsModule = vsResult.value;
+    const fsResult = await opts.createShaderModule(device, {
+      label: 'debug-draw-fs',
+      code: FRAGMENT_SHADER,
+    });
+    if (!fsResult.ok) {
+      return pipelineCreateFailed(`createShaderModule(fragment): ${fsResult.error.code}`);
+    }
+    const fsModule = fsResult.value;
 
-  const fsResult = await opts.createShaderModule(device, {
-    label: 'debug-draw-fs',
-    code: FRAGMENT_SHADER,
-  });
-  if (!fsResult.ok) {
-    device.destroyBuffer(vbo);
-    return pipelineCreateFailed(`createShaderModule(fragment): ${fsResult.error.code}`);
-  }
-  const fsModule = fsResult.value;
-
-  const bglResult = device.createBindGroupLayout({
-    label: 'debug-draw-bind-group-layout',
-    entries: [
-      {
-        binding: 0,
-        visibility: 1,
-        buffer: { type: 'uniform', minBindingSize: 64 },
-      },
-    ],
-  });
-  if (!bglResult.ok) {
-    device.destroyBuffer(vbo);
-    device.destroyBuffer(uniformBuf);
-    return pipelineCreateFailed(`createBindGroupLayout: ${bglResult.error.code}`);
-  }
-
-  const pipelineLayoutResult = device.createPipelineLayout({
-    label: 'debug-draw-pipeline-layout',
-    bindGroupLayouts: [bglResult.value],
-  });
-  if (!pipelineLayoutResult.ok) {
-    device.destroyBuffer(vbo);
-    device.destroyBuffer(uniformBuf);
-    return pipelineCreateFailed(`createPipelineLayout: ${pipelineLayoutResult.error.code}`);
-  }
-
-  // Build render pipeline descriptor.
-  // For 'always' mode: no depthStencil — the overlay draws on top regardless of depth.
-  // For 'less-equal' mode: depthStencil included so the overlay respects scene depth.
-  const depthStencil: GPUDepthStencilState | undefined =
-    depthMode === 'less-equal'
-      ? {
-          format: (depthFormat ?? 'depth24plus') as GPUTextureFormat,
-          depthWriteEnabled: false,
-          depthCompare: 'greater-equal',
-        }
-      : undefined;
-
-  const vertexBuffers: GPUVertexBufferLayout[] = [
-    {
-      arrayStride: VERTEX_STRIDE_BYTES,
-      stepMode: 'vertex',
-      attributes: [
+    const bglResult = device.createBindGroupLayout({
+      label: 'debug-draw-bind-group-layout',
+      entries: [
         {
-          format: 'float32x3' as GPUVertexFormat,
-          offset: 0,
-          shaderLocation: 0,
-        },
-        {
-          format: 'unorm8x4' as GPUVertexFormat,
-          offset: 12,
-          shaderLocation: 1,
+          binding: 0,
+          visibility: 1,
+          buffer: { type: 'uniform', minBindingSize: 64 },
         },
       ],
-    },
-  ];
+    });
+    if (!bglResult.ok) {
+      return pipelineCreateFailed(`createBindGroupLayout: ${bglResult.error.code}`);
+    }
 
-  const pipelineDesc = (format: TextureFormat) => ({
-    label: 'debug-draw-pso',
-    layout: pipelineLayoutResult.value,
-    vertex: {
-      module: vsModule,
-      entryPoint: 'vs_main',
-      buffers: [...vertexBuffers],
-    },
-    primitive: {
-      topology: 'line-list' as GPUPrimitiveTopology,
-    },
-    depthStencil,
-    fragment: {
-      module: fsModule,
-      entryPoint: 'fs_main',
-      targets: [{ format: format as unknown as GPUTextureFormat }],
-    },
-  });
-  const pipelineSource: DebugDrawPipelineSource = {
-    format: fmt,
-    create: (format) => {
-      /* biome-ignore lint/suspicious/noExplicitAny: forgeax ShaderModule / TextureFormat
-         are opaque RHI handles; underlying WebGPU descriptor expects raw GPU types. */
-      const pso = device.createRenderPipeline(pipelineDesc(format) as any);
-      return pso.ok
-        ? ok(pso.value)
-        : pipelineCreateFailed(`createRenderPipeline(${format}): ${pso.error.code}`);
-    },
-  };
+    const pipelineLayoutResult = device.createPipelineLayout({
+      label: 'debug-draw-pipeline-layout',
+      bindGroupLayouts: [bglResult.value],
+    });
+    if (!pipelineLayoutResult.ok) {
+      return pipelineCreateFailed(`createPipelineLayout: ${pipelineLayoutResult.error.code}`);
+    }
 
-  const psoResult = pipelineSource.create(fmt);
-  if (!psoResult.ok) {
-    device.destroyBuffer(vbo);
-    device.destroyBuffer(uniformBuf);
-    return psoResult;
-  }
-  const pipeline = psoResult.value;
+    // Build render pipeline descriptor.
+    // For 'always' mode: no depthStencil — the overlay draws on top regardless of depth.
+    // For 'less-equal' mode: depthStencil included so the overlay respects scene depth.
+    const depthStencil: RenderPipelineDescriptor['depthStencil'] =
+      depthMode === 'less-equal'
+        ? {
+            format: depthFormat ?? 'depth24plus',
+            depthWriteEnabled: false,
+            depthCompare: 'greater-equal',
+          }
+        : undefined;
 
-  // Create the bind group from the same explicit RHI layout used by the pipeline.
-  const bgResult = device.createBindGroup({
-    layout: bglResult.value,
-    entries: [
+    const vertexBuffers: RenderPipelineDescriptor['vertex']['buffers'] = [
       {
-        binding: 0,
-        resource: {
-          kind: 'buffer' as const,
-          value: { buffer: uniformBuf, offset: 0, size: 64 },
-        },
+        arrayStride: VERTEX_STRIDE_BYTES,
+        stepMode: 'vertex',
+        attributes: [
+          {
+            format: 'float32x3',
+            offset: 0,
+            shaderLocation: 0,
+          },
+          {
+            format: 'unorm8x4',
+            offset: 12,
+            shaderLocation: 1,
+          },
+        ],
       },
-    ],
-    label: 'debug-draw-bindgroup',
-    // biome-ignore lint/suspicious/noExplicitAny: forgeax opaque BGL -> createBindGroup descriptor
-  } as any);
-  if (!bgResult.ok) {
-    device.destroyBuffer(vbo);
-    device.destroyBuffer(uniformBuf);
-    return pipelineCreateFailed(`createBindGroup: ${bgResult.error.code}`);
-  }
+    ];
 
-  return ok(
-    new DebugDraw(
+    const pipelineDesc = (format: TextureFormat): RenderPipelineDescriptor => ({
+      label: 'debug-draw-pso',
+      layout: pipelineLayoutResult.value,
+      vertex: {
+        module: vsModule,
+        entryPoint: 'vs_main',
+        buffers: vertexBuffers,
+      },
+      primitive: {
+        topology: 'line-list',
+      },
+      depthStencil,
+      fragment: {
+        module: fsModule,
+        entryPoint: 'fs_main',
+        targets: [{ format }],
+      },
+    });
+    const pipelineSource: DebugDrawPipelineSource = {
+      format: fmt,
+      create: (format) => {
+        const pso = device.createRenderPipeline(pipelineDesc(format));
+        return pso.ok
+          ? ok(pso.value)
+          : pipelineCreateFailed(`createRenderPipeline(${format}): ${pso.error.code}`);
+      },
+    };
+
+    const psoResult = pipelineSource.create(fmt);
+    if (!psoResult.ok) {
+      return psoResult;
+    }
+    const pipeline = psoResult.value;
+
+    // Create the bind group from the same explicit RHI layout used by the pipeline.
+    const bgResult = device.createBindGroup({
+      layout: bglResult.value,
+      entries: [
+        {
+          binding: 0,
+          resource: {
+            kind: 'buffer',
+            value: { buffer: uniformBuf, offset: 0, size: 64 },
+          },
+        },
+      ],
+      label: 'debug-draw-bindgroup',
+    });
+    if (!bgResult.ok) {
+      return pipelineCreateFailed(`createBindGroup: ${bgResult.error.code}`);
+    }
+
+    const draw = new DebugDraw(
       device,
       pipeline,
       vbo,
@@ -761,6 +731,13 @@ export async function createDebugDraw(
       initialCap,
       maxCap,
       pipelineSource,
-    ),
-  );
+    );
+    transferred = true;
+    return ok(draw);
+  } finally {
+    if (!transferred) {
+      device.destroyBuffer(vbo);
+      if (uniformBuf !== undefined) device.destroyBuffer(uniformBuf);
+    }
+  }
 }

@@ -1,9 +1,9 @@
 import { ok, type RhiCaps } from '@forgeax/engine-rhi';
 import {
+  type AssetHandle,
   deriveTextureLayout,
   numMipLevels,
   type TextureAsset,
-  toShared,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
@@ -18,6 +18,7 @@ type WriteCall = {
 const caps: RhiCaps = {
   backendKind: 'webgpu',
   compute: true,
+  rayQuery: { supported: false, reason: 'backend-has-no-ray-query' },
   timestampQuery: false,
   timestampPeriodNanoseconds: null,
   indirectDrawing: false,
@@ -49,6 +50,7 @@ function makeStore(calls: { create: TextureCall[]; writes: WriteCall[] }): GpuRe
         calls.create.push(descriptor);
         return ok(texture);
       },
+      createSampler: () => ok({}),
       createTextureView: () => ok({ tag: 'view' }),
       destroyTexture: () => ok(undefined),
       queue: {
@@ -65,7 +67,6 @@ function makeStore(calls: { create: TextureCall[]; writes: WriteCall[] }): GpuRe
       },
     } as never,
     undefined,
-    (() => ok(toShared<'EquirectAsset'>(1))) as never,
     caps,
   );
   return store;
@@ -94,7 +95,7 @@ describe('compressed texture physical extent recorded-RHI witness [w36]', () => 
     const pod = compressedPod();
     const expected = deriveTextureLayout(pod).unwrap().levels;
 
-    const result = makeStore(calls).ensureResident(toShared<'TextureAsset'>(36), pod);
+    const result = makeStore(calls).ensureResident(36 as AssetHandle<'texture'>, pod);
     if (!result.ok) throw result.error;
 
     expect(pod.shape.extent.width).toBe(2085);
@@ -128,7 +129,7 @@ describe('compressed texture physical extent recorded-RHI witness [w36]', () => 
       mips: { kind: 'none' },
     };
 
-    expect(makeStore(calls).ensureResident(toShared<'TextureAsset'>(37), pod).ok).toBe(true);
+    expect(makeStore(calls).ensureResident(37 as AssetHandle<'texture'>, pod).ok).toBe(true);
 
     expect(calls.create[0]?.size).toMatchObject({ width: 17, height: 9 });
     expect(calls.writes[0]?.size).toMatchObject({ width: 17, height: 9 });

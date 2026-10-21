@@ -1,5 +1,18 @@
 import { createHash } from 'node:crypto';
-import { finalizePackageTransportSource } from '../package-finalizer.ts';
+import { registerHooks } from 'node:module';
+
+const finalizerUrl = new URL('../package-finalizer.ts', import.meta.url).href;
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    return nextResolve(
+      context.parentURL === finalizerUrl && specifier === './material-program-wire.js'
+        ? new URL('../material-program-wire.ts', import.meta.url).href
+        : specifier,
+      context,
+    );
+  },
+});
+const { finalizePackageTransportSource } = await import(finalizerUrl);
 
 const values = Array(16 * 1024 * 1024).fill(1);
 const input = {

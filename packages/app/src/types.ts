@@ -14,12 +14,7 @@ import type { AssetRegistry, CatalogSource } from '@forgeax/engine-assets-runtim
 import type { AudioBackend } from '@forgeax/engine-audio';
 import type { DebugDraw } from '@forgeax/engine-debug-draw';
 import type { TimePolicy, World } from '@forgeax/engine-ecs';
-import type {
-  ActionConfig,
-  InputBackend,
-  PointerLockProvider,
-  VirtualJoystickConfig,
-} from '@forgeax/engine-input';
+import type { ActionConfig, InputBackend } from '@forgeax/engine-input';
 import type { PhysicsWorld, PhysicsWorld2D } from '@forgeax/engine-physics';
 import type { Platform } from '@forgeax/engine-platform';
 import type { Context, Plugin, PluginPrograms } from '@forgeax/engine-plugin';
@@ -36,11 +31,16 @@ import type {
 import type { RhiBackendInstrumentation } from '@forgeax/engine-render/internal/construct-renderer';
 import type { RhiError, RhiInstance } from '@forgeax/engine-rhi';
 import type { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import type { Loader, Result, RuntimeAssetBinding } from '@forgeax/engine-types';
+import type {
+  AssetDecoderContributionRef,
+  Result,
+  RuntimeAssetBinding,
+} from '@forgeax/engine-types';
 
 import type { AssetRuntimeAssemblyError } from './assets-runtime-assembly';
 import type { AppError, AppErrorCode } from './errors';
 import type { ExecutionControl, ExecutionOptions } from './execution';
+import type { InputAttachOptions } from './internal/input-attach';
 import type { RhiCapture } from './internal/rhi-capture';
 import type { AppObservation } from './observation';
 import type { RuntimePackOptions } from './runtime-packs.js';
@@ -153,7 +153,7 @@ export interface AppAssembleArgs {
   /** Explicit catalog projection for this Registry. */
   readonly assetCatalog?: CatalogSource;
   /** Explicit owner decoder contributions; no app-side decoder discovery is performed. */
-  readonly assetDecoders?: readonly Loader<unknown>[];
+  readonly assetDecoders?: readonly AssetDecoderContributionRef[];
   /** Program definitions owned by this realm's existing asset provider. */
   readonly pluginPrograms?: PluginPrograms;
   /** Opt-in producer; construct realm-bound hosts/imports inside an execution bootstrap when used. */
@@ -199,7 +199,7 @@ export interface CanvasDrawingBufferSize {
  * hatches stay discoverable for the RHI debugging path (charter P1 -- not
  * default noise, but reachable when the AI user scrolls the type).
  */
-export interface CreateAppOptions {
+export interface CreateAppOptions extends InputAttachOptions {
   /** Host facts and scheduling for local execution. */
   readonly platform?: Platform;
   /** Opt into realm-local engine execution. Omission preserves the existing local assembly path. */
@@ -209,15 +209,13 @@ export interface CreateAppOptions {
   /** Explicit catalog projection for this Registry. */
   readonly assetCatalog?: CatalogSource;
   /** Explicit owner decoder contributions; no app-side decoder discovery is performed. */
-  readonly assetDecoders?: readonly Loader<unknown>[];
+  readonly assetDecoders?: readonly AssetDecoderContributionRef[];
   /** Program definitions owned by this realm's existing asset provider. */
   readonly pluginPrograms?: PluginPrograms;
   /** Opt-in producer; construct realm-bound hosts/imports inside an execution bootstrap when used. */
   readonly runtimePacks?: RuntimePackOptions;
   /** Optional runtime scope that supplies the catalog URL and generation fence. */
   readonly assetRuntimeBinding?: RuntimeAssetBinding;
-  /** Host-owned UI root whose events do not enter gameplay input. */
-  readonly uiRoot?: Node;
   /** Producer-owned render features forwarded to the renderer unchanged. */
   readonly features?: readonly RenderFeature<unknown>[];
   /** Standard profile forwarded to the single renderer-owned pipeline. */
@@ -233,6 +231,8 @@ export interface CreateAppOptions {
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
+  /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
+  readonly shadowWorkload?: boolean;
   /** Exact source/tree/lock/build identity binding for the renderer-owned SSR seam. */
   readonly ssrIdentity?: SsrAdmissionIdentity;
   /** Explicit Render-owned full-frame reflection pixel readback for diagnostics. */
@@ -269,26 +269,6 @@ export interface CreateAppOptions {
   /** Optional host-owned RHI lifecycle instrumentation, such as recording. */
   readonly rhiInstrumentation?: RhiBackendInstrumentation;
   /**
-   * Neutral PointerLock gate forwarded verbatim to the canvas-form input
-   * attach (attachInputAuto → attachBrowserInputBackend). When it returns
-   * false, a canvas click does NOT capture the cursor. Absent => always-lock
-   * (standalone game behaviour). The engine never learns WHY locking is
-   * (dis)allowed — the host owns that decision (e.g. an editor viewport that
-   * only allows lock in its play·game quadrant). Ignored by the assemble form
-   * (host-managed input owns its own lock policy).
-   */
-  readonly pointerLockAllowed?: () => boolean;
-  /**
-   * Virtual joystick configs forwarded verbatim to the canvas-form input
-   * attach (attachInputAuto -> attachBrowserInputBackend). Each config derives
-   * a normalized 2D axis readable via `snap.virtualAxis(name)`. Absent => no
-   * virtual joysticks. Ignored by the assemble form (host-managed input wires
-   * its own backend). Mirrors `pointerLockAllowed`: the canvas-form entry must
-   * expose every backend option the standard recipe needs, or the config path
-   * dead-ends before reaching the backend that already supports it.
-   */
-  readonly virtualJoysticks?: readonly VirtualJoystickConfig[];
-  /**
    * Action mapping configuration (M1: action semantic abstraction layer).
    *
    * Declares named actions (e.g. 'jump', 'moveRight') bound to raw input sources
@@ -301,14 +281,6 @@ export interface CreateAppOptions {
    * `INPUT_MAP_KEY` Resource directly.
    */
   readonly inputMap?: readonly ActionConfig[] | undefined;
-  /**
-   * M2: pointer-lock provider injected by the host (e.g. editor play-runtime).
-   * Forwarded verbatim through InputAttachOptions to BrowserInputBackendOptions.
-   * When absent, the backend falls back to the W3C requestPointerLock() path.
-   * Type SSOT is @forgeax/engine-input's PointerLockProvider.
-   * Ignored by the assemble form (host-managed input owns its own lock policy).
-   */
-  readonly lockProvider?: PointerLockProvider;
   /**
    * Per-frame draw-source injection seam (M2 / D-3). When supplied, the
    * frame-loop pulls it each frame to decide which worlds to render + which

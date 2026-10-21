@@ -127,6 +127,7 @@ export {
   validateSingleLayerMediumSurfaceSource,
   validateSurfaceSource,
 } from './material/surface-contract.js';
+export { terrainProgramSource } from './material/terrain-program.js';
 export {
   createMaterialVariantContext,
   lowerMaterialVariantContext,

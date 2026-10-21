@@ -25,7 +25,6 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
-  type MaterialShaderArtifactReceipt,
   PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
@@ -34,6 +33,11 @@ import {
   compileShader,
   generateParameterModule,
 } from '@forgeax/engine-shader-compiler';
+import {
+  type MaterialProgramAbi,
+  projectMaterialParameterSchema,
+  TERRAIN_MATERIAL_PARAMETERS,
+} from '@forgeax/engine-types';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readShaderManifestPublication } from '../../../shader/src/manifest-publication.js';
 import { loadEngineImportsMap } from '../engine-imports-map.js';
@@ -1252,7 +1256,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         if (typeof defaultConfig !== 'function') return;
         expect(
           defaultConfig.call({} as never, {}, { command: 'build', mode: 'production' } as never),
-        ).toBeUndefined();
+        ).toEqual({ worker: { format: 'es' } });
 
         process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE = '0';
         const plugin = forgeaxShader();
@@ -1261,7 +1265,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         if (typeof config !== 'function') return;
         expect(
           config.call({} as never, {}, { command: 'build', mode: 'production' } as never),
-        ).toEqual({ build: { reportCompressedSize: false } });
+        ).toEqual({ worker: { format: 'es' }, build: { reportCompressedSize: false } });
       } finally {
         if (previous === undefined) delete process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE;
         else process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE = previous;
@@ -1391,7 +1395,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     paramSchema: string;
     composedWgsl: string;
     variants?: Array<{ definesKey: string; composedWgsl: string }>;
-    receipt?: MaterialShaderArtifactReceipt;
+    receipt?: MaterialProgramAbi;
   }
 
   const particleMeshSurfaceSchema = PARTICLE_MESH_SURFACE_PARAM_SCHEMA;
@@ -1458,7 +1462,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     );
 
     // biome-ignore format: keep the long manifest test call compact
-    it('(a) buildStart + generateBundle produces manifest with 28 materialShaders and correct paramSchema', async () => {
+    it('(a) buildStart + generateBundle produces the named engine shader roster and correct paramSchema', async () => {
       const manifest = await viteEngineManifest();
 
       expect(Array.isArray(manifest.materialShaders)).toBe(true);
@@ -1479,8 +1483,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 30 named engine shader entries',
-      ).toBe(30);
+        'materialShaders[] must contain exactly 35 named engine shader entries',
+      ).toBe(35);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1606,6 +1610,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
         'forgeax::engine-ray-path-tracer',
+        'forgeax::engine-shadow-variance',
         'forgeax::engine-standard-deferred-lighting',
         'forgeax::engine-subsurface-diffusion',
         'forgeax::msdf-text',
@@ -1613,6 +1618,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::points-lines',
         'forgeax::sprite',
         'forgeax::sprite-lit',
+        'forgeax::standard-terrain',
+        'forgeax::standard-terrain-ids',
+        'forgeax::standard-terrain-ids-shadow',
+        'forgeax::standard-terrain-shadow',
         'forgeax::vfx-render.particles.beam',
         'forgeax::vfx-render.particles.beam-inputs',
         'forgeax::vfx-render.particles.billboard',
@@ -1656,6 +1665,13 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs-unlit'
         ) {
           expect(parsed).toEqual(particleMeshSurfaceSchema);
+        } else if (
+          ms.identifier === 'forgeax::standard-terrain' ||
+          ms.identifier === 'forgeax::standard-terrain-ids' ||
+          ms.identifier === 'forgeax::standard-terrain-shadow' ||
+          ms.identifier === 'forgeax::standard-terrain-ids-shadow'
+        ) {
+          expect(parsed).toEqual(projectMaterialParameterSchema(TERRAIN_MATERIAL_PARAMETERS, ms.identifier, 'runtime').unwrap());
         } else if (ms.identifier === 'forgeax::msdf-text') {
           expect(parsed).toEqual([
             { name: 'tintColor', type: 'color', default: [1, 1, 1, 1] },
@@ -1664,7 +1680,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
             { name: 'metallicRoughnessTexture', type: 'texture2d' },
             { name: 'normalTexture', type: 'texture2d' },
           ]);
-        } else if (ms.identifier === 'forgeax::points-lines') {
+        } else if (
+          ms.identifier === 'forgeax::default-unlit' ||
+          ms.identifier === 'forgeax::points-lines'
+        ) {
           expect(parsed).toEqual(DEFAULT_UNLIT_PARAM_SCHEMA);
         } else {
           expect(parsed.length, `paramSchema must stay empty for '${ms.identifier}'`).toBe(0);
@@ -1744,6 +1763,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
           'forgeax::engine-ray-path-tracer',
+          'forgeax::engine-shadow-variance',
           'forgeax::engine-standard-deferred-lighting',
           'forgeax::engine-subsurface-diffusion',
           'forgeax::msdf-text',
@@ -1751,6 +1771,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::points-lines',
           'forgeax::sprite',
           'forgeax::sprite-lit',
+          'forgeax::standard-terrain',
+          'forgeax::standard-terrain-ids',
+          'forgeax::standard-terrain-ids-shadow',
+          'forgeax::standard-terrain-shadow',
           'forgeax::vfx-render.particles.beam',
           'forgeax::vfx-render.particles.beam-inputs',
           'forgeax::vfx-render.particles.billboard',

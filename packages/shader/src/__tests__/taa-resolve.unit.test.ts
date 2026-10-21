@@ -77,7 +77,7 @@ ${pbrTemporal.replace(/^#define_import_path.*$/gm, '').replace(/^#import.*$/gm, 
 @fragment
 fn fs_temporal_probe() -> @location(0) vec4<f32> {
   return projectPbrSceneTemporal(
-    0.75, 0.5, 0.0, vec3<f32>(0.0), true, colorTexture, colorSampler,
+    0.75, 0.5, 0.0, 0.0, vec3<f32>(0.0), true, colorTexture, colorSampler,
     vec4<f32>(0.0, 0.0, 1.0, 1.0), vec4<f32>(0.0), vec4<f32>(1.0, 0.0, 0.0, 0.0),
     vec4<f32>(0.0, 0.0, 1.0, 1.0), vec4<f32>(0.0),
     vec4<f32>(0.0, 0.0, 0.0, 0.0), 0.0, true,
@@ -98,7 +98,7 @@ fn fs_temporal_probe() -> @location(0) vec4<f32> {
     if (!compiled.ok) return;
     expect(compiled.value.wgsl).toContain('resolvePbrTemporalReactive');
     expect(compiled.value.wgsl).toContain('max(clamp(reactive');
-    const discardIndex = pbrTemporal.indexOf('discard;');
+    const discardIndex = pbrTemporal.indexOf('alphaCoverage(');
     const reactiveIndex = pbrTemporal.indexOf('var reactiveCoverage');
     expect(discardIndex).toBeGreaterThanOrEqual(0);
     expect(discardIndex).toBeLessThan(reactiveIndex);

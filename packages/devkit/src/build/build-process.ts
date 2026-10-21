@@ -169,12 +169,12 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
                     detail: { guid, root: request.root, operation: 'readPluginDefinition' },
                   });
             },
-            async loadByGuid(guid: unknown) {
+            async load(guid: unknown) {
               return err({
                 code: 'plugin-bootstrap-read-blocked',
                 expected: 'source-only build bootstrap',
                 hint: 'read cooked content during a producer operation after startup',
-                detail: { guid, root: request.root, operation: 'loadByGuid' },
+                detail: { guid, root: request.root, operation: 'load' },
               });
             },
           });

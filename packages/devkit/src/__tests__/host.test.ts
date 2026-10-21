@@ -4,11 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { assembleAssetRuntime, assembleRuntimePacks } from '@forgeax/engine-app';
-import {
-  AssetRegistry,
-  createAssetRegistry,
-  createCatalogSource,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { decodeCatalogWire, type RuntimeCatalogWire } from '@forgeax/engine-pack';
 import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
@@ -18,7 +14,9 @@ import { ShaderRegistry } from '@forgeax/engine-shader';
 import { RUNTIME_CATALOG_SNAPSHOT_SCHEMA } from '@forgeax/engine-types';
 import { transformWithOxc } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { discoverPluginAssets } from '../build/plugin-assets.js';
 import { createViteConfig, devKitDdcRoots, ignoreDevKitCatalogPath } from '../host.js';
+import { readLiveProjectInputs } from '../live-project-inputs.js';
 import { readProjectFacts } from '../project.js';
 import { generatedPlayerQueries } from './generated-player-queries.js';
 
@@ -368,7 +366,6 @@ describe('standalone host', () => {
           Context,
           ShaderRegistry,
           AssetRegistry,
-          createAssetRegistry,
           assembleAssetRuntime,
           assembleRuntimePacks,
           assetCatalog: createCatalogSource({ entries: [] }),
@@ -831,6 +828,83 @@ describe('standalone host', () => {
     }
   });
 
+  it('keeps accepted author inputs stable when a failed serving host retires its generated files', async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-retired-inputs-')));
+    const dependencyRoot = await realpath(
+      await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-input-dependency-')),
+    );
+    let server: import('vite').ViteDevServer | undefined;
+    try {
+      await mkdir(resolve(root, 'assets'));
+      await writeFile(resolve(root, 'package.json'), '{"name":"retired-inputs"}');
+      await writeFile(
+        resolve(root, 'forge.json'),
+        JSON.stringify({
+          id: 'retired-inputs',
+          name: 'Retired inputs',
+          schemaVersion: '3.0.0',
+          roots: {},
+        }),
+      );
+      const authored = resolve(root, 'assets/authored.pack.json');
+      await writeFile(
+        authored,
+        JSON.stringify({
+          schemaVersion: '2.0.0',
+          kind: 'internal-text-package',
+          assets: [],
+        }),
+      );
+      const facts = await readProjectFacts(root);
+      if (!facts.ok) throw facts.error;
+      const dependency = resolve(dependencyRoot, 'helper.ts');
+      await writeFile(dependency, 'export const value = 1;');
+      const sources = await discoverPluginAssets(facts.value);
+      await sources.sourceSnapshot.digest(dependency);
+      const config = await createViteConfig(facts.value, 'serve', '/', { initialSources: sources });
+      // The Pack compiler can observe Engine builtins while preparing a real game.
+      // Use that same retained snapshot and its native observation method here.
+      await sources.sourceSnapshot.digest(
+        resolve(String(config.root), 'engine-builtins.pack.json'),
+      );
+      const plugins = config.plugins as import('vite').Plugin[];
+      const session = plugins.find(
+        (plugin) => plugin.name === 'forgeax:project-session',
+      ) as import('vite').Plugin & { inputPaths(): readonly string[] };
+      server = await (await import('vite')).createServer({
+        ...config,
+        plugins: plugins.filter((plugin) => plugin.name === 'forgeax:generated-host-owner'),
+        optimizeDeps: { noDiscovery: true, include: [] },
+        server: { middlewareMode: true },
+      });
+      const paths = session.inputPaths();
+      const before = await readLiveProjectInputs(root, paths);
+      await server.close();
+      server = undefined;
+      await expect(
+        readFile(resolve(String(config.root), 'engine-builtins.pack.json')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readLiveProjectInputs(root, paths)).toBe(before);
+      await writeFile(dependency, 'export const value = 200;');
+      expect(await readLiveProjectInputs(root, paths)).not.toBe(before);
+      const afterDependency = await readLiveProjectInputs(root, paths);
+      await writeFile(
+        authored,
+        JSON.stringify({
+          schemaVersion: '2.0.0',
+          kind: 'internal-text-package',
+          assets: [],
+          name: 'changed',
+        }),
+      );
+      expect(await readLiveProjectInputs(root, paths)).not.toBe(afterDependency);
+    } finally {
+      await server?.close();
+      await rm(root, { recursive: true, force: true });
+      await rm(dependencyRoot, { recursive: true, force: true });
+    }
+  });
+
   it('projects package.json startup policy into generated App and Host startup paths', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-startup-policy-'));
     try {
@@ -849,7 +923,7 @@ describe('standalone host', () => {
           resolve(root, 'package.json'),
           `${JSON.stringify({
             name: 'startup-policy',
-            forgeax: { startupTimeoutMs: 120_000 },
+            forgeax: { startupTimeoutMs: 120_000, frameTimeoutMs: 5000 },
           })}\n`,
         ),
         writeFile(resolve(root, 'main.ts'), 'export default () => undefined;\n'),
@@ -862,12 +936,13 @@ describe('standalone host', () => {
       if (!config.root) throw new Error('required generated root missing');
       const generated = await readFile(resolve(config.root, 'main.ts'), 'utf8');
       expect(generated).toContain('startupTimeoutMs: 120000');
+      expect(generated).toContain('frameTimeoutMs: 5000');
       expect(generated).toContain('timeoutMs: 120000');
       await expect(transformWithOxc(generated, 'main.ts', { lang: 'ts' })).resolves.toBeDefined();
 
       await writeFile(
         resolve(root, 'package.json'),
-        `${JSON.stringify({ name: 'startup-policy', forgeax: { startupTimeoutMs: null } })}\n`,
+        `${JSON.stringify({ name: 'startup-policy', forgeax: { startupTimeoutMs: null, frameTimeoutMs: null } })}\n`,
       );
       const unboundedFacts = await readProjectFacts(root);
       expect(unboundedFacts.ok).toBe(true);
@@ -876,6 +951,7 @@ describe('standalone host', () => {
       if (!unboundedConfig.root) throw new Error('required generated root missing');
       const unbounded = await readFile(resolve(unboundedConfig.root, 'main.ts'), 'utf8');
       expect(unbounded).toContain('startupTimeoutMs: null');
+      expect(unbounded).toContain('frameTimeoutMs: null');
       expect(unbounded).toContain('timeoutMs: null');
       await expect(transformWithOxc(unbounded, 'main.ts', { lang: 'ts' })).resolves.toBeDefined();
     } finally {
@@ -1618,7 +1694,7 @@ describe('standalone host', () => {
         animation: { cadence: 'fixed' },
       });
       const generated = await readFile(resolve(root, '.forgeax/generated/main.ts'), 'utf8');
-      expect(generated).toContain("allocOwned('EquirectAsset', environment.value)");
+      expect(generated).toContain("await loadOwned(canonicalEnvironmentGuid, 'equirect')");
       const inspectionStart = generated.indexOf('function exposeGameInspection(app)');
       const inspectionEnd = generated.indexOf(
         'async function prepareProject(app)',
@@ -1729,6 +1805,8 @@ describe('standalone host', () => {
             '',
             '?forgeax-gpu-pass-timing=0',
             '?forgeax-gpu-pass-timing=1',
+            '?forgeax-shadow-workload=0',
+            '?forgeax-shadow-workload=1',
             '?forgeax-geometry-lane=automatic',
             '?forgeax-geometry-lane=direct',
             '?forgeax-geometry-lane=invalid',
@@ -1795,9 +1873,13 @@ describe('standalone host', () => {
             );
             const expectedGpuPassTiming =
               new URLSearchParams(search).get('forgeax-gpu-pass-timing') === '1' ? {} : undefined;
+            const expectedShadowWorkload =
+              new URLSearchParams(search).get('forgeax-shadow-workload') === '1' ? true : undefined;
             expect(options.animation).toEqual({ cadence: 'fixed' });
             if (workerExecution) {
               expect(options.gpuPassTiming).toBeUndefined();
+              expect(options.shadowWorkload).toBeUndefined();
+              expect(options.execution.diagnostics.shadowWorkload).toBe(expectedShadowWorkload);
               expect(options.execution.diagnostics.gpuPassTiming).toEqual(expectedGpuPassTiming);
               expect(options.execution.diagnostics.geometryLane).toBe(
                 new URLSearchParams(search).get('forgeax-geometry-lane') === 'direct'
@@ -1815,6 +1897,7 @@ describe('standalone host', () => {
               expect(options).not.toHaveProperty('geometryLane');
               expect(options).not.toHaveProperty('execution');
               expect(options.gpuPassTiming).toEqual(expectedGpuPassTiming);
+              expect(options.shadowWorkload).toBe(expectedShadowWorkload);
               expect(options.assetCatalog).toBe(runtimeCatalog);
               expect(options.pluginPrograms).toBe(realmPrograms);
               expect(options.runtimePacks.programHost).toBe(deliveredHost);
@@ -1838,7 +1921,9 @@ describe('standalone host', () => {
       }
       expect(generated).toContain('data: { equirect: canonicalEnvironment }');
       expect(generated).toContain('fitToolPreviewCameraToAabb');
-      expect(generated).toContain('createTextureWorkspacePreview(app.world, payload,');
+      expect(generated).toContain(
+        'createTextureWorkspacePreview(app.world, assets, resourceHandle,',
+      );
       expect(generated).toContain("resource.kind === 'texture'");
       expect(generated).toContain('rendererTextureResident');
       expect(generated).toContain('textureRendererObservation(');
@@ -1848,7 +1933,9 @@ describe('standalone host', () => {
       expect(generated).not.toContain('TEXTURE_VIEW_MATERIALS');
       expect(generated).toContain('texture: owner.texture');
       expect(generated).not.toContain('app.renderer.store.uploadTexture');
-      expect(generated).toContain('AssetGuid.format(slot.defaultMaterial)');
+      expect(generated).toContain(
+        'loadEngineWorkspaceMaterialSlots(assets, payload.materialSlots)',
+      );
       await expect(
         transformWithOxc(generated, 'generated/main.ts', { lang: 'ts' }),
       ).resolves.toBeDefined();

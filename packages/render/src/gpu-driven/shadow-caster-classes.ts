@@ -1,3 +1,5 @@
+import type { FrameList } from '../scene/frame-list';
+import { FrameSet } from '../scene/frame-set';
 /** Frames without a change before a changed caster settles into the static layer. */
 export const SHADOW_CASTER_SETTLE_FRAMES = 100;
 /**
@@ -12,11 +14,10 @@ export const SHADOW_CASTER_PROMOTE_WINDOW = 16;
 export const SHADOW_CASTER_SETTLE_MAX = 1600;
 
 export interface ShadowCasterClasses {
-  readonly staticSlots: readonly number[];
-  readonly dynamicSlots: readonly number[];
-  readonly dynamicSet: ReadonlySet<number>;
+  readonly staticSlots: FrameSet;
+  readonly dynamicSlots: FrameSet;
   /** Dynamic casters left in directional views once capsule-ready casters leave. */
-  readonly directionalDynamicSlots: readonly number[];
+  readonly directionalDynamicSlots: FrameSet;
 }
 
 export interface ShadowCasterClassInspection {
@@ -45,6 +46,8 @@ interface ShadowCasterSlot {
   /** Bumped when the slot is reused by another caster; absent reads as 0. */
   readonly generation?: number;
   readonly snapshot: {
+    readonly shadowCaster?: false;
+    readonly authorVisible?: boolean;
     readonly skin?: unknown;
     readonly spriteInstances?: unknown;
     readonly capsuleShadow?: { readonly status: string };
@@ -57,40 +60,47 @@ interface ShadowCasterScene {
   changedSlotsSince(revision: number): readonly number[] | undefined;
 }
 
+interface CasterState {
+  readonly slot: number;
+  readonly generation: number;
+  declared: boolean;
+  alwaysDynamic: boolean;
+  capsuleReady: boolean;
+  dynamic: boolean;
+  created: boolean;
+  threshold: number;
+  promotedAt: number | undefined;
+  timer: number | undefined;
+  pending: boolean;
+}
+
+/** Known transitions copy one numeric path; snapshots borrow the fixed root. */
+class SlotClass {
+  private slots = new FrameSet();
+  set(slot: number, present: boolean): void {
+    this.slots = present ? this.slots.with(slot) : this.slots.without(slot);
+  }
+  snapshot(): FrameSet {
+    return this.slots;
+  }
+}
+
 /**
- * Splits shadow casters into a settled static class and a dynamic class.
- * Skinned and sprite casters are always dynamic. A rigid caster declared
- * `Mobility static` is static from the update it first appears (or gains the
- * declaration) in, skipping observation; a later change of that caster takes
- * the derived path below, so a broken promise still renders correctly. Every
- * caster present at the first update is the level and starts static; a later
- * created caster stays dynamic for one {@link SHADOW_CASTER_PROMOTE_WINDOW};
- * a changed caster stays dynamic until it has been unchanged for its settle
- * threshold ({@link SHADOW_CASTER_SETTLE_FRAMES}). Either then joins the static
- * class on the next window boundary. A caster that changes
- * again within one threshold of its promotion is a periodic mover: its
- * threshold doubles up to {@link SHADOW_CASTER_SETTLE_MAX}, and halves back
- * for every threshold it then stays static. When the scene cannot prove which
- * slots changed, every caster counts as changed. With capsule shadows on,
- * capsule-ready (always skinned, so dynamic) casters are dropped from the
- * directional dynamic class; other views keep them. A slot reused by another
- * caster since the previous update holds a created caster, not a changed one.
- * Unchanged classes keep their array identities so cached views stay hits.
+ * Object changes arrive from the scene journal, independently of material adoption.
+ * Only initial attachment and explicit history loss enumerate the source roster.
+ * Each settling caster owns one cancellable deadline; quiet frames inspect no
+ * objects or pending movers. Promotion and backoff retain the existing windows.
  */
 export class ShadowCasterClassifier {
   private frame = 0;
   private revision: number | undefined;
-  private readonly changedAt = new Map<number, number>();
-  /** Settle threshold and last promotion frame of recently promoted casters. */
-  private readonly settled = new Map<number, { threshold: number; promotedAt: number }>();
-  /** Rigid casters declared `Mobility static` at the previous update. */
-  private declared = new Set<number>();
-  /** Settleable casters at the previous update. */
-  private known = new Set<number>();
-  /** Pending casters whose only observation is their creation. */
-  private readonly created = new Set<number>();
-  /** Slot generations at the previous update. */
-  private generations = new Map<number, number>();
+  private readonly rows = new Map<number, CasterState>();
+  private readonly timers = new Map<number, Set<CasterState>>();
+  private readonly staticSlots = new SlotClass();
+  private readonly dynamicSlots = new SlotClass();
+  private readonly directionalSlots = new SlotClass();
+  private declared = 0;
+  private alwaysDynamic = 0;
   private flips = 0;
   private pendingPromotions = 0;
   private promotions = 0;
@@ -101,153 +111,220 @@ export class ShadowCasterClassifier {
   private contentChanges = 0;
   private historyGaps = 0;
   private classes: ShadowCasterClasses = Object.freeze({
-    staticSlots: Object.freeze([]),
-    dynamicSlots: Object.freeze([]),
-    dynamicSet: new Set<number>(),
-    directionalDynamicSlots: Object.freeze([]),
+    staticSlots: this.staticSlots.snapshot(),
+    dynamicSlots: this.dynamicSlots.snapshot(),
+    directionalDynamicSlots: this.dynamicSlots.snapshot(),
   });
 
   update(
-    slots: readonly ShadowCasterSlot[],
+    source: {
+      readonly slots: FrameList<ShadowCasterSlot>;
+      slotAt(slot: number): ShadowCasterSlot | undefined;
+    },
     scene: ShadowCasterScene,
     capsuleShadowDirectional = false,
   ): ShadowCasterClasses {
-    this.frame += 1;
-    const frame = this.frame;
-    const previousRevision = this.revision;
+    this.frame++;
+    this.flips = 0;
+    const previous = this.revision;
+    const changed = previous === undefined ? undefined : scene.changedSlotsSince(previous);
     this.revision = scene.contentRevision;
-    const changed =
-      previousRevision === undefined ? undefined : scene.changedSlotsSince(previousRevision);
-    // A reused slot's bookkeeping belongs to its previous occupant.
-    const generations = new Map<number, number>();
-    const replaced = new Set<number>();
-    for (const { slot, generation = 0 } of slots) {
-      generations.set(slot, generation);
-      const previous = this.generations.get(slot);
-      if (previous === undefined) this.creations += 1;
-      else if (previous !== generation) replaced.add(slot);
-    }
-    for (const slot of this.generations.keys()) if (!generations.has(slot)) this.removals += 1;
-    this.replacements += replaced.size;
-    this.generations = generations;
-    for (const slot of replaced) {
-      this.known.delete(slot);
-      this.declared.delete(slot);
-      this.changedAt.delete(slot);
-      this.settled.delete(slot);
-      this.created.delete(slot);
-    }
-    // Only casters that can settle are tracked: skinned and sprite casters are
-    // always dynamic, and removed casters leave the bookkeeping.
-    const settleable = new Set<number>();
-    const declared = new Set<number>();
-    for (const { slot, snapshot } of slots) {
-      if (snapshot.skin !== undefined || snapshot.spriteInstances !== undefined) continue;
-      settleable.add(slot);
-      if (snapshot.mobility === 'static') declared.add(slot);
-    }
-    // A caster that appears with, or gains, the declaration is settled by
-    // promise; its creation or declaration change is not a move.
-    const newlyDeclared = new Set<number>();
-    for (const slot of declared) if (!this.declared.has(slot)) newlyDeclared.add(slot);
-    this.declared = declared;
-    for (const slot of this.changedAt.keys())
-      if (!settleable.has(slot)) this.changedAt.delete(slot);
-    for (const slot of this.settled.keys()) if (!settleable.has(slot)) this.settled.delete(slot);
-    for (const slot of this.created) if (!settleable.has(slot)) this.created.delete(slot);
-    const known = this.known;
-    this.known = settleable;
-    // The first population is the level itself and starts static.
-    for (const slot of previousRevision === undefined ? [] : settleable) {
-      if (known.has(slot) || newlyDeclared.has(slot)) continue;
-      this.changedAt.set(slot, frame);
-      this.created.add(slot);
-    }
-    if (previousRevision !== undefined && changed === undefined) this.historyGaps += 1;
-    // A history gap cannot prove any known caster settled.
-    for (const slot of changed ?? (previousRevision === undefined ? [] : settleable)) {
-      if (!known.has(slot) || !settleable.has(slot) || newlyDeclared.has(slot)) continue;
-      this.contentChanges += 1;
-      this.created.delete(slot);
-      this.noteChanged(slot, frame);
-    }
-    for (const slot of newlyDeclared) {
-      this.changedAt.delete(slot);
-      this.settled.delete(slot);
-      this.created.delete(slot);
-    }
-    const promote = frame % SHADOW_CASTER_PROMOTE_WINDOW === 0;
-    let pending = 0;
-    for (const [slot, at] of this.changedAt) {
-      const created = this.created.has(slot);
-      const threshold = created
-        ? SHADOW_CASTER_PROMOTE_WINDOW
-        : (this.settled.get(slot)?.threshold ?? SHADOW_CASTER_SETTLE_FRAMES);
-      if (frame - at < threshold) continue;
-      if (!promote) {
-        pending += 1;
-        continue;
+    if (changed === undefined) {
+      if (previous !== undefined) this.historyGaps++;
+      const remaining = new Set(this.rows.keys());
+      for (const row of source.slots) {
+        remaining.delete(row.slot);
+        this.accept(row, previous === undefined);
       }
-      this.changedAt.delete(slot);
-      // A creation promotion is no periodic-mover evidence.
-      if (created) this.created.delete(slot);
-      else this.settled.set(slot, { threshold, promotedAt: frame });
+      for (const slot of remaining) this.remove(slot);
+    } else if (changed.length > 0) {
+      for (const slot of new Set(changed)) {
+        const row = source.slotAt(slot);
+        if (row === undefined) this.remove(slot);
+        else this.accept(row, false);
+      }
     }
-    if (promote) {
-      for (const [slot, entry] of this.settled) {
-        if (this.changedAt.has(slot) || frame - entry.promotedAt < entry.threshold) continue;
-        if (entry.threshold <= SHADOW_CASTER_SETTLE_FRAMES) {
-          this.settled.delete(slot);
-          continue;
+    const due = this.timers.get(this.frame);
+    if (due !== undefined) {
+      this.timers.delete(this.frame);
+      for (const row of due) {
+        row.timer = undefined;
+        if (row.dynamic) {
+          if (this.frame % SHADOW_CASTER_PROMOTE_WINDOW !== 0) {
+            row.pending = true;
+            this.pendingPromotions++;
+            this.schedule(row, this.window(this.frame));
+            continue;
+          }
+          this.clearPending(row);
+          this.changeClass(row, false, true);
+          if (!row.created) {
+            row.promotedAt = this.frame;
+            this.schedule(row, this.window(this.frame + row.threshold));
+          }
+          row.created = false;
+        } else {
+          if (row.threshold <= SHADOW_CASTER_SETTLE_FRAMES) row.promotedAt = undefined;
+          else {
+            row.threshold /= 2;
+            row.promotedAt = this.frame;
+            this.schedule(row, this.window(this.frame + row.threshold));
+          }
         }
-        entry.threshold /= 2;
-        entry.promotedAt = frame;
       }
     }
-    this.pendingPromotions = pending;
-    const staticSlots: number[] = [];
-    const dynamicSlots: number[] = [];
-    const directionalDynamicSlots: number[] = [];
-    for (const { slot, snapshot } of slots) {
-      const dynamic = !settleable.has(slot) || this.changedAt.has(slot);
-      (dynamic ? dynamicSlots : staticSlots).push(slot);
-      if (dynamic && !(capsuleShadowDirectional && snapshot.capsuleShadow?.status === 'ready')) {
-        directionalDynamicSlots.push(slot);
-      }
+    const staticSlots = this.staticSlots.snapshot();
+    const dynamicSlots = this.dynamicSlots.snapshot();
+    const directionalDynamicSlots = capsuleShadowDirectional
+      ? this.directionalSlots.snapshot()
+      : dynamicSlots;
+    if (
+      staticSlots !== this.classes.staticSlots ||
+      dynamicSlots !== this.classes.dynamicSlots ||
+      directionalDynamicSlots !== this.classes.directionalDynamicSlots
+    ) {
+      this.classes = Object.freeze({
+        staticSlots,
+        dynamicSlots,
+        directionalDynamicSlots,
+      });
     }
-    const previous = this.classes;
-    const sameStatic = sameSlots(previous.staticSlots, staticSlots);
-    const sameDynamic = sameSlots(previous.dynamicSlots, dynamicSlots);
-    const sameDirectional = sameSlots(previous.directionalDynamicSlots, directionalDynamicSlots);
-    const flips = sameStatic
-      ? { promotions: 0, demotions: 0 }
-      : countFlips(previous, dynamicSlots, staticSlots, replaced);
-    this.flips = flips.promotions + flips.demotions;
-    this.promotions += flips.promotions;
-    this.demotions += flips.demotions;
-    if (sameStatic && sameDynamic && sameDirectional) return previous;
-    const nextDynamic = sameDynamic ? previous.dynamicSlots : Object.freeze(dynamicSlots);
-    this.classes = Object.freeze({
-      staticSlots: sameStatic ? previous.staticSlots : Object.freeze(staticSlots),
-      dynamicSlots: nextDynamic,
-      dynamicSet: sameDynamic ? previous.dynamicSet : new Set(dynamicSlots),
-      directionalDynamicSlots: sameDirectional
-        ? previous.directionalDynamicSlots
-        : sameSlots(nextDynamic, directionalDynamicSlots)
-          ? nextDynamic
-          : Object.freeze(directionalDynamicSlots),
-    });
     return this.classes;
+  }
+
+  private accept(source: ShadowCasterSlot, initial: boolean): void {
+    const { slot, generation = 0, snapshot } = source;
+    if (snapshot.shadowCaster === false || snapshot.authorVisible === false) {
+      this.remove(slot, true);
+      return;
+    }
+    let row = this.rows.get(slot);
+    const replaced = row !== undefined && row.generation !== generation;
+    if (replaced) {
+      this.remove(slot, false);
+      this.replacements++;
+      row = undefined;
+    }
+    const alwaysDynamic = snapshot.skin !== undefined || snapshot.spriteInstances !== undefined;
+    const declared = !alwaysDynamic && snapshot.mobility === 'static';
+    const capsuleReady = snapshot.capsuleShadow?.status === 'ready';
+    if (row === undefined) {
+      if (!replaced) this.creations++;
+      row = {
+        slot,
+        generation,
+        declared,
+        alwaysDynamic,
+        capsuleReady,
+        dynamic: alwaysDynamic || (!initial && !declared),
+        created: true,
+        threshold: SHADOW_CASTER_SETTLE_FRAMES,
+        promotedAt: undefined,
+        timer: undefined,
+        pending: false,
+      };
+      this.rows.set(slot, row);
+      this.declared += Number(declared);
+      this.alwaysDynamic += Number(alwaysDynamic);
+      this.changeClass(row, row.dynamic, false);
+      if (row.dynamic && !alwaysDynamic)
+        this.schedule(row, this.frame + SHADOW_CASTER_PROMOTE_WINDOW);
+      return;
+    }
+    const newlyDeclared = declared && !row.declared;
+    const newlySettleable = row.alwaysDynamic && !alwaysDynamic;
+    this.declared += Number(declared) - Number(row.declared);
+    this.alwaysDynamic += Number(alwaysDynamic) - Number(row.alwaysDynamic);
+    row.declared = declared;
+    row.alwaysDynamic = alwaysDynamic;
+    row.capsuleReady = capsuleReady;
+    this.cancel(row);
+    if (newlyDeclared || alwaysDynamic) {
+      row.threshold = SHADOW_CASTER_SETTLE_FRAMES;
+      row.promotedAt = undefined;
+      row.created = false;
+      this.changeClass(row, alwaysDynamic, true);
+      return;
+    }
+    if (newlySettleable) {
+      row.created = true;
+      row.threshold = SHADOW_CASTER_SETTLE_FRAMES;
+      row.promotedAt = undefined;
+    } else {
+      this.contentChanges++;
+      row.created = false;
+      if (
+        !row.dynamic &&
+        row.promotedAt !== undefined &&
+        this.frame - row.promotedAt < row.threshold
+      )
+        row.threshold = Math.min(SHADOW_CASTER_SETTLE_MAX, row.threshold * 2);
+    }
+    this.changeClass(row, true, true);
+    this.schedule(row, this.frame + (row.created ? SHADOW_CASTER_PROMOTE_WINDOW : row.threshold));
+  }
+
+  private changeClass(row: CasterState, dynamic: boolean, count: boolean): void {
+    if (count && dynamic !== row.dynamic) {
+      this.flips++;
+      if (dynamic) this.demotions++;
+      else this.promotions++;
+    }
+    row.dynamic = dynamic;
+    this.staticSlots.set(row.slot, !dynamic);
+    this.dynamicSlots.set(row.slot, dynamic);
+    this.directionalSlots.set(row.slot, dynamic && !row.capsuleReady);
+  }
+
+  private remove(slot: number, count = true): void {
+    const row = this.rows.get(slot);
+    if (row === undefined) return;
+    this.cancel(row);
+    this.rows.delete(slot);
+    this.declared -= Number(row.declared);
+    this.alwaysDynamic -= Number(row.alwaysDynamic);
+    this.staticSlots.set(slot, false);
+    this.dynamicSlots.set(slot, false);
+    this.directionalSlots.set(slot, false);
+    if (count) this.removals++;
+  }
+
+  private clearPending(row: CasterState): void {
+    if (row.pending) this.pendingPromotions--;
+    row.pending = false;
+  }
+
+  private cancel(row: CasterState): void {
+    this.clearPending(row);
+    if (row.timer === undefined) return;
+    const bucket = this.timers.get(row.timer);
+    bucket?.delete(row);
+    if (bucket?.size === 0) this.timers.delete(row.timer);
+    row.timer = undefined;
+  }
+
+  private schedule(row: CasterState, frame: number): void {
+    row.timer = frame;
+    let bucket = this.timers.get(frame);
+    if (bucket === undefined) {
+      bucket = new Set();
+      this.timers.set(frame, bucket);
+    }
+    bucket.add(row);
+  }
+
+  private window(frame: number): number {
+    return Math.ceil(frame / SHADOW_CASTER_PROMOTE_WINDOW) * SHADOW_CASTER_PROMOTE_WINDOW;
   }
 
   inspect(): ShadowCasterClassInspection {
     return {
       flips: this.flips,
       pendingPromotions: this.pendingPromotions,
-      staticCount: this.classes.staticSlots.length,
-      dynamicCount: this.classes.dynamicSlots.length,
-      declaredStaticCount: this.declared.size,
-      alwaysDynamicCount: this.generations.size - this.known.size,
+      staticCount: this.classes.staticSlots.size,
+      dynamicCount: this.classes.dynamicSlots.size,
+      declaredStaticCount: this.declared,
+      alwaysDynamicCount: this.alwaysDynamic,
       updates: this.frame,
       promotions: this.promotions,
       demotions: this.demotions,
@@ -258,70 +335,65 @@ export class ShadowCasterClassifier {
       historyGaps: this.historyGaps,
     };
   }
+}
 
-  /** A change within one threshold of a promotion marks a periodic mover. */
-  private noteChanged(slot: number, frame: number): void {
-    const entry = this.settled.get(slot);
+/** A view query reads both fixed roots; no intersection membership is maintained. */
+export class ShadowSlotSelection {
+  #members: FrameSet;
+  #allowed: FrameSet | ShadowSlotSelection;
+  constructor(members: FrameSet, allowed: FrameSet | ShadowSlotSelection) {
     if (
-      entry !== undefined &&
-      !this.changedAt.has(slot) &&
-      frame - entry.promotedAt < entry.threshold
-    ) {
-      entry.threshold = Math.min(SHADOW_CASTER_SETTLE_MAX, entry.threshold * 2);
-    }
-    this.changedAt.set(slot, frame);
+      !FrameSet.isFixed(members) ||
+      (!FrameSet.isFixed(allowed) && !ShadowSlotSelection.isFixed(allowed))
+    )
+      throw new TypeError('Shadow selection requires intrinsic fixed numeric roots');
+    this.#members = members;
+    this.#allowed = allowed;
+    Object.freeze(this);
+  }
+  static isFixed(value: unknown): value is ShadowSlotSelection {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      #members in value &&
+      Object.getPrototypeOf(value) === ShadowSlotSelection.prototype
+    );
+  }
+  same(other: ShadowSlotSelection): boolean {
+    return (
+      this.#members === other.#members &&
+      (this.#allowed === other.#allowed ||
+        (ShadowSlotSelection.isFixed(this.#allowed) &&
+          ShadowSlotSelection.isFixed(other.#allowed) &&
+          this.#allowed.same(other.#allowed)))
+    );
+  }
+  has(slot: number): boolean {
+    return this.#members.has(slot) && this.#allowed.has(slot);
   }
 }
 
-/** Existing casters that changed class; created and removed casters are not flips. */
-function countFlips(
-  previous: ShadowCasterClasses,
-  dynamicSlots: readonly number[],
-  staticSlots: readonly number[],
-  replaced: ReadonlySet<number>,
-): { promotions: number; demotions: number } {
-  const previousStatic = new Set(previous.staticSlots);
-  let demotions = 0;
-  let promotions = 0;
-  for (const slot of dynamicSlots)
-    if (previousStatic.has(slot) && !replaced.has(slot)) demotions += 1;
-  for (const slot of staticSlots)
-    if (previous.dynamicSet.has(slot) && !replaced.has(slot)) promotions += 1;
-  return { promotions, demotions };
-}
-
-const restrictedClasses = new WeakMap<
-  readonly number[] | ReadonlySet<number>,
-  { readonly source: ShadowCasterClasses; readonly restricted: ShadowCasterClasses }
->();
-
-/** Restricts caster classes to a view's own candidate subset, stable per pair. */
+/** Raw restrictions are observed at this actual query; native roots are borrowed. */
 export function restrictShadowCasterClasses(
   classes: ShadowCasterClasses,
-  candidates: readonly number[] | ReadonlySet<number> | undefined,
-): ShadowCasterClasses {
+  candidates: readonly number[] | ReadonlySet<number> | ShadowSlotSelection | undefined,
+) {
   if (candidates === undefined) return classes;
-  const cached = restrictedClasses.get(candidates);
-  if (cached?.source === classes) return cached.restricted;
-  const allowed = new Set(candidates);
-  const dynamicSlots = Object.freeze(classes.dynamicSlots.filter((slot) => allowed.has(slot)));
-  const restricted = Object.freeze({
-    staticSlots: Object.freeze(classes.staticSlots.filter((slot) => allowed.has(slot))),
+  let allowed: FrameSet | ShadowSlotSelection;
+  if (FrameSet.isFixed(candidates) || ShadowSlotSelection.isFixed(candidates)) allowed = candidates;
+  else {
+    let root = new FrameSet();
+    for (const slot of candidates)
+      if (Number.isSafeInteger(slot) && slot >= 0) root = root.with(slot);
+    allowed = root;
+  }
+  const dynamicSlots = new ShadowSlotSelection(classes.dynamicSlots, allowed);
+  return Object.freeze({
+    staticSlots: new ShadowSlotSelection(classes.staticSlots, allowed),
     dynamicSlots,
-    dynamicSet: classes.dynamicSet,
     directionalDynamicSlots:
       classes.directionalDynamicSlots === classes.dynamicSlots
         ? dynamicSlots
-        : Object.freeze(classes.directionalDynamicSlots.filter((slot) => allowed.has(slot))),
+        : new ShadowSlotSelection(classes.directionalDynamicSlots, allowed),
   });
-  restrictedClasses.set(candidates, { source: classes, restricted });
-  return restricted;
-}
-
-function sameSlots(left: readonly number[], right: readonly number[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
 }

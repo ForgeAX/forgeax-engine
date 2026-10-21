@@ -136,10 +136,12 @@ const entry: ExecutionBootstrapEntry = (data) => {
     plugins: [
       {
         name: 'multi-camera-worker-fixture',
-        inject: ['world', 'executionBootstrapHost'],
+        inject: ['world', 'assets', 'executionBootstrapHost'],
         apply(ctx) {
+          const assets = ctx.assets;
+          if (assets === undefined) throw new Error('Missing runtime asset owner');
           const world = ctx.world;
-          const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 2).unwrap());
+          const mesh = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
           const models = [-5, 5].map((x, index) =>
             world
               .spawn(
@@ -149,10 +151,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
                   component: MeshRenderer,
                   data: {
                     materials: [
-                      world.allocSharedRef(
-                        'MaterialAsset',
-                        Materials.unlit(index === 0 ? [1, 0.02, 0.01, 1] : [0.01, 1, 0.02, 1]),
-                      ),
+                      assets.create(Materials.unlit(index === 0 ? [1, 0.02, 0.01, 1] : [0.01, 1, 0.02, 1])).unwrap(),
                     ],
                   },
                 },
@@ -246,7 +245,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
                   mipLevel: 0,
                 }),
               );
-              const texture = world.allocSharedRef('RenderTargetTextureSource', source);
+              const texture = { source: source };
               world
                 .spawn(
                   { component: Transform, data: { pos: [5, 0, -3] } },
@@ -255,10 +254,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
                     component: MeshRenderer,
                     data: {
                       materials: [
-                        world.allocSharedRef(
-                          'MaterialAsset',
-                          Materials.unlit([1, 1, 1, 1], { baseColorTexture: texture }),
-                        ),
+                        assets.create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: texture })).unwrap(),
                       ],
                     },
                   },

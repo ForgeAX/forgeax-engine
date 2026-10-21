@@ -48,8 +48,8 @@ const transform = (position: { x: number; y: number; z: number }, rotation: read
   values: { pos: [position.x, position.y, position.z], quat: rotation, scale: [1, 1, 1] },
 });
 const meshComponents = [
-  { name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' } }, values: { assetHandle: 1025 } },
-  { name: 'MeshRenderer', fields: { materials: { type: 'array<shared<MaterialAsset>>' }, lightingChannels: { type: 'f64' } }, values: { materials: [], lightingChannels: 4294967295 } },
+  { name: 'MeshFilter', fields: { assetHandle: { type: 'asset<mesh>' } }, values: { assetHandle: 1025 } },
+  { name: 'MeshRenderer', fields: { materials: { type: 'array<asset<material>>' }, lightingChannels: { type: 'f64' } }, values: { materials: [], lightingChannels: 4294967295 } },
 ];
 
 export const INSPECTIONS = Object.freeze({
@@ -77,11 +77,11 @@ export const INSPECTIONS = Object.freeze({
       offset: { x: 0, y: 2.1, z: -4.5 },
       damping: 0.25,
     } },
-    { name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' }, mesh: { type: 'assetRef' } }, values: {
+    { name: 'MeshFilter', fields: { assetHandle: { type: 'asset<mesh>' }, mesh: { type: 'assetRef' } }, values: {
       assetHandle: 'fixture-geometry-capsule', mesh: { guid: 'fixture-geometry-capsule', name: 'geometry/capsule', kind: 'mesh' },
     } },
     { name: 'MeshRenderer', fields: {
-      materials: { type: 'array<shared<MaterialAsset>>' },
+      materials: { type: 'array<asset<material>>' },
       lightingChannels: { type: 'f64' },
       visible: { type: 'boolean', widget: 'switch' },
       castShadows: { type: 'boolean' },

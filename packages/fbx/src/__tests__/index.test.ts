@@ -1,5 +1,6 @@
 import type { ImportedAsset, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import type { FbxRawMesh } from '../parse-mesh.js';
 import { parseMesh } from '../parse-mesh.js';
 import { buildMeshAsset } from '../to-asset-pack.js';
@@ -61,9 +62,9 @@ describe('@forgeax/engine-fbx barrel', () => {
 // ── M6: buildMeshAsset aabb — GREEN (M7 make-green) ─────────────────
 
 /** Extract MeshAsset payload from an ImportedAsset (guards kind='mesh'). */
-function meshFromAsset(asset: ImportedAsset): MeshAsset {
+function meshFromAsset(asset: ImportedAsset<unknown>): MeshAsset {
   if (asset.kind !== 'mesh') throw new TypeError(`expected mesh, got ${asset.kind}`);
-  return asset.payload as MeshAsset;
+  return importedMesh(asset);
 }
 
 /** Build a mock FbxRawMesh with no indices (per-vertex attributes only). */
@@ -122,7 +123,7 @@ describe('buildMeshAsset aabb (GREEN)', () => {
     expect(aabb?.[5] as number, 'maxZ').toBe(5);
   });
 
-  it('m6-1c: empty vertices — inverted-empty box, no NaN', () => {
+  it('m6-1c: empty vertices — serializable zero bounds through binary decode', () => {
     const vertices: number[] = [];
     const raw = mockRawMesh(vertices);
     const pod = parseMesh(raw, 0);
@@ -133,14 +134,11 @@ describe('buildMeshAsset aabb (GREEN)', () => {
     expect(aabb, 'aabb must be defined for empty mesh').toBeDefined();
     expect(aabb?.length).toBe(6);
 
-    // Inverted-empty box convention: min.x > max.x (from box3.fromPositions
-    // when positions.length < 3). This signals "no volume" to pick.ts which
-    // skips the entity (AC-07).
-    expect(aabb?.[0] as number, 'minX').toBeGreaterThan(aabb?.[3] as number);
-    // No NaN anywhere
-    for (let i = 0; i < 6; i++) {
-      expect(Number.isNaN(aabb?.[i] ?? 0), `aabb[${i}] must not be NaN`).toBe(false);
-    }
+    expect(aabb).toEqual(new Float32Array(6));
+    expect(mesh.vertices).toHaveLength(0);
+    expect(
+      mesh.submeshes.every((section) => section.vertexCount === 0 && section.indexCount === 0),
+    ).toBe(true);
   });
 
   it('m6-1d: degenerate plane (Y=0) — one axis min==max, still pickable', () => {

@@ -61,6 +61,8 @@ describe('AssetErrorCode closed union - 22 members (feat-20260608 M0 +tileset-re
   it('type-level: exhaustive switch covers all 22 members without default', () => {
     function describeCode(code: AssetErrorCode): string {
       switch (code) {
+        case 'asset-not-ready':
+          return 'preparing';
         case 'asset-not-found':
           return 'not-found';
         case 'asset-parse-failed':
@@ -71,6 +73,11 @@ describe('AssetErrorCode closed union - 22 members (feat-20260608 M0 +tileset-re
           return 'fetch-failed';
         case 'catalog-source-unconfigured':
           return 'catalog-source-unconfigured';
+        case 'asset-reference-invalid':
+        case 'asset-owner-closed':
+        case 'asset-write-conflict':
+        case 'asset-budget-exceeded':
+          return code;
         case 'asset-invalid-value':
           return 'invalid-value';
         case 'cubemap-handle-missing':

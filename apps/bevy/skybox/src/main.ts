@@ -1,7 +1,7 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type EquirectAsset } from '@forgeax/engine-types';
+
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildSkyboxWorld } from './skybox';
@@ -39,13 +39,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   configureRuntimeAssetCatalog(assets, runtimeBinding);
-  const hdrResult = await assets.loadByGuid<EquirectAsset>(guidResult.value);
+  const hdrResult = await assets.load(guidResult.value, 'equirect');
   if (!hdrResult.ok) {
     console.error('[bevy-skybox] HDR load failed:', hdrResult.error.code, hdrResult.error.hint);
     return;
   }
 
-  const equirect = app.world.allocSharedRef('EquirectAsset', hdrResult.value);
+  const equirect = hdrResult.value;
   buildSkyboxWorld(app.world, equirect, target.width / Math.max(target.height, 1));
   app.onError((error) => console.error('[bevy-skybox] app error:', error.code, error.hint));
   const started = app.start();

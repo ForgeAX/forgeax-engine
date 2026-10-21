@@ -3,7 +3,10 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { worldRenderResources } from '../publication/resource-scope';
+import { testAssets } from './helpers/runtime-assets';
 import { readBuffer } from './raytracing/path-tracer.fixture';
 
 export async function verifySamplerResidency() {
@@ -16,15 +19,10 @@ export async function verifySamplerResidency() {
   const errors: string[] = [];
   raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('no cubemap');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const scope = new World();
+  const assets = testAssets(scope);
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   const source: TextureAsset = {
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: 2, height: 1 } },
@@ -33,11 +31,11 @@ export async function verifySamplerResidency() {
     mips: { kind: 'none' },
     data: new Uint8Array([0, 0, 0, 255, 255, 255, 255, 255]),
   };
-  const textureHandle = scope.allocSharedRef('TextureAsset', source);
-  const texture = store.ensureResident(textureHandle, source, scope).unwrap();
+  const textureHandle = assets.create(source).unwrap();
+  const texture = store.ensureResident(textureHandle, source, worldRenderResources(scope)).unwrap();
   const nearest: SamplerAsset = { kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' };
   const linear: SamplerAsset = { kind: 'sampler', minFilter: 'linear', magFilter: 'linear' };
-  const handle = scope.allocSharedRef('SamplerAsset', nearest);
+  const handle = assets.create(nearest).unwrap();
   const layout = device
     .createBindGroupLayout({
       entries: [
@@ -73,11 +71,19 @@ export async function verifySamplerResidency() {
   const captured = recorder.captureFrame();
   (await recorder.frameBoundary()).unwrap();
   try {
-    let previous = store.ensureSamplerResident(handle, nearest, scope).unwrap();
+    let previous = store
+      .ensureSamplerResident(handle, nearest, worldRenderResources(scope))
+      .unwrap();
     for (const [index, payload] of [nearest, linear, nearest].entries()) {
-      // The resource-scope API receives the next accepted publication payload at
-      // the same logical handle. World authoring itself does not replace shared refs.
-      const current = store.ensureSamplerResident(handle, payload, scope).unwrap();
+      assets
+        .update(handle, {
+          minFilter: payload.minFilter ?? 'nearest',
+          magFilter: payload.magFilter ?? 'nearest',
+        })
+        .unwrap();
+      const current = store
+        .ensureSamplerResident(handle, assets.read(handle).unwrap(), worldRenderResources(scope))
+        .unwrap();
       if (index !== 0) expect(current).not.toBe(previous);
       const binding = device
         .createBindGroup({

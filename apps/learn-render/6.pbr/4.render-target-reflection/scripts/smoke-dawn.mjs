@@ -14,6 +14,8 @@ import {
   deriveReflectionFallbackEvidence,
   reflectionFallbackValidationLog,
 } from './ssr-fallback-evidence.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const MIN_FRAMES = smokeFrameBudget();
 const WIDTH = 256;
@@ -164,7 +166,7 @@ const manifest = await buildEngineShaderManifest({
 const shaderManifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(shaderManifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');
-const { HANDLE_CUBE, HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
+
 const { World } = await import('@forgeax/engine-ecs');
 const {
   Camera,
@@ -266,6 +268,10 @@ renderer.draw = (...args) => {
   return result;
 };
 const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveSphere = app.assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
 const targetResult = renderer.createRenderTarget({
   shape: 'cube',
   width: 64,
@@ -290,7 +296,7 @@ if (!sourceResult.ok) {
   process.exit(1);
 }
 const targetHandle = world.allocSharedRef('RenderTarget', targetResult.value);
-const sourceHandle = world.allocSharedRef('RenderTargetTextureSource', sourceResult.value);
+const sourceHandle = { source: sourceResult.value };
 const materialPayload = REFLECTION_EVIDENCE
   ? Materials.standard({ baseColor: [0.8, 0.9, 1, 1], metallic: 0.1, roughness: 0.35 })
   : {
@@ -310,10 +316,7 @@ const materialPayload = REFLECTION_EVIDENCE
       ],
       values: { baseColor: [1, 1, 1, 1], cubeTexture: sourceHandle },
     };
-const materialHandle = world.allocSharedRef(
-  'MaterialAsset',
-  materialPayload,
-);
+const materialHandle = world.assets.create(materialPayload).unwrap();
 const panelTransforms = [
   [[3, 0, 0], [0.12, 2.4, 2.4]],
   [[-3, 0, 0], [0.12, 2.4, 2.4]],
@@ -325,25 +328,19 @@ const panelTransforms = [
 // The reflection evidence lane keeps the authored colored panels so the
 // producer-owned fallback MRT is falsifiable with a non-neutral GPU sample.
 for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
-  const panelMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    REFLECTION_EVIDENCE
+  const panelMaterial = world.assets.create(REFLECTION_EVIDENCE
       ? Materials.standard({ baseColor: FACE_COLORS[face], metallic: 0, roughness: 0.45 })
-      : Materials.unlit(FACE_COLORS[face]),
-  );
+      : Materials.unlit(FACE_COLORS[face])).unwrap();
   const [pos, scale] = panelTransforms[face];
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [panelMaterial] } },
   ).unwrap();
 }
-const neutralAccentMaterial = world.allocSharedRef(
-  'MaterialAsset',
-  REFLECTION_EVIDENCE
+const neutralAccentMaterial = world.assets.create(REFLECTION_EVIDENCE
     ? Materials.standard({ baseColor: [0.45, 0.45, 0.45, 1], metallic: 0, roughness: 0.7 })
-    : Materials.unlit([0.45, 0.45, 0.45, 1]),
-);
+    : Materials.unlit([0.45, 0.45, 0.45, 1])).unwrap();
 const accentColumns = [
   [[-2.3, 0, 0.8], [0.55, 2, 0.55]],
   [[2.3, 0, 0.8], [0.55, 2, 0.55]],
@@ -352,16 +349,13 @@ const accentColumns = [
 for (const [pos, scale] of accentColumns) {
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [neutralAccentMaterial] } },
   ).unwrap();
 }
-const markerMaterial = world.allocSharedRef(
-  'MaterialAsset',
-  REFLECTION_EVIDENCE
+const markerMaterial = world.assets.create(REFLECTION_EVIDENCE
     ? Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.5 })
-    : Materials.unlit([1, 1, 1, 1]),
-);
+    : Materials.unlit([1, 1, 1, 1])).unwrap();
 const plusZMarkerParts = [
   [[0.55, 0.78, 2.9], [0.85, 0.12, 0.05]],
   [[0.2, 0.45, 2.9], [0.12, 0.78, 0.05]],
@@ -369,7 +363,7 @@ const plusZMarkerParts = [
 for (const [pos, scale] of plusZMarkerParts) {
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [markerMaterial] } },
   ).unwrap();
 }
@@ -387,7 +381,7 @@ if (REFLECTION_EVIDENCE) {
 }
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], scale: [1.7, 1.7, 1.7] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [materialHandle] } },
 ).unwrap();
 if (REFLECTION_EVIDENCE) {
@@ -657,7 +651,7 @@ if (REFLECTION_EVIDENCE) {
       );
     if (
       current.rawFacesCaptured === 6 &&
-      current.filteredStepsCompleted === 30 &&
+      current.filteredStepsCompleted === 54 &&
       current.activeCount > 0 &&
       hasProbeFallback
     ) {
@@ -668,7 +662,7 @@ if (REFLECTION_EVIDENCE) {
   const settled = renderer.inspect().reflectionProbes;
   if (
     settled.rawFacesCaptured !== 6 ||
-    settled.filteredStepsCompleted !== 30 ||
+    settled.filteredStepsCompleted !== 54 ||
     settled.activeCount === 0 ||
     !settled.reflectionFallbacks?.some(
       (row) => row.source === 'probe' && row.state === 'active' && row.candidateVisible === false,
@@ -1031,10 +1025,10 @@ if (REFLECTION_EVIDENCE) {
   if (report.reflectionProbe.rawFaces !== 6) {
     failures.push(`probe raw face count=${report.reflectionProbe.rawFaces} != 6`);
   }
-  if (report.reflectionProbe.filteredSteps !== 30) {
-    failures.push(`probe PMREM steps=${report.reflectionProbe.filteredSteps} != 30`);
+  if (report.reflectionProbe.filteredSteps !== 27) {
+    failures.push(`probe PMREM steps=${report.reflectionProbe.filteredSteps} != 27`);
   }
-  if (Math.min(...report.reflectionProbe.mipLevels) !== 0 || Math.max(...report.reflectionProbe.mipLevels) !== 4) {
+  if (Math.min(...report.reflectionProbe.mipLevels) !== 0 || Math.max(...report.reflectionProbe.mipLevels) !== 8) {
     failures.push(`probe PMREM mip range=${JSON.stringify(report.reflectionProbe.mipLevels)}`);
   }
   const fallbackReadback =

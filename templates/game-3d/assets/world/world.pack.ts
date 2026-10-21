@@ -3,7 +3,6 @@ import { ok } from '@forgeax/engine/types';
 import { assetGuid, guidText, PACKAGE_IDS } from '../shared/asset-refs.ts';
 import { joinPluginFiber, mountPluginAsset, type Plugin } from '@forgeax/engine/plugin';
 import { worldDespawnScene } from '@forgeax/engine/scene';
-import type { SceneAsset } from '@forgeax/engine/types';
 import type {} from '../shared/scene-refs.ts';
 import { VASE_PLUGIN } from '../runtime-vase/vase-program.ts';
 export const scene: Plugin.Object<{ readonly scene: string; readonly children: readonly string[] }> =
@@ -13,15 +12,15 @@ export const scene: Plugin.Object<{ readonly scene: string; readonly children: r
     async apply(ctx, config) {
       const assets = ctx.assets;
       if (!assets) throw new Error('scene owner requires assets');
-      const loaded = await assets.loadByGuid<SceneAsset>(assets.parseGuid(config.scene));
+      const loaded = await assets.load(assets.parseGuid(config.scene), 'scene');
       if (!loaded.ok) throw loaded.error;
       // Register each inverse immediately; generator disposal joins children before scene data.
       await ctx.effect(async function* () {
-        const handle = ctx.world.allocSharedRef('SceneAsset', loaded.value);
+        const handle = loaded.value;
         yield () => {
-          ctx.world.sharedRefs.release(handle).unwrap();
+          assets.release(handle).unwrap();
         };
-        const root = assets.instantiate<SceneAsset>(handle, ctx.world).unwrap();
+        const root = assets.instantiate(handle, ctx.world).unwrap();
         yield () => worldDespawnScene(ctx.world, root).unwrap();
         yield ctx.provide('gameScene', { root });
         for (const guid of config.children) {
@@ -34,7 +33,7 @@ export const scene: Plugin.Object<{ readonly scene: string; readonly children: r
   };
 
 export default definePack({
-  schemaVersion: '2.0.0',
+  schemaVersion: '2.0.0', plugins: true,
   packageId: definePackageId('019fb7ce-3a00-7000-8000-000000000000'),
   build: () => ok({
     'plugin/scene': {

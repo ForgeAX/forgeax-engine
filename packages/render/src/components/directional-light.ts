@@ -64,7 +64,7 @@ export {
  *                                  plus automatic texel/filter/slope coverage
  *   normalBias                   — world-space receiver normal offset (default 0.05)
  *   shadowDistance > 0           — how far shadows reach in front of the camera,
- *                                  in world units (default 100000, capped by camera far). This is the sole
+ *                                  in world units (default 200, capped by camera far). This is the sole
  *                                  coverage knob: the CSM cascades are PSSM-split
  *                                  across [camera near, min(camera far, shadowDistance)] and each
  *                                  cascade's orthographic bounds are fit to the
@@ -141,14 +141,19 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   cascadeCount: { type: 'f32', default: 3 },
   splitLambda: { type: 'f32', default: 0.5 },
   cascadeBlend: { type: 'f32', default: 0.2 },
+  shadowMapAspect: { type: 'f32', default: 1 },
+  shadowCasterChannels: { type: 'f64', default: 0xffffffff },
+  shadowAutoUpdate: { type: 'bool', default: true },
+  shadowRevision: { type: 'f64', default: 0 },
   mapSize: { type: 'f32', default: 2048 },
   depthBias: { type: 'f32', default: 0.00001 },
   normalBias: { type: 'f32', default: 0.05 },
   // Sole shadow coverage knob (feat replaces nearPlane/farPlane). The PSSM
   // near end derives from the active camera near; shadowDistance is the far
   // cap. The effective distance is min(camera far, shadowDistance), matching
-  // Three.js CSM maxFar. Defaults cover the display camera's whole frustum.
-  shadowDistance: { type: 'f32', default: 100000 },
+  // Three.js CSM maxFar. The default cap preserves nearby detail independently
+  // of the display camera's longer visibility range.
+  shadowDistance: { type: 'f32', default: 200 },
   shadowFilter: {
     type: 'enum',
     default: DirectionalShadowFilterValue.pcfVogel,
@@ -156,6 +161,14 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   },
   shadowAngularRadius: { type: 'f32', default: 0.00465 },
   maxPenumbraTexels: { type: 'f32', default: 32 },
+  // Camera-fitted cascades remain the native default. An explicit reverse-Z
+  // world-to-clip matrix provides an independent authored shadow camera.
+  shadowProjection: { type: 'enum', labels: { cascaded: 0, matrix: 1 }, default: 0 },
+  shadowViewProjection: { type: 'array<f32, 16>' },
+  shadowBiasMode: { type: 'enum', labels: { receiverPlane: 0, constant: 1 }, default: 0 },
+  shadowRadius: { type: 'f32', default: 1 },
+  shadowIntensity: { type: 'f32', default: 1 },
+  shadowBlurSamples: { type: 'f32', default: 8 },
   staggerCascades: { type: 'bool', default: false },
   contactShadowLength: { type: 'f32', default: 0 },
 });

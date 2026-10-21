@@ -135,9 +135,10 @@ describe('M4 material and Instances documentation contract', () => {
       expect(renderReadme).toContain(token);
     }
     for (const token of [
-      'producer lifecycle observations',
-      '`inspect -> rebuild/recook or refresh LKG -> loadByGuid`',
-      'parallel readiness ledger',
+      '`inspect(guid)` observes source evidence',
+      '`sourceOf(handle)` reports the accepted',
+      'readiness is distinct from actual runtime adoption or GPU completion',
+      '`reload(handle, { conflict:',
     ]) {
       expect(assetsReadme).toContain(token);
     }

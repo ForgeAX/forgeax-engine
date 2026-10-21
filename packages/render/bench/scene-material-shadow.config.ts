@@ -9,10 +9,11 @@ export default defineConfig({
   target: 'node22',
   outDir: 'artifacts/scene-material-scaling/shadow-bin',
   splitting: true,
-  external: ['webgpu'],
-  noExternal: [/^@forgeax\/engine-render(?:\/|$)/],
+  external: ['webgpu', '@forgeax/engine-dawn-node'],
+  noExternal: [/^@forgeax\/engine-(?:render|runtime)(?:\/|$)/],
   esbuildOptions(options) {
     options.alias = {
+      '@forgeax/engine-runtime/internal/renderer-host': './packages/runtime/src/renderer-host.ts',
       '@forgeax/engine-render/internal/construct-renderer': './packages/render/src/construct-renderer.ts',
       '@forgeax/engine-render/internal': './packages/render/src/internal.ts',
       '@forgeax/engine-render': './packages/render/src/index.ts',

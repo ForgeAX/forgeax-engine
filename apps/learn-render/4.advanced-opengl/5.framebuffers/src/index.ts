@@ -23,7 +23,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createFullscreenRenderFeature, type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { perspective } from '@forgeax/engine-render';
@@ -32,11 +32,8 @@ import type { RenderFeature } from '@forgeax/engine-render';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { PostProcessParams } from '@forgeax/engine-render';
 
-import type {
-  MaterialAsset,
-  TextureAsset,
-} from '@forgeax/engine-types';
-import { ok, unwrapHandle } from '@forgeax/engine-types';
+
+import { ok } from '@forgeax/engine-types';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
@@ -53,6 +50,8 @@ import grayscaleShader from './shaders/grayscale.wgsl';
 import inversionShader from './shaders/inversion.wgsl';
 import passthroughShader from './shaders/passthrough.wgsl';
 import sharpenShader from './shaders/sharpen.wgsl';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 
 // Texture GUIDs from forgeax-engine-assets/learn-opengl/textures/*.meta.json.
@@ -419,7 +418,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   app.onError((error) => {
     if (captureExpectedPipelineError(error)) return;
     console.error('[learn-render 4.5 framebuffers] app.onError:', error.code, error.hint);
@@ -458,7 +463,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     );
     return;
   }
-  const containerHandleRes = await assets.loadByGuid<TextureAsset>(containerGuidRes.value);
+  const containerHandleRes = await assets.load(containerGuidRes.value, 'texture');
   if (!containerHandleRes.ok) {
     console.error(
       '[learn-render 4.5 framebuffers] container loadByGuid failed:',
@@ -466,7 +471,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     );
     return;
   }
-  const metalHandleRes = await assets.loadByGuid<TextureAsset>(metalGuidRes.value);
+  const metalHandleRes = await assets.load(metalGuidRes.value, 'texture');
   if (!metalHandleRes.ok) {
     console.error(
       '[learn-render 4.5 framebuffers] metal loadByGuid failed:',
@@ -476,14 +481,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   // loadByGuid returns texture PAYLOADs (M8 D-17); mint user-tier column
   // handles for the baseColorTexture slots below.
-  const containerTex = unwrapHandle(world.allocSharedRef('TextureAsset', containerHandleRes.value));
-  const metalTex = unwrapHandle(world.allocSharedRef('TextureAsset', metalHandleRes.value));
+  const containerTex = Number(containerHandleRes.value);
+  const metalTex = Number(metalHandleRes.value);
 
   // Cube material: unlit container.jpg. The 4.5 chapter teaches off-screen
   // RT + post-process; the scene shading is intentionally trivial (unlit) so
   // the visual delta between effects is dominated by the post-process pass,
   // not by per-cube lighting.
-  const cubeMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const cubeMatHandle = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -492,14 +497,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       baseColor: [1.0, 1.0, 1.0, 1.0],
       baseColorTexture: containerTex,
     },
-  });
+  }).unwrap();
 
   // Floor material: unlit metal.png. HANDLE_QUAD is a 1x1 quad with a
   // single-tile UV; the 5x5 scale stretches that one tile across the floor
   // (research F-A3 known-difference: unlit has no tiling/offset, so a single
   // wide-tile sample stands in for the LearnOpenGL 25x25 metal-texture floor
   // tiling -- the post-process effect demonstration is unaffected).
-  const floorMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const floorMatHandle = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -508,7 +513,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       baseColor: [1.0, 1.0, 1.0, 1.0],
       baseColorTexture: metalTex,
     },
-  });
+  }).unwrap();
 
   // Spawn cube #1 at (-1, 0, -1).
   world
@@ -517,7 +522,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [CUBE1_POS[0], CUBE1_POS[1], CUBE1_POS[2]]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
     )
     .unwrap();
@@ -529,7 +534,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [CUBE2_POS[0], CUBE2_POS[1], CUBE2_POS[2]]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
     )
     .unwrap();
@@ -542,7 +547,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [FLOOR_POS[0], FLOOR_POS[1], FLOOR_POS[2]], quat: [FLOOR_QUAT_X, 0, 0, FLOOR_QUAT_W], scale: [FLOOR_SCALE[0], FLOOR_SCALE[1], FLOOR_SCALE[2]],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [floorMatHandle] } },
     )
     .unwrap();

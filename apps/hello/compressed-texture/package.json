@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "KTX2/Basis block-compression e2e demo \u2014 packed PBR checkerboard texture through the Basis transcode + block-aware upload pipeline, with uncompressed RGBA8 fallback query switch (feat-20260707-texture-block-compression-web-transcode-ktx2-basis M6 / w39).",
+  "description": "KTX2/Basis block-compression e2e demo — packed PBR checkerboard texture through the Basis transcode + block-aware upload pipeline, with uncompressed RGBA8 fallback query switch (feat-20260707-texture-block-compression-web-transcode-ktx2-basis M6 / w39).",
   "scripts": {
     "gen-assets": "node assets/gen-png.mjs",
     "predev": "node assets/gen-png.mjs",
@@ -100,7 +100,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

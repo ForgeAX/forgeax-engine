@@ -116,10 +116,13 @@ export async function createGameplayVfx(options: {
   const effects: VfxGpuEffectAsset[] = [];
   for (const entry of loaded) {
     if (!entry.ok) { const cause = failure(entry.error); await host.detachWorld({ world }); return noop(cause.code, cause.hint); }
-    effects.push(entry.value);
+    effects.push(assets.read(entry.value).unwrap());
   }
   const [hit, charge, telegraph, flight, contact] = effects as [VfxGpuEffectAsset, VfxGpuEffectAsset, VfxGpuEffectAsset, VfxGpuEffectAsset, VfxGpuEffectAsset];
-  const hitEffect = world.allocSharedRef('ParticleEffectAsset', hit); const chargeEffect = world.allocSharedRef('ParticleEffectAsset', charge); const telegraphEffect = world.allocSharedRef('ParticleEffectAsset', telegraph); const flightEffect = world.allocSharedRef('ParticleEffectAsset', flight); const contactEffect = world.allocSharedRef('ParticleEffectAsset', contact);
+  const handles = loaded.map(entry => entry.unwrap());
+  const [hitEffect, chargeEffect, telegraphEffect, flightEffect, contactEffect] = handles;
+  if (hitEffect === undefined || chargeEffect === undefined || telegraphEffect === undefined || flightEffect === undefined || contactEffect === undefined) throw new Error('Missing VFX source');
+
   const player = world.addComponent(target, { component: ParticleEffectPlayer, data: { effect: hitEffect, playing: false, seed: 0, timeScale: 1 } });
   if (!player.ok) { await host.detachWorld({ world }); return noop(player.error.code, player.error.hint); }
   try {
@@ -151,6 +154,7 @@ export async function createGameplayVfx(options: {
       api.stopHostile();
       world.set(target, ParticleEffectPlayer, { playing: false });
       await host.detachWorld({ world });
+      for (const handle of handles) assets.release(handle).unwrap();
     },
     beginTelegraph: (position) => { if (disposed || !featureReady() || sentinel === undefined || world.get(sentinel, Transform).ok === false) return; seed = (seed + 1) >>> 0; phase = 'telegraph'; eventSequence += 1; telegraphEvents += 1; lastPosition = [...position]; setEffect(sentinel, telegraphEffect, true, seed); },
     flightPresentation: () => featureReady() ? [{ component: ParticleEffectPlayer, data: { effect: flightEffect, playing: true, seed: (seed + 1) >>> 0, timeScale: 1 } }] : [],

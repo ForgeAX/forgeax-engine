@@ -12,17 +12,18 @@ import {
   createStandardPbrArtifactReceipt,
 } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
-import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
+import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { GpuDrivenStandardPbrFrameResources, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import {
+  admitGpuFixture,
   mesh,
   preparedSnapshot,
   standardPbrInputs,
@@ -41,8 +42,8 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const group = () => device.createBindGroup({ layout, entries: [] }).unwrap();
   const programs = standardPbrInputs(device, shader, layout);
-  const base = defined(programs.standardPbrArtifact);
-  const state = defined(programs.standardPbrPipelineState);
+  const base = defined(programs.materialArtifact);
+  const state = defined(programs.materialPipelineState);
   const rigid = {
     ...base,
     program: createMaterialShaderProgram(clustered ? '@group(2) @binding(3) var light: u32;' : ''),
@@ -57,10 +58,22 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   const allocator = createSkinPaletteAllocator(device, 1 << 20);
   const snapshots = kinds.map((kind, index): RenderableSnapshot => {
     const source = preparedSnapshot(index + 1, index + 1);
-    const material = {
-      ...source.material,
-      renderState: { cullMode: index % 2 === 0 ? ('back' as const) : ('front' as const) },
-    };
+    const materialShaderId =
+      kind === 'skin' ? 'forgeax::pbr-skin' : 'forgeax::default-standard-pbr';
+    const cullMode = index % 2 === 0 ? ('back' as const) : ('front' as const);
+    const material = new MaterialResource({
+      ...source.material.snapshot,
+      materialShaderId,
+      renderState: { cullMode },
+      passes: [
+        {
+          name: 'forward',
+          program: { module: materialShaderId },
+          renderState: { cullMode, tags: { LightMode: 'Forward' } },
+        },
+      ],
+      materialProgramKeys: { forward: materialShaderId },
+    });
     return {
       ...source,
       material,
@@ -77,6 +90,15 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
         : {}),
       gpuDrivenDraws: defined(source.gpuDrivenDraws).map((draw) => ({
         ...draw,
+        geometry: {
+          ...draw.geometry,
+          deformation: kind,
+          receipt: {
+            ...draw.geometry.receipt,
+            vertexInputs:
+              kind === 'skin' ? skin.receipt.vertexInputs : defined(rigid.receipt).vertexInputs,
+          },
+        },
         prepared: {
           ...defined(draw.prepared),
           identity: { ...defined(draw.prepared).identity, deformation: kind },
@@ -113,40 +135,31 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   const prepare = () =>
     defined(
       production
-        .prepare({
-          ...programs,
-          standardPbrArtifact: rigid,
-          standardPbrPipelineState: {
-            ...state,
-            skinPaletteAllocator: allocator,
-            gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
-            pbrSkinMeshBindGroupLayout: skinLayout,
-          },
-          materialArtifacts: new Map(
-            topology.plan().batches.map((batch) => {
-              const prepared = defined(batch.prepared);
-              return [
-                gpuDrivenMaterialArtifactKey({
-                  material: prepared.identity.material,
-                  deformation: prepared.identity.deformation,
-                  receiptIdentity: prepared.receiptIdentity,
-                  receiptGeneration: prepared.receiptGeneration,
-                }),
-                prepared.identity.deformation === 'skin' ? skin : rigid,
-              ];
-            }),
-          ),
-          scene: {
-            scene: available.scene,
-            plan: topology.plan(),
-            slots: scene.slotsSnapshot(),
-            slotAt: scene.slotAt,
-          },
-          camera: makeZeroCameraFallbackSnapshot(),
-          meshBySlot,
-          viewBindGroupLayout: layout,
-          meshResidencyEpoch: 1,
-        })
+        .prepare(
+          admitGpuFixture({
+            ...programs,
+            materialArtifact: rigid,
+            materialPipelineState: {
+              ...state,
+              skinPaletteAllocator: allocator,
+              gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
+              pbrSkinMeshBindGroupLayout: skinLayout,
+            },
+            materialArtifacts: new Map([
+              ['forgeax::default-standard-pbr', rigid],
+              ['forgeax::pbr-skin', skin],
+            ]),
+            scene: {
+              scene: available.scene,
+              plan: topology.query(topology.sourcePlan(), undefined),
+              slots: scene.slotsSnapshot(),
+              slotAt: scene.slotAt,
+            },
+            camera: makeZeroCameraFallbackSnapshot(),
+            meshBySlot,
+            viewBindGroupLayout: layout,
+          }),
+        )
         .unwrap(),
     );
   return {
@@ -207,8 +220,14 @@ function recorder(
         try {
           gpu.encode(viewGroup, pass, resources, {
             ...defined(prepared.standardPbrFrameResources),
-            materialBindGroups: [materialGroup],
-            materialSlotIndicesByEntity: new Map(),
+            prepareMaterialBinding: (
+              (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+              (slot: number) => {
+                const group = groups[slot];
+                return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+              }
+            )([materialGroup]),
+            materialSlotIndicesByBinding: new Map(),
             ...overrides,
           });
         } catch (error) {
@@ -256,7 +275,18 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
       expect(r.record({ ...frame, selectedMaterialSlots: new Set() }).draws).toBe(0);
       expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
-      expect(() => r.record({ ...frame, materialBindGroups: [] })).toThrow();
+      expect(() =>
+        r.record({
+          ...frame,
+          prepareMaterialBinding: (
+            (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+            (slot: number) => {
+              const group = groups[slot];
+              return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+            }
+          )([]),
+        }),
+      ).toThrow();
       expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
       const first = r.record(frame);
       expect(first.draws).toBe(3);

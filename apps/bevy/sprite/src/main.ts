@@ -2,7 +2,6 @@
 
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildSpriteWorld, makeSpritePixels, SPRITE_SIZE } from './sprite';
 
@@ -24,6 +23,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   console.warn(`[bevy-sprite] state=${app.renderer.inspect().state}`);
   const pixels = makeSpritePixels();
   const texture = {
@@ -34,8 +35,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     colorSpace: 'srgb' as const,
     mips: { kind: 'none' as const },
   };
-  const handle = app.world.allocSharedRef('TextureAsset', texture);
-  buildSpriteWorld(app.world, unwrapHandle(handle));
+  const handle = assets.create(texture).unwrap();
+  buildSpriteWorld(app.world, handle);
   const started = app.start();
   if (!started.ok) {
     console.error('[bevy-sprite] app.start failed:', started.error.code, started.error.hint);

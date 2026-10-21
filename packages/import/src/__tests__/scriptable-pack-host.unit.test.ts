@@ -505,3 +505,26 @@ describe('ScriptablePack external Meta staging', () => {
     });
   });
 });
+
+it('preserves explicit direct JSON plugin outputs through the synthetic Pack definition', async () => {
+  const parsed = parsePackSourceJson({
+    schemaVersion: '3.0.0',
+    packageId: '01900000-0000-7000-8000-000000000079',
+    assets: {
+      'plugin/main': { kind: 'plugin', payload: { module: { specifier: '@fixture/runtime' } } },
+    },
+  }).unwrap();
+  if (parsed.format !== 'direct') throw new Error('Expected direct Pack');
+  const result = await prepareDirectPackTransport({
+    projected: projectDirectPackJson(parsed),
+    sourcePath: resolve(process.cwd(), 'src/__tests__/plugin.pack.json'),
+    sourceRevision: 'sha256:direct-plugin',
+    policy: {
+      base: '/',
+      packagePath: 'assets/plugin.pack.json',
+      artifactPath: (guid, key) => `${guid}/${key}.bin`,
+    },
+  });
+  expect(result).toMatchObject({ ok: true });
+  if (result.ok) expect(result.value.finalized.pack.assets).toMatchObject([{ kind: 'plugin' }]);
+});

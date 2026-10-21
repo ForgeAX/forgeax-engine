@@ -160,17 +160,19 @@ describe('ProfileCapture comparison', () => {
         recordCount: 3,
         phaseCount: 2,
         skipCount: 1,
+        completeness: { status: 'complete', retainedEventCount: 3, droppedEventCount: 0 },
       },
-      completeness: { status: 'complete', retainedEventCount: 3, droppedEventCount: 0 },
     });
     expect(result.value.right).toMatchObject({
-      summary: { captureId: 'capture-0002' },
-      completeness: {
-        status: 'overflow',
-        retainedEventCount: 4,
-        droppedEventCount: 2,
-        firstAffectedFrameId: 2,
-        lastAffectedFrameId: 2,
+      summary: {
+        captureId: 'capture-0002',
+        completeness: {
+          status: 'overflow',
+          retainedEventCount: 4,
+          droppedEventCount: 2,
+          firstAffectedFrameId: 2,
+          lastAffectedFrameId: 2,
+        },
       },
     });
 
@@ -271,4 +273,29 @@ describe('ProfileCapture comparison', () => {
     expect(updates[0]?.delta).toBeUndefined();
     expect(updates[1]?.delta).toBeUndefined();
   });
+});
+
+it('preserves rows with either side empty and omits unmatched deltas', () => {
+  const full = capture('left');
+  const empty = {
+    ...full,
+    records: [],
+    completeness: { status: 'complete', retainedEventCount: 0, droppedEventCount: 0 },
+  };
+  for (const [left, right, present] of [
+    [full, empty, 'left'],
+    [empty, full, 'right'],
+  ] as const) {
+    const result = compareProfileCaptures(left, right);
+    if (!result.ok) throw result.error;
+    expect(result.value.phases).toHaveLength(3);
+    for (const row of result.value.phases) {
+      expect(row[present]).toBeDefined();
+      expect(row[present === 'left' ? 'right' : 'left']).toBeUndefined();
+      expect(row.delta).toBeUndefined();
+    }
+  }
+  const result = compareProfileCaptures(empty, empty);
+  if (!result.ok) throw result.error;
+  expect(result.value.phases).toEqual([]);
 });

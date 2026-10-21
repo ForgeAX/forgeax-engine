@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import * as nodeModule from 'node:module';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parentPort, workerData } from 'node:worker_threads';
+import { parentPort } from 'node:worker_threads';
 import ts from 'typescript';
 import type { PackAuthoringError } from './pack-authoring.js';
 import { validatePluginAssetSource } from './plugin-asset.js';
@@ -27,18 +27,8 @@ const flushCompileCache = (
   nodeModule as typeof nodeModule & { readonly flushCompileCache?: () => void }
 ).flushCompileCache;
 const port = parentPort;
-const workerMode = workerData as {
-  readonly mode?: 'single' | 'reusable';
-  readonly sourcePath?: string;
-  readonly compileRoot?: string;
-  sources?: Readonly<Record<string, string>>;
-  transpiles?: readonly SnapshotTranspileText[];
-};
-const reusable = workerMode.mode === 'reusable';
-let sourcePath = workerMode.sourcePath;
-let compileRoot = workerMode.compileRoot;
-let capturedSources = workerMode.sources;
-let capturedTranspiles = workerMode.transpiles;
+let capturedSources: Readonly<Record<string, string>> | undefined;
+let capturedTranspiles: readonly SnapshotTranspileText[] | undefined;
 let completedTranspiles: SnapshotTranspileText[] = [];
 let reliableTranspileRecipe: string | undefined;
 function tryTranspileRecipe(): string | undefined {
@@ -74,6 +64,7 @@ type LoadedDefinition = {
   readonly schemaVersion?: unknown;
   readonly packageId?: unknown;
   readonly name?: unknown;
+  readonly plugins?: unknown;
   readonly parameters?: unknown;
   readonly sceneComponents?: unknown;
   readonly runtime?: unknown;
@@ -416,12 +407,10 @@ function compileModuleClosure(entryPath: string, outputRoot: string, loadId?: nu
 async function loadDefinition(task: {
   readonly sourcePath: string;
   readonly compileRoot: string;
-  readonly loadId?: number;
+  readonly loadId: number;
   readonly sources?: Readonly<Record<string, string>>;
   readonly transpiles?: readonly SnapshotTranspileText[];
 }): Promise<void> {
-  sourcePath = task.sourcePath;
-  compileRoot = task.compileRoot;
   capturedSources = task.sources;
   capturedTranspiles = task.transpiles;
   completedTranspiles = [];
@@ -433,9 +422,7 @@ async function loadDefinition(task: {
     )
       ? compileModuleClosure(task.sourcePath, task.compileRoot, task.loadId)
       : task.sourcePath;
-    const loaded = (await import(
-      `${pathToFileURL(executablePath).href}${reusable ? `?load=${task.loadId ?? 0}` : ''}`
-    )) as {
+    const loaded = (await import(`${pathToFileURL(executablePath).href}?load=${task.loadId}`)) as {
       readonly default?: unknown;
     };
     definition = loaded.default as LoadedDefinition | undefined;
@@ -457,6 +444,7 @@ async function loadDefinition(task: {
               schemaVersion: definition.schemaVersion,
               packageId: definition.packageId,
               ...(definition.name === undefined ? {} : { name: definition.name }),
+              ...(definition.plugins === undefined ? {} : { plugins: definition.plugins }),
               ...(definition.parameters === undefined ? {} : { parameters: definition.parameters }),
               ...(definition.runtime === undefined ? {} : { runtime: definition.runtime }),
               ...(definition.sceneComponents === undefined
@@ -468,12 +456,10 @@ async function loadDefinition(task: {
   } finally {
     // postMessage has already cloned the derived text for the host snapshot.
     // Build and delayed imports use the compiled closure on disk, not these
-    // load-only strings. workerData also owns the initial single-use payload.
+    // load-only strings.
     capturedSources = undefined;
     capturedTranspiles = undefined;
     completedTranspiles = [];
-    delete workerMode.sources;
-    delete workerMode.transpiles;
   }
 }
 
@@ -486,7 +472,6 @@ async function handleMessage(message: unknown): Promise<void> {
     return;
   }
   if (
-    reusable &&
     value.kind === 'load' &&
     typeof value.sourcePath === 'string' &&
     typeof value.compileRoot === 'string' &&
@@ -572,16 +557,3 @@ async function handleMessage(message: unknown): Promise<void> {
 port.on('message', (message: unknown) => {
   void handleMessage(message);
 });
-
-if (!reusable && sourcePath !== undefined && compileRoot !== undefined) {
-  try {
-    await loadDefinition({
-      sourcePath,
-      compileRoot,
-      ...(capturedSources === undefined ? {} : { sources: capturedSources }),
-      ...(capturedTranspiles === undefined ? {} : { transpiles: capturedTranspiles }),
-    });
-  } catch (error) {
-    port.postMessage({ kind: 'load-threw', error: failure(error) });
-  }
-}

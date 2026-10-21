@@ -1,4 +1,3 @@
-import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
@@ -26,14 +25,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = result.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('asset owner unavailable');
   const geometry = createBoxGeometry(1, 1, 1);
   if (!geometry.ok) {
     console.error('[bevy-animate-shader] createBoxGeometry failed:', geometry.error);
     return;
   }
-  const mesh = app.world.allocSharedRef('MeshAsset', geometry.value);
-  const material = app.world.allocSharedRef('MaterialAsset', makeMaterial());
-  const timeValue = app.world.spawn({ component: RuntimeMaterialValue, data: { asset: material, parameter: 'time', value: [0] } }).unwrap();
+  const mesh = assets.create(geometry.value).unwrap();
+  const material = assets.create(makeMaterial()).unwrap();
   app.world.spawn(
     { component: Transform, data: { pos: [0, 0.5, 0] } },
     { component: MeshFilter, data: { assetHandle: mesh } },
@@ -57,7 +57,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       const time = world.hasResource('Time')
         ? world.getResource<{ elapsed: number }>('Time').elapsed
         : 0;
-      world.set(timeValue, RuntimeMaterialValue, { value: [time] }).unwrap();
+      assets.update(material, { values: { time } }).unwrap();
     },
   });
   app.onError((error) => console.error('[bevy-animate-shader] app error:', error.code, error.hint));

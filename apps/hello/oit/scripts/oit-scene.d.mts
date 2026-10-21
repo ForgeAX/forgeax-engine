@@ -1,4 +1,4 @@
-import type { Entity, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
 
 export type Rgb = [number, number, number];
 export interface OitProbe {
@@ -26,9 +26,10 @@ export function probeReference(
 ): { readonly weighted: Rgb; readonly exact: Rgb };
 export function spawnOitScene(
   world: World,
+  assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
   options?: { readonly order?: readonly number[] },
 ): {
-  readonly camera: Entity;
+  readonly camera: EntityHandle;
   spawnLayers(order: readonly number[]): void;
   setTransparency(mode: 'sorted' | 'weighted-blended'): void;
 };

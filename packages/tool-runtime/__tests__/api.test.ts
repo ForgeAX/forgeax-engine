@@ -196,3 +196,98 @@ describe('Tool API provider admission', () => {
     await api.dispose();
   });
 });
+
+
+it('all disposal callers wait for ignored cancellation, including an overlapping revoke', async () => {
+  let release: (() => void) | undefined;
+  const api = createToolApi();
+  const provider = api.registerProvider({ providerId: 'drain', sourceId: 'test', realm: 'engine',
+    tools: [tool('fixture.drain', () => new Promise<void>((resolve) => { release = resolve; }))],
+  });
+  const run = api.run('fixture.drain', null);
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  const revoked = provider.revoke();
+  const first = api.dispose();
+  let secondSettled = false;
+  const second = api.dispose().then(() => { secondSettled = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(secondSettled).toBe(false);
+    expect(provider.snapshot().callable).toBe(false);
+  } finally {
+    release?.();
+    await Promise.all([first, second, revoked, run.executorExited]);
+  }
+  expect(provider.snapshot().state).toBe('revoked');
+});
+
+it('retains the failed provider owner until its executor exits', async () => {
+  let release: (() => void) | undefined;
+  const api = createToolApi();
+  const input = { providerId: 'failed', sourceId: 'test', realm: 'engine' as const,
+    tools: [tool('fixture.failed', () => new Promise<void>((resolve) => { release = resolve; }))],
+  };
+  const provider = api.registerProvider(input);
+  const run = api.run('fixture.failed', null);
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  provider.fail('owner failed');
+  try {
+    expect(() => api.registerProvider(input)).toThrow('already registered');
+  } finally {
+    release?.();
+    await run.executorExited;
+  }
+  const replacement = api.registerProvider(input);
+  expect(replacement.owner.generation).toBeGreaterThan(provider.owner.generation);
+  await api.dispose();
+});
+
+
+it('shares disposal completion with callers re-entering a retirement notification', async () => {
+  let release: (() => void) | undefined;
+  const api = createToolApi();
+  api.registerProvider({ providerId: 'reentrant', sourceId: 'test', realm: 'engine',
+    tools: [tool('fixture.reentrant', () => new Promise<void>((resolve) => { release = resolve; }))],
+  });
+  const run = api.run('fixture.reentrant', null);
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  let reentered: Promise<void> | undefined;
+  api.subscribe((snapshot) => {
+    if (snapshot.providers.some((provider) => provider.state === 'revoking')) reentered = api.dispose();
+  });
+  const completion = api.dispose();
+  try {
+    expect(reentered).toBe(completion);
+    expect(await Promise.race([completion.then(() => 'done'), Promise.resolve('pending')])).toBe('pending');
+  } finally {
+    release?.();
+    await Promise.all([completion, reentered, run.executorExited]);
+  }
+});
+
+
+it('drains an executor that revokes its provider synchronously during admission', async () => {
+  let release: (() => void) | undefined;
+  const api = createToolApi();
+  let revoked: Promise<void> | undefined;
+  const provider = api.registerProvider({ providerId: 'self-revoking', sourceId: 'test', realm: 'engine',
+    tools: [tool('fixture.self-revoking', () => {
+      revoked = provider.revoke();
+      return new Promise<void>((resolve) => { release = resolve; });
+    })],
+  });
+  const run = api.run('fixture.self-revoking', null);
+  expect(provider.revoke()).toBe(revoked);
+  let disposed = false;
+  const completion = api.dispose().then(() => { disposed = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disposed).toBe(false);
+    expect(provider.snapshot().state).toBe('revoking');
+    expect(await run.terminal).toMatchObject({ outcome: 'failed', failure: { code: 'tool-run-cancelled' } });
+  } finally {
+    release?.();
+    await Promise.all([completion, revoked, run.executorExited]);
+  }
+  expect(provider.snapshot().state).toBe('revoked');
+});

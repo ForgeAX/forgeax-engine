@@ -4,6 +4,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createSceneDataCatalog, type RenderFeaturePlan } from '@forgeax/engine-render';
 import type { VfxGpuTickIntent } from '@forgeax/engine-vfx';
 import { describe, expect, it } from 'vitest';
+import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
 import {
   freezeVfxPlan as freezeRenderFeaturePlan,
   gpuParticleRenderFeature,
@@ -35,7 +36,7 @@ describe('VFX managed stage execution seam', () => {
     expect(planPasses(plan)).toEqual([]);
   });
 
-  it('declares storage-produced indirect work and dependent raster descriptors', () => {
+  it('declares storage-produced indirect work and dependent raster descriptors', async () => {
     const intent = {
       sequence: 1,
       player: 1,
@@ -83,6 +84,11 @@ describe('VFX managed stage execution seam', () => {
       channelInputs: [],
       eventCounters: {},
     } as unknown as VfxGpuTickIntent;
+    const cooked = await cookedEffectFixture({ program: { emitters: [intent.emitter] } });
+    Object.assign(intent, {
+      emitter: cooked.program.emitters[0],
+      programFingerprint: cooked.programFingerprint,
+    });
     const runtime = {
       isEmitterSessionEnabled: () => true,
       setEmitterCameraVisibility: () => {},

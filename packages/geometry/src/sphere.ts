@@ -10,8 +10,9 @@
 
 import type { AssetError, MeshAsset } from '@forgeax/engine-types';
 import { err, type Result } from '@forgeax/engine-types';
-import { degenerate, FACTORY_FLOATS_PER_VERTEX, meshFromInterleaved } from './box';
+import { degenerate } from './box';
 import { poleGridIndices } from './pole-grid-indices';
+import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
 
 export function createSphereGeometry(
   radius: number,
@@ -25,7 +26,7 @@ export function createSphereGeometry(
   if (hs < 2) return err(degenerate(`heightSegments=${hs}; minimum 2`));
 
   const vertexCount = (ws + 1) * (hs + 1);
-  const vertices = new Float32Array(vertexCount * FACTORY_FLOATS_PER_VERTEX);
+  const attributes = createPrimitiveAttributes(vertexCount);
 
   let vIdx = 0;
   for (let iy = 0; iy <= hs; iy++) {
@@ -40,19 +41,18 @@ export function createSphereGeometry(
       const nx = x / radius;
       const ny = y / radius;
       const nz = z / radius;
-      const base = vIdx * FACTORY_FLOATS_PER_VERTEX;
-      vertices[base + 0] = x;
-      vertices[base + 1] = y;
-      vertices[base + 2] = z;
-      vertices[base + 3] = nx;
-      vertices[base + 4] = ny;
-      vertices[base + 5] = nz;
-      vertices[base + 6] = u;
+      attributes.position[vIdx * 3 + 0] = x;
+      attributes.position[vIdx * 3 + 1] = y;
+      attributes.position[vIdx * 3 + 2] = z;
+      attributes.normal[vIdx * 3 + 0] = nx;
+      attributes.normal[vIdx * 3 + 1] = ny;
+      attributes.normal[vIdx * 3 + 2] = nz;
+      attributes.uv[vIdx * 2 + 0] = u;
       // UV.v uses the WebGPU top-left convention (V=0 = image top).
-      vertices[base + 7] = v;
+      attributes.uv[vIdx * 2 + 1] = v;
       vIdx++;
     }
   }
 
-  return meshFromInterleaved(vertices, poleGridIndices(ws, hs + 1));
+  return finishPrimitiveMesh(attributes, poleGridIndices(ws, hs + 1));
 }

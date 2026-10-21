@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { createProfiler, validateProfileCapture } from '@forgeax/engine/profiler';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const allocationReport = { profilerEventObjectAllocations: 0 };
 const profiler = createProfiler({ allocationReport });
@@ -15,8 +17,14 @@ export default defineFeature({
   expect:
     'All checks pass: zero allocations before capture, a 6-frame capture finishes complete, validates, and contains app + render phase records; tiny eventLimit reports overflow.',
   setup({ world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.3, 0.5, 0.95, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.3, 0.5, 0.95, 1] }), {
       pos: [0, 0.5, 0],
     });
     let memo: Promise<readonly FeatureCheck[]> | undefined;

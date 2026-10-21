@@ -54,7 +54,7 @@ const EDGE_HEADER_CLASSES = [
   'dv-groupview-header-bottom',
 ] as const;
 
-const DISMISS_EXEMPT_SELECTORS = '.dv-context-menu, .fx-ue-overlay, .fx-ue-tab-slot';
+const DISMISS_EXEMPT_SELECTORS = '.dv-context-menu, .fx-menu-position, .fx-ue-overlay, .fx-ue-tab-slot';
 const DRAWER_CROSS_INSET_PX = 6;
 
 export type EdgeDrawerController = {

@@ -18,6 +18,7 @@
 // kinematic-position body is moved by writing its Transform -- exactly what
 // core-spin does -- so the sensor follows the bobbing/spinning visual.
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
 import {
@@ -28,8 +29,6 @@ import {
 } from '@forgeax/engine-physics';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
-
 import { CORE_GROUPS } from '../collision-groups';
 import { Core } from '../components';
 
@@ -69,21 +68,26 @@ export function spawnCore(
   world: World,
   position: { readonly x: number; readonly z: number },
 ): EntityHandle {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const sphereRes = createSphereGeometry(CORE_VISUAL_RADIUS, 16, 12);
   if (!sphereRes.ok) {
     throw new Error(`collectathon: createSphereGeometry failed: ${sphereRes.error.code}`);
   }
-  const coreMesh = world.allocSharedRef('MeshAsset', sphereRes.value);
-  const coreMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [1.0, 0.8, 0.3, 1.0],
-      emissive: [1.0, 0.7, 0.3],
-      emissiveIntensity: 2.0,
-      roughness: 0.4,
-      metallic: 0,
-    }),
-  );
+  const coreMesh = sceneAssets.create(sphereRes.value).unwrap();
+  const coreMat = sceneAssets
+    .create(
+      Materials.standard({
+        baseColor: [1.0, 0.8, 0.3, 1.0],
+        emissive: [1.0, 0.7, 0.3],
+        emissiveIntensity: 2.0,
+        roughness: 0.4,
+        metallic: 0,
+      }),
+    )
+    .unwrap();
   return world
     .spawn(
       { component: Transform, data: { pos: [position.x, CORE_BASE_Y, position.z] } },

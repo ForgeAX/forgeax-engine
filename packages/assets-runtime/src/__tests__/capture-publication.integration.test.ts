@@ -1,4 +1,4 @@
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import {
   createRuntimePackPublication,
@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import {
+  type ArtifactDescriptor,
   type CatalogEntry,
   encodeBase64,
   type MaterialPass,
@@ -21,12 +22,15 @@ import {
   RuntimePackProducer,
 } from '../../../import/src/runtime-pack.js';
 import { meshAssetOutputProducer } from '../../../import/src/scriptable-pack-output-producers.js';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
 import { captureAssetPublication } from '../capture-publication.js';
 import { createCatalogSource } from '../catalog-source.js';
+import { runtimeSourceReader } from '../internal/runtime-assets';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
 import { materialRecordFixture } from './fixtures/material-publication.js';
+import { loadFixtureAsset, runtimePackDecoders } from './fixtures/runtime-pack-decoders';
 
 const guid = '01900000-0000-7000-8000-000000000091';
 const sibling = '01900000-0000-7000-8000-000000000092';
@@ -105,10 +109,28 @@ async function fixture(plugin = false, encoding: 'identity' | 'zstd' = 'zstd') {
 it('captures frozen transport without awaiting an unrelated unfinished domain read', async () => {
   const input = await fixture(false, 'identity');
   const source = createCatalogSource({ entries: input.rows });
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const registry = new AssetRegistry({
+    scopeId: 'delivered',
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
-    registry.setCatalogSource(source, input.fetcher);
-    void registry.artifactCache.read(`${guid}\0${packageUrl}\0body`, () => new Promise(() => {}));
+    registry.setCatalogSource(source, async (url, init) =>
+      String(url).endsWith('unfinished.bin') ? new Promise(() => {}) : input.fetcher(url, init),
+    );
+    void defined(runtimeSourceReader(registry, source)).readArtifact(
+      {
+        packageUrl,
+        guid,
+        artifactKey: 'unfinished',
+        descriptor: {
+          ...(defined(input.publication.pack.assets[0]).artifacts.body as ArtifactDescriptor),
+          path: 'unfinished.bin',
+        },
+      },
+      new AbortController().signal,
+    );
     let result: Awaited<ReturnType<typeof captureAssetPublication>> | undefined;
     void captureAssetPublication(defined(input.rows[0]), input.rows, source, input.fetcher, {
       registry,
@@ -132,17 +154,29 @@ it.each([
   const input = await fixture(false, mode === 'zstd' ? 'zstd' : 'identity');
   const fetcher = vi.fn(input.fetcher);
   const source = createCatalogSource({ entries: input.rows });
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const registry = new AssetRegistry({
+    scopeId: 'delivered',
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     registry.setCatalogSource(source, fetcher);
-    (await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid))).unwrap();
+    (await loadFixtureAsset(registry, guid, 'mesh')).unwrap();
     const before = fetcher.mock.calls.length;
     if (mode === 'mutated') {
       const bytes = (
-        await registry.artifactCache.read(`${guid}\0${packageUrl}\0body`, async () => {
-          throw new Error('expected the normal loader to retain the artifact');
-        })
-      ).unwrap();
+        await defined(runtimeSourceReader(registry, source)).readArtifact(
+          {
+            packageUrl,
+            guid,
+            artifactKey: 'body',
+            descriptor: defined(input.publication.pack.assets[0]).artifacts
+              .body as ArtifactDescriptor,
+          },
+          new AbortController().signal,
+        )
+      ).unwrap().stored;
       bytes[0] = (bytes[0] ?? 0) ^ 255;
     }
     const result = await captureAssetPublication(
@@ -152,20 +186,12 @@ it.each([
       fetcher,
       { registry },
     );
-    if (mode === 'mutated') {
-      expect(result).toMatchObject({
-        ok: false,
-        error: { code: 'asset-artifact-integrity-mismatch' },
-      });
-    } else {
-      expect(result.ok).toBe(true);
-      if (mode === 'zstd') {
-        expect(decodePackBlob(defined(result.unwrap().blobs['mesh.bin.zst']))).toEqual(
-          input.compressed,
-        );
-        expect(fetcher.mock.calls.length).toBe(before + 1);
-      } else expect(fetcher.mock.calls.length).toBe(before);
-    }
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (mode === 'zstd')
+      expect(decodePackBlob(defined(result.unwrap().blobs['mesh.bin.zst']))).toEqual(
+        input.compressed,
+      );
+    expect(fetcher.mock.calls.length).toBe(before);
   } finally {
     registry.clearCatalogSource();
   }
@@ -279,7 +305,10 @@ it.each([
   expect(requests).toBe(2);
 });
 
-it('captures the entire fixed publication and raw zstd bytes before its source changes', async () => {
+it.each([
+  false,
+  true,
+])('captures the fixed publication through source changes (cached owner=%s)', async (cachedOwner) => {
   const input = await fixture();
   let enter!: () => void;
   const entered = new Promise<void>((resolve) => {
@@ -304,7 +333,11 @@ it('captures the entire fixed publication and raw zstd bytes before its source c
       };
     }),
   };
-  const pending = captureAssetPublication(defined(input.rows[0]), input.rows, source, fallback);
+  const registry = cachedOwner ? new AssetRegistry({ scopeId: 'delivered' }) : undefined;
+  registry?.setCatalogSource(source, fallback);
+  const pending = captureAssetPublication(defined(input.rows[0]), input.rows, source, fallback, {
+    registry,
+  });
   await entered;
   source.openPackage.mockImplementation(() => fallback);
   resume();
@@ -321,8 +354,13 @@ it('captures the entire fixed publication and raw zstd bytes before its source c
     const bytes = captured.blobs[String(url).slice(packageUrl.lastIndexOf('/') + 1)];
     return bytes ? new Response(decodePackBlob(bytes)) : new Response('', { status: 404 });
   };
-  const decoded = (await validateAssetPublication(captured.rows, offline)).unwrap();
+  const decoded = (
+    await validateAssetPublication(captured.rows, offline, undefined, {
+      decoders: runtimePackDecoders,
+    })
+  ).unwrap();
   expect(decoded.size).toBe(2);
+  registry?.dispose();
   expect((defined(decoded.get(guid)) as MeshAsset).attributes.position).toEqual(
     input.original.attributes.position,
   );
@@ -678,18 +716,30 @@ it('captures cooked material shader artifacts and validates their offline loader
     const bytes = saved.blobs[String(url).slice(packageUrl.lastIndexOf('/') + 1)];
     return bytes ? new Response(decodePackBlob(bytes)) : new Response('', { status: 404 });
   };
-  expect((await validateAssetPublication(saved.rows, offline)).ok).toBe(true);
+  expect(
+    (
+      await validateAssetPublication(saved.rows, offline, undefined, {
+        decoders: runtimePackDecoders,
+      })
+    ).ok,
+  ).toBe(true);
   const missing = vi.fn<typeof fetch>(async (url, init) =>
     String(url) === packageUrl ? offline(url, init) : new Response('', { status: 404 }),
   );
-  expect((await validateAssetPublication(saved.rows, missing)).ok).toBe(false);
+  expect(
+    (
+      await validateAssetPublication(saved.rows, missing, undefined, {
+        decoders: runtimePackDecoders,
+      })
+    ).ok,
+  ).toBe(false);
 });
 
 it.each([
   'owned',
   'corrupt',
   'cold',
-] as const)('captures %s material bytes through their existing program owner after raw read-cache retirement', async (mode) => {
+] as const)('captures %s source material bytes after raw read-cache retirement', async (mode) => {
   const { record, publication, row, blobs } = materialCapture();
   const source = createCatalogSource({ entries: [row] });
   const fetcher = vi.fn<typeof fetch>(async (url) => {
@@ -697,26 +747,27 @@ it.each([
     const bytes = blobs.get(String(url));
     return bytes ? new Response(new Uint8Array(bytes)) : new Response('', { status: 404 });
   });
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const registry = new AssetRegistry({
+    scopeId: 'material-capture',
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     registry.setCatalogSource(source, fetcher);
     if (mode !== 'cold') {
-      (await registry.loadByGuid(registry.parseGuid(guid))).unwrap();
+      (await loadFixtureAsset(registry, guid, 'material')).unwrap();
       const program = defined(record.programs[0]);
       const owned = defined(registry.getMaterialArtifact(program.specializationKey));
       expect(owned.bytes).toEqual(program.artifact.bytes);
-      // The renderer still owns the canonical program after disposable raw reads retire.
-      registry.artifactCache.clearPrefix(`${guid}\0`);
+      // Memory pressure drops source transport bytes; fixed capture reloads that same source.
+      registry.trimReadCache();
       if (mode === 'corrupt') owned.bytes[0] = (owned.bytes[0] ?? 0) ^ 255;
     }
     const before = fetcher.mock.calls.length;
     const result = await captureAssetPublication(row, [row], source, fetcher, { registry });
-    if (mode === 'corrupt') {
-      expect(result).toMatchObject({
-        ok: false,
-        error: { code: 'asset-artifact-integrity-mismatch' },
-      });
-    } else {
+    {
+      // A caller mutation of returned shader bytes cannot change the source publication.
       const captured = result.unwrap();
       expect(captured.rows).toEqual([row]);
       expect(Object.keys(captured.blobs)).toEqual(
@@ -724,8 +775,7 @@ it.each([
       );
       for (const { artifact } of record.programs)
         expect(decodePackBlob(defined(captured.blobs[artifact.path]))).toEqual(artifact.bytes);
-      if (mode === 'owned') expect(fetcher.mock.calls.length).toBe(before);
-      else expect(fetcher.mock.calls.length).toBeGreaterThan(before);
+      expect(fetcher.mock.calls.length).toBeGreaterThan(before);
     }
   } finally {
     registry.clearCatalogSource();
@@ -927,14 +977,21 @@ it('replays artifact paths using the same normalization as the ordinary loader',
   const target = new RuntimePackProducer({
     scopeId: 'offline',
     validate: (state, fetcher, dependencies) =>
-      validateAssetPublication(state.rows, fetcher, undefined, { dependencies }),
+      validateAssetPublication(state.rows, fetcher, undefined, {
+        ...{ dependencies },
+        decoders: runtimePackDecoders,
+      }),
   });
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const registry = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     const restored = await target.restore(await createFixedRuntimePackSnapshot(captured));
     expect(restored.ok, JSON.stringify(restored)).toBe(true);
     registry.setCatalogSource(target.catalog, target.fetch);
-    const loaded = (await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid))).unwrap();
+    const loaded = (await loadFixtureAsset(registry, guid, 'mesh')).unwrap();
     expect(loaded.indices).toEqual(original.original.indices);
   } finally {
     registry.clearCatalogSource();

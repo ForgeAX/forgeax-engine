@@ -1,5 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import {
   Camera,
   Materials,
@@ -10,30 +10,38 @@ import {
   perspective,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** A two-mesh contact test, shared by the browser and native renderer. */
 export function spawnSsaoScene(world: World, aspect = 16 / 9) {
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.standard({
       baseColor: [0.7, 0.7, 0.7, 1],
       roughness: 0.9,
-    }),
-  );
+    })).unwrap();
   world
     .spawn(
       {
         component: Transform,
         data: { pos: [0, -1, 0], scale: [12, 12, 1], quat: [-Math.SQRT1_2, 0, 0, Math.SQRT1_2] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
   const movingContact = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0], scale: [2, 2, 2] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();

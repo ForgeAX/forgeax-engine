@@ -24,6 +24,7 @@ import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -253,11 +254,12 @@ it.skipIf(process.env.LIGHTING_CHANNEL_PERF !== '1')(
       );
       const renderer = host.renderer;
       const world = new World();
-      const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 0.2).unwrap());
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 0.7 }),
-      );
+      const mesh = testAssets(world)
+        .create(createBoxGeometry(1, 1, 0.2).unwrap())
+        .unwrap();
+      const material = testAssets(world)
+        .create(Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 0.7 }))
+        .unwrap();
       const side = Math.sqrt(receiverCount);
       const receivers = Array.from({ length: receiverCount }, (_, i) =>
         world

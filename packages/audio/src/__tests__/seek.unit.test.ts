@@ -1,16 +1,27 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { expect, it } from 'vitest';
+import { audioContribution } from '../assets/audio-decoder';
 import { type AudioIntent, AudioSource, audioTickSystem, createAudioIntentBackend } from '../index';
 
 it('publishes the start position and emits seek only on ECS edits, with explicit repeated seek supported', () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: AudioIntent[] = [];
-  const backend = createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'seek',
-    bytes: Uint8Array.of(1),
+  const backend = createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
   });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'seek',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   const entity = world
     .spawn({
       component: AudioSource,

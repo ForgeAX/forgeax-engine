@@ -4,7 +4,7 @@ import { ViewerPanels } from '../App';
 import type { ViewerModel } from '../viewer-model';
 import { makeEmptyResourceLifecycle } from './viewer-model-fixtures';
 
-function model(): ViewerModel {
+function model() {
   return {
     commands: [],
     resources: [],
@@ -76,7 +76,7 @@ function model(): ViewerModel {
       },
     ],
     events: [],
-  };
+  } satisfies ViewerModel;
 }
 
 describe('PipelineState completeness', () => {

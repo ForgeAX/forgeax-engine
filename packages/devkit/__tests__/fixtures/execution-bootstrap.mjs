@@ -1,7 +1,4 @@
-import {
-  resolveAssetHandle,
-  scenePublicationFenceFromCatalog,
-} from '@forgeax/engine/assets-runtime';
+import { scenePublicationFenceFromCatalog } from '@forgeax/engine/assets-runtime';
 import { Update } from '@forgeax/engine/ecs';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import {
@@ -129,10 +126,7 @@ export default async function bootstrap(data) {
             const mesh =
               member === undefined
                 ? undefined
-                : resolveAssetHandle(
-                    world,
-                    world.get(member, MeshFilter).unwrap().assetHandle,
-                  ).unwrap();
+                : ctx.assets.read(world.get(member, MeshFilter).unwrap().assetHandle).unwrap();
             const xs =
               mesh && Array.from(mesh.attributes.position).filter((_, index) => index % 3 === 0);
             return {
@@ -248,15 +242,15 @@ export default async function bootstrap(data) {
                 (await assets.enumerateCatalog()).unwrap(),
                 guid('scene'),
               ).unwrap();
-              const scene = (await assets.loadByGuid(assets.parseGuid(guid('scene')))).unwrap();
-              const grant = world.allocSharedRef('SceneAsset', scene);
+              const grant = (await assets.load(guid('scene'), 'scene')).unwrap();
+              (await assets.reload(grant, { conflict: 'overwrite' })).unwrap();
               let next;
               try {
                 next = assets
                   .instantiateWithPublicationFence(grant, world, undefined, fence)
                   .unwrap();
               } finally {
-                world.sharedRefs.release(grant).unwrap();
+                assets.release(grant).unwrap();
               }
               if (root !== undefined) worldDespawnScene(world, root).unwrap();
               root = next;

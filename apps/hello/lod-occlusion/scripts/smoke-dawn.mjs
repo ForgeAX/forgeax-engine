@@ -8,7 +8,7 @@ import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smok
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { loadLodProducerInputs } from './load-lod-producer-inputs.mjs';
 import {
-  catalogLodProducerAssets,
+  loadLodProducerAssets,
   createLodPhaseProgress,
   observeCompletedReceipt,
   selectedLod,
@@ -129,13 +129,13 @@ try {
   if (!constructed.ok) throw constructed.error;
   ({ assets, renderer } = constructed.value);
   assets.configurePackIndex('/pack-index.json');
-  const producerAdmission = await catalogLodProducerAssets(
+  const producerAdmission = await loadLodProducerAssets(
     assets,
     producerManifest,
     async (path) => new Uint8Array(readFileSync(resolve(producerRoot, path))),
     expectedProducerRoles,
   );
-  world = new World();
+  world = new World({ assets: assets });
   await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
 
   meshByIndex = ['root', 'middle', 'lowest'].map((role) => {
@@ -143,24 +143,10 @@ try {
     if (!parsed.ok) throw new Error(`LOD sidecar has an invalid ${role} GUID`);
     return parsed.value;
   });
-  const rootMeshAsset = assets.lookup(meshByIndex[0]);
-  if (rootMeshAsset?.kind !== 'mesh') throw new Error('producer root mesh was not cataloged');
-  if (assets.lookup(meshByIndex[1])?.kind !== 'mesh')
-    throw new Error('producer middle mesh was not cataloged');
-  if (!Array.isArray(rootMeshAsset.lods) || rootMeshAsset.lods.length !== 2) {
-    throw new Error(
-      `root mesh LOD metadata missing after producer catalog: ${JSON.stringify(Object.keys(rootMeshAsset))}`,
-    );
-  }
-  if (assets.lookup(meshByIndex[2]) !== undefined) {
-    throw new Error('lowest LOD was already present before the not-ready fallback phase');
-  }
-
-  rootMeshHandle = world.allocSharedRef('MeshAsset', rootMeshAsset);
-  const materialHandle = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.2, 0.6, 0.95, 1], roughness: 0.5 }),
-  );
+  rootMeshHandle = producerAdmission.root;
+  let rootMeshAsset = assets.read(rootMeshHandle).unwrap();
+  if (rootMeshAsset.lods?.length !== 1) throw new Error('Initial source must contain root and middle only');
+  const materialHandle = world.assets.create(Materials.standard({ baseColor: [0.2, 0.6, 0.95, 1], roughness: 0.5 })).unwrap();
   renderEntity = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0] } },
@@ -323,11 +309,11 @@ try {
       evidenceReceipt: phaseEvidenceFrame.evidenceReceipt,
       evidence,
       assetRegistry: {
-        rootReady: assets.lookup(meshByIndex[0])?.kind === 'mesh',
-        middleReady: assets.lookup(meshByIndex[1])?.kind === 'mesh',
-        lowestReady: assets.lookup(meshByIndex[2])?.kind === 'mesh',
+        rootReady: assets.validate(rootMeshHandle).ok,
+        middleReady: rootMeshAsset.lods.length >= 1,
+        lowestReady: rootMeshAsset.lods.length >= 2,
       },
-      rootMeshSharedRefCount: world.sharedRefs.refcount(rootMeshHandle),
+      rootMeshResident: assets.validate(rootMeshHandle).ok,
       visibilityState: world.get(renderEntity, Visibility).unwrap().state,
       dynamicGeometryReceipt:
         revisionFour === undefined ? undefined : renderer.dynamicGeometryReceipt(revisionFour),
@@ -348,7 +334,7 @@ try {
     report.warmupFrameIds.push(warmup.receipt.frameId);
     if (warmup.evidence === undefined) continue;
     const evidence = evidenceFor(warmup);
-    if (assets.lookup(meshByIndex[2]) === undefined && selectedLod(evidence.cameraViews[1]) === 1) {
+    if (rootMeshAsset.lods.length === 1 && selectedLod(evidence.cameraViews[1]) === 1) {
       fallbackReady = true;
       break;
     }
@@ -359,19 +345,15 @@ try {
     );
   await runPhase('lod2-not-ready-fallback', { visible: 2, nearLevel: 0, farBelow: 2 });
 
-  const originalRootAsset = assets.lookup(meshByIndex[0]);
+  const before = assets.snapshot(rootMeshHandle).unwrap();
   const originalWorldIdentity = world.identity;
-  const originalRootRefCount = world.sharedRefs.refcount(rootMeshHandle);
   await producerAdmission.admitLowest();
-  if (assets.lookup(meshByIndex[2])?.kind !== 'mesh')
-    throw new Error('producer lowest LOD did not enter the AssetRegistry');
-  if (
-    assets.lookup(meshByIndex[0]) !== originalRootAsset ||
-    world.identity !== originalWorldIdentity ||
-    world.sharedRefs.refcount(rootMeshHandle) !== originalRootRefCount
-  ) {
-    throw new Error('lowest LOD admission changed the root MeshAsset or World identity');
-  }
+  rootMeshAsset = assets.read(rootMeshHandle).unwrap();
+  const after = assets.snapshot(rootMeshHandle).unwrap();
+  const adoptedNewVersion = after.version(rootMeshHandle).unwrap() > before.version(rootMeshHandle).unwrap();
+  before.dispose(); after.dispose();
+  if (rootMeshAsset.lods?.length !== 2 || !adoptedNewVersion || world.identity !== originalWorldIdentity || world.get(renderEntity, MeshFilter).unwrap().assetHandle !== rootMeshHandle)
+    throw new Error('Expanded source must advance the root version without rebinding the World');
   let residentLevel = false;
   for (let attempt = 0; attempt < 24; attempt += 1) {
     phaseToken = phaseProgress.beginPhase(`resident-warmup-${attempt + 1}`, 1);
@@ -389,10 +371,10 @@ try {
     );
   await runPhase('lod2-ready-resident', { visible: 2, nearLevel: 0, farLevel: 2 });
 
-  const visibleRefCount = world.sharedRefs.refcount(rootMeshHandle);
+  const visibleResidency = assets.validate(rootMeshHandle).ok;
   world.set(renderEntity, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
   const hidden = await runPhase('visibility-hidden', { visible: 0 });
-  if (hidden.rootMeshSharedRefCount !== visibleRefCount || !hidden.assetRegistry.lowestReady) {
+  if (hidden.rootMeshResident !== visibleResidency || !hidden.assetRegistry.lowestReady) {
     throw new Error('hiding the renderable changed MeshAsset ownership or AssetRegistry readiness');
   }
   world.set(renderEntity, Visibility, { state: VisibilityStateValue.inherited }).unwrap();
@@ -400,12 +382,11 @@ try {
 
   const lateMesh = structuredClone(rootMeshAsset);
   const acceptedMesh = structuredClone(rootMeshAsset);
-  const lateHandle = world.allocSharedRef('MeshAsset', lateMesh);
-  const acceptedHandle = world.allocSharedRef('MeshAsset', acceptedMesh);
+  const lateHandle = world.assets.create(lateMesh).unwrap();
+  const acceptedHandle = world.assets.create(acceptedMesh).unwrap();
   const preparedLate = renderer.prepareDynamicGeometry({
     world,
     entity: renderEntity,
-    mesh: lateMesh,
     meshHandle: lateHandle,
     revision: 3,
     topologyRevision: 1,
@@ -416,7 +397,6 @@ try {
   const preparedFour = renderer.prepareDynamicGeometry({
     world,
     entity: renderEntity,
-    mesh: acceptedMesh,
     meshHandle: acceptedHandle,
     revision: 4,
     topologyRevision: 1,
@@ -424,19 +404,19 @@ try {
   });
   if (!preparedFour.ok) {
     renderer.cancelDynamicGeometry(preparedLate.value).unwrap();
-    world.sharedRefs.release(lateHandle).unwrap();
-    world.sharedRefs.release(acceptedHandle).unwrap();
+    assets.release(lateHandle).unwrap();
+    assets.release(acceptedHandle).unwrap();
     throw new Error(`revision 4 preparation failed: ${preparedFour.error.code}`);
   }
   const acceptedFour = renderer.acceptDynamicGeometry(preparedFour.value, { world, fixedStep: 0 });
   if (!acceptedFour.ok) {
     renderer.cancelDynamicGeometry(preparedLate.value).unwrap();
     renderer.cancelDynamicGeometry(preparedFour.value).unwrap();
-    world.sharedRefs.release(lateHandle).unwrap();
-    world.sharedRefs.release(acceptedHandle).unwrap();
+    assets.release(lateHandle).unwrap();
+    assets.release(acceptedHandle).unwrap();
     throw new Error(`revision 4 acceptance failed: ${acceptedFour.error.code}`);
   }
-  world.sharedRefs.release(acceptedHandle).unwrap();
+  assets.release(acceptedHandle).unwrap();
   const acceptedBinding = world.get(renderEntity, MeshFilter).unwrap().assetHandle;
   const lateAcceptance = renderer.acceptDynamicGeometry(preparedLate.value, {
     world,
@@ -444,7 +424,7 @@ try {
   });
   const retainedBinding = world.get(renderEntity, MeshFilter).unwrap().assetHandle;
   // Accepting revision 4 already cancels the superseded prepared credential.
-  world.sharedRefs.release(lateHandle).unwrap();
+  assets.release(lateHandle).unwrap();
   if (lateAcceptance.ok || lateAcceptance.error.code !== 'dynamic-geometry-candidate-not-found') {
     throw new Error(
       `superseded revision 3 credential was not rejected: ${lateAcceptance.ok ? 'accepted' : lateAcceptance.error.code}`,

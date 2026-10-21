@@ -3,7 +3,7 @@ import {
   PanelHeader, PropertyRow, SearchField, Text, Toolbar, useClipboardAction, type AnchorRect,
 } from '@forgeax/view-components';
 import { Box, Copy, Crosshair, Layers, Maximize2, Minimize2, Move3d, SlidersHorizontal } from 'lucide-react';
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import {
   compactInspectorDisplay, inspectorComponentDisplayName,
   inspectorFieldMatches, inspectorGroups, inspectorSectionMatches, inspectorSections,
@@ -39,7 +39,8 @@ function InspectorMaterials({ references, truncated, openAsset, browseAsset, que
   </div>;
 }
 
-export function EntityInspectorBody({ source, selectionCount = 1, focus, openAsset, browseAsset }: {
+export function EntityInspectorBody({ source, selectionCount = 1, focus, openAsset, browseAsset, renderAuthorField }: {
+  renderAuthorField?: (component: string, field: InspectorField, fallback: ReactNode) => ReactNode;
   source: InspectorEntity;
   selectionCount?: number;
   focus?: () => void;
@@ -170,7 +171,7 @@ export function EntityInspectorBody({ source, selectionCount = 1, focus, openAss
                         <span className="insp-field-value">{section.component === 'MeshRenderer' && field.key === 'materials'
                           ? <InspectorMaterials references={source.materialOverrides} truncated={source.materialOverridesTruncated}
                             openAsset={openAsset} browseAsset={browseAsset} query={sectionMatches(section) || inspectorFieldMatches(field, query, labelFor(section.component, field)) ? '' : queryText} />
-                          : <InspectorFieldView field={compactInspectorDisplay(field)} openAsset={openAsset} browseAsset={browseAsset} />}</span>
+                          : renderAuthorField ? renderAuthorField(section.component, field, <InspectorFieldView field={compactInspectorDisplay(field)} openAsset={openAsset} browseAsset={browseAsset} />) : <InspectorFieldView field={compactInspectorDisplay(field)} openAsset={openAsset} browseAsset={browseAsset} />}</span>
                       </PropertyRow>
                       <IconButton className="insp-field-copy" variant="quiet" size="compact" icon={<Copy size={12} />} label={t('inspector.menu.copyValue')}
                         data-action={INSPECTOR_ACTIONS.copyField} disabled={field.rawValue === undefined} onClick={() => copy(field.rawValue)} />

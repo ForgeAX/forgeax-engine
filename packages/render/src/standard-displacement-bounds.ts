@@ -3,28 +3,36 @@ import type { MaterialSnapshot } from './render-system-extract';
 
 const displacementBit = standardTextureMask([{ name: 'displacementTexture', type: 'texture2d' }]);
 
+const radii = new WeakMap<MaterialSnapshot, number>();
+
+/** One accepted material's normalized height interval, matching the vertex shader. */
+export function materialDisplacementRadius(material: MaterialSnapshot): number {
+  const cached = material.immutableValues === true ? radii.get(material) : undefined;
+  if (cached !== undefined) return cached;
+  const present =
+    material.standardTextureMask === undefined
+      ? material.materialParamSchema?.some(
+          (p) => p.name === 'displacementTexture' && p.type === 'texture2d',
+        )
+      : (material.standardTextureMask & displacementBit) !== 0;
+  const scale = material.paramSnapshot?.displacementScale ?? 1;
+  const bias = material.paramSnapshot?.displacementBias ?? 0;
+  const radius = !present
+    ? 0
+    : typeof scale !== 'number' ||
+        typeof bias !== 'number' ||
+        !Number.isFinite(scale) ||
+        !Number.isFinite(bias)
+      ? Infinity
+      : Math.max(Math.abs(bias), Math.abs(scale + bias));
+  if (material.immutableValues === true) radii.set(material, radius);
+  return radius;
+}
+
 /** Same normalized height interval as the vertex shader, across every submesh. */
 export function standardDisplacementRadius(materials: readonly MaterialSnapshot[]): number {
   let radius = 0;
-  for (const material of materials) {
-    const present =
-      material.standardTextureMask === undefined
-        ? material.materialParamSchema?.some(
-            (p) => p.name === 'displacementTexture' && p.type === 'texture2d',
-          )
-        : (material.standardTextureMask & displacementBit) !== 0;
-    if (!present) continue;
-    const scale = material.paramSnapshot?.displacementScale ?? 1;
-    const bias = material.paramSnapshot?.displacementBias ?? 0;
-    if (
-      typeof scale !== 'number' ||
-      typeof bias !== 'number' ||
-      !Number.isFinite(scale) ||
-      !Number.isFinite(bias)
-    )
-      return Infinity;
-    radius = Math.max(radius, Math.abs(bias), Math.abs(scale + bias));
-  }
+  for (const material of materials) radius = Math.max(radius, materialDisplacementRadius(material));
   return radius;
 }
 

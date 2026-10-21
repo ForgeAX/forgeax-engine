@@ -4,7 +4,7 @@ import {
   Update,
   World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import {
   Camera,
@@ -32,6 +32,8 @@ import {
   workloadFingerprint,
   yawQuaternion,
 } from './workload';
+
+
 
 const PROFILE_FRAME_LIMIT = 180;
 const PROFILE_EVENT_LIMIT = 8192;
@@ -143,6 +145,9 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
+const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const errors: PerfEvidence['appRendererErrors'] = [];
   app.onError((error) => {
     const record = {
@@ -152,7 +157,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     errors.push(record);
     console.error(`[perf-10k-cubes-lights] engine error ${record.code}: ${record.hint}`);
   });
-  const materialHandle = app.world.allocSharedRef('MaterialAsset', {
+  const materialHandle = assets.create({
     kind: 'material',
     passes: [
       {
@@ -162,7 +167,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
       },
     ],
     values: { baseColor: [0.34, 0.48, 0.72], metallic: 0.05, roughness: 0.58 },
-  });
+  }).unwrap();
   const positions = cubePositions(options);
   for (let index = 0; index < options.cubeCount; index++) {
     const base = index * 3;
@@ -176,7 +181,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
             scale: CUBE_SCALE,
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: demoPrimitive } },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       )
       .unwrap();
@@ -248,7 +253,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     )
     .unwrap();
 
-  const postSpawn = inspectSpawnedWorld(app.world, materialHandle);
+  const postSpawn = inspectSpawnedWorld(app.world, demoPrimitive, materialHandle);
   const evidence: PerfEvidence = {
     backend: 'webgpu',
     bootstrapMs: performance.now() - bootstrapStart,
@@ -357,6 +362,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
 
 function inspectSpawnedWorld(
   world: World,
+  meshHandle: unknown,
   materialHandle: unknown,
 ): PerfEvidence['postSpawn'] {
   let cubeCount = 0;
@@ -370,7 +376,7 @@ function inspectSpawnedWorld(
     cubeCount += 1;
     const mesh = row.get(MeshFilter);
     const renderer = row.get(MeshRenderer);
-    if (mesh.assetHandle === HANDLE_CUBE) meshHandleMatches += 1;
+    if (mesh.assetHandle === meshHandle) meshHandleMatches += 1;
     if (renderer.materials.length === 1 && renderer.materials[0] === materialHandle) {
       materialHandleMatches += 1;
     }

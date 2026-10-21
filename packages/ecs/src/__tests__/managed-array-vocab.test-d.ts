@@ -107,7 +107,7 @@ describe('array vocab - element-type rejection (w12, AC-03)', () => {
   });
 
   it('array<handle<X>> is now a recognised schema field type (feat-20260608 M2 D-1)', () => {
-    const valid: SchemaFieldType = 'array<shared<MeshAsset>>';
+    const valid: SchemaFieldType = 'array<asset<mesh>>';
     void valid;
   });
 

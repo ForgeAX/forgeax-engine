@@ -28,6 +28,7 @@ import type { TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { verifyMeshDecalReplay } from './decals-mesh-replay.fixture';
+import { testAssets } from './helpers/runtime-assets';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 const json = (data: unknown) => new TextEncoder().encode(JSON.stringify(data, null, 2));
@@ -81,14 +82,13 @@ export async function verifyDecals(
     if (event.kind === 'error') errors.push(event.error);
   });
   const plane = createPlaneGeometry(3.6, 3.6).unwrap();
-  const receiverMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.3, 0.3, 1], roughness: 0.65 }),
-  );
+  const receiverMaterial = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.3, 0.3, 0.3, 1], roughness: 0.65 }))
+    .unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', plane) } },
+      { component: MeshFilter, data: { assetHandle: testAssets(world).create(plane).unwrap() } },
       { component: MeshRenderer, data: { materials: [receiverMaterial] } },
     )
     .unwrap();
@@ -116,14 +116,12 @@ export async function verifyDecals(
       data: { direction: [0, 0, -1], intensity: 2, castShadow: false },
     })
     .unwrap();
-  const red = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.01, 0.01, 1], roughness: 0.8 }),
-  );
-  const green = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.01, 0.8, 0.01, 1], roughness: 0.8 }),
-  );
+  const red = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.8, 0.01, 0.01, 1], roughness: 0.8 }))
+    .unwrap();
+  const green = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.01, 0.8, 0.01, 1], roughness: 0.8 }))
+    .unwrap();
   const decal = world
     .spawn(
       { component: Transform, data: { scale: [1.6, 1.6, 0.2] } },
@@ -197,10 +195,9 @@ export async function verifyDecals(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef(
-              'MeshAsset',
-              createBoxGeometry(0.5, 0.5, 0.1).unwrap(),
-            ),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(0.5, 0.5, 0.1).unwrap())
+              .unwrap(),
           },
         },
         { component: MeshRenderer, data: { materials: [receiverMaterial] } },
@@ -222,27 +219,25 @@ export async function verifyDecals(
       0.005,
     );
     world.despawn(second).unwrap();
-    const pattern = world.allocSharedRef(
-      'TextureAsset',
-      texture([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 0]),
-    );
-    const textured = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1], baseColorTexture: pattern }),
-    );
+    const pattern = testAssets(world)
+      .create(texture([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 0]))
+      .unwrap();
+    const textured = testAssets(world)
+      .create(Materials.standard({ baseColor: [1, 1, 1, 1], baseColorTexture: pattern }))
+      .unwrap();
     world.set(decal, ProjectedDecal, { material: textured }).unwrap();
     const mapped = await observe('gpu-texture');
     expect(patch(mapped, 50, 50)[0]).toBeGreaterThan(patch(mapped, 50, 50)[2] * 2);
     expect(patch(mapped, 77, 50)[1]).toBeGreaterThan(patch(mapped, 77, 50)[0] * 2);
     expect(patch(mapped, 50, 77)[2]).toBeGreaterThan(patch(mapped, 50, 77)[0] * 2);
-    const normal = world.allocSharedRef(
-      'TextureAsset',
-      texture(Array(4).fill([230, 128, 255, 255]).flat()),
-    );
-    const surface = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1], normalTexture: normal, roughness: 0.08 }),
-    );
+    const normal = testAssets(world)
+      .create(texture(Array(4).fill([230, 128, 255, 255]).flat()))
+      .unwrap();
+    const surface = testAssets(world)
+      .create(
+        Materials.standard({ baseColor: [1, 1, 1, 1], normalTexture: normal, roughness: 0.08 }),
+      )
+      .unwrap();
     world
       .set(decal, ProjectedDecal, {
         material: surface,
@@ -386,12 +381,12 @@ export async function verifyDecals(
         },
       },
     });
-    const meshMaterial = world.allocSharedRef('MaterialAsset', meshPaint);
+    const meshMaterial = testAssets(world).create(meshPaint).unwrap();
     const meshEntity = world
       .spawn(
         { component: Transform, data: {} },
         { component: ChildOf, data: { parent: receiver } },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+        { component: MeshFilter, data: { assetHandle: testAssets(world).create(mesh).unwrap() } },
         { component: MeshRenderer, data: { materials: [meshMaterial] } },
       )
       .unwrap();
@@ -407,15 +402,17 @@ export async function verifyDecals(
     expect(patch(meshPixels, 50, 77)[2]).toBeGreaterThan(patch(meshPixels, 50, 77)[0] * 2);
     const firstMeshPass = meshPaint.passes?.[0];
     if (!firstMeshPass) throw new Error('missing mesh material pass');
-    const wrongBias = world.allocSharedRef('MaterialAsset', {
-      ...meshPaint,
-      passes: [
-        {
-          ...firstMeshPass,
-          renderState: { ...firstMeshPass.renderState, depthBias: 64, depthBiasSlopeScale: 2 },
-        },
-      ],
-    });
+    const wrongBias = testAssets(world)
+      .create({
+        ...meshPaint,
+        passes: [
+          {
+            ...firstMeshPass,
+            renderState: { ...firstMeshPass.renderState, depthBias: 64, depthBiasSlopeScale: 2 },
+          },
+        ],
+      })
+      .unwrap();
     world.set(meshEntity, MeshRenderer, { materials: [wrongBias] }).unwrap();
     const wrongBiasCapture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();

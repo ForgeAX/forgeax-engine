@@ -31,6 +31,29 @@ describe('World semantic read seam', () => {
     expect(read.getRelationshipEpoch(relationship.source)).toBeGreaterThan(reparented);
   });
 
+  it('checks a known relationship edge after mirror swap, reparent and identity reuse', () => {
+    const world = new World();
+    const read = world[worldRead];
+    const target = world.spawn().unwrap();
+    const other = world.spawn().unwrap();
+    const first = world.spawn({ component: relationship.source, data: { target } }).unwrap();
+    const last = world.spawn({ component: relationship.source, data: { target } }).unwrap();
+    expect(read.hasRelationshipEdge(relationship.source, last, target)).toBe(true);
+    expect(read.hasRelationshipEdge(relationship.target, last, target)).toBe(false);
+    world.despawn(first).unwrap();
+    expect(read.hasRelationshipEdge(relationship.source, first, target)).toBe(false);
+    expect(read.hasRelationshipEdge(relationship.source, last, target)).toBe(true);
+    world.set(last, relationship.source, { target: other }).unwrap();
+    expect(read.hasRelationshipEdge(relationship.source, last, target)).toBe(false);
+    expect(read.hasRelationshipEdge(relationship.source, last, other)).toBe(true);
+    world.despawn(last).unwrap();
+    const replacement = world
+      .spawn({ component: relationship.source, data: { target: other } })
+      .unwrap();
+    expect(read.hasRelationshipEdge(relationship.source, last, other)).toBe(false);
+    expect(read.hasRelationshipEdge(relationship.source, replacement, other)).toBe(true);
+  });
+
   it('reads relationship facts without exposing a storage view', () => {
     const world = new World();
     const target = world.spawn().unwrap();

@@ -29,7 +29,7 @@ it.each([
         `import { definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
 export const ui = { apply() { throw new Error('publication must not activate'); } };
-export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('${pack.id}'),
+export default definePack({ schemaVersion: '2.0.0', plugins: true, packageId: definePackageId('${pack.id}'),
   build() { return ok({ 'plugin/ui': { kind: 'plugin', module: { specifier: './ui.pack.ts', export: 'ui' } } }); }
 });`,
       );

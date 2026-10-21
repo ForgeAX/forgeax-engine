@@ -10,6 +10,7 @@ import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry'
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { RenderScene } from '../scene/render-scene';
 import {
+  admitGpuFixture,
   mesh,
   preparedSnapshot,
   standardPbrInputs,
@@ -35,19 +36,20 @@ it('observes ordered attachment formats once per pass even when one array is reu
   topology.rebuild(scene.slotsSnapshot());
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const prepared = production
-    .prepare({
-      ...standardPbrInputs(device, shader, layout),
-      scene: {
-        scene: availability.scene,
-        plan: topology.plan(),
-        slots: scene.slotsSnapshot(),
-        slotAt: scene.slotAt,
-      },
-      camera: makeZeroCameraFallbackSnapshot(),
-      meshBySlot: new Map(Array.from({ length: batchCount }, (_, i) => [i, mesh(device)])),
-      viewBindGroupLayout: layout,
-      meshResidencyEpoch: 1,
-    })
+    .prepare(
+      admitGpuFixture({
+        ...standardPbrInputs(device, shader, layout),
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: scene.slotsSnapshot(),
+          slotAt: scene.slotAt,
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: new Map(Array.from({ length: batchCount }, (_, i) => [i, mesh(device)])),
+        viewBindGroupLayout: layout,
+      }),
+    )
     .unwrap();
   if (prepared?.standardPbrFrameResources === undefined) throw Error('missing GPU projection');
 
@@ -71,8 +73,14 @@ it('observes ordered attachment formats once per pass even when one array is reu
   const joins = vi.spyOn(formats, 'join');
   const frameResources = {
     ...prepared.standardPbrFrameResources,
-    materialSlotIndicesByEntity: new Map<number, readonly number[]>(),
-    materialBindGroups: [group],
+    materialSlotIndicesByBinding: new Map(),
+    prepareMaterialBinding: (
+      (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+      (slot: number) => {
+        const group = groups[slot];
+        return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+      }
+    )([group]),
     colorFormats: formats,
   };
   const attachments: readonly TextureFormat[][] = [

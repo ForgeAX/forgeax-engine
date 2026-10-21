@@ -1,6 +1,6 @@
 import type { HostTransportClient, HostRequestOptions } from '@forgeax/engine-host/transport';
 import type { EngineWorkspaceCameraInput, EngineWorkspaceCameraResult, EngineWorkspaceTargetTools } from '@forgeax/engine/app';
-import type { WorkspaceState, WorkspaceSummary, WorkspacePages, WorkspacePackReveal, WorkspacePackRevealResult, WorkspaceInspection, WorkspaceAsset, WorkspaceThumbnail } from './contract.ts';
+import type { WorkspacePreviewDisplay, WorkspacePreviewDisplayOptions, WorkspaceState, WorkspaceSummary, WorkspacePages, WorkspacePackReveal, WorkspacePackRevealResult, WorkspaceInspection, WorkspaceAsset, WorkspaceThumbnail } from './contract.ts';
 import type { ProjectSession } from './project-session.ts';
 import { workspaceDiagnosticRecord } from './command-error.ts';
 export type WorkspaceCallOptions = HostRequestOptions & { requestId?: string; reportError?: boolean };
@@ -281,6 +281,14 @@ export class ViewWorkspaceClient {
 
   getCamera({ targetId, targetGeneration, tabId, ...options }: WorkspaceOptions = {}) {
     return this.call<EngineWorkspaceCameraResult>('camera.get', { tabId, targetGeneration, ...(targetId === undefined ? {} : { targetId }) }, options);
+  }
+
+  getPreviewDisplay({ targetId, targetGeneration, tabId, ...options }: WorkspaceTargetOptions) {
+    return this.call<WorkspacePreviewDisplay>('preview.display.get', { targetId, targetGeneration, tabId }, options);
+  }
+
+  setPreviewDisplay(display: WorkspacePreviewDisplayOptions, { targetId, targetGeneration, tabId, ...options }: WorkspaceTargetOptions) {
+    return this.call<WorkspacePreviewDisplay>('preview.display.set', { targetId, targetGeneration, tabId, ...display }, options);
   }
 
   beginCamera({ targetId, targetGeneration, baseVersion, interactionId, tabId, ...options }: WorkspaceOptions = {}) {

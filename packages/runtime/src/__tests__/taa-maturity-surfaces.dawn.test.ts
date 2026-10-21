@@ -18,7 +18,7 @@ it
       height: ALPHA_HASH_SIZE,
     });
     try {
-      const evidence = await verifyAlphaHash(fixture.renderer, {
+      const evidence = await verifyAlphaHash(fixture.renderer, fixture.assets, {
         kind,
         taaScale: scale,
         image(name, bytes, metadata) {

@@ -94,3 +94,22 @@ describe('createMeshBuilder', () => {
     expect(second.value.attributes.position).toEqual(trianglePositions);
   });
 });
+
+it('captures one attribute batch before validating and retaining its private copy', () => {
+  let reads = 0;
+  const builder = createMeshBuilder();
+  const position = trianglePositions.slice();
+  const appended = builder.appendVertices({
+    get position() {
+      reads++;
+      return reads === 1 ? position : new Float32Array([Number.NaN]);
+    },
+  });
+  expect(appended.ok).toBe(true);
+  position.fill(Number.NaN);
+  const mesh = builder.build().unwrap();
+  expect(reads).toBe(1);
+  expect(mesh.attributes.position).toEqual(trianglePositions);
+  (mesh.attributes.position as Float32Array).fill(Number.NaN);
+  expect(builder.build().unwrap().attributes.position).toEqual(trianglePositions);
+});

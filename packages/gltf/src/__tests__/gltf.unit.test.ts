@@ -26,6 +26,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 
 // Shared helper: encode float array as base64 data URI (used by multi-primitive, pbr-material, texture-load)
 function buildBase64Buffer(floats: number[]): string {
@@ -1210,7 +1211,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const importerMesh = importerPack.assets.find((a) => a.guid === MESH_GUID);
         const importerMat = importerPack.assets.find((a) => a.guid === MAT_GUID);
 
-        expect(serialize(importerMesh?.payload)).toBe(serialize(baselineMesh));
+        if (!importerMesh) throw new Error('missing Mesh');
+        expect(importerMesh.payload).toEqual({ kind: 'mesh' });
+        expect(importedMesh(importerMesh)).toEqual(baselineMesh);
         const meshBody = importerMesh?.artifacts.body;
         expect(meshBody?.mediaType).toBe('application/x-forgeax-mesh');
         expect(meshBody?.assetCodec).toEqual({ name: 'mesh-binary', version: '5' });
@@ -1783,10 +1786,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
           }),
         ),
       );
-      const mesh = produced.find((asset) => asset.guid === meshGuid)?.payload;
-
-      expect(mesh?.kind).toBe('mesh');
-      if (mesh?.kind !== 'mesh') throw new Error('expected imported MeshAsset');
+      const row = produced.find((asset) => asset.guid === meshGuid);
+      if (!row) throw new Error('expected imported MeshAsset');
+      const mesh = importedMesh(row);
       expect(AssetGuid.format(mesh.materialSlots[0]?.defaultMaterial as never)).toBe(
         authoredMaterialGuid,
       );
@@ -1837,7 +1839,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
       );
       const meshAsset = produced.find((asset) => asset.guid === meshGuid);
       if (meshAsset?.payload.kind !== 'mesh') throw new Error('expected imported MeshAsset');
-      expect(meshAsset.payload.materialSlots[1]?.defaultMaterial).toBeUndefined();
+      expect(importedMesh(meshAsset).materialSlots[1]?.defaultMaterial).toBeUndefined();
       expect(meshAsset.refs.map((ref) => ref.guid)).not.toContain(removedGuid);
     });
 
@@ -2546,7 +2548,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const imgs = doc.images;
         if (!imgs) throw new Error('expected images');
         expect(imgs.length).toBe(3);
-        expect(imgs[0]?.uri ?? '').toBe('baseColor.png');
+        expect(imgs[0]?.source.kind === 'external-uri' ? imgs[0].source.uri : '').toBe(
+          'baseColor.png',
+        );
       });
 
       it('fills glTF spec defaults for missing pbrMetallicRoughness fields', async () => {
@@ -2640,7 +2644,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         expect(texs2[1]?.source ?? -1).toBe(5);
         const imgs2 = doc.images;
         if (!imgs2) throw new Error('expected images');
-        expect(imgs2[5]?.uri ?? '').toBe('tex5.png');
+        expect(imgs2[5]?.source.kind === 'external-uri' ? imgs2[5].source.uri : '').toBe(
+          'tex5.png',
+        );
       });
     });
   });
@@ -2970,7 +2976,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const imgs3 = doc.images;
         if (!imgs3) throw new Error('expected images');
         expect(imgs3.length).toBe(1);
-        expect(imgs3[0]?.uri ?? '').toBe('textures/checker.png');
+        expect(imgs3[0]?.source.kind === 'external-uri' ? imgs3[0].source.uri : '').toBe(
+          'textures/checker.png',
+        );
       });
 
       it('fails with gltf-texture-load-failed when externalLoader rejects', async () => {
@@ -3010,7 +3018,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         if (!result.ok) throw new Error('expected ok');
         const imgs4 = result.value.images;
         if (!imgs4) throw new Error('expected images');
-        expect(imgs4[0]?.uri ?? '').toBe('textures/photo.jpg');
+        expect(imgs4[0]?.source.kind === 'external-uri' ? imgs4[0].source.uri : '').toBe(
+          'textures/photo.jpg',
+        );
       });
 
       it('accepts image/png mimeType successfully', async () => {
@@ -3020,7 +3030,9 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         if (!result.ok) throw new Error('expected ok');
         const imgs5 = result.value.images;
         if (!imgs5) throw new Error('expected images');
-        expect(imgs5[0]?.uri ?? '').toBe('textures/photo.png');
+        expect(imgs5[0]?.source.kind === 'external-uri' ? imgs5[0].source.uri : '').toBe(
+          'textures/photo.png',
+        );
       });
     });
   });
@@ -3036,7 +3048,13 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
       nodes: [],
       scenes: [],
       textures: undefined,
-      images: images.length > 0 ? images : undefined,
+      images:
+        images.length > 0
+          ? images.map((image) => ({
+              ...image,
+              source: { kind: 'data-uri' as const, uri: 'data:image/png;base64,' },
+            }))
+          : undefined,
       samplers: undefined,
       skeletons: [],
       animationClips: [],

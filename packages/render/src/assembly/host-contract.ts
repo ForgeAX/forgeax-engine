@@ -1,62 +1,30 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import type { Result, RhiDevice, RhiError, ShaderModule } from '@forgeax/engine-rhi';
-import type { Handle, RenderPipelineAsset } from '@forgeax/engine-types';
-import type {
-  DynamicGeometryCandidate,
-  DynamicGeometryError,
-  DynamicGeometryOrdering,
-  DynamicGeometryPrepareInput,
-  DynamicGeometryReceipt,
-  MeshResidencyError,
-  MeshResidencyPhaseObserver,
-  PreparedMeshResidency,
-} from '../dynamic-geometry';
+import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import type { RecoverFailure } from '../errors/recover';
 import type { ObservationUnavailableError, RenderError } from '../errors/render';
 import type { RenderFeature, RenderFeatureDiagnostics } from '../features/types';
 import type { GpuDrivenProductionInspection, LodOcclusionInspection } from '../inspection-types';
 import type { MeshMaterialBindingObservation } from '../mesh-material-bindings';
-import type { OutputColorSpace } from '../output-color-space';
-import type {
-  PreparedPublishedMeshResidency,
-  PublishedMeshPreparation,
-  PublishedRenderFrameInput,
-  RenderPublicationError,
-  RenderPublicationIdentity,
-} from '../publication/contract';
+import type { PublishedRenderFrameInput } from '../publication/contract';
 import type { FrameObservation, FrameObservationOptions } from '../record/frame';
 import type { CurrentGraphTarget, GraphTargetCaptureRequest } from '../record/frame-snapshot';
 import type {
   DrawOwnerOptions,
-  FrameObservationRequest,
   FrameReceipt,
-  FrameReceiptObservation,
   HealthSnapshot,
   RenderDebugOverlay,
+  Renderer,
   RendererError,
   RendererErrorListener,
   RendererLostListener,
   RenderFrameInput,
-  RenderInspection,
   RenderPreparationSchedule,
-  RenderProfile,
   RenderResult,
-  RenderWorldLease,
 } from '../render-contract';
 import type { RenderSceneInspection } from '../render-system';
-import type { RenderSceneBounds } from '../scene/render-scene-types';
-import type { SurfaceDynamicInputFrame } from '../surface/dynamic-input';
-import type {
-  FramebufferSnapshotRequest,
-  FramebufferSnapshotTicket,
-  RenderTarget,
-  RenderTargetDescriptor,
-  RenderTargetReadbackRequest,
-  RenderTargetReadbackTicket,
-  RenderTargetTextureSource,
-  RenderTargetTextureSourceOptions,
-} from '../targets/contracts';
+import type { DynamicGeometryHostImplementation } from './dynamic-geometry-host';
 
 type RenderShaderModuleFactory = (
   device: RhiDevice,
@@ -75,88 +43,40 @@ export type RendererHostEventListener = (event: RendererHostEvent) => void;
  * Legacy diagnostics remain on RendererLegacyHostAdapter and cannot leak into
  * the public Renderer type.
  */
-export interface RendererHostImplementation {
-  prepareDynamicGeometryPipelines(
-    candidates: readonly DynamicGeometryCandidate[],
-    options?: { readonly signal?: AbortSignal },
-  ): Promise<Result<void, DynamicGeometryError>>;
-  /** Publish one renderer-owned read-only Surface dynamic page for the next frame. */
-  setSurfaceDynamicInput(frame: SurfaceDynamicInputFrame | undefined): void;
-  attach(world: World): RenderResult<RenderWorldLease, RenderError>;
-  prepareDynamicGeometry(
-    input: DynamicGeometryPrepareInput,
-  ): Result<DynamicGeometryCandidate, DynamicGeometryError>;
-  /** Prepare one complete roster under the existing aggregate byte budget. */
-  prepareDynamicGeometryCandidates(
-    inputs: readonly DynamicGeometryPrepareInput[],
-  ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError>;
-  /** Prepare source-namespaced Mesh buffers and wait for physical queue completion. */
-  preparePublishedMeshResidency(
-    input: PublishedMeshPreparation,
-    inputOwnership?: 'received',
-    options?: { readonly signal?: AbortSignal },
-  ): Promise<Result<PreparedPublishedMeshResidency, RenderPublicationError | MeshResidencyError>>;
-  prepareMeshResidency(
-    world: World,
-    meshHandle: Handle<'MeshAsset', 'shared'>,
-    observePhase?: MeshResidencyPhaseObserver,
-  ): Result<PreparedMeshResidency, MeshResidencyError>;
-  acceptDynamicGeometry(
-    candidate: DynamicGeometryCandidate,
-    ordering: DynamicGeometryOrdering,
-  ): Result<DynamicGeometryCandidate, DynamicGeometryError>;
-  /**
-   * Atomically swap distinct entities in one attached World. Returned failures
-   * retain old bindings; an uncertain rollback throws to require paired rebuild.
-   * Invoke inside PhysicsWorld.admitDerivedShapeCandidates commitGeometry.
-   */
-  acceptDynamicGeometryCandidates(
-    candidates: readonly DynamicGeometryCandidate[],
-    ordering: DynamicGeometryOrdering,
-  ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError>;
-  /** Whether the original candidate still owns current physical residency. */
-  isDynamicGeometryCurrent(candidate: DynamicGeometryCandidate): boolean;
-  dynamicGeometryReceipt(candidate: DynamicGeometryCandidate): DynamicGeometryReceipt | undefined;
-  cancelDynamicGeometry(candidate: DynamicGeometryCandidate): Result<void, DynamicGeometryError>;
-  retireDynamicGeometry(candidate: DynamicGeometryCandidate): Result<void, DynamicGeometryError>;
-  publishDynamicGeometry(
-    frame: {
-      readonly frameId: number;
-      readonly deviceGeneration: number;
-      readonly completed?: Promise<unknown>;
-    },
-    worlds?: readonly object[],
-    fixedStep?: number,
-  ): readonly DynamicGeometryReceipt[];
-  createRenderTarget(descriptor: RenderTargetDescriptor): RenderResult<RenderTarget, RenderError>;
-  resizeRenderTarget(
-    target: RenderTarget,
-    descriptor: RenderTargetDescriptor,
-  ): RenderResult<void, RenderError>;
-  createRenderTargetTextureSource(
-    target: RenderTarget,
-    options: RenderTargetTextureSourceOptions,
-  ): RenderResult<RenderTargetTextureSource, RenderError>;
-  requestTargetReadback(
-    target: RenderTarget,
-    request: RenderTargetReadbackRequest,
-  ): RenderResult<RenderTargetReadbackTicket, RenderError>;
-  requestFramebufferSnapshot(
-    target: RenderTarget,
-    request: FramebufferSnapshotRequest,
-  ): RenderResult<FramebufferSnapshotTicket, RenderError>;
-  destroyRenderTarget(target: RenderTarget): RenderResult<void, RenderError>;
-  importTexture(
-    input: import('../textures/external-texture').ExternalTextureInput,
-  ): Promise<RenderResult<import('../textures/external-texture').ExternalTexture, RenderError>>;
-  nativeDevice(): RenderResult<GPUDevice, RenderError>;
-  setProfile(profile: RenderProfile): RenderResult<void, RenderError>;
-  setOutputColorSpace(colorSpace: OutputColorSpace): RenderResult<void, RenderError>;
-  /** Detached world bounds for one record in the last extracted World; undefined if unavailable. */
-  bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
-  /** Direct read of the active device owner, independent of diagnostic projections. */
-  currentDeviceGeneration?: () => number;
-  inspect(options?: { readonly pipelineLibrary?: boolean }): RenderInspection;
+export interface RendererHostImplementation
+  extends Pick<
+    Renderer,
+    | 'prepareDynamicGeometryPipelines'
+    | 'setSurfaceDynamicInput'
+    | 'attach'
+    | 'prepareDynamicGeometry'
+    | 'prepareDynamicGeometryCandidates'
+    | 'preparePublishedMeshResidency'
+    | 'prepareMeshResidency'
+    | 'acceptDynamicGeometry'
+    | 'acceptDynamicGeometryCandidates'
+    | 'isDynamicGeometryCurrent'
+    | 'dynamicGeometryReceipt'
+    | 'cancelDynamicGeometry'
+    | 'retireDynamicGeometry'
+    | 'retireSupersededDynamicGeometry'
+    | 'createRenderTarget'
+    | 'resizeRenderTarget'
+    | 'createRenderTargetTextureSource'
+    | 'requestTargetReadback'
+    | 'requestFramebufferSnapshot'
+    | 'destroyRenderTarget'
+    | 'importTexture'
+    | 'nativeDevice'
+    | 'setProfile'
+    | 'setOutputColorSpace'
+    | 'bounds'
+    | 'currentDeviceGeneration'
+    | 'inspect'
+    | 'observeGeometry'
+    | 'observe'
+  > {
+  publishDynamicGeometry: DynamicGeometryHostImplementation['publishDynamicGeometry'];
   /**
    * Internal bounded inspection for high-cardinality producers. The public
    * snapshot also carries the full persistent render-scene record table, which
@@ -177,13 +97,6 @@ export interface RendererHostImplementation {
   requestObservation?: (
     domains: readonly import('../render-contract').FrameObservationDomain[],
   ) => RenderResult<void, RenderError>;
-  observeGeometry?: (
-    receipt: FrameReceipt,
-  ) => Promise<import('../geometry-observation').GeometryObservation>;
-  observe(
-    receipt: FrameReceipt,
-    request: FrameObservationRequest,
-  ): Promise<RenderResult<FrameReceiptObservation, RenderError>>;
   releaseSurface(): RenderResult<void, RhiError>;
   restoreSurface(): RenderResult<void, RhiError>;
   recover(): Promise<Result<void, RecoverFailure>>;

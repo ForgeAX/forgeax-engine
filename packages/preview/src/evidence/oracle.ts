@@ -83,7 +83,7 @@ export interface MeshOracleInput {
 }
 
 function oracleDetail(
-  kind: 'material' | 'mesh',
+  kind: 'material' | 'mesh' | 'vfx' | 'texture',
   requested: Record<string, unknown>,
   observed: Record<string, unknown>,
   mismatch: string | undefined,
@@ -121,42 +121,50 @@ function firstMismatch(
   return undefined;
 }
 
-export function evaluateMaterialOracle(input: MaterialOracleInput): PreviewOracle {
-  const requested = input.requested as unknown as Record<string, string>;
-  const observed = input.observed as unknown as Record<string, string>;
+function evaluateOracle(
+  kind: 'material' | 'mesh' | 'vfx' | 'texture',
+  requested: Record<string, unknown>,
+  observed: Record<string, unknown>,
+  healthy: boolean,
+  facts: {
+    readonly drawCalls: number;
+    readonly dispatches?: number;
+    readonly rendererHealthy: boolean;
+    readonly detail: Record<string, string | number | boolean>;
+  },
+): PreviewOracle {
   const mismatch = firstMismatch(requested, observed);
-  const healthy = input.observed.rendererHealthy && input.observed.drawCalls > 0;
-  const detail = oracleDetail('material', requested, observed, mismatch);
-  if (mismatch !== undefined || !healthy) {
-    return failedPreviewOracle({
-      drawCalls: input.observed.drawCalls,
-      rendererHealthy: input.observed.rendererHealthy,
-      detail: { ...detail, rendererHealthy: input.observed.rendererHealthy },
-    });
-  }
-  return passedPreviewOracle({
-    drawCalls: input.observed.drawCalls,
-    detail: { ...detail, rendererHealthy: true },
-  });
+  const detail = { ...oracleDetail(kind, requested, observed, mismatch), ...facts.detail };
+  const result = { ...facts, detail };
+  return mismatch === undefined && healthy
+    ? passedPreviewOracle(result)
+    : failedPreviewOracle(result);
+}
+
+function evaluateRasterOracle(
+  kind: 'material' | 'mesh',
+  input: MaterialOracleInput | MeshOracleInput,
+): PreviewOracle {
+  const observed = input.observed;
+  return evaluateOracle(
+    kind,
+    input.requested,
+    observed,
+    observed.rendererHealthy && observed.drawCalls > 0,
+    {
+      drawCalls: observed.drawCalls,
+      rendererHealthy: observed.rendererHealthy,
+      detail: { rendererHealthy: observed.rendererHealthy },
+    },
+  );
+}
+
+export function evaluateMaterialOracle(input: MaterialOracleInput): PreviewOracle {
+  return evaluateRasterOracle('material', input);
 }
 
 export function evaluateMeshOracle(input: MeshOracleInput): PreviewOracle {
-  const requested = input.requested as unknown as Record<string, string>;
-  const observed = input.observed as unknown as Record<string, string>;
-  const mismatch = firstMismatch(requested, observed);
-  const healthy = input.observed.rendererHealthy && input.observed.drawCalls > 0;
-  const detail = oracleDetail('mesh', requested, observed, mismatch);
-  if (mismatch !== undefined || !healthy) {
-    return failedPreviewOracle({
-      drawCalls: input.observed.drawCalls,
-      rendererHealthy: input.observed.rendererHealthy,
-      detail: { ...detail, rendererHealthy: input.observed.rendererHealthy },
-    });
-  }
-  return passedPreviewOracle({
-    drawCalls: input.observed.drawCalls,
-    detail: { ...detail, rendererHealthy: true },
-  });
+  return evaluateRasterOracle('mesh', input);
 }
 
 export interface VfxOracleInput {
@@ -221,22 +229,13 @@ function evaluateIdentityOracle(
   dispatches: number,
   detailOverrides: Record<string, string | number | boolean>,
 ): PreviewOracle {
-  const requested = identityRecord(requestedInput);
-  const observed = identityRecord(observedInput);
-  const mismatch = firstMismatch(requested, observed);
-  const detail = {
+  return evaluateOracle(
     kind,
-    mismatch: mismatch ?? 'none',
-    requestedSubjectDigest: requested.subjectDigest ?? 'unknown',
-    observedSubjectDigest: observed.subjectDigest ?? 'unknown',
-    requestedOwnerDigest: JSON.stringify(requested),
-    observedOwnerDigest: JSON.stringify(observed),
-    ...detailOverrides,
-  };
-  if (mismatch !== undefined || !healthy) {
-    return failedPreviewOracle({ drawCalls, dispatches, rendererHealthy: healthy, detail });
-  }
-  return passedPreviewOracle({ drawCalls, dispatches, detail });
+    identityRecord(requestedInput),
+    identityRecord(observedInput),
+    healthy,
+    { drawCalls, dispatches, rendererHealthy: healthy, detail: detailOverrides },
+  );
 }
 
 export function evaluateVfxOracle(input: VfxOracleInput): PreviewOracle {

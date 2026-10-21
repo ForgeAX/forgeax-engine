@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createDecalGeometry, createSphereGeometry } from '@forgeax/engine/geometry';
 import { mat4 } from '@forgeax/engine/math';
 import { Materials, Visibility, VisibilityStateValue } from '@forgeax/engine/render';
@@ -14,9 +15,13 @@ export default defineFeature({
   expect:
     'ON: a red/white checker sticker wraps around the front of the grey sphere following its curvature. OFF: the decal entity is hidden and the sphere is plain.',
   setup({ world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world);
     const sphereMesh = createSphereGeometry(0.5, 48, 32).unwrap();
-    const receiver = world.allocSharedRef('MeshAsset', sphereMesh);
+    const receiver = sceneAssets.create(sphereMesh).unwrap();
     const box = mat4.compose(mat4.create(), [0, 0, 0.4], [0, 0, 0, 1], [0.6, 0.6, 0.4]);
     const decal = createDecalGeometry(sphereMesh, { transform: box as never });
     const pose = { pos: [0, 0.9, 0] as const, scale: [1.6, 1.6, 1.6] as const };
@@ -43,7 +48,7 @@ export default defineFeature({
       }),
     );
     const decalMesh =
-      decal.ok && decal.value !== null ? world.allocSharedRef('MeshAsset', decal.value) : undefined;
+      decal.ok && decal.value !== null ? sceneAssets.create(decal.value).unwrap() : undefined;
     const entity =
       decalMesh === undefined
         ? undefined

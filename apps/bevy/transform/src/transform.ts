@@ -7,13 +7,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat, vec3 } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const MOVE_SPEED = 2;
 export const TURN_RATE = 1;
@@ -43,28 +47,29 @@ function firstHandleWith(world: World, component: typeof Orbiting | typeof Cente
 
 /** Build the orbiting cube and center sphere scene from Bevy's transform example. */
 export function buildTransformWorld(world: World): void {
-  const yellow = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.8, 0.1, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const yellow = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.8, 0.1, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [yellow] } },
     { component: CenterSphere, data: { maxSize: CENTER_MAX_SCALE, minSize: CENTER_MIN_SCALE, scaleFactor: CENTER_SCALE_FACTOR } },
   );
 
-  const white = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.95, 0.95, 0.95, 1] }),
-  );
+  const white = sceneAssets.create(Materials.standard({ baseColor: [0.95, 0.95, 0.95, 1] })).unwrap();
   const start: [number, number, number] = [0, 0, -6];
   // Begin tangent to the center so slerp visibly bends the forward path into
   // an orbit instead of merely flying straight at the sphere.
   const startQuat = quat.eulerY(Math.PI / 2);
   world.spawn(
     { component: Transform, data: { pos: start, quat: startQuat, scale: [0.7, 0.7, 0.7] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [white] } },
     { component: Orbiting, data: { start, moveSpeed: MOVE_SPEED, turnRate: TURN_RATE } },
   );

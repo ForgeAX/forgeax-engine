@@ -17,18 +17,22 @@ const engineDocuments = [
     'packages/assets-runtime/README.md',
     [
       'CatalogSource',
-      'subscribe before enumerating',
-      'added',
-      'changed',
-      'removed',
-      'catalog-source-unconfigured',
-      'static source',
+      'subscribeCatalog',
+      'enumerateCatalog',
+      'listCatalog',
+      'configureRuntimeBinding',
+      'load(guid, kind, { signal }?)',
+      'read(handle)',
+      'update(handle, patch)',
+      'snapshot(handle)',
+      'reload(handle, { conflict })',
+      'asset-write-conflict',
       'AssetEvidence',
       'packageUrl',
-      'notCooked',
       'stale',
       'unknown',
-      'lookup/verify --guid --project --catalog --json',
+      'inspect(guid)',
+      'verifyByGuid(guid)',
     ],
   ],
   [
@@ -80,7 +84,6 @@ const engineDocuments = [
     'packages/image/README.md',
     'packages/gltf/README.md',
     'packages/fbx/README.md',
-    'packages/font/README.md',
     'packages/ui/README.md',
     'packages/audio-webaudio/README.md',
   ].map((path) => [
@@ -94,6 +97,16 @@ const engineDocuments = [
       'lookup/verify --guid --project --catalog --json',
     ],
   ]),
+  [
+    'packages/font/README.md',
+    [
+      "assets.load(fontGuid, 'font')",
+      'fontContribution',
+      'Cook/Catalog',
+      'managed references',
+      '../assets-runtime/README.md',
+    ],
+  ],
 ];
 
 const materialDocuments = [
@@ -412,6 +425,11 @@ async function checkScriptablePackMatrix(root) {
   ];
   for (const relativePath of matrixDocuments) {
     const source = await readFile(resolve(root, relativePath), 'utf8');
+    if (relativePath === 'packages/assets-runtime/README.md') {
+      if (!source.includes('../pack/README.md#scriptablepack-in-30-seconds'))
+        failures.push(`engine/${relativePath}: link the owning ScriptablePack kind matrix`);
+      continue;
+    }
     for (const kind of kinds) {
       if (!source.includes(kind)) {
         failures.push(
@@ -427,10 +445,13 @@ async function checkScriptablePackMatrix(root) {
     'summary-only',
     'live handles',
     'shared<AnimationClip> handle',
+    'loadByGuid',
+    'allocSharedRef',
+    'World-owned shared reference',
   ];
   for (const relativePath of [
     ...matrixDocuments,
-    'packages/assets-runtime/src/wire-default-loaders.ts',
+    'packages/runtime/src/asset-contributions.ts',
     'packages/animation/src/graph/serialize-animation-graph.ts',
   ]) {
     const source = await readFile(resolve(root, relativePath), 'utf8');

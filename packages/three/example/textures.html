@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three.js texture inputs · Forgeax</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101820; color: #e4edf2; }
+  body { margin: auto; max-width: 1180px; padding: 36px 24px; }
+  a { color: #8cddc6; }
+  h1 { font-size: clamp(28px, 4vw, 44px); letter-spacing: -.035em; margin: 24px 0 12px; }
+  p { color: #aabac8; line-height: 1.6; }
+  main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(290px, 1fr); gap: 24px; margin: 28px 0; }
+  .viewport, aside { border: 1px solid #354858; border-radius: 14px; background: #182630; }
+  .viewport { height: 460px; overflow: hidden; }
+  canvas { width: 100%; height: 100%; display: block; }
+  aside { padding: 24px; }
+  label { display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: 12px; margin-bottom: 16px; font-size: 14px; }
+  select, button { font: inherit; color: inherit; border: 1px solid #4a6474; background: #253b48; padding: 9px; border-radius: 6px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  h2 { font-size: 16px; }
+  pre { white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: #b8e1d2; }
+  #status, #capture-status, footer { font-size: 13px; }
+  #downloads { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; }
+  #error { color: #ffa995; white-space: pre-wrap; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } .viewport { height: 320px; } }
+</style>
+<a href="./index.html">← Scene and material example</a>
+<h1>Familiar textures. Native rendering.</h1>
+<p>Switch UV sets, pixel storage and mip sampling using ordinary Three.js properties.</p>
+<main>
+  <div class="viewport"><canvas id="scene"></canvas></div>
+  <aside>
+    <label>Material<select id="material"><option>Basic</option><option>Standard</option><option>Physical</option></select></label>
+    <label>Normals<select id="normals"><option value="authored">Authored · +Z</option><option value="missing">Missing · auto flat</option></select></label>
+    <label>UV set<select id="channel"><option value="0">UV0 · original</option><option value="1">UV1 · swap axes</option><option value="2">UV2 · mirror U</option><option value="3">UV3 · mirror both</option></select></label>
+    <label>UV transform<select id="transform"><option value="identity">Original</option><option value="tiled">Offset + 2×3 repeat</option><option value="rotated">Rotate about center</option><option value="manual">Manual mirror matrix</option></select></label>
+    <label>Storage<select id="storage"><option value="rgba8">RGBA · unsigned byte</option><option value="rg8">RG · unsigned byte</option><option value="r8">Red · unsigned byte</option><option value="rgba16">RGBA · half float</option><option value="rg16">RG · half float</option><option value="r16">Red · half float</option></select></label>
+    <label>Sampling<select id="sampling"><option value="nearest">Nearest · color quadrants</option><option value="mips">Authored mips · green</option><option value="base">Base level only · white</option><option value="anisotropic">Trilinear · anisotropy 8×</option></select></label>
+    <p id="status">Initializing Forgeax…</p>
+    <button id="capture" disabled>Capture RHI frame</button>
+    <p id="capture-status"></p><div id="downloads"></div>
+    <p id="error" role="alert"></p>
+  </aside>
+</main>
+<h2>Application code</h2>
+<pre id="code"></pre>
+<pre id="uv-code"></pre>
+<pre id="geometry-code"></pre>
+<footer>This preview uses WebGPU. UV edits retain the shared image and sampler; affine UV shear is supported. Nonidentity Matcap UV transforms, render targets and per-draw callbacks remain native boundaries. Scene callbacks are supported. The alignment target is Three WebGPU; WebGL-specific interfaces are outside scope and addon expansion is deferred.</footer>
+<script type="module" src="./textures.ts"></script>
+</html>

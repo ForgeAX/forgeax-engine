@@ -140,16 +140,6 @@ export {
 // imported directly from @forgeax/engine-scene, @forgeax/engine-animation,
 // @forgeax/engine-skinning, and @forgeax/engine-render.
 /**
- * GlyphText authoring component for world-space MSDF text
- * (feat-20260531-world-space-msdf-text-rendering M4 / w14). Carries
- * `fontHandle` / `text` / `fontSize` / `color: array<f32, 4>`; the
- * `glyphTextLayoutSystem` (this package) bakes a MeshAsset and attaches
- * MeshFilter + MeshRenderer (plan-strategy D-2; GlyphText is pure authoring
- * data, baking is a system responsibility). Co-located with its consuming
- * system in `@forgeax/engine-runtime` so AI users import the component and
- * the system from one package.
- */
-/**
  * feat-20260625-sprite-instances-and-tilemap-terrain-static-batch M1 / w4 —
  * SpriteInstances primitive: 2D peer of `Instances`. Carries per-instance
  * mat4 (stride 16) + per-instance UV region (stride 4). Exported directly
@@ -164,20 +154,6 @@ export {
 // a DDC miss at runtime triggers an on-demand POST /__import import against the
 // vite-plugin-pack dev server. Aligned with the create*/wire* factory family.
 export { createDevImportTransport } from './dev-import-transport';
-// feat-20260705-runtime-tier2-decomposition M3 / w31: glyph-layout +
-// glyph-mesh-bake (FONT_CONCURRENCY_LIMIT /
-// GlyphLayoutResult / layoutGlyphText / resetFontConcurrency /
-// trackFontConcurrency / VERTEX_OFFSET / bakeGlyphMesh / buildGlyphMeshAsset /
-// conservativeCubeAabb / GlyphMeshBakeResult) moved to
-// @forgeax/engine-graphics-extras (AC-303). Zero shim -- import from that
-// package. glyphTextLayoutSystem stays here (system entry, S12).
-/**
- * glyphTextLayoutSystem (feat-20260531-world-space-msdf-text-rendering) -- lays
- * out + bakes every `GlyphText` entity, attaching MeshFilter + MeshRenderer on
- * first observation and re-baking in place on a text / size / color change.
- * `createApp` attaches the World and owns the returned render lease before
- * the first frame; `Renderer.draw` consumes only that lease-bound request.
- */
 /**
  * GpuBuffer / GpuTexture runtime wrappers + GpuResource union
  * (feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M2).
@@ -254,7 +230,7 @@ export type { SpriteParamValues } from './sprite-param-values';
 export { spriteAnimationTickSystem } from './systems/sprite-animation-tick';
 // feat-20260705-runtime-tier2-decomposition M3 / w31: tile-bits (decodeTileBits
 // / encodeTileBits) moved to @forgeax/engine-graphics-extras (AC-303). Zero shim
-// -- import from that package. tilemapChunkExtractSystem stays here (system
+// -- import from that package. Native Tilemap projection belongs to Render.
 // entry, S12).
 // feat-20260608-tilemap-object-layer-rendering M0 baseline rebuild — chunk-extract system
 // feat-20260705-runtime-tier2-decomposition M3 / w31: the video cluster

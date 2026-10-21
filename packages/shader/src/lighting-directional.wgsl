@@ -45,7 +45,7 @@
 
 #import forgeax_view::common::{view, shadowMap, shadowSampler}
 #import forgeax_pbr::brdf::{standardOpaqueBrdf}
-#import forgeax_pbr::shadow_pcf::{sample_shadow_2d, sample_shadow_2d_vogel}
+#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d, sample_shadow_2d_vogel, sample_shadow_2d_soft, sample_shadow_variance}
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
 #import forgeax_pbr::shadow_pcf::{shadow_clamp_texel_to_tile, shadow_load_raw_depth, shadow_sample_compare}
 #endif
@@ -120,6 +120,7 @@ fn _cascadeLightViewProj(layer : u32) -> mat4x4<f32> {
 }
 
 fn _directionalReceiverDepthBias(layer : u32, normal : vec3<f32>, l : vec3<f32>, radius : f32) -> f32 {
+  if (view.splitPlanes[0].w > 0.5) { return view.depthBias; }
   let nDotL = dot(normal, l);
   let depthSpan = view.splitPlanes[layer].z;
   // Every front-facing receiver needs its filter footprint, including grazing
@@ -150,6 +151,7 @@ fn _directionalReceiverDepthBias(layer : u32, normal : vec3<f32>, l : vec3<f32>,
 // bias only covers one texel of bilinear footprint instead of the whole
 // kernel radius. Zero where the plane is not a valid lit receiver.
 fn _directionalReceiverPlaneGradient(layer : u32, normal : vec3<f32>, l : vec3<f32>) -> vec2<f32> {
+  if (view.splitPlanes[0].w > 0.5) { return vec2<f32>(0.0); }
   if (!(dot(normal, l) > 0.01)) {
     return vec2<f32>(0.0);
   }
@@ -222,7 +224,13 @@ fn _samplePcssForCascade(
   let baseTexel = vec2<i32>(floor(tileUv * vec2<f32>(shadowMapSize)));
   let angle = _pcssDiskRotation(baseTexel, layer);
   let rawRadius = select(2.0, 3.0, profile == 5u);
-  let biasedDepth = projCoords.z + _directionalReceiverDepthBias(layer, normal, l, rawRadius + 1.0);
+  let planeGradient = _directionalReceiverPlaneGradient(layer, normal, l);
+  let planeCorrected = dot(normal, l) > 0.01;
+  // Raw and comparison samples land at exact texel centers. Compare the
+  // receiver plane at each center, without biasing past thin blockers by the
+  // full search radius. Retain bounded footprint bias at grazing degeneracy.
+  let biasedDepth = projCoords.z + select(
+    _directionalReceiverDepthBias(layer, normal, l, rawRadius + 1.0), view.depthBias, planeCorrected);
   var blockerDepth = 0.0;
   var blockerCount = 0u;
   if (profile == 4u) {
@@ -230,8 +238,9 @@ fn _samplePcssForCascade(
       let rawUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, rawRadius));
       let rawTexel = vec2<i32>(rawUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
       let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
-      if (rawDepth <= 1.0 && rawDepth > biasedDepth) {
-        blockerDepth = blockerDepth + rawDepth;
+      let correctedDepth = rawDepth - dot(planeGradient, (rawUv - tileUv) * vec2<f32>(shadowMapSize));
+      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
+        blockerDepth = blockerDepth + correctedDepth;
         blockerCount = blockerCount + 1u;
       }
     }
@@ -240,8 +249,9 @@ fn _samplePcssForCascade(
       let rawUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, rawRadius));
       let rawTexel = vec2<i32>(rawUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
       let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
-      if (rawDepth <= 1.0 && rawDepth > biasedDepth) {
-        blockerDepth = blockerDepth + rawDepth;
+      let correctedDepth = rawDepth - dot(planeGradient, (rawUv - tileUv) * vec2<f32>(shadowMapSize));
+      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
+        blockerDepth = blockerDepth + correctedDepth;
         blockerCount = blockerCount + 1u;
       }
     }
@@ -263,18 +273,21 @@ fn _samplePcssForCascade(
     view.directionalShadowFilter.z,
   );
   let compareRadius = max(0.5, penumbraTexels);
-  let compareDepth = projCoords.z + _directionalReceiverDepthBias(layer, normal, l, compareRadius + 1.5);
+  let compareDepth = projCoords.z + select(
+    _directionalReceiverDepthBias(layer, normal, l, compareRadius + 1.5), view.depthBias, planeCorrected);
   var litSum = 0.0;
   if (profile == 4u) {
     for (var i = 0u; i < PCSS_MEDIUM_COMPARE_TAPS; i = i + 1u) {
       let compareUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, compareRadius));
-      litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), compareDepth);
+      let tapDepth = compareDepth + dot(planeGradient, (compareUv - tileUv) * vec2<f32>(shadowMapSize));
+      litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), tapDepth);
     }
     return litSum / f32(PCSS_MEDIUM_COMPARE_TAPS);
   }
   for (var i = 0u; i < PCSS_HIGH_COMPARE_TAPS; i = i + 1u) {
     let compareUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, compareRadius));
-    litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), compareDepth);
+    let tapDepth = compareDepth + dot(planeGradient, (compareUv - tileUv) * vec2<f32>(shadowMapSize));
+    litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), tapDepth);
   }
   return litSum / f32(PCSS_HIGH_COMPARE_TAPS);
 }
@@ -295,7 +308,9 @@ fn _sampleShadowForCascade(
   let lightClip = lvp * vec4<f32>(worldPos, 1.0);
   let projCoords = lightClip.xyz / lightClip.w;
   let tileUv = vec2<f32>(projCoords.x * 0.5 + 0.5, -projCoords.y * 0.5 + 0.5);
-  let uv = tileUv;
+  let aspect = select(1.0, view.splitPlanes[3].w, view.splitPlanes[3].w > 0.0);
+  let viewportScale = vec2<f32>(min(1.0, aspect), min(1.0, 1.0 / aspect));
+  let uv = tileUv * viewportScale;
   let shadowLayer = i32(layer + layerBase);
   let currentDepth = projCoords.z;
   // NaN-safe bounds: relational < and > do not reject NaN (NaN < 0 is
@@ -316,20 +331,34 @@ fn _sampleShadowForCascade(
   // PCF1/3/5 profiles 1/2/3 retain their existing receiver. PCSS profiles 4/5
   // use the bounded three-stage receiver below without a material or variant
   // axis; the carrier y/z lanes provide angular radius and penumbra limit.
-  let filterProfile = clamp(u32(round(view.directionalShadowFilter.x)), 1u, 6u);
+  let filterProfile = clamp(u32(round(view.directionalShadowFilter.x)), 1u, 8u);
   #ifdef DIRECTIONAL_PCSS_AVAILABLE
   if (filterProfile == 4u || filterProfile == 5u) {
     return _samplePcssForCascade(worldPos, layer, normal, l, filterProfile);
   }
   #endif
   let kernel = select(select(3u, 5u, filterProfile == 3u), 1u, filterProfile == 1u);
-  let adjustedDepth = currentDepth + _directionalReceiverDepthBias(layer, normal, l, 1.0);
+  // Integer PCF offsets retain this bilinear phase. Bound only the actual
+  // distance to its four texel centers, rather than a full texel everywhere.
+  let phase = fract(uv * texelDims - vec2<f32>(0.5));
+  let reach = max(phase, vec2<f32>(1.0) - phase);
+  let footprintRadius = select(max(reach.x, reach.y), 1.0, filterProfile == 6u);
+  let adjustedDepth = currentDepth + _directionalReceiverDepthBias(layer, normal, l, footprintRadius);
   let planeGradient = _directionalReceiverPlaneGradient(layer, normal, l);
+  if (filterProfile == 8u) {
+    return sample_shadow_variance(uv, shadowLayer, adjustedDepth, viewportScale);
+  }
+  if (filterProfile == 7u) {
+    return sample_shadow_2d_soft(shadowMap, shadowSampler, uv, shadowLayer, texel, adjustedDepth, viewportScale);
+  }
   if (filterProfile == 6u) {
     return sample_shadow_2d_vogel(shadowMap, shadowSampler, uv, shadowLayer,
-      texel, adjustedDepth, planeGradient, pixel);
+      texel * vec2<f32>(1.0, 1.0 / aspect) * max(1.0 + view.splitPlanes[2].w, 0.0), adjustedDepth, planeGradient, pixel, viewportScale);
   }
   if (kernel == 1u) {
+    if (view.splitPlanes[0].w > 0.5) {
+      return sample_shadow_2d_nearest(shadowMap, shadowSampler, uv, shadowLayer, adjustedDepth, viewportScale);
+    }
     let lit = textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv, tileLo, tileHi), shadowLayer, adjustedDepth);
     return lit;
   }
@@ -456,7 +485,7 @@ fn evalDirectionalShadowFactorAtPixel(
       }
     }
   }
-  return shadow;
+  return mix(1.0, shadow, 1.0 - view.splitPlanes[1].w);
 }
 
 // Volume receivers are samples in a medium, not surfaces. They therefore use

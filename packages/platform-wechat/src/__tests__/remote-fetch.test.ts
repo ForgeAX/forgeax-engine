@@ -4,10 +4,10 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { meshAssetOutputProducer, normaliseForPack } from '@forgeax/engine-import';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import type { MeshAsset, PackageRequest } from '@forgeax/engine-types';
+import type { PackageRequest } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WechatCacheFiles } from '../download-cache.js';
 import { createWechatRemotePackageFetcher, type WechatDownloadSource } from '../remote-fetch.js';
@@ -115,7 +115,7 @@ describe('native remote PackageFetcher', () => {
     const body = product.artifacts.body;
     if (!body) throw new Error('mesh body missing');
     const packageUrl = `${baseUrl}mesh/pack.json`;
-    const { pack } = createRuntimePackPublication({
+    const { pack, publication } = createRuntimePackPublication({
       scopeId: 'download-test',
       sourcePath: 'mesh',
       sourceRevision: 'fixed',
@@ -131,6 +131,7 @@ describe('native remote PackageFetcher', () => {
               body: {
                 path: 'mesh.bin',
                 mediaType: body.mediaType,
+                contentEncoding: 'identity',
                 assetCodec: body.assetCodec,
                 byteLength: body.bytes.byteLength,
                 integrity: {
@@ -150,22 +151,25 @@ describe('native remote PackageFetcher', () => {
     for (const name of ['fetch', 'Request', 'Response', 'Headers', 'crypto'])
       vi.stubGlobal(name, undefined);
     const reader = f.create();
-    const registry = new AssetRegistry({} as never);
+    const registry = new AssetRegistry({ scopeId: 'download-test' });
+    registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
     registry.setCatalogSource(
       createCatalogSource({
         fetch: reader.fetch,
-        entries: [{ guid, kind: 'mesh', packageUrl, sourcePath: 'mesh', sourceKey: 'box' }],
+        entries: [
+          { guid, kind: 'mesh', packageUrl, sourcePath: 'mesh', sourceKey: 'box', publication },
+        ],
       }),
     );
     try {
-      const loaded = await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid));
+      const loaded = await registry.load(guid, 'mesh');
       if (corrupt)
         expect(loaded).toMatchObject({
           ok: false,
-          error: { code: 'asset-artifact-integrity-mismatch' },
+          error: { code: 'asset-integrity-failed' },
         });
       else {
-        const value = loaded.unwrap();
+        const value = registry.read(loaded.unwrap()).unwrap();
         expect(value.attributes.position).toEqual(mesh.attributes.position);
         expect(value.indices).toEqual(mesh.indices);
         expect(value.aabb).toEqual(mesh.aabb);

@@ -10,8 +10,12 @@ binding metadata only, never a device or GPU handle. Fog and temporal fields
 are transported through this existing module/reflection path rather than a
 second manifest or registry.
 
-The plugin publishes schema `4.0.0`: one fragment table, content-addressed source
-references and one shared ABI receipt table. `ShaderRegistry.loadManifest()`
+The plugin publishes schema `5.0.0`: one fragment table, content-addressed source
+references and shared ABI receipt and entry-read tables. Equal entry-read arrays
+are published once; direct entries, materials and variants retain their exact
+`entryPointsIndex`. Missing facts remain distinct from an empty read set. The
+reader validates every reference and owns one immutable copy per table row.
+The ordered-fragment source digest remains v4 because source identity is unchanged. `ShaderRegistry.loadManifest()`
 hashes each pooled UTF-8 fragment once, then checks each source's domain-separated
 digest of its ordered fragment hashes before validating every entry, variant and
 receipt for atomic admission. It never joins complete sources for verification;
@@ -20,6 +24,12 @@ identities share the requested string; ABI receipts are shared immutable facts.
 Failed validation leaves the registry unchanged. The runtime does not compile
 WGSL. Digest verification runs in bounded batches and never skips unselected
 sources. Older compact profiles must be rebuilt by their producer.
+
+Compiler-produced `entryPoints` remain immutable facts of each exact composed
+variant. Material receipts, private publication, manifest admission and device
+forks preserve them without loading unselected source strings. Runtime consumers
+may compare only fields read by the selected entries; a source without these
+facts uses conservative invalidation and never invokes the compiler.
 
 Native hosts supply `ShaderRegistryOptions.readText`; App/Renderer forward it as
 `BundlerOptions.readShaderManifest`. The reader returns complete text or rejects.
@@ -39,7 +49,13 @@ source rows use the same equality rule.
 Registries that fetch byte-identical manifest text from the same URL share one
 verified expansion, held weakly so it lives only while a registry retains it;
 renderer hosts that stay alive together therefore do not each hold a copy of
-every composed WGSL source. Changed text is parsed and verified again. GPU
+every composed WGSL source. The cache keeps a SHA-256 identity of the complete
+text, formed from ordered SHA-256 digests of fixed 256 KiB UTF-16 chunks, instead
+of retaining the wire JSON beside the admitted facts. Chunk hashing uses Web
+Crypto when available and the same fallback as source admission. This bounds
+temporary buffers and preserves native readers' unpaired surrogates. Each registry
+still reads the input; changed text is parsed
+and verified again. GPU
 prewarm may subsequently demand device-reachable variants; the admission memory
 budget does not claim that a complete renderer or GPU uses the same memory.
 
@@ -55,7 +71,10 @@ an undeclared backdrop sampler from single-source registrations, including conte
 program names; unknown binding expressions and shared variant layouts keep their
 conservative binding policy. Registrations, selected
 variants and material passes share it; `forkForDevice()` retains these CPU facts
-while GPU modules are rebuilt. New source selects a new description. The runtime
+while GPU modules are rebuilt. Reflected entry reads can complete a warmed description
+without rescanning its source. The registry owns that detached immutable contract;
+conflicting reads for the same source are rejected before shader publication, including
+contradictions between explicit reads and an ABI receipt. New source selects a new description. The runtime
 description retains the sampled user-region texture names too. Staged registration
 reuses these exact-source facts, while every schema still passes admission and
 the undeclared-texture check. No GPU work, failed schema or caller-supplied metadata
@@ -119,8 +138,10 @@ stable scene and material identities come from the selected visible item.
 
 The GPU-driven cull selects the LOD level and signed coverage per view and
 writes them into the visible item `vec4<u32>`: `x` is the GpuScene instance
-row, `y` the scene material row, `z` the skin palette base (0 for rigid), and
-`w` the bitcast signed coverage (zero keeps all samples). Scene-index vertex
+row, `y` the scene material row, `z` the view candidate row for every deformation,
+and `w` the bitcast signed coverage (zero keeps all samples). Skin entries read
+both palettes from `sceneInstances[visible.x].customDataStart`; the world-space
+palette receives no additional entity transform. Scene-index vertex
 stages resolve world, previous-world, temporal flags and probe identity through
 `forgeax_view::common::sceneIndexDraw(visible.x)`; there is no per-batch Mesh
 row. Standard's flat material-address varying carries coverage in its fourth
@@ -437,14 +458,21 @@ MaterialAsset. A texture value keeps its own `coordinates.set` and
 fragment sampling. The root contract is inherited by child materials; a child
 only supplies values it owns.
 
+Unlit selects native UV0–UV7 and applies the existing per-slot TRS through the
+shared coordinate kernel. Color, alpha coverage in shadow draws and temporal
+coverage use the same vertex coordinate. Matcap retains its view-derived lookup.
+This does not change the native transform convention or add an affine matrix.
+
 ```ts
 assets.configurePackIndex('/pack-index.json');
-const result = await assets.loadByGuid<MaterialAsset>(materialGuid);
+const result = await assets.load(materialGuid, 'material');
 if (!result.ok) {
   report(result.error.code, result.error.detail, result.error.hint);
   return;
 }
-const materialHandle = world.allocSharedRef('MaterialAsset', result.value);
+const materialHandle = result.value;
+// Bind directly to MeshRenderer.materials; release the caller reference after binding.
+const content = assets.read(materialHandle).unwrap(); // detached inspection only
 ```
 
 The custom-shader demo is the executable reference: [`apps/hello/custom-shader`](../../apps/hello/custom-shader). It loads the root and derived GUIDs, validates their cooked records, checks the manifest artifact, and only then draws.
@@ -590,7 +618,7 @@ same accessors. Consumers must not add a private velocity or G-buffer unpack,
 or import compiler, Naga, or backend policy into runtime shader code.
 
 The public render route supplies the semantic target; this package supplies the
-stable shader module identifier `SCENE_DATA_TEMPORAL_V1_SHADER_MODULE`. Layout,
+stable shader module `forgeax_scene_temporal`. Layout,
 clear values, invalid-depth handling, and reactive fallback remain owned by the
 shared accessor source.
 

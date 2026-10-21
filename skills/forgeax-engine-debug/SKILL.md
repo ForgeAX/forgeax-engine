@@ -12,6 +12,21 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For Three browser group timeouts, compare each complete native/reference/replay
+journey with its planner weight. Shadow/filter mutations, manual-update replay, loading, material-output,
+environment, transmission, output, rendering and texture comparisons must
+not fall back to the unknown-file five-second weight; follow
+[Browser gates](../../scripts/ci/README.md#browser-gates). Preserve cases, frames,
+pixel/replay assertions and deadlines when correcting scheduling estimates.
+The directional, point and spot shadow/filter journeys each own a separate
+Browser process through `shadow.fixture.ts`; run the corresponding
+`shadow-<kind>.browser.test.ts` owner rather than recombining their deadlines.
+The managed-material runtime pixel owner retains its original short case bound
+and uses the existing exclusive bootstrap process set to drain neighboring work.
+The complete 24-case Three material-output owner also drains neighboring Browser
+groups after run `39457755532` exhausted its original process bound beside a
+long GPU group. Keep its measured receipt, cases, pixels and deadlines intact.
+
 For View texture channels, source mip/slice or environment projection failures,
 run `tools/view-plugins/integration/verify-texture-preview.mjs` and inspect its
 PNG/pixel evidence under `artifacts/texture-preview`. It uses the real browser
@@ -105,6 +120,11 @@ For cold bundle preparation under coverage, verify that the tree-shake test
 forwards `FORGEAX_SHARED_APP_INPUTS_MANIFEST` to the maintained app builder.
 Keep the source-key admission and original timeout; repeated shader preparation
 inside the fixture is not a reason to widen its deadline.
+For direct-DFG manifest boot timeouts under coverage, retain the Renderer's
+ordinary shared/packaged manifest selection. The shader-owner producer test
+still forces source compilation; the boot consumer keeps JSON publication,
+fit/LUT and material-admission checks within its original deadline. See the
+[shader coverage preparation](../../scripts/ci/README.md#build-inputs).
 If Windows Rapier preparation stalls after compilation, inspect the declaration
 producer and its exact tsup entry; retain the real junction-mounted regression in
 `scripts/__tests__/rapier-wasm-declarations.test.mjs` before rebuilding the payload.
@@ -127,6 +147,9 @@ Keep the actual failed frame and distinguish Browser evidence from diagnostic
 Dawn replay. Separate Catalog preparation, payload decoding and completed-frame
 readiness before assigning a renderer cause. Source-byte reuse must retain digest
 and size admission; a faster decoder alone does not qualify startup.
+If a template smoke inherits on-demand production, inspect its owned Vite child's
+readiness policy: native imports belong to the existing before-consume Catalog
+barrier, before browser admission. Preserve the browser and completion deadlines.
 
 For SDK contracts that cannot import built Engine subpaths on a clean runner,
 inspect [build inputs](../../scripts/ci/README.md#build-inputs) and the seed's
@@ -166,6 +189,22 @@ and transport budget. For Topology Browser failures, read
 `artifacts/ci-focus/topology/failure.json`: Catalog startup belongs to its named
 producer; frame or PNG failures use RHI Debug. Follow [failure recovery](../../scripts/ci/README.md#failure-recovery)
 and retain the original oracle and timeout.
+
+For an oversized Three feature Browser file, keep the shared feature callback
+and its initial/edited captures intact, then inspect all four partition entries
+and the external-texture file. Refresh their existing Browser cost-table entries
+from complete successful children, including startup/cleanup, so normal grouping
+does not recreate the timeout. Label local timing separately from CI receipts;
+retain the 120-second case and 300-second process deadlines.
+For a Dawn lane canceled at the job deadline, inspect complete process receipts
+and exact file rosters before refreshing `dawn-file-seconds.json`. An interrupted
+owner contributes no completion sample. Keep the four-lane sequencer and original
+native deadlines; a cost refresh alone is not proof of a faster complete gate.
+For a cold Preview capture interrupted by Vite `full-reload`, inspect optimizer
+logs for late dependencies. A literal dynamic import remains eligible for Vite
+pretransform even with `@vite-ignore`; Node-only transports must load only on
+their native execution path. Preserve native remote-server and real cold-browser
+regressions when correcting that boundary.
 
 For Dawn partition roster drift, compare actual Vitest titles with the
 case-sensitive patterns in `scripts/ci/run-dawn-partitions.mjs`. VFX depth's
@@ -207,6 +246,11 @@ trace any `render-system-no-camera` event to the renderer owner. Template Browse
 smokes reject that event rather than exempting empty scenes from console checks.
 
 ## CI diagnosis and iteration
+
+For `check-no-assets-load`, inspect the named Pack production dependency.
+`AssetRegistry.load` is the supported game runtime API; the guard belongs to
+Pack's offline source/evidence boundary. Keep runtime imports out of Pack and
+retain the executable allowed-game/rejected-Pack regression cases.
 
 For a manual run that rejects evidence already on the PR target branch, inspect
 the guard's comparison base. Follow [manual CI comparison base](../../scripts/ci/README.md#manual-ci-comparison-base)
@@ -258,23 +302,42 @@ The suite deliberately retains representative core coverage. Keep unique browser
 transport, Worker, media and recovery cases; shared numerical fixtures can have
 one real-backend owner. Do not restore deleted duplicate tests or historical
 scheduling guards just to reproduce the former inventory.
-For a Dawn job cancelled after native process PASS, inspect its job annotation,
-complete owner costs and runner variation through the [Dawn cost table](../../scripts/ci/README.md#dawn-gates).
+For a Dawn job cancelled at its 27-minute limit during or after native execution,
+inspect the job annotation, complete owner costs and runner variation through the [Dawn cost table](../../scripts/ci/README.md#dawn-gates).
 Preserve the cancelled receipt and qualify the refreshed placement with full final-head CI.
+If a full-lane retry of the same head hits the same deadline, refresh completed
+file and owner costs before another attempt; do not attribute the repeated delay
+to transient contention without evidence.
 Refresh the existing file/owner table from multiple completed native rosters.
 For a cancelled run, admit only individually completed owners and ordinary-file
 receipts; never treat a partial owner or an unstarted tail as complete. Retain
-per-file observation counts in the investigation artifact: three observations
-use their median, one or two use their largest observed cost, and unobserved
-files keep the sequencer's conservative fallback. Include each ordinary file's
+per-file observation provenance in the investigation artifact. For a deadline
+recovery, retain the larger of the inherited forecast and each newly completed
+observation; unobserved files keep the sequencer's conservative fallback. Include each ordinary file's
 share of native process overhead and each fixed owner's complete child-process
-and cleanup costs. Ordinary work automatically moves when costs change. Replay
+and cleanup costs. Nearly equal file counts can hide unequal work when many
+new files receive the maximum-file fallback. Report measured-cost coverage
+alongside the replay before attributing the entire delay to runner variation.
+A completed ordinary process from a cancelled job remains a cost observation;
+the interrupted owner and unstarted tail do not. Verify complete file identity
+when a process-start line is absent before admitting an emitted file set.
+When a completed file within an interrupted owner already exceeds that owner's
+reservation, the old forecast is disproven even though no new complete duration
+exists. The CI guide documents a reservation estimate using that file's slowdown
+against complete matching rosters. Keep the estimate, its assumption and original
+failure separate from measured owner durations; full final-head CI remains required.
+Ordinary work automatically moves when costs change. Replay
 actual current discovery across all four lanes before moving complete groups,
 show missing historical costs as forecasts, and keep job setup and runner
 variation separate from new CI measurements. Preserve all four jobs, the
 27-minute deadline, frame windows and backend assertions. When upstream removes
 duplicate wrappers, reconcile explicit owners against actual discovery and remap
 heavy-group cost samples by file identity rather than their old numeric labels.
+If a new complete observation exceeds its existing forecast while other lanes
+finish early, replay the actual current discovery with the conservative maximum
+before moving complete owners. A single heterogeneous-runner observation cannot
+justify lowering costs. Keep interrupted owners on their historical forecasts;
+report those unmeasured tails separately and require a complete final-head run.
 Account for complete transmission, shadow, Screen Probe and multi-view GI owners
 rather than concentrating their serial native processes on one lane. Separate
 Surface, VFX depth and Direct Light too; updated ordinary costs must share that
@@ -362,6 +425,10 @@ transport. Reproduce with the owning package or `pnpm ci:focus`. Keep the real
 backend and failure assertion. Fix the owner, run its relevant checks, then
 qualify complete CI and SDK on the final commit. Retained 60-frame smokes, pixel
 thresholds, negative controls and coverage thresholds remain unchanged.
+For FBX skin exit 139 after a logged pass, inspect the standalone smoke's native
+teardown. Retire Renderer, World context and its offscreen target, then drain the
+shared Dawn owner before the receipt. Verify both the real 60-frame smoke and
+`FALSIFY=static`; a local non-reproduction does not qualify the failed CI job.
 
 Missing outputs require [source build or verified producer artifacts](../../scripts/ci/README.md#cross-platform-host-build-inputs).
 CI artifact consumers restore and verify first; only a real source-build miss
@@ -472,6 +539,10 @@ SDK package verification owns the default production build; the custom-base
 empty-project build retains direct CLI coverage. Do not rebuild the same unchanged
 project immediately before packaging it.
 For SDK subprocess failures, run `pnpm test:sdk:contracts` before the installed consumers.
+For npm-consumer `ERR_HTTP_HEADERS_SENT`, inspect the upstream body read before
+response headers are committed. The SDK registry regression in `sdk-lib.test.mjs`
+executes the build, preflight and publication listeners against an interrupted
+HTTP response; preserve the 502 outcome and the next successful request.
 For SDK packing, compare the shared archive writer's compression time and bytes;
 its deterministic level 6 policy is shared by every npm carrier. Source build
 work is serial and uses ordinary process priority inside the Runner's cgroup.
@@ -510,13 +581,20 @@ monotonic clock and restart it on new errors within the existing five-second
 bound. Nine-light uses the existing exclusive Browser admission. Boss Lightning's
 baseline/field and SDF commands keep separate Smoke receipt owners. See the
 CI guide's Browser and managed VFX sections for these shared boundaries.
-Full SDK Candidate consumers wait for source-producing jobs and run sequentially;
-retain their full-scene profile window and require a complete seal. An isolated
-consumer pass cannot qualify Promotion.
+Full SDK Candidate retains four parallel consumer owners after source-producing
+jobs; retain their full-scene profile window and require a complete seal. An
+isolated consumer pass cannot qualify Promotion. For npm visibility or publication
+transport failure, follow [SDK release recovery](../../scripts/ci/README.md#sdk-candidate-critical-path):
+rerun failed jobs in the completed Promotion instead of repeating successful
+qualification and publication jobs. Distinguish submitted/staged npm bytes from
+public metadata, exact tarball bytes and the fresh-consumer result.
 For Candidate seed transport failures before verification, follow the
 [SDK consumer guide](../../scripts/ci/README.md#sdk-consumers): reuse the bounded
-downloader, keep exact artifact counts and source/byte checks, and qualify a new
-complete Candidate. An unsealed failed run is never publication authority.
+downloader and keep exact artifact counts and source/byte checks. Retry failed
+jobs only while the unchanged-source run's required artifacts remain complete;
+source repairs, expired inputs or a cancelled run need a new Candidate. Retained
+failed-run artifacts never authorize Promotion: the controller requires a
+successful completed Candidate as well as the complete seal.
 
 For an external transport-only failure, rerun failed jobs only. A passing test
 prefix, cancelled tail or missing artifact is not success. Compare measured job

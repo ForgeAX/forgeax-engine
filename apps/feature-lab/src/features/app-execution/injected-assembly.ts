@@ -1,10 +1,12 @@
 import { createApp } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { FixedTime, FixedUpdate, Update, World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { createBrowserPlatform } from '@forgeax/engine/platform-browser';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { createRenderer } from '@forgeax/engine/runtime';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -22,8 +24,14 @@ export default defineFeature({
   expect:
     'All checks pass: the assembled App returns the same World/Renderer, keeps fixedDeltaSeconds=1/120, runs the plugin, and submits frames.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.6, 0.3, 0.9, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.6, 0.3, 0.9, 1] }), {
       pos: [0, 0.5, 0],
     });
     let memo: Promise<readonly { name: string; ok: boolean; detail?: string }[]> | undefined;

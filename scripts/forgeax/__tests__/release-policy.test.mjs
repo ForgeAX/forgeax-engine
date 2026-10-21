@@ -8,9 +8,37 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   assertChannelAdvance,
   assertReleaseSource,
+  assertSuccessfulCandidateRun,
   developmentVersion,
   releasePolicy,
 } from '../release-policy.mjs';
+
+test('retained failed or active Candidate artifacts never authorize Promotion', () => {
+  const run = {
+    id: 123,
+    path: '.github/workflows/sdk-release-candidate.yml',
+    status: 'completed',
+    conclusion: 'success',
+  };
+  assert.doesNotThrow(() => assertSuccessfulCandidateRun(run, '123'));
+  for (const change of [
+    { id: 124 },
+    { path: '.github/workflows/ci.yml' },
+    { status: 'in_progress' },
+    { status: 'queued' },
+    { conclusion: 'failure' },
+    { conclusion: 'cancelled' },
+    { conclusion: null },
+  ])
+    assert.throws(
+      () => assertSuccessfulCandidateRun({ ...run, ...change }, '123'),
+      /release-candidate-run-not-successful/,
+    );
+  assert.throws(
+    () => assertSuccessfulCandidateRun(undefined, '123'),
+    /release-candidate-run-not-successful/,
+  );
+});
 
 test('stable and development identities select disjoint branch and tag policies', () => {
   assert.deepEqual(releasePolicy('0.4.1'), { channel: 'stable', branch: 'stable', tag: 'latest' });

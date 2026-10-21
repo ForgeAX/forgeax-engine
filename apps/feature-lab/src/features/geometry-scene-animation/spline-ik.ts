@@ -1,5 +1,6 @@
 import { animationPlugin } from '@forgeax/engine/animation';
 import { SplineIK, splineIKPlugin } from '@forgeax/engine/animation/spline-ik';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
 import { SceneInstance } from '@forgeax/engine/render';
 import {
@@ -22,6 +23,10 @@ export default defineFeature({
     'The straight +X path places joints at x=0,1,2,3. Zero weight and disabling restore z=0,1,2,3, and re-enabling returns to +X without accumulating deformation. These pose checks are independent of the separate native Skin and RHI gates.',
   async run(checks) {
     const world = new World();
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const instanceLease = world.components.register(SceneInstance).unwrap();
     const context = await createWorldContext(world, [
       scenePlugin(),
@@ -59,10 +64,7 @@ export default defineFeature({
         },
       },
     };
-    const handle = world.allocSharedRef(
-      'SceneAsset',
-      JSON.parse(JSON.stringify(source)) as SceneAsset,
-    );
+    const handle = sceneAssets.create(JSON.parse(JSON.stringify(source)) as SceneAsset).unwrap();
     const instance = worldInstantiateSceneFlat(world, handle).unwrap();
     try {
       const controller = [...world.query({ read: [SplineIK] }).unwrap()][0]?.entity;

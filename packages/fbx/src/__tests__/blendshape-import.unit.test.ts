@@ -1,5 +1,6 @@
 import type { MeshPod } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { parseAnimationClips } from '../parse-animation-clip.js';
 import { type FbxRawMesh, parseMesh } from '../parse-mesh.js';
 import { buildMeshAsset } from '../to-asset-pack.js';
@@ -38,10 +39,7 @@ describe('FBX BlendShape morph projection', () => {
       readonly morphWeights?: Float32Array;
     };
     const asset = buildMeshAsset(pod, 'fbx-morph-guid');
-    const mesh = asset.payload as {
-      morphTargets?: readonly { readonly position?: Float32Array }[];
-      morphWeights?: Float32Array;
-    };
+    const mesh = importedMesh(asset);
     expect(mesh.morphTargets?.[0]?.position?.[3]).toBeCloseTo(0.25);
     expect(Array.from(mesh.morphWeights ?? [])).toEqual([0.5]);
   });

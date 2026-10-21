@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { parseScenePayload, resolveSceneComponentFields } from '../scene-payload';
 
 const Custom = defineComponent('SceneWireCustom', {
-  arbitrary: 'shared<MeshAsset>',
-  items: 'array<shared<MeshAsset>>',
-  fixed: 'array<shared<MeshAsset>, 2>',
+  arbitrary: 'asset<mesh>',
+  items: 'array<asset<mesh>>',
+  fixed: 'array<asset<mesh>, 2>',
   index: 'u32',
   density: 'f32',
   material: 'string',

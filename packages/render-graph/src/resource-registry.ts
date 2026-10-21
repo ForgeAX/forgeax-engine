@@ -56,9 +56,14 @@ export class ResourceRegistry {
   private readonly resources = new Map<string, ResourceEntry>();
 
   add(key: string, descriptor: ResourceDescriptor): Result<ResourceEntry, RenderGraphError> {
+    const { kind, lifetime, bufferRole } = descriptor;
     const entry: ResourceEntry = {
       key,
-      descriptor,
+      descriptor: Object.freeze({
+        kind,
+        lifetime,
+        ...(bufferRole === undefined ? {} : { bufferRole }),
+      }),
     };
     return this.register(entry);
   }
@@ -72,18 +77,18 @@ export class ResourceRegistry {
     name: string,
     desc: ColorTargetDescriptor,
   ): Result<ResourceEntry, RenderGraphError> {
-    const lifetime = desc.lifetime ?? 'transient';
-    const colorTargetMeta: ColorTargetResourceMeta = {
-      format: desc.format,
-      size: desc.size,
-      sample: desc.sample ?? 1,
-      usage: desc.usage ?? 0x10 | 0x04, // RENDER_ATTACHMENT | TEXTURE_BINDING
-      ...(desc.domain !== undefined ? { domain: desc.domain } : {}),
-      ...(desc.viewFormats !== undefined ? { viewFormats: desc.viewFormats } : {}),
-    };
+    const { format, size, lifetime, sample, usage, domain, viewFormats } = desc;
+    const colorTargetMeta: ColorTargetResourceMeta = Object.freeze({
+      format,
+      size: typeof size === 'string' ? size : Object.freeze({ w: size.w, h: size.h }),
+      sample: sample ?? 1,
+      usage: usage ?? 0x10 | 0x04, // RENDER_ATTACHMENT | TEXTURE_BINDING by default
+      ...(domain === undefined ? {} : { domain }),
+      ...(viewFormats === undefined ? {} : { viewFormats: Object.freeze([...viewFormats]) }),
+    });
     const entry: ResourceEntry = {
       key: name,
-      descriptor: { kind: 'texture', lifetime },
+      descriptor: { kind: 'texture', lifetime: lifetime ?? 'transient' },
       colorTarget: colorTargetMeta,
     };
     return this.register(entry);
@@ -129,6 +134,8 @@ export class ResourceRegistry {
 
   private register(entry: ResourceEntry): Result<ResourceEntry, RenderGraphError> {
     if (this.resources.has(entry.key)) return this.duplicateResource(entry.key);
+    Object.freeze(entry.descriptor);
+    Object.freeze(entry);
     this.resources.set(entry.key, entry);
     return ok(entry);
   }

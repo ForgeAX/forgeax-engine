@@ -143,7 +143,7 @@ When a producer already owns an independent prepared representation, use the
 published root's geometry-read capability rather than retaining a complete
 render Asset solely as processing input. Count actual recursive default
 references separately from author overrides and explicit ground preloads.
-Preserve ordinary `loadByGuid` readiness, artifact validation and invalidation
+Preserve ordinary `load(guid, kind)` readiness, artifact validation and invalidation
 fences. `invalidate` changes publication authority; it is not a safe memory
 eviction operation. The [source-read case](cases/full-scene-resources-20261016.md#decoded-source-roots-and-render-readiness)
 records the public API, full producer proof and measured limits.

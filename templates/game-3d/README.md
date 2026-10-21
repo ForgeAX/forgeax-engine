@@ -133,8 +133,30 @@ from source. The scene binds the same GUID to `SkyboxBackground` and `Skylight`,
 so the blue daylight background and PBR environment lighting share one authored
 image. The generator includes a broad circumsolar response and subdued ground
 bounce; the single `DirectionalLight` owns direct sunlight. Its intensity is
-3.2, with 0.92 exposure and ACES Filmic output. These values belong to this
+3.2, with the default exposure of 1 and ACES Filmic output. These values belong to this
 artistic environment; they are not a physical Atmosphere's lux/exposure preset.
+
+The sun explicitly caps `shadowDistance` at 56 meters for the 28-meter showcase
+and its third-person camera. The camera keeps its general far-plane default;
+shadow coverage is a separate scene choice. Inheriting that 2000-meter range
+spreads the cascades too thinly and loses contact shadows. Filter, cascade count,
+resolution and bias keep the Engine defaults. When enlarging a game, tune shadow
+coverage to its visible content instead of extending it to the camera far plane
+automatically.
+
+To tune sunlight in View, select `assets/scene.pack.ts` in the Content Browser
+and open **Parameters → Runtime**. `sunColor` is a linear RGB vector and
+`sunIntensity` ranges from 0 to 10. Both update the existing `Sun` immediately;
+they do not require **Generate**. **Save** writes their defaults back to
+`scene.pack.ts`; before saving, edits remain in memory. The bound fields also
+appear in the Sun's `DirectionalLight` Inspector. View detects parameter
+declarations added to this source while the project is open.
+
+To expose another field, select it in Inspector and choose **Expose**. The Agent
+reference includes its source, reflected type and exact binding path. Follow the
+[installed Pack parameter recipe](skills/forgeax-engine-assets/SKILL.md#view-pack-parameters)
+and check this source with `forgeax asset inspect assets/scene.pack.ts --parameters-only --json`.
+This check does not generate assets; verify the live effect in View separately.
 
 ```mermaid
 flowchart LR
@@ -166,7 +188,7 @@ The build and runtime route is one ownership chain:
 
 ```text
 WGSL source + Pack values -> importer/cooker -> DDC payload + pack-index
-  -> catalog -> assets.loadByGuid(materialGuid)
+  -> catalog -> assets.load(materialGuid, 'material')
 ```
 
 The cooker resolves the imported module and the Engine derives the pass family

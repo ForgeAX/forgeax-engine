@@ -39,11 +39,10 @@ describe('Fog component contract', () => {
         },
       ],
       suns: [],
-      lane: 'direct',
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe('environment-selection-invalid');
+    if (result.error.code !== 'environment-selection-invalid') throw result.error;
     expect(result.error.detail.field).toContain(field);
     expect(result.error.expected).toContain('finite');
     expect(result.error.hint).toContain(field);
@@ -57,7 +56,6 @@ describe('Fog component contract', () => {
         { entityKey: 3, color: [0.4, 0.3, 0.2], density: 0.02, heightFalloff: 0, maxOpacity: 1 },
       ],
       suns: [],
-      lane: 'direct',
     });
     expect(result).toMatchObject({
       ok: false,

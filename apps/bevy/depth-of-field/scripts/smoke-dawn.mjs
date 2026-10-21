@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless Dawn smoke for Bevy depth_of_field.
 // The effect-off/on pair falsifies a depth-independent fullscreen blur.
@@ -97,7 +99,9 @@ const effect = createFullscreenRenderFeature({
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, { features: [effect] }, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, { features: [effect] }, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (error) {
   console.error(`[smoke] FAIL - createRenderer threw: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -106,7 +110,7 @@ try {
 }
 subscribeSmokeErrors(renderer, (error) => errors.push({ code: error.code, hint: error.hint, detail: error.detail }));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const scene = buildDepthOfFieldWorld(world, width / height);

@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
@@ -23,6 +23,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from './helpers/runtime-assets';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -61,12 +62,19 @@ export async function verifyOutline(
       },
     })
     .unwrap();
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.15, 0.15, 0.15, 1]));
+  const material = testAssets(world)
+    .create(Materials.unlit([0.15, 0.15, 0.15, 1]))
+    .unwrap();
   const box = (x: number, z: number, scale: readonly [number, number, number]) =>
     world
       .spawn(
         { component: Transform, data: { pos: [x, 0, z], scale } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -193,17 +201,15 @@ export async function verifyOutline(
     const switched = await observe('switched');
     expect(switched.counts.visible).toBeGreaterThan(0);
     expect(switched.counts.hidden).toBe(0);
-    const cutout = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([0.15, 0.15, 0.15, 0], { alphaCutoff: 0.5 }),
-    );
+    const cutout = testAssets(world)
+      .create(Materials.unlit([0.15, 0.15, 0.15, 0], { alphaCutoff: 0.5 }))
+      .unwrap();
     world.set(other, MeshRenderer, { materials: [cutout] }).unwrap();
     await draw();
     expect((await observe('cutout')).counts).toEqual({ visible: 0, hidden: 0 });
-    const pbr = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.15, 0.15, 0.15, 1] }),
-    );
+    const pbr = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.15, 0.15, 0.15, 1] }))
+      .unwrap();
     world.set(other, MeshRenderer, { materials: [pbr] }).unwrap();
     await draw();
     expect((await observe('pbr')).counts.visible).toBeGreaterThan(0);

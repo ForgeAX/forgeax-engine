@@ -3,17 +3,17 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveAnimationAsset } from '@forgeax/engine-animation';
-import { createAssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { borrowAudioClip } from '@forgeax/engine-audio/internal';
 import { createHostAudioConsumer, WebAudioEngine } from '@forgeax/engine-audio-webaudio';
 import { World } from '@forgeax/engine-ecs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
-import { resolveTilesetRuntime } from '@forgeax/engine-render/internal';
 import { defaultAssetDecoderContributions } from '@forgeax/engine-runtime';
 import {
   type Asset,
+  type BuiltinAssetKind,
   createStandaloneRuntimeAssetBinding,
   type PackIndexEntry,
   type ParticleEffectAsset,
@@ -527,7 +527,7 @@ describe.sequential('ScriptablePack Vite publication', () => {
           if (body === undefined) throw new Error(`missing emitted production asset: ${path}`);
           return new Response(typeof body === 'string' ? body : Buffer.from(body), { status: 200 });
         };
-        const registry = createAssetRegistry({
+        const registry = new AssetRegistry({
           catalog: createCatalogSource({ entries: index }),
           fetcher: globalThis.fetch,
         });
@@ -535,29 +535,33 @@ describe.sequential('ScriptablePack Vite publication', () => {
           if (contribution.kind.kind === 'particle-effect') continue;
           registry.installDecoder(contribution.kind as never, contribution.decoder);
         }
-        const vfxWorld = new World();
+        const vfxWorld = new World({ assets: registry });
         const vfxHost = createVfxRuntimeHost({ camera: { read: () => undefined } });
         expect(await vfxHost.attachWorld({ world: vfxWorld, assets: registry })).toMatchObject({
           ok: true,
           value: { state: 'attached' },
         });
+        const loadPayload = async <K extends BuiltinAssetKind>(guid: string, kind: K) => {
+          const loaded = await registry.load(guid, kind);
+          return loaded.ok ? registry.read(loaded.value) : loaded;
+        };
         const loadResults = await Promise.all([
-          registry.load(ALL_KIND_GUIDS.mesh, 'mesh'),
-          registry.load(ALL_KIND_GUIDS.material, 'material'),
-          registry.load(ALL_KIND_GUIDS.scene, 'scene'),
-          registry.load(ALL_KIND_GUIDS.texture, 'texture'),
-          registry.load(ALL_KIND_GUIDS.equirect, 'equirect'),
-          registry.load(ALL_KIND_GUIDS.sampler, 'sampler'),
-          registry.load(ALL_KIND_GUIDS.font, 'font'),
-          registry.load(ALL_KIND_GUIDS['render-pipeline'], 'render-pipeline'),
-          registry.load(ALL_KIND_GUIDS.tileset, 'tileset'),
-          registry.load(ALL_KIND_GUIDS.video, 'video'),
-          registry.load(ALL_KIND_GUIDS.skeleton, 'skeleton'),
-          registry.load(ALL_KIND_GUIDS.skin, 'skin'),
-          registry.load(ALL_KIND_GUIDS['animation-clip'], 'animation-clip'),
-          registry.load(ALL_KIND_GUIDS['animation-graph'], 'animation-graph'),
-          registry.load(ALL_KIND_GUIDS.audio, 'audio'),
-          loadVfxGpuEffect(registry, ALL_KIND_GUIDS['particle-effect']),
+          loadPayload(ALL_KIND_GUIDS.mesh, 'mesh'),
+          loadPayload(ALL_KIND_GUIDS.material, 'material'),
+          loadPayload(ALL_KIND_GUIDS.scene, 'scene'),
+          loadPayload(ALL_KIND_GUIDS.texture, 'texture'),
+          loadPayload(ALL_KIND_GUIDS.equirect, 'equirect'),
+          loadPayload(ALL_KIND_GUIDS.sampler, 'sampler'),
+          loadPayload(ALL_KIND_GUIDS.font, 'font'),
+          loadPayload(ALL_KIND_GUIDS['render-pipeline'], 'render-pipeline'),
+          loadPayload(ALL_KIND_GUIDS.tileset, 'tileset'),
+          loadPayload(ALL_KIND_GUIDS.video, 'video'),
+          loadPayload(ALL_KIND_GUIDS.skeleton, 'skeleton'),
+          loadPayload(ALL_KIND_GUIDS.skin, 'skin'),
+          loadPayload(ALL_KIND_GUIDS['animation-clip'], 'animation-clip'),
+          loadPayload(ALL_KIND_GUIDS['animation-graph'], 'animation-graph'),
+          loadPayload(ALL_KIND_GUIDS.audio, 'audio'),
+          loadPayload(ALL_KIND_GUIDS['particle-effect'], 'particle-effect'),
         ]);
         const [
           ,
@@ -589,8 +593,13 @@ describe.sequential('ScriptablePack Vite publication', () => {
           if (kind === undefined) throw new Error(`missing test kind at index ${index}`);
           loadedAssets.set(ALL_KIND_GUIDS[kind].toLowerCase(), result.value);
         }
-        const lookup = (guid: string): Asset | undefined => loadedAssets.get(guid.toLowerCase());
-        const loadedParticle = await loadVfxGpuEffect(registry, ALL_KIND_GUIDS['particle-effect']);
+        const loadedParticleHandle = await loadVfxGpuEffect(
+          registry,
+          ALL_KIND_GUIDS['particle-effect'],
+        );
+        const loadedParticle = loadedParticleHandle.ok
+          ? registry.read(loadedParticleHandle.value)
+          : loadedParticleHandle;
         expect(loadedParticle).toMatchObject({ ok: true, value: { kind: 'particle-effect' } });
         if (loadedParticle.ok) {
           expect(loadedParticle.value.program.emitters[0]?.wgsl).toContain('@compute');
@@ -601,42 +610,21 @@ describe.sequential('ScriptablePack Vite publication', () => {
         if (!animationClipResult.ok || !animationGraphResult.ok) {
           throw new Error('animation assets did not load');
         }
-        const animationWorld = new World();
-        const resolvedClip = resolveAnimationAsset(
-          animationWorld,
-          ALL_KIND_GUIDS['animation-clip'],
-          'animation-clip',
-          lookup,
-        );
-        const resolvedGraph = resolveAnimationAsset(
-          animationWorld,
-          ALL_KIND_GUIDS['animation-graph'],
-          'animation-graph',
-          lookup,
-        );
-        expect(resolvedClip).toMatchObject({
-          ok: true,
-          value: { asset: { kind: 'animation-clip' } },
-        });
-        expect(resolvedGraph).toMatchObject({
-          ok: true,
-          value: { asset: { kind: 'animation-graph' } },
-        });
+        expect(animationClipResult.value.kind).toBe('animation-clip');
+        expect(animationGraphResult.value.kind).toBe('animation-graph');
         const firstGraphNode = animationGraphResult.value.nodes[0];
         expect(firstGraphNode?.type).toBe('clip');
         if (firstGraphNode?.type === 'clip') {
-          expect(firstGraphNode.clip).toBe(ALL_KIND_GUIDS['animation-clip']);
+          expect(firstGraphNode.clip).toBe(
+            (await registry.load(ALL_KIND_GUIDS['animation-clip'], 'animation-clip')).unwrap(),
+          );
         }
 
         if (!tilesetResult.ok) throw new Error('tileset asset did not load');
-        const atlasGuid = tilesetResult.value.atlases[0];
-        if (atlasGuid === undefined) throw new Error('tileset fixture has no atlas');
-        const tileWorld = new World();
-        const resolvedTileset = resolveTilesetRuntime(tileWorld, atlasGuid, lookup);
-        expect(resolvedTileset).toMatchObject({
-          ok: true,
-          value: { payload: { kind: 'texture' } },
-        });
+        const atlasHandle = tilesetResult.value.atlases[0];
+        if (typeof atlasHandle !== 'number')
+          throw new Error('Tileset atlas was not linked at admission');
+        expect(registry.read(atlasHandle)).toMatchObject({ ok: true, value: { kind: 'texture' } });
 
         if (!audioResult.ok) throw new Error('audio asset did not load');
         const audioEngine = new WebAudioEngine();
@@ -645,6 +633,10 @@ describe.sequential('ScriptablePack Vite publication', () => {
         const audioConsumer = createHostAudioConsumer(audioEngine);
         audioConsumer.consume({
           kind: 'play',
+          asset: borrowAudioClip(
+            registry,
+            (await registry.load(ALL_KIND_GUIDS.audio, 'audio')).unwrap(),
+          ).identity,
           entityId: 1,
           sourceKey: audioResult.value.sourceKey,
           ...(audioResult.value.bytes
@@ -663,7 +655,9 @@ describe.sequential('ScriptablePack Vite publication', () => {
         audioConsumer.dispose();
 
         if (!particleResult.ok) throw new Error('particle-effect asset did not load');
-        const effect = vfxWorld.allocSharedRef('ParticleEffectAsset', particleResult.value);
+        const effect = (
+          await registry.load(ALL_KIND_GUIDS['particle-effect'], 'particle-effect')
+        ).unwrap();
         const player = vfxWorld
           .spawn({
             component: ParticleEffectPlayer,

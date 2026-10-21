@@ -1,9 +1,9 @@
 import { createMaterialProgramSetDigest } from '@forgeax/engine-pack';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
-import { loadMaterialReadyByGuid } from '../registry/load-by-guid.js';
+import { runtimeAssets } from '../internal/runtime-assets';
 import { materialProductionFixture as publication } from './fixtures/material-production.js';
 import { MATERIAL_CONTEXT, materialRecordFixture } from './fixtures/material-publication.js';
 
@@ -32,7 +32,8 @@ async function withPublication<T>(
     } as never,
   });
   try {
-    const registry = new AssetRegistry(shaders);
+    const registry = new AssetRegistry({ shaderRegistry: shaders });
+    registry.installDecoder(materialContribution.kind, materialContribution.decoder);
     registry.configurePackIndex('/pack-index.json');
     return await run(registry, shaders, fetcher);
   } finally {
@@ -42,10 +43,15 @@ async function withPublication<T>(
 
 async function load(fixture: Awaited<ReturnType<typeof publication>>) {
   return withPublication(fixture, async (registry, shaders) => {
-    const guid = AssetGuid.parse(fixture.record.guid);
-    if (!guid.ok) throw guid.error;
-    const loaded = await registry.loadByGuid(guid.value);
-    return { loaded, readiness: registry.getMaterialReadiness(fixture.record.guid), shaders };
+    const loaded = await registry.load(fixture.record.guid, 'material');
+    const projection = loaded.ok
+      ? registry.getMaterialProjectionForPayload(
+          runtimeAssets(registry)
+            .borrow<import('@forgeax/engine-types').MaterialAsset>(loaded.value)
+            .unwrap(),
+        )
+      : undefined;
+    return { loaded, projection, shaders };
   });
 }
 
@@ -58,9 +64,8 @@ it('publishes external-only material programs and restores the original verified
   ]);
   const result = await load(fixture);
   expect(result.loaded).toMatchObject({ ok: true });
-  expect(result.readiness).toMatchObject({
-    status: 'Ready',
-    artifactDigest: fixture.record.artifactDigest,
+  expect(result.projection).toMatchObject({
+    artifactHash: fixture.record.artifactDigest,
   });
   for (const program of fixture.record.programs)
     expect(result.shaders.findMaterialArtifact(program.specializationKey)).toMatchObject({
@@ -73,28 +78,14 @@ it('hydrates a compact record only from the external validated shader artifact',
   const fixture = await publication();
   for (const program of fixture.pack.assets[0].payload.cooked.programs)
     delete program.artifact.bytes;
-  expect((await load(fixture)).readiness).toMatchObject({ status: 'Ready' });
+  expect((await load(fixture)).loaded).toMatchObject({ ok: true });
 });
 
-it.each([
-  'loadByGuid',
-  'loadMaterialReadyByGuid',
-] as const)('hashes the complete hydrated program manifest once through %s', async (entry) => {
+it('hashes the complete hydrated program manifest once during asset admission', async () => {
   const fixture = await publication();
   const encode = vi.spyOn(TextEncoder.prototype, 'encode');
   try {
-    if (entry === 'loadByGuid') {
-      expect((await load(fixture)).readiness).toMatchObject({ status: 'Ready' });
-    } else {
-      await withPublication(fixture, async (registry) => {
-        expect(
-          await loadMaterialReadyByGuid(registry, {
-            guid: fixture.record.guid,
-            specializationKey: fixture.record.specializationKey,
-          }),
-        ).toMatchObject({ status: 'Ready' });
-      });
-    }
+    expect((await load(fixture)).loaded).toMatchObject({ ok: true });
     const manifests = encode.mock.calls.filter(([input]) => {
       if (!input?.startsWith('{')) return false;
       const value = JSON.parse(input);
@@ -112,17 +103,21 @@ it('rejects the record schema before checking its program digest or installing s
   cooked.schemaVersion = 'material-cook/invalid';
   cooked.programs[0].artifact.digest = `sha256:${'0'.repeat(64)}`;
   const result = await load(fixture);
-  expect(result.loaded).toMatchObject({ ok: true });
-  expect(result.readiness).toMatchObject({
-    status: 'Error',
-    error: { code: 'material-cook-record-invalid', detail: { field: 'schemaVersion' } },
+  expect(result.loaded).toMatchObject({
+    ok: false,
+    error: {
+      code: 'asset-decode-failed',
+      detail: {
+        cause: { code: 'material-cook-record-invalid', detail: { field: 'schemaVersion' } },
+      },
+    },
   });
   expect(result.shaders.findMaterialArtifact(fixture.firstProgram.specializationKey).ok).toBe(
     false,
   );
 });
 
-it('independently verifies the material digest after the external descriptor accepts its bytes', async () => {
+it('rejects a material digest that differs from its verified external descriptor', async () => {
   const fixture = await publication();
   const cooked = fixture.pack.assets[0].payload.cooked;
   const program = cooked.programs[0];
@@ -130,16 +125,11 @@ it('independently verifies the material digest after the external descriptor acc
   cooked.artifactDigest = createMaterialProgramSetDigest(cooked.programs, cooked.resolved.passes);
   cooked.receipt.identity.artifactDigest = cooked.artifactDigest;
   const result = await load(fixture);
-  expect(result.loaded).toMatchObject({ ok: true });
-  expect(result.readiness).toMatchObject({
-    status: 'Error',
+  expect(result.loaded).toMatchObject({
+    ok: false,
     error: {
-      code: 'asset-artifact-integrity-mismatch',
-      detail: {
-        field: program.artifact.path,
-        expected: program.artifact.digest,
-        actual: fixture.firstProgram.artifact.digest,
-      },
+      code: 'asset-decode-failed',
+      detail: { cause: { code: 'asset-artifact-integrity-mismatch' } },
     },
   });
   expect(result.shaders.findMaterialArtifact(fixture.firstProgram.specializationKey).ok).toBe(
@@ -150,7 +140,7 @@ it('independently verifies the material digest after the external descriptor acc
 it('accepts the previous inline-plus-external production payload', async () => {
   const fixture = await publication();
   fixture.pack.assets[0].payload.cooked = fixture.original;
-  expect((await load(fixture)).readiness).toMatchObject({ status: 'Ready' });
+  expect((await load(fixture)).loaded).toMatchObject({ ok: true });
 });
 
 it.each([
@@ -178,13 +168,20 @@ it.each([
   if (failure === 'corrupt-external') {
     expect(result.loaded).toMatchObject({
       ok: false,
-      error: { code: 'asset-artifact-integrity-mismatch' },
+      error: { code: 'asset-integrity-failed' },
     });
   } else {
-    expect(result.loaded).toMatchObject({ ok: true });
-    expect(result.readiness).toMatchObject({
-      status: 'Error',
-      error: { code: 'material-cook-record-invalid' },
+    expect(result.loaded).toMatchObject({
+      ok: false,
+      error: {
+        code:
+          failure === 'missing-descriptor' || failure === 'inconsistent-inline'
+            ? 'asset-package-invalid'
+            : 'asset-decode-failed',
+        ...(failure === 'invalid-record'
+          ? { detail: { cause: { code: 'material-cook-record-invalid' } } }
+          : {}),
+      },
     });
   }
 });
@@ -192,7 +189,7 @@ it.each([
 it('retains complete inline bytes when the production source has no external descriptor', async () => {
   const fixture = await publication(false);
   expect(fixture.pack.assets[0].payload.cooked).toEqual(fixture.original);
-  expect((await load(fixture)).readiness).toMatchObject({ status: 'Ready' });
+  expect((await load(fixture)).loaded).toMatchObject({ ok: true });
 });
 
 it('hydrates distinct programs sharing one artifact with a single external read', async () => {
@@ -212,21 +209,12 @@ it('hydrates distinct programs sharing one artifact with a single external read'
   };
   const fixture = await publication(true, record);
   await withPublication(fixture, async (registry, _shaders, fetcher) => {
-    const reads = vi.spyOn(registry.artifactCache, 'read');
-    const ready = await loadMaterialReadyByGuid(registry, {
-      guid: record.guid,
-      specializationKey: record.specializationKey ?? 'missing-fixture-specialization',
-    });
-    expect(ready).toMatchObject({
-      status: 'Ready',
-      record: {
-        programs: [
-          { artifact: { bytes: fixture.firstProgram.artifact.bytes } },
-          { artifact: { bytes: fixture.firstProgram.artifact.bytes } },
-        ],
-      },
-    });
-    expect(reads).toHaveBeenCalledTimes(1);
+    const ready = await registry.load(record.guid, 'material');
+    expect(ready).toMatchObject({ ok: true });
+    for (const program of record.programs)
+      expect(registry.getMaterialArtifact(program.specializationKey)?.bytes).toEqual(
+        fixture.firstProgram.artifact.bytes,
+      );
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(1);
   });
 });

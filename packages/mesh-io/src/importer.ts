@@ -125,7 +125,7 @@ function createMeshImporter(format: MeshSourceFormat) {
             const declaration = declarations.get(texture.sourceKey);
             if (declaration?.kind !== 'texture') throw new Error('missing texture GUID');
             values[texture.slot] = {
-              texture: refs.length as unknown as MaterialTextureValue['texture'],
+              texture: refs.length as unknown as NonNullable<MaterialTextureValue['texture']>,
               coordinates: {
                 set: 0,
                 transform: {

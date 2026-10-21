@@ -19,7 +19,7 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
   const toolbar = document.createElement('div');
   toolbar.setAttribute('role', 'toolbar');
   toolbar.setAttribute('aria-label', 'Scene execution');
-  Object.assign(toolbar.style, { display: 'flex', gap: '6px', padding: '6px', alignItems: 'center', flexShrink: '0' });
+  toolbar.className = 'fx-toolbar fx-toolbar--viewport';
   const surface = document.createElement('div');
   Object.assign(surface.style, { position: 'relative', flex: '1', minHeight: '0' });
   Object.assign(element.style, { display: 'flex', flexDirection: 'column', height: '100%' });

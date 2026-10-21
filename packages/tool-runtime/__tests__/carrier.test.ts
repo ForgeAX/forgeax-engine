@@ -91,3 +91,44 @@ describe('ephemeral carrier state machine', () => {
     });
   });
 });
+
+describe('carrier lease retirement', () => {
+  it.each(['fallback', 'expired', 'exited'] as const)('cannot restart a lease after %s', (phase) => {
+    const machine = createCarrierStateMachine({
+      projectId: 'game', consumerId: 'preview', endpoint: 'http://127.0.0.1/carrier', now: 0, ttlMs: 100,
+    });
+    const request = { consumerId: 'preview', bearerToken: machine.offer.bearerToken, now: 1 };
+    const leased = machine.lease(request);
+    expect(leased.ok).toBe(true);
+    if (!leased.ok) throw new Error('lease failed');
+    const id = leased.value.leaseId;
+    if (phase === 'exited') {
+      expect(machine.started(id).ok).toBe(true);
+      expect(machine.exit(id).ok).toBe(true);
+    } else if (phase === 'fallback') {
+      expect(machine.fallback().ok).toBe(true);
+    } else {
+      expect(machine.lease({ ...request, now: 100 }).ok).toBe(false);
+    }
+    const retired = machine.snapshot();
+    expect(machine.started(id).ok).toBe(false);
+    expect(machine.lease(request).ok).toBe(false);
+    expect(machine.snapshot()).toEqual(retired);
+  });
+
+  it('replaces the old lease atomically before start', () => {
+    const machine = createCarrierStateMachine({
+      projectId: 'game', consumerId: 'preview', endpoint: 'http://127.0.0.1/carrier', now: 0, ttlMs: 100,
+    });
+    const request = { consumerId: 'preview', bearerToken: machine.offer.bearerToken, now: 1 };
+    const first = machine.lease(request);
+    if (!first.ok) throw new Error('lease failed');
+    const second = machine.lease(first.value.leaseId, request);
+    if (!second.ok) throw new Error('lease failed');
+    expect(second.value.leaseId).not.toBe(first.value.leaseId);
+    expect(machine.started(first.value.leaseId).ok).toBe(false);
+    expect(machine.started(second.value.leaseId).ok).toBe(true);
+    expect(machine.started(second.value.leaseId).ok).toBe(true);
+    expect(machine.exit(second.value.leaseId).ok).toBe(true);
+  });
+});

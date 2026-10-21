@@ -1,7 +1,7 @@
 import { Time, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
-import type { TerrainAsset } from '@forgeax/engine-types';
+
 
 /** A real terrain-dependent gameplay writer; readiness gates movement, not the frame clock. */
 export function installTerrainWalker(
@@ -19,8 +19,7 @@ export function installTerrainWalker(
         const intent = world.getResource<{ speed: number; updates: number }>('TerrainWalker');
         if (gate.blocked || intent.speed === 0) return;
         const component = world.get(subjects.terrain, Terrain).unwrap();
-        const root = world.sharedRefs
-          .resolve<'TerrainAsset', TerrainAsset>(component.asset)
+        const root = world.assets!.read(component.asset)
           .unwrap();
         const origin = world.get(subjects.terrain, GlobalTransform).unwrap().world;
         const pos = world.get(subjects.walker, Transform).unwrap().pos;

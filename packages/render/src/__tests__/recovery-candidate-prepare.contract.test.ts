@@ -216,7 +216,7 @@ describe('recovery candidate preparation contract', () => {
   });
 
   it('prepares the submitted forward specialization with the direct Surface ABI', () => {
-    expect(recoveryPipelineSource).toContain('readonly dispatch: readonly DispatchEntry[]');
+    expect(recoveryPipelineSource).toContain('readonly dispatch: DispatchList');
     expect(recoveryPipelineSource).toContain(
       "candidate.tags.LightMode !== 'Forward' || candidate.materialShaderId === undefined",
     );

@@ -22,6 +22,7 @@ import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import {
   type TranslucentFogComposition,
@@ -29,6 +30,7 @@ import {
 } from '../../../render/src/record/view-ubo';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import {
   PANE_PIXEL,
@@ -188,16 +190,19 @@ async function withBillboard(
   const { renderer, assets } = host.value;
   try {
     const material = AssetGuid.random();
-    assets.catalog(material, createBuiltinMaterialAsset('unlit')).unwrap();
+    publishRuntimeAssets(assets, [
+      { guid: AssetGuid.format(material), asset: createBuiltinMaterialAsset('unlit') },
+    ]);
+    (await assets.load(material, 'material')).unwrap();
     const effect = await cookBillboard(material, blend, size);
-    const world = new World();
+    const world = new World({ assets });
     spawnFogBackdrop(world, false);
     (await vfx.attachWorld({ world, assets })).unwrap();
     world
       .spawn({
         component: ParticleEffectPlayer,
         data: {
-          effect: world.allocSharedRef('ParticleEffectAsset', effect),
+          effect: testAssets(world).create(effect).unwrap(),
           playing: true,
           seed: 1,
           timeScale: 1,

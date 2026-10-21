@@ -1,17 +1,17 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import {
   DEFAULT_VERTEX_ATTRIBUTE_MAP,
   deriveVertexLayoutProjection,
 } from '@forgeax/engine-geometry';
 import { err, ok } from '@forgeax/engine-rhi';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import { ResidencyLifetime } from '../device/residency-lifetime';
 import { PointsLinesMaterialUnsupportedError } from '../errors/render';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
+import { renderAssetRevision } from '../publication/resource-scope';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import type {
   PointsLinesRecordOwner,
@@ -32,9 +32,10 @@ import {
   type PointsLinesBackend,
   type PointsLinesLane,
 } from './record';
-import type { PointsLinesRetainedSnapshot } from './snapshot';
+import type { PointsLinesPreparedSnapshot } from './snapshot';
 
 type PointsLinesGpuResources = {
+  readonly lifetime: ResidencyLifetime;
   readonly vertexBuffer: import('@forgeax/engine-rhi').Buffer;
   readonly indexBuffer: import('@forgeax/engine-rhi').Buffer;
 };
@@ -52,6 +53,7 @@ type PointsLinesPreparationAdapter = PointsLinesLanePreparationAdapter<PointsLin
 export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
   private readonly cache = new PointsLinesExpansionCache();
   private readonly preparations = new Map<string, PointsLinesPreparationAdapter>();
+  private readonly retiring = new Set<PointsLinesPreparationAdapter>();
   private readonly active = new Map<string, PointsLinesInspection>();
   private readonly layoutProjection = deriveVertexLayoutProjection(DEFAULT_VERTEX_ATTRIBUTE_MAP);
 
@@ -140,20 +142,23 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     preparations: Map<string, PointsLinesPreparationAdapter>,
     inspections: Map<string, PointsLinesInspection>,
   ): PointsLinesRecordSubmission | undefined {
-    const snapshot = entry.source.pointsLines;
-    if (snapshot === undefined || snapshot.component === undefined || entry.world === undefined) {
+    const source = entry.source.pointsLines;
+    if (source === undefined || source.component === undefined || entry.world === undefined) {
       return undefined;
     }
+    const snapshot: PointsLinesPreparedSnapshot = {
+      ...source,
+      meshGeneration: renderAssetRevision(entry.world, source.meshHandle) ?? 0,
+      materialGeneration: renderAssetRevision(entry.world, source.materialHandle) ?? 0,
+    };
     const key = `${snapshot.worldId}:${snapshot.entityKey}`;
     const backend = this.backend(runtime);
     const lane = backend === 'wgpu-webgl2' ? 'cpu-webgl2' : clustered ? 'clustered' : 'direct';
-    const meshResult = resolveAssetHandle<MeshAsset>(
-      entry.world,
-      toShared<'MeshAsset'>(entry.source.assetHandle),
+    const meshResult = entry.world.resolveAsset<MeshAsset>(
+      entry.source.assetHandle as AssetHandle<'mesh'>,
     );
-    const materialResult = resolveAssetHandle<MaterialAsset>(
-      entry.world,
-      toShared<'MaterialAsset'>(snapshot.materialHandle),
+    const materialResult = entry.world.resolveAsset<MaterialAsset>(
+      snapshot.materialHandle as AssetHandle<'material'>,
     );
     if (!meshResult.ok || !materialResult.ok) {
       this.publishRefusal(
@@ -197,6 +202,16 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     let preparation = preparations.get(prepKey);
     if (preparation === undefined) {
       preparation = this.createPreparation(runtime, geometryKey, lane, backend);
+      preparations.set(prepKey, preparation);
+      if (preparations === this.preparations && preparations.size > 256) {
+        const oldest = preparations.entries().next().value;
+        if (oldest !== undefined) {
+          preparations.delete(oldest[0]);
+          this.retiring.add(oldest[1]);
+        }
+      }
+    } else {
+      preparations.delete(prepKey);
       preparations.set(prepKey, preparation);
     }
     const prepared = preparation.prepare(snapshot, meshResult.value);
@@ -275,8 +290,21 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     };
   }
 
+  /** Retired cache rows may still be named by an earlier view in this submission. */
+  track(completed: Promise<unknown>): void {
+    for (const preparation of this.preparations.values())
+      preparation.lastKnownGood()?.resource.lifetime.track(completed);
+    for (const preparation of this.retiring) {
+      preparation.lastKnownGood()?.resource.lifetime.track(completed);
+      preparation.resetForDeviceLoss();
+    }
+    this.retiring.clear();
+  }
+
   resetForDeviceLoss(): void {
     for (const preparation of this.preparations.values()) preparation.resetForDeviceLoss();
+    for (const preparation of this.retiring) preparation.resetForDeviceLoss();
+    this.retiring.clear();
     this.active.clear();
   }
 
@@ -284,12 +312,15 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     for (const preparation of this.preparations.values()) {
       preparation.abandonForDeviceLoss();
     }
+    for (const preparation of this.retiring) preparation.abandonForDeviceLoss();
+    this.retiring.clear();
     this.active.clear();
   }
 
   dispose(): void {
     this.resetForDeviceLoss();
     this.preparations.clear();
+    this.cache.clear();
   }
 
   inspections(): readonly PointsLinesInspection[] {
@@ -309,7 +340,7 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
 
   private publishRefusal(
     inspections: Map<string, PointsLinesInspection>,
-    snapshot: PointsLinesRetainedSnapshot,
+    snapshot: PointsLinesPreparedSnapshot,
     error: PointsLinesSourceError,
   ): void {
     inspections.set(
@@ -365,7 +396,14 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
             runtime.device.destroyBuffer(vertex.value);
             return err(index.error);
           }
-          return ok({ vertexBuffer: vertex.value, indexBuffer: index.value });
+          return ok({
+            vertexBuffer: vertex.value,
+            indexBuffer: index.value,
+            lifetime: new ResidencyLifetime(() => {
+              runtime.device.destroyBuffer(vertex.value);
+              runtime.device.destroyBuffer(index.value);
+            }),
+          });
         },
         upload: (resource, geometry) => {
           if (geometry.vertices.byteLength > 0) {
@@ -390,10 +428,7 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
           geometry.expandedVertexCount > 0 && geometry.expandedIndexCount > 0
             ? ok(undefined)
             : err(new Error('Points/Lines expansion contains no drawable triangles')),
-        destroy: (resource) => {
-          runtime.device.destroyBuffer(resource.vertexBuffer);
-          runtime.device.destroyBuffer(resource.indexBuffer);
-        },
+        destroy: (resource) => resource.lifetime.retire(),
       },
     });
   }

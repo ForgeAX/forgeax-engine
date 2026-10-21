@@ -1,14 +1,13 @@
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry, type CatalogListener } from '@forgeax/engine/assets-runtime';
 import { createBoxGeometry, packMeshBin, prepareMeshData } from '@forgeax/engine/geometry';
 import { createRuntimePackPublication } from '@forgeax/engine/pack/runtime';
-import type { CatalogEntry, MaterialAsset } from '@forgeax/engine/types';
+import { samplerContribution } from '@forgeax/engine/render';
+import { type CatalogEntry, ok } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 
 const GUID = '019f1a00-0000-7000-8000-0000000000f1';
 const PACKAGE_URL = 'https://feature-lab.invalid/prepared/candidate.pack.json';
-
 const unreachable = (async () => new Response('', { status: 404 })) as typeof fetch;
-const invalid = () => ({ kind: 'material', passes: [], values: {} }) as unknown as MaterialAsset;
 
 function throws(body: () => void): boolean {
   try {
@@ -24,12 +23,12 @@ export default defineFeature({
   catalog: 'Runtime publication preparation',
   kind: 'headless',
   summary:
-    'Runtime-produced Packs are prepared privately by the registry loaders and adopted only through a single-use commit proof. Portable mesh encoding (prepareMeshData / packMeshBin) is a separate pure geometry kernel.',
+    'Runtime-produced Packs are privately decoded and retained before a single-use commit proof and the producer Catalog delta publish them. Portable mesh encoding is a separate pure geometry kernel.',
   expect:
-    'A prepared material stays invisible to lookup until commit; edits to the prepared read, the source Pack, and the loaded copy never reach the adopted payload; a second commit throws; public catalog() still validates. Box geometry encodes; a truncated vertex stream is mesh-bin-payload-invalid.',
+    'Preparation creates no runtime identity. Edits to prepared reads, the producer Pack and loaded snapshots cannot change retained content. Reused or foreign commit proofs fail, and ordinary runtime writes retain owner validation.',
   async run(checks) {
     const { pack, publication } = createRuntimePackPublication({
-      scopeId: 'feature-lab-prepared',
+      scopeId: 'asset-runtime',
       sourcePath: 'candidate.pack.ts',
       sourceRevision: 'lab',
       packageUrl: PACKAGE_URL,
@@ -37,8 +36,8 @@ export default defineFeature({
         assets: [
           {
             guid: GUID,
-            kind: 'material',
-            payload: { passes: [{ program: { module: 'feature-lab' } }], values: {} },
+            kind: 'sampler',
+            payload: { kind: 'sampler', magFilter: 'nearest' },
             refs: [],
             artifacts: {},
           },
@@ -48,52 +47,76 @@ export default defineFeature({
     const rows: CatalogEntry[] = [
       {
         guid: GUID,
-        kind: 'material',
+        kind: 'sampler',
         sourcePath: 'candidate.pack.ts',
         packageUrl: PACKAGE_URL,
         refs: [],
         publication,
       },
     ];
-    const registry = new AssetRegistry({} as never);
-    registry.setCatalogSource(createCatalogSource({ entries: [] }), unreachable);
+    const registry = new AssetRegistry();
+    registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const listeners = new Set<CatalogListener>();
+    registry.setCatalogSource(
+      {
+        enumerate: async () => ok([]),
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      },
+      unreachable,
+    );
     try {
       const prepared = await registry.preparePublication(rows, unreachable, undefined, { pack });
-      checks.ok(
-        'prepare ok',
-        prepared.ok,
-        prepared.ok ? undefined : String((prepared.error as { code?: unknown }).code),
-      );
+      checks.ok('prepare succeeds', prepared.ok, prepared.ok ? undefined : String(prepared.error));
       if (!prepared.ok) return;
-      checks.ok('prepared payload is private before commit', registry.lookup(GUID) === undefined);
+      checks.equal('preparation creates no runtime identity', registry.inspect().assets.length, 0);
       const read = prepared.value.get(GUID);
       const copy = typeof read === 'function' ? await read() : read;
-      Object.assign(copy ?? {}, invalid());
-      (pack.assets[0]?.payload as Record<string, unknown>).passes = [];
+      Object.assign(copy ?? {}, { magFilter: 'invalid' });
+      Object.assign(pack.assets[0]?.payload ?? {}, { magFilter: 'invalid' });
       registry.commitPreparedPublication(pack);
-      const loaded = await registry.loadByGuid<MaterialAsset>(registry.parseGuid(GUID));
-      checks.ok('committed payload loads', loaded.ok);
+      for (const listener of listeners) listener({ added: rows, changed: [], removed: [] });
+      const loaded = await registry.load(GUID, 'sampler');
+      checks.ok(
+        'committed payload loads without producer I/O',
+        loaded.ok,
+        loaded.ok ? undefined : loaded.error.code,
+      );
       if (loaded.ok) {
-        checks.equal('edits before commit did not leak', loaded.value.passes?.length, 1);
-        Object.assign(loaded.value, invalid());
-        const again = typeof read === 'function' ? await read() : read;
+        const value = registry.read(loaded.value).unwrap();
+        checks.equal('edits before commit did not leak', value.magFilter, 'nearest');
+        Object.assign(value, { magFilter: 'invalid' });
         checks.equal(
-          'loaded copy is isolated from retention',
-          (again as MaterialAsset).passes?.length,
-          1,
+          'loaded snapshots cannot change retained content',
+          registry.read(loaded.value).unwrap().magFilter,
+          'nearest',
         );
-        checks.ok('public catalog still validates', !registry.catalog(GUID, loaded.value).ok);
+        const again = typeof read === 'function' ? await read() : read;
+        checks.ok(
+          'private retention remains unchanged',
+          again?.kind === 'sampler' && again.magFilter === 'nearest',
+        );
+        checks.ok(
+          'runtime updates retain owner validation',
+          !registry.update(loaded.value, { lodMinClamp: -1 }).ok,
+        );
       }
       checks.ok(
         'commit proof is single-use',
         throws(() => registry.commitPreparedPublication(pack)),
       );
+      const foreign = new AssetRegistry();
       checks.ok(
         'foreign registry cannot commit',
-        throws(() => new AssetRegistry({} as never).commitPreparedPublication(pack)),
+        throws(() => foreign.commitPreparedPublication(pack)),
       );
+      foreign.dispose();
     } finally {
-      registry.clearCatalogSource();
+      registry.dispose();
     }
 
     const box = createBoxGeometry(1, 1, 1).unwrap();

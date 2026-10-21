@@ -206,7 +206,11 @@ describe('browser-backend focus loss', () => {
       { action: 'mouse', bindings: [{ type: 'mouseButton' as const, button: 0 as const }] },
     ];
     const previousActions = deriveActionStates(acquired, inputMap);
-    const resetActions = deriveActionStates(cancelled, inputMap, previousActions);
+    const resetActions = deriveActionStates(
+      cancelled,
+      inputMap,
+      (action) => previousActions.find((state) => state.action === action)?.pressed ?? false,
+    );
     expect(resetActions.every((action) => action.justReleased === false)).toBe(true);
 
     const stableAfterLoss = env.backend.sample();

@@ -97,11 +97,11 @@ function shaderSource(
   return (frame as RenderPipelineFrame).ssrShaders?.[stage];
 }
 
-function addPass(
-  graph: RenderGraphBuilder<RenderGraphFrame>,
+function addPass<FrameCtx extends RenderGraphFrame>(
+  graph: RenderGraphBuilder<FrameCtx>,
   name: string,
   accesses: readonly GraphAccess[],
-  encode: ComputeGraphPass<RenderGraphFrame>['encode'] = () => undefined,
+  encode: ComputeGraphPass<FrameCtx>['encode'] = () => undefined,
 ): Result<void, RenderGraphError> {
   return graph.addComputePass(name, { accesses, encode });
 }
@@ -140,7 +140,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   const depthPyramid = input.depthPyramid;
   if (depthPyramid === undefined) return missingInput('depthPyramid');
 
-  const resources = createSsrSpatialResources(graph as RenderGraphBuilder<RenderGraphFrame>, {
+  const resources = createSsrSpatialResources(graph, {
     width: input.width,
     height: input.height,
   });
@@ -376,7 +376,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
           },
         ]),
       );
-      pass.dispatchWorkgroups(Math.ceil(input.width / 16), Math.ceil(input.height / 16), 1);
+      pass.dispatchWorkgroups(Math.ceil(input.width / 8), Math.ceil(input.height / 8), 1);
     },
   );
   if (!added.ok) return added;

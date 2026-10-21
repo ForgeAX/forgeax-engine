@@ -22,7 +22,10 @@
     "gauntletScenario": {
       "id": "hello-m1-composition-live",
       "script": "smoke:gauntlet",
-      "domains": ["World and host contract", "Simulation and media implementations"],
+      "domains": [
+        "World and host contract",
+        "Simulation and media implementations"
+      ],
       "packages": [
         "@forgeax/engine-app",
         "@forgeax/engine-ecs",
@@ -32,11 +35,35 @@
         "@forgeax/engine-scene",
         "@forgeax/engine-state"
       ],
-      "risks": ["baseline", "dynamic", "churn", "fault", "recovery", "behavioral"],
-      "phaseInputs": ["baseline", "dynamic", "churn", "fault", "recovery", "focus-loss", "reacquire"],
+      "risks": [
+        "baseline",
+        "dynamic",
+        "churn",
+        "fault",
+        "recovery",
+        "behavioral"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "dynamic",
+        "churn",
+        "fault",
+        "recovery",
+        "focus-loss",
+        "reacquire"
+      ],
       "evidence": {
-        "frontDoors": ["node-app", "browser-app", "remote-live", "ecs-world"],
-        "legs": ["semantic", "live", "recovery"]
+        "frontDoors": [
+          "node-app",
+          "browser-app",
+          "remote-live",
+          "ecs-world"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "recovery"
+        ]
       },
       "oracle": {
         "stdoutIncludes": [
@@ -86,7 +113,9 @@
     "@forgeax/engine-state": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
-    "vite": "8.0.16"
+    "vite": "8.0.16",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74"

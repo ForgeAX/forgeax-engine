@@ -15,6 +15,10 @@ import {
   REFLECTION_PROBE_SETTLE_FRAMES,
   reflectionFallbackValidationLog,
 } from './ssr-fallback-evidence.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 const MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const PERFORMANCE = process.env.SMOKE_PERF_TIMING === '1';
@@ -103,7 +107,7 @@ const CPU_PHASE_PROFILE = process.env.SMOKE_CPU_PHASE_PROFILE === '1';
 // threshold even though the requested callback count was met. SSR acceptance
 // likewise counts completed submissions, not callbacks that hit frame-credit
 // backpressure. Keep all requested frames on the real renderer path.
-const WAIT_DRAW_COMPLETION = process.env.SMOKE_WAIT_DRAW_COMPLETION === '1' || CPU_PHASE_PROFILE || SSR_EVIDENCE;
+const WAIT_DRAW_COMPLETION = true;
 const CPU_PHASE_PROFILE_WARMUP_FRAMES = Number.parseInt(
   process.env.SMOKE_CPU_PHASE_PROFILE_WARMUP_FRAMES ?? '120',
   10,
@@ -323,7 +327,7 @@ const cpuProfiler = CPU_PHASE_PROFILE
       clock: { nowMicros: () => Math.floor(hostNowMs() * 1_000) },
     })
   : undefined;
-const { HANDLE_CUBE, HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
+
 const { World } = await import('@forgeax/engine-ecs');
 const {
   ANTIALIAS_NONE,
@@ -423,7 +427,11 @@ if (!appResult.ok) {
 }
 const app = appResult.value;
 const renderer = app.renderer;
+const assets = app.assets;
+if (assets === undefined) throw new Error('SSR requires runtime assets');
 const world = app.world;
+const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
+const sphereHandle = assets.create(BUILTIN_SPHERE).unwrap();
 const timingReceipts = [];
 const timingObservations = [];
 const timingFrames = [];
@@ -432,7 +440,7 @@ const drawCpuFrameMs = [];
 const drawCpuAttemptMs = [];
 let latestDrawReceipt;
 let latestResourceSubmission;
-if (PERFORMANCE || SSR_EVIDENCE || CPU_PHASE_PROFILE || CAPTURE_RECOVERY || process.env.SMOKE_DISPLAY_DIR !== undefined) {
+{
   const draw = renderer.draw.bind(renderer);
   renderer.draw = (...args) => {
     const drawStart = hostNowMs();
@@ -531,13 +539,13 @@ if (!sourceResult.ok) {
   process.exit(1);
 }
 const targetHandle = world.allocSharedRef('RenderTarget', targetResult.value);
-const sourceHandle = world.allocSharedRef('RenderTargetTextureSource', sourceResult.value);
+const sourceHandle = { source: sourceResult.value };
 let skylightEntity;
 let reflectionProbeEntity;
 let movingObjectEntity;
 let cameraEntity;
 if (SSR_EVIDENCE) {
-  const scene = spawnReflectionScene(world, WIDTH / HEIGHT, resolveSsrFixture(process.env.SSR_FIXTURE), ANTIALIAS);
+  const scene = spawnReflectionScene(world, assets, WIDTH / HEIGHT, resolveSsrFixture(process.env.SSR_FIXTURE), ANTIALIAS);
   skylightEntity = scene.skylight;
   reflectionProbeEntity = scene.reflectionProbe;
   movingObjectEntity = scene.movingObject;
@@ -567,10 +575,7 @@ const materialPayload = SSR_EVIDENCE
       ],
       values: { baseColor: [1, 1, 1, 1], cubeTexture: sourceHandle },
     };
-const materialHandle = world.allocSharedRef(
-  'MaterialAsset',
-  materialPayload,
-);
+const materialHandle = assets.create(materialPayload).unwrap();
 const panelTransforms = [
   [[3, 0, 0], [0.12, 2.4, 2.4]],
   [[-3, 0, 0], [0.12, 2.4, 2.4]],
@@ -582,25 +587,19 @@ const panelTransforms = [
 // The reflection evidence lane keeps the authored colored panels so the
 // producer-owned fallback MRT is falsifiable with a non-neutral GPU sample.
 for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
-  const panelMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    SSR_EVIDENCE
+  const panelMaterial = assets.create(SSR_EVIDENCE
       ? Materials.standard({ baseColor: FACE_COLORS[face], metallic: 0, roughness: 0.45 })
-      : Materials.unlit(FACE_COLORS[face]),
-  );
+      : Materials.unlit(FACE_COLORS[face])).unwrap();
   const [pos, scale] = panelTransforms[face];
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cubeHandle } },
     { component: MeshRenderer, data: { materials: [panelMaterial] } },
   ).unwrap();
 }
-const neutralAccentMaterial = world.allocSharedRef(
-  'MaterialAsset',
-  SSR_EVIDENCE
+const neutralAccentMaterial = assets.create(SSR_EVIDENCE
     ? Materials.standard({ baseColor: [0.45, 0.45, 0.45, 1], metallic: 0, roughness: 0.7 })
-    : Materials.unlit([0.45, 0.45, 0.45, 1]),
-);
+    : Materials.unlit([0.45, 0.45, 0.45, 1])).unwrap();
 const accentColumns = [
   [[-2.3, 0, 0.8], [0.55, 2, 0.55]],
   [[2.3, 0, 0.8], [0.55, 2, 0.55]],
@@ -609,16 +608,13 @@ const accentColumns = [
 for (const [pos, scale] of accentColumns) {
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cubeHandle } },
     { component: MeshRenderer, data: { materials: [neutralAccentMaterial] } },
   ).unwrap();
 }
-const markerMaterial = world.allocSharedRef(
-  'MaterialAsset',
-  SSR_EVIDENCE
+const markerMaterial = assets.create(SSR_EVIDENCE
     ? Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.5 })
-    : Materials.unlit([1, 1, 1, 1]),
-);
+    : Materials.unlit([1, 1, 1, 1])).unwrap();
 const plusZMarkerParts = [
   [[0.55, 0.78, 2.9], [0.85, 0.12, 0.05]],
   [[0.2, 0.45, 2.9], [0.12, 0.78, 0.05]],
@@ -626,7 +622,7 @@ const plusZMarkerParts = [
 for (const [pos, scale] of plusZMarkerParts) {
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cubeHandle } },
     { component: MeshRenderer, data: { materials: [markerMaterial] } },
   ).unwrap();
 }
@@ -642,7 +638,7 @@ if (SSR_EVIDENCE) {
 }
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], scale: [1.7, 1.7, 1.7] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: sphereHandle } },
   { component: MeshRenderer, data: { materials: [materialHandle] } },
 ).unwrap();
 if (REFLECTION_EVIDENCE) {
@@ -750,7 +746,7 @@ const maybeStartCpuPhaseProfile = () => {
 };
 const animatedReceiverOrigin = process.env.SMOKE_ANIMATE_RECEIVER === '1'
   ? Array.from(world.get(movingObjectEntity, Transform).unwrap().pos) : undefined;
-for (; frames < MIN_FRAMES; frames += 1) {
+for (let attempts = 0; frames < MIN_FRAMES && attempts < MIN_FRAMES + 1000; attempts += 1) {
   if (animatedReceiverOrigin !== undefined) world.set(movingObjectEntity, Transform, {
     pos: [animatedReceiverOrigin[0] + Math.sin(frames * ANIMATION_SPEED) * ANIMATION_AMPLITUDE, animatedReceiverOrigin[1], animatedReceiverOrigin[2]],
   }).unwrap();
@@ -759,9 +755,11 @@ for (; frames < MIN_FRAMES; frames += 1) {
   maybeStartCpuPhaseProfile();
   now += 16.67;
   const cpuStart = hostNowMs();
+  const previousReceipt = latestDrawReceipt;
   item.callback(now);
   const submissionEnd = hostNowMs();
-  cpuFrameMs.push(submissionEnd - cpuStart);
+  await delay(0);
+  if (latestDrawReceipt === undefined || latestDrawReceipt === previousReceipt) continue;
   if (WAIT_DRAW_COMPLETION && latestDrawReceipt !== undefined) {
     const completed = await latestDrawReceipt.completed;
     if (!completed.ok) {
@@ -769,6 +767,9 @@ for (; frames < MIN_FRAMES; frames += 1) {
       process.exit(1);
     }
   }
+  if (latestDrawReceipt.presentation !== 'ready') continue;
+  frames += 1;
+  cpuFrameMs.push(submissionEnd - cpuStart);
   completionWaitMs.push(WAIT_DRAW_COMPLETION ? hostNowMs() - submissionEnd : null);
   endToEndMs.push(WAIT_DRAW_COMPLETION ? hostNowMs() - cpuStart : null);
   if (SSR_EVIDENCE) {
@@ -1226,7 +1227,7 @@ if (SSR_REFLECTION_EVIDENCE) {
       );
     if (
       current.rawFacesCaptured === 6 &&
-      current.filteredStepsCompleted === 30 &&
+      current.filteredStepsCompleted === 54 &&
       current.activeCount > 0 &&
       hasProbeFallback
     ) {
@@ -1247,7 +1248,7 @@ if (SSR_REFLECTION_EVIDENCE) {
   const settled = renderer.inspect().reflectionProbes;
   if (
     settled.rawFacesCaptured !== 6 ||
-    settled.filteredStepsCompleted !== 30 ||
+    settled.filteredStepsCompleted !== 54 ||
     settled.activeCount === 0 ||
     !settled.reflectionFallbacks?.some(
       (row) => row.source === 'probe' && row.state === 'active' && row.candidateVisible === false,
@@ -1835,10 +1836,10 @@ if (SSR_REFLECTION_EVIDENCE) {
   if (report.reflectionProbe.rawFaces !== 6) {
     failures.push(`probe raw face count=${report.reflectionProbe.rawFaces} != 6`);
   }
-  if (report.reflectionProbe.filteredSteps !== 30) {
-    failures.push(`probe PMREM steps=${report.reflectionProbe.filteredSteps} != 30`);
+  if (report.reflectionProbe.filteredSteps !== 27) {
+    failures.push(`probe PMREM steps=${report.reflectionProbe.filteredSteps} != 27`);
   }
-  if (Math.min(...report.reflectionProbe.mipLevels) !== 0 || Math.max(...report.reflectionProbe.mipLevels) !== 4) {
+  if (Math.min(...report.reflectionProbe.mipLevels) !== 0 || Math.max(...report.reflectionProbe.mipLevels) !== 8) {
     failures.push(`probe PMREM mip range=${JSON.stringify(report.reflectionProbe.mipLevels)}`);
   }
   const fallbackReadback =

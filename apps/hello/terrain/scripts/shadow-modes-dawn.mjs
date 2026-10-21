@@ -74,15 +74,15 @@ try {
     phase('harness-ready', { renderPath });
     try {
       phase('before-root-load', { renderPath });
-      const root = (
-        await h.app.assets.loadByGuid(
-          AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'),
+      const handle = (
+        await h.app.assets.load(
+          AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'), 'terrain'
         )
       ).unwrap();
+      const root = h.app.assets.read(handle).unwrap();
       assert.equal(root.kind, 'terrain');
-      const handle = h.app.world.sharedRefs.acquire('TerrainAsset', root);
       h.app.world.set(h.subjects.terrain, Terrain, { asset: handle, forcedLod: 0 }).unwrap();
-      h.app.world.sharedRefs.release(handle).unwrap();
+      h.app.world.assets.release(handle).unwrap();
       phase('root-ready', { renderPath });
       const eye = [11, 16, 14];
       h.app.world

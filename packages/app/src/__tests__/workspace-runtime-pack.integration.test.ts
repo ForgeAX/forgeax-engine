@@ -6,7 +6,7 @@ import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { startPluginAsset } from '@forgeax/engine-plugin';
 import type { Renderer } from '@forgeax/engine-render';
 import { createToolApi } from '@forgeax/engine-tool-runtime';
-import type { CatalogDelta, MeshAsset } from '@forgeax/engine-types';
+import type { CatalogDelta } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createApp } from '../create-app';
 import {
@@ -37,7 +37,7 @@ const rendererStub = () =>
 async function fixture() {
   const world = new World();
   world.insertResource('plugin-installations', new Set<number>());
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const app = (
     await createApp({
       platform: testPlatform(),
@@ -280,7 +280,8 @@ it.each([
     };
     expect(await f.call('generate', { instance })).toMatchObject({ status: 'admitted' });
     const guid = guidFor(instanceId, 'box');
-    const mesh = (await f.assets.loadByGuid<MeshAsset>(f.assets.parseGuid(guid))).unwrap();
+    const meshHandle = (await f.assets.load(guid, 'mesh')).unwrap();
+    const mesh = f.assets.read(meshHandle).unwrap();
     expect(mesh.attributes.position).toBeInstanceOf(Float32Array);
     expect(Array.from(mesh.aabb ?? [])).toEqual([-1.5, -1, -1.5, 1.5, 1, 1.5]);
     expect((await f.assets.enumerateCatalog()).unwrap()).toEqual([
@@ -298,7 +299,7 @@ it.each([
     expect(f.runtime.previews).toEqual([]);
     const runtimePacks = f.app.pluginContext.runtimePacks;
     assert(runtimePacks);
-    const previewAssets = new AssetRegistry({} as never);
+    const previewAssets = new AssetRegistry({ shaderRegistry: {} as never });
     let forward: ((delta: CatalogDelta) => void) | undefined;
     let dropDelta = false;
     const catalog = {
@@ -322,11 +323,11 @@ it.each([
     try {
       expect(preview.pluginContext.runtimePacks).toBeUndefined();
       expect(preview.world.identity).not.toBe(f.world.identity);
-      const first = (
-        await previewAssets.loadByGuid<MeshAsset>(previewAssets.parseGuid(guid))
-      ).unwrap();
-      expect(Array.from(first.aabb ?? [])).toEqual([-1.5, -1, -1.5, 1.5, 1, 1.5]);
-      const oldBinding = captureEngineWorkspaceAssetBinding(previewAssets, guid, first);
+      const first = (await previewAssets.load(guid, 'mesh')).unwrap();
+      expect(Array.from(previewAssets.read(first).unwrap().aabb ?? [])).toEqual([
+        -1.5, -1, -1.5, 1.5, 1, 1.5,
+      ]);
+      const oldBinding = captureEngineWorkspaceAssetBinding(previewAssets, first);
       expect(oldBinding.publication?.digest).toMatch(/^sha256:/);
       const originalBinding = structuredClone(oldBinding);
       dropDelta = delivery === 'reconcile';
@@ -351,28 +352,29 @@ it.each([
         });
         expect((await previewAssets.reconcileCatalog()).ok).toBe(true);
       }
-      const next = (
-        await previewAssets.loadByGuid<MeshAsset>(previewAssets.parseGuid(guid))
-      ).unwrap();
-      expect(Array.from(next.aabb ?? [])).toEqual([-2.5, -1, -1.5, 2.5, 1, 1.5]);
-      const nextBinding = captureEngineWorkspaceAssetBinding(previewAssets, guid, next);
+      expect(captureEngineWorkspaceAssetBinding(previewAssets, first)).toEqual(oldBinding);
+      (await previewAssets.reload(first, { conflict: 'reject' })).unwrap();
+      const next = (await previewAssets.load(guid, 'mesh')).unwrap();
+      expect(Array.from(previewAssets.read(next).unwrap().aabb ?? [])).toEqual([
+        -2.5, -1, -1.5, 2.5, 1, 1.5,
+      ]);
+      const nextBinding = captureEngineWorkspaceAssetBinding(previewAssets, next);
       expect(nextBinding.publication?.digest).not.toBe(oldBinding.publication?.digest);
       expect(oldBinding).toEqual(originalBinding);
       expect(oldBinding.meta?.aabb).toEqual([-1.5, -1, -1.5, 1.5, 1, 1.5]);
       expect(nextBinding.meta?.aabb).toEqual([-2.5, -1, -1.5, 2.5, 1, 1.5]);
-      expect(() => captureEngineWorkspaceAssetBinding(previewAssets, guid, first)).toThrow(
-        'loaded asset to remain current',
-      );
+      expect(next).toBe(first);
+      expect(captureEngineWorkspaceAssetBinding(previewAssets, first)).toEqual(nextBinding);
+      previewAssets.release(first).unwrap();
+      previewAssets.release(next).unwrap();
     } finally {
       await preview.dispose();
     }
     expect(f.app.pluginContext.runtimePacks).toBe(runtimePacks);
     expect(await f.call('generate', { instance })).toMatchObject({ status: 'admitted' });
-    expect(
-      Array.from(
-        (await f.assets.loadByGuid<MeshAsset>(f.assets.parseGuid(guid))).unwrap().aabb ?? [],
-      ),
-    ).toEqual([-1.5, -1, -1.5, 1.5, 1, 1.5]);
+    expect(Array.from(f.assets.read(meshHandle).unwrap().aabb ?? [])).toEqual([
+      -1.5, -1, -1.5, 1.5, 1, 1.5,
+    ]);
   } finally {
     await f.close();
   }

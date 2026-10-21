@@ -40,23 +40,14 @@ afterEach(async () => {
 });
 
 describe('catalog failure result', () => {
-  it('returns a structured conflict for a registered provider using an engine kind', async () => {
-    const root = await makeRoot('kind-conflict');
+  it('allows a registered importer to produce an engine-owned asset schema', async () => {
+    const root = await makeRoot('native-output');
     await writeMeta(root, meta('host-provider', 'texture'));
-
     const result = await buildCatalogResult([root], '/', new Set(['host-provider']));
-
-    expect(result.authority).toBe('degraded');
-    expect(result.entries).toEqual([]);
-    expect(result.diagnostics).toMatchObject([
-      {
-        code: 'catalog-host-kind-conflict',
-        path: join(root, 'asset.bin.meta.json'),
-        expected: expect.any(String),
-        actual: 'texture',
-        hint: expect.any(String),
-        subjects: [join(root, 'asset.bin.meta.json')],
-      },
+    expect(result.authority).toBe('authoritative');
+    expect(result.diagnostics).toEqual([]);
+    expect(result.entries).toMatchObject([
+      { guid: GOOD_GUID, kind: 'texture', lifecycle: 'missing' },
     ]);
   });
 

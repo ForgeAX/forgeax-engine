@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack';
 import {
   Camera,
@@ -28,7 +28,9 @@ import {
 } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import type { CookMeshLightingFixture } from './vfx-mesh-lighting.fixture';
 
@@ -90,21 +92,30 @@ export async function verifyMultiCameraVfx(options: {
     ),
   );
   const { renderer, assets } = host;
+  world.bindAssets(assets).unwrap();
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
   const material = AssetGuid.random();
-  assets.catalog(material, createBuiltinMaterialAsset('unlit')).unwrap();
+  publishRuntimeAssets(assets, [
+    { guid: AssetGuid.format(material), asset: createBuiltinMaterialAsset('unlit') },
+  ]);
+  (await assets.load(material, 'material')).unwrap();
   // This occluder is outside both display frusta but centered in the simulation camera.
   const occluder = world
     .spawn(
       { component: Transform, data: { pos: [3, 0, 0] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       {
         component: MeshRenderer,
         data: {
-          materials: [world.allocSharedRef('MaterialAsset', createBuiltinMaterialAsset('unlit'))],
+          materials: [testAssets(world).create(createBuiltinMaterialAsset('unlit')).unwrap()],
         },
       },
     )
@@ -182,7 +193,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     .spawn({
       component: ParticleEffectPlayer,
       data: {
-        effect: world.allocSharedRef('ParticleEffectAsset', cooked.value.asset),
+        effect: testAssets(world).create(cooked.value.asset).unwrap(),
         playing: true,
         seed: 1,
         timeScale: 1,
@@ -572,11 +583,16 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     world
       .spawn(
         { component: Transform, data: { pos: [3, 0, 0] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         {
           component: MeshRenderer,
           data: {
-            materials: [world.allocSharedRef('MaterialAsset', createBuiltinMaterialAsset('unlit'))],
+            materials: [testAssets(world).create(createBuiltinMaterialAsset('unlit')).unwrap()],
           },
         },
       )
@@ -585,7 +601,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       .spawn({
         component: ParticleEffectPlayer,
         data: {
-          effect: world.allocSharedRef('ParticleEffectAsset', cooked.value.asset),
+          effect: testAssets(world).create(cooked.value.asset).unwrap(),
           playing: true,
           seed: 2,
           timeScale: 1,

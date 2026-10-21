@@ -1,33 +1,10 @@
-// reimport-reuse-meta.ts - two-stage GUID matching for reimport-stable
-// `<source>.meta.json` with `importer: 'gltf'` (w13).
-//
-// Matching algorithm (plan-strategy decision section 2.4 + bevy comparison
-// wiki section 3):
-//
-//   For each new item produced by parseGltf in source iteration order:
-//     stage 1: existing entry with same (kind, name, indexFallback)  -> reuse
-//     stage 2: existing entry with same (kind, indexFallback) only   -> reuse
-//     fallback: AssetGuid.random() (UUIDv7 monotonic clock)
-//
-// Double-name hazard: when the SAME (kind, name) pair appears more than
-// once in the new items list, stage 1 cannot disambiguate. The producer
-// returns a structured source-key conflict before it can mint GUIDs or
-// publish output; sourceIndex remains a locator and is never promoted to
-// identity.
-//
-// AC anchors:
-//   - AC-05: byte-identical reimport when nothing changes (stage 1 reuse path)
-//   - AC-06: double-name conflict returns a structured source-key error
-//   - AC-13: reimport idempotency overall (no spurious GUID churn)
+// Reimport preserves GUIDs by semantic sourceKey, then by (kind, sourceIndex).
+// Validate the complete output set before minting any new identity.
 
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { ImportSubAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from './errors.js';
-import {
-  deriveGltfSourceKeys,
-  type GltfSourceKeyError,
-  sourceKeyForGltfOutput,
-} from './source-key.js';
+import { deriveGltfSourceKeys, type GltfSourceKeyError } from './source-key.js';
 import { type GltfDocItemLike, subAssetKey } from './sub-asset-key.js';
 
 export type { SubAssetKey } from './sub-asset-key.js';
@@ -90,37 +67,16 @@ export function reimportReuseMeta(
   }
 
   const subAssets: ImportSubAsset[] = [];
-  for (const item of items) {
-    const sourceKey = sourceKeyForGltfOutput(item);
-    const indexKey = `${item.kind} ${item.sourceIndex}`;
-    let reused: ImportSubAsset | undefined;
-
-    // Stage 1: semantic sourceKey match. Names are copied from the current
-    // source output below, but never participate in identity matching.
-    if (sourceKey !== undefined) reused = stage1Index.get(sourceKey);
-    // Stage 2: (kind, indexFallback) only.
-    if (reused === undefined) {
-      reused = stage2Index.get(indexKey);
-    }
-
-    if (reused !== undefined) {
-      subAssets.push({
-        guid: reused.guid,
-        sourceIndex: item.sourceIndex,
-        kind: item.kind,
-        ...(sourceKey === undefined ? {} : { sourceKey }),
-        ...(item.name === undefined ? {} : { name: item.name }),
-      });
-    } else {
-      const fresh = AssetGuid.random();
-      subAssets.push({
-        guid: AssetGuid.format(fresh),
-        sourceIndex: item.sourceIndex,
-        kind: item.kind,
-        ...(sourceKey === undefined ? {} : { sourceKey }),
-        ...(item.name === undefined ? {} : { name: item.name }),
-      });
-    }
+  for (const item of sourceKeys.items) {
+    const reused =
+      stage1Index.get(item.sourceKey) ?? stage2Index.get(`${item.kind} ${item.sourceIndex}`);
+    subAssets.push({
+      guid: reused?.guid ?? AssetGuid.format(AssetGuid.random()),
+      sourceIndex: item.sourceIndex,
+      kind: item.kind,
+      sourceKey: item.sourceKey,
+      ...(item.name === undefined ? {} : { name: item.name }),
+    });
   }
 
   return ok({ subAssets });

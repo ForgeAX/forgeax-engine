@@ -1,7 +1,7 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, DirectionalLight, Instances, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { createRenderer } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { Transform } from '@forgeax/engine-scene';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
@@ -9,7 +9,7 @@ import { page } from 'vitest/browser';
 const WIDTH = 1280;
 const HEIGHT = 720;
 const LIGHTWEIGHT = import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1';
-const FRAME_COUNT = LIGHTWEIGHT ? 24 : 600;
+const FRAME_COUNT = 60;
 // Sampling coordinates retain their reference extent; CI rasterizes one
 // quarter of each dimension while preserving every instance population.
 // Repeated steady frames only check unchanged residency; keep endurance local.
@@ -149,13 +149,13 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
       canvas.style.display = 'block';
       document.body.append(canvas);
 
-      const created = await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' });
+      const created = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' });
       expect(created.ok).toBe(true);
       if (!created.ok) return;
-      const renderer = created.value;
+      const { renderer, assets } = created.value;
       expect(renderer.inspect().capabilities.backendKind).toBe('webgpu');
 
-      const world = new World();
+      const world = new World({ assets });
       const attached = renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) return;
@@ -187,7 +187,7 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
           component: Transform,
           data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() } },
         { component: MeshRenderer, data: {} },
         { component: Instances, data: { transforms: translationGrid(count) } },
       );
@@ -203,18 +203,19 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
         environment: { lease },
       };
       let firstInspection;
-      for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
+      let submittedFrames = 0;
+      for (let frame = 0; frame < FRAME_COUNT;) {
+        expect(++submittedFrames, "bounded asynchronous preparation").toBeLessThanOrEqual(FRAME_COUNT + 120);
         expect(world.update(1 / 60).ok).toBe(true);
         const drawn = renderer.draw(frameInput);
         expect(drawn.ok).toBe(true);
         if (!drawn.ok) return;
         const completed = await drawn.value.completed;
         expect(completed.ok).toBe(true);
-        if (frame === 0) {
-          firstInspection = renderer
-            .inspect()
-            .instanceCollections[0];
-        }
+        const current = renderer.inspect().instanceCollections[0];
+        if ((firstInspection?.uploadedBytes ?? 0) === 0 && (current?.uploadedBytes ?? 0) > 0) firstInspection = current;
+        if (drawn.value.presentation === 'ready') frame += 1;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
 
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

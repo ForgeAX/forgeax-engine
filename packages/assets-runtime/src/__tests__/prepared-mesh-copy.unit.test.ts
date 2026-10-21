@@ -1,7 +1,8 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import type { CatalogEntry, MeshAsset } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { type CatalogEntry, type MeshAsset, ok } from '@forgeax/engine-types';
+import { expect, it, vi } from 'vitest';
+import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry.js';
 import { createCatalogSource } from '../catalog-source.js';
 import { copyPreparedAsset } from '../prepare-payload.js';
@@ -56,19 +57,23 @@ it.each([
     sourcePath: 'custom.pack.ts',
     publication: publication.publication,
   };
-  const registry = new AssetRegistry({} as never, undefined, [
-    { kind: 'mesh', load: () => structuredClone(mesh) },
-  ]);
+  const registry = new AssetRegistry({
+    scopeId: 'prepared-copy',
+    shaderRegistry: {} as never,
+  });
+  registry.installDecoder(defineAssetKind<MeshAsset, 'mesh'>('mesh'), {
+    decode: async () => ok(structuredClone(mesh)),
+  });
   const fetcher: typeof fetch = async () => {
     throw new Error('unexpected file read');
   };
-  registry.setCatalogSource(createCatalogSource({ entries: [] }), fetcher);
+  registry.setCatalogSource(createCatalogSource({ entries: [row] }), fetcher);
   try {
     const result = await registry.preparePublication([row], fetcher, undefined, {
       pack: publication.pack,
     });
     if (representation === 'shared') {
-      expect(result).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
+      expect(result).toMatchObject({ ok: false, error: { code: 'asset-decode-failed' } });
       expect(() => registry.commitPreparedPublication(publication.pack)).toThrow();
       return;
     }
@@ -78,7 +83,8 @@ it.each([
     const first = await retained();
     expect(first).toEqual(mesh);
     registry.commitPreparedPublication(publication.pack);
-    const loaded = (await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid))).unwrap();
+    const handle = (await registry.load(guid, 'mesh')).unwrap();
+    const loaded = registry.read(handle).unwrap();
     expect(loaded).toEqual(mesh);
     const bytes = (value: MeshAsset) => {
       const position = value.attributes.position as Float32Array | ArrayBuffer;
@@ -87,14 +93,59 @@ it.each([
     if (representation === 'views') {
       const p = loaded.attributes.position as Float32Array;
       const n = loaded.attributes.normal as Float32Array;
-      expect(p.buffer).toBe(n.buffer);
-      expect(p.byteOffset).toBe(16);
+      const preparedPosition = first.attributes.position as Float32Array;
+      const preparedNormal = first.attributes.normal as Float32Array;
+      expect(preparedPosition).toEqual(mesh.attributes.position);
+      expect(preparedNormal).toEqual(mesh.attributes.normal);
+      expect(preparedPosition.buffer).not.toBe((mesh.attributes.position as Float32Array).buffer);
+      // Runtime fields own logical views, so one tracked range write cannot mutate a sibling.
+      expect(p.buffer).not.toBe(n.buffer);
+      expect(p.byteOffset).toBe(0);
       expect(p.buffer).not.toBe((mesh.attributes.position as Float32Array).buffer);
     }
     bytes(first)[0] = 123;
     bytes(loaded)[0] = 456;
     expect(bytes(await retained())).toEqual(bytes(mesh));
   } finally {
-    registry.clearCatalogSource();
+    registry.dispose();
+  }
+});
+
+it('rejects a prepared publication from another scope before producer publication', async () => {
+  const guid = '01900000-0000-7000-8000-000000000996';
+  const packageUrl = 'https://prepared.invalid/foreign.pack.json';
+  const publication = createRuntimePackPublication({
+    scopeId: 'foreign',
+    sourcePath: 'foreign.pack.ts',
+    sourceRevision: '1',
+    packageUrl,
+    pack: { assets: [{ guid, kind: 'mesh', payload: {}, refs: [], artifacts: {} }] },
+  });
+  const row: CatalogEntry = {
+    guid,
+    kind: 'mesh',
+    packageUrl,
+    sourcePath: 'foreign.pack.ts',
+    publication: publication.publication,
+  };
+  const registry = new AssetRegistry({ scopeId: 'prepared-copy', shaderRegistry: {} as never });
+  registry.installDecoder(defineAssetKind<MeshAsset, 'mesh'>('mesh'), {
+    decode: async () => ok(createBoxGeometry(1, 1, 1).unwrap()),
+  });
+  const fetcher: typeof fetch = async () => {
+    throw new Error('unexpected file read');
+  };
+  registry.setCatalogSource(createCatalogSource({ entries: [] }), fetcher);
+  try {
+    const result = await registry.preparePublication([row], fetcher, undefined, {
+      pack: publication.pack,
+    });
+    expect(result.ok).toBe(false);
+    const publish = vi.fn();
+    expect(() => registry.commitPreparedPublication(publication.pack, publish)).toThrow();
+    expect(publish).not.toHaveBeenCalled();
+    expect((await registry.enumerateCatalog()).unwrap()).toEqual([]);
+  } finally {
+    registry.dispose();
   }
 });

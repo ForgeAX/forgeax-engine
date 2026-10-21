@@ -1,43 +1,218 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { walkMaterialPassesOverSharedRefs } from '@forgeax/engine-assets-runtime';
+import { type AssetChange, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import { GlobalTransform, readPresentationWorldMatrix, Transform } from '@forgeax/engine-scene';
 import {
   Terrain,
   terrainAxisEndpoint,
+  terrainHeightAtlas,
   terrainHeightBounds,
+  terrainHeightMipOffset,
   terrainTranslationValid,
 } from '@forgeax/engine-terrain';
 import type {
-  Asset,
-  Handle,
-  MaterialPass,
+  AssetHandle,
   TerrainAsset,
   TerrainError,
+  TerrainSection,
+  TextureAsset,
 } from '@forgeax/engine-types';
 import { Layer } from '../components/layer.js';
 import { ShadowParticipation } from '../components/shadow-participation.js';
+import { MaterialResource } from '../material-resource';
+import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
 import {
-  appendMaterialDispatchEntries,
   type DispatchEntry,
-  internSharedRefFromGuid,
-  type MaterialSnapshot,
+  defaultMaterialSnapshot,
   type RenderableSnapshot,
-  resolveMaterialSnapshot,
 } from '../render-system-extract.js';
+import { at, type Node as FrameNode, put } from '../scene/frame-tree';
 
-/** Detached source facts retained by the existing scene publication, independent of a camera. */
+/** Instance facts only. The asset owner supplies current content during section execution. */
 export interface TerrainRenderSource {
-  readonly handle: Handle<'TerrainAsset', 'shared'>;
-  readonly asset: TerrainAsset;
-  readonly grids: readonly Handle<'MeshAsset', 'shared'>[];
-  readonly heightTextures: readonly Handle<'TextureAsset', 'shared'>[];
-  readonly weightTextures: readonly Handle<'TextureAsset', 'shared'>[];
-  readonly passes: readonly (readonly MaterialPass[])[];
+  readonly handle: AssetHandle<'terrain'>;
   readonly lod0Diameter: number;
   readonly forcedLod: number;
   readonly layer: number;
+}
+
+/** Exact geometry retained by prepared draws and submitted receipts. No borrowed author arrays. */
+export interface TerrainDrawSource {
+  readonly version: number;
+  readonly asset: Pick<
+    TerrainAsset,
+    'columns' | 'rows' | 'spacing' | 'subsectionVertices' | 'heightRange'
+  >;
+  readonly layers: TerrainAsset['layers'];
+  readonly activeLayers: readonly number[];
+  readonly grids: readonly AssetHandle<'mesh'>[];
+  readonly sectionCount: number;
+  readonly sections: FrameNode<TerrainDrawSection> | undefined;
+}
+
+export interface TerrainDrawSection {
+  readonly data: TerrainSection;
+  /** This section's packed f32 mip chain, detached once per affected tile. */
+  readonly heights: Uint8Array;
+}
+
+const rootMaterial = MaterialResource.from({ ...defaultMaterialSnapshot(), passes: [] });
+
+function fixedAsset(asset: TerrainAsset): TerrainDrawSource['asset'] {
+  return {
+    columns: asset.columns,
+    rows: asset.rows,
+    spacing: asset.spacing,
+    subsectionVertices: asset.subsectionVertices,
+    heightRange: [...asset.heightRange],
+  };
+}
+
+function fixedSection(
+  world: RenderResourceScope,
+  asset: TerrainAsset,
+  index: number,
+): TerrainDrawSection {
+  const section = asset.sections[index];
+  if (section === undefined || typeof section.heightTexture !== 'number')
+    terrainSourceError('terrain-query-unavailable', 'section', 'an admitted Terrain section');
+  const texture = world.resolveAsset<TextureAsset>(section.heightTexture).unwrap();
+  if (texture.kind !== 'texture' || texture.format !== 'rgba8unorm')
+    terrainSourceError('terrain-query-unavailable', 'height', 'packed f32 height mip bytes');
+  const n = asset.subsectionVertices;
+  const atlas = terrainHeightAtlas(asset);
+  const heights = new Uint8Array(terrainHeightMipOffset(n, n, Math.log2(n) + 1));
+  let sourceOffset = 0,
+    targetOffset = 0;
+  for (let size = n; size >= 1; size /= 2) {
+    const width = atlas.tileColumns * size;
+    const x = (index % atlas.tileColumns) * size;
+    const z = Math.floor(index / atlas.tileColumns) * size;
+    for (let row = 0; row < size; row++) {
+      const offset = sourceOffset + ((z + row) * width + x) * 4;
+      heights.set(texture.data.subarray(offset, offset + size * 4), targetOffset + row * size * 4);
+    }
+    sourceOffset += width * atlas.tileRows * size * 4;
+    targetOffset += size * size * 4;
+  }
+  return { data: { ...section, activeLayers: [...section.activeLayers] }, heights };
+}
+
+/** Renderer-owned geometry projection; the existing source change stream drives path copies. */
+export class TerrainSourceCache {
+  private worlds = new WeakMap<RenderResourceScope, Map<number, TerrainDrawSource>>();
+
+  resolve(world: RenderResourceScope, handle: AssetHandle<'terrain'>): TerrainDrawSource {
+    let roots = this.worlds.get(world);
+    const cached = roots?.get(handle);
+    if (cached !== undefined) return cached;
+    const resolved = world.resolveAsset<TerrainAsset>(handle);
+    if (!resolved.ok || resolved.value.kind !== 'terrain')
+      terrainSourceError('terrain-query-unavailable', 'asset', 'one admitted TerrainAsset');
+    const asset = resolved.value;
+    const grids = asset.grids.map((value) => {
+      if (typeof value !== 'number')
+        terrainSourceError('terrain-query-unavailable', 'grid', 'an admitted Mesh reference');
+      return value;
+    });
+    let sections: FrameNode<TerrainDrawSection> | undefined;
+    for (let index = 0; index < asset.sections.length; index++)
+      sections = put(sections, fixedSection(world, asset, index), 0, index, 1);
+    const version = renderAssetRevision(world, handle);
+    if (version === undefined)
+      terrainSourceError(
+        'terrain-query-unavailable',
+        'version',
+        'one admitted Terrain asset version',
+      );
+    const result = {
+      version,
+      asset: fixedAsset(asset),
+      layers: asset.layers.map((layer) =>
+        layer.blend === 'height'
+          ? { ...layer, heightRange: [...layer.heightRange] as const }
+          : { ...layer },
+      ),
+      activeLayers: [...new Set(asset.sections.flatMap((section) => section.activeLayers))],
+      grids,
+      sectionCount: asset.sections.length,
+      sections,
+    };
+    if (roots === undefined) {
+      roots = new Map();
+      this.worlds.set(world, roots);
+    }
+    roots.set(handle, result);
+    return result;
+  }
+
+  adopt(world: RenderResourceScope, changes: readonly AssetChange[]): void {
+    const roots = this.worlds.get(world);
+    if (roots === undefined) return;
+    for (const change of changes) {
+      const before = roots.get(change.handle);
+      if (before === undefined) continue;
+      if (
+        change.removed ||
+        change.ranges.length === 0 ||
+        change.ranges.some((range) => range.path.length !== 1 || range.path[0] !== 'heights')
+      ) {
+        roots.delete(change.handle);
+        continue;
+      }
+      const asset = world.resolveAsset<TerrainAsset>(change.handle).unwrap();
+      const stride = asset.subsectionVertices - 1;
+      const nx = (asset.columns - 1) / stride;
+      const nz = (asset.rows - 1) / stride;
+      const indices = new Set<number>();
+      for (const range of change.ranges) {
+        const rowBytes = range.rowBytes ?? range.byteLength;
+        const byteStride = range.byteStride ?? rowBytes;
+        const rowCount = (range.byteLength - rowBytes) / byteStride + 1;
+        for (let row = 0; row < rowCount; row++) {
+          let start = (range.byteOffset + row * byteStride) / 4;
+          let remaining = rowBytes / 4;
+          while (remaining > 0) {
+            const x = start % asset.columns;
+            const z = Math.floor(start / asset.columns);
+            const count = Math.min(remaining, asset.columns - x);
+            const minX = Math.max(0, Math.ceil(x / stride) - 1);
+            const maxX = Math.min(nx - 1, Math.floor((x + count - 1) / stride));
+            const minZ = Math.max(0, Math.ceil(z / stride) - 1);
+            const maxZ = Math.min(nz - 1, Math.floor(z / stride));
+            for (let sz = minZ; sz <= maxZ; sz++)
+              for (let sx = minX; sx <= maxX; sx++) indices.add(sz * nx + sx);
+            start += count;
+            remaining -= count;
+          }
+        }
+      }
+      let sections = before.sections;
+      for (const index of indices)
+        sections = put(sections, fixedSection(world, asset, index), 0, index, 1);
+      roots.set(change.handle, {
+        ...before,
+        version: change.revision,
+        asset: fixedAsset(asset),
+        sections,
+      });
+    }
+  }
+
+  detach(world: RenderResourceScope): void {
+    this.worlds.delete(world);
+  }
+  clear(): void {
+    this.worlds = new WeakMap();
+  }
+}
+
+export function terrainDrawSection(source: TerrainDrawSource, index: number): TerrainDrawSection {
+  const section = at(source.sections, index)?.node.value;
+  if (section === undefined)
+    terrainSourceError('terrain-query-unavailable', 'section', 'a fixed prepared Terrain section');
+  return section;
 }
 
 export function terrainSourceError(
@@ -56,11 +231,11 @@ export function terrainSourceError(
 /** One real ECS identity; section draw expansion belongs to the view projection. */
 export function extractTerrainSources(
   world: World,
-  assets: AssetRegistry,
-  context: MaterialCookRasterContext | undefined,
+  _assets: AssetRegistry,
+  _context: MaterialCookRasterContext | undefined,
   worldId: number,
   renderables: RenderableSnapshot[],
-  dispatch: DispatchEntry[],
+  _dispatch: DispatchEntry[],
   selected?: ReadonlySet<number>,
   visibility?: { effective(entity: number): string },
   retainHidden = false,
@@ -83,21 +258,10 @@ export function extractTerrainSources(
     if (transform === undefined) continue;
     const layer = row.has(Layer) ? (row.get(Layer)?.value ?? 0) : 0;
     const shadow = row.has(ShadowParticipation) ? row.get(ShadowParticipation) : undefined;
-    const value = world.sharedRefs.resolve<'TerrainAsset', Asset>(terrain.asset);
+    const value = runtimeAssets(world.assets).resolveAsset<TerrainAsset>(terrain.asset);
     if (!value.ok || value.value.kind !== 'terrain')
       terrainSourceError('terrain-query-unavailable', 'asset', 'one loaded TerrainAsset');
     const asset = value.value as TerrainAsset;
-    const guid = assets.guidOf(asset);
-    if (guid === undefined)
-      terrainSourceError(
-        'terrain-query-unavailable',
-        'asset revision',
-        'a catalogued terrain root with a validated derived closure',
-      );
-    // Catalog HMR invalidates the old publication before asynchronous loading completes.
-    // Isolate this source until its coherent replacement binds; ordinary frame work must
-    // continue so Physics and the completed-frame gameplay gate can adopt that replacement.
-    if (assets.lookup(guid) !== asset || !assets.terrainClosureCurrent(asset)) continue;
     const matrix = transform;
     if (!terrainTranslationValid(asset, matrix))
       terrainSourceError(
@@ -116,80 +280,22 @@ export function extractTerrainSources(
         'LOD',
         'finite positive LOD0 diameter and a forced LOD within resident range',
       );
-    const handle = <T extends 'MeshAsset' | 'TextureAsset' | 'MaterialAsset'>(
-      guid: string,
-      kind: Asset['kind'],
-      tag: T,
-    ): Handle<T, 'shared'> => {
-      const payload = assets.lookup(guid);
-      if (!payload || payload.kind !== kind)
-        terrainSourceError(
-          'terrain-query-unavailable',
-          guid,
-          `loaded ${kind} dependency at the same adopted source revision`,
-        );
-      const handle = internSharedRefFromGuid(world, assets, guid, tag);
-      if (handle === undefined)
-        terrainSourceError('terrain-query-unavailable', guid, 'retained dependency');
-      return handle;
-    };
-    const grids = asset.grids.map((g) => handle(g, 'mesh', 'MeshAsset'));
-    const heightTextures = asset.sections.map((s) =>
-      handle(s.heightTexture, 'texture', 'TextureAsset'),
-    );
-    const weightTextures = asset.sections.map((s) =>
-      handle(s.weightTexture, 'texture', 'TextureAsset'),
-    );
-    const passes: (readonly MaterialPass[])[] = [];
-    const materials: MaterialSnapshot[] = asset.sections.map((s, sectionIndex) => {
-      const materialHandle = handle(s.material, 'material', 'MaterialAsset');
-      const resolved = walkMaterialPassesOverSharedRefs(world, materialHandle, assets);
-      if (!resolved.ok) throw resolved.error;
-      passes.push(
-        shadow?.cast === false
-          ? resolved.value.passes.filter(
-              (pass) =>
-                (pass.renderState?.tags as Record<string, string> | undefined)?.LightMode !==
-                  'ShadowCaster' && pass.name !== 'shadow-caster',
-            )
-          : resolved.value.passes,
-      );
-      const snapshot = resolveMaterialSnapshot(
-        Number(materialHandle),
-        world,
-        assets,
-        undefined,
-        undefined,
-        context === undefined ? undefined : { ...context, geometry: 'terrain' },
-      );
-      if (
-        snapshot.textureHandles?.get('terrainHeightTexture') !== heightTextures[sectionIndex] ||
-        snapshot.textureHandles?.get('terrainWeightTexture') !== weightTextures[sectionIndex]
-      )
-        terrainSourceError(
-          'terrain-query-unavailable',
-          'material terrain bindings',
-          'the GPU height/control bindings from this admitted terrain closure',
-        );
-      return snapshot;
+    const grids = asset.grids.map((value) => {
+      if (typeof value !== 'number')
+        terrainSourceError('terrain-query-unavailable', 'grids', 'admitted mesh references');
+      return value;
     });
-    const material = materials[0];
-    if (!material || !grids[0])
-      terrainSourceError('terrain-input-invalid', 'sections', 'at least one complete subsection');
-    const index = renderables.length;
-    let min = Infinity,
-      max = -Infinity;
-    for (const section of asset.sections) {
-      min = Math.min(min, section.minHeight);
-      max = Math.max(max, section.maxHeight);
-    }
-    const [minHeight, maxHeight] = terrainHeightBounds(min, max, asset.heightRange);
+    if (!grids[0])
+      terrainSourceError('terrain-input-invalid', 'grids', 'at least one complete subsection grid');
+    const [minHeight, maxHeight] = terrainHeightBounds(...asset.heightRange);
     renderables.push({
+      layer,
+      ...(shadow?.cast === false ? { shadowCaster: false as const } : {}),
       assetHandle: Number(grids[0]),
       transform: { world: new Float32Array(matrix) },
-      material,
-      materials,
-      materialBindingSources: materials.map(() => 'mesh-default'),
+      material: rootMaterial,
+      materials: [rootMaterial],
+      materialBindingSources: ['mesh-default'],
       worldId,
       entityKey: row.entity,
       ...(authorVisible ? {} : { authorVisible: false }),
@@ -210,27 +316,10 @@ export function extractTerrainSources(
       ]),
       terrain: {
         handle: terrain.asset,
-        asset,
-        grids,
-        heightTextures,
-        weightTextures,
-        passes,
         lod0Diameter: terrain.lod0Diameter,
         forcedLod: terrain.forcedLod,
         layer,
       },
     });
-    if (authorVisible)
-      appendMaterialDispatchEntries(
-        dispatch,
-        passes[0] ?? [],
-        row.entity,
-        material.materialHandle ?? 0,
-        index,
-        layer,
-        material.paramSnapshot,
-        0,
-        material.materialProgramKeys,
-      );
   }
 }

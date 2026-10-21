@@ -1,11 +1,16 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { FixedTime, FixedUpdate, defineComponent, type EntityHandle, type World, Update } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, FRAME_START_SCAN_SYSTEM_NAME, type InputSnapshot } from '@forgeax/engine-input';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle } from '@forgeax/engine-types';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SPEED = 2.5;
 
@@ -41,21 +46,29 @@ export interface PhysicsFixedState {
 
 export const PHYSICS_FIXED_STATE = 'bevyPhysicsFixedState';
 
-function material(world: World, color: readonly [number, number, number, number]): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard({ baseColor: color }));
+function material(world: World, color: readonly [number, number, number, number]): AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard({ baseColor: color })).unwrap();
 }
 
 export function buildPhysicsFixedWorld(world: World): PhysicsFixedState {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const floor = material(world, [0.08, 0.12, 0.24, 1]);
   world.spawn(
     { component: Transform, data: { pos: [0, -1.5, 0], quat: [0, 0, 0, 1], scale: [14, 0.05, 8] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [floor] } },
   );
 
   const player = world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [0.8, 0.8, 0.8] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [material(world, [0.95, 0.28, 0.2, 1])] } },
     { component: AccumulatedInput, data: {} },
     { component: Velocity, data: {} },

@@ -1,4 +1,9 @@
-import { type MaterialAsset, standardSurfaceParameters, withClipping } from '@forgeax/engine-types';
+import {
+  type MaterialAsset,
+  standardSurfaceParameters,
+  unlitMaterialParameters,
+  withClipping,
+} from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createMaterialPackCooker } from '../pack-cooker';
 
@@ -40,13 +45,7 @@ it('cooks the same local policy for Unlit without moving texture coordinates int
     source: withClipping(
       {
         kind: 'material',
-        parameters: [
-          { name: 'baseColor', type: 'color' },
-          { name: 'alphaCutoff', type: 'f32' },
-          { name: 'alphaHash', type: 'f32', default: 0 },
-          { name: 'shading', type: 'f32', default: 0 },
-          { name: 'baseColorTexture', type: 'texture' },
-        ],
+        parameters: unlitMaterialParameters('linear'),
         passes: [
           { name: 'forward', program: { module: 'forgeax_material::unlit' } },
           { name: 'shadow', program: { module: 'forgeax_material::unlit' } },

@@ -3,7 +3,7 @@
 > [!NOTE]
 > **LO original chapter**: [LearnOpenGL 4.2 Stencil Testing](https://learnopengl.com/Advanced-OpenGL/Stencil-testing)
 >
-> **Engine surface**: `createApp` + `MeshRenderer` with `stencilWriteMask`/`stencilReadMask` in `MaterialRenderState` + `stencilReference` in `MaterialPass` + `configureRuntimeAssetCatalog` + `loadByGuid<TextureAsset>` + custom `registerMaterialShader` (outline-solid).
+> **Engine surface**: `createApp` + `MeshRenderer` with `stencilWriteMask`/`stencilReadMask` in `MaterialRenderState` + `stencilReference` in `MaterialPass` + `configureRuntimeAssetCatalog` + `assets.load(guid, 'texture')` + custom `registerMaterialShader` (outline-solid).
 
 ## Hit-rate index (AI user fast-locate)
 
@@ -14,7 +14,7 @@
 | `stencilReference` draw-call state | `stencilReference:` | `src/index.ts` (cube + outline MaterialPass) |
 | `stencil.compare='not-equal'` stencil test | `compare: 'not-equal'` | `src/index.ts` (outline pass renderState.stencil) |
 | Multi-pass material (per-entity passes) | `passes: [` | `src/index.ts` (cube + floor + outline three-pass layout) |
-| `loadByGuid<TextureAsset>` GUID texture loading | `loadByGuid<TextureAsset>` | `src/index.ts` (bootstrap section) |
+| `assets.load(guid, 'texture')` GUID texture loading | `assets.load(guid, 'texture')` | `src/index.ts` (bootstrap section) |
 | `registerMaterialShader` custom shader | `registerMaterialShader` | `src/index.ts` (outline-solid shader registration) |
 | Custom WGSL pure-color unlit shader | `outline-solid.wgsl` | `src/outline-solid.wgsl` |
 
@@ -57,10 +57,10 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-2-stencil-testing" ty
 | Depth test disable (outline) | `glDisable(GL_DEPTH_TEST)` | `renderState.depthWriteEnabled: false` (outline pass renderState) |
 | Outline scale 1.1 | `glm::scale(model, glm::vec3(1.1))` | ECS `Transform` component: `scale=[1.1, 1.1, 1.1]` |
 | Single-color outline shader | `2.stencil_single_color.fs` outputs constant `vec4(0.04,0.28,0.26,1.0)` | `outline-solid.wgsl` fragment returns `material.baseColor` (uniform parameter) |
-| Floor plane | Custom 6-vertex plane at Y=-0.5 with texcoord=2.0 | `HANDLE_QUAD` (engine-builtin 1x1 quad) rotated -90 deg around X, scaled 5x5 at Y=-0.5 |
-| Cube geometry | 1x1x1 CCW cube, 36 vertices | `HANDLE_CUBE` (engine-builtin CCW cube) |
+| Floor plane | Custom 6-vertex plane at Y=-0.5 with texcoord=2.0 | `createPrimitiveMesh('quad')` (engine-builtin 1x1 quad) rotated -90 deg around X, scaled 5x5 at Y=-0.5 |
+| Cube geometry | 1x1x1 CCW cube, 36 vertices | `createPrimitiveMesh('cube')` (engine-builtin CCW cube) |
 | Cube transforms | `glm::translate((-1,0,-1))` / `glm::translate((2,0,0))` | ECS `Transform` component: `pos=[-1, 0, -1]` / `pos=[2, 0, 0]` |
-| Texture loading | `stb_image.h` + `loadTexture(path)` with `GL_REPEAT` | `configureRuntimeAssetCatalog` + `loadByGuid<TextureAsset>` with sidecar `.meta.json` |
+| Texture loading | `stb_image.h` + `loadTexture(path)` with `GL_REPEAT` | `configureRuntimeAssetCatalog` + `assets.load(guid, 'texture')` with sidecar `.meta.json` |
 | Camera | LO `Camera` class at (0,0,3), Zoom=45 deg | `Transform` (at (0,0,3)) + `Camera` (fov=PI/4, near=0.1, far=100) |
 | Window + loop | `glfwCreateWindow` + `while(!glfwWindowShouldClose)` | `createApp(canvas, opts)` from `@forgeax/engine-app` |
 
@@ -73,7 +73,7 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-2-stencil-testing" ty
 | Per-pass scale | `glm::scale(model, vec3(1.1))` applied per-draw-call on the same VAO | Separate outline entity with `Transform.scale = 1.1` -- structurally equivalent |
 | Multi-pass | Sequential `draw` + `draw` on same VAO with different state per call | Three entity groups (floor / cubes / outlines) with distinct MaterialAssets |
 | Stencil state API | `glStencilMask` / `glStencilFunc` / `glStencilOp` global state mutations per draw | Declarative per-pass `renderState` + `stencilReference` on each `MaterialAsset` |
-| Floor texcoord | 6 custom vertices, texcoord=2.0 on edges for REPEAT tiling | `HANDLE_QUAD` [0,1] texcoords; metal.png tiles 1x across 5-unit quad (same tiling frequency as LO's 2x across 10 units) |
+| Floor texcoord | 6 custom vertices, texcoord=2.0 on edges for REPEAT tiling | `createPrimitiveMesh('quad')` [0,1] texcoords; metal.png tiles 1x across 5-unit quad (same tiling frequency as LO's 2x across 10 units) |
 | Render loop | `glfwSwapBuffers` + `glfwPollEvents` | `createApp` rAF frame-loop with `Time` resource + auto input |
 
 > [!IMPORTANT]
@@ -86,7 +86,7 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-2-stencil-testing" ty
 | `src/index.ts` | ~280 | Three-section bootstrap -- spawns floor entity (stencilWriteMask=0x00) + 2 cube entities (stencil write ref=1) + 2 outline entities (stencil compare='not-equal' + scale=1.1); loads textures via GUID; registers outline-solid shader |
 | `src/outline-solid.wgsl` | ~65 | Custom WGSL pure-color unlit material shader: vertex pass-through + fragment return `material.baseColor` |
 | `src/outline-solid.wgsl.meta.json` | ~10 | Sidecar required by `vite-plugin-shader`: declares `.wgsl` file as `kind: 'material-shader'`; omitting it causes vite build to ignore the shader |
-| `scripts/smoke-dawn.mjs` | ~540 | Dawn-node pixel-readback smoke: compose outline-solid WGSL, decode textures via `decodeImageFromFile`, register with `registerWithGuid`, draw 60 frames, verify >=1 mesh site exceeds clear-color threshold |
+| `scripts/smoke-dawn.mjs` | ~540 | Dawn-node pixel-readback smoke: compose outline-solid WGSL, decode textures via `decodeImageFromFile`, admit decoded textures with `assets.create`, draw 60 frames, verify >=1 mesh site exceeds clear-color threshold |
 | `package.json` | ~50 | Workspace metadata + dependencies (`engine-app`, `engine-runtime`, `engine-ecs`, `engine-pack`, `engine-types`) |
 
 ## AI user discoverability

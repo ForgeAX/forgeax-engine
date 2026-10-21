@@ -6,8 +6,11 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { samplerContribution } from '../assets/asset-decoders';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
+import { worldRenderResources } from '../publication/resource-scope';
 import { resolveMaterialSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 
@@ -23,10 +26,9 @@ describe('material resource references across submeshes', () => {
     'string',
     'handle',
     'missing',
-  ] as const)('preserves %s texture and sampler references in every material slot', (representation) => {
-    const world = new World();
-    const assets = new AssetRegistry(
-      new ShaderRegistry({
+  ] as const)('preserves %s texture and sampler references in every material slot', async (representation) => {
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({
         device: {
           createShaderModule() {
             throw new Error('extraction must not compile shaders');
@@ -34,7 +36,9 @@ describe('material resource references across submeshes', () => {
         },
         manifestUrl: undefined,
       }),
-    );
+    });
+    assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const world = new World({ assets });
     const texture: TextureAsset = {
       kind: 'texture',
       format: 'rgba8unorm',
@@ -53,25 +57,33 @@ describe('material resource references across submeshes', () => {
     const layersGuid = guid('019d0000-0000-7000-8000-000000000012');
     const samplerGuid = guid('019d0000-0000-7000-8000-000000000013');
     if (representation !== 'missing') {
-      assets.catalog(textureGuid, texture).unwrap();
-      assets.catalog(layersGuid, layers).unwrap();
-      assets.catalog(samplerGuid, sampler).unwrap();
+      publishRuntimeAssets(assets, [
+        { guid: AssetGuid.format(textureGuid), asset: texture },
+        { guid: AssetGuid.format(layersGuid), asset: layers },
+        { guid: AssetGuid.format(samplerGuid), asset: sampler },
+      ]);
+      for (const [guid, kind] of [
+        [textureGuid, 'texture'],
+        [layersGuid, 'texture'],
+        [samplerGuid, 'sampler'],
+      ] as const)
+        (await assets.load(AssetGuid.format(guid), kind)).unwrap();
     }
     const textureRef =
       representation === 'handle'
-        ? world.allocSharedRef('TextureAsset', texture)
+        ? assets.create(texture).unwrap()
         : representation === 'string'
           ? AssetGuid.format(textureGuid)
           : textureGuid;
     const layersRef =
       representation === 'handle'
-        ? world.allocSharedRef('TextureAsset', layers)
+        ? assets.create(layers).unwrap()
         : representation === 'string'
           ? AssetGuid.format(layersGuid)
           : layersGuid;
     const samplerRef =
       representation === 'handle'
-        ? world.allocSharedRef('SamplerAsset', sampler)
+        ? assets.create(sampler).unwrap()
         : representation === 'string'
           ? AssetGuid.format(samplerGuid)
           : samplerGuid;
@@ -87,20 +99,30 @@ describe('material resource references across submeshes', () => {
         layers: { texture: layersRef, sampler: samplerRef },
       },
     });
-    const firstMaterial = world.allocSharedRef('MaterialAsset', material());
-    const secondMaterial = world.allocSharedRef('MaterialAsset', material());
+    if (representation === 'missing') {
+      expect(assets.create(material())).toMatchObject({
+        ok: false,
+        error: { code: 'asset-reference-invalid' },
+      });
+      expect(world.inspect().entityCount).toBe(0);
+      return;
+    }
+    const firstMaterial = assets.create(material()).unwrap();
+    const secondMaterial = assets.create(material()).unwrap();
     const handles = [firstMaterial, secondMaterial];
     const box = createBoxGeometry(1, 1, 1).unwrap();
     const submesh = box.submeshes[0];
     if (submesh === undefined) throw new Error('box has no submesh');
-    const mesh = world.allocSharedRef('MeshAsset', {
-      ...box,
-      materialSlots: [{ slotName: 'first' }, { slotName: 'second' }],
-      submeshes: [
-        { ...submesh, materialSlot: 0 },
-        { ...submesh, materialSlot: 1 },
-      ],
-    });
+    const mesh = assets
+      .create({
+        ...box,
+        materialSlots: [{ slotName: 'first' }, { slotName: 'second' }],
+        submeshes: [
+          { ...submesh, materialSlot: 0 },
+          { ...submesh, materialSlot: 1 },
+        ],
+      })
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: {} },
@@ -109,22 +131,17 @@ describe('material resource references across submeshes', () => {
       )
       .unwrap();
 
-    const extracted = extractFrames([world], 0, assets).renderables[0];
+    const extracted = extractFrames([world], 0, assets).renderables.at(0);
     expect(extracted?.materials).toHaveLength(2);
-    const primary = extracted?.materials[0];
-    const secondary = extracted?.materials[1];
+    const primary = extracted?.materials[0]?.snapshot;
+    const secondary = extracted?.materials[1]?.snapshot;
     for (const snapshot of [
       primary,
       secondary,
-      resolveMaterialSnapshot(secondMaterial, world, assets),
+      resolveMaterialSnapshot(secondMaterial, worldRenderResources(world), assets),
     ]) {
       expect(snapshot?.textureHandles).toEqual(primary?.textureHandles);
       expect(snapshot?.samplerHandles).toEqual(primary?.samplerHandles);
-      if (representation === 'missing') {
-        expect(snapshot?.textureHandles).toBeUndefined();
-        expect(snapshot?.samplerHandles).toBeUndefined();
-        continue;
-      }
       expect(snapshot?.textureHandles?.size).toBe(2);
       expect(snapshot?.samplerHandles?.size).toBe(2);
       for (const field of ['baseColorTexture', 'layers']) {
@@ -133,14 +150,12 @@ describe('material resource references across submeshes', () => {
         if (textureHandle === undefined || samplerHandle === undefined) {
           throw new Error(`missing ${field} texture or sampler`);
         }
-        expect(world.sharedRefs.resolve(textureHandle).unwrap()).toEqual(
-          field === 'layers' ? layers : texture,
-        );
-        expect(world.sharedRefs.resolve(samplerHandle).unwrap()).toEqual(sampler);
+        expect(assets.read(textureHandle).unwrap()).toEqual(field === 'layers' ? layers : texture);
+        expect(assets.read(samplerHandle).unwrap()).toEqual(sampler);
       }
     }
-    const next = extractFrames([world], 0, assets).renderables[0];
-    expect(next?.materials[1]?.textureHandles).toEqual(secondary?.textureHandles);
-    expect(next?.materials[1]?.samplerHandles).toEqual(secondary?.samplerHandles);
+    const next = extractFrames([world], 0, assets).renderables.at(0);
+    expect(next?.materials[1]?.snapshot.textureHandles).toEqual(secondary?.textureHandles);
+    expect(next?.materials[1]?.snapshot.samplerHandles).toEqual(secondary?.samplerHandles);
   });
 });

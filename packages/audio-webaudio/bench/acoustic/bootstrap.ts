@@ -3,7 +3,6 @@ import { audioPlugin, AudioSource, AudioListener, AcousticRegion } from '@forgea
 import { Update, type EntityHandle } from '@forgeax/engine/ecs';
 import { defineSharedKernel } from '@forgeax/engine/ecs/shared';
 import { GlobalTransform, Transform, worldDespawnScene } from '@forgeax/engine/scene';
-import type { SceneAsset } from '@forgeax/engine/types';
 import { AcousticCounter, run } from './kernel';
 const entry: ExecutionBootstrapEntry = data => ({ features: [], plugins: [audioPlugin(), {
   name: 'saved-acoustic-rooms', inject: ['world','assets','audio','executionBootstrapHost'],
@@ -13,8 +12,8 @@ const entry: ExecutionBootstrapEntry = data => ({ features: [], plugins: [audioP
     if(world.components.resolve('Transform')!==Transform||world.components.resolve('GlobalTransform')!==GlobalTransform)
       throw new Error('public Worker Scene component module identity diverged');
     const assets=ctx.assets;if(!assets)throw new Error('asset provider absent');
-    const loaded=(await assets.loadByGuid<SceneAsset>(assets.parseGuid(guid))).unwrap();
-    const handle=world.allocSharedRef('SceneAsset',loaded),root=assets.instantiate(handle,world).unwrap();
+    const handle=(await assets.load(guid, 'scene')).unwrap();
+    const root=assets.instantiate(handle,world).unwrap();
     const source=[...world.query({read:[AudioSource]}).unwrap()][0]?.entity;
     const listener=[...world.query({with:[AudioListener]}).unwrap()][0]?.entity;
     if(source===undefined||listener===undefined)throw new Error('saved source/listener absent');
@@ -42,7 +41,7 @@ const entry: ExecutionBootstrapEntry = data => ({ features: [], plugins: [audioP
         for(const entity of counters)world.despawn(entity).unwrap();
         worldDespawnScene(world,root).unwrap();
       }
-      world.sharedRefs.release(handle).unwrap();
+      assets.release(handle).unwrap();
     };
   },
 }]});

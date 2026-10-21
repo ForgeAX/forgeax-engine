@@ -68,7 +68,9 @@ describe('single-layer medium shader model', () => {
     expect(template).toContain('evaluateProbeDiffuse');
     expect(template).toContain('u32(probeHeader.x) + 1u == probeIdentity.x');
     expect(template).toContain('u32(probeHeader.y) == probeIdentity.y');
-    expect(template).toContain('let probeBase = probeIdentity.x * 16u');
+    expect(template).toContain('let requestedProbeBase = probeIdentity.x * 16u');
+    expect(template).toContain('requestedProbeBase + 9u < arrayLength(&probeBlendRecords)');
+    expect(template).toContain('let probeBase = select(0u, requestedProbeBase, probeInBounds)');
     expect(template).toContain('evalDirectionalShadowFactor');
     expect(template).toContain('@group(2) @binding(7) var ssaoBlurredTexture');
     expect(template).toContain('get_ssao_intensity()');

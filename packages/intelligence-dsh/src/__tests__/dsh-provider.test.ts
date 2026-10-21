@@ -312,3 +312,33 @@ describe('DeepSeek Harness intelligence provider', () => {
     });
   });
 });
+
+it('shares provider close completion while its harness is still retiring', async () => {
+  let retire!: () => void;
+  const retirement = new Promise<void>((resolve) => {
+    retire = resolve;
+  });
+  const provider = createDshIntelligenceProvider({
+    launch: { command: 'unused' },
+    createHarness: () => ({
+      async run() {
+        await retirement;
+        return { finalResponse: 'late' };
+      },
+      close: () => retirement,
+    }),
+  });
+  const service = createIntelligenceRuntime(provider);
+  service.submit({ input: 'pending' });
+  const first = provider.close();
+  let done = false;
+  const second = provider.close().then(() => {
+    done = true;
+  });
+  await Promise.resolve();
+  expect(done).toBe(false);
+  retire();
+  await Promise.all([first, second]);
+  expect(service.poll().map((event) => event.type)).toEqual(['cancelled']);
+  await service.close();
+});

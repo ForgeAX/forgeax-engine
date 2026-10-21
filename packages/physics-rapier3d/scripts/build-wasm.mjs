@@ -21,6 +21,8 @@ const inputs = [
   'scripts/build-wasm.mjs',
   'scripts/native-init.js',
   'scripts/build-declarations.mjs',
+  'scripts/native-tests.Cargo.toml',
+  'scripts/native-tests.Cargo.lock',
   bindingsManifest,
   lockfile,
   '../../scripts/lib/rust-build-paths.mjs',
@@ -108,6 +110,18 @@ for (const name of ['rapier', 'parry']) {
   }
 }
 const rapier = join(work, 'rapier');
+if (process.argv.includes('--test-native')) {
+  if (dimension !== '3d') throw new Error('shared geometry native tests are 3D');
+  const tests = join(work, 'native-tests');
+  await mkdir(tests, { recursive: true });
+  await cp(join(root, 'scripts/native-tests.Cargo.toml'), join(tests, 'Cargo.toml'));
+  await cp(join(root, 'scripts/native-tests.Cargo.lock'), join(tests, 'Cargo.lock'));
+  run('cargo', ['test', '--locked', '--manifest-path', join(tests, 'Cargo.toml')], root, {
+    CARGO_TARGET_DIR: join(cache, 'native-test-target'),
+    CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? '4',
+  });
+  process.exit(0);
+}
 const bindings = join(rapier, 'typescript');
 await writeFile(
   join(bindings, 'Cargo.toml'),
@@ -128,7 +142,7 @@ await cp(join(root, bindingsManifest), join(bindings, `builds/rapier${dimension}
 await cp(join(root, lockfile), join(bindings, 'Cargo.lock'));
 run('cargo', ['fetch', '--locked', '--manifest-path', join(bindings, 'Cargo.toml')], root);
 const wasm = join(work, 'wasm');
-const targetDirectory = join(resolve(process.env.CARGO_TARGET_DIR ?? join(cache, 'target')), contentKey);
+const targetDirectory = join(resolve(process.env.CARGO_TARGET_DIR ?? join(cache, 'target')), dimension);
 run(
   'wasm-pack',
   ['build', '--target', 'web', '--release', '--out-dir', wasm, '--', '--locked'],

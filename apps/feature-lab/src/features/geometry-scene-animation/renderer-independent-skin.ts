@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createWorldContext, type EntityHandle, World } from '@forgeax/engine/ecs';
 import { Name, scenePlugin, Transform } from '@forgeax/engine/scene';
 import { resolveSkinJoints, Skin, skinningPlugin } from '@forgeax/engine/skinning';
@@ -14,6 +15,10 @@ export default defineFeature({
     'All checks pass: joint paths resolve to the named entities in order, Skin stores the skeleton handle and joints, and an unknown joint returns skin-joint-path-unresolved with expected/hint/detail.',
   async run(checks) {
     const world = new World();
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     await createWorldContext(world, [scenePlugin(), skinningPlugin()]);
     const names = new Map<string, EntityHandle>();
     for (const name of ['Hips', 'Spine', 'Head']) {
@@ -44,7 +49,7 @@ export default defineFeature({
       jointCount: 3,
       inverseBindMatrices: new Float32Array(48).map((_, i) => ((i % 16) % 5 === 0 ? 1 : 0)),
     };
-    const handle = world.allocSharedRef('SkeletonAsset', skeleton);
+    const handle = sceneAssets.create(skeleton).unwrap();
     const added = world.addComponent(skinEntity, {
       component: Skin,
       data: { skeleton: handle, joints: Array.from(resolved.value) },

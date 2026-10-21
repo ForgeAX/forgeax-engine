@@ -193,9 +193,10 @@ function startServer(templateSlug) {
       cwd: resolve(ROOT, 'apps/preview'),
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
-      // This child serves the scoped development Pack protocol, even when its
-      // caller builds production artifacts in the same shell.
+      // Finish native asset production at the Catalog barrier, outside the
+      // browser deadline, even when the caller selects on-demand preparation.
       env: { ...process.env, NODE_ENV: 'development', FORGEAX_TEMPLATE_SMOKE: '1', FORGEAX_TEMPLATE_SMOKE_SLUGS: templateSlug,
+        FORGEAX_DEV_PACK_READINESS: 'before-consume',
         ...(templateSmokeRoot === undefined ? {} : { FORGEAX_TEMPLATE_SMOKE_ROOT: templateSmokeRoot }) },
     },
   );

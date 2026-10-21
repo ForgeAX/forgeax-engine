@@ -9,6 +9,16 @@
     "facts": "Mesh facts",
     "slots": "Material slots",
     "resetView": "Reset view",
-    "navigationHint": "WASD/QE move · Shift boost · RMB look/fly · wheel speed · F focus"
+    "viewModeDescription": "Switch between material and wireframe previews.",
+    "showDescription": "Set visibility for collision, bounds and statistics.",
+    "resetViewDescription": "Restore the view from when this mesh preview was opened.",
+    "previewOptions": "Mesh preview options", "viewMode": "View mode", "materialMode": "Material", "wireframe": "Wireframe",
+    "show": "Show", "collision": "Collision", "bounds": "Bounds", "statistics": "Statistics",
+    "valueUnavailable": "Unavailable", "present": "Present", "none": "None", "noCollision": "This mesh does not contain collision data.",
+    "stats": {
+      "triangles": "Triangles", "vertices": "Vertices", "uvChannels": "UV channels", "submeshes": "Submeshes",
+      "materialSlots": "Material slots", "dimensions": "Local dimensions", "declaredLods": "Declared LODs",
+      "collisionData": "Collision data", "collisionTriangles": "Collision triangles"
+    }
   }
 }

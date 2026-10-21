@@ -265,8 +265,8 @@ const _tmpInvVP = new Float32Array(16);
  * (DOM convention: y-down). They are clamped to `[0, vpWidth]` / `[0, vpHeight]` and
  * sanitized against NaN/Inf.
  *
- * `kind` discriminates the projection type so callers can branch on the result if needed;
- * both paths use the same two-point unproject algorithm.
+ * Perspective and orthographic projections share the same two-point unproject; the
+ * matrix alone determines the ray.
  *
  * @param out The Ray to write into.
  * @param screenX Horizontal pixel coordinate (y-down origin, top-left).
@@ -275,7 +275,6 @@ const _tmpInvVP = new Float32Array(16);
  * @param vpHeight Viewport height in pixels.
  * @param view Camera view matrix (world→eye).
  * @param proj Camera projection matrix (eye→clip).
- * @param kind `'perspective'` or `'orthographic'`.
  * @returns `out` (same Ray instance).
  */
 export function screenToRay(
@@ -286,7 +285,6 @@ export function screenToRay(
   vpHeight: number,
   view: Mat4Like,
   proj: Mat4Like,
-  _kind: 'perspective' | 'orthographic',
 ): Ray {
   // --- input sanitization ---
   if (

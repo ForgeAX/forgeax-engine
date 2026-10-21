@@ -9,7 +9,7 @@ it('owns accepted native frames, rejecting duplicates and closed frames before c
   const identity = { source: 'native-video-lifetime', epoch: 1 };
   const publisher = createRenderPublisher(
     new World(),
-    new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+    new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
     identity,
   );
   const candidate = publisher.prepare(0).unwrap();

@@ -21,6 +21,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { CHANNEL_EPSILON } from './lighting-channels.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -33,29 +34,31 @@ export async function verifyCharacterFill(
   save: (name: string, bytes: Uint8Array) => void | Promise<void>,
 ) {
   const world = new World();
-  const roleMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.35, 0.45, 0.65, 1],
-      roughness: 0.7,
-      emissive: [0.01, 0.01, 0.01],
-      emissiveIntensity: 1,
-    }),
-  );
-  const environmentMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.2, 0.3, 0.35, 1],
-      roughness: 0.9,
-      emissive: [0.01, 0.01, 0.01],
-      emissiveIntensity: 1,
-    }),
-  );
+  const roleMaterial = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.35, 0.45, 0.65, 1],
+        roughness: 0.7,
+        emissive: [0.01, 0.01, 0.01],
+        emissiveIntensity: 1,
+      }),
+    )
+    .unwrap();
+  const environmentMaterial = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.2, 0.3, 0.35, 1],
+        roughness: 0.9,
+        emissive: [0.01, 0.01, 0.01],
+        emissiveIntensity: 1,
+      }),
+    )
+    .unwrap();
   const part = (mesh: MeshAsset, x: number, y: number) =>
     world
       .spawn(
         { component: Transform, data: { pos: [x - 0.45, y, -4] } },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+        { component: MeshFilter, data: { assetHandle: testAssets(world).create(mesh).unwrap() } },
         { component: MeshRenderer, data: { materials: [roleMaterial], lightingChannels: 3 } },
       )
       .unwrap();
@@ -69,7 +72,9 @@ export async function verifyCharacterFill(
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(5, 3, 0.1).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(5, 3, 0.1).unwrap())
+            .unwrap(),
         },
       },
       { component: MeshRenderer, data: { materials: [environmentMaterial], lightingChannels: 1 } },

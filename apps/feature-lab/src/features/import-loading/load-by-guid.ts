@@ -1,6 +1,7 @@
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine/assets-runtime';
-import type { SamplerAsset } from '@forgeax/engine/types';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { samplerContribution } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
+import { installMemoryPack } from '../asset-formats/fixtures/memory-pack';
 
 const GUID = '019f1a00-0000-7000-8000-0000000000d1';
 const UNKNOWN = '019f1a00-0000-7000-8000-0000000000d2';
@@ -26,43 +27,37 @@ const PACK = {
 };
 
 export default defineFeature({
-  title: 'loadByGuid',
-  catalog: '`loadByGuid`',
+  title: 'Load by GUID',
+  catalog: '`AssetRegistry.load`',
   kind: 'headless',
   summary:
-    'An AssetRegistry with an in-memory Catalog row and a fetcher serving a Pack v2 body loads a sampler by GUID and returns the concrete SamplerAsset POD.',
+    'An AssetRegistry with an in-memory Catalog row and a fetcher serving a Pack v2 body loads a sampler by GUID and returns its owner-scoped runtime handle.',
   expect:
-    'The GUID resolves to kind "sampler" with the authored filters, a second load reuses the ready payload without fetching, and an uncatalogued GUID fails with a structured code.',
+    'The GUID resolves to kind "sampler" with the authored filters, a second load retains the same runtime identity without fetching, and an uncatalogued GUID fails with a structured code.',
   async run(checks) {
-    let fetches = 0;
-    const fetcher = (async (input: RequestInfo | URL) => {
-      fetches++;
-      return String(input) === PACKAGE_URL
-        ? new Response(JSON.stringify(PACK))
-        : new Response('', { status: 404 });
-    }) as typeof fetch;
-    const registry = new AssetRegistry({} as never);
-    registry.setCatalogSource(
-      createCatalogSource({
-        entries: [{ guid: GUID, kind: 'sampler', packageUrl: PACKAGE_URL, sourcePath: 'sampler' }],
-      }),
-      fetcher,
-    );
-    const first = await registry.loadByGuid<SamplerAsset>(registry.parseGuid(GUID));
+    const registry = new AssetRegistry();
+    registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const { fetched } = await installMemoryPack(registry, PACK.assets, PACKAGE_URL);
+    const first = await registry.load(GUID, 'sampler');
     checks.ok(
-      'loadByGuid ok',
+      'load returns a runtime handle',
       first.ok,
       first.ok ? undefined : String((first.error as { code?: unknown }).code),
     );
     if (first.ok) {
-      checks.equal('concrete POD kind', first.value.kind, 'sampler');
-      checks.equal('authored magFilter', first.value.magFilter, 'nearest');
-      checks.equal('authored addressModeV', first.value.addressModeV, 'clamp-to-edge');
+      const payload = registry.read(first.value).unwrap();
+      checks.equal('concrete POD kind', payload.kind, 'sampler');
+      checks.equal('authored magFilter', payload.magFilter, 'nearest');
+      checks.equal('authored addressModeV', payload.addressModeV, 'clamp-to-edge');
     }
-    const second = await registry.loadByGuid<SamplerAsset>(registry.parseGuid(GUID));
+    const second = await registry.load(GUID, 'sampler');
     checks.ok('second load ok', second.ok);
-    checks.equal('ready payload is reused (one fetch)', fetches, 1);
-    const missing = await registry.loadByGuid(registry.parseGuid(UNKNOWN));
+    checks.ok(
+      'repeated load retains the same identity',
+      first.ok && second.ok && first.value === second.value,
+    );
+    checks.equal('ready source is reused (one fetch)', fetched.length, 1);
+    const missing = await registry.load(UNKNOWN, 'sampler');
     checks.ok('uncatalogued GUID fails', !missing.ok);
     if (!missing.ok) {
       const code = String((missing.error as { code?: unknown }).code);
@@ -82,6 +77,6 @@ export default defineFeature({
           : false;
       }
     });
-    registry.clearCatalogSource();
+    registry.dispose();
   },
 });

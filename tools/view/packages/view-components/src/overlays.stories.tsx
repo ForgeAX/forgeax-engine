@@ -10,7 +10,7 @@ const meta = {
     docs: {
       description: {
         component:
-          '菜单面板：标题、分隔、危险项与快捷键。选中项使用 aria-selected 与勾选图标。通过 MenuDropdown、FloatingMenu 或 ContextMenu 呈现。',
+          'Menu items support titles, separators, destructive actions and shortcuts. Selection actions use aria-selected; radio and checkbox choices use their native menu roles with aria-checked. Present through MenuDropdown, FloatingMenu or ContextMenu.',
       },
     },
   },
@@ -57,4 +57,14 @@ export const SelectedItem: Story = {
       ]}
     />
   ),
+};
+
+export const CheckedItems: Story = {
+  render: () => <Menu items={[
+    { id: 'material', label: 'Material', selection: 'radio', checked: true },
+    { id: 'wireframe', label: 'Wireframe', selection: 'radio', checked: false },
+    { type: 'separator' },
+    { id: 'bounds', label: 'Bounds', selection: 'checkbox', checked: true },
+    { id: 'collision', label: 'Collision', selection: 'checkbox', checked: false, disabled: true },
+  ]} />,
 };

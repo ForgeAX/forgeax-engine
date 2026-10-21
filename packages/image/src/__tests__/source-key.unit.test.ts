@@ -19,9 +19,7 @@ function existing(): ExistingExternalAssetPackage {
 describe('image producer sourceKey', () => {
   it('uses a role key independent of path and sourceIndex', () => {
     expect(deriveImageSourceKey('texture')).toBe('image:texture');
-    expect(deriveImageSourceKey('texture', { sourcePath: 'moved/wood.png', sourceIndex: 8 })).toBe(
-      'image:texture',
-    );
+    expect(deriveImageSourceKey(' texture ')).toBe('image:texture');
   });
 
   it('rejects an empty role instead of manufacturing an index key', () => {

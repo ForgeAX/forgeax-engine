@@ -1,11 +1,10 @@
 export type TextureZoom = 'fit' | number;
-export type TextureAspect = 'all' | 'depth-only' | 'stencil-only';
-export type TextureAspectOptions = readonly [TextureAspect, ...TextureAspect[]];
+export type TextureAspectOptions = readonly [GPUTextureAspect, ...GPUTextureAspect[]];
 
 export interface TextureViewState {
   readonly mipLevel: number;
   readonly arrayLayer: number;
-  readonly aspect: TextureAspect;
+  readonly aspect: GPUTextureAspect;
   readonly zoom: TextureZoom;
 }
 

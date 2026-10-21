@@ -28,16 +28,6 @@ const GRID_SIZE = 46;
 const GRID_SPACING = 3;
 const CAMERA_TARGET: [number, number, number] = [GRID_SPACING / 2, 0, GRID_SPACING / 2];
 
-const world = new World();
-
-// Spawn DirectionalLight (no asset deps — can spawn before renderer ready)
-world.spawn({
-  component: DirectionalLight,
-  data: { castShadow: true,
-    direction: [-0.5, -1, -0.3],
-    color: [1, 1, 1], intensity: 1,
-  },
-});
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-culling: missing <canvas id="app"> in index.html');
@@ -50,20 +40,30 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const constructed = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
   if (!constructed.ok) throw constructed.error;
   const renderer = constructed.value.renderer;
+  const assets = constructed.value.assets;
+  const world = new World({ assets });
+
+  // Spawn DirectionalLight (no asset deps — can spawn before renderer ready)
+  world.spawn({
+    component: DirectionalLight,
+    data: { castShadow: true,
+      direction: [-0.5, -1, -0.3],
+      color: [1, 1, 1], intensity: 1,
+    },
+  });
+
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   console.warn('[culling] Standard pipeline active');
 
 
-  // Mint a custom cube mesh with known AABB as a user-tier shared ref. The
-  // built-in HANDLE_CUBE uses engine-internal handle values; using
-  // createBoxGeometry + allocSharedRef ensures AABB computation for culling.
+  // Create a procedural cube; its asset owner prepares the bounds used by culling.
   const boxResult = createBoxGeometry(1, 1, 1, 1, 1, 1);
   if (!boxResult.ok) {
     console.error('[culling] createBoxGeometry failed:', boxResult.error.code);
     return;
   }
-  const cubeHandle = world.allocSharedRef('MeshAsset', boxResult.value);
+  const cubeHandle = assets.create(boxResult.value).unwrap();
 
   // Spawn cubes AFTER renderer is ready (mesh assets with AABB are registered).
   // Frustum culling is unconditional: every cube outside the camera frustum is

@@ -53,6 +53,10 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -197,9 +201,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Materials } = await import('@forgeax/engine-render');
 const { Camera, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 // M5-engine-fix: build a real engine manifest carrying pbr.wgsl + unlit.wgsl
 // (post w22.9 the inline fallback was deleted; the engine demands real
@@ -317,13 +319,18 @@ const cameraSystem = {
   },
 };
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 // LO 1.7 unlit material: mint a user-tier column handle from the unlit
 // MaterialAsset POD (M8 D-17). orange teaching colour (1, 0.5, 0.2).
-const matHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([1.0, 0.5, 0.2, 1.0]));
+const matHandle = world.assets.create(Materials.unlit([1.0, 0.5, 0.2, 1.0])).unwrap();
 world.insertResource(INPUT_BACKEND_KEY, syntheticBackend);
 world.addSystem(Update, InputFrameStartScan);
 world.addSystem(Update, cameraSystem);
@@ -335,7 +342,7 @@ const cubeEntity = world
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   )
   .unwrap();

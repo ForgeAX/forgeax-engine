@@ -4,7 +4,7 @@ import type { BootstrapResource, Tape } from '../protocol/types';
 import type { ReplayReadbackResult } from '../replay/readback';
 import type { TextureSubresource } from '../replay/session';
 import { openReplay } from '../replay/session';
-import { getTextureReadbackPlan } from '../replay/texture-format';
+import { textureBytesPerTexel } from '../replay/texture-format';
 
 function textureResource(
   handleId: string,
@@ -50,32 +50,27 @@ async function nullBackend() {
 
 describe('Replay readback format matrix', () => {
   it.each([
-    ['bgra8unorm', '2d'],
-    ['depth24plus-stencil8', '2d'],
-    ['rgba8unorm', '2d'],
-    ['rgba8unorm-srgb', '2d'],
-    ['rg16float', '2d'],
-    ['rg32uint', '2d'],
-    ['rgba16float', '2d'],
-    ['rgba32uint', '2d'],
-    ['depth32float', '2d'],
-    ['depth24plus', '2d'],
-    ['rgba8unorm', 'cube'],
-    ['rgba8unorm', '3d'],
-  ])('keeps %s/%s in the supported matrix', (format, dimension) => {
-    const plan = getTextureReadbackPlan({ format, dimension });
-    expect(plan.supported).toBe(true);
+    'bgra8unorm',
+    'depth24plus-stencil8',
+    'rgba8unorm',
+    'rgba8unorm-srgb',
+    'rg16float',
+    'rg32uint',
+    'rgba16float',
+    'rgba32uint',
+    'depth32float',
+    'depth24plus',
+  ])('keeps %s in the supported matrix', (format) => {
+    expect(textureBytesPerTexel(format)).toBeGreaterThan(0);
   });
 
   it.each([
-    ['bc7-rgba-unorm', '2d'],
-    ['toString', '2d'],
-    ['constructor', '2d'],
-    ['__proto__', '2d'],
-  ])('returns an explicit unsupported plan for %s/%s', (format, dimension) => {
-    const plan = getTextureReadbackPlan({ format, dimension });
-    expect(plan.supported).toBe(false);
-    if (!plan.supported) expect(plan.reason.length).toBeGreaterThan(0);
+    'bc7-rgba-unorm',
+    'toString',
+    'constructor',
+    '__proto__',
+  ])('has no readback byte layout for %s', (format) => {
+    expect(textureBytesPerTexel(format)).toBeUndefined();
   });
 
   it('returns descriptor-aware readback-unsupported without allocating staging resources', async () => {

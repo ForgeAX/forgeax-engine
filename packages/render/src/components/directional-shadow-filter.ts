@@ -8,6 +8,8 @@ export const DirectionalShadowFilterValue = Object.freeze({
   pcssMedium: 4,
   pcssHigh: 5,
   pcfVogel: 6,
+  pcfSoft: 7,
+  variance: 8,
 } as const);
 
 export type DirectionalShadowFilterLabel = keyof typeof DirectionalShadowFilterValue;
@@ -19,6 +21,8 @@ export type DirectionalShadowFilterLabel = keyof typeof DirectionalShadowFilterV
 export type DirectionalShadowQuality =
   | { readonly kind: 'pcf'; readonly kernel: 1 | 3 | 5 }
   | { readonly kind: 'pcf-vogel' }
+  | { readonly kind: 'pcf-soft' }
+  | { readonly kind: 'variance' }
   | {
       readonly kind: 'pcss';
       readonly preset: 'medium' | 'high';
@@ -33,6 +37,10 @@ export function directionalShadowQualityFromF32(
   maxPenumbraTexels: number,
 ): DirectionalShadowQuality | undefined {
   switch (value) {
+    case DirectionalShadowFilterValue.variance:
+      return { kind: 'variance' };
+    case DirectionalShadowFilterValue.pcfSoft:
+      return { kind: 'pcf-soft' };
     case DirectionalShadowFilterValue.pcfVogel:
       return { kind: 'pcf-vogel' };
     case DirectionalShadowFilterValue.pcf1:
@@ -69,8 +77,12 @@ export const SHADOW_RASTER_GUARD_TEXELS = 2;
  */
 export function directionalShadowFilterRadiusTexels(quality: DirectionalShadowQuality): number {
   switch (quality.kind) {
+    case 'variance':
+      return 1;
     case 'pcf-vogel':
       return 1;
+    case 'pcf-soft':
+      return 2;
     case 'pcf':
       return (quality.kernel - 1) / 2;
     case 'pcss':

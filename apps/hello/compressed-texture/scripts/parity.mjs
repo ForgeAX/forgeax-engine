@@ -40,6 +40,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const FALSIFY = process.env.FALSIFY ?? '';
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '2000', 10);
@@ -122,10 +126,12 @@ function maybeShearRows(rgba, width, height) {
   return out;
 }
 
+const { isCompressedFormat } = await import('@forgeax/engine-types');
+
 // --- Codec chain (CPU) --------------------------------------------------------
 
 const { basisEncode } = await import('@forgeax/engine-codec/encode');
-const { parseKtx2, selectTranscodeTarget, transcodeKtx2, isCompressedFormat } = await import(
+const { parseKtx2, selectTranscodeTarget, transcodeKtx2 } = await import(
   '@forgeax/engine-codec'
 );
 
@@ -262,7 +268,7 @@ const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Transform } = await import('@forgeax/engine-scene');
 const { MeshFilter, MeshRenderer, DirectionalLight, Camera, perspective } = await import('@forgeax/engine-render');
-const { HANDLE_QUAD } = await import('@forgeax/engine-assets-runtime');
+
 
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'shaders', 'manifest.json'), 'utf8'),
@@ -302,11 +308,16 @@ renderer.subscribe((event) => {
   if (event.kind === 'error') rhiErrors.push(event.error);
 });
 
-const world = new World();
+const world = new World({ assets: created.value.assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-const texHandle = world.allocSharedRef('TextureAsset', {
+const texHandle = world.assets.create({
   kind: 'texture',
   width: blockTranscoded.value.width,
   height: blockTranscoded.value.height,
@@ -315,12 +326,12 @@ const texHandle = world.allocSharedRef('TextureAsset', {
   colorSpace: 'srgb',
   mipmap: blockTranscoded.value.mips.length > 1,
   mipLevelCount: Math.max(1, blockTranscoded.value.mips.length),
-});
-const samplerHandle = world.allocSharedRef('SamplerAsset', {
+}).unwrap();
+const samplerHandle = world.assets.create({
   kind: 'sampler', magFilter: 'linear', minFilter: 'linear',
   addressModeU: 'repeat', addressModeV: 'repeat',
-});
-const matHandle = world.allocSharedRef('MaterialAsset', {
+}).unwrap();
+const matHandle = world.assets.create({
   kind: 'material',
   passes: [{
     name: 'Forward',
@@ -334,11 +345,11 @@ const matHandle = world.allocSharedRef('MaterialAsset', {
     baseColorTexture: texHandle,
     sampler: samplerHandle,
   },
-});
+}).unwrap();
 const quads = [[-1.5, 0.8, 0, 0.7, 0.7, 1], [1.5, 0.8, 0, 0.5, 0.5, 1], [-1.5, -0.8, 0, 0.5, 0.5, 1], [1.5, -0.8, 0, 0.7, 0.7, 1]];
 for (const [px, py, pz, sx, sy, sz] of quads) {
   world.spawn(
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
     { component: Transform, data: { pos: [px, py, pz], scale: [sx, sy, sz]} },
   );

@@ -21,10 +21,10 @@ import {
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import lodMeta from '../assets/lod-scene.gltf.meta.json' with { type: 'json' };
 import {
-  catalogLodProducerAssets,
+  loadLodProducerAssets,
   createLodPhaseProgress,
   createSerialFrameQueue,
   type LodProducerIdentity,
@@ -34,6 +34,7 @@ import {
   summarizeLodObservation,
   verifyLodProducerManifestBytes,
 } from '../scripts/lod-acceptance-evidence.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 type SubAssetEntry = { readonly guid: string; readonly kind: string };
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
@@ -69,7 +70,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const { renderer, assets } = constructed.value;
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
-  const world = new World();
+  const world = new World({ assets: assets });
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
 
   const meshEntries = (
@@ -93,7 +98,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       __forgeaxLodIncrementalInputs?: LodProducerIdentity & { readonly manifestUrl: string };
     }
   ).__forgeaxLodIncrementalInputs;
-  let producerAdmission: Awaited<ReturnType<typeof catalogLodProducerAssets>> | undefined;
+  let producerAdmission: Awaited<ReturnType<typeof loadLodProducerAssets>> | undefined;
   let producerInputEvidence:
     | {
         readonly producerHead: string;
@@ -103,7 +108,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         readonly admission: 'incremental-catalog';
       }
     | undefined;
-  let rootMeshValue: MeshAsset;
+  let meshHandle: AssetHandle<'mesh'>;
   if (configuredInputs !== undefined) {
     if (typeof configuredInputs.manifestUrl !== 'string' || !configuredInputs.manifestUrl)
       throw new Error('E03 selected input must include a manifest URL');
@@ -125,18 +130,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       if (!response.ok) throw new Error(`E03 producer asset fetch failed: ${path}`);
       return new Uint8Array(await response.arrayBuffer());
     };
-    producerAdmission = await catalogLodProducerAssets(
+    producerAdmission = await loadLodProducerAssets(
       assets,
       verified.manifest,
       producerReadBytes,
       expectedProducerRoles,
     );
-    const stagedRoot = assets.lookup<MeshAsset>(rootGuid);
-    if (stagedRoot?.kind !== 'mesh' || assets.lookup(middleGuid)?.kind !== 'mesh')
-      throw new Error('E03 producer initial catalog did not admit root and middle meshes');
-    if (assets.lookup(lowestGuid) !== undefined)
-      throw new Error('E03 producer lowest mesh was present before its catalog stage');
-    rootMeshValue = stagedRoot;
+    meshHandle = producerAdmission.root;
     producerInputEvidence = {
       producerHead: String(verified.manifest.provenance.producerHead),
       manifestSha256: verified.sha256,
@@ -151,33 +151,31 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       admission: 'incremental-catalog',
     };
   } else {
-    const rootMesh = await assets.loadByGuid<MeshAsset>(rootGuid);
-    if (!rootMesh.ok) throw new Error(`root mesh load failed: ${rootMesh.error.code}`);
-    const middleMesh = await assets.loadByGuid<MeshAsset>(middleGuid);
-    if (!middleMesh.ok) throw new Error(`middle LOD load failed: ${middleMesh.error.code}`);
-    rootMeshValue = rootMesh.value;
+    meshHandle = (await assets.load(rootGuid, 'mesh')).unwrap();
   }
+  let rootMeshValue: MeshAsset;
+  let indexCounts: readonly number[] = [];
+  const refreshRoot = () => {
+    rootMeshValue = assets.read(meshHandle).unwrap();
+    indexCounts = [
+      rootMeshValue.indices?.length ?? 0,
+      ...(rootMeshValue.lods ?? []).map((lod) => {
+        if (typeof lod.mesh !== 'number') throw new Error('Adopted LOD must name a runtime mesh');
+        return assets.read(lod.mesh).unwrap().indices?.length ?? 0;
+      }),
+    ];
+  };
+  refreshRoot();
   const lodReadiness = (): readonly boolean[] => [
     true,
-    assets.lookup(middleGuid)?.kind === 'mesh',
-    assets.lookup(lowestGuid)?.kind === 'mesh',
+    indexCounts.length >= 2,
+    indexCounts.length >= 3,
   ];
-  const lodIndexCounts = (): readonly number[] => [
-    rootMeshValue.indices?.length ?? 0,
-    ...(rootMeshValue.lods ?? []).map(
-      (lod: NonNullable<MeshAsset['lods']>[number]) =>
-        assets.lookup<MeshAsset>(lod.mesh)?.indices?.length ?? 0,
-    ),
-  ];
+  const lodIndexCounts = (): readonly number[] => indexCounts;
 
-  // The interactive demo uses the imported MeshAsset and its LOD GUID chain
-  // with opaque Standard PBR materials, which is the production GPU-driven
-  // LOD lane exercised by the Dawn smoke.
-  const meshHandle = world.allocSharedRef('MeshAsset', rootMeshValue);
-  const materialHandle = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.08, 0.48, 0.78, 1], roughness: 0.5 }),
-  );
+  const materialHandle = sceneAssets
+    .create(Materials.standard({ baseColor: [0.08, 0.48, 0.78, 1], roughness: 0.5 }))
+    .unwrap();
   const sphereEntity = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0] } },
@@ -275,11 +273,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       if (producerAdmission !== undefined) {
         await producerAdmission.admitLowest();
       } else {
-        const loaded = await assets.loadByGuid<MeshAsset>(lowestGuid);
-        if (!loaded.ok) throw new Error(`lowest LOD load failed: ${loaded.error.code}`);
+        (await assets.reload(meshHandle, { conflict: 'reject' })).unwrap();
       }
-      if (assets.lookup(lowestGuid)?.kind !== 'mesh')
-        throw new Error('lowest LOD catalog admission did not produce a MeshAsset');
+      refreshRoot();
+      if (indexCounts.length !== 3)
+        throw new Error('Expanded root must contain its complete LOD closure');
       const button = document.querySelector<HTMLButtonElement>('#load-low-lod');
       if (button) button.textContent = button.dataset.loadedLabel ?? 'Lowest LOD loaded';
       return this.snapshot();
@@ -287,26 +285,24 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     acceptRevisionRace() {
       const lateMesh = structuredClone(rootMeshValue);
       const acceptedMesh = structuredClone(rootMeshValue);
-      const lateHandle = world.allocSharedRef('MeshAsset', lateMesh);
-      const acceptedHandle = world.allocSharedRef('MeshAsset', acceptedMesh);
+      const lateHandle = sceneAssets.create(lateMesh).unwrap();
+      const acceptedHandle = sceneAssets.create(acceptedMesh).unwrap();
       const late = renderer.prepareDynamicGeometry({
         world,
         entity: sphereEntity,
-        mesh: lateMesh,
         meshHandle: lateHandle,
         revision: 3,
         topologyRevision: 1,
         fixedStep: 0,
       });
       if (!late.ok) {
-        world.sharedRefs.release(lateHandle).unwrap();
-        world.sharedRefs.release(acceptedHandle).unwrap();
+        sceneAssets.release(lateHandle).unwrap();
+        sceneAssets.release(acceptedHandle).unwrap();
         throw new Error(`revision 3 preparation failed: ${late.error.code}`);
       }
       const accepted = renderer.prepareDynamicGeometry({
         world,
         entity: sphereEntity,
-        mesh: acceptedMesh,
         meshHandle: acceptedHandle,
         revision: 4,
         topologyRevision: 1,
@@ -314,8 +310,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       });
       if (!accepted.ok) {
         renderer.cancelDynamicGeometry(late.value).unwrap();
-        world.sharedRefs.release(lateHandle).unwrap();
-        world.sharedRefs.release(acceptedHandle).unwrap();
+        sceneAssets.release(lateHandle).unwrap();
+        sceneAssets.release(acceptedHandle).unwrap();
         throw new Error(`revision 4 preparation failed: ${accepted.error.code}`);
       }
       const acceptedResult = renderer.acceptDynamicGeometry(accepted.value, {
@@ -325,15 +321,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       if (!acceptedResult.ok) {
         renderer.cancelDynamicGeometry(late.value).unwrap();
         renderer.cancelDynamicGeometry(accepted.value).unwrap();
-        world.sharedRefs.release(lateHandle).unwrap();
-        world.sharedRefs.release(acceptedHandle).unwrap();
+        sceneAssets.release(lateHandle).unwrap();
+        sceneAssets.release(acceptedHandle).unwrap();
         throw new Error(`revision 4 acceptance failed: ${acceptedResult.error.code}`);
       }
-      world.sharedRefs.release(acceptedHandle).unwrap();
+      sceneAssets.release(acceptedHandle).unwrap();
       const lateResult = renderer.acceptDynamicGeometry(late.value, { world, fixedStep: 0 });
       const binding = world.get(sphereEntity, MeshFilter).unwrap().assetHandle;
       // Accepting revision 4 already cancels the superseded prepared credential.
-      world.sharedRefs.release(lateHandle).unwrap();
+      sceneAssets.release(lateHandle).unwrap();
       if (lateResult.ok || lateResult.error.code !== 'dynamic-geometry-candidate-not-found') {
         renderer.cancelDynamicGeometry(acceptedResult.value).unwrap();
         throw new Error(
@@ -389,7 +385,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         lodAssetsReady: lodReadiness(),
         targetVisible: visible,
         producerInput: producerInputEvidence,
-        rootMeshSharedRefCount: world.sharedRefs.refcount(meshHandle),
+        rootMeshResident: assets.validate(meshHandle).ok,
         revisionRace,
         dynamicReceipt,
         dynamicRevisionBindingHandle: dynamicRevisionFour?.meshHandle,

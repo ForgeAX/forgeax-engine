@@ -12,10 +12,10 @@
 
 import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
 import type {
-  AnimationChannelPod,
   AnimationClipPod,
-  AnimationSamplerPod,
+  AnimationSampler,
   AnimationTargetIdValue,
+  AnimationTransformChannel,
 } from '@forgeax/engine-types';
 import {
   type AccessorJson,
@@ -47,7 +47,7 @@ interface AnimationJson {
 
 const ANIMATION_ACCESSOR_TYPES = ['SCALAR', 'VEC2', 'VEC3', 'VEC4'] as const;
 
-interface GltfAnimationChannelRecord extends AnimationChannelPod {
+interface GltfAnimationChannelRecord extends AnimationTransformChannel {
   readonly targetNodeIndex: number;
 }
 
@@ -82,7 +82,7 @@ export function parseAnimation(
     if (anim === undefined) continue;
 
     // Decode samplers first (shared across channels).
-    const decodedSamplers: AnimationSamplerPod[] = [];
+    const decodedSamplers: AnimationSampler[] = [];
     for (let sampIdx = 0; sampIdx < anim.samplers.length; sampIdx++) {
       const sampler = anim.samplers[sampIdx];
       if (sampler === undefined) continue;

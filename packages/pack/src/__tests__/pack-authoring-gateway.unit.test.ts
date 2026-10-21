@@ -24,6 +24,88 @@ afterEach(async () => {
 });
 
 describe('Pack authoring gateway', () => {
+  it('inspects parameter declarations without scanning siblings or executing user code', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-parameters-'));
+    roots.push(root);
+    const source = `throw new Error('inspection must not execute this module');
+export default definePack({
+  schemaVersion: '2.0.0', packageId: definePackageId('${SOURCE_PACKAGE}'),
+  parameters: [
+    { name: 'segments', type: 'u32', default: 12, minimum: 3 },
+    { name: 'sunIntensity', type: 'f32', default: 3.2, maximum: 10,
+      apply: { asset: 'scene/main', path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'] } },
+  ],
+  build() { throw new Error('inspection must not generate'); },
+});\n`;
+    await writeFile(join(root, 'scene.pack.ts'), source);
+    await writeFile(join(root, 'broken.pack.json'), '{ invalid sibling');
+    const gateway = createFileSystemPackAuthoringGateway({
+      gameRoot: root,
+      inventory: async () => {
+        throw new Error('parameter inspection must not scan');
+      },
+      materialized: () => {
+        throw new Error('parameter inspection must not read Catalog');
+      },
+    });
+    const inspected = await gateway.execute({
+      operation: 'asset.inspect',
+      requestId: 'parameters',
+      subject: 'scene.pack.ts',
+      parametersOnly: true,
+    });
+    expect(inspected).toMatchObject({
+      ok: true,
+      value: {
+        sourcePath: 'scene.pack.ts',
+        packageId: SOURCE_PACKAGE,
+        status: 'identity',
+        parameters: [
+          {
+            name: 'segments',
+            mode: 'generation',
+            type: 'u32',
+            default: 12,
+            minimum: 3,
+            location: { line: 5 },
+          },
+          {
+            name: 'sunIntensity',
+            mode: 'runtime',
+            type: 'f32',
+            default: 3.2,
+            maximum: 10,
+            apply: {
+              asset: 'scene/main',
+              path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'],
+            },
+            location: { line: 6 },
+          },
+        ],
+      },
+    });
+    expect(await readFile(join(root, 'scene.pack.ts'), 'utf8')).toBe(source);
+    await writeFile(join(root, 'scene.pack.ts'), source.replace('default: 12', 'default: 1'));
+    expect(
+      await gateway.execute({
+        operation: 'asset.inspect',
+        requestId: 'invalid-parameters',
+        subject: 'scene.pack.ts',
+        parametersOnly: true,
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: {
+        code: 'pack-parameter-invalid',
+        detail: {
+          sourcePath: 'scene.pack.ts',
+          propertyPath: '$.parameters[0].default',
+          location: { line: 5 },
+        },
+      },
+    });
+  });
+
   it('keeps healthy read queries and source diagnostics when a sibling is malformed', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-partial-'));
     roots.push(root);

@@ -25,14 +25,14 @@
             "schedule": { "rate": 0, "bursts": [{ "time": 0.05, "count": 8 }] },
             "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 1.5 },
             "program": { "module": "hit.vfx.wgsl" },
-            "renderers": [{ "kind": "mesh", "material": "18ee653a-90cd-5c67-ad0e-b6c7a151de6b", "mesh": "cbe42beb-8975-5096-b3a1-3dda4cb4c077" }]
+            "renderers": [{ "kind": "mesh", "material": "18ee653a-90cd-5c67-ad0e-b6c7a151de6b", "mesh": "fc497c66-79e5-54d1-86f1-50bdb3b5f076" }]
           }
         ]
       },
       "refs": [
         "b9db2905-cbdf-5f0b-82cb-f02629450f23",
         "18ee653a-90cd-5c67-ad0e-b6c7a151de6b",
-        "cbe42beb-8975-5096-b3a1-3dda4cb4c077"
+        "fc497c66-79e5-54d1-86f1-50bdb3b5f076"
       ],
       "artifacts": {}
     }

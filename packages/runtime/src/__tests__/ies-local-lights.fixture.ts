@@ -23,6 +23,7 @@ import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export const IES_TEST_SIZE = 128;
@@ -77,21 +78,24 @@ export async function verifyLocalIes(
     capture?: (name: string, tape: EncodedTape | undefined, image: Float32Array) => Promise<void>;
   } = {},
 ): Promise<IesPixelSample[]> {
-  const world = new World();
-  const component = kind === 'point' ? PointLight : RectAreaLight;
-  const uniform = world.allocSharedRef('IesProfileAsset', localIesProfile('uniform'));
-  const upper = world.allocSharedRef('IesProfileAsset', localIesProfile('upper'));
-  const wide = world.allocSharedRef('IesProfileAsset', localIesProfile('wide270'));
-  const polar = world.allocSharedRef('IesProfileAsset', localIesProfile('polar'));
-  const wall = world.allocSharedRef('MeshAsset', createPlaneGeometry(6, 6).unwrap());
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.7, 0.7, 0.7, 1],
-      roughness: 0.5,
-      metallic: 0,
-    }),
+  const world = new World(
+    options.publication === undefined ? {} : { assets: options.publication.assets },
   );
+  const component = kind === 'point' ? PointLight : RectAreaLight;
+  const uniform = testAssets(world).create(localIesProfile('uniform')).unwrap();
+  const upper = testAssets(world).create(localIesProfile('upper')).unwrap();
+  const wide = testAssets(world).create(localIesProfile('wide270')).unwrap();
+  const polar = testAssets(world).create(localIesProfile('polar')).unwrap();
+  const wall = testAssets(world).create(createPlaneGeometry(6, 6).unwrap()).unwrap();
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.7, 0.7, 0.7, 1],
+        roughness: 0.5,
+        metallic: 0,
+      }),
+    )
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
@@ -133,7 +137,9 @@ export async function verifyLocalIes(
     .unwrap();
   if (options.combined && kind === 'point') {
     world.addComponent(light, { component: PointLightShadow, data: { mapSize: 128 } }).unwrap();
-    const blocker = world.allocSharedRef('MeshAsset', createBoxGeometry(0.6, 0.6, 0.2).unwrap());
+    const blocker = testAssets(world)
+      .create(createBoxGeometry(0.6, 0.6, 0.2).unwrap())
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0.8, 1.25] } },
@@ -143,16 +149,18 @@ export async function verifyLocalIes(
       .unwrap();
   }
   if (options.combined && kind === 'rect') {
-    const texture = world.allocSharedRef('TextureAsset', {
-      kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
-      format: 'rgba8unorm',
-      colorSpace: 'linear',
-      mips: { kind: 'none' },
-      data: new Uint8Array([
-        255, 80, 20, 255, 20, 80, 255, 255, 255, 80, 20, 255, 20, 80, 255, 255,
-      ]),
-    });
+    const texture = testAssets(world)
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array([
+          255, 80, 20, 255, 20, 80, 255, 255, 255, 80, 20, 255, 20, 80, 255, 255,
+        ]),
+      })
+      .unwrap();
     world.set(light, RectAreaLight, { sourceTexture: texture }).unwrap();
   }
   const publisher =

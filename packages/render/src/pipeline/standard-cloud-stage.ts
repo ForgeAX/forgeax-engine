@@ -108,14 +108,14 @@ export function contributeStandardCloudPreOpaque(
       ? []
       : renderPipelineCloudHistoryTargets(context.cloudHistory)),
   ];
-  const contributed = context.contributeFeatures(
-    featureTargets,
-    [],
-    cloudShadow === undefined ? {} : { 'cloud-shadow': cloudShadow },
-    [],
-    'scene',
-    ['cloud-layer-density-cache', 'cloud-layer-shadow'],
-  );
+  const contributed = context.contributeFeatures({
+    targets: featureTargets,
+    semanticTargets: [],
+    namedTargets: cloudShadow === undefined ? {} : { 'cloud-shadow': cloudShadow },
+    standardSurfaceAccesses: [],
+    placement: 'scene',
+    passNames: ['cloud-layer-density-cache', 'cloud-layer-shadow'],
+  });
   if (!contributed.ok) return contributed;
   return ok(featureTargets);
 }
@@ -138,10 +138,10 @@ export function contributeStandardCloudComposite(
   atmosphere?: GraphAtmosphere,
 ): Result<void, RenderPipelineBuildError> {
   const history = context.cloudHistory;
-  return context.contributeFeatures(
-    featureTargets,
-    [],
-    {
+  return context.contributeFeatures({
+    targets: featureTargets,
+    semanticTargets: [],
+    namedTargets: {
       'motion-input': targets.input,
       'motion-output': targets.output,
       ...(targets.cloudShadow === undefined ? {} : { 'cloud-shadow': targets.cloudShadow }),
@@ -156,9 +156,9 @@ export function contributeStandardCloudComposite(
             'cloud-history-depth-previous': history.previousDepth,
           }),
     },
-    receiverAccesses,
-    'scene',
-    ['cloud-layer-transport', 'cloud-layer-resolve'],
-    atmosphere,
-  );
+    standardSurfaceAccesses: receiverAccesses,
+    placement: 'scene',
+    passNames: ['cloud-layer-transport', 'cloud-layer-resolve'],
+    atmosphere: atmosphere,
+  });
 }

@@ -1,3 +1,4 @@
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 // Standard direct vs clustered pixel-parity fixture
 // (feat-20260608-cluster-lighting / M7 / w26).
 //
@@ -23,7 +24,7 @@
 //     direct/clustered choice at the Standard profile boundary.
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import {
@@ -37,9 +38,13 @@ import {
   type RenderWorldLease,
   type Renderer,
 } from '@forgeax/engine-render';
-import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime';
+import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const CANVAS_W = 512;
 const CANVAS_H = 512;
@@ -78,25 +83,25 @@ bootstrap().catch((err: unknown) => {
 });
 
 async function bootstrap(): Promise<void> {
-  const directRendererResult = await createRenderer(
+  const directRendererResult = await constructRuntimeRendererHost(
     directCanvas,
     { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' } },
     forgeaxBundlerAdapter(),
   );
   if (!directRendererResult.ok) throw directRendererResult.error;
-  const directRenderer = directRendererResult.value;
-  const clusteredRendererResult = await createRenderer(
+  const directRenderer = directRendererResult.value.renderer;
+  const clusteredRendererResult = await constructRuntimeRendererHost(
     clusteredCanvas,
     { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' } },
     forgeaxBundlerAdapter(),
   );
   if (!clusteredRendererResult.ok) throw clusteredRendererResult.error;
-  const clusteredRenderer = clusteredRendererResult.value;
+  const clusteredRenderer = clusteredRendererResult.value.renderer;
 
-  const directWorld = new World();
+  const directWorld = new World({ assets: directRendererResult.value.assets });
   const worldAttachment1 = directRenderer.attach(directWorld);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const clusteredWorld = new World();
+  const clusteredWorld = new World({ assets: clusteredRendererResult.value.assets });
   const worldAttachment2 = clusteredRenderer.attach(clusteredWorld);
   if (!worldAttachment2.ok) throw worldAttachment2.error;
   populateScene(directRenderer, directWorld);
@@ -129,12 +134,17 @@ async function bootstrap(): Promise<void> {
 }
 
 function populateScene(_renderer: Renderer, world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // Standard PBR material -- both Standard lanes route the same material
   // through the shared shading path. The direct loop and clustered bins for
   // our 4 spawn positions should produce pixel-equivalent radiance. Material
   // lives as a user-tier shared ref on
   // the World (D-19: no AssetRegistry round-trip for engine-built payloads).
-  const matHandle = world.allocSharedRef('MaterialAsset', {
+  const matHandle = sceneAssets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -144,7 +154,7 @@ function populateScene(_renderer: Renderer, world: World): void {
       metallic: 0.0,
       roughness: 0.4,
     },
-  });
+  }).unwrap();
 
   // Hero cube at origin facing camera.
   world.spawn(
@@ -152,7 +162,7 @@ function populateScene(_renderer: Renderer, world: World): void {
       component: Transform,
       data: { pos: [0, 0, 0], quat: [0, 0, 0, 1]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   ).unwrap();
 

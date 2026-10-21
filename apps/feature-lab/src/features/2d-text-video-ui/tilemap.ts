@@ -1,5 +1,5 @@
-import { TileLayer, Tilemap } from '@forgeax/engine/render/authoring';
-import { ChildOf, Transform } from '@forgeax/engine/scene';
+import { Tilemap } from '@forgeax/engine/render/authoring';
+import { Transform } from '@forgeax/engine/scene';
 import type { TilesetAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 import { spawnOrthoCamera, textureAsset } from './_shared/sprite';
@@ -7,8 +7,6 @@ import { spawnOrthoCamera, textureAsset } from './_shared/sprite';
 const COLS = 14;
 const ROWS = 7;
 const TILE = 0.5;
-const ATLAS_KEY = 'feature-lab/2d/tilemap-atlas';
-const TILESET_KEY = 'feature-lab/2d/tilemap-tileset';
 
 function fill(tiles: Uint32Array, sparse: boolean): void {
   for (let r = 0; r < ROWS; r++) {
@@ -22,7 +20,7 @@ export default defineFeature({
   title: 'Tilemap',
   catalog: 'Tilemap',
   kind: 'visual',
-  summary: `A ${COLS}x${ROWS} Tilemap with one TileLayer child reads a catalogued TilesetAsset over a 2x2 color atlas; chunk extraction turns it into Renderer draws. Toggling rewrites the tiles array and marks the layer dirty.`,
+  summary: `A ${COLS}x${ROWS} Tilemap reads a managed Tileset over a 2x2 color atlas. Toggling publishes cells with world.set; visible chunks become native Renderer draws.`,
   expect:
     'ON: a solid band of diagonal red/green/blue/yellow tiles fills the middle of the canvas. OFF: every other tile is set to 0 (empty), leaving a checkerboard of holes showing the dark clear color.',
   setup({ app, world, canvas }) {
@@ -41,7 +39,7 @@ export default defineFeature({
     );
     const tileset: TilesetAsset = {
       kind: 'tileset',
-      atlases: [ATLAS_KEY],
+      atlases: [assets.create(atlas).unwrap()],
       tileWidth: 16,
       tileHeight: 16,
       columns: 2,
@@ -54,9 +52,9 @@ export default defineFeature({
       ],
       tiles: [{ regionIndex: 0 }, { regionIndex: 1 }, { regionIndex: 2 }, { regionIndex: 3 }],
     };
-    const cataloged = [assets.catalog(ATLAS_KEY, atlas), assets.catalog(TILESET_KEY, tileset)];
-    for (const result of cataloged)
-      if (!result.ok) throw new Error(`catalog: ${result.error.code}`);
+    const handle = assets.create(tileset).unwrap();
+    const tiles = new Uint32Array(COLS * ROWS);
+    fill(tiles, false);
     spawnOrthoCamera(world, canvas);
     const map = world
       .spawn(
@@ -67,26 +65,18 @@ export default defineFeature({
             rows: ROWS,
             tileSize: [TILE, TILE],
             chunkSize: 8,
-            tileset: TILESET_KEY,
+            tileset: handle,
+            tiles,
           },
         },
         { component: Transform, data: { pos: [(-COLS * TILE) / 2, (-ROWS * TILE) / 2, 0] } },
       )
       .unwrap();
-    const tiles = new Uint32Array(COLS * ROWS);
-    fill(tiles, false);
-    const layer = world
-      .spawn(
-        { component: TileLayer, data: { tiles, layerOrder: 0, dirty: 1 } },
-        { component: ChildOf, data: { parent: map } },
-        { component: Transform, data: {} },
-      )
-      .unwrap();
     return {
       toggle(on) {
-        const view = world.get(layer, TileLayer).unwrap().tiles as Uint32Array;
+        const view = world.get(map, Tilemap).unwrap().tiles as Uint32Array;
         fill(view, !on);
-        world.set(layer, TileLayer, { dirty: 1 });
+        world.set(map, Tilemap, { tiles: view }).unwrap();
       },
     };
   },

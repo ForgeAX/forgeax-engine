@@ -4,6 +4,7 @@ import {
   bindAnimationTargets,
   deriveAnimationTargetId,
 } from '@forgeax/engine/animation';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { World } from '@forgeax/engine/ecs';
 import type { AnimationClip } from '@forgeax/engine/types';
 import { spawnAnimatedRig } from './animated-rig';
@@ -14,6 +15,10 @@ export function skeletalMotionRig(
   x: number,
   color: readonly [number, number, number, number],
 ) {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const joints = spawnAnimatedRig(world, x, 1, color);
   const targets = ['Root', 'Middle', 'End'].map((name) =>
     deriveAnimationTargetId(['MotionRig', name]),
@@ -65,7 +70,7 @@ export function skeletalMotionRig(
     .addComponent(joints[0], {
       component: AnimationPlayer,
       data: {
-        clips: [world.allocSharedRef('AnimationClip', clip)],
+        clips: [sceneAssets.create(clip).unwrap()],
         times: [0],
         weights: [1],
         speeds: [1],

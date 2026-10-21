@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
@@ -19,18 +20,17 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Terrain } from '@forgeax/engine-terrain';
 import { buildTerrainAssets } from '@forgeax/engine-terrain/cook';
-import {
-  type MaterialAsset,
-  standardSurfaceParameters,
-  type TerrainAsset,
-} from '@forgeax/engine-types';
+import type { Asset } from '@forgeax/engine-types';
+import { type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const SIZE = 192;
@@ -79,11 +79,10 @@ it.each([
   });
   const rows: { filter: string; lit: number; dark: number }[] = [];
   try {
-    const world = new World();
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.9 }),
-    );
+    const world = new World({ assets: host.value.assets });
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.9 }))
+      .unwrap();
     if (receiver === 'terrain') {
       world.components.register(Terrain).unwrap();
       expect(world.components.resolve('Terrain')).toBe(Terrain);
@@ -96,7 +95,6 @@ it.each([
         values: { baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.9 },
         passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
       };
-      host.value.assets.catalog(guid('layer'), layer).unwrap();
       const closure = buildTerrainAssets(
         {
           columns: 8,
@@ -110,8 +108,10 @@ it.each([
         guid,
         { [guid('layer')]: layer },
       ).unwrap();
-      for (const [key, asset] of Object.entries(closure))
-        host.value.assets.catalog(guid(key), asset).unwrap();
+      const publication = new Map<string, Asset>([
+        [guid('layer'), layer],
+        ...Object.entries(closure).map(([key, asset]) => [guid(key), asset] as const),
+      ]);
       const table: Record<string, MaterialAsset> = { [guid('layer')]: layer };
       for (const [key, asset] of Object.entries(closure))
         if (asset.kind === 'material') table[guid(key)] = asset;
@@ -128,11 +128,32 @@ it.each([
             artifacts: cooked.artifacts,
           }),
           loadReference: async (reference) =>
-            !AssetGuid.parse(reference).ok || host.value.assets.lookup(reference) !== undefined,
+            !AssetGuid.parse(reference).ok || publication.has(reference),
         }).load({ guid: materialGuid, specializationKey: record.specializationKey ?? '' });
         expect(ready.status).toBe('Ready');
-        host.value.assets.recordMaterialReadiness(materialGuid, ready);
-        const projection = host.value.assets.getMaterialProjection(materialGuid);
+        if (ready.status !== 'Ready') throw new Error(JSON.stringify(ready));
+        publication.set(materialGuid, cooked.payload as MaterialAsset);
+      }
+      publishRuntimeAssets(
+        host.value.assets,
+        [...publication].map(([assetGuid, asset]) => ({
+          guid: assetGuid,
+          asset,
+          refs:
+            asset.kind === 'terrain'
+              ? [...publication.keys()].filter((key) => key !== assetGuid)
+              : [],
+        })),
+      );
+      for (const [assetGuid, asset] of publication) {
+        if (asset.kind === 'sampler' || asset.kind === 'texture' || asset.kind === 'mesh')
+          (await host.value.assets.load(assetGuid, asset.kind)).unwrap();
+      }
+      for (const materialGuid of Object.keys(table)) {
+        const materialHandle = (await host.value.assets.load(materialGuid, 'material')).unwrap();
+        const projection = host.value.assets.getMaterialProjectionForPayload(
+          runtimeAssets(host.value.assets).borrow<MaterialAsset>(materialHandle).unwrap(),
+        );
         expect(projection).toBeDefined();
         if (materialGuid !== guid('layer')) {
           for (const passName of ['forward', 'deferred', 'shadow-caster']) {
@@ -145,16 +166,14 @@ it.each([
           }
         }
       }
-      const adopted = host.value.assets.lookup<TerrainAsset>(guid('terrain'));
-      if (adopted === undefined) throw new Error('missing adopted Terrain root');
-      expect(host.value.assets.terrainClosureCurrent(adopted)).toBe(true);
+      const adopted = (await host.value.assets.load(guid('terrain'), 'terrain')).unwrap();
       world
         .spawn(
           { component: Transform, data: { pos: [-60, 0, -90] } },
           {
             component: Terrain,
             data: {
-              asset: world.allocSharedRef('TerrainAsset', adopted),
+              asset: adopted,
               forcedLod: 0,
             },
           },
@@ -178,10 +197,9 @@ it.each([
           {
             component: MeshFilter,
             data: {
-              assetHandle: world.allocSharedRef(
-                'MeshAsset',
-                createBoxGeometry(size[0], size[1], size[2]).unwrap(),
-              ),
+              assetHandle: testAssets(world)
+                .create(createBoxGeometry(size[0], size[1], size[2]).unwrap())
+                .unwrap(),
             },
           },
           { component: MeshRenderer, data: { materials: [material] } },

@@ -1,3 +1,4 @@
+import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { AssetGuid, MaterialAsset, MaterialTextureValue } from '@forgeax/engine-types';
 
@@ -16,16 +17,16 @@ function authoredMaterial(texture: AssetGuid, sampler: AssetGuid): MaterialAsset
   return authoredLiteral;
 }
 
-type MaterialLoader = {
-  loadByGuid<T>(guid: AssetGuid): Promise<{ ok: true; value: T } | { ok: false; error: unknown }>;
-};
+type MaterialLoader = AssetRegistry;
 
 async function readLoadedMaterial(loader: MaterialLoader, guid: AssetGuid): Promise<void> {
-  const loaded = await loader.loadByGuid<MaterialAsset>(guid);
+  const loaded = await loader.load(guid, 'material');
   if (loaded.ok) {
-    expectTypeOf(loaded.value.parameters).toEqualTypeOf<MaterialAsset['parameters']>();
-    expectTypeOf(loaded.value.values).toEqualTypeOf<MaterialAsset['values']>();
-    expectTypeOf(loaded.value.passes).toEqualTypeOf<MaterialAsset['passes']>();
+    const material = loader.read(loaded.value).unwrap();
+    expectTypeOf(material.parameters).toEqualTypeOf<MaterialAsset['parameters']>();
+    expectTypeOf(material.values).toEqualTypeOf<MaterialAsset['values']>();
+    expectTypeOf(material.passes).toEqualTypeOf<MaterialAsset['passes']>();
+    loader.release(loaded.value).unwrap();
   }
 }
 

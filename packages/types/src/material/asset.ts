@@ -1,3 +1,4 @@
+import type { AssetHandle } from '../asset-handle.js';
 import type { AssetGuid } from '../index.js';
 import type { ParamSchemaEntry } from '../material-contracts.js';
 import { isMaterialProgramBindingContract } from '../material-program-abi.js';
@@ -18,6 +19,7 @@ import {
 } from './static-switches.js';
 import {
   deriveMaterialDynamicInputLayout,
+  isMaterialSurfaceModel,
   type MaterialDynamicInputSchema,
   type MaterialSurfaceDeclaration,
 } from './surface-model.js';
@@ -174,14 +176,24 @@ export function resolveMaterialTextureCoordinates(
   };
 }
 
-export type MaterialTextureReference = AssetGuid | number | string;
+export type MaterialTextureReference = AssetGuid | AssetHandle<'texture' | 'video'> | string;
 
-export interface MaterialTextureValue {
-  readonly texture: MaterialTextureReference;
-  readonly sampler?: MaterialTextureReference;
+/** Copyable reference to one native texture producer; its owner retains native lifetime. */
+export interface RenderTextureSourceToken {
+  readonly kind: 'render-texture-source';
+  readonly owner: string;
+  readonly id: number;
+  readonly source: 'target' | 'canvas' | 'external';
+}
+
+export type MaterialTextureValue = {
+  readonly sampler?: AssetGuid | AssetHandle<'sampler'> | string;
   readonly coordinates?: MaterialTextureCoordinates;
   readonly occlusionStrength?: number;
-}
+} & (
+  | { readonly texture: MaterialTextureReference; readonly source?: never }
+  | { readonly source: RenderTextureSourceToken; readonly texture?: never }
+);
 
 export type MaterialValue = boolean | number | readonly number[] | string | MaterialTextureValue;
 
@@ -243,7 +255,8 @@ export interface MaterialRootAsset {
  */
 export interface MaterialChildAsset {
   readonly kind: 'material';
-  readonly parent: AssetGuid;
+  /** Source GUID; inheritance is resolved before runtime adoption. */
+  readonly parent: AssetGuid | string;
   readonly colorSpace?: never;
   readonly passes?: never;
   readonly parameters?: never;
@@ -503,7 +516,7 @@ export function assertMaterialAsset(
   }
   if (value.surface !== undefined) {
     if (!isRecord(value.surface)) throw new Error(`${context}: surface must be an object`);
-    if (value.surface.model !== 'standard' && value.surface.model !== 'single-layer-medium') {
+    if (!isMaterialSurfaceModel(value.surface.model)) {
       throw new Error(`${context}: invalid Surface model`);
     }
     if (typeof value.surface.module !== 'string' || value.surface.module.length === 0) {

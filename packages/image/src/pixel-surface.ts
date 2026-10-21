@@ -1,14 +1,11 @@
 import type {
   DecodedImage,
-  ImageColorSpace,
   ImageError,
   ImageErrorDetailFor,
-  ImageMeta,
   TextureAsset,
 } from '@forgeax/engine-types';
 import { imageError } from './errors.js';
 import { err, ok, type Result } from './result.js';
-import { type ExternalAssetPackage, toAssetPack } from './to-asset-pack.js';
 
 /** Four finite RGBA8 channels in source order. */
 export type PixelColor =
@@ -32,18 +29,12 @@ export interface PixelSurfaceNoiseOptions {
   readonly alpha?: number;
 }
 
-export interface PixelSurfaceOptions {
-  readonly width: number;
-  readonly height: number;
-  readonly colorSpace?: ImageColorSpace;
-  readonly mipmap?: boolean;
-}
+export interface PixelSurfaceOptions
+  extends Pick<DecodedImage, 'width' | 'height'>,
+    Partial<Pick<DecodedImage, 'colorSpace' | 'mipmap'>> {}
 
-export interface PixelSurface {
-  readonly width: number;
-  readonly height: number;
-  readonly colorSpace: ImageColorSpace;
-  readonly mipmap: boolean;
+export interface PixelSurface
+  extends Pick<DecodedImage, 'width' | 'height' | 'colorSpace' | 'mipmap'> {
   /** Tight RGBA8 level-zero bytes in row-major order. */
   readonly data: Uint8Array;
 
@@ -63,13 +54,10 @@ export interface PixelSurface {
     sourceRect?: PixelSurfaceRect,
   ): Result<void, ImageError>;
   /** Fill RGB channels with deterministic seeded noise and set alpha uniformly. */
-  fillNoise(seed: number, options?: PixelSurfaceNoiseOptions): Result<void, ImageError>;
-  /** Alias kept on the same value for the concise authoring spelling. */
   noise(seed: number, options?: PixelSurfaceNoiseOptions): Result<void, ImageError>;
 
   toDecodedImage(): DecodedImage;
   toTextureAsset(): TextureAsset;
-  toAssetPack(meta: ImageMeta): ExternalAssetPackage;
 }
 
 type SurfaceOperation = ImageErrorDetailFor<'image-surface-invalid'>['operation'];
@@ -223,7 +211,7 @@ function fillClippedRect(
 
 function nextRandom(state: number): number {
   // xorshift32 is small, deterministic across runtimes, and has no ambient
-  // state. The seed is normalized once by fillNoise, so zero remains valid.
+  // state. The seed is normalized once by noise, so zero remains valid.
   let value = state >>> 0;
   value ^= value << 13;
   value ^= value >>> 17;
@@ -361,7 +349,7 @@ function makeSurface(options: PixelSurfaceOptions): Result<PixelSurface, ImageEr
       }
       return ok(undefined);
     },
-    fillNoise(seed, noiseOptions) {
+    noise(seed, noiseOptions) {
       if (!Number.isFinite(seed)) return invalid('noise', 'seed', String(seed), 'a finite number');
       const min = noiseOptions?.min ?? 0;
       const max = noiseOptions?.max ?? 255;
@@ -389,9 +377,6 @@ function makeSurface(options: PixelSurfaceOptions): Result<PixelSurface, ImageEr
       }
       return ok(undefined);
     },
-    noise(seed, noiseOptions) {
-      return surface.fillNoise(seed, noiseOptions);
-    },
     toDecodedImage() {
       return {
         bytes: data.slice(),
@@ -414,9 +399,6 @@ function makeSurface(options: PixelSurfaceOptions): Result<PixelSurface, ImageEr
         colorSpace,
         mips: mipmap ? { kind: 'generate' } : { kind: 'none' },
       };
-    },
-    toAssetPack(meta) {
-      return toAssetPack(meta);
     },
   };
   return ok(surface);

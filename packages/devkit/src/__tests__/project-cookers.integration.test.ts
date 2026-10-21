@@ -60,7 +60,7 @@ async function fixture(body: string, nested = false, config?: unknown): Promise<
 }
 
 describe('native build root process', () => {
-  it('reuses the host inventory without evaluating every authored Pack a second time', async () => {
+  it('reuses the host inventory without re-evaluating declared plugin producers', async () => {
     const facts = await fixture('export default { apply() {} };');
     const events = resolve(facts.root, 'pack-builds.txt');
     await writeFile(
@@ -69,7 +69,7 @@ describe('native build root process', () => {
       import {appendFileSync} from 'node:fs';
       import {definePack,definePackageId} from '@forgeax/engine-pack/source';
       import {ok} from '@forgeax/engine-types';
-      export default definePack({schemaVersion:'2.0.0',
+      export default definePack({schemaVersion:'2.0.0',plugins:true,
         packageId:definePackageId('019fb7ce-4200-7000-8000-000000000099'),
         build(){appendFileSync(${JSON.stringify(events)},'build\\n');return ok({});}
       });

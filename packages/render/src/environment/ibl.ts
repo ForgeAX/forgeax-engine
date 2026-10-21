@@ -12,10 +12,18 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import { writeAllPrefilterUniforms } from '../device/gpu-residency';
+import { IBL_UNIFORM_SLOT_STRIDE, iblPrefilterGroup0Entries } from '../ibl/IblPipelineCache';
+import {
+  createPmremPipeline,
+  type PmremPipeline,
+  pmremExtent,
+  pmremLevelCount,
+  pmremViewport,
+} from '../ibl/pmrem';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { atmosphereStorage } from './storage';
 
-/** Graph views of the shared device-owned sky and its lighting products. */
 export interface GraphEnvironment {
   readonly atmosphere?: import('./luts').GraphAtmosphere;
   readonly sky: GraphTextureView;
@@ -23,12 +31,15 @@ export interface GraphEnvironment {
   readonly prefilter: GraphTextureView;
 }
 
+/** Atmosphere supplies the source cube; the shared PMREM kernel owns specular filtering. */
 export function addAtmosphereIbl(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   sky: GraphTextureView,
   vertices: GraphBuffer,
   dirty: (frame: RenderPipelineFrame) => boolean,
 ): Result<GraphEnvironment, RenderGraphError> {
+  const size = 64,
+    levels = pmremLevelCount(size);
   const irradiance = graph.importTexture(
     'atmosphere-irradiance',
     {
@@ -43,20 +54,34 @@ export function addAtmosphereIbl(
     'atmosphere-prefilter',
     {
       format: 'rgba16float',
-      size: { width: 64, height: 64, depthOrArrayLayers: 6 },
-      mipLevelCount: 5,
-      usage: 0x14,
+      size: pmremExtent(size),
+      usage: 0x17,
     },
     (frame) => atmosphereStorage(frame).prefilter,
   );
   if (!prefilter.ok) return prefilter;
+  const scratch = graph.importTexture(
+    'atmosphere-prefilter-scratch',
+    {
+      format: 'rgba16float',
+      size: pmremExtent(size),
+      usage: 0x17,
+    },
+    (frame) => atmosphereStorage(frame).prefilterScratch,
+  );
+  if (!scratch.ok) return scratch;
   const irradianceView = graph.view(irradiance.value, { dimension: 'cube', arrayLayerCount: 6 });
   if (!irradianceView.ok) return irradianceView;
-  const prefilterView = graph.view(prefilter.value, { dimension: 'cube', arrayLayerCount: 6 });
+  const prefilterView = graph.view(prefilter.value, { dimension: '2d' });
   if (!prefilterView.ok) return prefilterView;
+  const scratchView = graph.view(scratch.value, { dimension: '2d' });
+  if (!scratchView.ok) return scratchView;
   const parameters = graph.importBuffer(
     'atmosphere-ibl-params',
-    { size: 5 * 256, usage: 0x48 },
+    {
+      size: levels * 6 * IBL_UNIFORM_SLOT_STRIDE,
+      usage: 0x48,
+    },
     (frame) => atmosphereStorage(frame).iblParams,
   );
   if (!parameters.ok) return parameters;
@@ -64,43 +89,42 @@ export function addAtmosphereIbl(
     accesses: [{ resource: parameters.value, usage: 'copy-dst' }],
     executeIf: dirty,
     encode: ({ frame, resources }) => {
-      const values = new Float32Array(5 * 64);
-      for (let mip = 0; mip < 5; mip++) values[mip * 64] = mip / 4;
-      frame.runtime.device.queue
-        .writeBuffer(resources.buffer(parameters.value).unwrap(), 0, values)
-        .unwrap();
+      writeAllPrefilterUniforms(
+        frame.runtime.device,
+        resources.buffer(parameters.value).unwrap(),
+        size,
+      ).unwrap();
     },
   });
   if (!upload.ok) return upload;
   let state:
     | {
-        layout: BindGroupLayout;
-        inputLayout: BindGroupLayout;
-        sampler: Sampler;
         irradiance: RenderPipeline;
-        prefilter: RenderPipeline;
-        inputs?: BindGroup;
+        diffuseInputs: BindGroupLayout;
+        sampler: Sampler;
+        prefilter: PmremPipeline;
         parameters: BindGroup[];
       }
     | undefined;
   const ensureState = (frame: RenderPipelineFrame) => {
     if (state !== undefined) return state;
-    const device = frame.runtime.device;
-    const source = frame.atmosphereShaders?.ibl;
-    const factory = frame.runtime.shaderModuleFactory;
-    if (source === undefined || factory === undefined)
+    const device = frame.runtime.device,
+      factory = frame.runtime.shaderModuleFactory;
+    const diffuseCode = frame.atmosphereShaders?.ibl,
+      prefilterCode = frame.atmosphereShaders?.prefilter;
+    if (factory === undefined || diffuseCode === undefined || prefilterCode === undefined)
       throw new RhiError({
         code: 'shader-compile-failed',
-        expected: 'the compiled Atmosphere IBL program is available',
+        expected: 'compiled Atmosphere irradiance and shared PMREM programs',
         hint: 'rebuild the Engine shader manifest before selecting Atmosphere lighting',
       });
-    const module = factory.createShaderModule({ code: source, label: 'atmosphere_ibl' }).unwrap();
-    const layout = device
-      .createBindGroupLayout({
-        entries: [{ binding: 0, visibility: 2, buffer: { type: 'uniform', minBindingSize: 64 } }],
-      })
+    const diffuse = factory
+      .createShaderModule({ code: diffuseCode, label: 'atmosphere_ibl' })
       .unwrap();
-    const inputLayout = device
+    const specular = factory
+      .createShaderModule({ code: prefilterCode, label: 'ibl-prefilter' })
+      .unwrap();
+    const diffuseInputs = device
       .createBindGroupLayout({
         entries: [
           { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: 'cube' } },
@@ -108,16 +132,14 @@ export function addAtmosphereIbl(
         ],
       })
       .unwrap();
-    const pipelineLayout = device
-      .createPipelineLayout({ bindGroupLayouts: [layout, inputLayout] })
-      .unwrap();
-    const pipeline = (entryPoint: string) =>
-      device
+    state = {
+      diffuseInputs,
+      irradiance: device
         .createRenderPipeline({
-          label: entryPoint,
-          layout: pipelineLayout,
+          label: 'atmosphere_irradiance_fs',
+          layout: device.createPipelineLayout({ bindGroupLayouts: [diffuseInputs] }).unwrap(),
           vertex: {
-            module,
+            module: diffuse,
             entryPoint: 'atmosphere_ibl_vs',
             buffers: [
               {
@@ -126,89 +148,141 @@ export function addAtmosphereIbl(
               },
             ],
           },
-          fragment: { module, entryPoint, targets: [{ format: 'rgba16float' }] },
+          fragment: {
+            module: diffuse,
+            entryPoint: 'atmosphere_irradiance_fs',
+            targets: [{ format: 'rgba16float' }],
+          },
           primitive: { topology: 'triangle-list' },
         })
-        .unwrap();
-    state = {
-      layout,
-      inputLayout,
+        .unwrap(),
+      prefilter: createPmremPipeline(device, specular, 'rgba16float').unwrap(),
       sampler: device
         .createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' })
         .unwrap(),
-      irradiance: pipeline('atmosphere_irradiance_fs'),
-      prefilter: pipeline('atmosphere_prefilter_fs'),
       parameters: [],
     };
     return state;
   };
-  for (const product of ['irradiance', 'prefilter'] as const) {
-    for (let mip = 0; mip < (product === 'irradiance' ? 1 : 5); mip++)
-      for (let face = 0; face < 6; face++) {
-        const target = graph.view(product === 'irradiance' ? irradiance.value : prefilter.value, {
-          dimension: '2d',
-          baseArrayLayer: face,
-          arrayLayerCount: 1,
-          baseMipLevel: mip,
-          mipLevelCount: 1,
-        });
-        if (!target.ok) return target;
-        const pass = graph.addRasterPass(`atmosphere-${product}-${mip}-${face}`, {
-          accesses: [
-            { resource: sky, usage: 'sampled-read' },
-            { resource: parameters.value, usage: 'uniform-read' },
-            { resource: vertices, usage: 'vertex-read' },
-            { resource: target.value, usage: 'color-attachment' },
-          ],
-          colorAttachments: [{ view: target.value, loadOp: 'clear', storeOp: 'store' }],
-          executeIf: dirty,
-          encode: ({ frame, resources, pass }) => {
-            const current = ensureState(frame);
-            current.inputs = frame.runtime.device
-              .createBindGroup({
-                layout: current.inputLayout,
-                entries: [
-                  {
-                    binding: 0,
-                    resource: { kind: 'textureView', value: resources.textureView(sky).unwrap() },
-                  },
-                  { binding: 1, resource: { kind: 'sampler', value: current.sampler } },
-                ],
-              })
-              .unwrap();
-            let parameterGroup = current.parameters[mip];
-            if (parameterGroup === undefined) {
-              parameterGroup = frame.runtime.device
-                .createBindGroup({
-                  layout: current.layout,
-                  entries: [
-                    {
-                      binding: 0,
-                      resource: {
-                        kind: 'buffer',
-                        value: {
-                          buffer: resources.buffer(parameters.value).unwrap(),
-                          offset: mip * 256,
-                          size: 64,
-                        },
-                      },
-                    },
-                  ],
-                })
-                .unwrap();
-              current.parameters[mip] = parameterGroup;
-            }
-            pass.setPipeline(current[product]);
-            pass.setBindGroup(0, parameterGroup);
-            pass.setBindGroup(1, current.inputs);
-            pass.setVertexBuffer(0, resources.buffer(vertices).unwrap());
-            pass.draw(3, 1, face * 3);
-            if (product === 'prefilter' && mip === 4 && face === 5)
-              atmosphereStorage(frame).recordedEncoder = frame.encoder;
-          },
-        });
-        if (!pass.ok) return pass;
-      }
+  for (let face = 0; face < 6; face++) {
+    const target = graph.view(irradiance.value, {
+      dimension: '2d',
+      baseArrayLayer: face,
+      arrayLayerCount: 1,
+    });
+    if (!target.ok) return target;
+    const added = graph.addRasterPass(`atmosphere-irradiance-${face}`, {
+      accesses: [
+        { resource: sky, usage: 'sampled-read' },
+        { resource: vertices, usage: 'vertex-read' },
+        { resource: target.value, usage: 'color-attachment' },
+      ],
+      colorAttachments: [{ view: target.value, loadOp: 'clear', storeOp: 'store' }],
+      executeIf: dirty,
+      encode: ({ frame, resources, pass }) => {
+        const current = ensureState(frame);
+        const group = frame.runtime.device
+          .createBindGroup({
+            layout: current.diffuseInputs,
+            entries: [
+              {
+                binding: 0,
+                resource: { kind: 'textureView', value: resources.textureView(sky).unwrap() },
+              },
+              { binding: 1, resource: { kind: 'sampler', value: current.sampler } },
+            ],
+          })
+          .unwrap();
+        pass.setPipeline(current.irradiance);
+        pass.setBindGroup(0, group);
+        pass.setVertexBuffer(0, resources.buffer(vertices).unwrap());
+        pass.draw(3, 1, face * 3);
+      },
+    });
+    if (!added.ok) return added;
+  }
+  for (let level = 0; level < levels; level++) {
+    const added = graph.addRasterPass(`atmosphere-prefilter-${level}`, {
+      accesses: [
+        { resource: sky, usage: 'sampled-read' },
+        { resource: scratchView.value, usage: 'sampled-read' },
+        { resource: parameters.value, usage: 'uniform-read' },
+        { resource: prefilterView.value, usage: 'color-attachment' },
+      ],
+      colorAttachments: [
+        { view: prefilterView.value, loadOp: level === 0 ? 'clear' : 'load', storeOp: 'store' },
+      ],
+      executeIf: dirty,
+      encode: ({ frame, resources, pass }) => {
+        const current = ensureState(frame);
+        const inputs = frame.runtime.device
+          .createBindGroup({
+            layout: current.prefilter.inputLayout,
+            entries: [
+              {
+                binding: 0,
+                resource: { kind: 'textureView', value: resources.textureView(sky).unwrap() },
+              },
+              { binding: 1, resource: { kind: 'sampler', value: current.sampler } },
+              {
+                binding: 2,
+                resource: {
+                  kind: 'textureView',
+                  value: resources.textureView(scratchView.value).unwrap(),
+                },
+              },
+            ],
+          })
+          .unwrap();
+        pass.setPipeline(current.prefilter.pipeline);
+        pass.setBindGroup(1, inputs);
+        for (let face = 0; face < 6; face++) {
+          const index = level * 6 + face;
+          current.parameters[index] ??= frame.runtime.device
+            .createBindGroup({
+              layout: current.prefilter.parametersLayout,
+              entries: iblPrefilterGroup0Entries(
+                resources.buffer(parameters.value).unwrap(),
+                level,
+                face,
+              ),
+            })
+            .unwrap();
+          const group = current.parameters[index];
+          const viewport = pmremViewport(size, level, face);
+          pass.setBindGroup(0, group);
+          pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
+          pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
+          pass.draw(3);
+        }
+      },
+    });
+    if (!added.ok) return added;
+    const copied = graph.addCopyPass(`atmosphere-prefilter-copy-${level}`, {
+      accesses: [
+        { resource: prefilterView.value, usage: 'copy-src' },
+        { resource: scratchView.value, usage: 'copy-dst' },
+      ],
+      executeIf: dirty,
+      encode: ({ frame, encoder, resources }) => {
+        for (let face = 0; face < 6; face++) {
+          const viewport = pmremViewport(size, level, face);
+          encoder.copyTextureToTexture(
+            {
+              texture: resources.texture(prefilter.value).unwrap(),
+              origin: [viewport.x, viewport.y, 0],
+            },
+            {
+              texture: resources.texture(scratch.value).unwrap(),
+              origin: [viewport.x, viewport.y, 0],
+            },
+            { width: viewport.width, height: viewport.height, depthOrArrayLayers: 1 },
+          );
+        }
+        if (level === levels - 1) atmosphereStorage(frame).recordedEncoder = frame.encoder;
+      },
+    });
+    if (!copied.ok) return copied;
   }
   return ok({ sky, irradiance: irradianceView.value, prefilter: prefilterView.value });
 }

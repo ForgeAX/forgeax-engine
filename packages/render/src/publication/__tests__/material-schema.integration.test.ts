@@ -1,5 +1,6 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import {
@@ -12,17 +13,22 @@ import {
   getAdmittedParamSchemaInterface,
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { ownReceivedPublicationMaterials } from '../../../../app/src/execution/received-publication-materials';
 import { createRenderTargetHost } from '../../assembly/render-target-host';
 import { MeshFilter, MeshRenderer } from '../../components';
+import { Materials } from '../../materials';
 import type { RenderFrameState } from '../../record/frame-snapshot';
-import { buildPbrMaterialUboPayload } from '../../record/main-pass-material';
-import { uploadMaterialUniforms } from '../../record/material-uniforms';
 import {
-  type _InternalRenderPipelineContext,
-  MATERIAL_PER_ENTITY_STRIDE,
-} from '../../record/render-context';
+  buildPbrMaterialUboPayload,
+  type PerSubmeshMaterialBgDeps,
+} from '../../record/main-pass-material';
+import {
+  materialUniformResources,
+  prepareMaterialUniform,
+  recordMaterialUniforms,
+} from '../../record/material-uniforms';
+import { MATERIAL_PER_ENTITY_STRIDE } from '../../record/render-context';
 import { type RenderPublication, renderPublicationTransfers } from '../contract';
 import { installPublicationPrograms, publicationMaterialSchemaRebinder } from '../programs';
 import { createRenderPublisher } from '../publisher';
@@ -33,34 +39,40 @@ function fixture(
   snapshotSchema = schema,
   shaderId = 'game::forward',
 ) {
-  const source = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const source = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   source.shaderRegistry.installMaterialArtifact(shaderId, { source: '', paramSchema: schema });
   const admitted = source.shaderRegistry.findMaterialArtifact(shaderId).unwrap().paramSchema;
-  const world = new World();
+  const world = new World({ assets: source });
+  const cube = source.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const material = source.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-      { component: MeshRenderer, data: {} },
+      { component: MeshFilter, data: { assetHandle: cube } },
+      { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
   const identity = { source: 'schema-publication-test', epoch: 1 };
   const publisher = createRenderPublisher(world, source, identity);
   const candidate = publisher.prepare(0).unwrap();
-  const templates = candidate.packet.templates.map((template) => {
-    const material = {
-      ...template.snapshot.material,
-      materialShaderId: shaderId,
-      materialProgramKeys: { Forward: shaderId, ShadowCaster: 'game::shadow' },
-      materialParamSchema: snapshotSchema === schema ? admitted : snapshotSchema,
-      paramSnapshot: { factor: 0.25 },
-    };
-    return { ...template, snapshot: { ...template.snapshot, material, materials: [material] } };
-  });
+  const materials = candidate.packet.materials.map(
+    ({ id, value: { immutableValues: _, ...value } }) => ({
+      id,
+      value: {
+        ...value,
+        materialShaderId: shaderId,
+        materialProgramKeys: { Forward: shaderId, ShadowCaster: 'game::shadow' },
+        materialParamSchema: snapshotSchema === schema ? admitted : snapshotSchema,
+        paramSnapshot: { factor: 0.25 },
+      },
+    }),
+  );
   const packet = structuredClone(
     {
       ...candidate.packet,
-      templates,
+      materials,
       programs: [
         { key: shaderId, shader: { source: '', paramSchema: admitted } },
         {
@@ -73,8 +85,10 @@ function fixture(
   );
   candidate.accept();
   const receiver = new RenderPublicationReceiver(identity);
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const copied = packet.templates[0]?.snapshot.material.materialParamSchema;
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const copied = packet.materials[0]?.value.materialParamSchema;
   if (copied === undefined) throw new Error('Missing published material schema');
   return { admitted, packet, receiver, assets, publisher, copied };
 }
@@ -86,19 +100,22 @@ it('rebinds a Worker clone to the selected program owner before retaining accept
   installPublicationPrograms(f.assets, f.packet.programs);
   const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
   const owned = f.assets.shaderRegistry.findMaterialArtifact('game::forward').unwrap().paramSchema;
-  const material = accepted.frame.renderables[0]?.material;
+  const material = accepted.frame.renderables.at(0)?.material.snapshot;
   if (material?.materialParamSchema === undefined) throw new Error('Missing accepted schema');
   expect(material.materialParamSchema).toBe(owned);
   expect(getAdmittedParamSchemaInterface(material.materialParamSchema)).toBe(derive(owned));
-  expect(accepted.frame.renderables[0]?.materials[0]).toBe(material);
-  expect(f.receiver.snapshot(accepted).frame.renderables[0]?.material).toBe(material);
+  expect(accepted.frame.renderables.at(0)?.materials[0]?.snapshot).toBe(material);
+  expect(accepted.frame.renderables.at(0)?.materialOverrides?.[0]).toBe(
+    accepted.frame.renderables.at(0)?.material,
+  );
+  expect(f.receiver.snapshot(accepted).frame.renderables.at(0)?.material.snapshot).toBe(material);
   expect(
-    accepted.operations[0]?.kind === 'update' && accepted.operations[0].snapshot?.material,
+    accepted.operations[0]?.kind === 'update' && accepted.operations[0].snapshot?.material.snapshot,
   ).toBe(material);
   // Native transfer did not confer immutability on arbitrary parameter values.
   expect(Object.isFrozen(material.paramSnapshot)).toBe(false);
   const firstPayload = buildPbrMaterialUboPayload(material);
-  const values = f.packet.templates[0]?.snapshot.material.paramSnapshot;
+  const values = f.packet.materials[0]?.value.paramSnapshot;
   if (values === undefined) throw new Error('Missing published parameter values');
   expect(material.paramSnapshot).toBe(values);
   values.factor = 0.5;
@@ -113,10 +130,10 @@ it('rebinds a Worker clone to the selected program owner before retaining accept
 
 it('finishes exclusive native material values without changing public receiver ownership', async () => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
-  const sourceMaterial = f.packet.templates[0]?.snapshot.material;
+  const sourceMaterial = f.packet.materials[0]?.value;
   if (sourceMaterial === undefined) throw new Error('Missing published material');
   const received = ownReceivedPublicationMaterials(f.packet);
-  const owned = received.templates[0]?.snapshot.material;
+  const owned = received.materials[0]?.value;
   expect(owned).not.toBe(sourceMaterial);
   expect(owned?.immutableValues).toBe(true);
   expect(Object.isFrozen(owned)).toBe(true);
@@ -125,8 +142,9 @@ it('finishes exclusive native material values without changing public receiver o
   expect(owned?.materialParamSchema).not.toBe(sourceMaterial.materialParamSchema);
   expect(owned?.baseColor).not.toBe(sourceMaterial.baseColor);
   expect(owned?.baseColor).toEqual(sourceMaterial.baseColor);
-  expect(received.templates[0]?.snapshot.materials[0]).toBe(owned);
-  expect(sourceMaterial.immutableValues).toBeUndefined();
+  expect(received.templates[0]?.snapshot.materials[0]).toBe(received.materials[0]?.id);
+  expect(received.templates).toBe(f.packet.templates);
+  expect(Reflect.get(sourceMaterial, 'immutableValues')).toBeUndefined();
   expect(received.transforms).toBe(f.packet.transforms);
   expect(received.assets).toBe(f.packet.assets);
   expect(received.targets).toBe(f.packet.targets);
@@ -138,7 +156,7 @@ it('finishes exclusive native material values without changing public receiver o
   expect(owned?.paramSnapshot?.factor).toBe(0.25);
 
   const accepted = f.receiver.accept(received, f.assets).unwrap();
-  const material = accepted.frame.renderables[0]?.material;
+  const material = accepted.frame.renderables.at(0)?.material.snapshot;
   if (material === undefined) throw new Error('Missing received material');
   expect(material.immutableValues).toBe(true);
   expect(material.materialParamSchema).toBe(
@@ -147,58 +165,66 @@ it('finishes exclusive native material values without changing public receiver o
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const buffer = device.createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 0x48 }).unwrap();
   const frameState = {} as RenderFrameState;
-  const context = (value = material) =>
-    ({
-      runtime: { device },
-      frameState,
-      materialSlotCount: 1,
-      materialSlots: [value],
-      materialSlotOwners: [{ renderableIndex: 0 }],
-      validatedOrdered: [],
-      pipelineState: { materialUniformBuffer: { buffer } },
-    }) as unknown as _InternalRenderPipelineContext;
+  const context = {
+    runtime: { device },
+    frameState,
+    pipelineState: { materialUniformBuffer: { buffer } },
+  } as unknown as PerSubmeshMaterialBgDeps;
+  const resources = materialUniformResources([]);
+  const writes = vi.spyOn(device.queue, 'writeBuffer');
+  const uploaded = () => {
+    const bytes = writes.mock.calls.at(-1)?.[2];
+    if (!ArrayBuffer.isView(bytes)) throw new Error('Missing material uniform upload');
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  };
+  const upload = (value = material) =>
+    recordMaterialUniforms(() =>
+      prepareMaterialUniform(context, value, accepted.resources, resources),
+    );
   try {
-    for (let frame = 0; frame < 3; frame++) uploadMaterialUniforms(context());
+    for (let frame = 0; frame < 3; frame++) upload();
     expect(frameState.materialUboCounters).toMatchObject({
-      packHits: 1,
-      packMisses: 2,
-      packMissMutable: 0,
-      packMissCold: 1,
+      packHits: 2,
+      packMisses: 1,
       skippedUploads: 2,
     });
-    const previousBytes = frameState.materialUboPayloadCache?.payload.slice();
+    expect(writes).toHaveBeenCalledTimes(1);
+    const previousBytes = uploaded().slice();
     const next = structuredClone({
       ...f.packet,
       base: 1,
       revision: 2,
       baseline: false,
       programs: [],
+      assets: [],
     });
-    for (const template of next.templates) template.snapshot.material.paramSnapshot.factor = 0.5;
+    for (const row of next.materials) row.value.paramSnapshot.factor = 0.5;
     const changed = f.receiver.accept(ownReceivedPublicationMaterials(next), f.assets).unwrap();
-    const updated = changed.frame.renderables[0]?.material;
+    const updated = changed.frame.renderables.at(0)?.material.snapshot;
     if (updated === undefined) throw new Error('Missing updated material');
     expect(updated).not.toBe(material);
     expect(updated.paramSnapshot?.factor).toBe(0.5);
     expect(material.paramSnapshot?.factor).toBe(0.25);
-    uploadMaterialUniforms(context(updated));
-    expect(frameState.materialUboPayloadCache?.payload).not.toEqual(previousBytes);
-    expect(
-      new DataView(
-        frameState.materialUboPayloadCache?.payload.buffer ?? new ArrayBuffer(0),
-      ).getFloat32(0, true),
-    ).toBe(0.5);
+    upload(updated);
+    expect(writes).toHaveBeenCalledTimes(2);
+    const nextBytes = uploaded();
+    expect(nextBytes).not.toEqual(previousBytes);
+    expect(new DataView(nextBytes.buffer, nextBytes.byteOffset).getFloat32(0, true)).toBe(0.5);
     const moved = {
       ...next,
       base: 2,
       revision: 3,
       templates: [],
+      materials: [],
       upserts: new Uint32Array(),
     };
     expect(ownReceivedPublicationMaterials(moved)).toBe(moved);
     const transformed = f.receiver.accept(moved, f.assets).unwrap();
-    expect(f.receiver.snapshot(transformed).frame.renderables[0]?.material).toBe(updated);
+    expect(f.receiver.snapshot(transformed).frame.renderables.at(0)?.material.snapshot).toBe(
+      updated,
+    );
   } finally {
+    writes.mockRestore();
     device.destroyBuffer(buffer).unwrap();
     f.receiver.dispose();
     f.publisher.dispose();
@@ -208,14 +234,15 @@ it('finishes exclusive native material values without changing public receiver o
 it('detaches numeric and ABI aliases while preserving dynamic resource identities', () => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
   const template = f.packet.templates[0];
-  if (template === undefined) throw new Error('Missing published template');
+  const row = f.packet.materials[0];
+  if (template === undefined || row === undefined) throw new Error('Missing published material');
   const values = { factor: -0, vector: [NaN, -0, Infinity, 1] };
   const coordinates = new Map([['albedo', { transform: { offset: [0, 0] as [number, number] } }]]);
   const baseColor = new Float32Array(new SharedArrayBuffer(12));
   baseColor.set([0.25, 0.5, 0.75]);
   const material = {
-    ...template.snapshot.material,
-    baseColor: baseColor as typeof template.snapshot.material.baseColor,
+    ...row.value,
+    baseColor: baseColor as typeof row.value.baseColor,
     paramSnapshot: values,
     textureCoordinates: coordinates,
     textureHandles: new Map(),
@@ -225,13 +252,14 @@ it('detaches numeric and ABI aliases while preserving dynamic resource identitie
   const sibling = { ...material, roughness: 0.125 };
   const packet = {
     ...f.packet,
-    templates: [
-      { ...template, snapshot: { ...template.snapshot, material, materials: [material, sibling] } },
+    materials: [
+      { id: row.id, value: material },
+      { id: row.id + 1, value: sibling },
     ],
   };
   const received = ownReceivedPublicationMaterials(packet);
-  const owned = received.templates[0]?.snapshot.material;
-  const second = received.templates[0]?.snapshot.materials[1];
+  const owned = received.materials[0]?.value;
+  const second = received.materials[1]?.value;
   if (owned === undefined || second === undefined) throw new Error('Missing owned values');
   expect(owned.materialParamSchema).toBe(second.materialParamSchema);
   expect(owned.materialParamSchema).not.toBe(material.materialParamSchema);
@@ -270,7 +298,7 @@ it.each([
 ] as readonly (readonly ParamSchemaEntry[])[])('preserves a distinct authored or merged schema: %j', (...snapshotSchema) => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }], snapshotSchema);
   const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
-  expect(accepted.frame.renderables[0]?.material.materialParamSchema).toBe(f.copied);
+  expect(accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema).toBe(f.copied);
   expect(getAdmittedParamSchemaInterface(f.copied)).toBeUndefined();
   f.receiver.dispose();
   f.publisher.dispose();
@@ -279,17 +307,18 @@ it.each([
 it('retains the program schema while accepting new values and transform-only publications', () => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
   const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
-  const first = accepted.frame.renderables[0]?.material;
+  const first = accepted.frame.renderables.at(0)?.material.snapshot;
   const next = structuredClone({
     ...f.packet,
     base: 1,
     revision: 2,
     baseline: false,
     programs: [],
+    assets: [],
   });
-  for (const row of next.templates) row.snapshot.material.paramSnapshot.factor = 0.5;
+  for (const row of next.materials) row.value.paramSnapshot.factor = 0.5;
   const changed = f.receiver.accept(next, f.assets).unwrap();
-  const second = changed.frame.renderables[0]?.material;
+  const second = changed.frame.renderables.at(0)?.material.snapshot;
   expect(second?.paramSnapshot?.factor).toBe(0.5);
   expect(first?.paramSnapshot?.factor).toBe(0.25);
   expect(second?.materialParamSchema).toBe(first?.materialParamSchema);
@@ -305,13 +334,14 @@ it('retains the program schema while accepting new values and transform-only pub
         base: 2,
         revision: 3,
         templates: [],
+        materials: [],
         upserts: new Uint32Array(),
       },
       f.assets,
     )
     .unwrap();
   expect(moved.frame.renderables).toHaveLength(0);
-  expect(f.receiver.snapshot(moved).frame.renderables[0]?.material).toBe(second);
+  expect(f.receiver.snapshot(moved).frame.renderables.at(0)?.material.snapshot).toBe(second);
   f.receiver.dispose();
   f.publisher.dispose();
 });
@@ -379,7 +409,7 @@ it('preserves accepted resources and revision when program validation fails, the
     baseline: false,
     time: { ...f.packet.time, elapsed: 123 },
     programs,
-    assets: f.packet.assets.map((row) => ({ ...row, value: { ...row.value } })),
+    assets: [],
   } satisfies RenderPublication;
   expect(() => f.receiver.accept(rejected, f.assets)).toThrow('conflicting immutable shader');
   expect(accepted.resources.revision).toBe(1);
@@ -398,8 +428,8 @@ it('does not collapse distinct numeric defaults during schema admission', () => 
     [{ name: 'factor', type: 'f32', default: -0 }],
   );
   const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
-  expect(accepted.frame.renderables[0]?.material.materialParamSchema).toBe(f.copied);
-  const first = accepted.frame.renderables[0]?.material.materialParamSchema?.[0];
+  expect(accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema).toBe(f.copied);
+  const first = accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema?.[0];
   expect(Object.is(first !== undefined && 'default' in first ? first.default : undefined, -0)).toBe(
     true,
   );
@@ -409,24 +439,15 @@ it('does not collapse distinct numeric defaults during schema admission', () => 
 
 it('rebinds shared received schemas without merging distinct material values or programs', () => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
-  const first = f.packet.templates[0];
-  if (first === undefined) throw new Error('Missing template');
-  const material = first.snapshot.material;
+  const first = f.packet.materials[0];
+  if (first === undefined) throw new Error('Missing material');
   const received = ownReceivedPublicationMaterials({
     ...f.packet,
-    templates: [
-      {
-        ...first,
-        snapshot: {
-          ...first.snapshot,
-          materials: [
-            material,
-            { ...material, paramSnapshot: { factor: 0.5 } },
-            { ...material, materialShaderId: 'game::other' },
-            { ...material, paramSnapshot: { factor: 1 } },
-          ],
-        },
-      },
+    materials: [
+      first,
+      { id: first.id + 1, value: { ...first.value, paramSnapshot: { factor: 0.5 } } },
+      { id: first.id + 2, value: { ...first.value, materialShaderId: 'game::other' } },
+      { id: first.id + 3, value: { ...first.value, paramSnapshot: { factor: 1 } } },
     ],
   });
   installPublicationPrograms(f.assets, f.packet.programs);
@@ -434,18 +455,17 @@ it('rebinds shared received schemas without merging distinct material values or 
     source: '',
     paramSchema: [{ name: 'factor', type: 'f32', default: 0.25 }],
   });
-  const snapshot = received.templates[0]?.snapshot;
-  if (snapshot === undefined) throw new Error('Missing received template');
   const canonical = f.assets.shaderRegistry
     .findMaterialArtifact('game::forward')
     .unwrap().paramSchema;
-  const rebound = publicationMaterialSchemaRebinder(f.assets.shaderRegistry)(snapshot);
-  expect(rebound.materials.map((row) => row.paramSnapshot?.factor)).toEqual([0.25, 0.5, 0.25, 1]);
-  expect(rebound.materials[0]?.materialParamSchema).toBe(canonical);
-  expect(rebound.materials[1]?.materialParamSchema).toBe(canonical);
-  expect(rebound.materials[2]).toBe(snapshot.materials[2]);
-  expect(rebound.materials[3]?.materialParamSchema).toBe(canonical);
-  expect(rebound.materials[0]).not.toBe(rebound.materials[1]);
+  const rebind = publicationMaterialSchemaRebinder(f.assets.shaderRegistry);
+  const rebound = received.materials.map(({ value }) => rebind(value));
+  expect(rebound.map((row) => row.paramSnapshot?.factor)).toEqual([0.25, 0.5, 0.25, 1]);
+  expect(rebound[0]?.materialParamSchema).toBe(canonical);
+  expect(rebound[1]?.materialParamSchema).toBe(canonical);
+  expect(rebound[2]).toBe(received.materials[2]?.value);
+  expect(rebound[3]?.materialParamSchema).toBe(canonical);
+  expect(rebound[0]).not.toBe(rebound[1]);
   f.receiver.dispose();
   f.publisher.dispose();
 });
@@ -453,23 +473,20 @@ it('rebinds shared received schemas without merging distinct material values or 
 it('observes changed defaults on a shared mutable schema between raw material rows', () => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
   installPublicationPrograms(f.assets, f.packet.programs);
-  const original = f.packet.templates[0]?.snapshot;
-  if (original === undefined) throw new Error('Missing template');
+  const original = f.packet.materials[0]?.value;
+  if (original === undefined) throw new Error('Missing material');
   const field = { name: 'factor', type: 'f32' as const, default: 0.75 };
   const schema = [field];
   const rebind = publicationMaterialSchemaRebinder(f.assets.shaderRegistry);
-  const row = () => {
-    const material = { ...original.material, materialParamSchema: schema };
-    return { material, materials: [material] };
-  };
+  const row = () => ({ ...original, materialParamSchema: schema });
   const canonical = f.assets.shaderRegistry
     .findMaterialArtifact('game::forward')
     .unwrap().paramSchema;
-  expect(rebind(row()).material.materialParamSchema).toBe(canonical);
+  expect(rebind(row()).materialParamSchema).toBe(canonical);
   field.default = 0.5;
-  expect(rebind(row()).material.materialParamSchema).toBe(schema);
+  expect(rebind(row()).materialParamSchema).toBe(schema);
   field.default = 0.75;
-  expect(rebind(row()).material.materialParamSchema).toBe(canonical);
+  expect(rebind(row()).materialParamSchema).toBe(canonical);
   f.receiver.dispose();
   f.publisher.dispose();
 });
@@ -482,7 +499,7 @@ it.each([
   const f = fixture(schema, schema, id);
   const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
   const owned = f.assets.shaderRegistry.findMaterialArtifact(id).unwrap().paramSchema;
-  expect(accepted.frame.renderables[0]?.material.materialParamSchema).toBe(owned);
+  expect(accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema).toBe(owned);
   expect(owned).toEqual(schema);
   f.receiver.dispose();
   f.publisher.dispose();

@@ -1,3 +1,5 @@
+import type { AssetHandle } from '@forgeax/engine-types';
+import { testAssets } from './helpers/runtime-assets';
 // feat-20260608-scene-nesting-ecs-fication M2 / w17 + w22 + w23 (red phase) —
 // world.instantiateScene + world.getSceneAssetForInstance + perf.
 //
@@ -26,23 +28,23 @@ import {
   worldGetSceneAssetForInstance,
   worldInstantiateScene,
 } from '@forgeax/engine-scene';
-import type { Handle, SceneAsset } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 function registerSceneAsset(
   world: World,
   asset: SceneAsset,
   extraComponents: readonly Parameters<World['components']['register']>[0][] = [],
-): Handle<'SceneAsset', 'shared'> {
+): AssetHandle<'scene'> {
   for (const component of [SceneInstance, ChildOf, Transform, ...extraComponents]) {
     world.components.register(component).unwrap();
   }
-  return world.allocSharedRef('SceneAsset', asset);
+  return testAssets(world).create(asset).unwrap();
 }
 
 function instantiateScene(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   parent?: Parameters<typeof worldInstantiateScene>[2],
 ) {
   return worldInstantiateScene(world, handle, parent);

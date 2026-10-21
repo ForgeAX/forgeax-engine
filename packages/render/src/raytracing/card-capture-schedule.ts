@@ -8,6 +8,13 @@ export interface CardCaptureSlice {
   readonly clear: boolean;
 }
 
+/** A shared capture root owns its physical tile work; publishing it never walks that work. */
+export interface CardCaptureWork {
+  readonly tiles: number;
+  runs(): IterableIterator<IndexRun>;
+  has(run: IndexRun): boolean;
+}
+
 /** Card atlas capture this frame: absent, the first slice (clears the atlas and
  * builds material mips) or a later slice that loads the retained atlas. */
 export type CardAtlasCapture = 'clear' | 'load' | undefined;
@@ -26,6 +33,15 @@ export class CardCaptureScheduler {
   #tiles: number;
   #captured = 0;
   #dirty: IndexRun[] = [];
+  readonly #work = new Map<
+    CardCaptureWork,
+    {
+      readonly cursor: IterableIterator<IndexRun>;
+      remaining: number;
+      run: IndexRun | undefined;
+      offset: number;
+    }
+  >();
 
   constructor(tiles: number, budget: number) {
     if (!Number.isSafeInteger(budget) || budget < 1)
@@ -54,11 +70,28 @@ export class CardCaptureScheduler {
 
   /** Every tile holds a submitted capture and no edit is pending. */
   get done(): boolean {
-    return this.#captured >= this.#tiles && this.#dirty.length === 0;
+    return this.#captured >= this.#tiles && this.#dirty.length === 0 && this.#work.size === 0;
   }
 
   get pendingTiles(): number {
-    return this.#dirty.reduce((n, run) => n + run.end - run.first, 0);
+    let count = this.#dirty.reduce((n, run) => n + run.end - run.first, 0);
+    for (const pending of this.#work.values()) count += pending.remaining;
+    return count;
+  }
+
+  get pendingWork(): boolean {
+    return this.#work.size > 0;
+  }
+
+  /** O(1) adoption of one changed shared root. Iteration starts only when a capture slice is needed. */
+  queueWork(work: CardCaptureWork): void {
+    if (work.tiles > 0)
+      this.#work.set(work, {
+        cursor: work.runs(),
+        remaining: work.tiles,
+        run: undefined,
+        offset: 0,
+      });
   }
 
   slice(): CardCaptureSlice | undefined {
@@ -68,16 +101,42 @@ export class CardCaptureScheduler {
         count: Math.min(this.#limit, this.#tiles - this.#captured),
         clear: false,
       };
-    const run = this.#dirty[0];
-    return run === undefined
-      ? undefined
-      : { first: run.first, count: Math.min(this.#limit, run.end - run.first), clear: true };
+    const dirty = this.#dirty[0];
+    if (dirty !== undefined)
+      return {
+        first: dirty.first,
+        count: Math.min(this.#limit, dirty.end - dirty.first),
+        clear: true,
+      };
+    for (const [work, pending] of this.#work) {
+      // Membership may retire while this physical work is waiting for budget.
+      // Validate only the selected run; publication never visits its members.
+      for (;;) {
+        pending.run ??= pending.cursor.next().value;
+        if (pending.run === undefined) {
+          this.#work.delete(work);
+          break;
+        }
+        if (work.has(pending.run)) {
+          const first = pending.run.first + pending.offset;
+          return { first, count: Math.min(this.#limit, pending.run.end - first), clear: true };
+        }
+        pending.remaining = Math.max(
+          0,
+          pending.remaining - (pending.run.end - pending.run.first - pending.offset),
+        );
+        pending.run = undefined;
+        pending.offset = 0;
+      }
+    }
+    return undefined;
   }
 
   /** Whether every tile of `run` holds a submitted capture with no recapture pending. */
   covers(run: IndexRun): boolean {
     return (
       run.end <= this.#captured &&
+      this.#work.size === 0 &&
       this.#dirty.every((dirty) => dirty.end <= run.first || dirty.first >= run.end)
     );
   }
@@ -110,7 +169,21 @@ export class CardCaptureScheduler {
       return;
     }
     const run = this.#dirty[0];
-    if (run === undefined || run.first !== slice.first) return;
+    if (run === undefined) {
+      const first = this.#work.entries().next().value;
+      if (first === undefined) return;
+      const [work, pending] = first;
+      if (pending.run === undefined || pending.run.first + pending.offset !== slice.first) return;
+      pending.remaining = Math.max(0, pending.remaining - slice.count);
+      pending.offset += slice.count;
+      if (pending.run.first + pending.offset >= pending.run.end) {
+        pending.run = undefined;
+        pending.offset = 0;
+      }
+      if (pending.remaining === 0) this.#work.delete(work);
+      return;
+    }
+    if (run.first !== slice.first) return;
     const rest = { first: run.first + slice.count, end: run.end };
     this.#dirty = rest.end > rest.first ? [rest, ...this.#dirty.slice(1)] : this.#dirty.slice(1);
   }

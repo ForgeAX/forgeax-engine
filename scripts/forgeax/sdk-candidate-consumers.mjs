@@ -20,7 +20,8 @@ function filesUnder(root) {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
-export function createCandidateSeedManifest({ sdkRoot, expectedHead, version }) {
+export function createCandidateSeedManifest({ sdkRoot, expectedHead, version, group = 'all' }) {
+  if (!['all', 'archive', 'npm'].includes(group)) throw new Error('sdk-candidate-seed-group');
   const root = resolve(sdkRoot);
   const build = JSON.parse(readFileSync(resolve(root, 'sdk-build-result.json'), 'utf8'));
   if (!build.ok || build.engineCommit !== expectedHead || build.sdkVersion !== version)
@@ -30,19 +31,20 @@ export function createCandidateSeedManifest({ sdkRoot, expectedHead, version }) 
 
   const archiveName = `forgeax-sdk-v${version}.zip`;
   const archivePath = resolve(root, archiveName);
-  const archiveBytes = readFileSync(archivePath);
-  const archiveDigest = sha256(archiveBytes);
-  if (archiveDigest !== build.sha256) throw new Error('sdk-candidate-seed-archive-bytes');
-  if (readFileSync(resolve(root, 'SHA256SUMS'), 'utf8') !== `${archiveDigest}  ${archiveName}\n`)
+  if (readFileSync(resolve(root, 'SHA256SUMS'), 'utf8') !== `${build.sha256}  ${archiveName}\n`)
     throw new Error('sdk-candidate-seed-checksum-contract');
+  const archiveBytes = group === 'npm' ? undefined : readFileSync(archivePath);
+  if (archiveBytes && sha256(archiveBytes) !== build.sha256)
+    throw new Error('sdk-candidate-seed-archive-bytes');
 
   const npmRoot = resolve(root, 'npm');
-  const npmFiles = filesUnder(npmRoot);
+  const npmFiles = group === 'archive' ? undefined : filesUnder(npmRoot);
   if (
     !Number.isSafeInteger(build.npm?.packageCount) ||
     build.npm.packageCount < 1 ||
-    npmFiles.length !== build.npm.packageCount + 1 ||
-    npmFiles.some((path) => !path.endsWith('.tgz'))
+    (npmFiles &&
+      (npmFiles.length !== build.npm.packageCount + 1 ||
+        npmFiles.some((path) => !path.endsWith('.tgz'))))
   )
     throw new Error('sdk-candidate-seed-package-count');
 
@@ -51,28 +53,51 @@ export function createCandidateSeedManifest({ sdkRoot, expectedHead, version }) 
     engineCommit: expectedHead,
     sdkVersion: version,
     viewCommit: build.viewCommit,
-    archive: {
-      path: archiveName,
-      bytes: archiveBytes.byteLength,
-      sha256: archiveDigest,
-    },
+    ...(archiveBytes
+      ? {
+          archive: {
+            path: archiveName,
+            bytes: archiveBytes.byteLength,
+            sha256: build.sha256,
+          },
+        }
+      : {}),
     npmPackageCount: build.npm.packageCount,
-    npm: npmFiles.map((path) => {
-      const bytes = readFileSync(path);
-      return {
-        path: `npm/${relative(npmRoot, path).split(sep).join('/')}`,
-        bytes: bytes.byteLength,
-        sha256: sha256(bytes),
-      };
-    }),
+    ...(npmFiles
+      ? {
+          npm: npmFiles.map((path) => {
+            const bytes = readFileSync(path);
+            return {
+              path: `npm/${relative(npmRoot, path).split(sep).join('/')}`,
+              bytes: bytes.byteLength,
+              sha256: sha256(bytes),
+            };
+          }),
+        }
+      : {}),
   };
 }
 
-export function verifyCandidateSeedManifest({ sdkRoot, manifest, expectedHead, version }) {
-  const expected = createCandidateSeedManifest({ sdkRoot, expectedHead, version });
-  if (JSON.stringify(manifest) !== JSON.stringify(expected))
+export function verifyCandidateSeedManifest({
+  sdkRoot,
+  manifest,
+  expectedHead,
+  version,
+  group = 'all',
+}) {
+  const expected = createCandidateSeedManifest({ sdkRoot, expectedHead, version, group });
+  const build = JSON.parse(readFileSync(resolve(sdkRoot, 'sdk-build-result.json'), 'utf8'));
+  if (
+    manifest.archive?.path !== `forgeax-sdk-v${version}.zip` ||
+    manifest.archive?.sha256 !== build.sha256
+  )
+    throw new Error('sdk-candidate-seed-archive-identity');
+  const transported = { ...manifest };
+  if (group === 'archive') delete transported.npm;
+  if (group === 'npm') delete transported.archive;
+  if (JSON.stringify(transported) !== JSON.stringify(expected))
     throw new Error('sdk-candidate-seed-byte-closure');
-  return JSON.parse(readFileSync(resolve(sdkRoot, 'sdk-build-result.json'), 'utf8'));
+  return build;
 }
 
 export function createCandidateConsumerReports({
@@ -181,7 +206,8 @@ if (import.meta.main) {
     );
   } else if (argv.includes('--verify-seed')) {
     const manifest = JSON.parse(await readFile(resolve(option(argv, 'seed-manifest')), 'utf8'));
-    const build = verifyCandidateSeedManifest({ sdkRoot, manifest, expectedHead, version });
+    const group = argv.includes('--group') ? option(argv, 'group') : 'all';
+    const build = verifyCandidateSeedManifest({ sdkRoot, manifest, expectedHead, version, group });
     process.stdout.write(
       `${JSON.stringify({ ok: true, engineCommit: expectedHead, sdkVersion: version, viewCommit: build.viewCommit })}\n`,
     );

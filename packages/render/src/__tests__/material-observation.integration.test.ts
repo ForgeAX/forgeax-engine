@@ -1,20 +1,30 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { type TextureAsset, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import {
   projectMeshMaterialBindingObservation,
   summarizeMeshMaterialBindings,
 } from '../mesh-material-bindings';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
-import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot } from '../render-system-extract';
 import {
   createMaterialResidencyObserver,
   observeMaterialResidency,
 } from '../render-system-residency';
+
+function assetWorld() {
+  const assets = new AssetRegistry();
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  return new World({ assets });
+}
 
 const bindings = [
   { handle: 11, source: 'renderer-override' as const },
@@ -31,19 +41,26 @@ const failure = {
 
 describe('resident MeshMaterialBindingObservation', () => {
   it('observes cloned value-only materials once per asset and scope, then refreshes the owner', () => {
-    const worlds = [new World(), new World()] as const;
+    const worlds = [assetWorld(), assetWorld()] as const;
     const handles = [
-      worlds[0].allocSharedRef('MaterialAsset', { kind: 'material' }),
-      worlds[1].allocSharedRef('MaterialAsset', { kind: 'material' }),
+      runtimeAssetRegistry(worlds[0].assets)
+        .create({ kind: 'material', passes: [{ name: 'main', program: { module: 'fixture' } }] })
+        .unwrap(),
+      runtimeAssetRegistry(worlds[1].assets)
+        .create({ kind: 'material', passes: [{ name: 'main', program: { module: 'fixture' } }] })
+        .unwrap(),
     ] as const;
-    expect(handles[0]).toBe(handles[1]);
-    const reads = worlds.map((world) => vi.spyOn(world.sharedRefs, 'resolve'));
+    expect(handles[0]).not.toBe(handles[1]);
+    const reads = worlds.map((world) => vi.spyOn(worldRenderResources(world), 'resolveAsset'));
     const internals = {
-      assets: new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+      assets: new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
     } as RenderSystemInternals;
     const observe = createMaterialResidencyObserver(internals);
     const observations = worlds.map((world, index) =>
-      observe(world, { ...defaultMaterialSnapshot(), materialHandle: handles[index] }),
+      observe(worldRenderResources(world), {
+        ...defaultMaterialSnapshot(),
+        materialHandle: handles[index],
+      }),
     );
     const repeated = [];
     for (let index = 0; index < 200; index++) {
@@ -54,81 +71,76 @@ describe('resident MeshMaterialBindingObservation', () => {
         roughness: index / 200,
         paramSnapshot: { factor: index },
       };
-      repeated.push(observe(worlds[scope], material));
+      const world = worlds[scope];
+      if (world === undefined) throw new Error('expected a World asset scope');
+      repeated.push(observe(worldRenderResources(world), material));
     }
     expect(reads.map((read) => read.mock.calls.length)).toEqual([1, 1]);
     for (const [index, observation] of repeated.entries())
       expect(observation).toBe(observations[index % 2]);
-    worlds[0].sharedRefs.release(handles[0]).unwrap();
+    runtimeAssetRegistry(worlds[0].assets).release(handles[0]).unwrap();
     const next = createMaterialResidencyObserver(internals);
     expect(
-      next(worlds[0], { ...defaultMaterialSnapshot(), materialHandle: handles[0] }).readiness,
+      next(worldRenderResources(worlds[0]), {
+        ...defaultMaterialSnapshot(),
+        materialHandle: handles[0],
+      }).readiness,
     ).toBe('failed');
     expect(
-      next(worlds[1], { ...defaultMaterialSnapshot(), materialHandle: handles[1] }).readiness,
+      next(worldRenderResources(worlds[1]), {
+        ...defaultMaterialSnapshot(),
+        materialHandle: handles[1],
+      }).readiness,
     ).toBe('ready');
     expect(observations[0]?.readiness).toBe('ready');
-    worlds[1].sharedRefs.release(handles[1]).unwrap();
+    runtimeAssetRegistry(worlds[1].assets).release(handles[1]).unwrap();
   });
 
-  it('reads cooked child readiness from the accepted program owner', () => {
-    const world = new World();
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-    const root = '019f0000-0000-7000-8000-000000000201';
-    const child = '019f0000-0000-7000-8000-000000000202';
-    const payload = { kind: 'material' as const, parent: assets.parseGuid(root), values: {} };
-    assets.catalog(child, payload).unwrap();
-    const missing = {
-      status: 'Error' as const,
-      error: {
-        code: 'material-specialization-not-cooked' as const,
-        expected: 'the selected material program is cooked',
-        hint: 'cook the selected program',
-        retryable: false,
-        recoveryActions: [],
-        detail: { guid: child, specializationKey: '' },
+  it('keeps accepted runtime material readiness when the source reload is rejected', async () => {
+    const world = assetWorld();
+    const assets = runtimeAssetRegistry(world.assets);
+    const guid = '019f0000-0000-7000-8000-000000000202';
+    publishRuntimeAssets(assets, [
+      {
+        guid,
+        asset: { kind: 'material', passes: [{ name: 'main', program: { module: 'fixture' } }] },
       },
-    };
-    assets.recordMaterialReadiness(child, missing);
-    const material = {
-      ...defaultMaterialSnapshot(),
-      materialHandle: world.allocSharedRef('MaterialAsset', payload),
-    };
+    ]);
+    const handle = (await assets.load(guid, 'material')).unwrap();
+    const material = { ...defaultMaterialSnapshot(), materialHandle: handle };
     const internals = { assets } as RenderSystemInternals;
-    const accepted = {
-      ...material,
-      materialPublication: {
-        identity: {
-          materialGuid: root,
-          publicationGeneration: 1,
-          specializationKey: 'root/1',
-          artifactHash: 'sha256:accepted-root',
-        },
-        programs: [],
-      },
-    };
-    expect(observeMaterialResidency(world, accepted, internals).readiness).toBe('ready');
-    // An uncooked child and a failed actual program owner remain failures.
-    expect(observeMaterialResidency(world, material, internals).readiness).toBe('failed');
-    assets.recordMaterialReadiness(root, {
-      ...missing,
-      error: { ...missing.error, detail: { ...missing.error.detail, guid: root } },
-    });
-    expect(observeMaterialResidency(world, accepted, internals).readiness).toBe('failed');
+    const scope = worldRenderResources(world);
+    const revision = scope.assetRevision(handle);
+    expect(observeMaterialResidency(scope, material, internals).readiness).toBe('ready');
+    publishRuntimeAssets(assets, [{ guid, asset: { kind: 'material', passes: null } as never }]);
+    expect((await assets.reload(handle, { conflict: 'overwrite' })).ok).toBe(false);
+    expect(scope.assetRevision(handle)).toBe(revision);
+    expect(observeMaterialResidency(scope, material, internals).readiness).toBe('ready');
   });
 
   it('keeps texture, sampler and video overrides separate from the same value-only material', () => {
-    const world = new World();
-    const materialHandle = world.allocSharedRef('MaterialAsset', { kind: 'material' });
-    const missing = world.allocSharedRef('TextureAsset', { kind: 'texture' } as TextureAsset);
-    world.sharedRefs.release(missing).unwrap();
+    const world = assetWorld();
+    const materialHandle = runtimeAssetRegistry(world.assets)
+      .create({ kind: 'material', passes: [{ name: 'main', program: { module: 'fixture' } }] })
+      .unwrap();
+    const missing = runtimeAssetRegistry(world.assets)
+      .create({
+        kind: 'texture',
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        mips: { kind: 'none' },
+        data: new Uint8Array(4),
+      })
+      .unwrap();
+    runtimeAssetRegistry(world.assets).release(missing).unwrap();
     const internals = {
-      assets: new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+      assets: new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
       dynamicTextureStore: { getView: () => undefined },
     } as unknown as RenderSystemInternals;
     const material = { ...defaultMaterialSnapshot(), materialHandle };
     const observe = createMaterialResidencyObserver(internals);
-    const ready = observe(world, material);
+    const ready = observe(worldRenderResources(world), material);
     for (const field of [
       'baseColorTexture',
       'metallicRoughnessTexture',
@@ -136,39 +148,37 @@ describe('resident MeshMaterialBindingObservation', () => {
       'emissiveTexture',
       'occlusionTexture',
     ]) {
-      expect(observe(world, { ...material, [field]: missing }).readiness).toBe('failed');
+      expect(
+        observe(worldRenderResources(world), { ...material, [field]: missing }).readiness,
+      ).toBe('failed');
     }
     expect(
-      observe(world, { ...material, textureHandles: new Map([['extra', missing]]) }).readiness,
-    ).toBe('failed');
-    expect(
-      observe(world, {
+      observe(worldRenderResources(world), {
         ...material,
-        samplerHandles: new Map([['extra', toShared<'SamplerAsset'>(missing)]]),
+        textureHandles: new Map([['extra', missing]]),
       }).readiness,
     ).toBe('failed');
     expect(
-      observe(world, {
+      observe(worldRenderResources(world), {
         ...material,
-        videoTextureFields: new Map([['extra', toShared<'VideoAsset'>(missing)]]),
+        samplerHandles: new Map([['extra', Number(missing) as AssetHandle<'sampler'>]]),
+      }).readiness,
+    ).toBe('failed');
+    expect(
+      observe(worldRenderResources(world), {
+        ...material,
+        videoTextureFields: new Map([['extra', Number(missing) as AssetHandle<'video'>]]),
       }).readiness,
     ).toBe('pending');
-    expect(observe(world, { ...material, roughness: 0.6 })).toBe(ready);
-    world.sharedRefs.release(materialHandle).unwrap();
+    expect(observe(worldRenderResources(world), { ...material, roughness: 0.6 })).toBe(ready);
+    runtimeAssetRegistry(world.assets).release(materialHandle).unwrap();
   });
 
   it('keeps distinct material snapshots and observes resource failures in the next phase', async () => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const gpuStore = new GpuResidencyCache();
-    gpuStore.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('no cubemap');
-      },
-      device.caps,
-    );
-    const world = new World();
+    gpuStore.configureGpuDevice(device, undefined, device.caps);
+    const world = assetWorld();
     const texture: TextureAsset = {
       kind: 'texture',
       shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
@@ -177,26 +187,31 @@ describe('resident MeshMaterialBindingObservation', () => {
       mips: { kind: 'packed', levelCount: 1 },
       data: new Uint8Array(4),
     };
-    const first = world.allocSharedRef('TextureAsset', texture);
-    const second = world.allocSharedRef('TextureAsset', { ...texture });
+    const first = runtimeAssetRegistry(world.assets).create(texture).unwrap();
+    const second = runtimeAssetRegistry(world.assets)
+      .create({ ...texture })
+      .unwrap();
     const firstMaterial = { ...defaultMaterialSnapshot(), baseColorTexture: first };
     const secondMaterial = { ...firstMaterial, baseColorTexture: second };
     const internals = { gpuStore } as RenderSystemInternals;
     const observe = createMaterialResidencyObserver(internals);
     const ensureResident = vi.spyOn(gpuStore, 'ensureResident');
     try {
-      const observation = observe(world, firstMaterial);
-      expect(observe(world, firstMaterial)).toBe(observation);
-      expect(observe(world, secondMaterial)).toMatchObject({ textures: [{ handle: second }] });
+      const observation = observe(worldRenderResources(world), firstMaterial);
+      expect(observe(worldRenderResources(world), firstMaterial)).toBe(observation);
+      expect(observe(worldRenderResources(world), secondMaterial)).toMatchObject({
+        textures: [{ handle: second }],
+      });
       expect(ensureResident).toHaveBeenCalledTimes(2);
-      world.sharedRefs.release(first).unwrap();
-      expect(createMaterialResidencyObserver(internals)(world, firstMaterial).readiness).toBe(
-        'failed',
-      );
+      runtimeAssetRegistry(world.assets).release(first).unwrap();
+      expect(
+        createMaterialResidencyObserver(internals)(worldRenderResources(world), firstMaterial)
+          .readiness,
+      ).toBe('failed');
       expect(observation.readiness).toBe('ready');
     } finally {
       gpuStore.destroyAll();
-      world.sharedRefs.release(second).unwrap();
+      runtimeAssetRegistry(world.assets).release(second).unwrap();
     }
   });
 
@@ -281,59 +296,46 @@ describe('resident MeshMaterialBindingObservation', () => {
     });
   });
 
-  it('keeps accepted texture allocations while observing mutable source mip validity', async () => {
+  it('keeps accepted GPU texture allocations after an invalid edit and adopts a valid replacement', async () => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const gpuStore = new GpuResidencyCache();
-    gpuStore.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('no cubemap');
-      },
-      device.caps,
-    );
-    const world = new World();
-    const shape = vi.fn(() => ({ viewDimension: '2d' as const, extent: { width: 4, height: 4 } }));
-    const mips = { kind: 'packed' as const, levelCount: 3 };
-    const texture: TextureAsset = {
-      kind: 'texture',
-      get shape() {
-        return shape();
-      },
-      format: 'rgba8unorm',
-      colorSpace: 'linear',
-      mips,
-      data: new Uint8Array(84),
-    };
-    const handle = world.allocSharedRef('TextureAsset', texture);
-    const material = { baseColorTexture: handle } as MaterialSnapshot;
+    gpuStore.configureGpuDevice(device, undefined, device.caps);
+    const world = assetWorld();
+    const assets = runtimeAssetRegistry(world.assets);
+    const handle = assets
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'packed', levelCount: 3 },
+        data: new Uint8Array(84),
+      })
+      .unwrap();
+    const material = { ...defaultMaterialSnapshot(), baseColorTexture: handle };
     const internals = { gpuStore } as RenderSystemInternals;
     const createTexture = vi.spyOn(device, 'createTexture');
+    const scope = worldRenderResources(world);
     try {
-      const cold = observeMaterialResidency(world, material, internals);
+      const cold = observeMaterialResidency(scope, material, internals);
       expect(cold).toMatchObject({ readiness: 'ready', textures: [{ handle, mipLevelCount: 3 }] });
-      expect(shape).toHaveBeenCalled();
-      shape.mockClear();
-      for (let receiver = 0; receiver < 100; receiver++) {
-        expect(observeMaterialResidency(world, material, internals)).toEqual(cold);
-      }
-      expect(shape).toHaveBeenCalledTimes(100);
+      for (let receiver = 0; receiver < 100; receiver++)
+        expect(observeMaterialResidency(scope, material, internals)).toEqual(cold);
       expect(createTexture).toHaveBeenCalledTimes(1);
-      mips.levelCount = 0;
-      expect(observeMaterialResidency(world, material, internals).preparationFailure?.code).toBe(
-        'texture-mip-policy-invalid',
-      );
-      mips.levelCount = 2;
-      // A valid author edit alone does not replace the accepted GPU allocation.
-      expect(observeMaterialResidency(world, material, internals).textures).toEqual(cold.textures);
-      mips.levelCount = 3;
-      gpuStore.invalidateTexture(handle, world);
-      expect(observeMaterialResidency(world, material, internals)).toEqual(cold);
-      expect(shape).toHaveBeenCalled();
+      expect(assets.update(handle, { mips: { kind: 'packed', levelCount: 0 } }).ok).toBe(false);
+      expect(observeMaterialResidency(scope, material, internals)).toEqual(cold);
+      expect(createTexture).toHaveBeenCalledTimes(1);
+      assets.update(handle, { mips: { kind: 'none' }, data: new Uint8Array(64) }).unwrap();
+      // The residency owner adopts changed textures at the next preparation boundary.
+      gpuStore.invalidateTexture(handle, scope);
+      expect(observeMaterialResidency(scope, material, internals)).toMatchObject({
+        readiness: 'ready',
+        textures: [{ handle, mipLevelCount: 1 }],
+      });
       expect(createTexture).toHaveBeenCalledTimes(2);
     } finally {
       gpuStore.destroyAll();
-      world.sharedRefs.release(handle).unwrap();
+      assets.dispose();
     }
   });
 });

@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ANTIALIAS_FXAA, ANTIALIAS_NONE, Camera } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, unlit } from '../../lab/stage';
+import { spawnMesh, unlit } from '../../lab/stage';
 import { spawnAliasingEdges } from './shared/scenes';
 
 export default defineFeature({
@@ -12,11 +14,17 @@ export default defineFeature({
   expect:
     'ON: the thin white and red bars have smooth, slightly soft edges. OFF: every shallow bar shows hard stair-step jaggies and broken dotted segments.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const camera = spawnAliasingEdges(world, { antialias: ANTIALIAS_FXAA });
     const yellow = unlit(world, [1, 0.9, 0.1, 1]);
     for (let i = 0; i < 24; i++) {
       const angle = -0.35 - i * 0.03;
-      spawnMesh(world, MESH.cube, yellow, {
+      spawnMesh(world, stageCube, yellow, {
         pos: [0, -2.4 + i * 0.2, -0.2],
         scale: [9, 0.03, 0.03],
         rotation: [0, 0, Math.sin(angle / 2), Math.cos(angle / 2)],

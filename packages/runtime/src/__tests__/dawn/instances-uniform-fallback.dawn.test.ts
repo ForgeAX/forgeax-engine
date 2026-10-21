@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl as createShaderManifestUrl } from '../shader-manifest-url.fixture';
 // World-authored Instances render through storage and uniform bindings on Dawn.
 // The restricted RHI advertises no storage buffers while retaining the real
@@ -109,7 +111,7 @@ describe('World Instances storage and uniform submission', () => {
         return adapter;
       },
     };
-    const { AssetRegistry, HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+    const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
     const { Camera, MeshRenderer } = await import('@forgeax/engine-render');
     const { Instances } = await import('@forgeax/engine-render');
     const { constructRuntimeRendererHost } = await import('../../renderer-host');
@@ -223,10 +225,7 @@ describe('World Instances storage and uniform submission', () => {
     }
 
     const world = new World();
-    const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      matAsset,
-    );
+    const matHandle = testAssets(world).create(matAsset).unwrap();
     world.spawn(
       {
         component: Transform,
@@ -236,7 +235,12 @@ describe('World Instances storage and uniform submission', () => {
           scale: [0.3, 0.3, 0.3],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandle] } },
       { component: Instances, data: { transforms } },
     );

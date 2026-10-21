@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createMeshBuilder } from '@forgeax/engine/geometry';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import type { MeshAsset } from '@forgeax/engine/types';
@@ -57,9 +58,13 @@ export default defineFeature({
   expect:
     'ON: an orange filled square framed by fourteen cyan line squares from the same mesh. OFF: the mesh has only the triangle submesh, so the cyan lines disappear.',
   setup({ world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0, 1.2, 4], target: [0, 1.2, 0] });
-    const both = world.allocSharedRef('MeshAsset', mesh(true));
-    const fillOnly = world.allocSharedRef('MeshAsset', mesh(false));
+    const both = sceneAssets.create(mesh(true)).unwrap();
+    const fillOnly = sceneAssets.create(mesh(false)).unwrap();
     const fill = unlit(world, [1, 0.5, 0.1, 1]);
     const lines = unlit(world, [0.1, 1, 1, 1]);
     const entity = spawnMesh(world, both, fill, { pos: [0, 1.2, 0] });

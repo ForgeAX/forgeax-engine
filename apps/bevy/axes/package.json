@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `gizmos/axes` example (each entity's local coordinate frame drawn as three colored arrows) \u2014 a debug-draw demo exercising the new DebugDraw axes/arrow gizmo primitives (mapping Bevy gizmos.axes), drawing per-entity X=red/Y=green/Z=blue local axes via app.debugDraw each frame.",
+  "description": "Reproduction of Bevy's `gizmos/axes` example (each entity's local coordinate frame drawn as three colored arrows) — a debug-draw demo exercising the new DebugDraw axes/arrow gizmo primitives (mapping Bevy gizmos.axes), drawing per-entity X=red/Y=green/Z=blue local axes via app.debugDraw each frame.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -56,7 +56,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

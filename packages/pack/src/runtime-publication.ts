@@ -1,5 +1,6 @@
 import type { ToolCommandContract } from '@forgeax/engine-tool-runtime';
 import type {
+  AssetEnvelopeV2,
   AssetPublicationEnvelope,
   AssetPublicationExternalEvidence,
   AssetPublicationOutput,
@@ -11,6 +12,7 @@ import { createAssetPublication, encodeBase64 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { PackBlob } from './blob.js';
+import { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material-program-wire.js';
 import type { PackProgram } from './program.js';
 
 /** Portable delivered bytes. Decoding and dependency readiness remain loader responsibilities. */
@@ -28,11 +30,8 @@ export interface FixedPackPublication {
   readonly executions?: Readonly<Partial<Record<PluginBuildTarget, FixedPackExecution>>>;
 }
 
-export interface RuntimePackAssetInput {
-  readonly guid: string;
-  readonly kind: string;
-  readonly name?: string;
-  readonly payload: unknown;
+export interface RuntimePackAssetInput
+  extends Pick<AssetEnvelopeV2, 'guid' | 'kind' | 'name' | 'payload'> {
   readonly refs?: readonly string[];
   readonly artifacts?: Readonly<Record<string, unknown>>;
 }
@@ -97,13 +96,18 @@ function isRuntimePackEnvelope(value: unknown): value is RuntimePackEnvelope {
  * cooked asset bytes represented by an immutable DDC key.
  */
 export function stripRuntimePackLifecycle(value: unknown): unknown {
-  if (!isRuntimePackEnvelope(value)) return value;
-  const { scopeId: _scopeId, generation: _generation, ...semantic } = value;
-  return semantic;
+  const decoded = decodeMaterialProgramWire(value);
+  if (!decoded.ok || !isRuntimePackEnvelope(decoded.value)) return value;
+  const { scopeId: _scopeId, generation: _generation, ...semantic } = decoded.value;
+  return decoded.value === value ? semantic : encodeMaterialProgramWire(semantic);
 }
 
 /** Rehydrate a DDC Pack payload into the active runtime scope for transport. */
 export function bindRuntimePackScope(value: unknown, scopeId: string, generation: number): unknown {
+  const decoded = decodeMaterialProgramWire(value);
+  if (!decoded.ok) return value;
+  const wire = decoded.value !== value;
+  value = decoded.value;
   if (
     value === null ||
     typeof value !== 'object' ||
@@ -117,7 +121,8 @@ export function bindRuntimePackScope(value: unknown, scopeId: string, generation
   // The accepted Catalog tuple is authoritative for a live transport. This
   // also repairs a legacy DDC body whose publication generation predates the
   // current accepted candidate.
-  return { ...(value as Record<string, unknown>), scopeId, generation };
+  const bound = { ...(value as Record<string, unknown>), scopeId, generation };
+  return wire ? encodeMaterialProgramWire(bound) : bound;
 }
 
 function stable(value: unknown): string {

@@ -1,5 +1,6 @@
 // Animation clip and graph contracts.
 import type { AnimationTargetIdValue } from './animation-target.js';
+import type { AssetHandle } from './asset-handle';
 
 // === Skeleton / Skin / AnimationClip asset POD shapes (feat-20260523-skin-skeleton-animation M0) ===
 //
@@ -10,14 +11,12 @@ import type { AnimationTargetIdValue } from './animation-target.js';
 //   - plan-strategy D-1 (3-asset separation: IBM/Skin bindings/AnimationClip curves physically independent)
 //   - charter P3 (explicit failure: all shape carry typed fields, no loose Record<string,unknown> payloads)
 //
-// AnimationChannel / AnimationSampler sub-types are inline here since they are
-// exclusively consumed by AnimationClip; no other asset or component references them.
+// Runtime clips and importer PODs share the same transform channels and numeric samplers.
 
 /** Stable target identity linking a sampler to a scene entity. */
 export interface AnimationTransformChannel {
   /** Stable animation target identity. */
   readonly targetId: AnimationTargetIdValue;
-  /** Target transform property: 'translation' | 'rotation' | 'scale' | 'weights'. */
   readonly property: 'translation' | 'rotation' | 'scale' | 'weights';
   /** Sampler driving this channel. */
   readonly sampler: AnimationSampler;
@@ -43,14 +42,14 @@ export type AnimationChannel = AnimationTransformChannel | AnimationPropertyChan
 /**
  * Animation sampler — keyframe curve for a single animation-target-property pair.
  *
- * `input` and `output` are Float32Arrays of equal length
- * (`output.length = input.length * elementCount`) where elementCount is:
+ * `input` and `output` are Float32Arrays. Linear/step output has
+ * `input.length * elementCount` values, where elementCount is:
  *   - 3 for 'translation' / 'scale' (vec3)
  *   - 4 for 'rotation' (quat)
  *   - targetCount for 'weights' (morph weights)
  *
- * `interpolation` is restricted to LINEAR and STEP per D-1 scope;
- * CUBICSPLINE is deferred to OOS-skin-cubicspline (fail-fast at importer).
+ * CUBICSPLINE stores in-tangent, value and out-tangent per keyframe,
+ * so its output has three times that many values.
  */
 export interface AnimationSampler {
   readonly input: Float32Array;
@@ -86,7 +85,7 @@ export interface AnimationMask {
 //
 // Decision anchors:
 //   - requirements AC-02 (declarative Clip/Blend/Add + nesting graph carried as
-//     a shared<AnimationGraph> asset handle, multi-entity shared).
+//     a asset<animation-graph> asset handle, multi-entity shared).
 //   - requirements AC-14 (AnimationGraph joins the closed `Asset` union, owns a
 //     GUID, and serializes into pack/scene round-trip — foundation landed here,
 //     the serialize/deserialize mechanism itself is M4).
@@ -108,14 +107,14 @@ export interface AnimationMask {
 // World-local transient shared handle only at evaluation time.
 
 /**
- * Clip leaf node — samples a single `shared<AnimationClip>` at the node's
+ * Clip leaf node — samples a single `asset<animation-clip>` at the node's
  * runtime seek-time (M3 evaluation). `weight` is the node's STATIC weight; the
  * effective weight is `runtime weight x static weight` (requirements AC-07
  * orthogonal product).
  */
 export interface AnimationGraphClipNode {
   readonly type: 'clip';
-  readonly clip: string;
+  readonly clip: string | AssetHandle<'animation-clip'>;
   readonly weight: number;
 }
 

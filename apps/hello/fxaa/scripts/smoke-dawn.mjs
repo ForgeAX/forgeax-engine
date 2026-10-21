@@ -41,6 +41,9 @@ import {
   createDarkGradientFixtureReport,
 } from './dark-gradient-fixture.mjs';
 import { createDarkGradientTexture, darkGradientQuad } from './dark-gradient-scene.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
+
 
 const WIDTH = DARK_GRADIENT_RESOLUTION.width;
 const HEIGHT = DARK_GRADIENT_RESOLUTION.height;
@@ -158,14 +161,13 @@ const {
   TONEMAP_LINEAR,
 } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 let renderer;
+let assets;
 try {
   const constructed = await constructRuntimeRendererHost(
     mockCanvas,
@@ -174,6 +176,7 @@ try {
   );
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
 } catch (err) {
   console.error(
     `[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -199,15 +202,16 @@ if (!device) {
  * for the Camera. Returns immediately; the caller is responsible for
  * registering components on the World before calling this.
  */
-function spawnScene(world, antialias) {
-  const gradientTexture = world.allocSharedRef('TextureAsset', createDarkGradientTexture());
-  const gradientMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+function spawnScene(world, assets, antialias) {
+  const quadMesh = assets.create(BUILTIN_QUAD).unwrap();
+  const gradientTexture = assets.create(createDarkGradientTexture()).unwrap();
+  const gradientMaterial = assets.create(Materials.standard({
     baseColor: [1, 1, 1, 1],
     baseColorTexture: gradientTexture,
     metallic: 0,
     roughness: 1,
     renderState: { cullMode: 'none' },
-  }));
+  })).unwrap();
   const gradientQuad = darkGradientQuad();
   world.spawn(
     {
@@ -217,7 +221,7 @@ function spawnScene(world, antialias) {
         scale: gradientQuad.scale,
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: quadMesh } },
     { component: MeshRenderer, data: { materials: [gradientMaterial] } },
     { component: ShadowParticipation, data: { cast: false, receive: true } },
   );
@@ -320,10 +324,10 @@ async function renderAndRead(world, lease) {
 }
 
 // Pass 1: ANTIALIAS_NONE baseline.
-const worldNone = new World();
+const worldNone = new World({ assets });
 const worldAttachment1 = renderer.attach(worldNone);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-spawnScene(worldNone, ANTIALIAS_NONE);
+spawnScene(worldNone, assets, ANTIALIAS_NONE);
 let pixelsNone;
 let framesNone = 0;
 for (let frame = 0; frame < VALIDATION_FRAME_COUNT; frame += 1) {
@@ -345,10 +349,11 @@ const noneInspection = renderer.inspect();
 // because each World is independent; the renderer's internal state (BGLs,
 // pipelines, per-frame resources) is rebuilt from ECS data on each draw call.
 
-const worldFxaa = new World();
+const fxaaAssets = new AssetRegistry();
+const worldFxaa = new World({ assets: fxaaAssets });
 const worldAttachment2 = renderer.attach(worldFxaa);
 if (!worldAttachment2.ok) throw worldAttachment2.error;
-spawnScene(worldFxaa, ANTIALIAS_FXAA);
+spawnScene(worldFxaa, fxaaAssets, ANTIALIAS_FXAA);
 let pixelsFxaa;
 let framesFxaa = 0;
 for (let frame = 0; frame < VALIDATION_FRAME_COUNT; frame += 1) {

@@ -17,7 +17,7 @@ export interface PreparedRasterBindings {
   readonly mesh: BindGroup;
   readonly skin: boolean;
   readonly vertex: Buffer;
-  readonly index?: Buffer;
+  readonly index?: Buffer | undefined;
   readonly indexFormat: GPUIndexFormat;
   readonly indirect: Buffer;
   readonly indirectOffset: number;
@@ -30,6 +30,16 @@ export interface PreparedRasterCounters {
   builds: number;
   commands: number;
   evictions: number;
+}
+
+const ownedWindows = new WeakSet<readonly BindGroup[]>();
+
+/** Materialize window values once at their publication owner, including accessor inputs. */
+export function prepareRasterWindows(windows: readonly BindGroup[]): readonly BindGroup[] {
+  if (ownedWindows.has(windows)) return windows;
+  const snapshot = Object.freeze([...windows]);
+  ownedWindows.add(snapshot);
+  return snapshot;
 }
 
 function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
@@ -45,10 +55,11 @@ function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
     a.indexFormat !== b.indexFormat ||
     a.indirect !== b.indirect ||
     a.indirectOffset !== b.indirectOffset ||
-    a.indexed !== b.indexed ||
-    a.windows.length !== b.windows.length
+    a.indexed !== b.indexed
   )
     return false;
+  if (a.windows === b.windows) return true;
+  if (a.windows.length !== b.windows.length) return false;
   for (let index = 0; index < a.windows.length; index++)
     if (a.windows[index] !== b.windows[index]) return false;
   return true;
@@ -115,92 +126,208 @@ export function recordPreparedRaster(
   recordPreparedRasters(commands, [bindings]);
 }
 
-/** Owned by one live batch; retirement drops all resource references with it. */
-export class PreparedRasterBundleCache {
-  private readonly entries = new Map<
-    string,
-    {
-      readonly device: RhiDevice;
-      readonly bindings: readonly PreparedRasterBindings[];
-      readonly bundle: RenderBundle;
-    }
-  >();
+type RasterFormats = readonly (GPUTextureFormat | null | undefined)[];
+type RasterDescriptor = Omit<RenderBundleEncoderDescriptor, 'colorFormats'> & {
+  readonly colorFormats: (GPUTextureFormat | null)[];
+};
+function formatsFor(descriptor: RenderBundleEncoderDescriptor): RasterFormats {
+  if (descriptor.colorFormats === undefined)
+    throw new Error('missing prepared raster color formats');
+  return Array.isArray(descriptor.colorFormats)
+    ? descriptor.colorFormats
+    : Array.from(descriptor.colorFormats);
+}
 
-  /** A batch-owned closure can validate one observation without allocating an input list. */
-  resolveOne(
-    key: string,
+function compatible(
+  retained: RasterDescriptor,
+  observed: RenderBundleEncoderDescriptor,
+  formats: RasterFormats,
+): boolean {
+  if (
+    retained.sampleCount !== (observed.sampleCount ?? 1) ||
+    retained.depthStencilFormat !== observed.depthStencilFormat ||
+    retained.depthReadOnly !== (observed.depthReadOnly ?? false) ||
+    retained.stencilReadOnly !== (observed.stencilReadOnly ?? false) ||
+    retained.colorFormats.length !== formats.length
+  )
+    return false;
+  for (let i = 0; i < formats.length; i++)
+    if (retained.colorFormats[i] !== (formats[i] ?? null)) return false;
+  return true;
+}
+
+/** A pass-owned compatibility snapshot, shared by every batch recorded for that pass. */
+export class PreparedRasterPass {
+  readonly #descriptor: RasterDescriptor;
+
+  constructor(descriptor: RenderBundleEncoderDescriptor, formats = formatsFor(descriptor)) {
+    const colorFormats = Array.from(formats, (format) => format ?? null);
+    // RHI requires a mutable array type; the privately owned snapshot stays frozen at runtime.
+    Object.freeze(colorFormats);
+    this.#descriptor = Object.freeze({
+      ...descriptor,
+      colorFormats,
+      sampleCount: descriptor.sampleCount ?? 1,
+      depthReadOnly: descriptor.depthReadOnly ?? false,
+      stencilReadOnly: descriptor.stencilReadOnly ?? false,
+    });
+  }
+
+  get descriptor(): RasterDescriptor {
+    return this.#descriptor;
+  }
+}
+
+/** Selection and attachment observations happen once per pass, outside the batch loop. */
+export class PreparedRasterPassCache {
+  readonly #entries: { readonly key: string; readonly pass: PreparedRasterPass }[] = [];
+
+  prepare(key: string, descriptor: RenderBundleEncoderDescriptor): PreparedRasterPass {
+    const formats = formatsFor(descriptor);
+    for (const entry of this.#entries)
+      if (entry.key === key && compatible(entry.pass.descriptor, descriptor, formats))
+        return entry.pass;
+    const pass = new PreparedRasterPass(descriptor, formats);
+    if (this.#entries.length === 32) this.#entries.shift();
+    this.#entries.push({ key, pass });
+    return pass;
+  }
+}
+
+interface PreparedRasterEntry {
+  readonly pass: PreparedRasterPass;
+  readonly device: RhiDevice;
+  readonly bindings: readonly PreparedRasterBindings[];
+  readonly bundle: RenderBundle;
+}
+type RasterRecordingEntry = Pick<PreparedRasterEntry, 'pass' | 'device'> &
+  Partial<Pick<PreparedRasterEntry, 'bindings' | 'bundle'>>;
+
+function snapshotBindings(observed: PreparedRasterBindings): PreparedRasterBindings {
+  return { ...observed, windows: prepareRasterWindows(observed.windows) };
+}
+
+function buildEntry(
+  entries: Map<PreparedRasterPass, PreparedRasterEntry>,
+  pass: PreparedRasterPass,
+  device: RhiDevice,
+  bindings: readonly PreparedRasterBindings[],
+  counters: PreparedRasterCounters,
+): RenderBundle {
+  const encoder = device.createRenderBundleEncoder(pass.descriptor);
+  if (!encoder.ok) throw encoder.error;
+  const commands = recordPreparedRasters(encoder.value, bindings);
+  const finished = encoder.value.finish();
+  if (!finished.ok) throw finished.error;
+  if (!entries.has(pass) && entries.size === 8) {
+    const oldest = entries.keys().next().value;
+    if (oldest !== undefined) entries.delete(oldest);
+    counters.evictions++;
+  }
+  entries.set(pass, { pass, device, bindings, bundle: finished.value });
+  counters.builds++;
+  counters.commands += commands;
+  return finished.value;
+}
+
+/** A one-shot transaction; private snapshots are published only after recording succeeds. */
+class PreparedRasterRecording {
+  readonly #entries: Map<PreparedRasterPass, PreparedRasterEntry>;
+  readonly #entry: RasterRecordingEntry;
+  readonly #previous: readonly PreparedRasterBindings[];
+  #count = 0;
+  #changed: PreparedRasterBindings[] | undefined;
+
+  constructor(
+    entries: Map<PreparedRasterPass, PreparedRasterEntry>,
+    entry: RasterRecordingEntry,
+    private readonly counters: PreparedRasterCounters,
+  ) {
+    this.#entries = entries;
+    this.#entry = entry;
+    this.#previous = entry.bindings ?? [];
+  }
+
+  push(observed: PreparedRasterBindings): void {
+    const previous = this.#previous[this.#count];
+    if (previous !== undefined && equal(previous, observed)) {
+      this.#changed?.push(previous);
+      this.#count++;
+      return;
+    } else {
+      if (this.#count < 0) throw new Error('prepared raster recording already finished');
+      this.#changed ??= this.#previous.slice(0, this.#count);
+      this.#changed.push(snapshotBindings(observed));
+    }
+    this.#count++;
+  }
+
+  finish(): RenderBundle {
+    const count = this.#count;
+    if (count < 0) throw new Error('prepared raster recording already finished');
+    this.#count = -1;
+    const entry = this.#entry;
+    if (
+      this.#changed === undefined &&
+      entry.bundle !== undefined &&
+      count === entry.bindings?.length &&
+      this.#entries.get(entry.pass) === entry
+    ) {
+      this.counters.hits++;
+      return entry.bundle;
+    }
+    try {
+      const bindings =
+        this.#changed ??
+        (count === entry.bindings?.length
+          ? entry.bindings
+          : (entry.bindings?.slice(0, count) ?? []));
+      return buildEntry(this.#entries, entry.pass, entry.device, bindings, this.counters);
+    } catch (error) {
+      this.#count = count;
+      throw error;
+    }
+  }
+}
+
+/** One live batch owns bounded pass variants; callers never receive cached binding snapshots. */
+export class PreparedRasterBundleCache {
+  readonly #entries = new Map<PreparedRasterPass, PreparedRasterEntry>();
+
+  begin(
+    pass: PreparedRasterPass,
     device: RhiDevice,
-    descriptor: RenderBundleEncoderDescriptor,
+    counters: PreparedRasterCounters,
+  ): PreparedRasterRecording {
+    const previous = this.#entries.get(pass);
+    return new PreparedRasterRecording(
+      this.#entries,
+      previous?.device === device ? previous : { pass, device },
+      counters,
+    );
+  }
+
+  resolveOne(
+    pass: PreparedRasterPass,
+    device: RhiDevice,
     observed: PreparedRasterBindings,
     counters: PreparedRasterCounters,
   ): RenderBundle {
-    const previous = this.entries.get(key);
-    const binding = previous?.bindings[0];
+    const previous = this.#entries.get(pass);
+    const before = previous?.bindings[0];
     if (
       previous?.device === device &&
       previous.bindings.length === 1 &&
-      binding !== undefined &&
-      equal(binding, observed)
+      before !== undefined &&
+      equal(before, observed)
     ) {
       counters.hits++;
       return previous.bundle;
     }
-    return this.build(key, device, descriptor, [observed], counters);
+    return buildEntry(this.#entries, pass, device, [snapshotBindings(observed)], counters);
   }
 
-  retire(key: string, counters: PreparedRasterCounters): void {
-    if (this.entries.delete(key)) counters.evictions++;
-  }
-
-  resolve(
-    key: string,
-    device: RhiDevice,
-    descriptor: RenderBundleEncoderDescriptor,
-    bindings: readonly PreparedRasterBindings[],
-    counters: PreparedRasterCounters,
-  ): RenderBundle {
-    const previous = this.entries.get(key);
-    if (
-      previous?.device === device &&
-      previous.bindings.length === bindings.length &&
-      bindings.every((batch, index) => {
-        const before = previous.bindings[index];
-        return before !== undefined && (before === batch || equal(before, batch));
-      })
-    ) {
-      counters.hits++;
-      return previous.bundle;
-    }
-    return this.build(key, device, descriptor, bindings, counters);
-  }
-
-  private build(
-    key: string,
-    device: RhiDevice,
-    descriptor: RenderBundleEncoderDescriptor,
-    bindings: readonly PreparedRasterBindings[],
-    counters: PreparedRasterCounters,
-  ): RenderBundle {
-    const encoder = device.createRenderBundleEncoder(descriptor);
-    if (!encoder.ok) throw encoder.error;
-    const recordedCommands = recordPreparedRasters(encoder.value, bindings);
-    const finished = encoder.value.finish();
-    if (!finished.ok) throw finished.error;
-    counters.builds++;
-    counters.commands += recordedCommands;
-    // Bound attachment variants; changed physical resources replace their entry.
-    if (!this.entries.has(key) && this.entries.size >= 8) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest !== undefined) this.entries.delete(oldest);
-      counters.evictions++;
-    }
-    this.entries.set(key, {
-      device,
-      bindings: bindings.map((batch) =>
-        Object.freeze({ ...batch, windows: Object.freeze([...batch.windows]) }),
-      ),
-      bundle: finished.value,
-    });
-    return finished.value;
+  retire(pass: PreparedRasterPass, counters: PreparedRasterCounters): void {
+    if (this.#entries.delete(pass)) counters.evictions++;
   }
 }

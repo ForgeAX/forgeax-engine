@@ -1,6 +1,6 @@
 # @forgeax/engine-physics-rapier3d
 
-Rapier 0.20 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
+Pinned Rapier 0.35.1 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
 Install `physicsPlugin('rapier-3d')` in the World; game code consumes the optional
 `PhysicsWorld` capabilities rather than retaining Rapier objects.
 
@@ -24,6 +24,13 @@ candidate budget. Prepared native colliders stay disabled, and only complete-gro
 admission may exceed the independent-candidate bound. Partial or mixed admission
 is refused, while preparation failure or cancellation releases every member.
 
+Admission resolves caller credentials before projecting the complete incoming
+roster over the existing queue. Every member shares that projection; queued
+dependencies are revalidated after the complete synchronous enqueue and again
+when rejecting a group changes the projection. This avoids rebuilding and
+rescanning the whole queue for each member while preserving revision checks,
+whole-group rejection and fixed-step rollback.
+
 `prepareDerivedBodyTypeCandidates` accepts exact current publication receipts and
 retains their committed native collider handles for static/dynamic/kinematic
 policy changes. It uses the same group admission, paired callback, rollback,
@@ -37,9 +44,33 @@ and [real postshot producer evidence](reports/derived-body-type-reuse-20261015.j
 frozen shape ID array. Repeated reads retain identity until a new fixed-step
 publication replaces it; retained older revisions remain unchanged. Reads still
 refuse during paired admission and return no publication when recovery is required.
-Terrain retirement selects the admitted `terrain:` source namespace from the
-existing derived-body records. Unrelated voxel and compound sources do not incur
-publication reads or shape-ID scans during heightfield synchronization.
+Terrain has an ordinary native collider owner independent of derived candidates.
+Its persistent ECS projection handles actual lifecycle and pose work; shared
+Mesh/Terrain assets replace immutable native geometry roots at fixed sync.
+`getTerrainAssetVersion(entity)` reads that collider's actual asset and successfully
+adopted source version. Pending or rejected edits retain the prior version; collider
+retirement returns no value. It derives these facts from the existing native binding
+and shared geometry owner, with no reverse notification table.
+Asset edits never scan entity or collider lists. The two-level spatial hierarchy
+selects actual query and collision work, and affected solver bodies prepare mass,
+COM, inertia and CCD once per deduplicated solve closure, including sleeping isolates.
+The same native source resolves ray/point/shape queries, narrow phase, character
+movement and CCD. Old snapshots retain old roots; scale caches are version-local
+and bounded by eight entries and 16 MiB of requested native shape allocations.
+
+Terrain height rectangles use the existing asset range journal. Only changed author
+samples are transposed into native indices. The heightfield stores immutable 32×32
+sample tiles in a 32-way persistent tree; a write copies touched tiles and ancestor
+paths, while clone/scale retain the tree. Partial boundary tiles store only real
+samples, so long thin heightfields retain bounded storage. Cell queries normally
+read four heights from one tile. Bounds expand conservatively and a full replacement
+recomputes tight extrema. Shared spatial pairing uses the changed cells against each
+target's complete old/new support, including two roots edited at different places.
+Collider descriptors choose ordinary Shape or an explicit shared geometry/scale;
+there is no parallel JS Shape cache for managed collision roots.
+
+[Regional Terrain measurements](reports/terrain-regional-20261018.md) include the
+remaining ray/cell lookup overhead and the measured complete native contact step.
 
 A successful geometry commit can replace ordinary ECS colliders. The backend
 consumes those changes through its existing incremental projection before the
@@ -54,6 +85,19 @@ origins/rotations and the ordinary mass/admission/recovery contract without a
 producer option or a simplified collision mesh. Recentered cuboids retain their
 offset inside the compound, including a single off-center piece; specialization
 never moves the collider frame or changes a body's mass/COM during preparation.
+
+Nonlinear CCD against a nonrotating voxel grid queries complete occupied cuboids
+for both native boxes and convex hulls proved to contain all eight Cartesian
+corners. The original convex vertices and collider pose remain unchanged. This
+avoids treating internal voxel seams as separate solids when a decimal box cannot
+use the exact native-cuboid representation. Other convex geometry keeps the
+individual-cell traversal; occupied groups retain holes and chunk boundaries.
+Rotating voxel grids first reject disjoint full-interval swept bounds, both for
+whole grids and individual occupied cells. Bounds include rotation about the
+actual COM, linear displacement, narrow-phase tolerance and coordinate roundoff;
+remaining candidates keep the same nonlinear query and earliest-hit ordering.
+The native gate compares this traversal with exhaustive cells across 960 moving,
+rotating, perforated and nonzero-substep cases.
 
 The managed joint capability is independent of the derived geometry constraint
 publication route. It exposes no raw joint handles. Supported rig policy and
@@ -78,10 +122,23 @@ The package config is a Vitest project definition; from the repository root keep
 the owner directory filter so a diagnostic invocation cannot select unrelated
 browser/Dawn tests. Complete repository backend/smoke gates retain their own config.
 
+Run `node packages/physics-rapier3d/scripts/check-ccd-penetration-bound.mjs`
+with the pinned Rust toolchain available to exercise the patched nonlinear CCD
+owner's slow overlap, fast impact, COM offset, underflow and invalid-input cases.
+It verifies the official WASM source key and compiles the original Rust owner and
+private math utilities against real Parry shapes and queries.
+
 The ECS adapter resolves movement through one Rapier character-controller solve.
 Body and attached collider poses are committed together so consecutive character
 computations use the new pose. Character tuning remains in `CharacterController`;
 this package has no terrain-specific lift, retry or ground-state policy.
+
+Character push queries retain each collider's manifolds together with its body
+and world pose before querying another collider. Composite/voxel dispatchers may
+replace the scratch manifold vector, so its length is not an append cursor.
+Impulse points and normals include the manifold's subshape frame. Empty manifolds
+apply no impulse. The [multiple-collider regression](reports/kcc-manifold-ownership-20261020.md)
+retains the published-WASM panic and checks pushing plus local-origin invariance.
 
 Changed physics rows are decoded once per synchronization and that same descriptor
 is reconciled and retained. Pose-only edits keep primitive collision dimensions
@@ -139,8 +196,11 @@ across differing compiler patch releases or wasm-opt versions.
 | Library | Invariant |
 |:--|:--|
 | Rapier | A floor normal parallel to `up` retains the entire horizontal tangent plane, including normals rounded around unit length. |
-| Rapier | Fixed CCD targets invalidate on every authored scene change, including steps with no fast body; later sweeps cannot reuse removed colliders or omit replacement targets. |
+| Rapier | CCD selects fixed targets from the live two-level spatial hierarchy and resolves current geometry; no fixed-target cache or full collider collection survives edits. |
 | Parry | Cuboid CCD queries visit exact occupied cuboids per voxel chunk. Query bounds select complete cuboids instead of clipping them into artificial interior collision faces; holes and current chunk edits remain authoritative. |
+| Parry | Voxel contacts reuse the opposite-normal support distance within one voxel/part manifold and apply the canonical subshape translation directly. Updated empty manifolds skip filtering; polygonal contacts transfer old impulses only after GJK finds closest points. Each point retains its own penetration and voxel-membership checks; no value survives into another manifold or step. |
+| Parry | Nonlinear CCD retains the original penetration solver unless a conservative COM-relative point-speed bound proves that its penetration threshold cannot be reached. Nonzero start times and uncertain inputs keep the original path. |
+| Parry | Persistent composite, heightfield and voxel detectors transfer the previous owned contact manifold without cloning its subshape poses or solver payload. Separation retires that data; new contacts start with fresh state. |
 | Parry | Capsule/cuboid closest points minimize segment-to-box distance. The normal, signed distance and witnesses derive from that same solution. Initial casts preserve every strictly approaching direction and reject parallel/separating motion when `stop_at_penetration` is false. |
 | Parry | A thin triangle's closest-point projection cannot be farther away than its edges. Ill-conditioned f32 projections use f64 intermediate coordinates. |
 | Parry | EPA expands a touching CSO edge with a noncollinear support point before admitting its initial facets; a degenerate zero-normal facet cannot become a published contact. |
@@ -188,10 +248,17 @@ it cannot overwrite 3D outputs with old npm binaries.
 
 ```sh
 node scripts/build-wasm.mjs --verify
+node scripts/build-wasm.mjs --test-native
 node --test ../../scripts/forgeax/__tests__/rapier-native.test.mjs
 ```
 
-The native gate runs the real 2D/3D generated binaries through the ordinary
+`--test-native` reconstructs the pinned patched sources and runs the checked
+Cargo test graph. Its affine hierarchy cases cover 32,768 instances and pruning;
+shared geometry cases cover actual contacts, lost support, mass/COM/inertia,
+sleeping isolates, joint/multibody closure, CCD and bounded snapshot/cache lifetime.
+Serial and parallel native modes retain the same solver invariants.
+
+The native host gate runs the real 2D/3D generated binaries through the ordinary
 Engine backend for 60 collision steps with global WebAssembly and performance
 absent, proving the native timers consume the supplied Host clock. It also
 checks rejection, retry, concurrent initialization and both
@@ -286,3 +353,19 @@ The conservative preparation budget accounts for expanded native chunks as well
 as the compact transfer bytes; a tiny encoded box cannot request an unbounded
 native allocation. Direct `setVoxels` is still a low-level native primitive,
 not a replacement for the Engine publication transaction.
+
+### Optional spatial compound layout
+
+`ConvexCompoundShapeInput.nativeLayout = 'spatial-groups-16'` opts a dynamic,
+explicit-mass body into a bounded spatial partition of its existing convex pieces.
+The ordinary default stays one native collider. Unsupported counts and ambiguous
+centers fall back to that default; grouping neither merges hulls nor approximates
+geometry. Groups preserve the candidate's mass, density, rollback and publication
+ownership. A change to automatic mass policy rebuilds an incompatible grouped layout.
+
+One logical shape may own several internal colliders. Native start/stop events are
+coalesced across the complete event drain, including replacement, so moving a contact
+between groups does not create a logical stop/start pair. A started observation samples
+a real contact from the lowest active group ordinal. That representative point can
+differ from the ordinary single collider and can affect a consumer's impact location.
+No default gameplay policy or universal speedup is implied by this opt-in layout.

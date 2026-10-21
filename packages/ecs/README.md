@@ -87,7 +87,8 @@ open-ended metadata do not belong on a component token.
 | scalar | numeric, boolean, or enum data | `{ type: 'f32', default: 0 }` |
 | `string` | managed text value | `{ type: 'string', default: '' }` |
 | `entity` | raw entity reference | `{ type: 'entity' }` |
-| `shared<Tag>` | externally owned shared payload handle | `{ type: 'shared<MeshAsset>' }` |
+| `asset<kind>` | reference retained by the World's asset owner | `{ type: 'asset<mesh>' }` |
+| `shared<Tag>` | World-owned non-asset shared payload | `{ type: 'shared<RenderTarget>' }` |
 | `array<T>` | variable array replaced as one value or written in place by range | `{ type: 'array<f32>' }` |
 | `array<T,N>` | fixed-size inline array | `{ type: 'array<f32, 4>' }` |
 | sparse tag | presence-only marker | `defineComponent('Disabled', {})` |
@@ -98,7 +99,8 @@ Release once per acquisition, including repeated acquisitions of the same
 handle. Component columns retain their own references through the normal write
 barrier. `world.internSharedRef` remains an idempotent producer lookup and does
 not retain on repeated discovery; `world.allocSharedRef` creates an independent
-handle.
+handle. Asset content belongs to `AssetRegistry`; obtain its handles with
+`assets.create` or `assets.load` and place them in `asset<kind>` fields.
 
 `world.allocUniqueRef(tag, payload, onRelease?)` stores the actual owned
 payload. `world.resolveUniqueRef<T>(handle)` reads that same payload and returns
@@ -246,8 +248,10 @@ for requested changed/added predicates. Dense queries match
 only tables; queries with sparse predicates match only archetypes. A World's
 storage rosters append without replacing their owners, so a retained Query
 checks only newly appended owners and keeps empty matches for later repopulation.
-Rows, spans and derived writers borrow the same matched table objects. Structural
-mutation still invalidates active iterators; `changed` and `added` observations
+Rows, spans and derived writers borrow the same matched table objects. Derived
+bindings keep their identity across unrelated structure changes and refresh only
+the accessed table's grown columns; row counts come directly from that table.
+Structural mutation still invalidates active iterators; `changed` and `added` observations
 remain independent between Query instances.
 
 The [storage matching allocation comparison](reports/query-storage-matching-20261017/README.md)
@@ -300,15 +304,32 @@ numeric writes leave projections current. Array, buffer and managed-field writes
 remain explicit publications: a fixed-array view may already have been edited
 through an alias before `set` is called.
 
-State consumers use `createStateProjection` from the projection subpath. A consumer
-retains accepted identities per 256-row block; current membership and component
-revisions discover the next unique source-index work set. Deletion, migration,
-sparse tags and generation reuse reconcile against final World records, without
-a structural event history or an overflow recovery mode.
-Changed table blocks compare complete entity handles and forward changed row
-identities plus component writes, so a spawn does not invalidate unchanged block
-neighbors. Tracked or candidate sparse components retain conservative block
-discovery because their membership changes need not move table rows.
+State consumers use `createStateProjection` from the projection subpath. World
+publishes writes into mutable max-epoch radix indices over stable entity slots.
+A consumer reads only changed index paths and retains its accepted membership
+and cursor. Component indices own the only changed epoch for each live component identity;
+row and sparse storage retain only the distinct added epoch. Migration and
+swap-removal move added evidence but never duplicate or move changed evidence.
+Known-identity queries read the same index directly. Removal releases empty
+paths. Repeated writes mutate existing paths; unexpected allocation failure
+after a mutation poisons the World through its existing partial-write policy.
+Structural facts coalesce by World slot, retaining deletion and generation
+replacement for independent slow consumers without an append history.
+
+Changed row and span queries use the same write evidence. They resolve current
+physical rows directly, restore physical ordering with fixed-width radix passes
+(and bounded insertion for small cohorts), and commit their observation
+cursor only on complete iteration. Each temporal iterator checks World health,
+derived-write activity and structural validity before reading or committing.
+If the source epoch still equals its captured upper bound, already validated
+candidates need no repeated predicate lookup; a later value write restores the
+original upper-bound checks, including Added-only semantics. Known-slot epoch
+lookups reuse one current leaf reference inside the index; every set/delete
+clears it before mutation, so no old leaf backing survives through that shortcut.
+No clean table directory or block summary is
+scanned to discover local changes. Declared range writes publish their actual
+range; arbitrary writes through a borrowed mutable column remain conservative
+at capability acquisition, not automatically observed property writes.
 
 ```ts
 import { createStateProjection } from '@forgeax/engine-ecs/projection';
@@ -323,7 +344,7 @@ candidate.accept(); // Only after the consumer successfully applies its changes.
 
 | Boundary | Contract |
 |:--|:--|
-| Discovery | Enumerates current nonempty relevant tables plus retained deleted blocks; unchanged blocks skip row reads. |
+| Discovery | Prunes unchanged max-epoch index paths; resolves only emitted stable identities. Explicit invalidation may rebuild the consumer baseline. |
 | Acceptance | Synchronous, consumer-local; a new read, invalidation, or World mutation expires an outstanding candidate. |
 | Failure | Leave the batch unaccepted and read again; poisoned Worlds reject projection. |
 | Scratch | `indices` is borrowed until the next `read`; do not retain it as a snapshot. |
@@ -331,13 +352,24 @@ candidate.accept(); // Only after the consumer successfully applies its changes.
 | Fast check | `isCurrent()` compares accepted World epochs without allocating a batch; unrelated writes may return false. |
 | Root facts | `membershipChanged` and `changedComponents` conservatively identify work domains; `changed(entity, component)` checks a surviving value against acceptance. Removed components require current-membership reconciliation. |
 
-The optional third argument selects candidate table membership (any listed
+Derived numeric producers execute under one World-owned synchronous write
+fence. The internal `writeRows` operation covers the producer's numeric writes,
+its distinct `(bindingIndex, row)` staging and publication; no full changed-mask
+scan is needed. Complete changed tables coalesce directly from the known row
+count. Source projections and temporal Query cursors cannot observe or accept
+pending evidence (`derived-write-active`); plain input/parent reads remain valid.
+Nested writers reject before execution. Unexpected producer failures poison the
+World; ordinary callback mutations/thenables are invalid numeric producers.
+
+The optional third argument selects candidate component membership (any listed
 component); it defaults to the observed components. Sparse candidates conservatively
 include current tables. Consumers still inspect final component membership and
 values: the work set is conservative, never an event stream.
 
 The `@forgeax/engine-ecs/world-read` seam is a read-only owner capability for
-hot semantic scalar/array probes. `World.getStructureEpoch()` remains the
+hot semantic scalar/array probes. `hasRelationshipEdge` validates one known
+source, its existing backpointer and one current mirror element in constant time;
+it does not enumerate the target's children. `World.getStructureEpoch()` remains the
 public cache-invalidation primitive; the seam never returns tables, archetypes,
 columns, or mutable views. Ordinary gameplay code should continue to use
 `World.get` and queries.
@@ -439,7 +471,9 @@ if (!result.ok) {
 ```
 
 Recovery means constructing a fresh World and replaying the authoritative
-game state; a poisoned identity is never reused:
+game state; a poisoned identity is never reused. World identities include a
+realm namespace so a replacement Worker cannot admit old World-scoped references
+when its local counter restarts. Callers treat this identity as opaque:
 
 ```ts
 function createWorld(): World {
@@ -501,7 +535,7 @@ their owner instead of being forwarded through the root.
 | Entry | Purpose |
 |:--|:--|
 | `@forgeax/engine-ecs` | World, components, relationships, queries, schedules, resources, errors |
-| `@forgeax/engine-ecs/projection` | Current-state block projection, render read versions, numeric spans, and array range-change evidence |
+| `@forgeax/engine-ecs/projection` | Write-indexed current-state projection, render read versions, numeric spans, and array range-change evidence |
 | `@forgeax/engine-ecs/shared` | Shared numeric kernel contracts |
 | `@forgeax/engine-ecs/world-read` | Safe semantic scalar/array reads for owner-package hot paths |
 | `@forgeax/engine-ecs/externalization` | Generic component projection and entity remap |
@@ -545,3 +579,7 @@ retaining a large free bucket. Growth preserves bytes and slot identity, and
 allocation failure returns the existing structured managed-buffer error. Small
 fields keep their existing allocation and reuse behavior. Game data, including
 instance transforms, remains World-owned regardless of its size.
+
+Managed buffer slots derive logical length and backing storage from their current byte view. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
+
+Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only buffer sources and numeric-array inputs widen.

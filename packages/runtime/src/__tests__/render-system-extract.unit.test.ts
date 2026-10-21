@@ -1,3 +1,7 @@
+import { createMeshBuilder } from '@forgeax/engine-geometry';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 // render-system-extract.unit.test.ts
 // feat-20260625-sprite-instances-and-tilemap-terrain-static-batch M3 / w8.
 //
@@ -47,7 +51,7 @@ import {
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry, type ShaderRegistryDevice } from '@forgeax/engine-shader';
-import type { Handle, MaterialAsset, MaterialPass, MeshAsset } from '@forgeax/engine-types';
+import type { MaterialAsset, MaterialPass } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SpriteInstances } from '../../../render/src/components';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
@@ -109,22 +113,28 @@ const SPRITE_PASS: MaterialPass = {
 
 const UNLIT_PASS: MaterialPass = { name: 'Forward', program: { module: 'forgeax::default-unlit' } };
 
-function registerSpriteMesh(world: World): Handle<'MeshAsset', 'shared'> {
-  return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-    kind: 'mesh',
-    vertices: new Float32Array([
-      0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
-      1, 0, 0, 0, 0,
-    ]),
-    indices: new Uint16Array([0, 1, 2]),
-    attributes: { position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) },
-    aabb: new Float32Array([0, 0, 0, 1, 1, 1]),
-    submeshes: [
-      { indexOffset: 0, indexCount: 3, vertexCount: 3, topology: 'triangle-list', materialSlot: 0 },
-    ],
+function registerSpriteMesh(world: World): AssetHandle<'mesh'> {
+  return testAssets(world)
+    .create(
+      createMeshBuilder({
+        indices: new Uint16Array([0, 1, 2]),
+        attributes: { position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) },
+        submeshes: [
+          {
+            indexOffset: 0,
+            indexCount: 3,
+            vertexCount: 3,
+            topology: 'triangle-list',
+            materialSlot: 0,
+          },
+        ],
 
-    materialSlots: [{ slotName: 'Default' }],
-  });
+        materialSlots: [{ slotName: 'Default' }],
+      })
+        .build()
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 function spawnCameraAndLight(world: World): void {
@@ -156,29 +166,35 @@ function makeScene(): {
   world: World;
   assets: AssetRegistry;
   collected: CollectedError[];
-  mesh: Handle<'MeshAsset', 'shared'>;
-  spriteMat: Handle<'MaterialAsset', 'shared'>;
-  unlitMat: Handle<'MaterialAsset', 'shared'>;
+  mesh: AssetHandle<'mesh'>;
+  spriteMat: AssetHandle<'material'>;
+  unlitMat: AssetHandle<'material'>;
 } {
   const collected: CollectedError[] = [];
   const world = new World();
-  const assets = new AssetRegistry(makeShaderRegistryWithSpriteAndPbr());
+  const assets = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSpriteAndPbr() });
+  installDefaultAssetDecoders(assets);
+  world.bindAssets(assets).unwrap();
   vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
     const e = args[args.length - 1] as { code?: string; detail?: unknown };
     if (e.code !== undefined) collected.push({ code: e.code, detail: e.detail });
   });
   spawnCameraAndLight(world);
   const mesh = registerSpriteMesh(world);
-  const spriteMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [SPRITE_PASS],
-    values: {},
-  } as MaterialAsset);
-  const unlitMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [UNLIT_PASS],
-    values: {},
-  } as MaterialAsset);
+  const spriteMat = testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [SPRITE_PASS],
+      values: {},
+    } as MaterialAsset)
+    .unwrap();
+  const unlitMat = testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [UNLIT_PASS],
+      values: {},
+    } as MaterialAsset)
+    .unwrap();
   return { world, assets, collected, mesh, spriteMat, unlitMat };
 }
 
@@ -292,11 +308,13 @@ describe('render-system-extract material color boundary', () => {
   it('decodes default-sRGB asset colors exactly once into the runtime snapshot', () => {
     const { world, assets, mesh } = makeScene();
     const authored = [0.5, 0.25, 0.75, 0.4] as const;
-    const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [UNLIT_PASS],
-      values: { baseColor: authored },
-    });
+    const material = testAssets(world)
+      .create({
+        kind: 'material',
+        passes: [UNLIT_PASS],
+        values: { baseColor: authored },
+      })
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: identityTransform() },
@@ -306,7 +324,7 @@ describe('render-system-extract material color boundary', () => {
       .unwrap();
 
     const frame = extractFrame(world, prepareExtractContext(world, { assets }));
-    const runtime = frame.renderables[0]?.material;
+    const runtime = frame.renderables[0]?.material.snapshot;
     // MaterialSnapshot stores baseColor in f32 engine vectors.
     expect(runtime?.baseColor[0]).toBeCloseTo(0.2140411405, 6);
     expect(runtime?.baseColor[1]).toBeCloseTo(0.0508760882, 6);
@@ -322,12 +340,14 @@ describe('render-system-extract material color boundary', () => {
 
   it('passes explicitly-linear asset colors through unchanged', () => {
     const { world, assets, mesh } = makeScene();
-    const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      colorSpace: 'linear',
-      passes: [UNLIT_PASS],
-      values: { baseColor: [0.5, 0.25, 0.75, 0.4] },
-    });
+    const material = testAssets(world)
+      .create({
+        kind: 'material',
+        colorSpace: 'linear',
+        passes: [UNLIT_PASS],
+        values: { baseColor: [0.5, 0.25, 0.75, 0.4] },
+      })
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: identityTransform() },
@@ -337,7 +357,7 @@ describe('render-system-extract material color boundary', () => {
       .unwrap();
 
     const runtime = extractFrame(world, prepareExtractContext(world, { assets })).renderables[0]
-      ?.material;
+      ?.material.snapshot;
     expect(Array.from(runtime?.baseColor ?? [])).toEqual([0.5, 0.25, 0.75]);
     expect(runtime?.paramSnapshot?.baseColor).toEqual([0.5, 0.25, 0.75, 0.4]);
   });

@@ -36,6 +36,10 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -156,9 +160,7 @@ const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_TRIANGLE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const ENGINE_MANIFEST = await buildEngineShaderManifest();
@@ -191,7 +193,12 @@ const errors = [];
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -200,7 +207,7 @@ const lease = worldAttachment1.value;
 // (M8 D-17). The shader pass is what the unlit pipeline picks up. The
 // smoke does not call computePulse(): pulse is rAF-driven in main.ts and
 // is not part of the static frame verdict.
-const playMaterial = world.allocSharedRef('MaterialAsset', {
+const playMaterial = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -210,7 +217,7 @@ const playMaterial = world.allocSharedRef('MaterialAsset', {
     },
   ],
   values: { baseColor: PLAY_BASE_COLOR },
-});
+}).unwrap();
 // LO 1.3 single triangle at origin / identity rotation / unit scale.
 world.spawn(
   {
@@ -218,7 +225,7 @@ world.spawn(
     data: {
       pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+  { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
   {
     component: MeshRenderer,
     data: { materials: [playMaterial] },

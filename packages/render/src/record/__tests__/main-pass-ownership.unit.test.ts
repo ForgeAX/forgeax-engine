@@ -1,7 +1,5 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
-import { gpuDrivenDrawKey } from '../../extract/gpu-driven';
-import { worldEntityKey } from '../frame-snapshot';
 import { emitGpuDrivenDrawReceipts } from '../gpu-draw-receipts';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
 
@@ -27,10 +25,11 @@ it('uses each validated GPU ownership lookup once across recording and preserves
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
   f.add({ entity: 1, claimed: [0, 2] });
-  const has = vi.spyOn(f.claims, 'has');
+  const selection = f.prepareSelection();
+  const has = vi.spyOn(selection, 'owns');
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
-    f.record(pass);
+    f.record(pass, 'forward', selection);
     expect(f.receipts).toEqual([{ entity: 1, submesh: 1 }]);
     expect(has).toHaveBeenCalledTimes(2);
     expect(f.errors).toEqual([]);
@@ -93,13 +92,13 @@ it.each([
       return ordinal;
     }),
   });
-  f.claims.add(gpuDrivenDrawKey(worldEntityKey(17, 1), 7, 0));
-  const has = vi.spyOn(f.claims, 'has');
+  const selection = f.prepareSelection();
+  const has = vi.spyOn(selection, 'owns');
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
-    f.record(pass);
+    f.record(pass, 'forward', selection);
     expect(f.receipts).toEqual([0, 1].map((submesh) => ({ entity: 1, submesh })));
-    expect(has).toHaveBeenCalledTimes(draws.length);
+    expect(has).toHaveBeenCalledTimes(1);
     expect(f.errors).toEqual([]);
   } finally {
     pass.end();
@@ -113,12 +112,12 @@ it('retains accepted ownership through dispatch reordering without borrowing ano
   const f = cpuSetupFixture(device, module);
   const first = f.add({ entity: 1, claimed: [0, 2] });
   const second = f.add({ entity: 2 });
+  const selection = f.prepareSelection();
   Object.assign(second.source, { gpuDrivenDraws: first.source.gpuDrivenDraws });
   const rows = f.entries.slice();
-  const has = vi.spyOn(f.claims, 'has');
-  const ownership = f.validateClaims('same-source');
-  expect(f.validateClaims('same-source')).toBe(ownership);
-  expect(has).toHaveBeenCalledTimes(4);
+  const has = vi.spyOn(selection, 'owns');
+  const ownership = selection;
+  expect(has).not.toHaveBeenCalled();
   f.entries.reverse();
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
@@ -129,7 +128,11 @@ it('retains accepted ownership through dispatch reordering without borrowing ano
     ]);
     expect(has).toHaveBeenCalledTimes(4);
     const submitted = vi.fn();
-    emitGpuDrivenDrawReceipts(rows, ownership, submitted);
+    emitGpuDrivenDrawReceipts(
+      rows.map((row) => row.source),
+      ownership,
+      submitted,
+    );
     expect(submitted.mock.calls.map(([row, submesh]) => [row.source.entityKey, submesh])).toEqual([
       [1, 0],
       [1, 2],
@@ -146,20 +149,29 @@ it('revalidates a same-count source replacement before recording compact draw ow
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
   const original = f.add({ entity: 1, claimed: [0, 2] });
-  const first = f.validateClaims('frame');
+  const first = f.prepareSelection();
   const draws = original.source.gpuDrivenDraws ?? [];
   f.entries[0] = {
     ...original,
     source: {
       ...original.source,
       gpuDrivenDraws: draws.map((draw, index) =>
-        index === 0 ? { ...draw, drawItemIndex: 1, first: 3 } : draw,
+        index === 0
+          ? {
+              ...draw,
+              drawItemIndex: 1,
+              first: 3,
+              geometry: { ...draw.geometry, draw: { ...draw.geometry.draw, first: 3 } },
+            }
+          : draw,
       ),
     },
   };
-  const replacement = f.validateClaims('frame');
-  expect(replacement).not.toBe(first);
-  const has = vi.spyOn(f.claims, 'has');
+  const replacement = first;
+  // A retained selection rejects the changed geometry without rebuilding claims.
+  expect(replacement).toBe(first);
+  const selection = f.prepareSelection();
+  const has = vi.spyOn(selection, 'owns');
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
     f.record(pass, 'forward', replacement);
@@ -180,14 +192,13 @@ it('maps retained ordinal ownership through the current same-count mesh replacem
   Object.assign(entry.source, {
     gpuDrivenDraws: entry.source.gpuDrivenDraws?.map(({ drawItemIndex: _index, ...draw }) => draw),
   });
-  f.claims.clear();
-  f.claims.add(gpuDrivenDrawKey(worldEntityKey(17, 1), 7, 0));
-  const ownership = f.validateClaims('same-source');
+
+  const ownership = f.prepareSelection();
   f.entries[0] = {
     ...entry,
     mesh: { ...entry.mesh, submeshes: [...entry.mesh.submeshes].reverse() },
   };
-  expect(f.validateClaims('same-source')).toBe(ownership);
+
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
     f.record(pass, 'forward', ownership);

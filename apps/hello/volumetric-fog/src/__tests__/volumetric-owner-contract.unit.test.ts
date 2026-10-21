@@ -7,7 +7,9 @@ import {
   type VolumetricFogAuthoring,
   VolumetricFogSamplingValue,
 } from '@forgeax/engine-render';
-import type { Handle, TextureAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { textureContribution } from '@forgeax/engine-image';
+import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 const DENSITY_GUID = 'cpu-fixture-density';
@@ -34,7 +36,7 @@ function authorings(world: World): VolumetricFogAuthoring[] {
     const source = row.get(VolumetricFog);
     if (source.light === null) throw new Error('fixture VolumetricFog has no selected light');
     if (source.density === null) throw new Error('fixture VolumetricFog has no density handle');
-    const resolved = world.sharedRefs.resolve(source.density);
+    const resolved = world.assets!.read(source.density);
     if (!resolved.ok) throw resolved.error;
     const asset = resolved.value as TextureAsset;
     if (asset.shape.viewDimension !== '3d') throw new Error('fixture density must be 3D');
@@ -68,7 +70,7 @@ function authorings(world: World): VolumetricFogAuthoring[] {
   return result;
 }
 
-function worldOwnerSnapshot(world: World, densityHandle: Handle<'TextureAsset', 'shared'>) {
+function worldOwnerSnapshot(world: World, densityHandle: AssetHandle<'texture'>) {
   const query = world.query({ read: [VolumetricFog] }).unwrap();
   return {
     owners: Array.from(query, (row) => {
@@ -87,14 +89,14 @@ function worldOwnerSnapshot(world: World, densityHandle: Handle<'TextureAsset', 
         sampling: owner.sampling,
       };
     }),
-    densityRefcount: world.sharedRefs.refcount(densityHandle),
+    densityReadable: world.assets!.read(densityHandle).ok,
   };
 }
 
 function spawnOwner(
   world: World,
   light: EntityHandle,
-  densityHandle: Handle<'TextureAsset', 'shared'>,
+  densityHandle: AssetHandle<'texture'>,
 ): EntityHandle {
   return world
     .spawn({
@@ -116,20 +118,22 @@ function spawnOwner(
 }
 
 function createWorldFixture() {
-  const world = new World();
-  const densityHandle = world.allocSharedRef('TextureAsset', densityAsset());
+  const assets = new AssetRegistry();
+  assets.installDecoder(textureContribution.kind, textureContribution.decoder);
+  const world = new World({ assets });
+  const densityHandle = assets.create(densityAsset()).unwrap();
   const light = world
     .spawn({
       component: DirectionalLight,
       data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
     })
     .unwrap();
-  return { world, densityHandle, light };
+  return { world, assets, densityHandle, light };
 }
 
 describe('public volumetric fog owner CPU contract', () => {
-  it('accepts eight owners, rejects the ninth, and reuses capacity after despawn', () => {
-    const { world, densityHandle, light } = createWorldFixture();
+  it('accepts the owner limit, rejects overflow, and reuses capacity after despawn', () => {
+    const { world, assets, densityHandle, light } = createWorldFixture();
     const ownerEntities: EntityHandle[] = [];
     for (let index = 0; index < MAX_VOLUMETRIC_FOG_OWNERS; index += 1) {
       ownerEntities.push(spawnOwner(world, light, densityHandle));
@@ -141,42 +145,42 @@ describe('public volumetric fog owner CPU contract', () => {
     if (!acceptedResult.ok) throw acceptedResult.error;
     expect(acceptedResult.value.status).toBe('available');
     if (acceptedResult.value.status !== 'available') {
-      throw new Error('eight live owners must extract as available');
+      throw new Error('the owner limit must extract as available');
     }
     expect(acceptedResult.value.fogs).toHaveLength(MAX_VOLUMETRIC_FOG_OWNERS);
 
-    const ninthEntity = spawnOwner(world, light, densityHandle);
-    const nineLiveOwners = authorings(world);
-    expect(nineLiveOwners).toHaveLength(9);
+    const overflowEntity = spawnOwner(world, light, densityHandle);
+    const overflowOwners = authorings(world);
+    expect(overflowOwners).toHaveLength(MAX_VOLUMETRIC_FOG_OWNERS + 1);
     const stateBeforeRejection = worldOwnerSnapshot(world, densityHandle);
-    const rejected = extractVolumetricFog(nineLiveOwners);
+    const rejected = extractVolumetricFog(overflowOwners);
     expect(rejected.ok).toBe(false);
     if (!rejected.ok) {
       expect(rejected.error).toMatchObject({
         code: 'volume-owner-conflict',
         expected: expect.any(String),
         hint: expect.any(String),
-        detail: { ownerCount: 9 },
+        detail: { ownerCount: MAX_VOLUMETRIC_FOG_OWNERS + 1 },
       });
     }
     expect(worldOwnerSnapshot(world, densityHandle)).toEqual(stateBeforeRejection);
 
-    world.despawn(ninthEntity).unwrap();
+    world.despawn(overflowEntity).unwrap();
     const acceptedAfterDestroy = extractVolumetricFog(authorings(world));
     expect(acceptedAfterDestroy.ok).toBe(true);
     if (!acceptedAfterDestroy.ok) throw acceptedAfterDestroy.error;
     expect(acceptedAfterDestroy.value.status).toBe('available');
     if (acceptedAfterDestroy.value.status !== 'available') {
-      throw new Error('eight live owners must remain available after destroying the ninth');
+      throw new Error('the owner limit must remain available after destroying overflow');
     }
     expect(acceptedAfterDestroy.value.fogs).toHaveLength(MAX_VOLUMETRIC_FOG_OWNERS);
-    expect(world.sharedRefs.refcount(densityHandle)).toBe(9);
+    expect(assets.read(densityHandle).ok).toBe(true);
 
     const destroyed = ownerEntities[3];
     if (destroyed === undefined) throw new Error('fixture has no owner to despawn');
     world.despawn(destroyed).unwrap();
-    expect(authorings(world)).toHaveLength(7);
-    expect(world.sharedRefs.refcount(densityHandle)).toBe(8);
+    expect(authorings(world)).toHaveLength(MAX_VOLUMETRIC_FOG_OWNERS - 1);
+    expect(assets.read(densityHandle).ok).toBe(true);
 
     spawnOwner(world, light, densityHandle);
     const readmitted = extractVolumetricFog(authorings(world));
@@ -184,14 +188,14 @@ describe('public volumetric fog owner CPU contract', () => {
     if (!readmitted.ok) throw readmitted.error;
     expect(readmitted.value.status).toBe('available');
     if (readmitted.value.status !== 'available') {
-      throw new Error('eight owners must be available after capacity is reused');
+      throw new Error('the owner limit must be available after capacity is reused');
     }
     expect(readmitted.value.fogs).toHaveLength(MAX_VOLUMETRIC_FOG_OWNERS);
-    expect(world.sharedRefs.refcount(densityHandle)).toBe(9);
+    expect(assets.read(densityHandle).ok).toBe(true);
   });
 
   it('rejects invalid density and bounds without mutating live owners or accepted inputs', () => {
-    const { world, densityHandle, light } = createWorldFixture();
+    const { world, assets, densityHandle, light } = createWorldFixture();
     spawnOwner(world, light, densityHandle);
     const accepted = authorings(world);
     const acceptedResult = extractVolumetricFog(accepted);
@@ -236,22 +240,25 @@ describe('public volumetric fog owner CPU contract', () => {
   });
 
   it('rebinds one live owner to a new shared 3D density asset', () => {
-    const { world, densityHandle, light } = createWorldFixture();
+    const { world, assets, densityHandle, light } = createWorldFixture();
     const ownerEntity = spawnOwner(world, light, densityHandle);
-    const updatedDensity = world.allocSharedRef('TextureAsset', {
-      ...densityAsset(),
-      data: new Uint8Array(8).fill(255),
-    });
+    const updatedDensity = assets
+      .create({
+        ...densityAsset(),
+        data: new Uint8Array(8).fill(255),
+      })
+      .unwrap();
 
     world.set(ownerEntity, VolumetricFog, { density: updatedDensity }).unwrap();
 
     const ownerRows = world.query({ read: [VolumetricFog] }).unwrap();
     const owner = Array.from(ownerRows, (row) => row.get(VolumetricFog))[0];
     expect(Number(owner?.density)).toBe(Number(updatedDensity));
-    expect(world.sharedRefs.refcount(densityHandle)).toBe(1);
-    expect(world.sharedRefs.refcount(updatedDensity)).toBe(2);
+    assets.release(updatedDensity).unwrap();
+    expect(assets.read(densityHandle).ok).toBe(true);
+    expect(assets.read(updatedDensity).ok).toBe(true);
 
-    const resolvedDensity = world.sharedRefs.resolve<'TextureAsset', TextureAsset>(updatedDensity);
+    const resolvedDensity = assets.read(updatedDensity);
     expect(resolvedDensity.ok).toBe(true);
     if (!resolvedDensity.ok) throw resolvedDensity.error;
     expect(Array.from(resolvedDensity.value.data)).toEqual(new Array(8).fill(255));
@@ -266,6 +273,6 @@ describe('public volumetric fog owner CPU contract', () => {
     expect(extracted.value.fogs).toHaveLength(1);
 
     world.despawn(ownerEntity).unwrap();
-    expect(world.sharedRefs.refcount(updatedDensity)).toBe(1);
+    expect(assets.read(updatedDensity).ok).toBe(false);
   });
 });

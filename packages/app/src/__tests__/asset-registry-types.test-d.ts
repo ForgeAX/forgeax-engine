@@ -1,6 +1,6 @@
 import type { AssetRegistry, CatalogSource } from '@forgeax/engine-assets-runtime';
 import type { EngineContextServices } from '@forgeax/engine-plugin';
-import type { Loader, RuntimeAssetBinding } from '@forgeax/engine-types';
+import type { AssetDecoderContributionRef, RuntimeAssetBinding } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 
 import type { App, AppAssembleArgs, CreateAppOptions } from '../index';
@@ -19,7 +19,7 @@ describe('App Registry assembly types', () => {
     expectTypeOf<CreateAppOptions['assets']>().toEqualTypeOf<AssetRegistry | undefined>();
     expectTypeOf<CreateAppOptions['assetCatalog']>().toEqualTypeOf<CatalogSource | undefined>();
     expectTypeOf<CreateAppOptions['assetDecoders']>().toEqualTypeOf<
-      readonly Loader<unknown>[] | undefined
+      readonly AssetDecoderContributionRef[] | undefined
     >();
     expectTypeOf<CreateAppOptions['assetRuntimeBinding']>().toEqualTypeOf<
       RuntimeAssetBinding | undefined

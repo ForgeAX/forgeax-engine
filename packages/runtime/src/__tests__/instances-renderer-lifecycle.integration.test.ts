@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, Instances, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { RhiNullAdapter, rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
@@ -7,6 +7,7 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { standardPbrManifestRow } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
+import { testAssets } from './helpers/runtime-assets';
 
 function requireValue<T>(
   result:
@@ -89,21 +90,28 @@ it.each([
       } as never),
   } as never;
   const world = new World();
-  const material = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-unlit' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [1, 0, 0] },
-  });
+  const material = testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-unlit' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [1, 0, 0] },
+    })
+    .unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
       { component: Instances, data: { transforms: matrices(0, count) } },
     )

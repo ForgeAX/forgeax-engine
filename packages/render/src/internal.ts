@@ -1,13 +1,6 @@
 // Non-stable implementation seam for engine-owned consumers and tests.
 
 export {
-  type ResolvedTilesetRuntime,
-  resolveTilesetRuntime,
-  type TilesetAtlasLookup,
-  type TilesetRuntimeError,
-  type TilesetRuntimeErrorCode,
-} from '@forgeax/engine-assets-runtime';
-export {
   createDynamicGeometrySourceHost,
   type DynamicGeometryResidencyPort,
 } from './assembly/dynamic-geometry-host';
@@ -123,11 +116,13 @@ export {
   type IrradianceVolumeLattice,
   integrateIrradianceProbes,
   irradianceProbePosition,
+  irradianceVolumeContribution,
   irradianceVolumeDigest,
-  irradianceVolumePackLoader,
+  irradianceVolumeKind,
   irradianceVolumeProbeBlocks,
   sphericalFibonacci,
   validateIrradianceLattice,
+  validateIrradianceVolume,
 } from './raytracing/irradiance-volume';
 export {
   createRayPathTracer,
@@ -197,7 +192,6 @@ export {
   SSR_HISTORY_FORMAT,
   type SsrHistoryCandidate,
   type SsrHistoryError,
-  type SsrHistoryFailureStage,
   type SsrHistoryInspection,
   SsrHistoryOwner,
   type SsrHistoryResetReason,

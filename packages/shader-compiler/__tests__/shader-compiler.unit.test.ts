@@ -1184,6 +1184,7 @@ beforeAll(async () => {
     'forgeax_material::displacement': readSrc('standard-displacement.wgsl'),
     'forgeax_material::texture_coordinates': readSrc('texture-coordinates.wgsl'),
     'forgeax_material::terrain_vertex': readSrc('terrain-vertex.wgsl'),
+    'forgeax_material::terrain_layer_sampling': readSrc('terrain-layer-sampling.wgsl'),
     'forgeax_material::terrain_surface': readSrc('terrain-surface.wgsl'),
     'forgeax_material::standard_surface': readSrc('standard-surface.wgsl'),
     'forgeax_clipping::planes': readSrc('clipping.wgsl'),
@@ -1206,6 +1207,7 @@ beforeAll(async () => {
     'forgeax_shadow::surface': readSrc('shadow-surface.wgsl'),
     'forgeax_pbr::temporal': PBR_TEMPORAL,
     'forgeax_pbr::ibl_shared': IBL_SHARED,
+    'forgeax_pbr::pmrem': readSrc('ibl-pmrem.wgsl'),
     'forgeax_pbr::ibl_sampling': IBL_SAMPLING,
     'forgeax_pbr::tbn': TBN,
     'forgeax_pbr::lighting_directional': LIGHTING_DIRECTIONAL,
@@ -1237,6 +1239,7 @@ beforeAll(async () => {
   UNLIT_ENTRY_IMPORTS = {
     'forgeax_clipping::planes': readSrc('clipping.wgsl'),
     'forgeax_material::fragment_output': readSrc('material/fragment-output.wgsl'),
+    'forgeax_material::texture_coordinates': readSrc('texture-coordinates.wgsl'),
     'forgeax_view::tone_mapping': readSrc('tone-mapping.wgsl'),
     'forgeax_view::output_encoding': readSrc('output-encoding.wgsl'),
     'forgeax_material::alpha_hash': readSrc('alpha-hash.wgsl'),

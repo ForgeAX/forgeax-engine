@@ -2,8 +2,10 @@ import type {
   RhiBindingResource,
   ExternalTexture as RhiExternalTexture,
 } from '@forgeax/engine-rhi';
+import type { RenderTextureSourceToken } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import type { RenderResult } from '../render-contract';
+import { isRenderTextureSourceToken } from './source-token';
 
 /**
  * One external-source concept; the kind is the only difference. A
@@ -17,9 +19,9 @@ export type ExternalTextureInput =
 
 export type ExternalTextureKind = ExternalTextureInput['kind'];
 
-/** Runtime material reference. Keep it in a World shared ref, never in a Pack. */
-export interface ExternalTextureSource {
-  readonly externalTextureId: number;
+/** Copyable runtime reference; only its importing Renderer may resolve it. */
+export interface ExternalTextureSource extends RenderTextureSourceToken {
+  readonly source: 'external';
 }
 
 /** Renderer-local handle returned by `renderer.importTexture`. */
@@ -43,18 +45,10 @@ export interface ExternalTextureBinder {
   importVideoFrame(source: HTMLVideoElement | VideoFrame): RhiExternalTexture | undefined;
 }
 
-let nextId = 1;
-
-export function createExternalTextureSource(): ExternalTextureSource {
-  return Object.freeze({ externalTextureId: nextId++ });
+export function createExternalTextureSource(owner: string, id: number): ExternalTextureSource {
+  return Object.freeze({ kind: 'render-texture-source', source: 'external', owner, id });
 }
 
 export function isExternalTextureSource(source: unknown): source is ExternalTextureSource {
-  return (
-    typeof source === 'object' &&
-    source !== null &&
-    'externalTextureId' in source &&
-    Number.isSafeInteger(source.externalTextureId) &&
-    (source.externalTextureId as number) > 0
-  );
+  return isRenderTextureSourceToken(source) && source.source === 'external';
 }

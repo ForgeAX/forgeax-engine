@@ -30,6 +30,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-terrain": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
@@ -38,7 +39,6 @@
     "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
-    "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-physics-rapier2d": "workspace:*",
     "@forgeax/engine-physics-rapier3d": "workspace:*",
     "@forgeax/engine-shader": "workspace:*"

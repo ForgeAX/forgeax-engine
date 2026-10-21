@@ -1,3 +1,7 @@
+import { createMeshBuilder } from '@forgeax/engine-geometry';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w19 (AC-07).
 //
 // Asserts the bidirectional Skin <-> pbr-skin material fail-fast added to
@@ -27,13 +31,7 @@ import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
-import type {
-  Handle,
-  MaterialAsset,
-  MaterialProgramAbi,
-  MeshAsset,
-  SkeletonAsset,
-} from '@forgeax/engine-types';
+import type { MaterialProgramAbi } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MaterialRenderProjection } from '../../../assets-runtime/src/material/runtime-shader';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
@@ -46,24 +44,7 @@ afterEach(() => {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-const UNIT_AABB = new Float32Array([-1, -1, -1, 1, 1, 1]);
 const IDENTITY_MATRIX = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-// Unskinned: 12 floats / vertex × 3 vertices = 36 (position vec3 + normal vec3 + uv vec2 + tangent vec4).
-const TRIANGLE_VERTICES = new Float32Array([
-  0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0,
-  0, 0, 0,
-]);
-// Skinned: 18 floats / vertex × 3 vertices = 54 (12 base + skinIndex u16x4 packed in 2 floats at slots 12-13 + skinWeight vec4 at slots 14-17).
-// validateMeshPayload (asset-registry feat: validateMeshPayload skin-aware stride) rejects skin meshes at the 12F stride.
-// Trailing 6 floats per vertex are placeholder (extract path reads attributes.skinIndex/Weight directly, not from interleaved buffer).
-const TRIANGLE_VERTICES_SKINNED = new Float32Array([
-  // v0: pos (0,0,0) | normal (0,0,1) | uv (0,0) | tangent (0,0,0,1) | skin (0,0) | weight (0,0,0,0)
-  0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-  // v1: pos (1,0,0) | normal (0,0,1) | uv (1,0) | tangent (0,0,0,1) | skin (0,0) | weight (0,0,0,0)
-  1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-  // v2: pos (0,1,0) | normal (0,0,1) | uv (0,1) | tangent (0,0,0,1) | skin (0,0) | weight (0,0,0,0)
-  0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-]);
 const TRIANGLE_POSITIONS = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
 
 function makeAssetRegistry(): AssetRegistry {
@@ -83,79 +64,103 @@ function makeAssetRegistry(): AssetRegistry {
       { name: 'roughness', type: 'f32', default: 0.5 },
     ],
   });
-  return new AssetRegistry(shaderRegistry);
+  return new AssetRegistry({ shaderRegistry: shaderRegistry });
 }
 
-function registerSkinnedMesh(world: World): Handle<'MeshAsset', 'shared'> {
-  return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-    kind: 'mesh',
-    vertices: TRIANGLE_VERTICES_SKINNED,
-    indices: new Uint16Array([0, 1, 2]),
-    attributes: {
-      position: TRIANGLE_POSITIONS,
-      // pbr-skin requires skinIndex + skinWeight in attributes; values are
-      // irrelevant here -- key presence is what extract reads.
-      skinIndex: new Uint16Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-      skinWeight: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
-    },
-    aabb: UNIT_AABB,
-    submeshes: [
-      { indexOffset: 0, indexCount: 3, vertexCount: 3, topology: 'triangle-list', materialSlot: 0 },
-    ],
+function registerSkinnedMesh(world: World): AssetHandle<'mesh'> {
+  return testAssets(world)
+    .create(
+      createMeshBuilder({
+        indices: new Uint16Array([0, 1, 2]),
+        attributes: {
+          position: TRIANGLE_POSITIONS,
+          // pbr-skin requires skinIndex + skinWeight in attributes; values are
+          // irrelevant here -- key presence is what extract reads.
+          skinIndex: new Uint16Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+          skinWeight: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+        },
+        submeshes: [
+          {
+            indexOffset: 0,
+            indexCount: 3,
+            vertexCount: 3,
+            topology: 'triangle-list',
+            materialSlot: 0,
+          },
+        ],
 
-    materialSlots: [{ slotName: 'Default' }],
-  });
+        materialSlots: [{ slotName: 'Default' }],
+      })
+        .build()
+        .unwrap(),
+    )
+    .unwrap();
 }
 
-function registerUnskinnedMesh(world: World): Handle<'MeshAsset', 'shared'> {
-  return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-    kind: 'mesh',
-    vertices: TRIANGLE_VERTICES,
-    indices: new Uint16Array([0, 1, 2]),
-    attributes: { position: TRIANGLE_POSITIONS },
-    aabb: UNIT_AABB,
-    submeshes: [
-      { indexOffset: 0, indexCount: 3, vertexCount: 3, topology: 'triangle-list', materialSlot: 0 },
-    ],
+function registerUnskinnedMesh(world: World): AssetHandle<'mesh'> {
+  return testAssets(world)
+    .create(
+      createMeshBuilder({
+        indices: new Uint16Array([0, 1, 2]),
+        attributes: { position: TRIANGLE_POSITIONS },
+        submeshes: [
+          {
+            indexOffset: 0,
+            indexCount: 3,
+            vertexCount: 3,
+            topology: 'triangle-list',
+            materialSlot: 0,
+          },
+        ],
 
-    materialSlots: [{ slotName: 'Default' }],
-  });
+        materialSlots: [{ slotName: 'Default' }],
+      })
+        .build()
+        .unwrap(),
+    )
+    .unwrap();
 }
 
-function registerPbrSkinMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::pbr-skin' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [1, 1, 1] },
-  });
+function registerPbrSkinMaterial(world: World): AssetHandle<'material'> {
+  return testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::pbr-skin' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [1, 1, 1] },
+    })
+    .unwrap();
 }
 
-function registerUnlitMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-unlit' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [1, 1, 1] },
-  });
+function registerUnlitMaterial(world: World): AssetHandle<'material'> {
+  return testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-unlit' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [1, 1, 1] },
+    })
+    .unwrap();
 }
 
-function registerSkeleton(world: World): Handle<'SkeletonAsset', 'shared'> {
-  return world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
-    kind: 'skeleton',
-    inverseBindMatrices: new Float32Array(IDENTITY_MATRIX),
-    jointCount: 1,
-  });
+function registerSkeleton(world: World): AssetHandle<'skeleton'> {
+  return testAssets(world)
+    .create({
+      kind: 'skeleton',
+      inverseBindMatrices: new Float32Array(IDENTITY_MATRIX),
+      jointCount: 1,
+    })
+    .unwrap();
 }
 
 function spawnCamera(world: World): void {
@@ -256,8 +261,8 @@ function customSkinProjection(): MaterialRenderProjection {
 
 function spawnRenderable(
   world: World,
-  meshHandle: Handle<'MeshAsset', 'shared'>,
-  matHandle: Handle<'MaterialAsset', 'shared'>,
+  meshHandle: AssetHandle<'mesh'>,
+  matHandle: AssetHandle<'material'>,
 ): void {
   world
     .spawn(
@@ -270,9 +275,9 @@ function spawnRenderable(
 
 function spawnSkinnedRenderable(
   world: World,
-  meshHandle: Handle<'MeshAsset', 'shared'>,
-  matHandle: Handle<'MaterialAsset', 'shared'>,
-  skeletonHandle: Handle<'SkeletonAsset', 'shared'>,
+  meshHandle: AssetHandle<'mesh'>,
+  matHandle: AssetHandle<'material'>,
+  skeletonHandle: AssetHandle<'skeleton'>,
 ) {
   // feat-20260612 M2 / m2-6: Skin.joints[] now validated against
   // SkeletonAsset.jointCount (=1 here) at extract time; spawn one joint
@@ -303,6 +308,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it('(a) Skin + non-pbr-skin material -> SkinMaterialMismatchError routed + entity skipped', () => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const meshHandle = registerSkinnedMesh(world);
     const unlitMatHandle = registerUnlitMaterial(world);
     const skeletonHandle = registerSkeleton(world);
@@ -327,6 +334,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it('(b) pbr-skin material + non-skin mesh -> MaterialSkinAttrMissingError routed + entity skipped', () => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const meshHandle = registerUnskinnedMesh(world);
     const skinMatHandle = registerPbrSkinMaterial(world);
     spawnCamera(world);
@@ -350,6 +359,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it('(c) Skin + pbr-skin material without a GPU allocator publishes a source pose', () => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const meshHandle = registerSkinnedMesh(world);
     const skinMatHandle = registerPbrSkinMaterial(world);
     const skeletonHandle = registerSkeleton(world);
@@ -377,6 +388,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it('(d) D-5 continue semantics: bad-skin entity skipped does NOT abort sibling extract', () => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const skinnedMesh = registerSkinnedMesh(world);
     const unskinnedMesh = registerUnskinnedMesh(world);
     const unlitMat = registerUnlitMaterial(world);
@@ -404,6 +417,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it('uses the selected custom skin ABI to publish a source pose without a GPU allocator', () => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const meshHandle = registerSkinnedMesh(world);
     const materialHandle = registerUnlitMaterial(world);
     const skeletonHandle = registerSkeleton(world);
@@ -433,6 +448,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   ])('rejects a dangling joint before publishing skin dispatch (custom=%s)', (custom) => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const mesh = registerSkinnedMesh(world);
     const material = custom ? registerUnlitMaterial(world) : registerPbrSkinMaterial(world);
     const skeleton = registerSkeleton(world);
@@ -462,6 +479,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it('keeps an exact mesh-context publication miss instead of fabricating skin-attribute failure', () => {
     const world = new World();
     const assets = makeAssetRegistry();
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     const meshHandle = registerSkinnedMesh(world);
     const materialHandle = registerUnlitMaterial(world);
     const projection = customSkinProjection();

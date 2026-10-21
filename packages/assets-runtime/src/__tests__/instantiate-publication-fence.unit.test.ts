@@ -85,12 +85,12 @@ describe('scenePublicationFenceFromRegistry', () => {
     });
   });
 
-  it('uses the complete pack-index tuple during a Catalog handoff', () => {
+  it('derives the fence only from the accepted Catalog, regardless of a stale side map', () => {
     const stale = publication();
     const current = publication('assets/current.glb');
     const registry = {
-      catalogSnapshot: () => ({ entries: [entry(stale)] }),
-      packIndexCache: new Map([[SCENE_GUID, entry(current, '/assets/current.pack.json')]]),
+      catalogSnapshot: () => ({ entries: [entry(current)] }),
+      packIndexCache: new Map([[SCENE_GUID, entry(stale)]]),
     };
     expect(scenePublicationFenceFromRegistry(registry as never, SCENE_GUID)).toMatchObject({
       ok: true,

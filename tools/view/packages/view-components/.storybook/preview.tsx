@@ -50,7 +50,7 @@ const preview: Preview = {
           ['Button', 'Icon', 'Forms', 'Choices', 'Switch'],
           'Workspace Patterns',
           'Feedback',
-          ['States', 'Error Notice'],
+          ['States', 'Error Notice', 'Preview Stats'],
           'Overlays',
           ['Menu', 'MenuDropdown', 'FloatingMenu', 'Tooltip', 'Dialog and Context'],
           'Workflows',

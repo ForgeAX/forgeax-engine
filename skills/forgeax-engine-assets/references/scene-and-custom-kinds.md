@@ -5,58 +5,28 @@ custom loaders, and static asset evidence.
 
 ## VideoAsset: world-space video textures
 
-VideoAsset treats video as a changing texture in the 3D world. Load its { kind: 'video', url } payload by GUID and use it through the material texture chain.
-
-VideoAsset belongs to the Engine Asset union as a runtime kind without import/cook. URL points to WebM/MP4; the host VideoElementProvider supplies HTMLVideoElement. The descriptor has no dependency refs.
-
-wireDefaultLoaders installs the descriptor-only videoLoader; it returns VideoAsset synchronously without manual registration.
-
-### Usage skeleton
+A VideoAsset is a source descriptor `{ kind: 'video', url }`. Use
+`assets.load(guid, 'video')` for a verified source publication, or
+`assets.create({ kind: 'video', url })` for code-created content. Both return
+an asset handle. A host VideoSourceProvider owns native video elements and
+playback capability; the asset definition does not create DOM elements.
 
 ```ts
-import type { VideoAsset } from '@forgeax/engine-types';
-// videoLoader is already registered in wireDefaultLoaders — no manual register needed
-
-// 1) register the VideoAsset { url } descriptor via catalog (dev/memory path)
-assets.catalog<VideoAsset>(guid, { kind: 'video', url: '/clip.webm' });
-
-// 2) loadByGuid returns the payload directly (descriptor-only loader)
-const res = await assets.loadByGuid<VideoAsset>(guid);
-if (!res.ok) {
-  // res.error.code is an AssetErrorCode (e.g. 'asset-not-found') or
-  // runtime video code 'video-upload-unsupported'
-  console.error(res.error.code, res.error.hint);
-  return;
-}
-const videoAsset = res.value; // VideoAsset { kind: 'video', url: '/clip.webm' }
-
-// 3) the GUID can be used in MaterialAsset.paramValues texture fields
-//    (e.g. baseColorTexture) — identical to a static texture GUID. The
-//    texture field takes the DASH-FORM GUID STRING (not the AssetGuid object /
-//    Uint8Array — a non-string silently drops to the default white texture):
-const mat: MaterialAsset = {
-  kind: 'material',
-  passes: [{ name: 'Forward', shader: 'forgeax::default-unlit' }],
-  paramValues: { baseColorTexture: guid },  // dash-form GUID string, same texture2d slot as static
-};
+const video = assets.create({ kind: 'video', url: '/clip.webm' }).unwrap();
+assets.update(material, { values: { baseColorTexture: video } }).unwrap();
+// Bind the same video handle to VideoPlayer.clip on the material's entity.
+// Release the caller reference once those bindings have retained it.
+assets.release(video).unwrap();
 ```
 
-### Capability boundaries
+Engine/Runtime installs its video domain contribution. A bare Registry must
+install the matching contribution. `assets.read(video)` is an explicit
+metadata read; never allocate another World asset reference from that payload.
 
-| Boundary | Contract | Recovery |
-|:--|:--|:--|
-| No Dawn video pixels | No HTMLVideoElement/VideoFrame; structural checks can report video-upload-unsupported. | Use browser E2E for pixel acceptance. |
-| Host supplies video element | Engine does not create DOM video elements or set src. Register VideoElementProvider as a World resource. | See hello/video-texture. |
-| High-performance path is a probe only | GPUExternalTexture upload is unimplemented; general copyExternalImageToTexture works. | Use the supported general path. |
-| No audio-track fields | Host or separate audio work owns sound. | Separate owner. |
-| Dynamic frames are not static cache entries | DynamicTextureStore uploads per frame, outside ensureResident's permanent cache. | Static invalidate semantics do not apply. |
-
-> [!NOTE]
-> Video integration updates Asset, ASSET_BRAND, and default loader registration. Recursive refs loading remains kind-independent; retired collectRefs/storedNameOf paths and Pack build need no change.
-
-### Material consumption
-
-Material texture fields referencing VideoAsset use the extraction branch for kind=video and transient uploads; other material behavior matches static textures. See the material skill.
+- Real browser acceptance must exercise the supplied native video source; Dawn cannot prove video pixels.
+- DynamicTextureStore owns frame uploads and device retirement. Playback cursor and native source lifetime remain instance/host state.
+- `renderer.importTexture({ kind: 'video', ... })` is the separate caller-owned external-source API. A `texture_external` material slot can use zero-copy sampling when available; see the material skill and Render contract.
+- Replacing or reloading a VideoAsset follows normal asset admission. Native playback owners consume its accepted source version at their own boundary.
 
 ## Nested SceneAsset mounts
 
@@ -90,17 +60,17 @@ World SceneInstance methods: [`forgeax-engine-ecs`](../../forgeax-engine-ecs/SKI
 
 ## Scene save and writeback
 
-rootsToSceneAsset(registry, world, roots) serializes any live entity forest to reusable SceneAsset, deriving entity-to-localId and shared-to-GUID conversion from schemas. Engine owns GUID lookup; callers need no handleToGuid table or SceneInstance guard.
+rootsToSceneAsset(registry, world, roots) serializes any live entity forest to reusable SceneAsset, deriving entity-to-localId and asset-handle-to-source-GUID conversion from schemas. Engine owns GUID lookup; callers need no handleToGuid table or SceneInstance guard.
 
 ### Load and save cycle
 
 ```mermaid
 flowchart LR
-    LOAD["gltfDocToSceneAsset(doc) → SceneAsset"] --> INST["world.instantiateScene(handle) → live entities"]
+    LOAD["gltfDocToSceneAsset(doc) → SceneAsset"] --> INST["assets.instantiate(handle, world) → live entities"]
     INST --> EDIT["Edit entity forest: equipment, transforms, hierarchy"]
     EDIT --> COLLECT["rootsToSceneAsset(registry, world, roots) → SceneAsset"]
     COLLECT --> SER["serializeSceneAssetToPack(sceneAsset, guid) → pack JSON"]
-    SER --> RELOAD["world.instantiateScene(reloadedHandle): reload instance"]
+    SER --> RELOAD["assets.instantiate(reloadedHandle, world)"]
 ```
 
 ### rootsToSceneAsset contract
@@ -108,7 +78,7 @@ flowchart LR
 ```ts
 // packages/runtime/src/collect-scene-asset.ts
 export function rootsToSceneAsset(
-  registry: AssetRegistry,
+  registry: SceneAssetGuidLookup,
   world: World,
   roots: EntityHandle[],
 ): Result<SceneAsset, SceneCollectEntityRefOutOfClosureError | SceneCollectAssetGuidUnresolvedError>;
@@ -117,7 +87,7 @@ export function rootsToSceneAsset(
 | Aspect | Retired collectSceneAsset | rootsToSceneAsset |
 |:--|:--|:--|
 | Entry | One root with SceneInstance guard | Multiple arbitrary roots. |
-| Handle/GUID lookup | Injected external table | Engine resolveAssetHandle/guidForAsset. |
+| Handle/GUID lookup | Injected external table | AssetRegistry load/read and source GUID identity. |
 | Field conversion | Hand-maintained names | Schema-derived. |
 | Root ChildOf | Preserved | Stripped in the saved scene. |
 | Local IDs | Reused | Consecutive BFS numbering from zero. |
@@ -131,13 +101,13 @@ rootsToSceneAsset and serializeSceneAssetToPack share one schema dispatcher:
 |:--|:--|
 | entity | Forest-local ID; external references fail scene-collect-entity-ref-out-of-closure. |
 | array<entity> | Element-wise local IDs. |
-| shared<T> | Resolve GUID; uncatalogued assets fail scene-collect-asset-guid-unresolved. |
-| array<shared<T>> | Element-wise GUIDs, including fixed-length forms. |
+| asset(kind) | Resolve the adopted source GUID; runtime-only content requires a durable publication before source export. |
+| array<asset(kind)> | Element-wise GUIDs, including fixed-length forms. |
 | Other | Preserve primitive values. |
 
 ### Internal GUID lookup
 
-AssetRegistry._guidForAsset searches envelope payload identity and returns its GUID. Instantiation and skin resolution reuse it. It is internal; rootsToSceneAsset already performs the entire handle-to-GUID path.
+`AssetRegistry.guidOf(handle)` projects adopted source identity. `rootsToSceneAsset` consumes that existing lookup; consumers do not search detached payload identity or maintain a second GUID table.
 
 ### Structured collection errors
 
@@ -146,7 +116,7 @@ Handle these RuntimeErrorCode members exhaustively without default:
 | Code | Trigger | Detail | Hint |
 |:--|:--|:--|:--|
 | scene-collect-entity-ref-out-of-closure | Entity reference leaves the selected forest. | entity, field, target | Expand roots or remove the reference. |
-| scene-collect-asset-guid-unresolved | Shared handle cannot resolve to a catalogued asset. | field, handle | Register the asset before collection. |
+| scene-collect-asset-guid-unresolved | Asset handle has no durable source GUID. | field, handle | Publish runtime content or load its source before collection. |
 
 ### Consumer skeleton
 
@@ -163,8 +133,8 @@ if (!result.ok) {
       break;
     }
     case 'scene-collect-asset-guid-unresolved': {
-      // detail.field/handle identify an unresolved shared reference.
-      // Register/load the asset first.
+      // detail.field/handle identify an asset without a source GUID.
+      // Publish the referenced content or load its durable source first.
       break;
     }
   }
@@ -191,127 +161,90 @@ const packJson = packResult.value; // { kind: 'scene', entities: [...], refs: [.
 
 ## Add an Engine asset kind
 
-After removing collectRefs/storedNameOf/assetBrand switches, kind integration is concentrated in types/importers:
-
-1. Add the Asset union member with its kind and payload fields.
-2. Add its ASSET_BRAND record entry; TypeScript rejects missing keys.
-3. Populate ImportedAsset refs with dependency GUIDs and sourceField metadata for entity handle fields; texture edges omit sourceField.
-
-Retired paths stay absent:
-- No collect-refs switch arm; that file was removed.
-- No obsolete recursive type-test guard.
-- No per-kind preload branch in loadByGuid; refs use one loop.
-- No storedNameOf table; envelope owns names.
-
-Correct importer refs integrate automatically with recursive loading.
+The built-in kind vocabulary derives from the `Asset` union. Add its POD type,
+producer, domain decoder contribution and runtime preparation at the owning
+package. Component references use `asset(kind)`. Declare source dependencies in
+the Pack envelope and runtime dependencies through the preparation context;
+consumers must not invent a second kind registry or per-kind preload loop.
 
 ## Open registration for host kinds
 
-Engine kinds use the Asset union. Host configuration/dialogue/ability data uses open loader registration and loadByGuid<MyType>, retaining precise types without casts.
-
-### Register and load
-
-**Register the custom loader**:
+Configuration, dialogue and ability data use an `AssetKind<P>` token without
+expanding the built-in union. Share that token between decoder installation,
+loads and runtime creation.
 
 ```ts
-import type { Loader, LoaderOutput } from '@forgeax/engine-types';
+import { assetDecoderPlugin, defineAssetKind } from '@forgeax/engine/assets-runtime';
+import { err, type AssetDecoderContribution, type AssetError, type Result } from '@forgeax/engine/types';
 
 interface MyGameConfig {
   level: number;
   maxPlayers: number;
 }
+// The host implements validation of its complete configuration schema.
+declare function validateConfig(value: unknown): Result<MyGameConfig, AssetError>;
 
-function myGameConfigLoader(): Loader<MyGameConfig> {
-  return {
-    kind: 'my-game-config',
-    load(payload: Record<string, unknown>): LoaderOutput<MyGameConfig> {
-      return payload as unknown as MyGameConfig;
+const GameConfig = defineAssetKind<MyGameConfig>('my-game-config');
+const contribution: AssetDecoderContribution<MyGameConfig> = {
+  kind: GameConfig,
+  consumer: 'game',
+  decoder: {
+    async decode({ envelope }) {
+      const checked = validateConfig(envelope.payload);
+      return checked.ok ? checked : err({
+        code: 'asset-decode-failed',
+        expected: checked.error.expected,
+        hint: checked.error.hint,
+        detail: { guid: envelope.guid, kind: envelope.kind, cause: checked.error },
+      });
     },
-  };
-}
-
-import { assetLoaderPlugin } from '@forgeax/engine-assets-runtime';
-
-const loaderFiber = await app.pluginContext.plugin(assetLoaderPlugin(myGameConfigLoader()));
-```
-
-**Load the precise payload type**:
-
-```ts
-const res = await engine.assets.loadByGuid<MyGameConfig>(guid);
-if (!res.ok) {
-  console.error(res.error.code, res.error.hint);
+    prepare: validateConfig,
+  },
+};
+const decoderFiber = app.pluginContext.plugin(assetDecoderPlugin(contribution));
+const loaded = await app.assets.load(guid, GameConfig);
+if (!loaded.ok) {
+  console.error(loaded.error.code, loaded.error.hint);
   return;
 }
-const cfg = res.value;  // MyGameConfig without a cast.
-cfg.maxPlayers;          // Available through type completion.
-
-// Remove the loader registration when unloading the feature.
-await loaderFiber.dispose();
+const handle = loaded.value;
+const cfg = app.assets.read(handle).unwrap(); // MyGameConfig, detached
+app.assets.update(handle, { maxPlayers: 8 }).unwrap();
+app.assets.release(handle).unwrap();
+// Retire the decoder contribution when the feature's native Fiber ends.
+await decoderFiber.dispose();
 ```
 
-### Open payload semantics
-
-AssetEnvelope, ImportedAsset, and Loader each accept P=Asset:
-
-- AssetEnvelope<P> stores the catalog payload; default Asset covers Engine kinds, custom P covers hosts.
-- Loader<P>.load returns LoaderOutput<P>, the payload rather than an envelope.
-- ImportedAsset<P> carries payload and AssetRef dependencies.
-
-The Asset union remains an Engine convenience, not the registry's sole admissible payload type.
+A standalone host can own `assets.installDecoder(GameConfig, decoder)` directly
+and dispose the returned lease. A decoder with only `decode` admits read-only
+source content; `create(GameConfig, value)`, `update`, `replace` and `copy` need
+its synchronous `prepare` contract. Preparation receives a detached complete
+candidate and returns validated data; retained aliases cannot modify current
+content after commit.
 
 ### Cross-kind references
 
-Host/Engine refs can cross in either direction. Loader.load returns payload only; envelope/Pack assets[].refs carry dependencies. Recursive loading reads that envelope graph. The loader refs argument contains already-declared references and may be ignored when unnecessary.
+Pack `refs` carries dependency GUIDs. Source loading validates eager closures
+before atomic admission. A custom `prepare(value, context)` uses
+`context.reference(guidOrHandle, kind)` for each dependency stored in the
+accepted content and `context.read(handle)` for explicit detached reads.
+The owner retains referenced versions and retires omitted references after a
+successful replacement. A declared deferred decoder keeps activation-specific
+references deferred rather than loading them during definition inspection.
 
-```ts
-// refs are in the sidecar, NOT in load()'s return value.
-// The pack.json assets[] entry declares refs:
-//
-// {
-//   guid: "...",
-//   kind: "my-game-config",
-//   payload: { kind: "my-game-config", title: "Parent", ... },
-//   refs: [childGuid]   // <-- refs live here
-// }
-//
-// load() just returns the payload P (no envelope, no refs).
-function myGameConfigLoader(): Loader<MyGameConfig> {
-  return {
-    kind: 'my-game-config',
-    load(payload: Record<string, unknown>): LoaderOutput<MyGameConfig> {
-      return payload as unknown as MyGameConfig;
-    },
-  };
-}
-```
+### Missing decoder recovery
 
-The same refs loop handles host/Engine kinds. host-custom-kind-contract.test.ts covers host-to-host, host-to-Engine, Engine-to-host, and cycles.
-
-### Missing loader recovery
-
-Production/upstream loading reports loader-not-registered when an indexed kind requires decoding but has no loader:
-
-```ts
-const res = await engine.assets.loadByGuid<SomeType>(guid);
-if (!res.ok && res.error.code === 'loader-not-registered') {
-  // detail.registeredKinds lists available loaders.
-  await app.pluginContext.plugin(assetLoaderPlugin(myLoader));
-  // retry...
-}
-```
-
-This remains a Result, not a thrown exception/rejected Promise; inspect ok/code/detail.
-
-> [!NOTE]
-> Direct in-memory catalog registration can pass through custom payloads without a loader. The missing-loader error belongs to production/upstream paths requiring parsing. Register a loader to perform custom parsing/validation, not merely to admit in-memory data.
-
-> [!IMPORTANT]
-> registry.loaders.register is the low-level App-free host interface with an idempotent disposer. Games prefer assetsPlugin/assetLoaderPlugin/packLoaderPlugin so registration, removal, and provider recovery share one Cordis Fiber.
+`asset-decoder-missing` identifies the absent kind contribution. Install the
+owning decoder lease and retry `assets.load(guid, token)`. A generic type
+parameter, optional payload `kind`, or Catalog row cannot bypass this gate.
+`asset-kind-mismatch` requires the correct built-in kind or custom token.
+Inspect structured `code`, `detail` and `hint`.
 
 ### Scope
 
-Engine addresses, transports, catalogs, and recursively loads custom payloads; it does not render them. Host logic must translate domain data into entities/components; GPU stores recognize Engine render kinds only.
+The asset owner transports, verifies, retains and updates custom content. Host
+logic translates domain data into entities or other native consumers; declaring
+a custom kind does not add a rendering implementation.
 
 ## Further reading
 

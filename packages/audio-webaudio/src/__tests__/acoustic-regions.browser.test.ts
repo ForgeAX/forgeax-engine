@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   AcousticRegion,
   AudioListener,
   AudioSource,
+  audioContribution,
   audioTickSystem,
   createAcousticRegionSystem,
   createAudioIntentBackend,
@@ -122,12 +124,17 @@ it('crossfades native route samples, holds silence during pause, and restores th
     .unwrap();
   const consumer = createHostAudioConsumer(engine);
   const backend = createAudioIntentBackend({ emit: (i) => consumer.consume(structuredClone(i)) });
-  const world = new World();
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'native-acoustic',
-    bytes: pcmWav(new Float32Array(48000).fill(0.1)),
-  });
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'native-acoustic',
+      bytes: pcmWav(new Float32Array(48000).fill(0.1)),
+    })
+    .unwrap();
   const source = world
     .spawn(
       { component: AudioSource, data: { clip, playing: true, loop: true } },
@@ -198,7 +205,9 @@ it('blends listener environment into existing wet/send parameters and keeps the 
       1,
     )
     .unwrap();
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const listener = world
     .spawn(
       { component: AudioListener, data: {} },
@@ -293,6 +302,7 @@ it('fences real pending decode and routing controls when the Host consumer is di
     .unwrap();
   const consumer = createHostAudioConsumer(engine);
   consumer.consume({
+    asset: { owner: 'pending-acoustic', handle: 1, revision: 1 },
     kind: 'play',
     entityId: 8,
     sourceKey: 'pending-acoustic',

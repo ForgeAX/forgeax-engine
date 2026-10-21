@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NativeCookerRegistry } from '../native-cooker-registry.js';
+import { type NativeCookDraft, NativeCookerRegistry } from '../native-cooker-registry.js';
 
 describe('NativeCookerRegistry artifact boundary', () => {
   it('keeps native artifact bytes available before converting to CookProduct descriptors', async () => {
@@ -77,4 +77,68 @@ describe('NativeCookerRegistry artifact boundary', () => {
     expect(result.error.detail.producer).toContain('producer-schema-invalid');
     expect(result.error.detail.producer).not.toContain('[object Object]');
   });
+});
+
+const validDraft = (): NativeCookDraft => ({
+  guid: 'draft',
+  payload: {},
+  refs: [],
+  artifacts: {},
+  inputFingerprint: 'input',
+});
+
+it.each([
+  undefined,
+  null,
+  {},
+  { ...validDraft(), guid: 5 },
+  { ...validDraft(), refs: [2] },
+])('reports malformed producer output through every entry point: %j', async (output) => {
+  const registry = new NativeCookerRegistry();
+  registry.register({ key: 'broken', cook: () => output as NativeCookDraft });
+  await expect(registry.runDraft('broken', {})).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'native-cook-failed' },
+  });
+  await expect(registry.run('broken', {})).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'native-cook-failed' },
+  });
+  await expect(registry.runTransaction({ key: 'broken', input: {} })).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'native-cook-failed' },
+  });
+  const previous = { draft: validDraft(), generation: 3 };
+  const recovered = await registry.runTransaction({ key: 'broken', input: {}, previous });
+  expect(recovered).toMatchObject({ ok: true, value: { ...previous, status: 'recovered' } });
+  if (recovered.ok) expect(recovered.value.draft).toBe(previous.draft);
+});
+
+it('uses the accepted snapshot when validation throws without publishing the candidate', async () => {
+  const registry = new NativeCookerRegistry();
+  registry.register({ key: 'test', cook: validDraft });
+  const first = await registry.runTransaction({ key: 'test', input: {} });
+  if (!first.ok) throw new Error(first.error.hint);
+  let published = false;
+  const options = {
+    key: 'test',
+    input: {},
+    validate: () => {
+      throw new Error('invalid payload');
+    },
+    publish: () => {
+      published = true;
+    },
+  };
+  await expect(registry.runTransaction(options)).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'native-cook-failed', detail: { producer: 'invalid payload' } },
+  });
+  await expect(
+    registry.runTransaction({ ...options, previous: first.value }),
+  ).resolves.toMatchObject({
+    ok: true,
+    value: { generation: 1, draft: first.value.draft, status: 'recovered' },
+  });
+  expect(published).toBe(false);
 });

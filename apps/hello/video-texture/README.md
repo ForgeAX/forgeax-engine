@@ -5,7 +5,8 @@ texture slot and onto a world-space quad. The recipe is intentionally close to
 a static image recipe:
 
 ```text
-VideoAsset { url } -> loadByGuid -> VideoPlayer + MeshFilter + MeshRenderer
+Pack GUID -> assets.load(guid, 'video') -> VideoPlayer + MeshFilter + MeshRenderer
+VideoAsset { url } -> assets.create(video) -> same managed binding
                          -> MaterialAsset.values.baseColorTexture
                          -> transient GPU video texture -> quad
 ```

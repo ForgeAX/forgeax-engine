@@ -1,22 +1,14 @@
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { box3, mat4, ray, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
+import { Instances } from '@forgeax/engine-render';
+import { currentMeshPositions } from './current-positions';
+import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
+import { computeScreenRay, type ScreenRay, visitMeshBoundsCorners } from './pick-core';
+import { meshQueryEntities, queryMesh, queryMeshMatrix } from './query-mesh';
+
 // Screen vertex queries use the same current Morph -> Skin projection as exact
 // triangle picking. Only vertices of ray-intersected triangle-list primitives
 // participate; unavailable CPU poses and explicit instances yield no candidates.
-
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { box3, mat4, ray, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
-import { Instances, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { GlobalTransform, Transform } from '@forgeax/engine-scene';
-import type { MeshAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
-import { currentMeshPositions } from './current-positions';
-import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
-import {
-  computeScreenRay,
-  readWorldMatrix,
-  type ScreenRay,
-  visitMeshBoundsCorners,
-} from './pick-core';
 
 // ── types ────────────────────────────────────────────────────────────────
 
@@ -107,25 +99,16 @@ function collectVertexHits(
   const rDz = r[5] as number;
 
   // ── resolve entity's mesh asset ──
-  const mfRes = world.get(entity, MeshFilter);
-  if (!mfRes.ok) {
-    return [];
-  }
-  const meshRes = resolveAssetHandle<MeshAsset>(
-    world,
-    toShared<'MeshAsset'>(mfRes.value.assetHandle as unknown as number),
-  );
-  if (!meshRes.ok) {
-    return [];
-  }
-  const mesh = meshRes.value;
+  const value = queryMesh(world, entity);
+  if (value === undefined) return [];
+  const mesh = value.mesh;
 
   // VertexHit has no instance ordinal; explicit instances are untestable here.
   if (world.hasComponent(entity, Instances)) return [];
   const pose = currentMeshPositions(world, entity, mesh);
   if ('reason' in pose) return [];
   const { positions, bounds, deformed, worldSpace } = pose;
-  const entityWorld = readWorldMatrix(world, entity);
+  const entityWorld = queryMeshMatrix(world, entity, screenRay);
   if (!entityWorld) return [];
   const entityWMLike = worldSpace ? mat4.identity(mat4.create()) : entityWorld;
   if (bounds !== undefined && !rayHitsWorldAabb(r, bounds, entityWMLike)) return [];
@@ -401,14 +384,9 @@ export function pickVertexWithScreenRay(
 
   // ── walk renderable archetypes (Transform + MeshFilter + MeshRenderer) ──
   // Reuse pick.ts archetype walk skeleton (research Finding 1).
-  const query = world
-    .query({ read: [Transform, GlobalTransform, MeshFilter, MeshRenderer] })
-    .unwrap();
-
   const allCandidates: VertexHit[] = [];
 
-  for (const row of query) {
-    const entity = row.entity;
+  for (const entity of meshQueryEntities(world)) {
     // Collect vertices for this entity
     const entityHits = collectVertexHits(
       world,

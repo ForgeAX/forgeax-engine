@@ -7,9 +7,9 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { halfFloat } from '@forgeax/engine/math';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
 import { create, globals } from '@forgeax/engine-dawn-node';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { encodePng } from '@forgeax/engine-image/png';
 import {
   ANTIALIAS_NONE,
@@ -35,7 +35,7 @@ import {
   VolumetricFogSamplingValue,
 } from '@forgeax/engine-render';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
-import { createRenderer } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 
 import {
@@ -118,8 +118,8 @@ async function fixture(width, height, capture = false) {
     removeEventListener() {},
   };
   const recorder = capture ? value(attachRecorder(webgpu)) : undefined;
-  const renderer = value(
-    await createRenderer(
+  const host = value(
+    await constructRuntimeRendererHost(
       canvas,
       {
         ...(recorder ? { rhi: recorder.backend.rhi } : {}),
@@ -131,7 +131,10 @@ async function fixture(width, height, capture = false) {
     ),
   );
   console.log(`[post-processing] renderer ready ${width}x${height}`);
-  const world = new World();
+  const { renderer, assets } = host;
+  const world = new World({ assets });
+  const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const sphere = assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
   const lease = value(renderer.attach(world));
   const profile = {
     ...renderer.inspect().profile,
@@ -139,14 +142,14 @@ async function fixture(width, height, capture = false) {
     ibl: false,
   };
   value(renderer.setProfile(profile));
-  const spawnMesh = (position, scale, material, mesh = HANDLE_CUBE) =>
+  const spawnMesh = (position, scale, material, mesh = cube) =>
     value(
       world.spawn(
         { component: Transform, data: { pos: position, scale } },
         { component: MeshFilter, data: { assetHandle: mesh } },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', material)] },
+          data: { materials: [assets.create(material).unwrap()] },
         },
       ),
     );
@@ -179,7 +182,7 @@ async function fixture(width, height, capture = false) {
       roughness: 1,
       metallic: 0,
     }),
-    HANDLE_SPHERE,
+    sphere,
   );
   spawnMesh(
     [0.6, 0.3, 0.2],
@@ -255,14 +258,16 @@ async function fixture(width, height, capture = false) {
       },
     ),
   );
-  const density = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '3d', extent: { width: 8, height: 8, depth: 8 } },
-    format: 'r8unorm',
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-    data: new Uint8Array(512).fill(128),
-  });
+  const density = assets
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '3d', extent: { width: 8, height: 8, depth: 8 } },
+      format: 'r8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: new Uint8Array(512).fill(128),
+    })
+    .unwrap();
   let cloud,
     analytic,
     volumes = [];
@@ -362,12 +367,20 @@ async function fixture(width, height, capture = false) {
   async function draw(read = false) {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (read) value(renderer.requestObservation(['linear-hdr', 'final-display']));
-    const start = performance.now();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
-    const cpuMs = performance.now() - start;
+    const deadline = performance.now() + 30_000;
+    let start, receipt, cpuMs;
+    for (;;) {
+      if (read) value(renderer.requestObservation(['linear-hdr', 'final-display']));
+      start = performance.now();
+      receipt = value(
+        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      );
+      cpuMs = performance.now() - start;
+      if (receipt.presentation === 'ready') break;
+      value(await receipt.completed);
+      if (performance.now() >= deadline) throw new Error('Renderer preparation timed out');
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
     value(await receipt.completed);
     const latencyMs = performance.now() - start;
     const observed = value(

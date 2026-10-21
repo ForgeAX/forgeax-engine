@@ -9,18 +9,28 @@
 import { World } from '@forgeax/engine-ecs';
 import { ChildOf, Name } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { SkinAsset } from '@forgeax/engine-types';
+import type { AssetHandle, SkinAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { postSpawnResolveJoints } from '../../../../render/src/scene-instances/post-spawn-resolve-joints';
+import { testAssets } from '../../__tests__/helpers/runtime-assets';
 
 /**
  * Build a 3-joint linear chain `Root -> Spine -> Hip` rooted at a fresh entity,
  * with shared Name strings across spawns. Returns the spawnRoot + the three
  * descendant entities for assertion. The Skin component is attached to the
- * spawn root with a synthetic skeleton handle (the resolver's resolveSkinAsset
+ * spawn root with a managed skeleton handle (the resolver's resolveSkinAsset
  * is wired to return a fixed SkinAsset for any handle in this test).
  */
-function spawnFoxLikeChain(world: World, skeletonHandle: number) {
+function skeleton(world: World): AssetHandle<'skeleton'> {
+  const inverseBindMatrices = new Float32Array(48);
+  for (let joint = 0; joint < 3; joint++)
+    for (const diagonal of [0, 5, 10, 15]) inverseBindMatrices[joint * 16 + diagonal] = 1;
+  return testAssets(world)
+    .create({ kind: 'skeleton', jointCount: 3, inverseBindMatrices })
+    .unwrap();
+}
+
+function spawnFoxLikeChain(world: World, skeletonHandle: AssetHandle<'skeleton'>) {
   const root = world.spawn({ component: Name, data: { value: 'Root' } }).unwrap();
   const spine = world.spawn({ component: Name, data: { value: 'Spine' } }).unwrap();
   const hip = world.spawn({ component: Name, data: { value: 'Hip' } }).unwrap();
@@ -33,8 +43,7 @@ function spawnFoxLikeChain(world: World, skeletonHandle: number) {
   world
     .addComponent(root, {
       component: Skin,
-      // biome-ignore lint/suspicious/noExplicitAny: test fixture stamps a synthetic skeleton handle for resolver isolation; the resolver is mocked.
-      data: { skeleton: skeletonHandle as any, joints: new Uint32Array() },
+      data: { skeleton: skeletonHandle, joints: new Uint32Array() },
     })
     .unwrap();
 
@@ -44,13 +53,14 @@ function spawnFoxLikeChain(world: World, skeletonHandle: number) {
 describe('postSpawnResolveJoints — single instance', () => {
   it('wires Skin.joints[] to subtree entities for one spawn', () => {
     const world = new World();
+    const skeletonHandle = skeleton(world);
     const skinAsset: SkinAsset = {
       kind: 'skin',
       skeletonGuid: '00000000-0000-0000-0000-000000000001',
       jointPaths: ['Root', 'Spine', 'Hip'],
     };
 
-    const { root, spine, hip } = spawnFoxLikeChain(world, 1);
+    const { root, spine, hip } = spawnFoxLikeChain(world, skeletonHandle);
 
     const result = postSpawnResolveJoints(world, { resolveSkinAsset: () => skinAsset }, root);
 
@@ -66,6 +76,7 @@ describe('postSpawnResolveJoints — single instance', () => {
 describe('postSpawnResolveJoints — multi instance (D-7 subtree-scope)', () => {
   it('three spawns each wire to their own subtree entities — not instance-0', () => {
     const world = new World();
+    const skeletonHandle = skeleton(world);
     const skinAsset: SkinAsset = {
       kind: 'skin',
       skeletonGuid: '00000000-0000-0000-0000-000000000001',
@@ -73,9 +84,9 @@ describe('postSpawnResolveJoints — multi instance (D-7 subtree-scope)', () => 
     };
 
     // Three independent spawns — same Name strings collide across instances.
-    const a = spawnFoxLikeChain(world, 1);
-    const b = spawnFoxLikeChain(world, 1);
-    const c = spawnFoxLikeChain(world, 1);
+    const a = spawnFoxLikeChain(world, skeletonHandle);
+    const b = spawnFoxLikeChain(world, skeletonHandle);
+    const c = spawnFoxLikeChain(world, skeletonHandle);
 
     // Resolve each spawn independently.
     expect(postSpawnResolveJoints(world, { resolveSkinAsset: () => skinAsset }, a.root).ok).toBe(
@@ -109,13 +120,14 @@ describe('postSpawnResolveJoints — multi instance (D-7 subtree-scope)', () => 
 
   it('does not wire across spawn roots — instance 1 is untouched after instance 0 resolves', () => {
     const world = new World();
+    const skeletonHandle = skeleton(world);
     const skinAsset: SkinAsset = {
       kind: 'skin',
       skeletonGuid: '00000000-0000-0000-0000-000000000001',
       jointPaths: ['Root', 'Spine', 'Hip'],
     };
-    const a = spawnFoxLikeChain(world, 1);
-    const b = spawnFoxLikeChain(world, 1);
+    const a = spawnFoxLikeChain(world, skeletonHandle);
+    const b = spawnFoxLikeChain(world, skeletonHandle);
 
     // Resolve only a; b should remain joints=[] (resolver was not invoked for b).
     postSpawnResolveJoints(world, { resolveSkinAsset: () => skinAsset }, a.root);
@@ -130,6 +142,7 @@ describe('postSpawnResolveJoints — multi instance (D-7 subtree-scope)', () => 
 describe('postSpawnResolveJoints — error path', () => {
   it('returns skin-joint-path-unresolved when leaf name not present in subtree', () => {
     const world = new World();
+    const skeletonHandle = skeleton(world);
     const skinAsset: SkinAsset = {
       kind: 'skin',
       skeletonGuid: '00000000-0000-0000-0000-000000000001',
@@ -139,7 +152,7 @@ describe('postSpawnResolveJoints — error path', () => {
       jointPaths: ['Root/Spine/NoSuchBone'],
     };
 
-    const { root } = spawnFoxLikeChain(world, 1);
+    const { root } = spawnFoxLikeChain(world, skeletonHandle);
 
     const result = postSpawnResolveJoints(world, { resolveSkinAsset: () => skinAsset }, root);
 
@@ -153,6 +166,7 @@ describe('postSpawnResolveJoints — error path', () => {
 
   it('warns on same-name sibling within a single subtree (D-6a still active)', () => {
     const world = new World();
+    const skeletonHandle = skeleton(world);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     // Two siblings both named 'Bone' under one root.
@@ -164,8 +178,7 @@ describe('postSpawnResolveJoints — error path', () => {
     world
       .addComponent(root, {
         component: Skin,
-        // biome-ignore lint/suspicious/noExplicitAny: test fixture stamps a synthetic skeleton handle for resolver isolation; the resolver is mocked.
-        data: { skeleton: 1 as any, joints: new Uint32Array() },
+        data: { skeleton: skeletonHandle, joints: new Uint32Array() },
       })
       .unwrap();
 

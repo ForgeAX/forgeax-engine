@@ -1,17 +1,17 @@
-import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import type { World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 
 const GOLDEN_ANGLE = 137.50777;
 const HUE_SPEED = 100;
 
 export interface AnimatedMaterialScene {
-  readonly materials: readonly { handle: Handle<'MaterialAsset', 'shared'>; content: EntityHandle; baseHue: number }[];
+  readonly materials: readonly { handle: AssetHandle<'material'>; baseHue: number }[];
 }
 
 function hueToRgb(p: number, q: number, t: number): number {
@@ -32,20 +32,17 @@ export function hslToRgb(hue: number, saturation = 1, lightness = 0.5): readonly
   return [hueToRgb(p, q, h + 1 / 3), hueToRgb(p, q, h), hueToRgb(p, q, h - 1 / 3)];
 }
 
-export function buildAnimatedMaterialWorld(world: World, aspect: number): AnimatedMaterialScene {
-  const materials: Array<{ handle: Handle<'MaterialAsset', 'shared'>; content: EntityHandle; baseHue: number }> = [];
+export function buildAnimatedMaterialWorld(world: World, assets: AssetRegistry, aspect: number): AnimatedMaterialScene {
+  const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const materials: Array<{ handle: AssetHandle<'material'>; baseHue: number }> = [];
   let hue = 0;
   for (let x = -1; x <= 1; x += 1) {
     for (let z = -1; z <= 1; z += 1) {
-      const handle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-        'MaterialAsset',
-        Materials.standard({ baseColor: [...hslToRgb(hue), 1], roughness: 0.45 }),
-      );
-      const content = world.spawn({ component: RuntimeMaterialValue, data: { asset: handle, parameter: 'baseColor', kind: 2, value: [...hslToRgb(hue), 1] } }).unwrap();
-      materials.push({ handle, content, baseHue: hue });
+      const handle = assets.create<MaterialAsset>(Materials.standard({ baseColor: [...hslToRgb(hue), 1], roughness: 0.45 })).unwrap();
+      materials.push({ handle, baseHue: hue });
       world.spawn(
         { component: Transform, data: { pos: [x, 0, z], quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [handle] } },
       );
       hue += GOLDEN_ANGLE;
@@ -64,10 +61,10 @@ export function buildAnimatedMaterialWorld(world: World, aspect: number): Animat
   return { materials };
 }
 
-export function stepAnimatedMaterials(world: World, scene: AnimatedMaterialScene, elapsed: number): number {
+export function stepAnimatedMaterials(assets: AssetRegistry, scene: AnimatedMaterialScene, elapsed: number): number {
   const hueDelta = elapsed * HUE_SPEED;
   for (const material of scene.materials) {
-    world.set(material.content, RuntimeMaterialValue, { value: [...hslToRgb(material.baseHue + hueDelta), 1] }).unwrap();
+    assets.update(material.handle, { values: { baseColor: [...hslToRgb(material.baseHue + hueDelta), 1] } }).unwrap();
   }
   return hueDelta;
 }

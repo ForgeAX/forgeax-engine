@@ -1,11 +1,8 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { GameHost } from '@forgeax/engine-app';
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
-import { createCapsuleGeometry } from '@forgeax/engine-geometry';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { TransparentSort } from '@forgeax/engine-render/authoring';
-import type { Handle, MaterialAsset } from '@forgeax/engine-runtime';
-import type { MeshAsset } from '@forgeax/engine-types';
 import type { ChromaticAberrationHandle } from './chromatic-aberration';
 import { createCustomProjectileMesh, type CustomProjectileMesh } from './custom-projectile-mesh';
 import { createHitFlashMaterial } from './hit-flash-material';
@@ -17,17 +14,18 @@ import { createSpriteAtlasLoop, type SpriteAtlasLoop } from './sprite-atlas-loop
 import { HitFlash, ProjectilePolicy, TargetPresentation, type ProjectileVisual } from './components/gameplay';
 
 export type ProjectilePresentation = {
+  dispose(): void;
   readonly bulletRadius: number;
   readonly bulletHalfHeight: number;
-  readonly projectileMesh: Handle<'MeshAsset', 'shared'>;
-  readonly projectileMaterial: Handle<'MaterialAsset', 'shared'>;
-  readonly hostileProjectileMaterial: Handle<'MaterialAsset', 'shared'>;
+  readonly projectileMesh: AssetHandle<'mesh'>;
+  readonly projectileMaterial: AssetHandle<'material'>;
+  readonly hostileProjectileMaterial: AssetHandle<'material'>;
   readonly customProjectile: CustomProjectileMesh | undefined;
   readonly spriteAtlasLoop: SpriteAtlasLoop | undefined;
-  readonly flashMaterial: Handle<'MaterialAsset', 'shared'>;
+  readonly flashMaterial: AssetHandle<'material'>;
   readonly getProjectileVisual: () => ProjectileVisual;
   readonly setProjectileVisual: (visual: ProjectileVisual) => void;
-  readonly materialsForCurrentMesh: (entity: EntityHandle, flashing: boolean) => readonly Handle<'MaterialAsset', 'shared'>[];
+  readonly materialsForCurrentMesh: (entity: EntityHandle, flashing: boolean) => readonly AssetHandle<'material'>[];
   readonly triggerFlash: (entity?: EntityHandle) => void;
   readonly multiMaterial: () => {
     readonly available: boolean;
@@ -53,32 +51,21 @@ type ProjectilePresentationArgs = {
 
 /** Assemble projectile geometry, authored visual variants, and hit presentation. */
 export async function createProjectilePresentation(args: ProjectilePresentationArgs): Promise<ProjectilePresentation> {
+  const assets = args.host?.assets;
+  if (assets === undefined) throw new Error('Projectile presentation requires the host AssetRegistry');
   const bulletRadius = 0.12;
   const bulletHalfHeight = 0.16;
-  const bulletMaterial = args.world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard({
-    baseColor: [1, 0.85, 0.3, 1],
-    roughness: 0.4,
-    metallic: 0,
-    emissive: [1, 0.7, 0.15],
-    emissiveIntensity: 5,
-  }));
-  const bulletMeshResult = createCapsuleGeometry(bulletRadius, bulletHalfHeight * 2, 6, 12);
-  const hostileProjectileMaterial = args.world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard({
+  const hostileProjectileMaterial = assets.create(Materials.standard({
     baseColor: [1, 0.12, 0.02, 1],
     roughness: 0.32,
     metallic: 0.05,
     emissive: [1, 0.05, 0.01],
     emissiveIntensity: 7,
-  }));
-  const bulletMesh = bulletMeshResult.ok ? args.world.allocSharedRef('MeshAsset', bulletMeshResult.value) : HANDLE_SPHERE;
-  const customProjectile = args.host === undefined
-    ? undefined
-    : await createCustomProjectileMesh(args.world);
-  const spriteAtlasLoop = customProjectile === undefined
-    ? undefined
-    : await createSpriteAtlasLoop(args.world, args.host?.assets, customProjectile.spriteMaterialHandle, customProjectile.spriteLitMaterialHandle);
-  const projectileMesh = customProjectile?.meshHandle ?? bulletMesh;
-  const projectileMaterial = customProjectile?.materialHandle ?? bulletMaterial;
+  })).unwrap();
+  const customProjectile = await createCustomProjectileMesh(assets);
+  const spriteAtlasLoop = await createSpriteAtlasLoop(args.world, assets, customProjectile.spriteMaterialHandle, customProjectile.spriteLitMaterialHandle);
+  const projectileMesh = customProjectile.meshHandle;
+  const projectileMaterial = customProjectile.materialHandle;
   const visualIndex = (visual: ProjectileVisual): number => visual === 'mesh' ? 0 : visual === 'sprite' ? 1 : 2;
   const visualValue = (value: number): ProjectileVisual => value === 1 ? 'sprite' : value === 2 ? 'sprite-lit' : 'mesh';
   const getProjectileVisual = (): ProjectileVisual => {
@@ -96,8 +83,8 @@ export async function createProjectilePresentation(args: ProjectilePresentationA
   };
   setProjectileVisual('mesh');
 
-  const flashMaterial = createHitFlashMaterial(args.world);
-  const materialsForCurrentMesh = (entity: EntityHandle, flashing: boolean): readonly Handle<'MaterialAsset', 'shared'>[] => {
+  const flashMaterial = createHitFlashMaterial(assets);
+  const materialsForCurrentMesh = (entity: EntityHandle, flashing: boolean): readonly AssetHandle<'material'>[] => {
     const presentation = args.world.get(entity, TargetPresentation);
     const original = presentation.ok ? presentation.value.authoredMaterials : [];
     const textured = args.jpegTextureSwap?.entity === entity && args.jpegTextureSwap.active === 'jpeg'
@@ -107,7 +94,7 @@ export async function createProjectilePresentation(args: ProjectilePresentationA
       (args.fbxMeshSwap?.entity === entity && args.fbxMeshSwap.active === 'fbx') ||
       (args.meshHandleSwap?.entity === entity && args.meshHandleSwap.active === 'alternate') ||
       (args.gltfMeshSwap?.entity === entity && args.gltfMeshSwap.active !== 'original');
-    if (replacementHasOneSubmesh) return [flashing ? flashMaterial : (textured[0] ?? (0 as Handle<'MaterialAsset', 'shared'>))];
+    if (replacementHasOneSubmesh) return flashing ? [flashMaterial] : textured.slice(0, 1);
     return flashing ? [flashMaterial, ...textured.slice(1)] : [...textured];
   };
   const triggerFlash = (entity?: EntityHandle): void => {
@@ -127,7 +114,7 @@ export async function createProjectilePresentation(args: ProjectilePresentationA
     if (target === undefined) return { available: false, materialCount: 0, submeshCount: 0, topologies: [], slotsAligned: false };
     const renderer = args.world.get(target, MeshRenderer);
     const filter = args.world.get(target, MeshFilter);
-    const mesh = filter.ok ? args.world.sharedRefs.resolve<'MeshAsset', MeshAsset>(filter.value.assetHandle) : undefined;
+    const mesh = filter.ok ? assets.read(filter.value.assetHandle) : undefined;
     const materialCount = renderer.ok ? renderer.value.materials.length : 0;
     const submeshes = mesh?.ok === true ? mesh.value.submeshes : [];
     return {
@@ -140,6 +127,12 @@ export async function createProjectilePresentation(args: ProjectilePresentationA
   };
 
   return {
+    dispose() {
+      spriteAtlasLoop?.dispose();
+      customProjectile.dispose();
+      assets.release(hostileProjectileMaterial).unwrap();
+      assets.release(flashMaterial).unwrap();
+    },
     bulletRadius,
     bulletHalfHeight,
     projectileMesh,

@@ -26,6 +26,12 @@ export function meshMaterialSlotsFromTopology(
   return slots.map((slot) => runtimeSlot(slot, slot.defaultMaterialGuid));
 }
 
+function sourceMaterialGuid(reference: NonNullable<MeshMaterialSlot['defaultMaterial']>): string {
+  if (typeof reference === 'number')
+    throw new TypeError('Pack Mesh references require source GUIDs');
+  return AssetGuid.format(reference);
+}
+
 export function meshMaterialSlotsToTopology(
   slots: readonly MeshMaterialSlot[],
 ): MeshMaterialSlotTopologyEntry[] {
@@ -34,7 +40,7 @@ export function meshMaterialSlotsToTopology(
     ...(slot.sourceKey === undefined ? {} : { sourceKey: slot.sourceKey }),
     ...(slot.defaultMaterial === undefined
       ? {}
-      : { defaultMaterialGuid: AssetGuid.format(slot.defaultMaterial) }),
+      : { defaultMaterialGuid: sourceMaterialGuid(slot.defaultMaterial) }),
   }));
 }
 

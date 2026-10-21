@@ -54,7 +54,6 @@ export {
   createVfxDataInterfaceRegistry,
 } from './host/data-interface-providers.js';
 export type {
-  VfxAuthoringAssetRegistry,
   VfxRuntimeHost,
   VfxRuntimeHostControl,
   VfxRuntimeHostControlError,

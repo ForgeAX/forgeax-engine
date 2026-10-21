@@ -11,6 +11,7 @@ import {
 } from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import type { MaterialSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot } from '../render-system-extract';
 import type { RenderTargetTextureSource } from '../targets/contracts';
 import type { MaterialTextureSource } from '../textures/canvas-texture';
 
@@ -45,6 +46,7 @@ function dependencies(
   const bindGroupEntries: Array<readonly TestBindGroupEntry[]> = [];
   const runtime = {
     device: {
+      queue: { writeBuffer: () => ({ ok: true, value: undefined, unwrap: () => undefined }) },
       caps: { storageBuffer: false },
       limits: { maxSampledTexturesPerShaderStage: 16 },
       createBindGroup: (descriptor: { readonly entries: readonly TestBindGroupEntry[] }) => {
@@ -79,7 +81,7 @@ function dependencies(
     runtime,
     pipelineState,
     world: new World(),
-    store: { materialResourceEpoch: 0 },
+    store: {},
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: {
@@ -117,12 +119,16 @@ function customDependencies(schema: readonly ParamSchemaEntry[]): TestDependenci
   deps.pipelineState.defaultWhite2dArrayTextureView = Object.assign({} as TextureView, {
     label: 'whitearray',
   });
-  deps.pipelineState.skylightFallback = { prefilterView: { label: 'whitecube' } } as never;
+  deps.pipelineState.skylightFallback = {
+    irradianceView: { label: 'whitecube' },
+    prefilterView: { label: 'white2d' },
+  } as never;
   return deps;
 }
 
 function snapshot(): MaterialSnapshot {
-  return { materialShaderId: 'test::custom' } as MaterialSnapshot;
+  const { materialHandle: _handle, ...material } = defaultMaterialSnapshot();
+  return { ...material, materialShaderId: 'test::custom' };
 }
 
 function textureValues(deps: TestDependencies, count: number): unknown[] {
@@ -189,7 +195,7 @@ describe('material parameter selection complexity', () => {
     const artifact = deps.runtime.getMaterialShaderArtifact(shaderId);
     if (variantBackdrop === undefined) expect(artifact).toBeUndefined();
     else expect(artifact?.program.source).toBe(source(variantBackdrop));
-    buildMaterialBg(deps, { materialShaderId: shaderId } as MaterialSnapshot, 1);
+    buildMaterialBg(deps, { ...snapshot(), materialShaderId: shaderId }, 1);
     const layout = buildBindGroupLayoutDescriptor(
       {
         shader: { id: shaderId, passKind: 'forward', variantSet: undefined },
@@ -227,7 +233,7 @@ describe('material parameter selection complexity', () => {
       ],
     }).schema;
     const deps = customDependencies(schema);
-    buildMaterialBg(deps, { materialShaderId: shaderId } as MaterialSnapshot, 1);
+    buildMaterialBg(deps, { ...snapshot(), materialShaderId: shaderId }, 1);
     const layout = buildBindGroupLayoutDescriptor(
       {
         shader: { id: shaderId, passKind: 'forward', variantSet: undefined },
@@ -338,7 +344,7 @@ describe('material parameter selection complexity', () => {
     const deps = customDependencies(schema);
     buildMaterialBg(deps, snapshot(), 1);
     expect(textureValues(deps, 6)).toEqual([
-      deps.pipelineState.skylightFallback?.prefilterView,
+      deps.pipelineState.skylightFallback?.irradianceView,
       deps.pipelineState.defaultWhite3dTextureView,
       deps.pipelineState.defaultWhite2dArrayTextureView,
       deps.pipelineState.defaultNormalTextureView,
@@ -359,7 +365,7 @@ describe('material parameter selection complexity', () => {
     const schema: ParamSchemaEntry[] = [{ name: 'first', type: 'texture_cube' }];
     const deps = customDependencies(schema);
     buildMaterialBg(deps, snapshot(), 1);
-    expect(textureValues(deps, 1)).toEqual([deps.pipelineState.skylightFallback?.prefilterView]);
+    expect(textureValues(deps, 1)).toEqual([deps.pipelineState.skylightFallback?.irradianceView]);
     schema[0] = { name: 'renamed', type: 'texture3d' };
     schema.push({ name: 'second', type: 'texture2d_array' });
     buildMaterialBg(deps, snapshot(), 2);
@@ -389,7 +395,12 @@ describe('material parameter selection complexity', () => {
       deps,
       {
         ...snapshot(),
-        textureSources: new Map([['external', { externalTextureId: 1 }]]),
+        textureSources: new Map([
+          [
+            'external',
+            { kind: 'render-texture-source', source: 'external', owner: 'fixture', id: 1 },
+          ],
+        ]),
       } as MaterialSnapshot,
       1,
     );
@@ -408,7 +419,12 @@ describe('material parameter selection complexity', () => {
     ];
     const deps = customDependencies(schema);
     const targetSource = {} as RenderTargetTextureSource;
-    const externalSource = { externalTextureId: 1 };
+    const externalSource = {
+      kind: 'render-texture-source',
+      source: 'external',
+      owner: 'fixture',
+      id: 1,
+    } as const;
     let targetView: TextureView | undefined = {} as TextureView;
     let targetDimension = 'cube';
     const flags: boolean[] = [];
@@ -445,7 +461,7 @@ describe('material parameter selection complexity', () => {
     targetView = undefined;
     buildMaterialBg(targetDeps, material, 2);
     expect(textureValues(deps, 2)).toEqual([
-      deps.pipelineState.skylightFallback?.prefilterView,
+      deps.pipelineState.skylightFallback?.irradianceView,
       externalView,
     ]);
     targetView = {} as TextureView;
@@ -453,7 +469,7 @@ describe('material parameter selection complexity', () => {
     schema[1] = { name: 'external', type: 'texture2d' };
     buildMaterialBg(targetDeps, material, 3);
     expect(textureValues(deps, 2)).toEqual([
-      deps.pipelineState.skylightFallback?.prefilterView,
+      deps.pipelineState.skylightFallback?.irradianceView,
       externalView,
     ]);
     expect(flags).toEqual([true, true, false]);
@@ -539,7 +555,7 @@ describe('material parameter selection complexity', () => {
     );
     expect(trace.at(-2)).toBe('resolve-target');
     expect(trace.at(-1)).toBe('type:texture3d');
-    expect(textureValues(deps, 1)[0]).toBe(deps.pipelineState.skylightFallback?.prefilterView);
+    expect(textureValues(deps, 1)[0]).toBe(deps.pipelineState.skylightFallback?.irradianceView);
     expect(textureValues(deps, 1)[0]).not.toBe(targetView);
   });
 
@@ -610,12 +626,12 @@ describe('material parameter selection complexity', () => {
     });
     const deps = customDependencies(first.schema);
     buildMaterialBg(deps, snapshot(), 1);
-    expect(textureValues(deps, 1)).toEqual([deps.pipelineState.skylightFallback?.prefilterView]);
+    expect(textureValues(deps, 1)).toEqual([deps.pipelineState.skylightFallback?.irradianceView]);
     deps.runtime.getParamSchema = () => next.schema;
     buildMaterialBg(deps, snapshot(), 2);
     expect(textureValues(deps, 1)).toEqual([deps.pipelineState.defaultWhite3dTextureView]);
     deps.runtime.getParamSchema = () => first.schema;
     buildMaterialBg(deps, snapshot(), 3);
-    expect(textureValues(deps, 1)).toEqual([deps.pipelineState.skylightFallback?.prefilterView]);
+    expect(textureValues(deps, 1)).toEqual([deps.pipelineState.skylightFallback?.irradianceView]);
   });
 });

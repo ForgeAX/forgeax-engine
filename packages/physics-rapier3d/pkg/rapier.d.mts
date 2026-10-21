@@ -27,6 +27,10 @@ declare class RawColliderSet {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Bind one authored collider instance to a native geometry identity and scale.
+     */
+    bindSharedGeometry(collider: number, geometry: number, scale: RawVector): boolean;
+    /**
      * The collision types enabled for this collider.
      */
     coActiveCollisionTypes(handle: number): number;
@@ -87,6 +91,7 @@ declare class RawColliderSet {
      * Returns `false` if it doesn’t have a half-space shape.
      */
     coHalfspaceNormal(handle: number, scratch_buffer: Float32Array): boolean;
+    coHasSharedGeometry(collider: number): boolean;
     coHeightFieldFlags(handle: number): number | undefined;
     /**
      * The height of this heightfield if it is one.
@@ -268,6 +273,10 @@ declare class RawColliderSet {
     contains(handle: number): boolean;
     createCollider(enabled: boolean, shape: RawShape, translation: RawVector, rotation: RawRotation, massPropsMode: number, mass: number, centerOfMass: RawVector, principalAngularInertia: RawVector, angularInertiaFrame: RawRotation, density: number, friction: number, restitution: number, frictionCombineRule: number, restitutionCombineRule: number, isSensor: boolean, collisionGroups: number, solverGroups: number, activeCollisionTypes: number, activeHooks: number, activeEvents: number, contactForceEventThreshold: number, contactSkin: number, hasParent: boolean, parent: number, bodies: RawRigidBodySet): number | undefined;
     /**
+     * Create one immutable geometry root, independently of collider instances.
+     */
+    createSharedGeometry(shape: RawShape): number;
+    /**
      * Applies the given JavaScript function to the integer handle of each collider managed by this collider set.
      *
      * # Parameters
@@ -284,6 +293,22 @@ declare class RawColliderSet {
      * Removes a collider from this set and wake-up the rigid-body it is attached to.
      */
     remove(handle: number, islands: RawIslandManager, bodies: RawRigidBodySet, wakeUp: boolean): void;
+    /**
+     * Retire a geometry only after its actual collider bindings have retired.
+     */
+    removeSharedGeometry(geometry: number): boolean;
+    /**
+     * Replace one geometry root; instance rows and sleeping bodies are untouched here.
+     */
+    replaceSharedGeometry(geometry: number, shape: RawShape): boolean;
+    /**
+     * Capture an existing native shape for one real collider admission, without re-uploading geometry.
+     */
+    sharedGeometryShape(geometry: number, scale: RawVector): RawShape | undefined;
+    /**
+     * Regional Terrain adoption preserves old shape captures and untouched blocks.
+     */
+    writeSharedHeightfield(geometry: number, indices: Uint32Array, values: Float32Array): boolean;
 }
 
 declare class RawColliderShapeCastHit {
@@ -1561,6 +1586,41 @@ declare class SdpMatrix3 {
 declare class SdpMatrix3Ops {
     static fromBuffer(buffer: Float32Array, target?: SdpMatrix3): SdpMatrix3;
     static fromRaw(raw: RawSdpMatrix3): SdpMatrix3;
+}
+
+/**
+ * The contact info between two shapes.
+ */
+declare class ShapeContact {
+    /**
+     * Distance between the two contact points.
+     * If this is negative, this contact represents a penetration.
+     */
+    distance: number;
+    /**
+     * Position of the contact on the first shape.
+     */
+    point1: Vector;
+    /**
+     * Position of the contact on the second shape.
+     */
+    point2: Vector;
+    /**
+     * Contact normal, pointing towards the exterior of the first shape.
+     */
+    normal1: Vector;
+    /**
+     * Contact normal, pointing towards the exterior of the second shape.
+     * If these contact data are expressed in world-space, this normal is equal to -normal1.
+     */
+    normal2: Vector;
+    constructor(dist: number, point1: Vector, point2: Vector, normal1: Vector, normal2: Vector);
+    /**
+     * @param raw - The raw contact returned by the WASM query. It is freed by this method.
+     * @param target - If provided, this object is populated and returned instead of
+     * allocating a new one.
+     */
+    static fromBuffer(raw: RawShapeContact, target?: ShapeContact): ShapeContact;
 }
 
 /**
@@ -2929,100 +2989,11 @@ declare class World {
  */
 type InteractionGroups = number;
 
-/**
- * The contact info between two shapes.
- */
-declare class ShapeContact {
-    /**
-     * Distance between the two contact points.
-     * If this is negative, this contact represents a penetration.
-     */
-    distance: number;
-    /**
-     * Position of the contact on the first shape.
-     */
-    point1: Vector;
-    /**
-     * Position of the contact on the second shape.
-     */
-    point2: Vector;
-    /**
-     * Contact normal, pointing towards the exterior of the first shape.
-     */
-    normal1: Vector;
-    /**
-     * Contact normal, pointing towards the exterior of the second shape.
-     * If these contact data are expressed in world-space, this normal is equal to -normal1.
-     */
-    normal2: Vector;
-    constructor(dist: number, point1: Vector, point2: Vector, normal1: Vector, normal2: Vector);
-    /**
-     * @param raw - The raw contact returned by the WASM query. It is freed by this method.
-     * @param target - If provided, this object is populated and returned instead of
-     * allocating a new one.
-     */
-    static fromBuffer(raw: RawShapeContact, target?: ShapeContact): ShapeContact;
-}
-
 declare enum FeatureType {
     Vertex = 0,
     Edge = 1,
     Face = 2,
     Unknown = 3
-}
-
-/**
- * The projection of a point on a collider.
- */
-declare class PointProjection {
-    /**
-     * The projection of the point on the collider.
-     */
-    point: Vector;
-    /**
-     * Is the point inside of the collider?
-     */
-    isInside: boolean;
-    constructor(point: Vector, isInside: boolean);
-    /**
-     * @param raw - The raw projection returned by the WASM query. It is freed by this method.
-     * @param target - If provided, this object is populated and returned instead of
-     * allocating a new one.
-     */
-    static fromBuffer(raw: RawPointProjection, target?: PointProjection): PointProjection;
-}
-/**
- * The projection of a point on a collider (includes the collider handle).
- */
-declare class PointColliderProjection {
-    /**
-     * The collider hit by the ray.
-     */
-    collider: Collider;
-    /**
-     * The projection of the point on the collider.
-     */
-    point: Vector;
-    /**
-     * Is the point inside of the collider?
-     */
-    isInside: boolean;
-    /**
-     * The type of the geometric feature the point was projected on.
-     */
-    featureType: FeatureType;
-    /**
-     * The id of the geometric feature the point was projected on.
-     */
-    featureId: number | undefined;
-    constructor(collider: Collider, point: Vector, isInside: boolean, featureType?: FeatureType, featureId?: number);
-    /**
-     * @param colliderSet - The set the projected-on collider belongs to.
-     * @param raw - The raw projection returned by the WASM query. It is freed by this method.
-     * @param target - If provided, this object is populated and returned instead of
-     * allocating a new one.
-     */
-    static fromBuffer(colliderSet: ColliderSet, raw: RawPointColliderProjection, target?: PointColliderProjection): PointColliderProjection;
 }
 
 /**
@@ -3170,636 +3141,6 @@ declare class ColliderShapeCastHit extends ShapeCastHit {
     collider: Collider;
     constructor(collider: Collider, time_of_impact: number, witness1: Vector, witness2: Vector, normal1: Vector, normal2: Vector);
     static fromBuffer(collider: Collider, buffer: Float32Array, target?: ColliderShapeCastHit): ColliderShapeCastHit;
-}
-
-declare abstract class Shape {
-    abstract intoRaw(): RawShape;
-    /**
-     * The concrete type of this shape.
-     */
-    abstract get type(): ShapeType;
-    /**
-     * instant mode without cache
-     */
-    static fromRaw(rawSet: RawColliderSet, handle: ColliderHandle): Shape;
-    static fromRawShape(rawShape: RawShape): Shape;
-    /**
-     * Computes the time of impact between two moving shapes.
-     * @param shapePos1 - The initial position of this shape.
-     * @param shapeRot1 - The rotation of this shape.
-     * @param shapeVel1 - The velocity of this shape.
-     * @param shape2 - The second moving shape.
-     * @param shapePos2 - The initial position of the second shape.
-     * @param shapeRot2 - The rotation of the second shape.
-     * @param shapeVel2 - The velocity of the second shape.
-     * @param targetDistance − If the shape moves closer to this distance from a collider, a hit
-     *                         will be returned.
-     * @param maxToi - The maximum time when the impact can happen.
-     * @param stopAtPenetration - If set to `false`, the linear shape-cast won’t immediately stop if
-     *   the shape is penetrating another shape at its starting point **and** its trajectory is such
-     *   that it’s on a path to exit that penetration state.
-     * @param {ShapeCastHit?} target - The object to be populated. If provided,
-     * the function returns this object instead of creating a new one.
-     * @returns If the two moving shapes collider at some point along their trajectories, this returns the
-     *  time at which the two shape collider as well as the contact information during the impact. Returns
-     *  `null` if the two shapes never collide along their paths.
-     */
-    castShape(shapePos1: Vector, shapeRot1: Rotation, shapeVel1: Vector, shape2: Shape, shapePos2: Vector, shapeRot2: Rotation, shapeVel2: Vector, targetDistance: number, maxToi: number, stopAtPenetration: boolean, target?: ShapeCastHit): ShapeCastHit | null;
-    /**
-     * Tests if this shape intersects another shape.
-     *
-     * @param shapePos1 - The position of this shape.
-     * @param shapeRot1 - The rotation of this shape.
-     * @param shape2  - The second shape to test.
-     * @param shapePos2 - The position of the second shape.
-     * @param shapeRot2 - The rotation of the second shape.
-     * @returns `true` if the two shapes intersect, `false` if they don’t.
-     */
-    intersectsShape(shapePos1: Vector, shapeRot1: Rotation, shape2: Shape, shapePos2: Vector, shapeRot2: Rotation): boolean;
-    /**
-     * Computes one pair of contact points between two shapes.
-     *
-     * @param shapePos1 - The initial position of this sahpe.
-     * @param shapeRot1 - The rotation of this shape.
-     * @param shape2 - The second shape.
-     * @param shapePos2 - The initial position of the second shape.
-     * @param shapeRot2 - The rotation of the second shape.
-     * @param prediction - The prediction value, if the shapes are separated by a distance greater than this value, test will fail.
-     * @returns `null` if the shapes are separated by a distance greater than prediction, otherwise contact details. The result is given in world-space.
-     */
-    contactShape(shapePos1: Vector, shapeRot1: Rotation, shape2: Shape, shapePos2: Vector, shapeRot2: Rotation, prediction: number, target?: ShapeContact): ShapeContact | null;
-    containsPoint(shapePos: Vector, shapeRot: Rotation, point: Vector): boolean;
-    projectPoint(shapePos: Vector, shapeRot: Rotation, point: Vector, solid: boolean, target?: PointProjection): PointProjection;
-    intersectsRay(ray: Ray, shapePos: Vector, shapeRot: Rotation, maxToi: number): boolean;
-    castRay(ray: Ray, shapePos: Vector, shapeRot: Rotation, maxToi: number, solid: boolean): number;
-    castRayAndGetNormal(ray: Ray, shapePos: Vector, shapeRot: Rotation, maxToi: number, solid: boolean, target?: RayIntersection): RayIntersection;
-}
-/**
- * An enumeration representing the type of a shape.
- */
-declare enum ShapeType {
-    Ball = 0,
-    Cuboid = 1,
-    Capsule = 2,
-    Segment = 3,
-    Polyline = 4,
-    Triangle = 5,
-    TriMesh = 6,
-    HeightField = 7,
-    Compound = 8,
-    ConvexPolyhedron = 9,
-    Cylinder = 10,
-    Cone = 11,
-    RoundCuboid = 12,
-    RoundTriangle = 13,
-    RoundCylinder = 14,
-    RoundCone = 15,
-    RoundConvexPolyhedron = 16,
-    HalfSpace = 17,
-    Voxels = 18
-}
-/**
- * Flags controlling the behavior of some operations involving heightfields.
- */
-declare enum HeightFieldFlags {
-    /**
-     * If set, a special treatment will be applied to contact manifold calculation to eliminate
-     * or fix contacts normals that could lead to incorrect bumps in physics simulation (especially
-     * on flat surfaces).
-     *
-     * This is achieved by taking into account adjacent triangle normals when computing contact
-     * points for a given triangle.
-     */
-    FIX_INTERNAL_EDGES = 1
-}
-/**
- * Flags controlling the behavior of the triangle mesh creation and of some
- * operations involving triangle meshes.
- */
-declare enum TriMeshFlags {
-    /**
-     * If set, any triangle that results in a failing half-hedge topology computation will be deleted.
-     */
-    DELETE_BAD_TOPOLOGY_TRIANGLES = 4,
-    /**
-     * If set, the trimesh will be assumed to be oriented (with outward normals).
-     *
-     * The pseudo-normals of its vertices and edges will be computed.
-     */
-    ORIENTED = 8,
-    /**
-     * If set, the duplicate vertices of the trimesh will be merged.
-     *
-     * Two vertices with the exact same coordinates will share the same entry on the
-     * vertex buffer and the index buffer is adjusted accordingly.
-     */
-    MERGE_DUPLICATE_VERTICES = 16,
-    /**
-     * If set, the triangles sharing two vertices with identical index values will be removed.
-     *
-     * Because of the way it is currently implemented, this methods implies that duplicate
-     * vertices will be merged. It will no longer be the case in the future once we decouple
-     * the computations.
-     */
-    DELETE_DEGENERATE_TRIANGLES = 32,
-    /**
-     * If set, two triangles sharing three vertices with identical index values (in any order)
-     * will be removed.
-     *
-     * Because of the way it is currently implemented, this methods implies that duplicate
-     * vertices will be merged. It will no longer be the case in the future once we decouple
-     * the computations.
-     */
-    DELETE_DUPLICATE_TRIANGLES = 64,
-    /**
-     * If set, a special treatment will be applied to contact manifold calculation to eliminate
-     * or fix contacts normals that could lead to incorrect bumps in physics simulation
-     * (especially on flat surfaces).
-     *
-     * This is achieved by taking into account adjacent triangle normals when computing contact
-     * points for a given triangle.
-     *
-     * /!\ NOT SUPPORTED IN THE 2D VERSION OF RAPIER.
-     */
-    FIX_INTERNAL_EDGES = 144
-}
-/**
- * A shape that is a sphere in 3D and a circle in 2D.
- */
-declare class Ball extends Shape {
-    readonly type = ShapeType.Ball;
-    /**
-     * The balls radius.
-     */
-    radius: number;
-    /**
-     * Creates a new ball with the given radius.
-     * @param radius - The balls radius.
-     */
-    constructor(radius: number);
-    intoRaw(): RawShape;
-}
-declare class HalfSpace extends Shape {
-    readonly type = ShapeType.HalfSpace;
-    /**
-     * The outward normal of the half-space.
-     */
-    normal: Vector;
-    /**
-     * Creates a new halfspace delimited by an infinite plane.
-     *
-     * @param normal - The outward normal of the plane.
-     */
-    constructor(normal: Vector);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a box in 3D and a rectangle in 2D.
- */
-declare class Cuboid extends Shape {
-    readonly type = ShapeType.Cuboid;
-    /**
-     * The half extent of the cuboid along each coordinate axis.
-     */
-    halfExtents: Vector;
-    /**
-     * Creates a new 3D cuboid.
-     * @param hx - The half width of the cuboid.
-     * @param hy - The half height of the cuboid.
-     * @param hz - The half depth of the cuboid.
-     */
-    constructor(hx: number, hy: number, hz: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a box in 3D and a rectangle in 2D, with round corners.
- */
-declare class RoundCuboid extends Shape {
-    readonly type = ShapeType.RoundCuboid;
-    /**
-     * The half extent of the cuboid along each coordinate axis.
-     */
-    halfExtents: Vector;
-    /**
-     * The radius of the cuboid's round border.
-     */
-    borderRadius: number;
-    /**
-     * Creates a new 3D cuboid.
-     * @param hx - The half width of the cuboid.
-     * @param hy - The half height of the cuboid.
-     * @param hz - The half depth of the cuboid.
-     * @param borderRadius - The radius of the borders of this cuboid. This will
-     *   effectively increase the half-extents of the cuboid by this radius.
-     */
-    constructor(hx: number, hy: number, hz: number, borderRadius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a capsule.
- */
-declare class Capsule extends Shape {
-    readonly type = ShapeType.Capsule;
-    /**
-     * The radius of the capsule's basis.
-     */
-    radius: number;
-    /**
-     * The capsule's half height, along the `y` axis.
-     */
-    halfHeight: number;
-    /**
-     * Creates a new capsule with the given radius and half-height.
-     * @param halfHeight - The balls half-height along the `y` axis.
-     * @param radius - The balls radius.
-     */
-    constructor(halfHeight: number, radius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a segment.
- */
-declare class Segment extends Shape {
-    readonly type = ShapeType.Segment;
-    /**
-     * The first point of the segment.
-     */
-    a: Vector;
-    /**
-     * The second point of the segment.
-     */
-    b: Vector;
-    /**
-     * Creates a new segment shape.
-     * @param a - The first point of the segment.
-     * @param b - The second point of the segment.
-     */
-    constructor(a: Vector, b: Vector);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a segment.
- */
-declare class Triangle extends Shape {
-    readonly type = ShapeType.Triangle;
-    /**
-     * The first point of the triangle.
-     */
-    a: Vector;
-    /**
-     * The second point of the triangle.
-     */
-    b: Vector;
-    /**
-     * The second point of the triangle.
-     */
-    c: Vector;
-    /**
-     * Creates a new triangle shape.
-     *
-     * @param a - The first point of the triangle.
-     * @param b - The second point of the triangle.
-     * @param c - The third point of the triangle.
-     */
-    constructor(a: Vector, b: Vector, c: Vector);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a triangle with round borders and a non-zero thickness.
- */
-declare class RoundTriangle extends Shape {
-    readonly type = ShapeType.RoundTriangle;
-    /**
-     * The first point of the triangle.
-     */
-    a: Vector;
-    /**
-     * The second point of the triangle.
-     */
-    b: Vector;
-    /**
-     * The second point of the triangle.
-     */
-    c: Vector;
-    /**
-     * The radius of the triangles's rounded edges and vertices.
-     * In 3D, this is also equal to half the thickness of the round triangle.
-     */
-    borderRadius: number;
-    /**
-     * Creates a new triangle shape with round corners.
-     *
-     * @param a - The first point of the triangle.
-     * @param b - The second point of the triangle.
-     * @param c - The third point of the triangle.
-     * @param borderRadius - The radius of the borders of this triangle. In 3D,
-     *   this is also equal to half the thickness of the triangle.
-     */
-    constructor(a: Vector, b: Vector, c: Vector, borderRadius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a triangle mesh.
- */
-declare class Polyline extends Shape {
-    readonly type = ShapeType.Polyline;
-    /**
-     * The vertices of the polyline.
-     */
-    vertices: Float32Array;
-    /**
-     * The indices of the segments.
-     */
-    indices: Uint32Array;
-    /**
-     * Creates a new polyline shape.
-     *
-     * @param vertices - The coordinates of the polyline's vertices.
-     * @param indices - The indices of the polyline's segments. If this is `null` or not provided, then
-     *    the vertices are assumed to form a line strip.
-     */
-    constructor(vertices: Float32Array, indices?: Uint32Array);
-    intoRaw(): RawShape;
-}
-/**
- * A shape made of voxels.
- */
-declare class Voxels extends Shape {
-    readonly type = ShapeType.Voxels;
-    /**
-     * The points or grid coordinates used to initialize the voxels.
-     */
-    data: Float32Array | Int32Array;
-    /**
-     * The dimensions of each voxel.
-     */
-    voxelSize: Vector;
-    /**
-     * Creates a new shape made of voxels.
-     *
-     * @param data - Defines the set of voxels. If this is a `Int32Array` then
-     *               each voxel is defined from its (signed) grid coordinates,
-     *               with 3 (resp 2) contiguous integers per voxel in 3D (resp 2D).
-     *               If this is a `Float32Array`, each voxel will be such that
-     *               they contain at least one point from this array (where each
-     *               point is defined from 3 (resp 2) contiguous numbers per point
-     *               in 3D (resp 2D).
-     * @param voxelSize - The size of each voxel.
-     */
-    constructor(data: Float32Array | Int32Array, voxelSize: Vector);
-    /** Half-open [minX,minY,minZ,maxX,maxY,maxZ] regions, when constructed compactly. */
-    regions?: Int32Array;
-    /** Constructs a union of regions without allocating one XYZ triple per voxel. */
-    static fromRegions(regions: Int32Array, voxelSize: Vector): Voxels;
-    intoRaw(): RawShape;
-}
-/**
- * A compound shape, consisting of multiple sub-shapes with relative positions.
- */
-declare class Compound extends Shape {
-    readonly type = ShapeType.Compound;
-    /**
-     * The shapes composing this compound shape.
-     */
-    shapes: Shape[];
-    /**
-     * The positions of each sub-shape relative to the compound's origin.
-     */
-    positions: Vector[];
-    /**
-     * The rotations of each sub-shape relative to the compound's orientation.
-     */
-    rotations: Rotation[];
-    /**
-     * Creates a new compound shape.
-     *
-     * @param shapes - The array of shapes composing this compound. Must not be empty,
-     *                 and must not contain other compound shapes (nested compound shapes
-     *                 are not allowed).
-     * @param positions - The array of positions for each shape.
-     * @param rotations - The array of rotations for each shape.
-     */
-    constructor(shapes: Shape[], positions: Vector[], rotations: Rotation[]);
-    /**
-     * Reconstructs a compound shape from its raw representation.
-     *
-     * This takes ownership of `rawShape` and always frees it before returning.
-     */
-    static fromRawShape(rawShape: RawShape): Compound;
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a triangle mesh.
- */
-declare class TriMesh extends Shape {
-    readonly type = ShapeType.TriMesh;
-    /**
-     * The vertices of the triangle mesh.
-     */
-    vertices: Float32Array;
-    /**
-     * The indices of the triangles.
-     */
-    indices: Uint32Array;
-    /**
-     * The triangle mesh flags.
-     */
-    flags: TriMeshFlags;
-    /**
-     * Creates a new triangle mesh shape.
-     *
-     * @param vertices - The coordinates of the triangle mesh's vertices.
-     * @param indices - The indices of the triangle mesh's triangles.
-     */
-    constructor(vertices: Float32Array, indices: Uint32Array, flags?: TriMeshFlags);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a convex polygon.
- */
-declare class ConvexPolyhedron extends Shape {
-    readonly type = ShapeType.ConvexPolyhedron;
-    /**
-     * The vertices of the convex polygon.
-     */
-    vertices: Float32Array;
-    /**
-     * The indices of the convex polygon.
-     */
-    indices?: Uint32Array | null;
-    /**
-     * Creates a new convex polygon shape.
-     *
-     * @param vertices - The coordinates of the convex polygon's vertices.
-     * @param indices - The index buffer of this convex mesh. If this is `null`
-     *   or `undefined`, the convex-hull of the input vertices will be computed
-     *   automatically. Otherwise, it will be assumed that the mesh you provide
-     *   is already convex.
-     */
-    constructor(vertices: Float32Array, indices?: Uint32Array | null);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a convex polygon.
- */
-declare class RoundConvexPolyhedron extends Shape {
-    readonly type = ShapeType.RoundConvexPolyhedron;
-    /**
-     * The vertices of the convex polygon.
-     */
-    vertices: Float32Array;
-    /**
-     * The indices of the convex polygon.
-     */
-    indices?: Uint32Array;
-    /**
-     * The radius of the convex polyhedron's rounded edges and vertices.
-     */
-    borderRadius: number;
-    /**
-     * Creates a new convex polygon shape.
-     *
-     * @param vertices - The coordinates of the convex polygon's vertices.
-     * @param indices - The index buffer of this convex mesh. If this is `null`
-     *   or `undefined`, the convex-hull of the input vertices will be computed
-     *   automatically. Otherwise, it will be assumed that the mesh you provide
-     *   is already convex.
-     * @param borderRadius - The radius of the borders of this convex polyhedron.
-     */
-    constructor(vertices: Float32Array, indices: Uint32Array | null | undefined, borderRadius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a heightfield.
- */
-declare class Heightfield extends Shape {
-    readonly type = ShapeType.HeightField;
-    /**
-     * The number of rows in the heights matrix.
-     */
-    nrows: number;
-    /**
-     * The number of columns in the heights matrix.
-     */
-    ncols: number;
-    /**
-     * The heights of the heightfield along its local `y` axis,
-     * provided as a matrix stored in column-major order.
-     */
-    heights: Float32Array;
-    /**
-     * The dimensions of the heightfield's local `x,z` plane.
-     */
-    scale: Vector;
-    /**
-     * Flags applied to the heightfield.
-     */
-    flags: HeightFieldFlags;
-    /**
-     * Creates a new heightfield shape.
-     *
-     * @param nrows − The number of rows in the heights matrix.
-     * @param ncols - The number of columns in the heights matrix.
-     * @param heights - The heights of the heightfield along its local `y` axis,
-     *                  provided as a matrix stored in column-major order.
-     * @param scale - The dimensions of the heightfield's local `x,z` plane.
-     */
-    constructor(nrows: number, ncols: number, heights: Float32Array, scale: Vector, flags?: HeightFieldFlags);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a 3D cylinder.
- */
-declare class Cylinder extends Shape {
-    readonly type = ShapeType.Cylinder;
-    /**
-     * The radius of the cylinder's basis.
-     */
-    radius: number;
-    /**
-     * The cylinder's half height, along the `y` axis.
-     */
-    halfHeight: number;
-    /**
-     * Creates a new cylinder with the given radius and half-height.
-     * @param halfHeight - The balls half-height along the `y` axis.
-     * @param radius - The balls radius.
-     */
-    constructor(halfHeight: number, radius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a 3D cylinder with round corners.
- */
-declare class RoundCylinder extends Shape {
-    readonly type = ShapeType.RoundCylinder;
-    /**
-     * The radius of the cylinder's basis.
-     */
-    radius: number;
-    /**
-     * The cylinder's half height, along the `y` axis.
-     */
-    halfHeight: number;
-    /**
-     * The radius of the cylinder's rounded edges and vertices.
-     */
-    borderRadius: number;
-    /**
-     * Creates a new cylinder with the given radius and half-height.
-     * @param halfHeight - The balls half-height along the `y` axis.
-     * @param radius - The balls radius.
-     * @param borderRadius - The radius of the borders of this cylinder.
-     */
-    constructor(halfHeight: number, radius: number, borderRadius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a 3D cone.
- */
-declare class Cone extends Shape {
-    readonly type = ShapeType.Cone;
-    /**
-     * The radius of the cone's basis.
-     */
-    radius: number;
-    /**
-     * The cone's half height, along the `y` axis.
-     */
-    halfHeight: number;
-    /**
-     * Creates a new cone with the given radius and half-height.
-     * @param halfHeight - The balls half-height along the `y` axis.
-     * @param radius - The balls radius.
-     */
-    constructor(halfHeight: number, radius: number);
-    intoRaw(): RawShape;
-}
-/**
- * A shape that is a 3D cone with round corners.
- */
-declare class RoundCone extends Shape {
-    readonly type = ShapeType.RoundCone;
-    /**
-     * The radius of the cone's basis.
-     */
-    radius: number;
-    /**
-     * The cone's half height, along the `y` axis.
-     */
-    halfHeight: number;
-    /**
-     * The radius of the cylinder's rounded edges and vertices.
-     */
-    borderRadius: number;
-    /**
-     * Creates a new cone with the given radius and half-height.
-     * @param halfHeight - The balls half-height along the `y` axis.
-     * @param radius - The balls radius.
-     * @param borderRadius - The radius of the borders of this cone.
-     */
-    constructor(halfHeight: number, radius: number, borderRadius: number);
-    intoRaw(): RawShape;
 }
 
 /**
@@ -4441,9 +3782,15 @@ declare enum MassPropsMode {
     Mass = 1,
     MassProps = 2
 }
+/** Native geometry reference used only for shared collider admission. */
+interface SharedColliderGeometry {
+    readonly type: "shared";
+    readonly geometry: number;
+    readonly scale: Vector;
+}
 declare class ColliderDesc {
     enabled: boolean;
-    shape: Shape;
+    shape: Shape | SharedColliderGeometry;
     massPropsMode: MassPropsMode;
     mass: number;
     centerOfMass: Vector;
@@ -4469,7 +3816,7 @@ declare class ColliderDesc {
      *
      * @param shape - The shape of the collider being built.
      */
-    constructor(shape: Shape);
+    constructor(shape: Shape | SharedColliderGeometry);
     /**
      * Create a new collider descriptor with a ball shape.
      *
@@ -4794,6 +4141,690 @@ declare class ColliderDesc {
 }
 
 /**
+ * The projection of a point on a collider.
+ */
+declare class PointProjection {
+    /**
+     * The projection of the point on the collider.
+     */
+    point: Vector;
+    /**
+     * Is the point inside of the collider?
+     */
+    isInside: boolean;
+    constructor(point: Vector, isInside: boolean);
+    /**
+     * @param raw - The raw projection returned by the WASM query. It is freed by this method.
+     * @param target - If provided, this object is populated and returned instead of
+     * allocating a new one.
+     */
+    static fromBuffer(raw: RawPointProjection, target?: PointProjection): PointProjection;
+}
+/**
+ * The projection of a point on a collider (includes the collider handle).
+ */
+declare class PointColliderProjection {
+    /**
+     * The collider hit by the ray.
+     */
+    collider: Collider;
+    /**
+     * The projection of the point on the collider.
+     */
+    point: Vector;
+    /**
+     * Is the point inside of the collider?
+     */
+    isInside: boolean;
+    /**
+     * The type of the geometric feature the point was projected on.
+     */
+    featureType: FeatureType;
+    /**
+     * The id of the geometric feature the point was projected on.
+     */
+    featureId: number | undefined;
+    constructor(collider: Collider, point: Vector, isInside: boolean, featureType?: FeatureType, featureId?: number);
+    /**
+     * @param colliderSet - The set the projected-on collider belongs to.
+     * @param raw - The raw projection returned by the WASM query. It is freed by this method.
+     * @param target - If provided, this object is populated and returned instead of
+     * allocating a new one.
+     */
+    static fromBuffer(colliderSet: ColliderSet, raw: RawPointColliderProjection, target?: PointColliderProjection): PointColliderProjection;
+}
+
+declare abstract class Shape {
+    abstract intoRaw(): RawShape;
+    /**
+     * The concrete type of this shape.
+     */
+    abstract get type(): ShapeType;
+    /**
+     * instant mode without cache
+     */
+    static fromRaw(rawSet: RawColliderSet, handle: ColliderHandle): Shape;
+    static fromRawShape(rawShape: RawShape): Shape;
+    /**
+     * Computes the time of impact between two moving shapes.
+     * @param shapePos1 - The initial position of this shape.
+     * @param shapeRot1 - The rotation of this shape.
+     * @param shapeVel1 - The velocity of this shape.
+     * @param shape2 - The second moving shape.
+     * @param shapePos2 - The initial position of the second shape.
+     * @param shapeRot2 - The rotation of the second shape.
+     * @param shapeVel2 - The velocity of the second shape.
+     * @param targetDistance − If the shape moves closer to this distance from a collider, a hit
+     *                         will be returned.
+     * @param maxToi - The maximum time when the impact can happen.
+     * @param stopAtPenetration - If set to `false`, the linear shape-cast won’t immediately stop if
+     *   the shape is penetrating another shape at its starting point **and** its trajectory is such
+     *   that it’s on a path to exit that penetration state.
+     * @param {ShapeCastHit?} target - The object to be populated. If provided,
+     * the function returns this object instead of creating a new one.
+     * @returns If the two moving shapes collider at some point along their trajectories, this returns the
+     *  time at which the two shape collider as well as the contact information during the impact. Returns
+     *  `null` if the two shapes never collide along their paths.
+     */
+    castShape(shapePos1: Vector, shapeRot1: Rotation, shapeVel1: Vector, shape2: Shape, shapePos2: Vector, shapeRot2: Rotation, shapeVel2: Vector, targetDistance: number, maxToi: number, stopAtPenetration: boolean, target?: ShapeCastHit): ShapeCastHit | null;
+    /**
+     * Tests if this shape intersects another shape.
+     *
+     * @param shapePos1 - The position of this shape.
+     * @param shapeRot1 - The rotation of this shape.
+     * @param shape2  - The second shape to test.
+     * @param shapePos2 - The position of the second shape.
+     * @param shapeRot2 - The rotation of the second shape.
+     * @returns `true` if the two shapes intersect, `false` if they don’t.
+     */
+    intersectsShape(shapePos1: Vector, shapeRot1: Rotation, shape2: Shape, shapePos2: Vector, shapeRot2: Rotation): boolean;
+    /**
+     * Computes one pair of contact points between two shapes.
+     *
+     * @param shapePos1 - The initial position of this sahpe.
+     * @param shapeRot1 - The rotation of this shape.
+     * @param shape2 - The second shape.
+     * @param shapePos2 - The initial position of the second shape.
+     * @param shapeRot2 - The rotation of the second shape.
+     * @param prediction - The prediction value, if the shapes are separated by a distance greater than this value, test will fail.
+     * @returns `null` if the shapes are separated by a distance greater than prediction, otherwise contact details. The result is given in world-space.
+     */
+    contactShape(shapePos1: Vector, shapeRot1: Rotation, shape2: Shape, shapePos2: Vector, shapeRot2: Rotation, prediction: number, target?: ShapeContact): ShapeContact | null;
+    containsPoint(shapePos: Vector, shapeRot: Rotation, point: Vector): boolean;
+    projectPoint(shapePos: Vector, shapeRot: Rotation, point: Vector, solid: boolean, target?: PointProjection): PointProjection;
+    intersectsRay(ray: Ray, shapePos: Vector, shapeRot: Rotation, maxToi: number): boolean;
+    castRay(ray: Ray, shapePos: Vector, shapeRot: Rotation, maxToi: number, solid: boolean): number;
+    castRayAndGetNormal(ray: Ray, shapePos: Vector, shapeRot: Rotation, maxToi: number, solid: boolean, target?: RayIntersection): RayIntersection;
+}
+/**
+ * An enumeration representing the type of a shape.
+ */
+declare enum ShapeType {
+    Ball = 0,
+    Cuboid = 1,
+    Capsule = 2,
+    Segment = 3,
+    Polyline = 4,
+    Triangle = 5,
+    TriMesh = 6,
+    HeightField = 7,
+    Compound = 8,
+    ConvexPolyhedron = 9,
+    Cylinder = 10,
+    Cone = 11,
+    RoundCuboid = 12,
+    RoundTriangle = 13,
+    RoundCylinder = 14,
+    RoundCone = 15,
+    RoundConvexPolyhedron = 16,
+    HalfSpace = 17,
+    Voxels = 18
+}
+/**
+ * Flags controlling the behavior of some operations involving heightfields.
+ */
+declare enum HeightFieldFlags {
+    /**
+     * If set, a special treatment will be applied to contact manifold calculation to eliminate
+     * or fix contacts normals that could lead to incorrect bumps in physics simulation (especially
+     * on flat surfaces).
+     *
+     * This is achieved by taking into account adjacent triangle normals when computing contact
+     * points for a given triangle.
+     */
+    FIX_INTERNAL_EDGES = 1
+}
+/**
+ * Flags controlling the behavior of the triangle mesh creation and of some
+ * operations involving triangle meshes.
+ */
+declare enum TriMeshFlags {
+    /**
+     * If set, any triangle that results in a failing half-hedge topology computation will be deleted.
+     */
+    DELETE_BAD_TOPOLOGY_TRIANGLES = 4,
+    /**
+     * If set, the trimesh will be assumed to be oriented (with outward normals).
+     *
+     * The pseudo-normals of its vertices and edges will be computed.
+     */
+    ORIENTED = 8,
+    /**
+     * If set, the duplicate vertices of the trimesh will be merged.
+     *
+     * Two vertices with the exact same coordinates will share the same entry on the
+     * vertex buffer and the index buffer is adjusted accordingly.
+     */
+    MERGE_DUPLICATE_VERTICES = 16,
+    /**
+     * If set, the triangles sharing two vertices with identical index values will be removed.
+     *
+     * Because of the way it is currently implemented, this methods implies that duplicate
+     * vertices will be merged. It will no longer be the case in the future once we decouple
+     * the computations.
+     */
+    DELETE_DEGENERATE_TRIANGLES = 32,
+    /**
+     * If set, two triangles sharing three vertices with identical index values (in any order)
+     * will be removed.
+     *
+     * Because of the way it is currently implemented, this methods implies that duplicate
+     * vertices will be merged. It will no longer be the case in the future once we decouple
+     * the computations.
+     */
+    DELETE_DUPLICATE_TRIANGLES = 64,
+    /**
+     * If set, a special treatment will be applied to contact manifold calculation to eliminate
+     * or fix contacts normals that could lead to incorrect bumps in physics simulation
+     * (especially on flat surfaces).
+     *
+     * This is achieved by taking into account adjacent triangle normals when computing contact
+     * points for a given triangle.
+     *
+     * /!\ NOT SUPPORTED IN THE 2D VERSION OF RAPIER.
+     */
+    FIX_INTERNAL_EDGES = 144
+}
+/**
+ * A shape that is a sphere in 3D and a circle in 2D.
+ */
+declare class Ball extends Shape {
+    readonly type = ShapeType.Ball;
+    /**
+     * The balls radius.
+     */
+    radius: number;
+    /**
+     * Creates a new ball with the given radius.
+     * @param radius - The balls radius.
+     */
+    constructor(radius: number);
+    intoRaw(): RawShape;
+}
+declare class HalfSpace extends Shape {
+    readonly type = ShapeType.HalfSpace;
+    /**
+     * The outward normal of the half-space.
+     */
+    normal: Vector;
+    /**
+     * Creates a new halfspace delimited by an infinite plane.
+     *
+     * @param normal - The outward normal of the plane.
+     */
+    constructor(normal: Vector);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a box in 3D and a rectangle in 2D.
+ */
+declare class Cuboid extends Shape {
+    readonly type = ShapeType.Cuboid;
+    /**
+     * The half extent of the cuboid along each coordinate axis.
+     */
+    halfExtents: Vector;
+    /**
+     * Creates a new 3D cuboid.
+     * @param hx - The half width of the cuboid.
+     * @param hy - The half height of the cuboid.
+     * @param hz - The half depth of the cuboid.
+     */
+    constructor(hx: number, hy: number, hz: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a box in 3D and a rectangle in 2D, with round corners.
+ */
+declare class RoundCuboid extends Shape {
+    readonly type = ShapeType.RoundCuboid;
+    /**
+     * The half extent of the cuboid along each coordinate axis.
+     */
+    halfExtents: Vector;
+    /**
+     * The radius of the cuboid's round border.
+     */
+    borderRadius: number;
+    /**
+     * Creates a new 3D cuboid.
+     * @param hx - The half width of the cuboid.
+     * @param hy - The half height of the cuboid.
+     * @param hz - The half depth of the cuboid.
+     * @param borderRadius - The radius of the borders of this cuboid. This will
+     *   effectively increase the half-extents of the cuboid by this radius.
+     */
+    constructor(hx: number, hy: number, hz: number, borderRadius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a capsule.
+ */
+declare class Capsule extends Shape {
+    readonly type = ShapeType.Capsule;
+    /**
+     * The radius of the capsule's basis.
+     */
+    radius: number;
+    /**
+     * The capsule's half height, along the `y` axis.
+     */
+    halfHeight: number;
+    /**
+     * Creates a new capsule with the given radius and half-height.
+     * @param halfHeight - The balls half-height along the `y` axis.
+     * @param radius - The balls radius.
+     */
+    constructor(halfHeight: number, radius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a segment.
+ */
+declare class Segment extends Shape {
+    readonly type = ShapeType.Segment;
+    /**
+     * The first point of the segment.
+     */
+    a: Vector;
+    /**
+     * The second point of the segment.
+     */
+    b: Vector;
+    /**
+     * Creates a new segment shape.
+     * @param a - The first point of the segment.
+     * @param b - The second point of the segment.
+     */
+    constructor(a: Vector, b: Vector);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a segment.
+ */
+declare class Triangle extends Shape {
+    readonly type = ShapeType.Triangle;
+    /**
+     * The first point of the triangle.
+     */
+    a: Vector;
+    /**
+     * The second point of the triangle.
+     */
+    b: Vector;
+    /**
+     * The second point of the triangle.
+     */
+    c: Vector;
+    /**
+     * Creates a new triangle shape.
+     *
+     * @param a - The first point of the triangle.
+     * @param b - The second point of the triangle.
+     * @param c - The third point of the triangle.
+     */
+    constructor(a: Vector, b: Vector, c: Vector);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a triangle with round borders and a non-zero thickness.
+ */
+declare class RoundTriangle extends Shape {
+    readonly type = ShapeType.RoundTriangle;
+    /**
+     * The first point of the triangle.
+     */
+    a: Vector;
+    /**
+     * The second point of the triangle.
+     */
+    b: Vector;
+    /**
+     * The second point of the triangle.
+     */
+    c: Vector;
+    /**
+     * The radius of the triangles's rounded edges and vertices.
+     * In 3D, this is also equal to half the thickness of the round triangle.
+     */
+    borderRadius: number;
+    /**
+     * Creates a new triangle shape with round corners.
+     *
+     * @param a - The first point of the triangle.
+     * @param b - The second point of the triangle.
+     * @param c - The third point of the triangle.
+     * @param borderRadius - The radius of the borders of this triangle. In 3D,
+     *   this is also equal to half the thickness of the triangle.
+     */
+    constructor(a: Vector, b: Vector, c: Vector, borderRadius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a triangle mesh.
+ */
+declare class Polyline extends Shape {
+    readonly type = ShapeType.Polyline;
+    /**
+     * The vertices of the polyline.
+     */
+    vertices: Float32Array;
+    /**
+     * The indices of the segments.
+     */
+    indices: Uint32Array;
+    /**
+     * Creates a new polyline shape.
+     *
+     * @param vertices - The coordinates of the polyline's vertices.
+     * @param indices - The indices of the polyline's segments. If this is `null` or not provided, then
+     *    the vertices are assumed to form a line strip.
+     */
+    constructor(vertices: Float32Array, indices?: Uint32Array);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape made of voxels.
+ */
+declare class Voxels extends Shape {
+    readonly type = ShapeType.Voxels;
+    /**
+     * The points or grid coordinates used to initialize the voxels.
+     */
+    data: Float32Array | Int32Array;
+    /**
+     * The dimensions of each voxel.
+     */
+    voxelSize: Vector;
+    /**
+     * Creates a new shape made of voxels.
+     *
+     * @param data - Defines the set of voxels. If this is a `Int32Array` then
+     *               each voxel is defined from its (signed) grid coordinates,
+     *               with 3 (resp 2) contiguous integers per voxel in 3D (resp 2D).
+     *               If this is a `Float32Array`, each voxel will be such that
+     *               they contain at least one point from this array (where each
+     *               point is defined from 3 (resp 2) contiguous numbers per point
+     *               in 3D (resp 2D).
+     * @param voxelSize - The size of each voxel.
+     */
+    constructor(data: Float32Array | Int32Array, voxelSize: Vector);
+    /** Half-open [minX,minY,minZ,maxX,maxY,maxZ] regions, when constructed compactly. */
+    regions?: Int32Array;
+    /** Constructs a union of regions without allocating one XYZ triple per voxel. */
+    static fromRegions(regions: Int32Array, voxelSize: Vector): Voxels;
+    intoRaw(): RawShape;
+}
+/**
+ * A compound shape, consisting of multiple sub-shapes with relative positions.
+ */
+declare class Compound extends Shape {
+    readonly type = ShapeType.Compound;
+    /**
+     * The shapes composing this compound shape.
+     */
+    shapes: Shape[];
+    /**
+     * The positions of each sub-shape relative to the compound's origin.
+     */
+    positions: Vector[];
+    /**
+     * The rotations of each sub-shape relative to the compound's orientation.
+     */
+    rotations: Rotation[];
+    /**
+     * Creates a new compound shape.
+     *
+     * @param shapes - The array of shapes composing this compound. Must not be empty,
+     *                 and must not contain other compound shapes (nested compound shapes
+     *                 are not allowed).
+     * @param positions - The array of positions for each shape.
+     * @param rotations - The array of rotations for each shape.
+     */
+    constructor(shapes: Shape[], positions: Vector[], rotations: Rotation[]);
+    /**
+     * Reconstructs a compound shape from its raw representation.
+     *
+     * This takes ownership of `rawShape` and always frees it before returning.
+     */
+    static fromRawShape(rawShape: RawShape): Compound;
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a triangle mesh.
+ */
+declare class TriMesh extends Shape {
+    readonly type = ShapeType.TriMesh;
+    /**
+     * The vertices of the triangle mesh.
+     */
+    vertices: Float32Array;
+    /**
+     * The indices of the triangles.
+     */
+    indices: Uint32Array;
+    /**
+     * The triangle mesh flags.
+     */
+    flags: TriMeshFlags;
+    /**
+     * Creates a new triangle mesh shape.
+     *
+     * @param vertices - The coordinates of the triangle mesh's vertices.
+     * @param indices - The indices of the triangle mesh's triangles.
+     */
+    constructor(vertices: Float32Array, indices: Uint32Array, flags?: TriMeshFlags);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a convex polygon.
+ */
+declare class ConvexPolyhedron extends Shape {
+    readonly type = ShapeType.ConvexPolyhedron;
+    /**
+     * The vertices of the convex polygon.
+     */
+    vertices: Float32Array;
+    /**
+     * The indices of the convex polygon.
+     */
+    indices?: Uint32Array | null;
+    /**
+     * Creates a new convex polygon shape.
+     *
+     * @param vertices - The coordinates of the convex polygon's vertices.
+     * @param indices - The index buffer of this convex mesh. If this is `null`
+     *   or `undefined`, the convex-hull of the input vertices will be computed
+     *   automatically. Otherwise, it will be assumed that the mesh you provide
+     *   is already convex.
+     */
+    constructor(vertices: Float32Array, indices?: Uint32Array | null);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a convex polygon.
+ */
+declare class RoundConvexPolyhedron extends Shape {
+    readonly type = ShapeType.RoundConvexPolyhedron;
+    /**
+     * The vertices of the convex polygon.
+     */
+    vertices: Float32Array;
+    /**
+     * The indices of the convex polygon.
+     */
+    indices?: Uint32Array;
+    /**
+     * The radius of the convex polyhedron's rounded edges and vertices.
+     */
+    borderRadius: number;
+    /**
+     * Creates a new convex polygon shape.
+     *
+     * @param vertices - The coordinates of the convex polygon's vertices.
+     * @param indices - The index buffer of this convex mesh. If this is `null`
+     *   or `undefined`, the convex-hull of the input vertices will be computed
+     *   automatically. Otherwise, it will be assumed that the mesh you provide
+     *   is already convex.
+     * @param borderRadius - The radius of the borders of this convex polyhedron.
+     */
+    constructor(vertices: Float32Array, indices: Uint32Array | null | undefined, borderRadius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a heightfield.
+ */
+declare class Heightfield extends Shape {
+    readonly type = ShapeType.HeightField;
+    /**
+     * The number of rows in the heights matrix.
+     */
+    nrows: number;
+    /**
+     * The number of columns in the heights matrix.
+     */
+    ncols: number;
+    /**
+     * The heights of the heightfield along its local `y` axis,
+     * provided as a matrix stored in column-major order.
+     */
+    heights: Float32Array;
+    /**
+     * The dimensions of the heightfield's local `x,z` plane.
+     */
+    scale: Vector;
+    /**
+     * Flags applied to the heightfield.
+     */
+    flags: HeightFieldFlags;
+    /**
+     * Creates a new heightfield shape.
+     *
+     * @param nrows − The number of rows in the heights matrix.
+     * @param ncols - The number of columns in the heights matrix.
+     * @param heights - The heights of the heightfield along its local `y` axis,
+     *                  provided as a matrix stored in column-major order.
+     * @param scale - The dimensions of the heightfield's local `x,z` plane.
+     */
+    constructor(nrows: number, ncols: number, heights: Float32Array, scale: Vector, flags?: HeightFieldFlags);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a 3D cylinder.
+ */
+declare class Cylinder extends Shape {
+    readonly type = ShapeType.Cylinder;
+    /**
+     * The radius of the cylinder's basis.
+     */
+    radius: number;
+    /**
+     * The cylinder's half height, along the `y` axis.
+     */
+    halfHeight: number;
+    /**
+     * Creates a new cylinder with the given radius and half-height.
+     * @param halfHeight - The balls half-height along the `y` axis.
+     * @param radius - The balls radius.
+     */
+    constructor(halfHeight: number, radius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a 3D cylinder with round corners.
+ */
+declare class RoundCylinder extends Shape {
+    readonly type = ShapeType.RoundCylinder;
+    /**
+     * The radius of the cylinder's basis.
+     */
+    radius: number;
+    /**
+     * The cylinder's half height, along the `y` axis.
+     */
+    halfHeight: number;
+    /**
+     * The radius of the cylinder's rounded edges and vertices.
+     */
+    borderRadius: number;
+    /**
+     * Creates a new cylinder with the given radius and half-height.
+     * @param halfHeight - The balls half-height along the `y` axis.
+     * @param radius - The balls radius.
+     * @param borderRadius - The radius of the borders of this cylinder.
+     */
+    constructor(halfHeight: number, radius: number, borderRadius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a 3D cone.
+ */
+declare class Cone extends Shape {
+    readonly type = ShapeType.Cone;
+    /**
+     * The radius of the cone's basis.
+     */
+    radius: number;
+    /**
+     * The cone's half height, along the `y` axis.
+     */
+    halfHeight: number;
+    /**
+     * Creates a new cone with the given radius and half-height.
+     * @param halfHeight - The balls half-height along the `y` axis.
+     * @param radius - The balls radius.
+     */
+    constructor(halfHeight: number, radius: number);
+    intoRaw(): RawShape;
+}
+/**
+ * A shape that is a 3D cone with round corners.
+ */
+declare class RoundCone extends Shape {
+    readonly type = ShapeType.RoundCone;
+    /**
+     * The radius of the cone's basis.
+     */
+    radius: number;
+    /**
+     * The cone's half height, along the `y` axis.
+     */
+    halfHeight: number;
+    /**
+     * The radius of the cylinder's rounded edges and vertices.
+     */
+    borderRadius: number;
+    /**
+     * Creates a new cone with the given radius and half-height.
+     * @param halfHeight - The balls half-height along the `y` axis.
+     * @param radius - The balls radius.
+     * @param borderRadius - The radius of the borders of this cone.
+     */
+    constructor(halfHeight: number, radius: number, borderRadius: number);
+    intoRaw(): RawShape;
+}
+
+/**
  * A set of rigid bodies that can be handled by a physics pipeline.
  *
  * To avoid leaking WASM resources, this MUST be freed manually with `colliderSet.free()`
@@ -4802,6 +4833,15 @@ declare class ColliderDesc {
 declare class ColliderSet {
     raw: RawColliderSet;
     private map;
+    /** Create one native geometry identity, shared by independently authored colliders. */
+    createSharedGeometry(shape: Shape): number;
+    /** Replace one geometry root at the next native physics boundary. */
+    writeSharedHeightfield(geometry: number, indices: Uint32Array, values: Float32Array): boolean;
+    replaceSharedGeometry(geometry: number, shape: Shape): boolean;
+    /** Bind one collider instance; geometry edits never enumerate these bindings. */
+    bindSharedGeometry(collider: ColliderHandle, geometry: number, scale: Vector): boolean;
+    /** Return false if actual collider bindings still retain this geometry. */
+    removeSharedGeometry(geometry: number): boolean;
     /**
      * Release the WASM memory occupied by this collider set.
      */
@@ -6845,6 +6885,7 @@ type RAPIER_ShapeContact = ShapeContact;
 declare const RAPIER_ShapeContact: typeof ShapeContact;
 type RAPIER_ShapeType = ShapeType;
 declare const RAPIER_ShapeType: typeof ShapeType;
+type RAPIER_SharedColliderGeometry = SharedColliderGeometry;
 type RAPIER_SolverFlags = SolverFlags;
 declare const RAPIER_SolverFlags: typeof SolverFlags;
 type RAPIER_SphericalImpulseJoint = SphericalImpulseJoint;
@@ -6882,7 +6923,7 @@ declare const RAPIER_reserveMemory: typeof reserveMemory;
 declare const RAPIER_scratchBuffer: typeof scratchBuffer;
 declare const RAPIER_version: typeof version;
 declare namespace RAPIER {
-  export { RAPIER_ActiveCollisionTypes as ActiveCollisionTypes, RAPIER_ActiveEvents as ActiveEvents, RAPIER_ActiveHooks as ActiveHooks, RAPIER_Ball as Ball, RAPIER_BroadPhase as BroadPhase, RAPIER_CCDSolver as CCDSolver, RAPIER_Capsule as Capsule, RAPIER_CharacterCollision as CharacterCollision, RAPIER_CoefficientCombineRule as CoefficientCombineRule, RAPIER_Collider as Collider, RAPIER_ColliderDesc as ColliderDesc, type RAPIER_ColliderHandle as ColliderHandle, RAPIER_ColliderSet as ColliderSet, RAPIER_ColliderShapeCastHit as ColliderShapeCastHit, RAPIER_Compound as Compound, RAPIER_Cone as Cone, RAPIER_ConvexPolyhedron as ConvexPolyhedron, RAPIER_Cuboid as Cuboid, RAPIER_Cylinder as Cylinder, RAPIER_DebugRenderBuffers as DebugRenderBuffers, RAPIER_DebugRenderPipeline as DebugRenderPipeline, RAPIER_DynamicRayCastVehicleController as DynamicRayCastVehicleController, RAPIER_EventQueue as EventQueue, RAPIER_FeatureType as FeatureType, RAPIER_FixedImpulseJoint as FixedImpulseJoint, RAPIER_FixedMultibodyJoint as FixedMultibodyJoint, RAPIER_GenericImpulseJoint as GenericImpulseJoint, RAPIER_HalfSpace as HalfSpace, RAPIER_HeightFieldFlags as HeightFieldFlags, RAPIER_Heightfield as Heightfield, RAPIER_ImpulseJoint as ImpulseJoint, type RAPIER_ImpulseJointHandle as ImpulseJointHandle, RAPIER_ImpulseJointSet as ImpulseJointSet, RAPIER_IntegrationParameters as IntegrationParameters, type RAPIER_InteractionGroups as InteractionGroups, RAPIER_IslandManager as IslandManager, RAPIER_JointAxesMask as JointAxesMask, RAPIER_JointAxis as JointAxis, RAPIER_JointData as JointData, RAPIER_JointType as JointType, RAPIER_KinematicCharacterController as KinematicCharacterController, RAPIER_MassPropsMode as MassPropsMode, RAPIER_MotorModel as MotorModel, RAPIER_MultibodyJoint as MultibodyJoint, type RAPIER_MultibodyJointHandle as MultibodyJointHandle, RAPIER_MultibodyJointSet as MultibodyJointSet, RAPIER_NarrowPhase as NarrowPhase, type RAPIER_PhysicsHooks as PhysicsHooks, RAPIER_PhysicsPipeline as PhysicsPipeline, RAPIER_PidAxesMask as PidAxesMask, RAPIER_PidController as PidController, RAPIER_PointColliderProjection as PointColliderProjection, RAPIER_PointProjection as PointProjection, RAPIER_Polyline as Polyline, RAPIER_PrismaticImpulseJoint as PrismaticImpulseJoint, RAPIER_PrismaticMultibodyJoint as PrismaticMultibodyJoint, RAPIER_Quaternion as Quaternion, RAPIER_QueryFilterFlags as QueryFilterFlags, RAPIER_Ray as Ray, RAPIER_RayColliderHit as RayColliderHit, RAPIER_RayColliderIntersection as RayColliderIntersection, RAPIER_RayIntersection as RayIntersection, RAPIER_RevoluteImpulseJoint as RevoluteImpulseJoint, RAPIER_RevoluteMultibodyJoint as RevoluteMultibodyJoint, RAPIER_RigidBody as RigidBody, RAPIER_RigidBodyDesc as RigidBodyDesc, type RAPIER_RigidBodyHandle as RigidBodyHandle, RAPIER_RigidBodySet as RigidBodySet, RAPIER_RigidBodyType as RigidBodyType, RAPIER_RopeImpulseJoint as RopeImpulseJoint, type RAPIER_Rotation as Rotation, RAPIER_RotationOps as RotationOps, RAPIER_RoundCone as RoundCone, RAPIER_RoundConvexPolyhedron as RoundConvexPolyhedron, RAPIER_RoundCuboid as RoundCuboid, RAPIER_RoundCylinder as RoundCylinder, RAPIER_RoundTriangle as RoundTriangle, RAPIER_SdpMatrix3 as SdpMatrix3, RAPIER_SdpMatrix3Ops as SdpMatrix3Ops, RAPIER_Segment as Segment, RAPIER_SerializationPipeline as SerializationPipeline, RAPIER_Shape as Shape, RAPIER_ShapeCastHit as ShapeCastHit, RAPIER_ShapeContact as ShapeContact, RAPIER_ShapeType as ShapeType, RAPIER_SolverFlags as SolverFlags, RAPIER_SphericalImpulseJoint as SphericalImpulseJoint, RAPIER_SphericalMultibodyJoint as SphericalMultibodyJoint, RAPIER_SpringImpulseJoint as SpringImpulseJoint, RAPIER_TempContactForceEvent as TempContactForceEvent, RAPIER_TempContactManifold as TempContactManifold, RAPIER_TriMesh as TriMesh, RAPIER_TriMeshFlags as TriMeshFlags, RAPIER_Triangle as Triangle, RAPIER_UnitImpulseJoint as UnitImpulseJoint, RAPIER_UnitMultibodyJoint as UnitMultibodyJoint, type RAPIER_VHACDParameters as VHACDParameters, type RAPIER_Vector as Vector, RAPIER_Vector3 as Vector3, RAPIER_VectorOps as VectorOps, RAPIER_Voxels as Voxels, RAPIER_World as World, RAPIER_init as init, RAPIER_reserveMemory as reserveMemory, RAPIER_scratchBuffer as scratchBuffer, RAPIER_version as version };
+  export { RAPIER_ActiveCollisionTypes as ActiveCollisionTypes, RAPIER_ActiveEvents as ActiveEvents, RAPIER_ActiveHooks as ActiveHooks, RAPIER_Ball as Ball, RAPIER_BroadPhase as BroadPhase, RAPIER_CCDSolver as CCDSolver, RAPIER_Capsule as Capsule, RAPIER_CharacterCollision as CharacterCollision, RAPIER_CoefficientCombineRule as CoefficientCombineRule, RAPIER_Collider as Collider, RAPIER_ColliderDesc as ColliderDesc, type RAPIER_ColliderHandle as ColliderHandle, RAPIER_ColliderSet as ColliderSet, RAPIER_ColliderShapeCastHit as ColliderShapeCastHit, RAPIER_Compound as Compound, RAPIER_Cone as Cone, RAPIER_ConvexPolyhedron as ConvexPolyhedron, RAPIER_Cuboid as Cuboid, RAPIER_Cylinder as Cylinder, RAPIER_DebugRenderBuffers as DebugRenderBuffers, RAPIER_DebugRenderPipeline as DebugRenderPipeline, RAPIER_DynamicRayCastVehicleController as DynamicRayCastVehicleController, RAPIER_EventQueue as EventQueue, RAPIER_FeatureType as FeatureType, RAPIER_FixedImpulseJoint as FixedImpulseJoint, RAPIER_FixedMultibodyJoint as FixedMultibodyJoint, RAPIER_GenericImpulseJoint as GenericImpulseJoint, RAPIER_HalfSpace as HalfSpace, RAPIER_HeightFieldFlags as HeightFieldFlags, RAPIER_Heightfield as Heightfield, RAPIER_ImpulseJoint as ImpulseJoint, type RAPIER_ImpulseJointHandle as ImpulseJointHandle, RAPIER_ImpulseJointSet as ImpulseJointSet, RAPIER_IntegrationParameters as IntegrationParameters, type RAPIER_InteractionGroups as InteractionGroups, RAPIER_IslandManager as IslandManager, RAPIER_JointAxesMask as JointAxesMask, RAPIER_JointAxis as JointAxis, RAPIER_JointData as JointData, RAPIER_JointType as JointType, RAPIER_KinematicCharacterController as KinematicCharacterController, RAPIER_MassPropsMode as MassPropsMode, RAPIER_MotorModel as MotorModel, RAPIER_MultibodyJoint as MultibodyJoint, type RAPIER_MultibodyJointHandle as MultibodyJointHandle, RAPIER_MultibodyJointSet as MultibodyJointSet, RAPIER_NarrowPhase as NarrowPhase, type RAPIER_PhysicsHooks as PhysicsHooks, RAPIER_PhysicsPipeline as PhysicsPipeline, RAPIER_PidAxesMask as PidAxesMask, RAPIER_PidController as PidController, RAPIER_PointColliderProjection as PointColliderProjection, RAPIER_PointProjection as PointProjection, RAPIER_Polyline as Polyline, RAPIER_PrismaticImpulseJoint as PrismaticImpulseJoint, RAPIER_PrismaticMultibodyJoint as PrismaticMultibodyJoint, RAPIER_Quaternion as Quaternion, RAPIER_QueryFilterFlags as QueryFilterFlags, RAPIER_Ray as Ray, RAPIER_RayColliderHit as RayColliderHit, RAPIER_RayColliderIntersection as RayColliderIntersection, RAPIER_RayIntersection as RayIntersection, RAPIER_RevoluteImpulseJoint as RevoluteImpulseJoint, RAPIER_RevoluteMultibodyJoint as RevoluteMultibodyJoint, RAPIER_RigidBody as RigidBody, RAPIER_RigidBodyDesc as RigidBodyDesc, type RAPIER_RigidBodyHandle as RigidBodyHandle, RAPIER_RigidBodySet as RigidBodySet, RAPIER_RigidBodyType as RigidBodyType, RAPIER_RopeImpulseJoint as RopeImpulseJoint, type RAPIER_Rotation as Rotation, RAPIER_RotationOps as RotationOps, RAPIER_RoundCone as RoundCone, RAPIER_RoundConvexPolyhedron as RoundConvexPolyhedron, RAPIER_RoundCuboid as RoundCuboid, RAPIER_RoundCylinder as RoundCylinder, RAPIER_RoundTriangle as RoundTriangle, RAPIER_SdpMatrix3 as SdpMatrix3, RAPIER_SdpMatrix3Ops as SdpMatrix3Ops, RAPIER_Segment as Segment, RAPIER_SerializationPipeline as SerializationPipeline, RAPIER_Shape as Shape, RAPIER_ShapeCastHit as ShapeCastHit, RAPIER_ShapeContact as ShapeContact, RAPIER_ShapeType as ShapeType, type RAPIER_SharedColliderGeometry as SharedColliderGeometry, RAPIER_SolverFlags as SolverFlags, RAPIER_SphericalImpulseJoint as SphericalImpulseJoint, RAPIER_SphericalMultibodyJoint as SphericalMultibodyJoint, RAPIER_SpringImpulseJoint as SpringImpulseJoint, RAPIER_TempContactForceEvent as TempContactForceEvent, RAPIER_TempContactManifold as TempContactManifold, RAPIER_TriMesh as TriMesh, RAPIER_TriMeshFlags as TriMeshFlags, RAPIER_Triangle as Triangle, RAPIER_UnitImpulseJoint as UnitImpulseJoint, RAPIER_UnitMultibodyJoint as UnitMultibodyJoint, type RAPIER_VHACDParameters as VHACDParameters, type RAPIER_Vector as Vector, RAPIER_Vector3 as Vector3, RAPIER_VectorOps as VectorOps, RAPIER_Voxels as Voxels, RAPIER_World as World, RAPIER_init as init, RAPIER_reserveMemory as reserveMemory, RAPIER_scratchBuffer as scratchBuffer, RAPIER_version as version };
 }
 
-export { ActiveCollisionTypes, ActiveEvents, ActiveHooks, Ball, BroadPhase, CCDSolver, Capsule, CharacterCollision, CoefficientCombineRule, Collider, ColliderDesc, type ColliderHandle, ColliderSet, ColliderShapeCastHit, Compound, Cone, ConvexPolyhedron, Cuboid, Cylinder, DebugRenderBuffers, DebugRenderPipeline, DynamicRayCastVehicleController, EventQueue, FeatureType, FixedImpulseJoint, FixedMultibodyJoint, GenericImpulseJoint, HalfSpace, HeightFieldFlags, Heightfield, ImpulseJoint, type ImpulseJointHandle, ImpulseJointSet, IntegrationParameters, type InteractionGroups, IslandManager, JointAxesMask, JointAxis, JointData, JointType, KinematicCharacterController, MassPropsMode, MotorModel, MultibodyJoint, type MultibodyJointHandle, MultibodyJointSet, NarrowPhase, type PhysicsHooks, PhysicsPipeline, PidAxesMask, PidController, PointColliderProjection, PointProjection, Polyline, PrismaticImpulseJoint, PrismaticMultibodyJoint, Quaternion, QueryFilterFlags, Ray, RayColliderHit, RayColliderIntersection, RayIntersection, RevoluteImpulseJoint, RevoluteMultibodyJoint, RigidBody, RigidBodyDesc, type RigidBodyHandle, RigidBodySet, RigidBodyType, RopeImpulseJoint, type Rotation, RotationOps, RoundCone, RoundConvexPolyhedron, RoundCuboid, RoundCylinder, RoundTriangle, SdpMatrix3, SdpMatrix3Ops, Segment, SerializationPipeline, Shape, ShapeCastHit, ShapeContact, ShapeType, SolverFlags, SphericalImpulseJoint, SphericalMultibodyJoint, SpringImpulseJoint, TempContactForceEvent, TempContactManifold, TriMesh, TriMeshFlags, Triangle, UnitImpulseJoint, UnitMultibodyJoint, type VHACDParameters, type Vector, Vector3, VectorOps, Voxels, World, RAPIER as default, init, reserveMemory, scratchBuffer, version };
+export { ActiveCollisionTypes, ActiveEvents, ActiveHooks, Ball, BroadPhase, CCDSolver, Capsule, CharacterCollision, CoefficientCombineRule, Collider, ColliderDesc, type ColliderHandle, ColliderSet, ColliderShapeCastHit, Compound, Cone, ConvexPolyhedron, Cuboid, Cylinder, DebugRenderBuffers, DebugRenderPipeline, DynamicRayCastVehicleController, EventQueue, FeatureType, FixedImpulseJoint, FixedMultibodyJoint, GenericImpulseJoint, HalfSpace, HeightFieldFlags, Heightfield, ImpulseJoint, type ImpulseJointHandle, ImpulseJointSet, IntegrationParameters, type InteractionGroups, IslandManager, JointAxesMask, JointAxis, JointData, JointType, KinematicCharacterController, MassPropsMode, MotorModel, MultibodyJoint, type MultibodyJointHandle, MultibodyJointSet, NarrowPhase, type PhysicsHooks, PhysicsPipeline, PidAxesMask, PidController, PointColliderProjection, PointProjection, Polyline, PrismaticImpulseJoint, PrismaticMultibodyJoint, Quaternion, QueryFilterFlags, Ray, RayColliderHit, RayColliderIntersection, RayIntersection, RevoluteImpulseJoint, RevoluteMultibodyJoint, RigidBody, RigidBodyDesc, type RigidBodyHandle, RigidBodySet, RigidBodyType, RopeImpulseJoint, type Rotation, RotationOps, RoundCone, RoundConvexPolyhedron, RoundCuboid, RoundCylinder, RoundTriangle, SdpMatrix3, SdpMatrix3Ops, Segment, SerializationPipeline, Shape, ShapeCastHit, ShapeContact, ShapeType, type SharedColliderGeometry, SolverFlags, SphericalImpulseJoint, SphericalMultibodyJoint, SpringImpulseJoint, TempContactForceEvent, TempContactManifold, TriMesh, TriMeshFlags, Triangle, UnitImpulseJoint, UnitMultibodyJoint, type VHACDParameters, type Vector, Vector3, VectorOps, Voxels, World, RAPIER as default, init, reserveMemory, scratchBuffer, version };

@@ -43,12 +43,14 @@ texture value.
 
 ```ts
 assets.configurePackIndex('/pack-index.json');
-const result = await assets.loadByGuid<MaterialAsset>(materialGuid);
+const result = await assets.load(materialGuid, 'material');
 if (!result.ok) {
   report(result.error.code, result.error.detail, result.error.hint);
   return;
 }
-const materialHandle = world.allocSharedRef('MaterialAsset', result.value);
+const materialHandle = result.value;
+// Bind directly to MeshRenderer.materials; release the caller reference after binding.
+const content = assets.read(materialHandle).unwrap(); // detached inspection only
 ```
 
 ## External (video) textures
@@ -101,18 +103,18 @@ passing result.
 
 ## GPU-driven scene-index materials
 
-GPU-driven raster and shadow passes bind one visible item `vec4<u32>` per
-drawn instance: `x` scene instance row, `y` scene material row, `z` skin
-palette base, `w` bitcast signed LOD coverage. LOD level and coverage are
-chosen by the GPU cull per view; the material never selects a level.
+Use the [LOD coverage ABI](../../packages/shader/README.md#lod-coverage-abi)
+when composing scene-index vertex entries. Import `sceneInstances` from
+`forgeax_view::common` for Skin palette addressing and read
+`sceneInstances[visible.x].customDataStart`. LOD selection stays with the GPU
+cull; the material only applies its published coverage.
 
 > [!IMPORTANT]
 > Migration: a cooked scene-index material must not read `Mesh` rows or treat
 > `visible.x` as a per-batch index. Resolve transforms, temporal flags and
 > probe identity with `sceneIndexDraw(visible.x)` from
 > `forgeax_view::common`, and pass `bitcast<f32>(visible.w)` to
-> `applyLodCoverage`. See the
-> [LOD coverage ABI](../../packages/shader/README.md#lod-coverage-abi).
+> `applyLodCoverage`.
 
 ## Contract and reflection
 

@@ -3,8 +3,6 @@ import { atmosphereAvailable } from '../environment/capability';
 // Variant selection, module caching, and manifest material preparation stay
 // independent from renderer lifetime and generation-scoped ready state.
 
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { PipelineLayout, Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
@@ -18,7 +16,7 @@ import {
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardPhysicalTextureFields,
 } from '@forgeax/engine-shader';
-import type { AssetGuid as AssetGuidType, ParamSchemaEntry } from '@forgeax/engine-types';
+import type { ParamSchemaEntry } from '@forgeax/engine-types';
 import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 import {
   atmosphereMaterialVisibilityLayoutEntries,
@@ -261,51 +259,11 @@ function makeRhiNotAvailableError(key: string): RhiError {
 export async function prepareMaterialShaders(
   rhiDevice: RhiDevice,
   getShader: () => ShaderCatalog,
-  assets: AssetRegistry,
   // feat-20260629 M4: populated with uvSetCount from naga reflection JSON
   // keyed by materialShaderId; consumed by getMaterialShaderPipeline for
   // auto-fill of shaderUvSetCount clamp-to-last alias parameter.
   materialShaderUvSetCounts: Map<string, number>,
 ): Promise<void> {
-  const builtinGuid = (result: ReturnType<typeof AssetGuid.parse>): AssetGuidType => {
-    if (!result.ok) throw result.error;
-    return result.value;
-  };
-  // feat-20260528-material-shader-registration-unification M3 / w15:
-  // pre-computed UUIDv5 GUIDs for engine-shipped material shaders.
-  // Derived from FORGEAX_NAMESPACE (9a09805a-7623-482e-b322-9fc3591f2a38)
-  // with SHA-1 per RFC 4122 section 4.3.
-  const pbrGuidRes = AssetGuid.parse('94d85ce4-650c-54b1-a86a-eaf22696ecbc');
-  const unlitGuidRes = AssetGuid.parse('37f593ea-0c79-528c-b7f7-23d17045d776');
-  const spriteGuidRes = AssetGuid.parse('658234f6-a605-5fff-957d-7149b48fd0f4');
-  // feat-20260624-sprite-lit-shading-model-pure-2d-lighting M1' / t7: stable
-  // UUID for sprite-lit material shader (matches sprite-lit.material.json
-  // subAssets[0].guid; shader-id catalog SSOT).
-  const spriteLitGuidRes = AssetGuid.parse('f0ec6a4b-cad1-5a3d-9b4e-6d2b0fa14d8e');
-  const pbrSkinGuidRes = AssetGuid.parse('5ad0833e-2f17-56e5-a3d2-dab543afae65');
-  // feat-20260531-world-space-msdf-text-rendering M5 / w21: stable UUIDv5 for
-  // the world-space MSDF text material shader (deriveBuiltin('forgeax::msdf-text')
-  // under FORGEAX_NAMESPACE). Registered via the manifest materialShaders[]
-  // loop below alongside sprite / unlit (D-7 -- materialShaderId path).
-  const msdfTextGuidRes = AssetGuid.parse('b8f92146-3b24-519b-97a2-271419b53563');
-  const shadowCasterGuidRes = AssetGuid.parse('2e167c2a-1747-5bd7-b56d-aea9bc3f436e');
-  const pbrGuid = builtinGuid(pbrGuidRes);
-  const unlitGuid = builtinGuid(unlitGuidRes);
-  const spriteGuid = builtinGuid(spriteGuidRes);
-  const spriteLitGuid = builtinGuid(spriteLitGuidRes);
-  const pbrSkinGuid = builtinGuid(pbrSkinGuidRes);
-  const msdfTextGuid = builtinGuid(msdfTextGuidRes);
-  const shadowCasterGuid = builtinGuid(shadowCasterGuidRes);
-  const ENGINE_SHADER_GUIDS = new Map<string, AssetGuidType>([
-    ['forgeax::default-standard-pbr', pbrGuid],
-    ['forgeax::default-unlit', unlitGuid],
-    ['forgeax::sprite', spriteGuid],
-    ['forgeax::sprite-lit', spriteLitGuid],
-    ['forgeax::default-standard-pbr-skin', pbrSkinGuid],
-    ['forgeax::msdf-text', msdfTextGuid],
-    ['forgeax::default-shadow-caster', shadowCasterGuid],
-  ]);
-
   // ── Step 0: storage-buffer cap gate ───────────────────────────────────────
   const capValue = rhiDevice.limits.maxStorageBuffersPerShaderStage;
   const webgl2Downlevel = rhiDevice.caps.backendKind === 'wgpu-webgl2';
@@ -463,8 +421,14 @@ export async function prepareMaterialShaders(
       // buildPbrPipelineLayouts at pipeline-build time. The historical
       // separate bind-layout sidecar field has been deleted from
       // MaterialShaderEntry / MaterialRuntimeInfo (D-1 / D-2).
+      const entryPoints =
+        chosen?.entryPoints ??
+        chosen?.receipt?.entryPoints ??
+        msEntry.entryPoints ??
+        msEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(msEntry.identifier, {
         source: wgsl,
+        ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema,
         ...(chosen?.receipt === undefined && msEntry.receipt === undefined
           ? {}
@@ -480,21 +444,6 @@ export async function prepareMaterialShaders(
       // (charter P3 explicit failure). The derived output is discarded; the
       // SSOT consumer is buildPbrPipelineLayouts later.
       derive(paramSchema);
-
-      const shaderGuid = ENGINE_SHADER_GUIDS.get(msEntry.identifier);
-      if (shaderGuid !== undefined) {
-        const shaderAsset = {
-          kind: 'shader' as const,
-          name: msEntry.identifier,
-          source: wgsl,
-          paramSchema,
-        };
-        // feat-20260614 M8 (D-17): catalogue the shader asset by GUID so it is
-        // GUID-addressable; no handle minted. A shader without an engine GUID
-        // lives only in the ShaderCatalog (the installMaterialArtifact SSOT
-        // above) -- there is no GUID to catalogue it under.
-        assets.catalog(shaderGuid, shaderAsset);
-      }
     }
   }
 
@@ -514,22 +463,13 @@ export async function prepareMaterialShaders(
       // shadow_caster evaluates the same default Surface as Standard. Keep
       // its generated MaterialParameters contract aligned with the Standard
       // pipeline even when a legacy manifest omitted the material entry.
+      const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(shadowCasterIdentifier, {
         source: manifestEntry.composedWgsl,
+        ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
         ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
       });
-      const shaderGuid = ENGINE_SHADER_GUIDS.get(shadowCasterIdentifier);
-      if (shaderGuid !== undefined) {
-        const shaderAsset = {
-          kind: 'shader' as const,
-          name: shadowCasterIdentifier,
-          source: manifestEntry.composedWgsl,
-          paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
-        };
-        // feat-20260614 M8 (D-17): catalogue by GUID; no handle minted.
-        assets.catalog(shaderGuid, shaderAsset);
-      }
     }
   }
 }

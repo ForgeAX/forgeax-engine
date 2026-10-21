@@ -13,6 +13,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { renderLifecycleManifestUrl } from '../../../render/src/__tests__/shader-manifest-fixture';
+import { worldRenderResources } from '../../../render/src/publication/resource-scope';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 function value<T>(
@@ -34,14 +35,21 @@ it('uses the public publication Renderer for preparation and exact submitted dra
     ),
   );
   value(await initialization);
-  const world = new World();
+  const world = new World({ assets });
   const publisher = createRenderPublisher(world, assets, identity, renderer.inspect().capabilities);
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+  const meshHandle = assets.create(mesh).unwrap();
+  const revision = worldRenderResources(world).assetRevision(meshHandle);
+  if (revision === undefined) throw new Error('managed mesh revision missing');
   const prepared = (
-    await renderer.preparePublishedMeshResidency({ ...identity, meshHandle, mesh })
+    await renderer.preparePublishedMeshResidency({
+      ...identity,
+      meshHandle,
+      mesh: assets.read(meshHandle).unwrap(),
+      revision,
+    })
   ).unwrap();
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 1]));
+  const material = assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 5] } },

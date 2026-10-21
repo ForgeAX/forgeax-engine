@@ -82,13 +82,12 @@ export function materialDepthStencil(
   };
 }
 
-/** Generated shadow passes share raster geometry, but own their depth writes. */
-export function shadowCasterRenderState(
-  state?: MaterialRenderState,
-): MaterialRenderState | undefined {
-  if (state === undefined) return undefined;
+/** Like Three's non-VSM shadow side, generated casters render the opposite
+ * face of a single-sided surface. Closed meshes avoid self-shadow acne;
+ * explicitly double-sided surfaces keep both faces. Custom passes own their state. */
+export function shadowCasterRenderState(state: MaterialRenderState = {}): MaterialRenderState {
   return {
-    ...(state.cullMode === undefined ? {} : { cullMode: state.cullMode }),
+    cullMode: state.cullMode === 'none' ? 'none' : state.cullMode === 'front' ? 'back' : 'front',
     ...(state.frontFace === undefined ? {} : { frontFace: state.frontFace }),
     ...(state.depthBias === undefined ? {} : { depthBias: state.depthBias }),
     ...(state.depthBiasSlopeScale === undefined

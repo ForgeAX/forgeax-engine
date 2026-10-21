@@ -24,7 +24,10 @@ import type {
   PreparedMaterialPipelineLayoutCacheEntry,
   RendererPipelineCacheState,
 } from '../recovery/renderer-recover';
-import { isEngineOwnedMaterialShader, resolveMaterialPipelineBindGroups } from './pipeline-helpers';
+import {
+  isSharedLayoutMaterialShader,
+  resolveMaterialPipelineBindGroups,
+} from './pipeline-helpers';
 import { MaterialPipelineRequestCache } from './pipeline-request-cache';
 
 /** Material layouts use the active or candidate generation's existing cache. */
@@ -259,7 +262,7 @@ export function createMaterialLayoutCache({
     const source = lookup.ok ? lookup.value.source : '';
     const paramSchema = lookup.ok ? lookup.value.paramSchema : explicitParamSchema;
     if (
-      isEngineOwnedMaterialShader(materialShaderId) &&
+      isSharedLayoutMaterialShader(materialShaderId) &&
       !clustered &&
       !materialUsesDirectDfgLut(paramSchema)
     )
@@ -386,7 +389,7 @@ export function createMaterialLayoutCache({
     materialShaderId: string,
     materialParamSchema?: readonly ParamSchemaEntry[],
   ): BindGroupLayout | undefined => {
-    if (isEngineOwnedMaterialShader(materialShaderId)) return undefined;
+    if (isSharedLayoutMaterialShader(materialShaderId)) return undefined;
     const lookup = getShader().findMaterialArtifact(materialShaderId);
     const contract = lookup.ok
       ? (lookup.value.receipt?.bindings ?? 'render-material')

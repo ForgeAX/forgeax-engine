@@ -1,8 +1,11 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { type TextureAsset, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { MaterialResource } from '../material-resource';
+import { worldRenderResources } from '../publication/resource-scope';
 import { createFoldedDrawRecorder } from '../record/fold-instance-buffer';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import type { FoldBucket } from '../record/mesh-ssbo';
@@ -10,7 +13,6 @@ import type { RenderSystemInternals } from '../record/render-context';
 import {
   type DispatchEntry,
   defaultMaterialSnapshot,
-  type MaterialSnapshot,
   type RenderableSnapshot,
 } from '../render-system-extract';
 import {
@@ -67,7 +69,7 @@ function projectSubmittedWorkset(input: {
       ? 'pending'
       : projectFramePresentation({
           renderables,
-          preparedWorlds: input.preparedWorlds,
+          preparedWorlds: input.preparedWorlds.map(worldRenderResources),
           internals: input.internals,
         })
     : 'ready';
@@ -90,8 +92,8 @@ it.each([
           assetHandle: 0,
           entityKey: 1,
           transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
-          material: defaultMaterialSnapshot(),
-          materials: [defaultMaterialSnapshot()],
+          material: MaterialResource.from(defaultMaterialSnapshot()),
+          materials: [MaterialResource.from(defaultMaterialSnapshot())],
           materialBindingSources: [],
           ...(count === undefined
             ? {}
@@ -120,7 +122,6 @@ it.each([
           vertexEntry: undefined,
           fragmentEntry: undefined,
           materialShaderId: undefined,
-          paramSnapshot: undefined,
         } satisfies DispatchEntry,
       ],
       // An absent material world makes residency pending; no GPU mock is needed.
@@ -135,11 +136,12 @@ it.each([
 });
 
 it('checks a shared visible material once and observes video readiness again next frame', () => {
-  const world = new World();
-  const material = {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const material = MaterialResource.from({
     ...defaultMaterialSnapshot(),
-    videoTextureFields: new Map([['clip', toShared<'VideoAsset'>(1)]]),
-  };
+    videoTextureFields: new Map([['clip', Number(1) as AssetHandle<'video'>]]),
+  });
   const getView = vi.fn(() => ({}) as unknown);
   const renderables = Array.from(
     { length: 2048 },
@@ -170,7 +172,6 @@ it('checks a shared visible material once and observes video readiness again nex
         vertexEntry: undefined,
         fragmentEntry: undefined,
         materialShaderId: undefined,
-        paramSnapshot: undefined,
       }) satisfies DispatchEntry,
   );
   const project = () =>
@@ -193,15 +194,9 @@ it('checks a shared visible material once and observes video readiness again nex
 it('observes a shared material once per scope and refreshes the next presentation', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const gpuStore = new GpuResidencyCache();
-  gpuStore.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('no cubemap');
-    },
-    device.caps,
-  );
-  const worlds = [new World(), new World()] as const;
+  gpuStore.configureGpuDevice(device, undefined, device.caps);
+  const owners = [new AssetRegistry(), new AssetRegistry()] as const;
+  const worlds = [new World({ assets: owners[0] }), new World({ assets: owners[1] })] as const;
   const texture: TextureAsset = {
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
@@ -210,18 +205,18 @@ it('observes a shared material once per scope and refreshes the next presentatio
     mips: { kind: 'packed', levelCount: 1 },
     data: new Uint8Array(64),
   };
-  const handles = [
-    worlds[0].allocSharedRef('TextureAsset', texture),
-    worlds[1].allocSharedRef('TextureAsset', texture),
-  ] as const;
-  expect(handles[0]).toBe(handles[1]);
-  const material: MaterialSnapshot = {
-    ...defaultMaterialSnapshot(),
-    baseColorTexture: handles[0],
-  };
-  const rows = Array.from(
-    { length: 200 },
-    (_, index): RenderableSnapshot => ({
+  const handles = [owners[0].create(texture).unwrap(), owners[1].create(texture).unwrap()] as const;
+  expect(handles[0]).not.toBe(handles[1]);
+  const materials = handles.map((handle) =>
+    MaterialResource.from({
+      ...defaultMaterialSnapshot(),
+      baseColorTexture: handle,
+    }),
+  );
+  const rows = Array.from({ length: 200 }, (_, index): RenderableSnapshot => {
+    const material = materials[index % 2];
+    if (material === undefined) throw new Error('expected a World material');
+    return {
       worldId: index % 2,
       authorVisible: true,
       assetHandle: 0,
@@ -230,8 +225,8 @@ it('observes a shared material once per scope and refreshes the next presentatio
       material,
       materials: [material],
       materialBindingSources: [],
-    }),
-  );
+    };
+  });
   const dispatch = rows.map(
     (row, index): DispatchEntry => ({
       entityIndex: row.entityKey,
@@ -246,7 +241,6 @@ it('observes a shared material once per scope and refreshes the next presentatio
       vertexEntry: undefined,
       fragmentEntry: undefined,
       materialShaderId: undefined,
-      paramSnapshot: undefined,
     }),
   );
   const ensureResident = vi.spyOn(gpuStore, 'ensureResident');
@@ -265,14 +259,15 @@ it('observes a shared material once per scope and refreshes the next presentatio
     expect(project().presentation).toBe('ready');
     expect(createTexture).toHaveBeenCalledTimes(2);
     expect(ensureResident).toHaveBeenCalledTimes(2);
-    gpuStore.invalidateTexture(handles[0], worlds[0]);
+    gpuStore.invalidateTexture(handles[0], worldRenderResources(worlds[0]));
     expect(project().presentation).toBe('ready');
     expect(createTexture).toHaveBeenCalledTimes(3);
     expect(ensureResident).toHaveBeenCalledTimes(4);
   } finally {
     gpuStore.destroyAll();
-    worlds[0].sharedRefs.release(handles[0]).unwrap();
-    worlds[1].sharedRefs.release(handles[1]).unwrap();
+    owners.forEach((owner) => {
+      owner.dispose();
+    });
   }
 });
 
@@ -299,7 +294,6 @@ it('selects the display workset without reading or preparing material resources'
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: undefined,
-    paramSnapshot: undefined,
   };
   expect(projectDisplayRenderables([row], [dispatch])).toEqual([row]);
   expect(materialRead).not.toHaveBeenCalled();
@@ -309,10 +303,23 @@ it('selects the display workset without reading or preparing material resources'
 });
 
 it('keeps failed material bindings pending after submission', () => {
-  const world = new World();
-  const handle = world.allocSharedRef('TextureAsset', {} as TextureAsset);
-  world.sharedRefs.release(handle).unwrap();
-  const material = { ...defaultMaterialSnapshot(), baseColorTexture: handle };
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const handle = assets
+    .create<TextureAsset>({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: new Uint8Array(4),
+    })
+    .unwrap();
+  assets.release(handle).unwrap();
+  const material = MaterialResource.from({
+    ...defaultMaterialSnapshot(),
+    baseColorTexture: handle,
+  });
   const row: RenderableSnapshot = {
     worldId: 0,
     assetHandle: 0,
@@ -325,7 +332,7 @@ it('keeps failed material bindings pending after submission', () => {
   expect(
     projectFramePresentation({
       renderables: [row],
-      preparedWorlds: [world],
+      preparedWorlds: [world].map(worldRenderResources),
       internals: {} as RenderSystemInternals,
     }),
   ).toBe('pending');

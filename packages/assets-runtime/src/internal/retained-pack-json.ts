@@ -1,3 +1,4 @@
+import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { retainJsonMaterialFacts } from './retained-material-facts.js';
 
 // Capture optional platform methods without consulting response.text or function.call.
@@ -43,7 +44,9 @@ export async function readRetainedPackJson(response: Pick<Response, 'json'>): Pr
 const parsedShapes = new WeakMap<object, number | readonly string[]>();
 
 export function parseRetainedPackJson(text: string): unknown {
-  const value: unknown = JSON.parse(text);
+  const decoded = decodeMaterialProgramWire(JSON.parse(text));
+  if (!decoded.ok) throw new SyntaxError('Invalid package material program table');
+  const value: unknown = decoded.value;
   // Retention is consumed only by plugin definition reads. Resource-only
   // production packages never need an ownership audit over every payload.
   if (value !== null && typeof value === 'object') {

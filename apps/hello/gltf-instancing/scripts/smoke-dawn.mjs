@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-gltf-instancing headless smoke (feat-20260515-gltf-loader-via-asset-system / M5 / w23).
 //
 // End-to-end proof: dawn-node drives the same loadByGuid<SceneAsset> +
@@ -31,6 +32,10 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -149,9 +154,7 @@ const {
   renderComponentsPlugin,
 } = await import('@forgeax/engine-render');
 const { ChildOf, Name, scenePlugin, Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const { parseGltf, gltfDocToSceneAsset } = await import('@forgeax/engine-gltf');
 
@@ -175,21 +178,6 @@ try {
 }
 
 console.log('[hello-gltf-instancing] pipeline=Standard');
-
-// Read + parse the gltf source (same Tier-B fork the browser bundle
-// hands to parseGltf). The data URI buffer is resolved inline so
-// externalLoader never fires (it throws if invoked, charter P3
-// explicit-failure red line).
-const gltfJson = JSON.parse(readFileSync(INSTANCED_GLTF_PATH, 'utf8'));
-const externalLoader = async (uri) => {
-  throw new Error(`[smoke] unexpected externalLoader call for uri=${uri}`);
-};
-const docResult = await parseGltf(gltfJson, externalLoader, INSTANCED_GLTF_PATH);
-if (!docResult.ok) {
-  console.error(`[smoke] FAIL - parseGltf: ${docResult.error.code}`);
-  process.exit(1);
-}
-const doc = docResult.value;
 
 // Read meta sidecar for the GUID -> kind map (mirror of vite JSON
 // import in src/main.ts; the meta is committed alongside box.gltf so
@@ -215,101 +203,11 @@ const meshGuid = parseGuid(meshSub.guid);
 const materialGuid = parseGuid(materialSub.guid);
 const sceneGuid = parseGuid(sceneSub.guid);
 
-// IR -> POD bridge. Tier-B mesh (positions only) expanded to canonical
-// 12F interleaved layout (position+normal+uv+tangent) with GLTF Tier-B
-// defaults: normal=(0,1,0), uv=(0,0), tangent=(1,0,0,1).
-const meshIr = doc.meshes[0];
-if (!meshIr) {
-  console.error('[smoke] FAIL - gltf has no mesh[0]');
-  process.exit(1);
-}
-const vertexCount = meshIr.positions.length / 3;
-const FLOATS_PER_VERTEX = 12;
-const interleavedVerts = new Float32Array(vertexCount * FLOATS_PER_VERTEX);
-const normals = meshIr.normals;
-const texcoords = meshIr.texcoord0;
-const tangents = meshIr.tangents;
-for (let i = 0; i < vertexCount; i++) {
-  const dst = i * FLOATS_PER_VERTEX;
-  const p = i * 3;
-  interleavedVerts[dst + 0] = meshIr.positions[p + 0];
-  interleavedVerts[dst + 1] = meshIr.positions[p + 1];
-  interleavedVerts[dst + 2] = meshIr.positions[p + 2];
-  if (normals !== undefined) {
-    const n = i * 3;
-    interleavedVerts[dst + 3] = normals[n + 0];
-    interleavedVerts[dst + 4] = normals[n + 1];
-    interleavedVerts[dst + 5] = normals[n + 2];
-  } else {
-    interleavedVerts[dst + 3] = 0;
-    interleavedVerts[dst + 4] = 1;
-    interleavedVerts[dst + 5] = 0;
-  }
-  if (texcoords !== undefined) {
-    const t = i * 2;
-    interleavedVerts[dst + 6] = texcoords[t + 0];
-    interleavedVerts[dst + 7] = texcoords[t + 1];
-  } else {
-    interleavedVerts[dst + 6] = 0;
-    interleavedVerts[dst + 7] = 0;
-  }
-  if (tangents !== undefined) {
-    const g = i * 4;
-    interleavedVerts[dst + 8] = tangents[g + 0];
-    interleavedVerts[dst + 9] = tangents[g + 1];
-    interleavedVerts[dst + 10] = tangents[g + 2];
-    interleavedVerts[dst + 11] = tangents[g + 3];
-  } else {
-    interleavedVerts[dst + 8] = 1;
-    interleavedVerts[dst + 9] = 0;
-    interleavedVerts[dst + 10] = 0;
-    interleavedVerts[dst + 11] = 1;
-  }
-}
-const meshAsset = {
-  kind: 'mesh',
-  vertices: interleavedVerts,
-  indices: meshIr.indices,
-  submeshes: [{
-    indexOffset: 0,
-    indexCount: meshIr.indices.length,
-    vertexCount,
-    topology: 'triangle-list',
-    materialSlot: 0,
-  }],
-  materialSlots: [{ slotName: 'Default' }],
-  attributes: {
-    position: meshIr.positions,
-    normal: normals ?? new Float32Array(vertexCount * 3).fill(0),
-    uv: texcoords ?? new Float32Array(vertexCount * 2).fill(0),
-    tangent: tangents ?? new Float32Array(vertexCount * 4).fill(0),
-  },
-};
-const materialIr = doc.materials[0];
-if (!materialIr) {
-  console.error('[smoke] FAIL - gltf has no material[0]');
-  process.exit(1);
-}
-// MaterialAsset shape mirrors src/main.ts `materialIrToPod`: the retired
-// `shadingModel` discriminator (feat-20260526 M4) is replaced by an explicit
-// `passes[]` + `values`. allocSharedRef stores the POD verbatim (no
-// register-time normalization), so a bare `{ shadingModel }` material resolves
-// to zero passes and trips MaterialResolvedEmptyPassesError in extract.
-const materialAsset = {
-  kind: 'material',
-  passes: [
-    {
-      name: 'Forward',
-      program: { module: 'forgeax::default-unlit' },
-      renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-    },
-  ],
-  values: {
-    baseColor: materialIr.baseColorFactor,
-  },
-};
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
 
-const world = new World();
+
 const worldContext = await createWorldContext(world, [
   renderComponentsPlugin(),
   scenePlugin(),
@@ -321,40 +219,14 @@ const frameRequest = {
   camera: { lease: worldAttachment1.value },
   environment: { lease: worldAttachment1.value },
 };
-assets.catalog(meshGuid, meshAsset);
-// catalog the material payload so loadByGuid<MaterialAsset>(materialGuid) hits
-// the fast-path (parity with src/main.ts); allocSharedRef mints the column handle.
-assets.catalog(materialGuid, materialAsset);
-const materialHandle = world.allocSharedRef('MaterialAsset', materialAsset);
-
-// Build the SceneAsset POD via the public bridge (feat-20260518 M3 SSOT).
-// MeshFilter routes to HANDLE_CUBE (engine builtin GPU buffer) per the
-// hello-gltf inline pattern; OOS-13 custom mesh GPU upload deferred to
-// feat-future-asset-system-v2.
-const sceneAsset = gltfDocToSceneAsset(doc, {
-  meshHandles: new Map([[0, HANDLE_CUBE]]),
-  materialHandles: new Map([[0, materialHandle]]),
-});
-assets.catalog(sceneGuid, sceneAsset);
-
-// Step (4) parity with src/main.ts: loadByGuid<SceneAsset> + instantiate.
-const sceneHandleRes = await assets.loadByGuid(sceneGuid);
-if (!sceneHandleRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid scene: ${sceneHandleRes.error.code}`);
-  process.exit(1);
-}
-const meshLoadRes = await assets.loadByGuid(meshGuid);
-if (!meshLoadRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid mesh: ${meshLoadRes.error.code}`);
-  process.exit(1);
-}
-const matLoadRes = await assets.loadByGuid(materialGuid);
-if (!matLoadRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid material: ${matLoadRes.error.code}`);
-  process.exit(1);
-}
-// loadByGuid returns the payload (D-17); mint a user-tier column handle.
-const sceneHandle = world.allocSharedRef('SceneAsset', sceneHandleRes.value);
+useBuiltAssetSource(assets, resolve(here, '..', 'dist'));
+const sceneHandleRes = await assets.load(sceneGuid, 'scene');
+if (!sceneHandleRes.ok) throw sceneHandleRes.error;
+const meshLoadRes = await assets.load(meshGuid, 'mesh');
+if (!meshLoadRes.ok) throw meshLoadRes.error;
+const matLoadRes = await assets.load(materialGuid, 'material');
+if (!matLoadRes.ok) throw matLoadRes.error;
+const sceneHandle = sceneHandleRes.value;
 const instanceRes = assets.instantiate(sceneHandle, world);
 if (!instanceRes.ok) {
   console.error(`[smoke] FAIL - instantiate: ${instanceRes.error.code}`);

@@ -6,7 +6,6 @@ const read = (path: string): string => readFileSync(new URL(path, import.meta.ur
 const count = (source: string, pattern: RegExp): number => source.match(pattern)?.length ?? 0;
 
 const productionRaster = read('../gpu-driven/production-raster.ts');
-const productionRasterPrepare = read('../gpu-driven/production-raster-prepare.ts');
 const productionRasterMaterial = read('../gpu-driven/production-raster-material.ts');
 const frameRecord = read('../record/frame.ts');
 const mainPass = read('../record/main-pass.ts');
@@ -44,19 +43,14 @@ describe('GPU-driven baseline characterization', () => {
     expect(productionRaster).not.toContain('GPU_DRIVEN_STANDARD_PBR_WGSL');
     expect(productionRaster).not.toContain('class GpuDrivenPbrRaster');
     expect(productionRaster).toContain('MaterialAbiRasterAdapter');
-    expect(productionRasterPrepare).toContain('preparedPbrCandidateEligible');
     expect(productionRasterMaterial).toContain('deriveVertexBufferLayoutFromProjection');
     expect(productionRasterMaterial).toContain('vertexLayout.arrayStride');
   });
 
   it('keeps CPU-only video slots out of the global GPU receipt gate', () => {
     expect(mainPass).toContain('videoTextureFields?.size');
-    expect(mainPass).toMatch(
-      /gpuDrivenStandardPbrFrameResources === undefined\s*\|\|\s*gpuDrivenStandardPbrFrameResources\.materialBindGroups\.length === 0/,
-    );
-    expect(mainPass).not.toContain(
-      'gpuDrivenStandardPbrFrameResources.materialBindGroups.some((group) => group === undefined)',
-    );
+    expect(mainPass).toContain('prepareMaterialBinding = (slot)');
+    expect(mainPass).not.toContain('for (let materialSlot = 0; materialSlot < materialSlotCount;');
     expect(productionRaster).toMatch(
       /material bind group for global slot \$\{globalMaterialSlot\}/,
     );
@@ -86,7 +80,7 @@ describe('GPU-driven baseline characterization', () => {
   });
 
   it('freezes current ownership and stable-frame inspection signals', () => {
-    expect(productionRaster).toContain('ownsAllDrawItems');
+    expect(productionRaster).toContain('selection: filtered.selection');
     expect(productionRaster).not.toContain('ownsAllRenderables');
     expect(rendererSystem).toContain('gpuDriven: gpuDrivenProduction.inspect()');
     expect(productionRaster).toContain('gpuOwnedSnapshotsMaterialized');

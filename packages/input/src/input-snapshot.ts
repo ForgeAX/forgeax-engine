@@ -486,25 +486,31 @@ function buildGamepadReader(
   slot: GamepadSlotSample | undefined,
 ): ReturnType<InputSnapshot['gamepad']> {
   const standard = slot?.standardMapping === true;
+  const pressed = new Set(slot?.pressed);
+  const justPressed = new Set(slot?.justPressed);
+  const justReleased = new Set(slot?.justReleased);
+  const buttonValues = new Map(slot?.buttonValues);
+  const axes = slot === undefined ? ([0, 0, 0, 0] as const) : ([...slot.axes] as const);
   return Object.freeze({
-    feedbackTarget: slot?.feedbackTarget,
+    feedbackTarget:
+      slot?.feedbackTarget === undefined ? undefined : Object.freeze({ ...slot.feedbackTarget }),
     dualRumble: slot?.dualRumble ?? false,
     connected: slot !== undefined,
     standardMapping: standard,
     button(b: GamepadButtonIndex): boolean {
-      return standard && slot.pressed.has(b);
+      return standard && pressed.has(b);
     },
     buttonValue(b: GamepadButtonIndex): number {
-      return standard ? (slot.buttonValues.get(b) ?? 0) : 0;
+      return standard ? (buttonValues.get(b) ?? 0) : 0;
     },
     justPressed(b: GamepadButtonIndex): boolean {
-      return standard && slot.justPressed.has(b);
+      return standard && justPressed.has(b);
     },
     justReleased(b: GamepadButtonIndex): boolean {
-      return standard && slot.justReleased.has(b);
+      return standard && justReleased.has(b);
     },
     axis(a: GamepadAxisIndex): number {
-      return standard ? slot.axes[a] : 0;
+      return standard ? axes[a] : 0;
     },
   });
 }
@@ -576,37 +582,54 @@ export function snapshotFromSample(
 
   // D-9: use `??` empty-signal defaults for all new optional fields.
   const gamepadSlots: readonly GamepadSlotSample[] = sample.gamepads ?? [];
-  const caps: Capabilities =
-    sample.capabilities ?? Object.freeze({ gamepad: false, pointer: false });
-  const pointerEvts: readonly PointerPhaseEvent[] = sample.pointerEvents ?? [];
+  const caps = Object.freeze({ ...(sample.capabilities ?? { gamepad: false, pointer: false }) });
+  const pointerEvts = Object.freeze(
+    (sample.pointerEvents ?? []).map((event) => Object.freeze({ ...event })),
+  );
   // D-4 / AC-12: no active gesture -> identity empty signal; gesture events
   // default to an empty one-frame queue (mirrors pointerEvents).
-  const gesture: GestureState = sample.gestures ?? IDENTITY_GESTURE;
-  const gestureEvts: readonly GestureEvent[] = sample.gestureEvents ?? [];
+  const gesture = Object.freeze({ ...(sample.gestures ?? IDENTITY_GESTURE) });
+  const gestureEvts = Object.freeze(
+    (sample.gestureEvents ?? []).map((event) =>
+      Object.freeze(
+        'pointerIds' in event
+          ? { ...event, pointerIds: Object.freeze([...event.pointerIds] as const) }
+          : { ...event },
+      ),
+    ),
+  );
   // virtualAxes: consumed by M3 virtualAxis reader; stored as local for
   // the snapshot closure below.
   const _virtualAxes: readonly VirtualAxisSample[] = sample.virtualAxes ?? [];
 
   const virtualAxesMap = new Map<string, VirtualAxisSample>();
   for (const va of _virtualAxes) {
-    virtualAxesMap.set(va.name, va);
+    virtualAxesMap.set(va.name, Object.freeze({ ...va }));
   }
 
   // Build index→slot map so gamepad(i) looks up by slot.index, not array position.
   // The browser getGamepads() returns null-padded arrays where position IS the
   // index, but the diffGamepadFrame output is a sparse list keyed by .index.
-  const gamepadSlotMap = new Map<number, GamepadSlotSample>();
-  for (const slot of gamepadSlots) {
-    gamepadSlotMap.set(slot.index, {
-      ...slot,
-      ...(slot.feedbackTarget ? { feedbackTarget: Object.freeze({ ...slot.feedbackTarget }) } : {}),
-    });
+  const gamepadSlotMap = new Map<number, ReturnType<InputSnapshot['gamepad']>>();
+  for (const slot of gamepadSlots) gamepadSlotMap.set(slot.index, buildGamepadReader(slot));
+  const disconnectedGamepad = buildGamepadReader(undefined);
+  const pointers = new Map<number, PointerSample>();
+  for (const pointer of sample.pointers ?? []) {
+    if (!pointers.has(pointer.pointerId))
+      pointers.set(
+        pointer.pointerId,
+        Object.freeze({
+          ...pointer,
+          delta: Object.freeze({ ...pointer.delta }),
+        }),
+      );
   }
+  const frozenActions = actionStates?.map((state) => Object.freeze({ ...state }));
 
   // Build action lookup map for snap.action(name) readpoint.
   const actionMap = new Map<string, ActionState>();
-  if (actionStates) {
-    for (const a of actionStates) {
+  if (frozenActions) {
+    for (const a of frozenActions) {
       actionMap.set(a.action, a);
     }
   }
@@ -661,12 +684,11 @@ export function snapshotFromSample(
       wheelDelta,
     },
     gamepad(i) {
-      const slot = gamepadSlotMap.get(i);
-      return buildGamepadReader(slot);
+      return gamepadSlotMap.get(i) ?? disconnectedGamepad;
     },
     capabilities: caps,
     pointer(id) {
-      const entry = (sample.pointers ?? []).find((p) => p.pointerId === id);
+      const entry = pointers.get(id);
       if (!entry) {
         return Object.freeze({
           active: false,
@@ -678,10 +700,7 @@ export function snapshotFromSample(
           delta: Object.freeze({ x: 0, y: 0 }),
         });
       }
-      return Object.freeze({
-        ...entry,
-        delta: Object.freeze({ x: entry.delta.x, y: entry.delta.y }),
-      });
+      return entry;
     },
     virtualAxis(name) {
       const va = virtualAxesMap.get(name);
@@ -699,29 +718,18 @@ export function snapshotFromSample(
       });
     },
     getAxis(neg, pos) {
-      if (!actionStates) return 0;
-      return getAxis(actionStates, neg, pos);
+      if (!frozenActions) return 0;
+      return getAxis(frozenActions, neg, pos);
     },
     getVector(negX, posX, negY, posY, opts) {
-      if (!actionStates) return { x: 0, y: 0 };
-      return getVector(actionStates, negX, posX, negY, posY, opts);
+      if (!frozenActions) return { x: 0, y: 0 };
+      return getVector(frozenActions, negX, posX, negY, posY, opts);
     },
     pointerEvents: pointerEvts,
     gesture,
     gestureEvents: gestureEvts,
   };
-  (snapshot as unknown as Record<string, unknown>)._actionStates = actionStates;
   return Object.freeze(snapshot);
-}
-
-/**
- * @internal Read previously derived action states from a snapshot for edge diff.
- * Used by the frame-start scan system (D-6: prev snapshot = edge baseline).
- */
-export function readActionStatesForEdgeDiff(
-  snap: InputSnapshot,
-): readonly ActionState[] | undefined {
-  return (snap as unknown as { _actionStates?: readonly ActionState[] })._actionStates;
 }
 
 /**

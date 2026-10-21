@@ -1,5 +1,5 @@
 import type { SchemaOf, ShapeOf } from '@forgeax/engine-ecs';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 import {
   createVfxEffectContract,
@@ -41,7 +41,7 @@ describe('ParticleEffectPlayer public type shape', () => {
     >();
     expectTypeOf<
       SchemaOf<typeof ParticleEffectPlayer>['effect']
-    >().toEqualTypeOf<'shared<ParticleEffectAsset>'>();
+    >().toEqualTypeOf<'asset<particle-effect>'>();
     expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['playing']>().toEqualTypeOf<'bool'>();
     expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['seed']>().toEqualTypeOf<'u32'>();
     expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['timeScale']>().toEqualTypeOf<'f32'>();
@@ -49,7 +49,7 @@ describe('ParticleEffectPlayer public type shape', () => {
 
   it('derives the shared effect handle from the ECS schema', () => {
     type Data = ShapeOf<SchemaOf<typeof ParticleEffectPlayer>>;
-    expectTypeOf<Data['effect']>().toEqualTypeOf<Handle<'ParticleEffectAsset', 'shared'>>();
+    expectTypeOf<Data['effect']>().toEqualTypeOf<AssetHandle<'particle-effect'>>();
     expectTypeOf<Data['playing']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['seed']>().toEqualTypeOf<number>();
     expectTypeOf<Data['timeScale']>().toEqualTypeOf<number>();

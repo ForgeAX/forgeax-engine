@@ -1,5 +1,6 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import {
@@ -28,15 +29,13 @@ import {
 } from '@forgeax/engine-rhi-webgpu';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { Transform } from '@forgeax/engine-scene';
-import type {
-  Handle,
-  IesProfileAsset,
-  MaterialAsset,
-  MeshAsset,
-  TextureAsset,
-} from '@forgeax/engine-types';
+import type { IesProfileAsset, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import type { LightingSceneManifest } from './lighting-reference';
 import { constantProbeSh } from './probe-reference';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const EXTENDED_LIGHTING_RUNTIME_MODES = [
   'rect',
@@ -156,8 +155,8 @@ function createControlledDeviceLoss(
 
 function spawnMesh(
   world: World,
-  mesh: Handle<'MeshAsset', 'shared'>,
-  material: Handle<'MaterialAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
+  material: AssetHandle<'material'>,
   pos: readonly [number, number, number],
   scale: readonly [number, number, number] = [1, 1, 1],
 ): void {
@@ -170,12 +169,18 @@ function spawnMesh(
     .unwrap();
 }
 
-function allocateMaterial(world: World, material: MaterialAsset): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef('MaterialAsset', material);
+function allocateMaterial(world: World, material: MaterialAsset): AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(material).unwrap();
 }
 
-function allocateMesh(world: World, mesh: MeshAsset): Handle<'MeshAsset', 'shared'> {
-  return world.allocSharedRef('MeshAsset', mesh);
+function allocateMesh(world: World, mesh: MeshAsset): AssetHandle<'mesh'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(mesh).unwrap();
 }
 
 function spawnProbe(
@@ -201,6 +206,11 @@ function spawnProbeReceivers(
   manifest: LightingSceneManifest,
   radius = 0.58,
 ): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   const probeMaterial = manifest.materials.probe;
   const sphereMaterial = allocateMaterial(
     world,
@@ -211,7 +221,7 @@ function spawnProbeReceivers(
     }),
   );
   for (const x of positions) {
-    spawnMesh(world, HANDLE_SPHERE, sphereMaterial, [x, -0.05, 0], [radius, radius, radius]);
+    spawnMesh(world, primitiveSphere, sphereMaterial, [x, -0.05, 0], [radius, radius, radius]);
   }
 }
 
@@ -286,6 +296,9 @@ function spawnSpot(
   manifest: LightingSceneManifest,
   plainSpot = false,
 ): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const useIes = !plainSpot && (mode === 'ies' || mode === 'spot-combined' || mode === 'recovery');
   const useCookie = !plainSpot && (mode === 'cookie' || mode === 'spot-combined' || mode === 'recovery');
   const spot = manifest.lighting.spot;
@@ -303,8 +316,8 @@ function spawnSpot(
           outerConeDeg: spot.outerConeDeg,
           castShadow: mode === 'spot-combined' || mode === 'recovery',
           rollDeg: useIes ? spot.rollDeg : 0,
-          ...(useIes ? { iesProfile: world.allocSharedRef('IesProfileAsset', assets.ies) } : {}),
-          ...(useCookie ? { cookie: world.allocSharedRef('TextureAsset', assets.cookie) } : {}),
+          ...(useIes ? { iesProfile: sceneAssets.create(assets.ies).unwrap() } : {}),
+          ...(useCookie ? { cookie: sceneAssets.create(assets.cookie).unwrap() } : {}),
         },
       },
     )
@@ -320,6 +333,11 @@ export function populateExtendedLightingWorld(
   comparisonMode = false,
   plainSpot = false,
 ): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   const camera = manifest.camera;
   world
     .spawn(
@@ -368,7 +386,7 @@ export function populateExtendedLightingWorld(
   );
   spawnMesh(world, planeHandle, receiver, [0, 0, 0]);
   for (const sphere of manifest.geometry.glossySpheres) {
-    spawnMesh(world, HANDLE_SPHERE, glossy, sphere.position, [sphere.radius, sphere.radius, sphere.radius]);
+    spawnMesh(world, primitiveSphere, glossy, sphere.position, [sphere.radius, sphere.radius, sphere.radius]);
   }
 
   if (mode === 'rect' || mode === 'rect-backface') {
@@ -454,7 +472,7 @@ export async function createExtendedLightingRuntime(input: {
       ...(typeof candidate.hint === 'string' ? { hint: candidate.hint } : {}),
     });
   });
-  const world = new World();
+  const world = new World({ assets: constructed.value.assets });
   populateExtendedLightingWorld(
     world,
     input.mode,

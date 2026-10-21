@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
@@ -14,7 +16,7 @@ import {
 } from '../index';
 
 async function fixture() {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   const context = await createWorldContext(world, [scenePlugin(), animationPlugin()]);
   const chain = (prefix: string, length: number, x: number) => {
     const joints: EntityHandle[] = [];
@@ -83,7 +85,7 @@ async function fixture() {
     .addComponent(player, {
       component: AnimationPlayer,
       data: {
-        clips: [world.allocSharedRef('AnimationClip', clip)],
+        clips: [runtimeAssetRegistry(world.assets).create(clip).unwrap()],
         times: [0],
         weights: [1],
         speeds: [0],
@@ -169,7 +171,7 @@ describe('ordinary retargeted clips', () => {
       .addComponent(targetPlayer, {
         component: AnimationPlayer,
         data: {
-          clips: [world.allocSharedRef('AnimationClip', baked)],
+          clips: [runtimeAssetRegistry(world.assets).create(baked).unwrap()],
           times: [0],
           weights: [0],
           speeds: [0],
@@ -180,7 +182,9 @@ describe('ordinary retargeted clips', () => {
       .unwrap();
     bindAnimationTargets(world, targetPlayer, target).unwrap();
     world
-      .set(player, AnimationPlayer, { clips: [world.allocSharedRef('AnimationClip', cubic)] })
+      .set(player, AnimationPlayer, {
+        clips: [runtimeAssetRegistry(world.assets).create(cubic).unwrap()],
+      })
       .unwrap();
     for (const time of [0, 0.009, 0.139, 0.371, 0.593, 0.999, 1.731, 2]) {
       world.set(player, AnimationPlayer, { times: [time] }).unwrap();
@@ -258,7 +262,7 @@ describe('ordinary retargeted clips', () => {
       .addComponent(targetPlayer, {
         component: AnimationPlayer,
         data: {
-          clips: [world.allocSharedRef('AnimationClip', baked)],
+          clips: [runtimeAssetRegistry(world.assets).create(baked).unwrap()],
           times: [0],
           weights: [1],
           speeds: [0],
@@ -374,8 +378,8 @@ it('preserves root motion through changing blend slots, loop wrap and retarget-b
       sampler: { ...channel.sampler, output: new Float32Array([-3, 0, 0, -3, 0, 0, -3, 0, 0]) },
     })),
   };
-  const movingHandle = world.allocSharedRef('AnimationClip', clip);
-  const neutralHandle = world.allocSharedRef('AnimationClip', neutral);
+  const movingHandle = runtimeAssetRegistry(world.assets).create(clip).unwrap();
+  const neutralHandle = runtimeAssetRegistry(world.assets).create(neutral).unwrap();
   let expectedX = 4;
   let residual = 0;
   let goal = [0, 0, 0];

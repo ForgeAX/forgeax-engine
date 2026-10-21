@@ -1,15 +1,20 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { fileURLToPath } from 'node:url';
+import { textureContribution } from '@forgeax/engine-image';
 import {
   ImporterRegistry,
   type ImportRunnerFs,
   type RunImportMeta,
   runImport,
 } from '@forgeax/engine-import';
+import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
+import { materialContribution, samplerContribution } from '@forgeax/engine-render';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { importedSource } from '../../../import/src/__tests__/fixtures/runtime-import';
+import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { gltfImporter } from '../gltf-importer.js';
 
-const SOURCE = 'foliage.gltf';
+const SOURCE = fileURLToPath(new URL('./fixtures/foliage.gltf', import.meta.url));
 const TINY_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC';
 const MATERIAL_GUID = '019f0000-0000-7000-8000-000000000200';
@@ -94,8 +99,8 @@ function fs(extension: Record<string, unknown>, colorSpaces: string[]): ImportRu
         ok: true,
         value: {
           texture,
-          bytes: Uint8Array.from(atob(TINY_PNG_BASE64), (c) => c.charCodeAt(0)),
-          mediaType: 'image/png',
+          bytes: new Uint8Array([128, 96, 64, 255]),
+          mediaType: 'application/octet-stream',
           assetCodec: { name: 'rgba8', version: '1' },
         },
       };
@@ -103,10 +108,12 @@ function fs(extension: Record<string, unknown>, colorSpaces: string[]): ImportRu
   };
 }
 
-describe('glTF KHR_materials_diffuse_transmission import', () => {
+describe('glTF KHR_materials_diffuse_transmission import', { timeout: 60_000 }, () => {
   it('publishes the diffuseTransmission layer, values and textures through pack parsing', async () => {
     const importers = new ImporterRegistry();
     importers.register(gltfImporter);
+    const cookers = new NativeCookerRegistry();
+    cookers.register(createMaterialPackCooker());
     const colorSpaces: string[] = [];
     const result = await runImport(
       meta(),
@@ -120,19 +127,16 @@ describe('glTF KHR_materials_diffuse_transmission import', () => {
         },
         colorSpaces,
       ),
+      cookers,
     );
-    if (!result.ok || 'skipped' in result.value) throw new Error('diffuse import did not publish');
+    if (!result.ok) throw new Error(JSON.stringify(result.error));
+    if ('skipped' in result.value) throw new Error('diffuse import did not publish');
     // The factor texture is alpha data; the tint texture is sRGB color.
     expect(colorSpaces).toEqual(['linear', 'srgb']);
 
     const material = result.value.pack.assets.find((asset) => asset.guid === MATERIAL_GUID);
     if (material === undefined) throw new Error('leaf material row missing');
-    expect(material.refs).toEqual([
-      TEXTURE_GUIDS[0],
-      SAMPLER_GUIDS[0],
-      TEXTURE_GUIDS[1],
-      SAMPLER_GUIDS[1],
-    ]);
+    expect([...material.refs].sort()).toEqual([...TEXTURE_GUIDS, ...SAMPLER_GUIDS].sort());
     const names = new Set(
       (material.payload.parameters as readonly { name: string }[]).map((p) => p.name),
     );
@@ -144,33 +148,39 @@ describe('glTF KHR_materials_diffuse_transmission import', () => {
     ])
       expect(names.has(name)).toBe(true);
 
-    const runtime = new AssetRegistry({
-      findMaterialArtifact: () => ({ ok: false, error: new Error('shader registry not wired') }),
-    } as never);
-    const parsed = runtime.parseAndReturnAsset({
-      kind: material.kind,
-      payload: material.payload,
-      refs: [...material.refs],
-    });
-    if (!parsed.ok) throw parsed.error;
-    const values = (parsed.value.asset as { values?: Record<string, unknown> }).values ?? {};
+    const { assets: runtime } = importedSource(result.value.pack);
+    runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
+    runtime.installDecoder(textureContribution.kind, textureContribution.decoder);
+    runtime.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const handle = (await runtime.load(MATERIAL_GUID, 'material')).unwrap();
+    const values = runtime.read(handle).unwrap().values ?? {};
+    const textures = await Promise.all(
+      TEXTURE_GUIDS.map(async (guid) => (await runtime.load(guid, 'texture')).unwrap()),
+    );
+    const samplers = await Promise.all(
+      SAMPLER_GUIDS.map(async (guid) => (await runtime.load(guid, 'sampler')).unwrap()),
+    );
     expect(values.diffuseTransmission).toBeCloseTo(0.6);
     expect(values.diffuseTransmissionColor).toEqual([0.5, 0.9, 0.3]);
     expect(values.diffuseTransmissionTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[0],
-      sampler: SAMPLER_GUIDS[0],
+      texture: textures[0],
+      sampler: samplers[0],
     });
     expect(values.diffuseTransmissionColorTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[1],
-      sampler: SAMPLER_GUIDS[1],
+      texture: textures[1],
+      sampler: samplers[1],
     });
+    for (const texture of textures)
+      expect(runtime.read(texture).unwrap().data).toEqual(new Uint8Array([128, 96, 64, 255]));
+    runtime.dispose();
   });
 
   it('defaults an empty extension to the KHR factor 0 and white tint', async () => {
     const importers = new ImporterRegistry();
     importers.register(gltfImporter);
     const result = await runImport(meta(), importers, fs({}, []));
-    if (!result.ok || 'skipped' in result.value) throw new Error('diffuse import did not publish');
+    if (!result.ok) throw new Error(JSON.stringify(result.error));
+    if ('skipped' in result.value) throw new Error('diffuse import did not publish');
     const material = result.value.pack.assets.find((asset) => asset.guid === MATERIAL_GUID);
     const values = (material?.payload.values ?? {}) as Record<string, unknown>;
     expect(values.diffuseTransmission).toBe(0);

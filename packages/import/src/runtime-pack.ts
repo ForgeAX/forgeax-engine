@@ -25,6 +25,7 @@ import {
   AssetGuid,
   type DirectPackJson,
   definePackageId,
+  executePackBuild,
   isScriptablePackAssetKind,
   isValidPackSourceKey,
   lowerPluginToolContract,
@@ -53,6 +54,7 @@ import {
   type AssetPublicationOutput,
   type CatalogDelta,
   type CatalogEntry,
+  type CatalogRevisionPoint,
   encodeBase64,
   err,
   ImportError,
@@ -500,19 +502,9 @@ export class RuntimePackProducer {
   private readonly admissions = new Map<string, AbortController>();
   private closed = false;
   private request = 0;
-  readonly catalog = {
-    openPackage: (packageUrl: string): PackageFetcher | undefined => {
-      const bodies = this.bodies.get(packageUrl);
-      return bodies === undefined ? undefined : bodyFetcher(bodies);
-    },
-    enumerate: async (): Promise<Result<readonly CatalogEntry[], AssetError>> => ok(this.rows()),
-    subscribe: (listener: (delta: CatalogDelta) => void): (() => void) => {
-      this.listeners.add(listener);
-      return () => {
-        this.listeners.delete(listener);
-      };
-    },
-  };
+  private readonly catalogRoot = PackageId.format(PackageId.random());
+  private catalogRevision = 0;
+  readonly catalog;
   readonly fetch: PackageFetcher = async (input, init) => {
     if (init?.signal?.aborted) throw init.signal.reason;
     const key = input;
@@ -528,6 +520,27 @@ export class RuntimePackProducer {
   constructor(private readonly options: RuntimePackProducerOptions) {
     if (!options.scopeId)
       throw new TypeError('Runtime Pack producer requires the active scope identity');
+    this.catalog = {
+      expectedScope: { scopeId: this.options.scopeId, generation: 0 },
+      openPackage: (packageUrl: string): PackageFetcher | undefined => {
+        const bodies = this.bodies.get(packageUrl);
+        return bodies === undefined ? undefined : bodyFetcher(bodies);
+      },
+      enumerate: async (): Promise<
+        Result<readonly CatalogEntry[], AssetError> & {
+          readonly revisions: readonly CatalogRevisionPoint[];
+        }
+      > =>
+        Object.assign(ok(this.rows()), {
+          revisions: [{ rootId: this.catalogRoot, revision: this.catalogRevision }],
+        }),
+      subscribe: (listener: (delta: CatalogDelta) => void): (() => void) => {
+        this.listeners.add(listener);
+        return () => {
+          this.listeners.delete(listener);
+        };
+      },
+    };
   }
   rows(): readonly CatalogEntry[] {
     return json([...this.published.values()].flatMap((value) => value.rows));
@@ -1160,9 +1173,16 @@ export class RuntimePackProducer {
     const first = state.rows[0];
     if (first) this.bodies.set(first.packageUrl, bodies);
     install?.();
+    const baselineRevision = this.catalogRevision++;
     const oldGuids = new Set(before?.rows.map((row) => row.guid));
     const newGuids = new Set(state.rows.map((row) => row.guid));
     const delta: CatalogDelta = {
+      scopeId: this.options.scopeId,
+      generation: 0,
+      revisions: {
+        baseline: [{ rootId: this.catalogRoot, revision: baselineRevision }],
+        current: [{ rootId: this.catalogRoot, revision: this.catalogRevision }],
+      },
       added: state.rows.filter((row) => !oldGuids.has(row.guid)),
       changed: state.rows.filter((row) => oldGuids.has(row.guid)),
       removed: [...oldGuids].filter((guid) => !newGuids.has(guid)),
@@ -1413,11 +1433,11 @@ export class RuntimePackProducer {
           dependencyFault = error;
           return err(error);
         };
-        const built = await definition.build({
+        const built = await executePackBuild(definition, {
           packageId: definePackageId(instance.packageId),
           values,
           readByGuid,
-        } as never);
+        });
         if (!built || typeof built.ok !== 'boolean')
           throw new TypeError('Pack build must return a Result');
         if (!built.ok) throw built.error;

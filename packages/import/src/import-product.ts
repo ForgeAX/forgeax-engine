@@ -21,11 +21,10 @@ export interface TerminalImportProduct<P = unknown> extends ImportProduct<P> {
   readonly sourceKey?: string;
 }
 
-export interface ImportAssetProduct<P = unknown> {
-  readonly payload: P;
-  readonly refs: readonly AssetRef[];
-  readonly artifacts: Readonly<Record<string, ImportedArtifactBody>>;
-}
+export type ImportAssetProduct<P = unknown> = Pick<
+  ImportedAsset<P>,
+  'payload' | 'refs' | 'artifacts'
+>;
 
 export interface ImportProductContractError {
   readonly code: 'import-product-invalid';

@@ -166,7 +166,7 @@ it.each([
   const f = await fixture();
   try {
     f.batches.length = 3;
-    const middle = defined(f.batches[1]);
+    const middle = defined(f.batches.at(1));
     const original = defined(f.projections.get(middle.batchId));
     let changed = original;
     switch (change) {
@@ -346,7 +346,7 @@ it('observes alpha-mask coverage and still rejects its missing material resource
     delete artifact.variantSet;
     for (const [id, projection] of f.projections)
       f.projections.set(id, { ...projection, shadowArtifact: artifact });
-    defined(f.batches[1]).key.admission = 'alpha-mask';
+    defined(f.batches.at(1)).key.admission = 'alpha-mask';
     expect(f.run).toThrow('GPU Scene material buffer');
     expect(f.lookup).toHaveBeenCalledTimes(2);
     expect(f.lookup.mock.calls[0]?.[5]).toContain('ALPHA_MASK=false');
@@ -367,7 +367,7 @@ it('rejects a missing indexed buffer even after a matching pipeline was prepared
         ...projection,
         mesh: {
           ...projection.mesh,
-          indexBuffer: batch === f.batches[1] ? null : projection.mesh.vertexBuffer,
+          indexBuffer: batch === f.batches.at(1) ? null : projection.mesh.vertexBuffer,
           indexFormat: 'uint16',
         },
       });
@@ -397,7 +397,7 @@ it('does not retain a missing pipeline between invocations', async () => {
 it('rejects a missing receipt before reusing any pipeline', async () => {
   const f = await fixture();
   try {
-    const middle = defined(f.batches[1]);
+    const middle = defined(f.batches.at(1));
     const projection = defined(f.projections.get(middle.batchId));
     const artifact = { ...projection.shadowArtifact };
     delete artifact.receipt;

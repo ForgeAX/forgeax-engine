@@ -11,6 +11,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const here = resolve(import.meta.dirname);
 const appRoot = resolve(here, '..');
@@ -84,13 +88,12 @@ const { World } = await import('@forgeax/engine-ecs');
 const { mat4, quat, vec3 } = await import('@forgeax/engine-math');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
-const { HANDLE_CUBE, HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
+
 const { createApp } = await import('@forgeax/engine-app');
 const { GlobalTransform, Transform, scenePlugin } = await import('@forgeax/engine-scene');
 const { loadVfxGpuEffect, ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY } = await import('@forgeax/engine-vfx');
 const { createCameraProvider, createVfxRuntimeHost } = await import('@forgeax/engine-vfx-render');
 
-const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
 const cameraPosition = [0, 4.9, 10.0];
 const cameraTarget = [0, 3.8, 0];
 const cameraQuat = quat.fromLookAt(quat.create(), cameraPosition, cameraTarget, [0, 1, 0]);
@@ -133,6 +136,14 @@ const constructed = await constructRuntimeRendererHost(
 );
 if (!constructed.ok) throw constructed.error;
 const { renderer, assets } = constructed.value;
+const world = new World({ assets, time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
 phase('world-attach');
 const attachment = renderer.attach(world);
 if (!attachment.ok) throw attachment.error;
@@ -142,18 +153,18 @@ const attached = await host.attachWorld({ world, assets });
 if (!attached.ok) throw new Error(`cinder-fall: VFX host attach failed: ${attached.error.hint}`);
 
 phase('assets');
-const materialResult = await assets.loadByGuid(assets.parseGuid(STANDARD_MATERIAL_GUID));
+const materialResult = await assets.load(assets.parseGuid(STANDARD_MATERIAL_GUID), 'material');
 if (!materialResult.ok) throw new Error(`cinder-fall: material load failed: ${String(materialResult.error)}`);
-const material = world.allocSharedRef('MaterialAsset', materialResult.value);
+const material = materialResult.value;
 let platformMaterial = material;
 for (const guid of [ADDITIVE_MATERIAL_GUID, ALPHA_MATERIAL_GUID, PLATFORM_MATERIAL_GUID]) {
-  const loadedMaterial = await assets.loadByGuid(assets.parseGuid(guid));
+  const loadedMaterial = await assets.load(assets.parseGuid(guid), 'material');
   if (!loadedMaterial.ok) throw new Error(`cinder-fall: material load failed: ${String(loadedMaterial.error)}`);
   // Keep every material referenced by the V3 renderer projections resident in
   // the same World registry. The VFX feature resolves these typed assets by
   // GUID during its owning prepare stage; it must not silently defer a
   // missing material to a zero-pass plan.
-  const loadedRef = world.allocSharedRef('MaterialAsset', loadedMaterial.value);
+  const loadedRef = loadedMaterial.value;
   if (guid === PLATFORM_MATERIAL_GUID) platformMaterial = loadedRef;
 }
 cameraEntity = world.spawn(
@@ -166,18 +177,18 @@ world.spawn({
 }).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, -0.12, 0], scale: [4.5, 0.1, 4.5] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [platformMaterial] } },
 ).unwrap();
 const meteor = world.spawn(
   { component: Transform, data: { pos: [0, 8, 0], scale: [0.52, 0.7, 0.52] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [material] } },
 ).unwrap();
 phase('effect-load');
 const loaded = await loadVfxGpuEffect(assets, EFFECT_GUID);
 if (!loaded.ok) throw new Error(`cinder-fall: effect load failed: ${JSON.stringify(loaded.error)}`);
-const effect = world.allocSharedRef('ParticleEffectAsset', loaded.value);
+const effect = loaded.value;
 const player = world.spawn(
   { component: Transform, data: { pos: [0, 0, 0] } },
   { component: ParticleEffectPlayer, data: { effect, playing: true, seed: 0xc1de3, timeScale: 1 } },

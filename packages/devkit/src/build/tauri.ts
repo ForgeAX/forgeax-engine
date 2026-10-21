@@ -1,14 +1,10 @@
 import { mkdir, readdir, rename, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { BuildOptions, ProjectFacts } from '../types.js';
+import type { ProjectFacts } from '../types.js';
 import { tauriBuildScript, tauriMainSource, tauriSmokeScript } from './tauri-source.js';
 
 /** Tauri embeds the ordinary browser closure; it owns no second runtime or renderer. */
-export async function writeTauriProject(
-  facts: ProjectFacts,
-  _options: BuildOptions,
-  outDir: string,
-): Promise<void> {
+export async function writeTauriProject(facts: ProjectFacts, outDir: string): Promise<void> {
   const files = await readdir(outDir);
   await mkdir(resolve(outDir, 'web'));
   for (const name of files) await rename(resolve(outDir, name), resolve(outDir, 'web', name));

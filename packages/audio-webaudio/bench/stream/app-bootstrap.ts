@@ -9,22 +9,22 @@ const entry: ExecutionBootstrapEntry = data => ({ features: [], plugins: [audioP
   name: 'audio-stream-evidence', inject: ['world', 'assets', 'audio', 'executionBootstrapHost'],
   async apply(ctx) {
     const { guid, count, shared, shortGuid } = data as { guid: string; count: number; shared: boolean; shortGuid?: string };
-    const loaded = await ctx.assets!.loadByGuid(ctx.assets!.parseGuid(guid));
-    if (!loaded.ok || loaded.value.kind !== 'audio') throw loaded.ok ? new Error('not audio') : loaded.error;
+    const loaded = await ctx.assets!.load(guid, 'audio');
+    if (!loaded.ok) throw loaded.error;
     ctx.audio!.configureBuses([{ id: 'master', parent: null }, { id: 'music', parent: 'master', volume: 0.5,
       sends: [{ bus: 'room', gain: 0.25, tap: 'pre-fader' }] }, { id: 'room', parent: 'master' }]);
     const clips = [loaded.value];
     if (shortGuid) {
-      const short = await ctx.assets!.loadByGuid(ctx.assets!.parseGuid(shortGuid));
-      if (!short.ok || short.value.kind !== 'audio' || short.value.stream)
+      const short = await ctx.assets!.load(shortGuid, 'audio');
+      if (!short.ok || ctx.assets!.read(short.value).unwrap().stream)
         throw new Error('mixed App requires the ordinary buffered short audio GUID');
       clips.push(short.value);
     }
-    const entities = clips.flatMap(value => {
-      const clip = ctx.world.allocSharedRef('AudioClipAsset', value);
+    const entities = clips.flatMap(clip => {
       return Array.from({ length: count }, () => ctx.world.spawn({ component: AudioSource,
         data: { clip, playing: true, loop: true, volume: 0.25 / (count * clips.length), spatialBlend: 1, bus: 'music' } }).unwrap());
     });
+    for (const clip of clips) ctx.assets!.release(clip).unwrap();
     ctx.world.spawn({ component: Transform, data: { pos: [0, 0, 8] } }, { component: Camera,
       data: perspective({ fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 }) }).unwrap();
     if (shared) {

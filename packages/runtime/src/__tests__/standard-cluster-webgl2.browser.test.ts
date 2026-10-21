@@ -1,5 +1,5 @@
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   DEFAULT_STANDARD_PROFILE,
@@ -12,10 +12,10 @@ import {
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import * as backend from '@forgeax/engine-rhi-wgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
   if (!result.ok) throw result.error;
@@ -50,48 +50,54 @@ it.each([
     const x = ((index % 5) - 2) * 0.7;
     const y = (Math.floor(index / 5) - 3) * 0.5;
     receiverPixels.push({ x: Math.round((x + 2) * 16), y: Math.round((y + 2) * 16) });
-    const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      surface === 'standard'
-        ? Materials.standard({
-            baseColor: [1, 1, 1, 1],
-            metallic: 0,
-            roughness: 0.65 + index / 100,
-          })
-        : {
-            kind: 'material',
-            passes: [
-              {
-                name: 'Forward',
-                program: { module: 'forgeax::sprite-lit' },
-                renderState: {
-                  blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND,
-                  tags: { LightMode: 'Forward' },
-                  queue: 3000,
+    const material = testAssets(world)
+      .create(
+        surface === 'standard'
+          ? Materials.standard({
+              baseColor: [1, 1, 1, 1],
+              metallic: 0,
+              roughness: 0.65 + index / 100,
+            })
+          : {
+              kind: 'material',
+              passes: [
+                {
+                  name: 'Forward',
+                  program: { module: 'forgeax::sprite-lit' },
+                  renderState: {
+                    blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND,
+                    tags: { LightMode: 'Forward' },
+                    queue: 3000,
+                  },
                 },
+              ],
+              parameters: [
+                { name: 'colorTint', type: 'vec4' },
+                { name: 'region', type: 'vec4' },
+                { name: 'pivotAndSize', type: 'vec4' },
+                { name: 'slicesAndMode', type: 'vec4' },
+                { name: 'baseColorTexture', type: 'texture' },
+              ],
+              values: {
+                colorTint: [0.65 + index / 100, 1, 1, 1],
+                region: [0, 0, 1, 1],
+                pivotAndSize: [0.5, 0.5, 1, 1],
+                slicesAndMode: [0, 0, 0, 0],
               },
-            ],
-            parameters: [
-              { name: 'colorTint', type: 'vec4' },
-              { name: 'region', type: 'vec4' },
-              { name: 'pivotAndSize', type: 'vec4' },
-              { name: 'slicesAndMode', type: 'vec4' },
-              { name: 'baseColorTexture', type: 'texture' },
-            ],
-            values: {
-              colorTint: [0.65 + index / 100, 1, 1, 1],
-              region: [0, 0, 1, 1],
-              pivotAndSize: [0.5, 0.5, 1, 1],
-              slicesAndMode: [0, 0, 0, 0],
             },
-          },
-    );
+      )
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [x, y, 0], scale: [0.5, 0.35, 0.2] } },
         {
           component: MeshFilter,
-          data: { assetHandle: surface === 'standard' ? HANDLE_CUBE : HANDLE_QUAD },
+          data: {
+            assetHandle:
+              surface === 'standard'
+                ? testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap()
+                : testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
         },
         { component: MeshRenderer, data: { materials: [material], lightingChannels: 0x80000000 } },
       )

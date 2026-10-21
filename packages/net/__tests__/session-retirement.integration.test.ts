@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryEndpointPair } from '../src/endpoint/memory';
 import { NetSession } from '../src/session/net-session';
 import type { NetRecoverySnapshot } from '../src/session/recovery';
@@ -60,4 +60,19 @@ describe('NetSession terminal retirement', () => {
       deferredCallbacks: 0,
     });
   });
+});
+
+
+it('publishes retirement before endpoint cleanup can reenter the session', () => {
+  const [endpoint] = createMemoryEndpointPair();
+  const session = new NetSession({ endpoint, maxRawMessages: 8 });
+  const observed: string[] = [];
+  const close = vi.spyOn(endpoint, 'close').mockImplementation(() => {
+    observed.push(session.getRecoverySnapshot().state.kind);
+    session.dispose();
+    session.advanceRecovery();
+  });
+  session.dispose();
+  expect(observed).toEqual(['retired']);
+  expect(close).toHaveBeenCalledTimes(1);
 });

@@ -45,7 +45,7 @@ it.each([false, true])('adapts DRS with shared pass timing %s and verifies RHI D
   const root = `artifacts/adaptive-drs/${gpuPassTiming ? 'dawn-pass-timing' : 'dawn'}`;
   mkdirSync(root, { recursive: true });
   try {
-    await verifyAdaptiveDrs(renderer, recorder, (name, bytes) => {
+    await verifyAdaptiveDrs(renderer, result.value.assets, recorder, (name, bytes) => {
       writeFileSync(`${root}/${name}`, bytes);
     });
   } finally {

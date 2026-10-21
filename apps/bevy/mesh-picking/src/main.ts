@@ -8,13 +8,13 @@
 
 import { createApp } from '@forgeax/engine-app/browser';
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { type MeshAsset } from '@forgeax/engine-assets-runtime';
+
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { createBoxGeometry, createSphereGeometry, createCapsuleGeometry, createTorusGeometry } from '@forgeax/engine-geometry';
 import { pick } from '@forgeax/engine-picking';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -33,17 +33,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const world = app.world;
 
   // ── Materials ──────────────────────────────────────────────────────────
-  const defaultMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.8, 0.8, 1] }),
-  );
-  const highlightMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0.85, 0.1, 1] }),
-  );
+  const defaultMat = assets.create(Materials.standard({ baseColor: [0.8, 0.8, 0.8, 1] })).unwrap();
+  const highlightMat = assets.create(Materials.standard({ baseColor: [1, 0.85, 0.1, 1] })).unwrap();
 
   // ── Meshes with AABB (createBoxGeometry etc. auto-compute AABB) ─────────
   const boxGeom = createBoxGeometry(0.5, 0.5, 0.5, 1, 1, 1);
@@ -56,10 +52,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  const boxHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', boxGeom.value);
-  const sphereHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', sphereGeom.value);
-  const capsuleHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', capsuleGeom.value);
-  const torusHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', torusGeom.value);
+  const boxHandle = assets.create(boxGeom.value).unwrap();
+  const sphereHandle = assets.create(sphereGeom.value).unwrap();
+  const capsuleHandle = assets.create(capsuleGeom.value).unwrap();
+  const torusHandle = assets.create(torusGeom.value).unwrap();
 
   // ── Spawn shapes in a row ───────────────────────────────────────────────
   const spacing = 1.5;

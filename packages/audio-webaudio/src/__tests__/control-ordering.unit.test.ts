@@ -76,6 +76,7 @@ test('control: volume changes reach an already created source', async () => {
   const consumer = createHostAudioConsumer();
   try {
     consumer.consume({
+      asset: { owner: 'clip', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'clip',
@@ -97,6 +98,7 @@ test('R2-A1a: mute before the first clip remains applied when the context is laz
   try {
     consumer.consume({ kind: 'set-bus-mute', bus: 'sfx', muted: true });
     consumer.consume({
+      asset: { owner: 'clip', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'clip',
@@ -116,6 +118,7 @@ test('R2-A1b: latest volume during decode applies to the source eventually creat
   const consumer = createHostAudioConsumer();
   try {
     consumer.consume({
+      asset: { owner: 'clip', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'clip',
@@ -137,6 +140,7 @@ test('R2-A2: host audio state preserves the backend resume failure', async () =>
   const consumer = createHostAudioConsumer(engine);
   try {
     consumer.consume({
+      asset: { owner: 'clip', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 1,
       sourceKey: 'clip',

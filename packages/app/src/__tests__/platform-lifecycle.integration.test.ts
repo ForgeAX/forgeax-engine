@@ -119,24 +119,21 @@ function fixture() {
 }
 
 describe('App borrowed platform lifecycle', () => {
-  it('releases completed artifact reads under memory pressure while hidden and leaves stopped owners untouched', async () => {
+  it('trims the owning asset read cache while hidden and leaves stopped owners untouched', async () => {
     const f = fixture();
-    const assets = new AssetRegistry({} as never);
-    const bytes = Uint8Array.of(1, 2, 3);
-    await assets.artifactCache.read('raw-bytes', async () => ok(bytes));
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
+    const trim = vi.spyOn(assets, 'trimReadCache');
     const app = (await createApp({ ...f, assets })).unwrap();
     app.start().unwrap();
     f.visibility(false);
     const stale = [...f.listeners];
     for (const listener of f.listeners) listener({ kind: 'memory-pressure', level: 'critical' });
-    expect(assets.artifactCache.peek('raw-bytes')).toBeUndefined();
-    expect(bytes).toEqual(Uint8Array.of(1, 2, 3));
+    expect(trim).toHaveBeenCalledTimes(1);
     expect(f.updates).toBe(0);
     expect(f.pending).toBeUndefined();
-    await assets.artifactCache.read('after-stop', async () => ok(bytes));
     await app.dispose();
     for (const listener of stale) listener({ kind: 'memory-pressure', level: 'moderate' });
-    expect(assets.artifactCache.peek('after-stop')).toBeDefined();
+    expect(trim).toHaveBeenCalledTimes(1);
   });
 
   it('advances the actual World once per host frame and discards background time', async () => {

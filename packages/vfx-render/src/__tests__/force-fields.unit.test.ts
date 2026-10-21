@@ -1,12 +1,19 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   isVfxFieldTransform,
   type VfxForceField,
   validateVfxForceFields,
 } from '@forgeax/engine-vfx';
 import { createVfxVectorFieldTexture } from '@forgeax/engine-vfx-compiler';
-import { describe, expect, it } from 'vitest';
-import { createVfxForceFieldPreparation } from '../feature/force-fields.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createVfxForceFieldPreparation } from '../feature/force-fields';
 
+const leases: { dispose(): void }[] = [];
+afterEach(() => {
+  for (const lease of leases) lease.dispose();
+  leases.length = 0;
+});
 const guid = '01a11250-0000-7000-8000-000000000001';
 const transform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const fields: readonly VfxForceField[] = [
@@ -20,29 +27,54 @@ const texture = () =>
 
 describe('managed force-field preparation', () => {
   it('retains unchanged ordinary payloads and replaces content at the same GUID', () => {
-    const prepare = createVfxForceFieldPreparation();
-    const original = texture();
-    const first = prepare(fields, new Map([[guid, original]])).unwrap();
-    const same = prepare(fields, new Map([[guid, original]])).unwrap();
+    const assets = new AssetRegistry();
+    const kernel = createVfxForceFieldPreparation();
+    const prepare = (fields: readonly VfxForceField[], reference?: AssetHandle<'texture'>) => {
+      const pinned =
+        reference === undefined
+          ? undefined
+          : runtimeAssets(assets)
+              .pin<import('@forgeax/engine-types').TextureAsset>(reference)
+              .unwrap();
+      if (pinned !== undefined) leases.push(pinned);
+      return kernel(fields, pinned === undefined ? [] : [pinned]);
+    };
+    const original = assets.create(texture()).unwrap();
+    const bound = fields.map((field) => ({ ...field, texture: original }));
+    const first = prepare(bound, original).unwrap();
+    const same = prepare(bound, original).unwrap();
     expect(same).toBe(first);
     expect(Array.from(first.data.slice(44, 48))).toEqual([0.5, 0.25, -0.125, 0]);
     const replacement = texture();
     new DataView(replacement.data.buffer).setFloat32(0, 2, true);
-    const next = prepare(fields, new Map([[guid, replacement]])).unwrap();
+    assets.update(original, { data: replacement.data }).unwrap();
+    const next = prepare(bound, original).unwrap();
     expect(next.revision).not.toBe(first.revision);
     expect(next.data[44]).toBe(2);
     expect(first.data[44]).toBe(0.5);
+    assets.dispose();
   });
 
   it('preserves structured missing, malformed, nonfinite and capacity failures', () => {
-    const prepare = createVfxForceFieldPreparation();
-    expect(prepare(fields, new Map())).toMatchObject({
+    const assets = new AssetRegistry();
+    const kernel = createVfxForceFieldPreparation();
+    const prepare = (fields: readonly VfxForceField[], reference?: AssetHandle<'texture'>) => {
+      const pinned =
+        reference === undefined
+          ? undefined
+          : runtimeAssets(assets)
+              .pin<import('@forgeax/engine-types').TextureAsset>(reference)
+              .unwrap();
+      if (pinned !== undefined) leases.push(pinned);
+      return kernel(fields, pinned === undefined ? [] : [pinned]);
+    };
+    expect(prepare(fields)).toMatchObject({
       ok: false,
       error: { code: 'vfx-field-asset-missing', detail: { guid } },
     });
     const invalid = texture();
     new DataView(invalid.data.buffer).setFloat32(4, Number.NaN, true);
-    expect(prepare(fields, new Map([[guid, invalid]]))).toMatchObject({
+    expect(prepare(fields, assets.create(invalid).unwrap())).toMatchObject({
       ok: false,
       error: { code: 'vfx-field-payload-invalid' },
     });
@@ -66,6 +98,7 @@ describe('managed force-field preparation', () => {
         error: { code: 'vfx-field-invalid' },
       });
     }
+    assets.dispose();
   });
 
   it('rejects a JSON array in the ordinary texture GUID slot without coercion', () => {
@@ -101,3 +134,5 @@ describe('managed force-field preparation', () => {
     );
   });
 });
+
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';

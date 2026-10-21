@@ -9,10 +9,9 @@
 //
 // Attribute layout (all factories): position (3 floats) + normal (3 floats) +
 // uv (2 floats), expanded to the 12-float runtime layout (adds tangent vec4)
-// by meshFromInterleaved / PROCEDURAL_FLOATS_PER_VERTEX.
+// by the primitive finalizer / PROCEDURAL_FLOATS_PER_VERTEX.
 
 export type { VertexAttributePackDetail } from '@forgeax/engine-types';
-export { type UnpackedMeshBin, unpackMeshBin } from './assets/mesh-bin';
 export { MeshBinAssetError } from './assets/mesh-bin-error';
 export { decodeMeshBinary, normalizeMeshPayload } from './assets/mesh-binary';
 export { meshAssetContribution, meshAssetDecoder, meshAssetKind } from './assets/mesh-decoder';
@@ -21,6 +20,7 @@ export {
   createProceduralMesh,
   type PrimitiveMeshKind,
 } from './assets/primitive-mesh';
+export { type UnpackedMeshBin, unpackMeshBin } from './assets/unpack-mesh-bin';
 export {
   createBoxGeometry,
   meshFromInterleaved,

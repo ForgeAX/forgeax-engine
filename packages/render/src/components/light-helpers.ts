@@ -95,12 +95,12 @@ export function validateDirection(
   return null;
 }
 
-/** Validate directional-light payloads at the render owner boundary. */
-export function validateDirectionalLightData(
+function validateDirectedLightData(
+  componentName: 'DirectionalLight' | 'SpotLight',
   data: Readonly<Record<string, unknown>>,
 ): LightValidationResult {
   const directionError = validateDirection(
-    'DirectionalLight',
+    componentName,
     data.direction as ArrayLike<number> | undefined,
   );
   if (directionError !== null) return err(directionError);
@@ -110,40 +110,189 @@ export function validateDirectionalLightData(
       new ShadowInvalidConfigError(
         'contactShadowLength',
         contactShadowLength,
-        0,
-        '>=',
+        { kind: 'lower-bound', value: 0, operator: '>=' },
         'a finite value >= 0 (0 disables contact shadows)',
       ),
     );
   }
+  return ok(undefined);
+}
+
+/** Projection and update controls share the same admission in all light families. */
+function validateShadowPolicy(
+  data: Readonly<Record<string, unknown>>,
+  kind: 'directional' | 'point' | 'spot',
+): LightValidationResult {
+  for (const field of ['shadowProjection', 'shadowBiasMode'] as const) {
+    const value = (data[field] as number | undefined) ?? 0;
+    if (value !== 0 && value !== 1)
+      return err(
+        new ShadowInvalidConfigError(field, value, { kind: 'allowed-values', values: [0, 1] }),
+      );
+  }
+  for (const [field, fallback, min, max] of [
+    ['shadowRadius', 1, 0, 3.4028234663852886e38],
+    ['shadowIntensity', 1, 0, 1],
+    ['shadowMapAspect', 1, Number.MIN_VALUE, 3.4028234663852886e38],
+    ['shadowRevision', 0, 0, Number.MAX_SAFE_INTEGER],
+    ['shadowBlurSamples', 8, 1, 64],
+  ] as const) {
+    const value = (data[field] as number | undefined) ?? fallback;
+    if (
+      !Number.isFinite(value) ||
+      value < min ||
+      value > max ||
+      ((field === 'shadowRevision' || field === 'shadowBlurSamples') &&
+        !Number.isSafeInteger(value))
+    )
+      return err(new ShadowInvalidConfigError(field, value, { kind: 'range', min, max }));
+  }
+  if (kind !== 'directional') {
+    const values = kind === 'point' ? [1, 6] : [1, 6, 7, 8];
+    const filter = (data.shadowFilter as number | undefined) ?? 6;
+    if (!values.includes(filter))
+      return err(
+        new ShadowInvalidConfigError('shadowFilter', filter, { kind: 'allowed-values', values }),
+      );
+  }
+  if (data.shadowProjection !== 1) return ok(undefined);
+  if (kind === 'point') {
+    const position = data.shadowPosition as ArrayLike<number> | undefined;
+    if (
+      position?.length !== 3 ||
+      !Array.from(position).every((value) => Number.isFinite(Math.fround(value)))
+    )
+      return err(
+        new ShadowInvalidConfigError(
+          'shadowPosition',
+          0,
+          { kind: 'range', min: -3.4028234663852886e38, max: 3.4028234663852886e38 },
+          'three finite world-space coordinates',
+        ),
+      );
+    return ok(undefined);
+  }
+  const matrix = data.shadowViewProjection as ArrayLike<number> | undefined;
+  if (
+    matrix?.length !== 16 ||
+    !Array.from(matrix).every((value) => Number.isFinite(Math.fround(value)))
+  )
+    return err(
+      new ShadowInvalidConfigError(
+        'shadowViewProjection',
+        0,
+        { kind: 'lower-bound', operator: '>', value: 0 },
+        'a finite nonsingular reverse-Z world-to-clip matrix',
+      ),
+    );
+  // Gaussian elimination checks rank without an absolute scale cutoff: valid
+  // orthographic cameras may span very small or very large world distances.
+  const rows = Float64Array.from(
+    { length: 16 },
+    (_, i) => matrix[(i % 4) * 4 + Math.floor(i / 4)] as number,
+  );
+  let valid = true;
+  for (let col = 0; col < 4; col++) {
+    const target = col * 4;
+    let pivot = target;
+    for (let row = col + 1; row < 4; row++) {
+      const candidate = row * 4;
+      if (Math.abs(rows[candidate + col] as number) > Math.abs(rows[pivot + col] as number))
+        pivot = candidate;
+    }
+    if (rows[pivot + col] === 0) {
+      valid = false;
+      break;
+    }
+    for (let lane = col; lane < 4; lane++)
+      [rows[pivot + lane], rows[target + lane]] = [
+        rows[target + lane] as number,
+        rows[pivot + lane] as number,
+      ];
+    for (let row = col + 1; row < 4; row++) {
+      const offset = row * 4;
+      const factor = (rows[offset + col] as number) / (rows[target + col] as number);
+      for (let lane = col + 1; lane < 4; lane++)
+        rows[offset + lane] =
+          (rows[offset + lane] as number) - factor * (rows[target + lane] as number);
+    }
+  }
+  if (
+    !valid ||
+    (kind === 'directional' &&
+      ([3, 7, 11].some((index) => matrix[index] !== 0) || matrix[15] !== 1))
+  )
+    return err(
+      new ShadowInvalidConfigError(
+        'shadowViewProjection',
+        0,
+        { kind: 'lower-bound', operator: '>', value: 0 },
+        kind === 'directional'
+          ? 'a nonsingular orthographic reverse-Z matrix'
+          : 'a nonsingular reverse-Z matrix',
+      ),
+    );
+  return ok(undefined);
+}
+
+/** Validate directional-light payloads at the render owner boundary. */
+export function validateDirectionalLightData(
+  data: Readonly<Record<string, unknown>>,
+): LightValidationResult {
+  const directed = validateDirectedLightData('DirectionalLight', data);
+  if (!directed.ok) return directed;
   if (data.castShadow !== true) return ok(undefined);
 
   const mapSize =
     (data.mapSize as number | undefined) ?? (DirectionalLight.fields.mapSize.default as number);
-  if (mapSize < 1) {
-    return err(new ShadowInvalidConfigError('mapSize', mapSize, 1));
+  if (!Number.isInteger(mapSize) || mapSize < 1) {
+    return err(
+      new ShadowInvalidConfigError('mapSize', mapSize, {
+        kind: 'lower-bound',
+        value: 1,
+        operator: '>=',
+      }),
+    );
   }
+  const policy = validateShadowPolicy(data, 'directional');
+  if (!policy.ok) return policy;
   const cascadeCount =
     (data.cascadeCount as number | undefined) ??
     (DirectionalLight.fields.cascadeCount.default as number);
   if (cascadeCount < 1 || cascadeCount > 4 || !Number.isInteger(cascadeCount)) {
-    return err(new ShadowInvalidConfigError('cascadeCount', cascadeCount, 1, 4));
+    return err(
+      new ShadowInvalidConfigError('cascadeCount', cascadeCount, { kind: 'range', min: 1, max: 4 }),
+    );
   }
   const splitLambda =
     (data.splitLambda as number | undefined) ??
     (DirectionalLight.fields.splitLambda.default as number);
   if (splitLambda < 0 || splitLambda > 1) {
-    return err(new ShadowInvalidConfigError('splitLambda', splitLambda, 0, 1));
+    return err(
+      new ShadowInvalidConfigError('splitLambda', splitLambda, { kind: 'range', min: 0, max: 1 }),
+    );
   }
   const cascadeBlend = (data.cascadeBlend as number | undefined) ?? 0.2;
   if (cascadeBlend < 0 || cascadeBlend > 0.5) {
-    return err(new ShadowInvalidConfigError('cascadeBlend', cascadeBlend, 0, 0.5));
+    return err(
+      new ShadowInvalidConfigError('cascadeBlend', cascadeBlend, {
+        kind: 'range',
+        min: 0,
+        max: 0.5,
+      }),
+    );
   }
   const shadowDistance =
     (data.shadowDistance as number | undefined) ??
     (DirectionalLight.fields.shadowDistance.default as number);
   if (shadowDistance <= 0) {
-    return err(new ShadowInvalidConfigError('shadowDistance', shadowDistance, 0, '>'));
+    return err(
+      new ShadowInvalidConfigError('shadowDistance', shadowDistance, {
+        kind: 'lower-bound',
+        value: 0,
+        operator: '>',
+      }),
+    );
   }
   const shadowFilter =
     (data.shadowFilter as number | undefined) ??
@@ -155,8 +304,7 @@ export function validateDirectionalLightData(
         'shadowFilter',
         shadowFilter,
         { kind: 'allowed-values', values: allowedFilters },
-        undefined,
-        'one of [pcf1, pcf3, pcf5, pcssMedium, pcssHigh, pcfVogel]',
+        'one of [pcf1, pcf3, pcf5, pcssMedium, pcssHigh, pcfVogel, pcfSoft, variance]',
       ),
     );
   }
@@ -200,7 +348,6 @@ export function validateDirectionalLightData(
           'maxPenumbraTexels',
           maxPenumbraTexels,
           { kind: 'range', min: PCSS_PENUMBRA_MIN, max: PCSS_PENUMBRA_MAX },
-          undefined,
           'a finite integer in [1, 64]',
         ),
       );
@@ -216,42 +363,70 @@ export function resolvePunctualShadowFarPlane(
   fallback: number,
 ): Result<number, ShadowInvalidConfigError> {
   if (!Number.isFinite(nearPlane) || nearPlane <= 0)
-    return err(new ShadowInvalidConfigError('nearPlane', nearPlane, 0, '>', 'a finite value > 0'));
+    return err(
+      new ShadowInvalidConfigError(
+        'nearPlane',
+        nearPlane,
+        { kind: 'lower-bound', value: 0, operator: '>' },
+        'a finite value > 0',
+      ),
+    );
   const farPlane = Number.isFinite(range) && range > 0 ? range : fallback;
   if (!Number.isFinite(farPlane) || farPlane <= nearPlane)
     return err(
       new ShadowInvalidConfigError(
         'farPlane',
         farPlane,
-        nearPlane,
-        '>',
+        { kind: 'lower-bound', value: nearPlane, operator: '>' },
         'a finite far plane beyond nearPlane; reduce nearPlane for short-range lights',
       ),
     );
   return ok(farPlane);
 }
 
+function validatePunctualShadowData(
+  data: Readonly<Record<string, unknown>>,
+  component: typeof PointLightShadow | typeof SpotLight,
+  range: number,
+): LightValidationResult {
+  const policy = validateShadowPolicy(data, component === PointLightShadow ? 'point' : 'spot');
+  if (!policy.ok) return policy;
+  const mapSize =
+    (data.mapSize as number | undefined) ?? (component.fields.mapSize.default as number);
+  if (!Number.isInteger(mapSize) || mapSize < 1)
+    return err(
+      new ShadowInvalidConfigError('mapSize', mapSize, {
+        kind: 'lower-bound',
+        value: 1,
+        operator: '>=',
+      }),
+    );
+  const nearPlane =
+    (data.nearPlane as number | undefined) ?? (component.fields.nearPlane.default as number);
+  const farPlane =
+    (data.farPlane as number | undefined) ?? (component.fields.farPlane.default as number);
+  const projection = resolvePunctualShadowFarPlane(range, nearPlane, farPlane);
+  if (!projection.ok) return projection;
+  const pcfKernelSize = (data.pcfKernelSize as number | undefined) ?? 3;
+  if (!Number.isFinite(pcfKernelSize) || pcfKernelSize < 1) {
+    return err(
+      new ShadowInvalidConfigError(
+        'pcfKernelSize',
+        pcfKernelSize,
+        { kind: 'lower-bound', operator: '>=', value: 1 },
+        'a finite footprint diameter >= 1',
+      ),
+    );
+  }
+  return ok(undefined);
+}
+
 /** Validate spot-light payloads at the render owner boundary. */
 export function validateSpotLightData(
   data: Readonly<Record<string, unknown>>,
 ): LightValidationResult {
-  const directionError = validateDirection(
-    'SpotLight',
-    data.direction as ArrayLike<number> | undefined,
-  );
-  if (directionError !== null) return err(directionError);
-  const contactShadowLength = (data.contactShadowLength as number | undefined) ?? 0;
-  if (!Number.isFinite(contactShadowLength) || contactShadowLength < 0) {
-    return err(
-      new ShadowInvalidConfigError(
-        'contactShadowLength',
-        contactShadowLength,
-        0,
-        '>=',
-        'a finite value >= 0 (0 disables contact shadows)',
-      ),
-    );
-  }
+  const directed = validateDirectedLightData('SpotLight', data);
+  if (!directed.ok) return directed;
 
   const range = (data.range as number | undefined) ?? (SpotLight.fields.range.default as number);
   if (typeof range !== 'number' || Number.isNaN(range) || range < 0) {
@@ -268,30 +443,8 @@ export function validateSpotLightData(
     return err(new SpawnLightInvalidBoundsError('SpotLight', 'innerOuter', outerConeDeg));
   }
   if (data.castShadow !== true) return ok(undefined);
-  const mapSize = (data.mapSize as number | undefined) ?? 1024;
-  if (mapSize < 1) return err(new ShadowInvalidConfigError('mapSize', mapSize, 1));
-  const nearPlane =
-    (data.nearPlane as number | undefined) ?? (SpotLight.fields.nearPlane.default as number);
-  const farPlane =
-    (data.farPlane as number | undefined) ?? (SpotLight.fields.farPlane.default as number);
-  const projection = resolvePunctualShadowFarPlane(range, nearPlane, farPlane);
-  if (!projection.ok) return projection;
-  const pcfKernelSize = (data.pcfKernelSize as number | undefined) ?? 3;
-  if (pcfKernelSize < 1 || pcfKernelSize % 2 === 0) {
-    return err(
-      new ShadowInvalidConfigError(
-        'pcfKernelSize',
-        pcfKernelSize,
-        { kind: 'lower-bound', operator: '>=', value: 1 },
-        undefined,
-        'an odd integer >= 1',
-      ),
-    );
-  }
-  const shadowIntensity = (data.shadowIntensity as number | undefined) ?? 1;
-  if (!Number.isFinite(shadowIntensity) || shadowIntensity < 0 || shadowIntensity > 1) {
-    return err(new ShadowInvalidConfigError('shadowIntensity', shadowIntensity, 0, 1));
-  }
+  const shadow = validatePunctualShadowData(data, SpotLight, range);
+  if (!shadow.ok) return shadow;
   return ok(undefined);
 }
 
@@ -310,27 +463,7 @@ export function validatePointLightData(
 export function validatePointLightShadowData(
   data: Readonly<Record<string, unknown>>,
 ): LightValidationResult {
-  const mapSize = (data.mapSize as number | undefined) ?? 512;
-  if (mapSize < 1) return err(new ShadowInvalidConfigError('mapSize', mapSize, 1));
-  const nearPlane =
-    (data.nearPlane as number | undefined) ?? (PointLightShadow.fields.nearPlane.default as number);
-  const farPlane =
-    (data.farPlane as number | undefined) ?? (PointLightShadow.fields.farPlane.default as number);
-  const projection = resolvePunctualShadowFarPlane(Infinity, nearPlane, farPlane);
-  if (!projection.ok) return projection;
-  const pcfKernelSize = (data.pcfKernelSize as number | undefined) ?? 3;
-  if (pcfKernelSize < 1 || pcfKernelSize % 2 === 0) {
-    return err(
-      new ShadowInvalidConfigError(
-        'pcfKernelSize',
-        pcfKernelSize,
-        { kind: 'lower-bound', operator: '>=', value: 1 },
-        undefined,
-        'an odd integer >= 1',
-      ),
-    );
-  }
-  return ok(undefined);
+  return validatePunctualShadowData(data, PointLightShadow, Infinity);
 }
 
 /** Validate rectangular area-light authoring facts before renderer admission. */

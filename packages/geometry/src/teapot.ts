@@ -4,7 +4,7 @@
 
 import type { MeshAsset } from '@forgeax/engine-types';
 import { ASSET_ERROR_HINTS, AssetError, err, ok, type Result } from '@forgeax/engine-types';
-import { FACTORY_FLOATS_PER_VERTEX, meshFromInterleaved } from './box';
+import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
 
 const PATCHES = new Uint16Array([
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 3, 16, 17, 18, 7, 19, 20, 21, 11, 22, 23,
@@ -197,9 +197,7 @@ export function createTeapotGeometry(
   for (let surface = firstSurface; surface < lastSurface; surface++) {
     if (lid || surface < 20 || surface >= 28) activeSurfaces.push(surface);
   }
-  const vertices = new Float32Array(
-    activeSurfaces.length * (steps + 1) * (steps + 1) * FACTORY_FLOATS_PER_VERTEX,
-  );
+  const attributes = createPrimitiveAttributes(activeSurfaces.length * (steps + 1) * (steps + 1));
   const indices: number[] = [];
   const stride = steps + 1;
   let vertex = 0;
@@ -221,15 +219,14 @@ export function createTeapotGeometry(
           Math.fround(trueSize * (evaluated.point[2] - maxHeight2)),
           Math.fround(-trueSize * evaluated.point[1]),
         ];
-        const base = vertex * FACTORY_FLOATS_PER_VERTEX;
-        vertices[base] = position[0];
-        vertices[base + 1] = position[1];
-        vertices[base + 2] = position[2];
-        vertices[base + 3] = normal[0];
-        vertices[base + 4] = normal[1];
-        vertices[base + 5] = normal[2];
-        vertices[base + 6] = 1 - t;
-        vertices[base + 7] = 1 - s;
+        attributes.position[vertex * 3 + 0] = position[0];
+        attributes.position[vertex * 3 + 1] = position[1];
+        attributes.position[vertex * 3 + 2] = position[2];
+        attributes.normal[vertex * 3 + 0] = normal[0];
+        attributes.normal[vertex * 3 + 1] = normal[1];
+        attributes.normal[vertex * 3 + 2] = normal[2];
+        attributes.uv[vertex * 2 + 0] = 1 - t;
+        attributes.uv[vertex * 2 + 1] = 1 - s;
         positions.push(position);
         vertex++;
       }
@@ -249,7 +246,7 @@ export function createTeapotGeometry(
       }
     }
   }
-  const mesh = meshFromInterleaved(vertices, new Uint32Array(indices));
+  const mesh = finishPrimitiveMesh(attributes, new Uint32Array(indices));
   if (!mesh.ok) return mesh;
   return ok({
     ...mesh.value,

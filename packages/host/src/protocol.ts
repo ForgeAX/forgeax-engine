@@ -175,21 +175,29 @@ export function createHostAssembly(input: HostAssemblyInput = {}): HostAssembly 
   if (!checked.ok) throw checked.error;
   return checked.value;
 }
+const ASSEMBLY_FIELDS = {
+  schemaVersion: true,
+  revision: true,
+  sessionGeneration: true,
+  root: true,
+  config: true,
+} as const satisfies Record<keyof HostAssembly, true>;
+const ROOT_FIELDS = {
+  program: true,
+  codeRevision: true,
+  config: true,
+  source: true,
+} as const satisfies Record<keyof HostRootDescriptor, true>;
 export function validateHostAssembly(value: unknown): HostAssemblyValidation {
   try {
     json(value);
     if (typeof value !== 'object' || value === null) throw invalid('assembly must be an object');
     const assembly = value as HostAssembly;
-    if (
-      Object.keys(assembly).some(
-        (key) =>
-          !['schemaVersion', 'revision', 'sessionGeneration', 'root', 'config'].includes(key),
-      )
-    ) {
+    if (Object.keys(assembly).some((key) => !Object.hasOwn(ASSEMBLY_FIELDS, key))) {
       throw invalid('unknown assembly fields');
     }
     if (
-      assembly.schemaVersion !== 2 ||
+      assembly.schemaVersion !== HOST_ASSEMBLY_SCHEMA_VERSION ||
       !Number.isSafeInteger(assembly.sessionGeneration) ||
       assembly.sessionGeneration < 1
     ) {
@@ -205,9 +213,7 @@ export function validateHostAssembly(value: unknown): HostAssemblyValidation {
         typeof root.codeRevision !== 'string' ||
         !root.codeRevision ||
         (root.source !== undefined && typeof root.source !== 'string') ||
-        Object.keys(root).some(
-          (key) => !['program', 'codeRevision', 'config', 'source'].includes(key),
-        ))
+        Object.keys(root).some((key) => !Object.hasOwn(ROOT_FIELDS, key)))
     ) {
       throw invalid('invalid root descriptor');
     }

@@ -15,7 +15,7 @@ pnpm --filter @forgeax/hello-app smoke    # dawn-node 60-frame headless smoke
 | Path | Purpose |
 |:--|:--|
 | `index.html` | `<canvas id="app">` host page |
-| `src/main.ts` | The exemplar: `await createApp(canvas, { clearColor: [0.1, 0.2, 0.3, 1] })` + `populateDemoWorld(app.value.world)` + `app.value.start()`. Demonstrates the D-6 dual-layer error pattern (`instanceof EngineEnvironmentError` + exhaustive `switch (err.code)` over 5 + 18 = 23 codes) |
+| `src/main.ts` | The exemplar: `await createApp(canvas, { clearColor: [0.1, 0.2, 0.3, 1] })` + `populateDemoWorld(app.value.world, app.value.assets)` + `app.value.start()`. Demonstrates the D-6 dual-layer error pattern (`instanceof EngineEnvironmentError` + exhaustive `switch (err.code)` over 5 + 18 = 23 codes) |
 | `scripts/smoke.mjs` | dawn-node clearColor-only verdict (no baseline png; D-12 + R-5). 4 criteria: clearColor RGBA each component within ε ≤ 0.05 / `app.onError` count == 0 / `console.error` count == 0 / frames ≥ 60 |
 | `vite.config.ts` | Mirror of `apps/hello/cube/vite.config.ts` shape; `forgeaxShader()` injected so the production build exercises the same shader-pipeline path |
 

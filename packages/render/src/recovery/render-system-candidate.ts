@@ -1,6 +1,5 @@
 import type { MipmapEncoderWork } from '@forgeax/engine-assets-runtime';
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
-import type { World } from '@forgeax/engine-ecs';
+
 import {
   type CommandBuffer,
   err,
@@ -10,8 +9,15 @@ import {
   RhiError,
 } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import type { MeshAsset, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import { terrainMaterialChannels } from '@forgeax/engine-terrain';
+import type {
+  AssetHandle,
+  MaterialAsset,
+  MeshAsset,
+  SamplerAsset,
+  TerrainAsset,
+  TextureAsset,
+} from '@forgeax/engine-types';
 import { createFeatureSceneInputs } from '../assembly/feature-scene-inputs';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
 import { standardBloomAdmitted } from '../bloom-admission';
@@ -50,7 +56,7 @@ import { standardTopologyVariantSet } from '../pipeline-spec';
 import { inspectPointShadow } from '../point-shadow-inspection';
 import type { PreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { gpuDrivenMeshesForFrame, validateRenderables } from '../record/frame';
+import { validateRenderables } from '../record/frame';
 import { prepareFrameLighting } from '../record/frame-lighting';
 import {
   emptyFrameRecordingOutputs,
@@ -68,6 +74,7 @@ import {
   type RecoveryPipelineReadiness,
 } from '../record/recovery-pipeline';
 import type { PointsLinesRecordOwner, RenderSystemInternals } from '../record/render-context';
+import { gpuDrivenMeshesForFrame, querySceneExecution } from '../record/resident-meshes';
 import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import {
   ensureCompiledFrameGraph,
@@ -78,7 +85,7 @@ import {
 } from '../record/typed-frame-graph';
 import { emptyVolumetricFogParams } from '../record/volume-params';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
-import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
+import type { ExtractedFrame } from '../render-system-extract';
 import { materialSamplerHandles, materialTextureHandles } from '../render-system-residency';
 import type { PersistentGpuDrivenCandidate, PersistentRenderScene } from '../scene/render-scene';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
@@ -99,7 +106,7 @@ import type {
   RecoveryPointsLinesCandidate,
 } from './types';
 
-export interface RecoveryFrameSeed {
+interface RecoveryFrameSeed {
   /** Exact feature POD from the submitted publication; never re-extract a receiver World. */
   readonly publishedFeatures?: RenderFeatureFrameInput['publishedFeatures'];
   readonly frame: ExtractedFrame;
@@ -118,7 +125,7 @@ export interface RecoveryFrameSeed {
   readonly shadowMaterialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
 }
 
-export interface RenderSystemRecoveryDependencies {
+interface RenderSystemRecoveryDependencies {
   readonly frameState: RenderFrameState;
   readonly internals: RenderSystemInternals;
   readonly getEnvironmentLifecycle: () => EnvironmentLifecycle;
@@ -153,8 +160,9 @@ export interface RenderSystemRecoveryDependencies {
   readonly createPreparedResolverCaches: () => PreparedResolverCaches;
 }
 
-export interface RenderSystemRecoveryOwner {
+interface RenderSystemRecoveryOwner {
   setLastSuccessfulFrameSeed(seed: RecoveryFrameSeed): void;
+  prepareRecoveryTextureData(runtime: RecoveryGraphCandidateRuntime): Promise<void>;
   prepareRecoveryGraphCandidate(
     runtime: RecoveryGraphCandidateRuntime,
   ): RecoveryGraphCandidatePreparation;
@@ -166,6 +174,13 @@ export interface RenderSystemRecoveryOwner {
   discardRecoveryGraphCandidate(candidate: RecoveryGraphCandidate): void;
 }
 
+/**
+ * Keep the missing-texture sentinel out of residency preparation. A zero
+ * handle is the same absent-reference value used by materialHandle; resolving
+ * it as a real TextureAsset would otherwise pass an undefined pod to the GPU
+ * store and fail before the renderer can produce a structured readiness
+ * result.
+ */
 export function createRenderSystemRecovery(
   deps: RenderSystemRecoveryDependencies,
 ): RenderSystemRecoveryOwner {
@@ -225,6 +240,7 @@ export function createRenderSystemRecovery(
       directionalShadowCache: null,
       directionalShadowCacheRecorded: false,
       shadowRaster: new ShadowRasterLedger(),
+      shadowDepthLayers: undefined,
       compiledFrameGraph: null,
       compiledFrameGraphCandidate: undefined,
       volumetricFogParams: emptyVolumetricFogParams(),
@@ -351,6 +367,61 @@ export function createRenderSystemRecovery(
     candidate.release();
   };
 
+  const prepareRecoveryTextureData = async (
+    runtime: RecoveryGraphCandidateRuntime,
+  ): Promise<void> => {
+    const seed = lastSuccessfulFrameSeed;
+    if (seed === undefined) return;
+    const store = runtime.internals.gpuStore;
+    const waits: Promise<void>[] = [];
+    const seen = new Map<RenderResourceScope, Map<number, number>>();
+    const terrainLayers = new Set<TerrainAsset['layers']>();
+    const prepare = (world: RenderResourceScope, handle: number, rgba: boolean) => {
+      let handles = seen.get(world);
+      if (handles === undefined) {
+        handles = new Map();
+        seen.set(world, handles);
+      }
+      const bit = rgba ? 2 : 1;
+      const before = handles.get(handle) ?? 0;
+      if ((before & bit) !== 0) return;
+      handles.set(handle, before | bit);
+      const source = world.resolveAsset<TextureAsset>(handle);
+      if (!source.ok || source.value.encoding === undefined) return;
+      store.prepareTextureData(
+        handle,
+        source.value,
+        world,
+        rgba ? (source.value.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm') : undefined,
+      );
+      waits.push(store.waitTextureData(handle, world));
+    };
+    for (const renderable of seed.frame.renderables) {
+      const world = seed.worlds[renderable.worldId];
+      if (world === undefined) continue;
+      for (const material of renderable.materials)
+        for (const handle of materialTextureHandles(material.snapshot))
+          prepare(world, handle, false);
+      let layers = renderable.terrainSection?.source.layers;
+      if (layers === undefined && renderable.terrain !== undefined) {
+        const source = world.resolveAsset<TerrainAsset>(renderable.terrain.handle);
+        if (source.ok) layers = source.value.layers;
+      }
+      if (layers === undefined || terrainLayers.has(layers)) continue;
+      terrainLayers.add(layers);
+      // These are the submitted Terrain's ordinary Layer Material references,
+      // not the generated section material's height/control texture bindings.
+      for (const layer of layers) {
+        const material = world.resolveAsset<MaterialAsset>(Number(layer.material));
+        if (!material.ok) continue;
+        for (const texture of terrainMaterialChannels(material.value).unwrap().textures)
+          if (texture !== undefined) prepare(world, Number(texture), true);
+        if (layer.blend === 'height') prepare(world, Number(layer.height), true);
+      }
+    }
+    await Promise.all(waits);
+  };
+
   const prepareRecoveryGraphCandidate = (
     runtime: RecoveryGraphCandidateRuntime,
   ): RecoveryGraphCandidatePreparation => {
@@ -417,6 +488,7 @@ export function createRenderSystemRecovery(
       }
       try {
         candidateFrameState.pointShadowAtlas?.dispose();
+        candidateFrameState.shadowDepthLayers?.dispose();
       } catch {
         // Candidate cleanup continues through every independent owner.
       }
@@ -448,6 +520,9 @@ export function createRenderSystemRecovery(
       candidateGpuStore.destroyAll();
     };
     const markPublished = (): void => {
+      // The readiness graph is retired at publication; it is never submitted.
+      preparedGpuDriven?._abortResourceReplacement?.();
+      preparedGpuDriven = undefined;
       candidatePointsLines?.publish();
       candidateSurfacePage?.release();
       candidateSurfacePage = undefined;
@@ -554,6 +629,8 @@ export function createRenderSystemRecovery(
         };
       }
       if (candidateGpuDrivenScene.state !== undefined) {
+        // Recovery compiles real execution work, including every shared Mesh section.
+        const candidateScene = querySceneExecution(candidateGpuDrivenScene.state);
         candidateGpuDrivenProduction = GpuDrivenProduction.forDevice(
           runtime.internals.device,
           gpuDrivenShaderFactory,
@@ -585,30 +662,10 @@ export function createRenderSystemRecovery(
           },
         );
         const shadowProjection = persistentRenderScene.shadowCasterProjection();
-        // The retained scene owns prepared draw receipts. The extraction seed
-        // precedes GPU admission and must not stand in for that projection.
-        const preparedSnapshots = new Map(
-          candidateGpuDrivenScene.state.slots.map((slot) => [
-            `${slot.snapshot.worldId}:${slot.snapshot.entityKey}`,
-            slot.snapshot,
-          ]),
-        );
-        const artifactRows = (renderables: readonly RenderableSnapshot[]) =>
-          renderables.map((source, renderableIndex) => {
-            const prepared = preparedSnapshots.get(`${source.worldId}:${source.entityKey}`);
-            return {
-              source: {
-                ...source,
-                ...(prepared?.skin === undefined ? {} : { skin: prepared.skin }),
-                gpuDrivenDraws: prepared?.gpuDrivenDraws ?? source.gpuDrivenDraws ?? [],
-              },
-              renderableIndex,
-            };
-          });
         const shadowViews = hasShadowViewDemand(seed.frame.lights);
         const collectedArtifacts = collectGpuDrivenMaterialArtifacts({
-          rows: artifactRows(shadowProjection?.renderables ?? seed.frame.renderables),
-          dispatch: shadowProjection?.dispatch ?? seed.frame.dispatch,
+          batches: candidateScene.plan.batches,
+          probeBlend: (candidateScene.probeBlend?.records.length ?? 0) > 0,
           programs: shadowProjection?.materialPrograms,
           resolve: runtime.internals.getMaterialShaderArtifact,
           clustered:
@@ -642,20 +699,19 @@ export function createRenderSystemRecovery(
           ? ensureProbeBlendRecordBuffer(
               runtime.internals.device,
               candidateFrameState,
-              candidateGpuDrivenScene.state.probeBlend,
+              candidateScene.probeBlend,
             )
           : undefined;
         const prepared = candidateGpuDrivenProduction.prepare({
-          scene: candidateGpuDrivenScene.state,
+          scene: candidateScene,
+          batchExecutions: collectedArtifacts.batchExecutions,
+          shadowViews,
+          ...(shadowProjection === undefined
+            ? {}
+            : { materialFrame: shadowProjection.content.materials }),
           camera,
-          meshBySlot: gpuDrivenMeshesForFrame(
-            runtime.internals,
-            runtime.pipelineState,
-            seed.worlds,
-            candidateGpuDrivenScene.state,
-          ),
+          meshByBinding: gpuDrivenMeshesForFrame(runtime.internals, seed.worlds, candidateScene),
           viewBindGroupLayout: runtime.pipelineState.viewBindGroupLayout,
-          meshResidencyEpoch: runtime.internals.gpuStore.meshResidencyEpoch,
           hdrp:
             clustered &&
             ((lighting.value.standard?.prepared.local.length ?? 0) > 0 ||
@@ -665,7 +721,6 @@ export function createRenderSystemRecovery(
           ...(materialSkinArtifact === undefined ? {} : { materialSkinArtifact }),
           ...(materialArtifacts.size === 0 ? {} : { materialArtifacts }),
           ...(shadowMaterialArtifacts.size === 0 ? {} : { shadowMaterialArtifacts }),
-          ...(shadowViews ? {} : { shadowCasterMembership: [] }),
           ...(probeBlendRecordBuffer === undefined ? {} : { probeBlendRecordBuffer }),
           ...(seed.frameTime === undefined ? {} : { frameTime: seed.frameTime }),
           ...(recoverySurfaceDynamicInput === undefined
@@ -680,24 +735,20 @@ export function createRenderSystemRecovery(
         if (!prepared.ok) return failed('candidate GPU-driven preparation failed', prepared.error);
         preparedGpuDriven = prepared.value;
       }
-      // A fully GPU-owned frame recovers through GPU Scene above. Only mixed
-      // or direct frames need the legacy instance-buffer closure as well.
-      if (!preparedGpuDriven?.ownsAllDrawItems || !preparedGpuDriven.ownsAllShadowCasters) {
-        for (const entry of candidateValidated) {
-          if (entry.source.instances === undefined) continue;
-          const prepared = resolveGeometryInstanceBuffer(
-            {
-              runtime: runtime.internals,
-              pipelineState: runtime.pipelineState,
-              frameState: candidateFrameState,
-              bindGroupCounts: { createBindGroup: 0, keys: [] },
-            },
-            entry,
-            [],
-            false,
-          );
-          if (prepared === null) return failed('candidate instance preparation failed');
-        }
+      for (const entry of candidateValidated) {
+        if (entry.source.instances === undefined) continue;
+        const prepared = resolveGeometryInstanceBuffer(
+          {
+            runtime: runtime.internals,
+            pipelineState: runtime.pipelineState,
+            frameState: candidateFrameState,
+            bindGroupCounts: { createBindGroup: 0, keys: [] },
+          },
+          entry,
+          [],
+          false,
+        );
+        if (prepared === null) return failed('candidate instance preparation failed');
       }
       candidateFeatureHost = runtime.internals.featureHost;
       if (candidateFeatureHost !== undefined && candidateFeatureHost.size > 0) {
@@ -713,15 +764,17 @@ export function createRenderSystemRecovery(
         const featureBatch = runRenderFeatureFrame(candidateFeatureHost, [
           {
             ...renderFeatureCameraView(camera),
-            worlds: seed.worlds.filter((world): world is World => !('resolveAsset' in world)),
+            worlds: seed.worlds.flatMap((scope) =>
+              scope.world === undefined ? [] : [scope.world],
+            ),
             ...(seed.publishedFeatures === undefined
               ? {}
               : { publishedFeatures: seed.publishedFeatures }),
-            resolveAsset: (index, handle) => {
+            resolveAsset: (index, handle, revision) => {
               const source = recoveryWorlds[index];
               return source === undefined
                 ? err(new Error(`Missing feature asset source ${index}`))
-                : resolveAssetHandle(source, handle);
+                : source.resolveAsset(handle, revision);
             },
             owner: seed.resourceOwner,
             frameNumber: candidateFrameState.frameNumber,
@@ -814,14 +867,14 @@ export function createRenderSystemRecovery(
       for (const renderable of seed.frame.renderables) {
         const world = seed.worlds[renderable.worldId];
         if (world === undefined) return failed(`world ${renderable.worldId} is unavailable`);
-        if (!runtime.pipelineState.meshes.has(renderable.assetHandle)) {
-          const mesh = resolveAssetHandle<MeshAsset>(
-            world,
-            toShared<'MeshAsset'>(renderable.assetHandle),
-          );
+        if (renderable.generatedMesh !== undefined) {
+          const prepared = runtime.internals.gpuStore.ensureGeneratedMesh(renderable.generatedMesh);
+          if (!prepared.ok) return failed('generated layout residency failed');
+        } else if (renderable.assetHandle !== undefined) {
+          const mesh = world.resolveAsset<MeshAsset>(renderable.assetHandle as AssetHandle<'mesh'>);
           if (!mesh.ok) return failed(`mesh ${renderable.assetHandle} resolution failed`);
           const preparedMesh = runtime.internals.gpuStore.prepareResidentForRecovery(
-            toShared<'MeshAsset'>(renderable.assetHandle),
+            renderable.assetHandle as AssetHandle<'mesh'>,
             mesh.value,
             world,
           );
@@ -831,8 +884,8 @@ export function createRenderSystemRecovery(
           }
         }
         for (const material of renderable.materials) {
-          for (const textureHandle of materialTextureHandles(material)) {
-            const texture = resolveAssetHandle<TextureAsset>(world, textureHandle);
+          for (const textureHandle of materialTextureHandles(material.snapshot)) {
+            const texture = world.resolveAsset<TextureAsset>(textureHandle);
             if (!texture.ok) return failed(`texture ${textureHandle} resolution failed`);
             const preparedTexture = runtime.internals.gpuStore.prepareResidentForRecovery(
               textureHandle,
@@ -844,8 +897,8 @@ export function createRenderSystemRecovery(
               setupWorks.push(preparedTexture.value.mipmapWork);
             }
           }
-          for (const samplerHandle of materialSamplerHandles(material)) {
-            const sampler = resolveAssetHandle<SamplerAsset>(world, samplerHandle);
+          for (const samplerHandle of materialSamplerHandles(material.snapshot)) {
+            const sampler = world.resolveAsset<SamplerAsset>(samplerHandle);
             if (!sampler.ok) return failed(`sampler ${samplerHandle} resolution failed`);
             const preparedSampler = runtime.internals.gpuStore.ensureSamplerResident(
               samplerHandle,
@@ -1158,6 +1211,7 @@ export function createRenderSystemRecovery(
     setLastSuccessfulFrameSeed(seed: RecoveryFrameSeed): void {
       lastSuccessfulFrameSeed = seed;
     },
+    prepareRecoveryTextureData,
     prepareRecoveryGraphCandidate,
     submitCandidateSetup,
     publishRecoveryGraphCandidate,

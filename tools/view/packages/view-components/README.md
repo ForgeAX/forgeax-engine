@@ -18,6 +18,11 @@ import '@forgeax/view-components/styles.css';
 import { Button, Field, TextInput, ThemeProvider } from '@forgeax/view-components';
 ```
 
+`ColorPicker` accepts normalized linear RGB or RGBA. Its `onChange` emits the
+selected value on OK with channels rounded to the displayed three decimals;
+Cancel leaves the external value unchanged. Pack fields retain their existing
+draft and Save ownership.
+
 `ThemeProvider` 默认跟随系统。偏好值为 `system`、`light` 或 `dark`；
 `systemTheme` 可由宿主提供，否则监听系统颜色变化。持久化保存偏好，
 根节点 `data-theme` 始终是解析后的 `light` 或 `dark`。主题只改变界面表面，

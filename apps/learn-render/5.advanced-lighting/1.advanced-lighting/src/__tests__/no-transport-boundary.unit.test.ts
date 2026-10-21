@@ -12,17 +12,22 @@ const REPRESENTATIVE_ENTRIES = [
   'apps/learn-render/5.advanced-lighting/9.ssao/src/main.ts',
 ];
 
-describe('representative browser no-transport boundary', () => {
-  it('removes import transport wiring from all three consumer entries', () => {
+describe('representative browser import transport ownership', () => {
+  it('keeps transport implementation in the shared host adapter', () => {
     for (const relativePath of REPRESENTATIVE_ENTRIES) {
       const source = readFileSync(resolve(ROOT, relativePath), 'utf8');
       expect(source, relativePath).not.toMatch(/createDevImportTransport/);
-      expect(source, relativePath).not.toMatch(/importTransport\s*:/);
-      expect(source, relativePath).toContain('loadByGuid');
+      expect(source, relativePath).not.toMatch(/\/__import\/|fetchPack\s*[:(]/);
+      if (/importTransport\s*:/.test(source)) {
+        expect(source, relativePath).toMatch(
+          /importTransport\s*:\s*createRuntimeAssetImportTransport\(runtimeBinding\)/,
+        );
+        expect(source, relativePath).toContain("from '@forgeax/apps-shared/asset-runtime-config'");
+      }
     }
   });
 
-  it('keeps the explicit Studio transport implementation available', () => {
+  it('keeps the Engine explicit Host transport adapter available', () => {
     const transport = readFileSync(
       resolve(ROOT, 'packages/runtime/src/dev-import-transport.ts'),
       'utf8',

@@ -42,3 +42,26 @@ test.each(fixtures)('image import gate distinguishes %s', (_name, source, exitCo
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('allows test hosts to install image decoders while rejecting the same production dependency', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gltf-image-host-gate-'));
+  const src = join(root, 'packages/gltf/src');
+  const fixture = join(src, '__tests__/fixtures/runtime.ts');
+  const source =
+    "import { textureContribution } from '@forgeax/engine-image';\n" +
+    'assets.installDecoder(textureContribution.kind, textureContribution.decoder);\n';
+  mkdirSync(dirname(fixture), { recursive: true });
+  writeFileSync(fixture, source);
+  try {
+    const allowed = spawnSync(process.execPath, [gate, '--root', root], { encoding: 'utf8' });
+    expect(allowed.status, allowed.stderr).toBe(0);
+
+    writeFileSync(join(src, 'runtime.ts'), source);
+    const rejected = spawnSync(process.execPath, [gate, '--root', root], { encoding: 'utf8' });
+    expect(rejected.status, rejected.stderr).toBe(1);
+    expect(rejected.stderr).toContain('runtime.ts:1: static import');
+    expect(rejected.stderr).not.toContain('__tests__');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

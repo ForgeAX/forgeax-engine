@@ -59,22 +59,22 @@ interface StandardPostSurface {
   readonly storage: RenderPipelineTarget;
 }
 
-export const STANDARD_BLOOM_MAX_LEVELS = 5;
+const STANDARD_BLOOM_MAX_LEVELS = 5;
 
 /** One authored Bloom contract drives declaration and compiled-graph validation. */
-export const STANDARD_BLOOM_TARGET_SPEC = {
+const STANDARD_BLOOM_TARGET_SPEC = {
   composited: { label: 'bloom-composited', format: 'rgba16float' },
   horizontalPrefix: 'bloom-horizontal-',
   verticalPrefix: 'bloom-vertical-',
 } as const;
 
-export interface StandardBloomLevelDimensions {
+interface StandardBloomLevelDimensions {
   readonly width: number;
   readonly height: number;
 }
 
 /** Derive the bounded ceil-halving output pyramid, including D0. */
-export function deriveStandardBloomLevels(
+function deriveStandardBloomLevels(
   outputWidth: number,
   outputHeight: number,
 ): readonly StandardBloomLevelDimensions[] {
@@ -89,7 +89,7 @@ export function deriveStandardBloomLevels(
   return levels;
 }
 
-export interface StandardBloomTargetSpecs {
+interface StandardBloomTargetSpecs {
   readonly composited: GraphTextureDescriptor & { readonly label: string };
   readonly horizontal: readonly (GraphTextureDescriptor & { readonly label: string })[];
   readonly vertical: readonly (GraphTextureDescriptor & { readonly label: string })[];
@@ -124,7 +124,7 @@ function standardBloomTargetSpecs(
   };
 }
 
-export interface StandardBloomGraphInspection {
+interface StandardBloomGraphInspection {
   readonly status: 'empty' | 'valid' | 'invalid';
   readonly targetCount: number;
   readonly targetBytes: number;
@@ -387,8 +387,8 @@ export function contributeStandardSceneFeatures(
   atmosphere?: GraphAtmosphere,
 ): Result<void, RenderPipelineBuildError> {
   const { color, colorResolve, depth } = targets;
-  return context.contributeFeatures(
-    [
+  return context.contributeFeatures({
+    targets: [
       {
         name: 'linear-hdr',
         kind: 'scene-color',
@@ -406,13 +406,13 @@ export function contributeStandardSceneFeatures(
         sampleCount: depth.sampleCount,
       },
     ],
-    [],
-    {},
-    receiverAccesses,
-    { exclude: [BARREL_DISTORTION_FEATURE_IDENTITY] },
-    [],
-    atmosphere,
-  );
+    semanticTargets: [],
+    namedTargets: {},
+    standardSurfaceAccesses: receiverAccesses,
+    exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
+    passNames: [],
+    atmosphere: atmosphere,
+  });
 }
 
 export function addStandardPost(
@@ -442,7 +442,6 @@ export function addStandardPost(
     });
   }
   const outputPlan = createStandardOutputPlan({
-    lane: topology.standardProfile?.renderPath === 'deferred' ? 'clustered' : 'direct',
     temporal: !clearOnly && topology.camera.antialias === 'taa',
     meter: topology.output?.autoExposure === true,
     bloom: !clearOnly && standardBloomAdmitted(topology.camera),
@@ -456,7 +455,6 @@ export function addStandardPost(
     lensEffects: !clearOnly && topology.camera.lensEffects === true,
     fxaa: !clearOnly && topology.camera.antialias === 'fxaa',
     smaa: !clearOnly && topology.camera.antialias === 'smaa',
-    outputEncoding: 'explicit-oetf',
   });
   if (
     (outputPlan.features.barrelDistortion ||
@@ -638,16 +636,16 @@ export function addStandardPost(
         domain: hdr ? 'linear-hdr' : 'linear-ldr',
       });
       if (!blurred.ok) return blurred;
-      const features = context.contributeFeatures(
-        featureTargets,
-        [postTemporal],
-        {
+      const features = context.contributeFeatures({
+        targets: featureTargets,
+        semanticTargets: [postTemporal],
+        namedTargets: {
           'motion-input': postInput,
           'motion-output': blurred.value,
         },
-        [],
-        { exclude: [BARREL_DISTORTION_FEATURE_IDENTITY] },
-      );
+        standardSurfaceAccesses: [],
+        exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
+      });
       if (!features.ok) return features;
       if (context.hasFeature?.('forgeax.motion-blur') === true) {
         postInput = blurred.value;
@@ -657,13 +655,13 @@ export function addStandardPost(
         postInput = blurred.value;
       }
     } else {
-      const features = context.contributeFeatures(
-        featureTargets,
-        sceneTemporal === undefined ? [] : [sceneTemporal],
-        {},
-        [],
-        { exclude: [BARREL_DISTORTION_FEATURE_IDENTITY] },
-      );
+      const features = context.contributeFeatures({
+        targets: featureTargets,
+        semanticTargets: sceneTemporal === undefined ? [] : [sceneTemporal],
+        namedTargets: {},
+        standardSurfaceAccesses: [],
+        exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
+      });
       if (!features.ok) return features;
     }
   }
@@ -863,13 +861,13 @@ export function addStandardPost(
       domain: 'linear-ldr',
     });
     if (!barrelOutput.ok) return barrelOutput;
-    const barrel = context.contributeFeatures(
-      featureTargets,
-      [],
-      { 'barrel-input': postInput, 'barrel-output': barrelOutput.value },
-      [],
-      { include: [BARREL_DISTORTION_FEATURE_IDENTITY] },
-    );
+    const barrel = context.contributeFeatures({
+      targets: featureTargets,
+      semanticTargets: [],
+      namedTargets: { 'barrel-input': postInput, 'barrel-output': barrelOutput.value },
+      standardSurfaceAccesses: [],
+      include: [BARREL_DISTORTION_FEATURE_IDENTITY],
+    });
     if (!barrel.ok) return barrel;
     if (context.hasFeature?.(BARREL_DISTORTION_FEATURE_IDENTITY) !== true) {
       return err(

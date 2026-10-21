@@ -1,16 +1,25 @@
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { DirectionalLight, DirectionalShadowFilterValue, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Fixed lighting and exposure: only occlusion geometry and filter controls vary. */
 export function spawnSsaoRoom(world: World) {
-  const material = world.allocSharedRef('MaterialAsset', Materials.standard({
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.standard({
     baseColor: [0.62, 0.66, 0.7, 1], roughness: 0.9,
-  }));
+  })).unwrap();
   const mesh = (pos: number[], scale: number[]) => world.spawn(
     { component: Transform, data: { pos, scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [material] } },
   ).unwrap();
   const wall = mesh([-2.5, 0.75, -0.5], [0.12, 3.5, 5]);

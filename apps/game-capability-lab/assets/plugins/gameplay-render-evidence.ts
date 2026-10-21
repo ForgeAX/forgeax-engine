@@ -1,10 +1,10 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { GameHost } from '@forgeax/engine-app';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { Context } from '@forgeax/engine-plugin';
 import { CharacterController } from '@forgeax/engine-physics';
 import { Camera } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, Handle } from '@forgeax/engine-runtime';
 import type { GameplayStateHandle } from './gameplay-state';
 import type { GameplayChangeDetectionHandle } from './change-detection';
 import type { TargetHealthHandle } from './target-health';
@@ -28,7 +28,6 @@ import type { WorldScoreTextHandle } from './world-score-text';
 import type { MultiWorldOverlay } from './multi-world-overlay';
 import type { AnimatedMaterialTarget } from './animated-target-material';
 import type { ScoringTargetQuery } from './scoring-target';
-import type { MatHandle } from './scene-runtime';
 import type { ProjectileVisual } from './components/gameplay';
 import { HitFlash, PlayerMotion, TargetPresentation } from './components/gameplay';
 import { GAME_DEFAULT_COMMAND_COUNTERS } from './resources/gameplay';
@@ -47,7 +46,7 @@ type GameplayRenderEvidenceArgs = {
   readonly targetEntities: () => readonly EntityHandle[];
   readonly triggerFlash: () => void;
   readonly triggerScore: () => void;
-  readonly flashMaterial: Handle<'MaterialAsset', 'shared'>;
+  readonly flashMaterial: AssetHandle<'material'>;
   readonly settingsState: { bloom: boolean };
   readonly depthOfField: DepthOfFieldHandle;
   readonly chromaticAberration: ChromaticAberrationHandle;
@@ -94,8 +93,8 @@ export function installGameplayRenderEvidence(args: GameplayRenderEvidenceArgs):
     triggerFlash: args.triggerFlash,
     triggerScore: args.triggerScore,
     hitFlashBlendEnabled: () => {
-      const material = args.world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(args.flashMaterial);
-      return material.ok && material.value.passes?.[0]?.renderState?.blend !== undefined;
+      const material = args.world.assets?.read(args.flashMaterial);
+      return material?.ok === true && material.value.passes?.[0]?.renderState?.blend !== undefined;
     },
     bloomEnabled: () => args.settingsState.bloom,
     toggleBloom: () => { args.settingsState.bloom = !args.settingsState.bloom; },
@@ -136,8 +135,9 @@ export function installGameplayRenderEvidence(args: GameplayRenderEvidenceArgs):
       });
       if (target === undefined) return null;
       const presentation = args.world.get(target, TargetPresentation);
-      const material = args.world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(presentation.ok ? (presentation.value.authoredMaterials[0] ?? (0 as MatHandle)) : (0 as MatHandle));
-      if (!material.ok) return null;
+      const handle = presentation.ok ? presentation.value.authoredMaterials[0] : undefined;
+      const material = handle === undefined ? undefined : args.world.assets?.read(handle);
+      if (!material?.ok) return null;
       const values = material.value.values as Record<string, unknown> | undefined;
       const strength = Number(values?.clearcoat ?? 0);
       const roughness = Number(values?.clearcoatRoughness ?? 0);

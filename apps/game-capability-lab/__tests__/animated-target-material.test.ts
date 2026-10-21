@@ -1,4 +1,4 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { MeshRenderer } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -8,16 +8,18 @@ import { createAnimatedMaterialTarget, resetAnimatedMaterial, stepAnimatedMateri
 vi.mock('../assets/shaders/animated-target.wgsl', () => ({ default: { wgsl: '' } }));
 
 it('publishes animation without modifying shared source content and restores bindings on reset', () => {
-  const world = new World();
-  const base: MaterialAsset = Object.freeze({
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const base: MaterialAsset = Object.freeze<MaterialAsset>({
     kind: 'material',
+    passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' } }],
     values: Object.freeze({ baseColor: [1, 0, 0, 1], time: 0 }),
   });
-  const mat = world.allocSharedRef('MaterialAsset', base);
+  const mat = assets.create(base).unwrap();
   const e = world.spawn({ component: MeshRenderer, data: { materials: [mat] } }).unwrap();
   const other = world.spawn({ component: MeshRenderer, data: { materials: [mat] } }).unwrap();
-  const target = createAnimatedMaterialTarget(world, { e, mat });
-  const projectedTime = () => resolveAssetHandle<MaterialAsset>(world, target.material).unwrap().values?.time;
+  const target = createAnimatedMaterialTarget(world, assets, { e, mat });
+  const projectedTime = () => assets.read(target.material).unwrap().values?.time;
   stepAnimatedMaterial(world, target, 2);
   expect(projectedTime()).toBe(2);
   expect(base.values?.time).toBe(0);

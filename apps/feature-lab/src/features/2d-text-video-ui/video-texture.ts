@@ -1,19 +1,15 @@
-import { HANDLE_QUAD } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   VIDEO_SOURCE_PROVIDER_KEY,
   VideoPlayer,
   type VideoSourceProvider,
 } from '@forgeax/engine/graphics-extras';
-import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
-import type { MaterialAsset, VideoAsset } from '@forgeax/engine/types';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnOrthoCamera } from './_shared/sprite';
-
-const VIDEO_GUID = '019f2d10-0000-7000-8000-00000000b701';
-const MATERIAL_GUID = '019f2d10-0000-7000-8000-00000000b702';
 
 export default defineFeature({
   title: 'Video Texture',
@@ -24,6 +20,12 @@ export default defineFeature({
   expect:
     'ON: the large quad shows magenta/cyan vertical stripes with a white bar sweeping across. OFF: the source canvas paints yellow/blue horizontal stripes, and the quad follows within a few frames. Checks: the provider was queried and the element is playing.',
   async setup({ app, world, canvas }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     const assets = app.assets;
     if (assets === undefined) throw new Error('app.assets is undefined');
     const source = document.createElement('canvas');
@@ -67,43 +69,33 @@ export default defineFeature({
     };
     world.insertResource(VIDEO_SOURCE_PROVIDER_KEY, provider);
 
-    const videoGuid = AssetGuid.parse(VIDEO_GUID);
-    const materialGuid = AssetGuid.parse(MATERIAL_GUID);
-    if (!videoGuid.ok || !materialGuid.ok) throw new Error('guid parse failed');
-    const catalogedVideo = assets.catalog<VideoAsset>(videoGuid.value, {
-      kind: 'video',
-      url: 'feature-lab://canvas-stream',
-    });
-    if (!catalogedVideo.ok) throw new Error(`catalog video: ${catalogedVideo.error.code}`);
-    const clip = await assets.loadByGuid<VideoAsset>(videoGuid.value);
-    if (!clip.ok) throw new Error(`loadByGuid video: ${clip.error.code}`);
-    const catalogedMaterial = assets.catalog<MaterialAsset>(materialGuid.value, {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-unlit' },
-          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-        },
-      ],
-      values: { baseColor: [1, 1, 1], baseColorTexture: VIDEO_GUID },
-    } as MaterialAsset);
-    if (!catalogedMaterial.ok) throw new Error(`catalog material: ${catalogedMaterial.error.code}`);
-    const mat = await assets.loadByGuid<MaterialAsset>(materialGuid.value);
-    if (!mat.ok) throw new Error(`loadByGuid material: ${mat.error.code}`);
+    const clip = assets.create({ kind: 'video', url: 'feature-lab://canvas-stream' }).unwrap();
+    const mat = assets
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-unlit' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: { baseColor: [1, 1, 1], baseColorTexture: clip },
+      })
+      .unwrap();
 
     spawnOrthoCamera(world, canvas);
     world
       .spawn(
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } as never },
+        { component: MeshFilter, data: { assetHandle: primitiveQuad } as never },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', mat.value)] } as never,
+          data: { materials: [mat] } as never,
         },
         {
           component: VideoPlayer,
           data: {
-            clip: world.allocSharedRef('VideoAsset', clip.value),
+            clip: clip,
             playing: true,
             loop: true,
             currentTime: 0,

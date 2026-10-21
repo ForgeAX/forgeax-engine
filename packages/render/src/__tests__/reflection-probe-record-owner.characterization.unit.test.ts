@@ -25,12 +25,12 @@ const ownerContractsSource = `${renderSystemSource}\n${ownerSource}`;
 describe('ReflectionProbeRecordOwner characterization', () => {
   it('keeps candidate resources invisible until an active generation exists', () => {
     expect(ownerSource).toContain('class ReflectionProbeRecordOwner');
-    expect(ownerContractsSource).toContain('active: ProbeCubeSet | undefined;');
-    expect(ownerContractsSource).toContain('candidate: ProbeCubeSet;');
-    expect(ownerContractsSource).toContain('spare: ProbeCubeSet | undefined;');
+    expect(ownerContractsSource).toContain('active: PmremAtlas | undefined;');
+    expect(ownerContractsSource).toContain('candidate: PmremAtlas;');
+    expect(ownerContractsSource).toContain('spare: PmremAtlas | undefined;');
     expect(ownerSource).toContain('const active = resource.activeFact?.center.every');
     expect(ownerSource).toContain('if (active === undefined) return undefined;');
-    expect(ownerSource).toContain('filteredView: active.cubeView');
+    expect(ownerSource).toContain('filteredView: active.view');
   });
 
   it('publishes only through the accepted submission completion boundary', () => {
@@ -60,10 +60,10 @@ describe('ReflectionProbeRecordOwner characterization', () => {
     const initial = createProbeFilterState({ probeIndex: 2, mipCount: 2 });
     expect(commitProbeFilterStep(initial, false)).toEqual(initial);
     const first = commitProbeFilterStep(initial, true);
-    expect(first.cursor).toBe(1);
+    expect(first.cursor).toBe(2);
     expect(first.activeGeneration).toBe(0);
     expect(probeFilterIsSteady(first)).toBe(false);
-    const complete = Array.from({ length: 11 }).reduce<ProbeFilterState>(
+    const complete = Array.from({ length: 5 }).reduce<ProbeFilterState>(
       (state) => commitProbeFilterStep(state, true),
       first,
     );
@@ -81,7 +81,7 @@ describe('ReflectionProbeRecordOwner characterization', () => {
 
   it('does not derive one fallback snapshot from the sorted first probe', () => {
     expect(ownerSource).not.toContain('const selectedProbe = [...selections.values()]');
-    expect(ownerSource).toContain('fallbackProjections');
+    expect(ownerSource).toContain('fallbackReceipts');
     expect(ownerSource).toContain('renderableKey');
     expect(ownerSource).toContain('sourceKey');
     expect(ownerSource).toContain('producerId');

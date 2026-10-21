@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  boundGeometryObservationMetadata,
   captureGeometrySource,
   decodeGeometryCommands,
   decodeGeometryView,
+  GEOMETRY_OBSERVATION_MAX_BYTES,
   GEOMETRY_OBSERVATION_MAX_COMMANDS,
   type GeometryCommandCapture,
+  type GeometryObservation,
 } from '../geometry-observation';
 
 function fixture() {
@@ -63,6 +66,108 @@ function fixture() {
   };
 }
 describe('same-submit geometry decoding', () => {
+  it('keeps small legacy observations byte-for-byte inline', () => {
+    const commands = decodeGeometryCommands(fixture().input);
+    const input: GeometryObservation = {
+      scope: 'primary-display-view-gpu-commands',
+      otherViews: 'unobserved',
+      shadows: 'unobserved',
+      cpuDraws: 'unobserved',
+      featureDraws: 'unobserved',
+      status: 'complete',
+      frameId: 3,
+      deviceGeneration: 2,
+      commands,
+      commandCount: commands.length,
+      indexOrVertexWork: 216,
+    };
+    expect(boundGeometryObservationMetadata(input)).toBe(input);
+    expect(input).not.toHaveProperty('identityTables');
+  });
+  it('losslessly interns repeated ABI and publication metadata inside the original byte limit', () => {
+    const command = decodeGeometryCommands(fixture().input)[0];
+    if (command === undefined) throw Error('Missing decoded command');
+    const program = {
+      scope: 'selected-gpu-driven-gbuffer-artifact' as const,
+      material: 'material',
+      pass: 'Deferred',
+      programIdentity: 'composer',
+      artifactSourceSha256: `sha256:${'a'.repeat(64)}`,
+      specializationKey: null,
+      layoutIdentity: 'layout'.repeat(4000),
+      receiptIdentity: 'abi'.repeat(4000),
+      receiptGeneration: 2,
+      vertexEntry: 'vs_scene_index',
+      fragmentEntry: 'fs_gbuffer',
+      pipelineIdentity: 71,
+      nativeShader: 'unobserved' as const,
+    };
+    const publication = {
+      materialGuid: 'mat',
+      publicationGeneration: 8,
+      specializationKey: 'key',
+      artifactHash: 'hash',
+    };
+    const commands = Array.from({ length: 80 }, (_, i) => ({
+      ...command,
+      batchId: i,
+      gbufferProgram: { ...program, pipelineIdentity: i % 2 ? 72 : 71 },
+      members: command.members.map((member) => ({
+        ...member,
+        materialHandle: 19,
+        materialPublication: publication,
+      })),
+    }));
+    const input: GeometryObservation = {
+      scope: 'primary-display-view-gpu-commands',
+      otherViews: 'unobserved',
+      shadows: 'unobserved',
+      cpuDraws: 'unobserved',
+      featureDraws: 'unobserved',
+      status: 'complete',
+      frameId: 3,
+      deviceGeneration: 2,
+      commands,
+      commandCount: commands.length,
+      indexOrVertexWork: commands.reduce((sum, row) => sum + row.indexOrVertexWork, 0),
+    };
+    expect(new TextEncoder().encode(JSON.stringify(input)).byteLength).toBeGreaterThan(
+      GEOMETRY_OBSERVATION_MAX_BYTES,
+    );
+    const output = structuredClone(boundGeometryObservationMetadata(input));
+    expect(new TextEncoder().encode(JSON.stringify(output)).byteLength).toBeLessThanOrEqual(
+      GEOMETRY_OBSERVATION_MAX_BYTES,
+    );
+    expect(output.identityTables?.gbufferPrograms).toHaveLength(2);
+    expect(output.identityTables?.materialPublications).toEqual([publication]);
+    const expanded = output.commands.map(({ gbufferProgramId, ...row }) => ({
+      ...row,
+      gbufferProgram: output.identityTables?.gbufferPrograms[gbufferProgramId ?? -1],
+      members: row.members.map(({ materialPublicationId, ...member }) => ({
+        ...member,
+        materialPublication:
+          output.identityTables?.materialPublications[materialPublicationId ?? -1],
+      })),
+    }));
+    expect(expanded).toEqual(input.commands);
+    expect(input.commands[0]).not.toHaveProperty('gbufferProgramId');
+    const failed = boundGeometryObservationMetadata({
+      ...input,
+      viewKey: 'x'.repeat(GEOMETRY_OBSERVATION_MAX_BYTES),
+    });
+    expect(failed).toMatchObject({
+      status: 'unavailable',
+      reason: 'metadata-budget',
+      metadataEncoding: {
+        attemptedCommandCount: 80,
+        attemptedMemberCount: 160,
+        programIdentityCount: 2,
+        materialPublicationIdentityCount: 1,
+      },
+    });
+    expect(failed.metadataEncoding?.tableBytes).toBeGreaterThan(GEOMETRY_OBSERVATION_MAX_BYTES);
+    expect(failed.commands).toEqual([]);
+  });
   it('separates early prefix from final union and late region without double counting', () => {
     const f = fixture(),
       r = decodeGeometryCommands(f.input);
@@ -77,6 +182,70 @@ describe('same-submit geometry decoding', () => {
       materialSlot: 2,
       sourceRevision: 17,
     });
+  });
+  it('carries captured material and selected GBuffer identity through actual visible-row decoding', () => {
+    const f = fixture();
+    const publication = Object.freeze({
+      materialGuid: 'material/a',
+      publicationGeneration: 3,
+      specializationKey: 'accepted-key',
+      artifactHash: 'accepted-artifact',
+    });
+    const first = f.base.sources.get(100);
+    if (first === undefined) throw Error('Missing source fixture');
+    const sources = new Map(f.base.sources);
+    sources.set(100, { ...first, materialHandle: 91, materialPublication: publication });
+    const gbufferProgram = Object.freeze({
+      scope: 'selected-gpu-driven-gbuffer-artifact' as const,
+      material: 'selected-material',
+      pass: 'Deferred',
+      programIdentity: 'scene-index-program',
+      artifactSourceSha256: `sha256:${'a'.repeat(64)}`,
+      specializationKey: 'scene-key',
+      layoutIdentity: 'layout',
+      receiptIdentity: 'receipt',
+      receiptGeneration: 7,
+      vertexEntry: 'vs_scene_index',
+      fragmentEntry: 'fs_gbuffer',
+      pipelineIdentity: 52,
+      nativeShader: 'unobserved' as const,
+    });
+    f.input.commands = [{ ...f.base, sources, gbufferProgram }];
+    const command = decodeGeometryCommands(f.input)[0];
+    if (command === undefined) throw Error('Missing decoded command');
+    expect(command.gbufferProgram).toEqual(gbufferProgram);
+    expect(command.members[0]).toMatchObject({
+      materialHandle: 91,
+      materialPublication: publication,
+    });
+    expect(command.members).toHaveLength(2);
+    expect(structuredClone(command)).toEqual(command);
+    expect(command.gbufferProgram?.specializationKey).not.toBe(publication.specializationKey);
+    expect(decodeGeometryCommands(fixture().input)[0]).not.toHaveProperty('gbufferProgram');
+  });
+  it('rejects material publication ambiguity instead of borrowing a neighboring visible source', () => {
+    const f = fixture(),
+      source = f.base.sources.get(100);
+    if (source === undefined) throw Error('Missing source fixture');
+    const sources = new Map<number, typeof source>();
+    captureGeometrySource(sources, 100, { ...source, materialHandle: 11 });
+    expect(() => captureGeometrySource(sources, 100, { ...source, materialHandle: 12 })).toThrow(
+      'ambiguous-instance-source',
+    );
+    const publication = {
+      materialGuid: 'm',
+      publicationGeneration: 1,
+      specializationKey: 'key',
+      artifactHash: 'hash',
+    };
+    const published = new Map<number, typeof source>();
+    captureGeometrySource(published, 100, { ...source, materialPublication: publication });
+    expect(() =>
+      captureGeometrySource(published, 100, {
+        ...source,
+        materialPublication: { ...publication, publicationGeneration: 2 },
+      }),
+    ).toThrow('ambiguous-instance-source');
   });
   it('counts all actual command executions even when a buffer offset or batch is reused by another pass', () => {
     const f = fixture();

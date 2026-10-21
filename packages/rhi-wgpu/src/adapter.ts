@@ -1,4 +1,5 @@
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
+import { projectAdapterCapabilities } from '@forgeax/engine-rhi';
 // packages/rhi-wgpu/src/adapter.ts — RhiAdapter / RhiCanvasContext shim
 // (w16 of feat-20260511-rhi-wgpu-impl).
 //
@@ -53,7 +54,7 @@ import { adapterUnavailable, webgpuRuntimeError } from './errors';
  * 2. The `RhiWgpuAdapter` wasm-bindgen handle (when the lazy-loaded wgpu
  *    wasm bundle drives the device request path).
  */
-export interface RawAdapterLike {
+interface RawAdapterLike {
   readonly features?: ReadonlySet<string> | { has(name: string): boolean } | undefined;
   readonly limits?: Readonly<Record<string, number>> | undefined;
   // forgeax-async-whitelist: wasm-bindgen — wgpu-wasm `Adapter.requestDevice()` raw entry
@@ -71,22 +72,11 @@ export interface RawAdapterLike {
  *     RhiError factories (charter proposition 4 explicit failure).
  */
 export function makeRhiAdapter(rawAdapter: RawAdapterLike): RhiAdapter {
-  const rawFeatures = rawAdapter.features as unknown as ReadonlySet<GPUFeatureName> | undefined;
-  const features: ReadonlySet<GPUFeatureName> =
-    rawFeatures !== undefined && rawFeatures !== null
-      ? new Set(rawFeatures)
-      : new Set<GPUFeatureName>();
-  const limitsRaw = (rawAdapter.limits as unknown as Record<string, unknown> | undefined) ?? {};
-  const limits: Record<string, number> = {};
-  for (const key in limitsRaw) {
-    const v = limitsRaw[key];
-    if (typeof v === 'number') {
-      limits[key] = v;
-    }
-  }
   return {
-    features,
-    limits: limits as Readonly<Record<string, number>>,
+    ...projectAdapterCapabilities(
+      rawAdapter.features as unknown as ReadonlySet<GPUFeatureName> | undefined,
+      rawAdapter.limits as unknown as Record<string, unknown> | undefined,
+    ),
     async requestDevice(
       opts?: ForgeaXRequestDeviceOptions | undefined,
     ): Promise<Result<RhiDevice, RhiError>> {

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `time` example (behavior keyed to absolute elapsed time) \u2014 a MOTION demo exercising the new Time resource `elapsed` field (accumulated seconds since start, mapping Bevy Time::elapsed_secs), driving a cube that oscillates as sin(elapsed) via createApp's managed frame-loop + a world.addSystem Update system.",
+  "description": "Reproduction of Bevy's `time` example (behavior keyed to absolute elapsed time) — a MOTION demo exercising the new Time resource `elapsed` field (accumulated seconds since start, mapping Bevy Time::elapsed_secs), driving a cube that oscillates as sin(elapsed) via createApp's managed frame-loop + a world.addSystem Update system.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -49,7 +49,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

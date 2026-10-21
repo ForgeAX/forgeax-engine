@@ -1,123 +1,53 @@
-// scene-bare-guid-refs-instantiate.test — regression for the prod Play
-// instantiate crash (feedback 2026-06-23, root cause corrected 2026-06-24).
-//
-// Reproduces the production on-disk pack shape that in-process / unit tests
-// never exercised: a catalogued scene envelope whose `refs[]` are *bare GUID
-// edges* (`sceneEntityId` / `sourceField` stripped at the w7 D-10
-// serialization boundary), with multiple entities referencing the same mesh
-// GUID through `MeshFilter.assetHandle`.
-//
-// Before the fix, `_resolveSceneGuids` took Branch A (envelope.refs.length>0)
-// but `continue`-skipped every bare edge (no sceneEntityId/sourceField) →
-// `resolvedMap` stayed empty → the entity-walk fallback (only reachable on the
-// `else` / no-refs branch) never ran → the GUID *string* passed through to
-// spawn. There `col.view[row] = (guidString as number)` coerced to 0 and
-// `retainSharedScalarHandle(guidString)` skipped the `< BUILTIN_BASE` guard
-// (NaN compare is false) → `SharedRefStore.retain` routed `shared-ref-released`
-// to the World error handler, and the field read back as the sentinel 0 (the
-// per-frame `asset-not-registered` flood in the studio report).
-//
-// The fix falls through to the entity-walk fallback whenever the structured
-// edges resolved nothing, so GUID strings resolve to live user-tier handles
-// before spawn.
-
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { MeshFilter, SceneInstance } from '@forgeax/engine-render';
-import type { LocalEntityId, MeshAsset, SceneAsset, SceneEntity } from '@forgeax/engine-types';
-import { BUILTIN_BASE } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
+import { expect, it } from 'vitest';
+import { publishTestAssets } from './helpers/publish-runtime-assets';
 import { registerSceneComponents } from './helpers/register-scene-components';
+import { testAssets } from './helpers/runtime-assets';
 
-function localId(n: number): LocalEntityId {
-  return n as LocalEntityId;
-}
+const MESH_A = '00d274da-e863-41d8-bafe-10b97d1468d4';
+const MESH_B = '95730fd2-1111-4222-8333-444455556666';
+const SCENE = 'c1111111-2222-4333-8444-555566667777';
 
-function cubeMesh(): MeshAsset {
-  const res = createBoxGeometry(1, 1, 1);
-  if (!res.ok) throw new Error('createBoxGeometry(1,1,1) failed');
-  return res.value;
-}
-
-// Two distinct mesh GUIDs referenced from N entities each — mirrors the studio
-// report where engine builtin cube/sphere were among the unresolved handles.
-const MESH_GUID_A = '00d274da-e863-41d8-bafe-10b97d1468d4';
-const MESH_GUID_B = '95730fd2-1111-4222-8333-444455556666';
-
-describe('regression — prod bare-GUID scene envelope.refs resolve before retain', () => {
-  it('instantiate resolves bare-GUID MeshFilter.assetHandle across N entities (no shared-ref-released)', () => {
-    const reg = new AssetRegistry(makeMockShaderRegistry());
-    const world = new World();
-    registerSceneComponents(world, [MeshFilter]);
-
-    // Catalogue the two mesh payloads (as loadByGuid would on the prod path).
-    const guidA = AssetGuid.parse(MESH_GUID_A);
-    const guidB = AssetGuid.parse(MESH_GUID_B);
-    if (!guidA.ok || !guidB.ok) throw new Error('GUID parse failed');
-    expect(reg.catalog(guidA.value, cubeMesh()).ok).toBe(true);
-    expect(reg.catalog(guidB.value, cubeMesh()).ok).toBe(true);
-
-    // Build a scene whose entities reference the meshes by GUID *string* —
-    // exactly the post-parseScenePayload intermediate state. Several entities
-    // share each GUID to exercise the dedup (one allocSharedRef per GUID).
-    const entities: SceneEntity[] = [];
-    for (let i = 0; i < 4; i++) {
-      entities.push({
-        localId: localId(i),
-        components: {
-          MeshFilter: { assetHandle: i % 2 === 0 ? MESH_GUID_A : MESH_GUID_B },
+it('resolves bare GUID source edges before spawning repeated MeshFilter references', async () => {
+  const world = new World();
+  registerSceneComponents(world, [MeshFilter]);
+  const assets = testAssets(world);
+  try {
+    const mesh = createBoxGeometry(1, 1, 1).unwrap();
+    publishTestAssets(assets, [
+      { guid: MESH_A, kind: 'mesh', payload: mesh },
+      { guid: MESH_B, kind: 'mesh', payload: mesh },
+      {
+        guid: SCENE,
+        kind: 'scene',
+        refs: [MESH_A, MESH_B],
+        payload: {
+          kind: 'scene',
+          entities: Object.fromEntries(
+            Array.from({ length: 4 }, (_, i) => [
+              `mesh-${i}`,
+              { components: { MeshFilter: { assetHandle: i % 2 === 0 ? MESH_A : MESH_B } } },
+            ]),
+          ),
         },
-      } as unknown as SceneEntity);
-    }
-    const scene: SceneAsset = { kind: 'scene', entities };
-
-    // Catalogue the scene as an envelope carrying BARE-GUID refs[] — no
-    // sceneEntityId / sourceField (the prod serialization shape). This forces
-    // Branch A of _resolveSceneGuids while leaving every edge unresolvable.
-    const SCENE_GUID = 'c1111111-2222-4333-8444-555566667777';
-    const sceneGuid = AssetGuid.parse(SCENE_GUID);
-    if (!sceneGuid.ok) throw new Error('scene GUID parse failed');
-    expect(
-      reg.catalog(sceneGuid.value, scene, [{ guid: MESH_GUID_A }, { guid: MESH_GUID_B }]).ok,
-    ).toBe(true);
-
-    // Mint the scene handle and instantiate through the public sugar entry.
-    const sceneHandle = world.allocSharedRef('SceneAsset', scene);
-    const res = reg.instantiate<SceneAsset>(sceneHandle, world);
-
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-
-    // Every spawned member's MeshFilter.assetHandle is a resolved
-    //     user-tier slot (>= BUILTIN_BASE) — not the sentinel 0 a coerced GUID
-    //     string would leave behind.
-    const inst = world.get(res.value, SceneInstance);
-    expect(inst.ok).toBe(true);
-    if (!inst.ok) return;
-    let seen = 0;
-    for (let i = 0; i < 4; i++) {
-      const member = inst.value.mapping[i] as unknown as number;
-      const mf = world.get(member as never, MeshFilter);
-      expect(mf.ok).toBe(true);
-      if (!mf.ok) continue;
-      const handle = mf.value.assetHandle as unknown as number;
-      expect(typeof handle).toBe('number');
-      expect(handle).toBeGreaterThanOrEqual(BUILTIN_BASE);
-      seen++;
-    }
-    expect(seen).toBe(4);
-
-    // Dedup: the two distinct GUIDs mint exactly two user-tier handles,
-    //     shared across the four members (one allocSharedRef per unique GUID).
-    const handles = new Set<number>();
-    for (let i = 0; i < 4; i++) {
-      const member = inst.value.mapping[i] as unknown as number;
-      const mf = world.get(member as never, MeshFilter);
-      if (mf.ok) handles.add(mf.value.assetHandle as unknown as number);
-    }
-    expect(handles.size).toBe(2);
-  });
+      },
+    ]);
+    const scene = (await assets.load(SCENE, 'scene')).unwrap();
+    const first = (await assets.load(MESH_A, 'mesh')).unwrap(),
+      second = (await assets.load(MESH_B, 'mesh')).unwrap();
+    const root = assets.instantiate(scene, world).unwrap();
+    const mapping = world.get(root, SceneInstance).unwrap().mapping;
+    const handles = Array.from(
+      mapping,
+      (entity) => world.get(entity as EntityHandle, MeshFilter).unwrap().assetHandle,
+    );
+    expect(handles).toEqual([first, second, first, second]);
+    expect(first).not.toBe(second);
+    expect(assets.guidOf(first)).toBe(MESH_A);
+    expect(assets.guidOf(second)).toBe(MESH_B);
+  } finally {
+    assets.dispose();
+  }
 });

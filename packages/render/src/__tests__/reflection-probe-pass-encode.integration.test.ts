@@ -1,6 +1,7 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
+import { createPmremAtlas } from '../ibl/pmrem';
 import {
   addReflectionProbeGraphPasses,
   type ReflectionProbeGraphState,
@@ -51,7 +52,8 @@ describe('ReflectionProbe capture pass encoding', () => {
     const sampler = device.createSampler().unwrap();
     const emptyLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
     const filterGroup1 = device.createBindGroup({ layout: emptyLayout, entries: [] }).unwrap();
-    const cubeVertexBuffer = device.createBuffer({ size: 16, usage: 0x20 }).unwrap();
+    const atlas = createPmremAtlas(device, 'probe-test-atlas', 16, 'rgba8unorm').unwrap();
+    const scratch = createPmremAtlas(device, 'probe-test-scratch', 16, 'rgba8unorm').unwrap();
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
     const filterPipeline = device
       .createRenderPipeline({
@@ -71,16 +73,16 @@ describe('ReflectionProbe capture pass encoding', () => {
       rawCaptureFace: 0,
       rawDepthView: depthView,
       rawSize: 1,
-      filteredTexture: rawTexture,
-      filteredCubeView: rawCubeView,
-      filteredFaceViewsByMip: [rawFaceViews],
+      filteredTexture: atlas.texture,
+      filteredView: atlas.view,
+      filterScratchTexture: scratch.texture,
+      filterScratchView: scratch.view,
       outputFormat: 'rgba8unorm',
       sampler,
       filterPipeline,
       filterGroup0: undefined,
       filterGroup1,
-      cubeVertexBuffer,
-      filteredSize: 1,
+      filteredSize: 16,
       step: undefined,
     };
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();

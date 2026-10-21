@@ -42,7 +42,7 @@ export default defineFeature({
     const assets = app.assets;
     if (assets === undefined) checks.push({ name: 'app.assets present', ok: false });
     else {
-      installMemoryPack(
+      await installMemoryPack(
         assets,
         [
           {
@@ -71,13 +71,14 @@ export default defineFeature({
       );
       texture = await loadTexture(assets, TEXTURE, checks);
       if (texture !== undefined) {
+        const payload = assets.read(texture).unwrap();
         checks.push({
           name: 'texture is 16x16 rgba8unorm-srgb',
           ok:
-            texture.shape.extent.width === 16 &&
-            texture.format === 'rgba8unorm-srgb' &&
-            texture.data.byteLength === 1024,
-          detail: `${texture.shape.extent.width}x${texture.shape.extent.height} ${texture.format} ${texture.data.byteLength}B`,
+            payload.shape.extent.width === 16 &&
+            payload.format === 'rgba8unorm-srgb' &&
+            payload.data.byteLength === 1024,
+          detail: `${payload.shape.extent.width}x${payload.shape.extent.height} ${payload.format} ${payload.data.byteLength}B`,
         });
       }
     }

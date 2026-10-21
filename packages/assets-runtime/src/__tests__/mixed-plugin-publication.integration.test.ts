@@ -14,6 +14,7 @@ import { captureAssetPublication } from '../capture-publication.js';
 import { createCatalogSource } from '../catalog-source.js';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
+import { runtimePackDecoders } from './fixtures/runtime-pack-decoders';
 
 const backend = '01900000-0000-7000-8000-000000000995';
 const frontend = '01900000-0000-7000-8000-000000000996';
@@ -109,7 +110,8 @@ it('captures all realm attachments without conflating same program keys or evalu
   const producer = new RuntimePackProducer({
     scopeId: 'restored',
     target: 'frontend',
-    validate: async (state, fetcher) => validateAssetPublication(state.rows, fetcher),
+    validate: async (state, fetcher) =>
+      validateAssetPublication(state.rows, fetcher, undefined, { decoders: runtimePackDecoders }),
   });
   try {
     // Backend bytes remain durable but do not require Node capabilities here.
@@ -158,7 +160,8 @@ it('checks capabilities only for the selected fixed execution group before publi
       ...(available
         ? { imports: { 'node:fs': { identity: 'node-version', url: 'node:fs' } } }
         : {}),
-      validate: async (state, fetcher) => validateAssetPublication(state.rows, fetcher),
+      validate: async (state, fetcher) =>
+        validateAssetPublication(state.rows, fetcher, undefined, { decoders: runtimePackDecoders }),
     });
     try {
       expect((await producer.restore(snapshot)).ok).toBe(available);

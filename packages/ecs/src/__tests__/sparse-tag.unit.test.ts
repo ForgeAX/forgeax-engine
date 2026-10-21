@@ -67,10 +67,8 @@ describe('sparse tag storage', () => {
           bytes: new Uint8Array(column.view.buffer).slice(),
         })),
       ),
-      epochs: [...table.storage.values()].map(({ epochs }) => ({
-        added: epochs.added.slice(),
-        changed: epochs.changed.slice(),
-      })),
+      added: [...table.storage.values()].map(({ added }) => added.slice()),
+      changed: world[worldInternal].getComponentChange(entity, componentId(Wide)),
     };
 
     world.addComponent(entity, { component: Selected, data: {} }).unwrap();
@@ -87,12 +85,10 @@ describe('sparse tag storage', () => {
       expect(current?.view.buffer).toBe(column.buffer);
       expect(new Uint8Array(current?.view.buffer ?? new ArrayBuffer(0))).toEqual(column.bytes);
     }
-    expect(
-      [...table.storage.values()].map(({ epochs }) => ({
-        added: epochs.added,
-        changed: epochs.changed,
-      })),
-    ).toEqual(before.epochs);
+    expect([...table.storage.values()].map(({ added }) => added)).toEqual(before.added);
+    expect(world[worldInternal].getComponentChange(entity, componentId(Wide))).toEqual(
+      before.changed,
+    );
 
     world.removeComponent(entity, Selected).unwrap();
     expect(world[worldInternal].getEntityArchetype(entity)?.tableId).toBe(table.id);

@@ -1,8 +1,10 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../../render-pipeline';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import { addStandardSceneDataPass } from '../standard-scene-data';
 
 it.each([
@@ -43,14 +45,26 @@ it.each([
   addStandardSceneDataPass(graph, color, depth, undefined, 'forward-only-opaque').unwrap();
   const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
   let reads = 0;
-  const material = {
+  let recording = false;
+  const material = new MaterialResource({
+    baseColor: [1, 1, 1],
+    metallic: 0,
+    roughness: 1,
+    passes: [],
     materialHandle: 1,
     get materialShaderId(): string {
-      reads++;
-      throw new Error('selected Forward material contract');
+      if (recording) {
+        reads++;
+        throw new Error('selected Forward material contract');
+      }
+      return 'forgeax::default-standard-pbr';
     },
-  };
+  } as never);
   const frame = {
+    pipelineState: {},
+    materialSlots: [material.snapshot],
+    materialSlotIndices: [[0]],
+    materialFrame: new MaterialFrame(undefined).with(material, 1),
     encoder: device.createCommandEncoder().unwrap(),
     runtime: { device },
     dispatch: [
@@ -67,6 +81,7 @@ it.each([
     validatedOrdered: [{ renderableIndex: 0, source: { material, materials: [material] } }],
   } as unknown as _InternalRenderPipelineContext;
   try {
+    recording = true;
     const result = compiled.execute(frame);
     if (lightMode === 'Deferred') {
       expect(device.framePassNames).toEqual(['gbuffer']);
@@ -75,12 +90,12 @@ it.each([
     } else {
       // An unconditional skip would hide a selected producer failure.
       expect(result.ok).toBe(false);
-      expect(reads).toBe(1);
       if (!result.ok)
         expect(result.error).toMatchObject({
           code: 'pass-encode-failed',
           detail: { cause: { message: 'selected Forward material contract' } },
         });
+      expect(reads).toBe(1);
     }
   } finally {
     await compiled.retire();

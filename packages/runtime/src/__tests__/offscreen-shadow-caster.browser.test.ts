@@ -15,6 +15,7 @@ import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 it('retains the same ground shadow when its caster moves behind the camera', async () => {
   const canvas = document.createElement('canvas');
@@ -29,15 +30,14 @@ it('retains the same ground shadow when its caster moves behind the camera', asy
   const { renderer } = host.value;
   const world = new World();
   const context = await createWorldContext(world, [scenePlugin()]);
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 }),
-  );
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 }))
+    .unwrap();
   for (const [geometry, pos] of [
     [createBoxGeometry(40, 0.2, 40).unwrap(), [0, -0.1, 0]],
     [createBoxGeometry(2, 3, 1).unwrap(), [0, 1.5, 0]],
   ] as const) {
-    const mesh = world.allocSharedRef('MeshAsset', geometry);
+    const mesh = testAssets(world).create(geometry).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos } },

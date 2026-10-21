@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 // Reproduce G28 through managed ECS admission and the scheduled native tick.
 // Run after build: node packages/physics-rapier3d/bench/mesh-collision-effect.mjs
 import assert from 'node:assert/strict';
@@ -59,7 +61,7 @@ function cavity() {
   };
 }
 function fixture() {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   world.components.register(Transform).unwrap();
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
@@ -78,10 +80,10 @@ function fixture() {
   };
 }
 function cooked(world, source) {
-  return world.sharedRefs.alloc('MeshAsset', {
+  return runtimeAssetRegistry(world.assets).create({
     ...source,
     collision: buildMeshCollision(source).unwrap(),
-  });
+  }).unwrap();
 }
 function body(physics, entity) {
   let result;

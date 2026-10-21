@@ -1,6 +1,12 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { terrainDerivedLayoutValid, validateTerrain } from '@forgeax/engine-terrain';
-import { AssetError, type Loader, type TerrainAsset } from '@forgeax/engine-types';
+import {
+  type AssetDecoderContribution,
+  type AssetKind,
+  err,
+  ok,
+  type TerrainAsset,
+} from '@forgeax/engine-types';
 
 function readTerrain(
   payload: Record<string, unknown>,
@@ -38,32 +44,36 @@ function readTerrain(
   return terrain;
 }
 
-/** Array bytes are reconstructed explicitly after JSON fetch, never cast to a typed array. */
-export const terrainLoader: Loader<TerrainAsset> = {
-  kind: 'terrain',
-  load: (payload, refs) => readTerrain(payload, refs),
-  loadPack: (input) => {
-    let payload = input.payload;
-    try {
-      if (input.artifacts.body)
-        payload = JSON.parse(new TextDecoder().decode(input.artifacts.body.bytes)) as Record<
-          string,
-          unknown
-        >;
-    } catch {
-      throw new AssetError({
-        code: 'asset-parse-failed',
-        expected: 'terrain JSON with finite height/weight arrays',
-        hint: 'rebuild the terrain producer for the same GUID',
-      });
-    }
-    const value = readTerrain(payload, input.refs);
-    if (value === undefined)
-      throw new AssetError({
-        code: 'asset-parse-failed',
-        expected: 'complete validated Landscape asset and declared GUID closure',
-        hint: 'repair terrain dimensions, layers or missing references and recook',
-      });
-    return value;
+export const terrainContribution: AssetDecoderContribution<TerrainAsset, 'terrain'> = {
+  kind: { kind: 'terrain' } as AssetKind<TerrainAsset, 'terrain'>,
+  consumer: 'Terrain',
+  decoder: {
+    async decode({ envelope, artifacts }) {
+      let payload = envelope.payload;
+      const body = envelope.artifacts.body;
+      if (body !== undefined) {
+        const bytes = await artifacts.read(body);
+        if (!bytes.ok) return bytes;
+        try {
+          payload = JSON.parse(new TextDecoder().decode(bytes.value));
+        } catch {
+          return err({
+            code: 'asset-package-invalid',
+            expected: 'terrain JSON',
+            hint: 'recook the terrain body',
+            detail: { guid: envelope.guid, reason: 'invalid terrain body' },
+          });
+        }
+      }
+      const value = readTerrain(payload as unknown as Record<string, unknown>, envelope.refs);
+      return value === undefined
+        ? err({
+            code: 'asset-package-invalid',
+            expected: 'complete terrain data and declared references',
+            hint: 'recook the terrain closure',
+            detail: { guid: envelope.guid, reason: 'invalid terrain' },
+          })
+        : ok(value);
+    },
   },
 };

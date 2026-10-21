@@ -25,6 +25,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -146,17 +147,18 @@ export async function verifyLensFlare(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef(
-              'MeshAsset',
-              createBoxGeometry(size, size, 0.1).unwrap(),
-            ),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(size, size, 0.1).unwrap())
+              .unwrap(),
           },
         },
         {
           component: MeshRenderer,
           data: {
             materials: [
-              world.allocSharedRef('MaterialAsset', Materials.unlit([color, color, color, 1])),
+              testAssets(world)
+                .create(Materials.unlit([color, color, color, 1]))
+                .unwrap(),
             ],
           },
         },

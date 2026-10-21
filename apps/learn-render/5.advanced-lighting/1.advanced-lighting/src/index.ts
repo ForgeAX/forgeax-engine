@@ -22,8 +22,8 @@ import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
@@ -108,7 +108,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Load texture through the GUID asset pipeline.
-  const texRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+  const texRes = await assets.load(woodGuidRes.value, 'texture');
   if (!texRes.ok) {
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: texRes.error.code, hint: texRes.error.hint });
@@ -118,15 +118,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const woodTex = texRes.value;
 
   // Construct MaterialAsset POJO directly.
-  const mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const mat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: BLINN_PHONG_SHADER_ID }, renderState: { tags: { LightMode: 'Forward' } } },
     ],
     values: {
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', woodTex)),
+      baseColorTexture: Number(woodTex),
     },
-  });
+  }).unwrap();
 
   // Floor plane: 20x20 on the XZ plane at y=-0.5, normal +Y facing the
   // overhead light at the origin (LIGHT_POS in blinn-phong.wgsl). The
@@ -136,7 +136,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.1 blinn-phong] createPlaneGeometry failed:', floorRes.error);
     return;
   }
-  const floorMesh = world.allocSharedRef('MeshAsset', floorRes.value);
+  const floorMesh = assets.create(floorRes.value).unwrap();
   world.spawn(
     {
       component: Transform,

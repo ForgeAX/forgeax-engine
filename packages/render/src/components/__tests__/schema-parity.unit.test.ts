@@ -10,7 +10,7 @@ import {
 
 describe('render schema parity', () => {
   it('keeps branded mesh and merged light fields in the canonical schema', () => {
-    expect(MeshFilter.fields.assetHandle.type).toBe('shared<MeshAsset>');
+    expect(MeshFilter.fields.assetHandle.type).toBe('asset<mesh>');
     expect(DirectionalLight.fields.direction.type).toBe('array<f32, 3>');
     expect(DirectionalLight.fields.castShadow.default).toBe(false);
     expect(DirectionalLight.fields.shadowFilter.labels).toEqual({
@@ -20,10 +20,12 @@ describe('render schema parity', () => {
       pcssMedium: 4,
       pcssHigh: 5,
       pcfVogel: 6,
+      pcfSoft: 7,
+      variance: 8,
     });
     expect(DirectionalLight.fields.shadowFilter.default).toBe(6);
     expect('pcfKernelSize' in DirectionalLight.fields).toBe(false);
-    expect(MeshRenderer.fields.materials.type).toBe('array<shared<MaterialAsset>>');
+    expect(MeshRenderer.fields.materials.type).toBe('array<asset<material>>');
   });
 
   it('exposes both camera projection variants and helpers', () => {

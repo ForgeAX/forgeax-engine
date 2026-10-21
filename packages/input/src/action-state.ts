@@ -182,28 +182,19 @@ function bindingContribution(binding: ActionBinding, sample: InputBackendSample)
  *
  * @param sample - One frame's raw input backend sample (POD).
  * @param inputMap - ActionConfig array; duplicate action names → last-wins (D-8).
- * @param prevActionStates - Previous frame's action states for edge diff
- *   (justPressed/justReleased derivation). Omitted on the first frame or
- *   when actions are not being tracked across frames.
+ * @param previouslyPressed - Previous snapshot's action readpoint for edge diff.
+ *   Omitted on the first frame or when actions are not being tracked.
  * @returns ActionState[] with one entry per action name in inputMap (last-wins dedup).
  */
 export function deriveActionStates(
   sample: InputBackendSample,
   inputMap: readonly ActionConfig[],
-  prevActionStates?: readonly ActionState[],
+  previouslyPressed?: (action: string) => boolean,
 ): ActionState[] {
   // D-8: last-wins dedup — later configs overwrite earlier for same action name.
   const deduped = new Map<string, ActionConfig>();
   for (const config of inputMap) {
     deduped.set(config.action, config);
-  }
-
-  // Build prev lookup for edge diff.
-  const prevByAction = new Map<string, boolean>();
-  if (prevActionStates) {
-    for (const s of prevActionStates) {
-      prevByAction.set(s.action, s.pressed);
-    }
   }
 
   const results: ActionState[] = [];
@@ -234,7 +225,7 @@ export function deriveActionStates(
     }
 
     // Edge detection: justPressed / justReleased from prev frame's pressed state.
-    const prevPressed = prevByAction.get(config.action) ?? false;
+    const prevPressed = previouslyPressed?.(config.action) ?? false;
     const justPressed = aggregatedPressed && !prevPressed;
     const justReleased = sample.focusReset !== true && !aggregatedPressed && prevPressed;
 

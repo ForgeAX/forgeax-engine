@@ -135,9 +135,9 @@ async function rendererImages(scene) {
       limits: device.limits,
     }),
   });
-  const world = new World();
+  const world = new World({ assets: assets });
   if (scene === SPONZA_SCENE) await gi.spawnSponza(world, assets, SPONZA_DIST);
-  else spawnProceduralScene(world, scene, gi.publishMaterials(world, assets, cooked), 1, boxMesh);
+  else spawnProceduralScene(world, scene, await gi.publishMaterials(world, assets, cooked), 1, boxMesh);
   // The baked lane resolves its volume GUID through the served bake catalog.
   const restoreCatalog = GATHER === 'baked' ? gi.installDistCatalog(assets, BAKE_DIR) : () => {};
   const lease = renderer.attach(world).unwrap();

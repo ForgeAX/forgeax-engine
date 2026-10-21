@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 // hello-custom-importer headless smoke -- acceptance gate for
 // feat-20260629-importer-self-declared-fold-contract (M5 / w15; AC-01 / AC-09).
@@ -15,9 +16,9 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 //   3. dawn-node WebGPU + a `globalThis.fetch` that reads the built dist/
 //      artefacts off disk -- the SAME production fetch chain the browser uses
 //      (pack-index.json -> .pack.json), no HTTP server required.
-//   4. Real load + real use (AC-01 functional): register the host loader on
-//      host assets, configurePackIndex, `loadByGuid<ReelGameBlob>`, assert
-//      the typed payload (title + reels), then spawn one cube per reel and
+//   4. Real load + real use (AC-01 functional): install the host decoder,
+//      configurePackIndex, load the managed handle, read and assert
+//      the typed snapshot (title + reels), then spawn one cube per reel and
 //      render 60 frames + pixel readback (the scene is non-empty because the
 //      blob really loaded).
 //
@@ -25,11 +26,11 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 //   (a) backend=webgpu
 //   (b) frames >= SMOKE_MIN_FRAMES
 //   (c) pack-index.json has a 'reel-game-blob' row for the declared GUID
-//   (d) loadByGuid returned the typed blob (title + 3 reels) -- REAL load
+//   (d) loading and reading returns the typed blob (title + 3 reels) -- REAL load
 //   (e) NDC-region pixel distance to black > eps -- REAL use (cubes rendered)
 //   (f) Renderer.onError RhiError count == 0
 //   (g) malformed GUID is rejected before a known GUID loads in the same process
-//   (h) catalog-miss loadByGuid failure recovers to a known GUID in the same process
+//   (h) catalog-miss load failure recovers to a known GUID in the same process
 //
 // AC-07 (no Importer.fold) is enforced by a separate grep gate in the w15
 // acceptanceCheck, not here.
@@ -44,6 +45,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -151,7 +156,7 @@ Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: t
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
 // --- fetch shim: serve the built dist/ artefacts off disk --------------------
-// loadByGuidProd needs globalThis.fetch. dawn-node has no HTTP server, so we
+// The production asset loader needs globalThis.fetch. dawn-node has no HTTP server, so we
 // map the production fetch URLs (/pack-index.json + the Pack v2 packageUrl)
 // onto the on-disk dist/ tree. This is the SAME chain a browser drives -- the
 // importer ran at vite build time and the runtime never re-imports.
@@ -252,23 +257,9 @@ const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
 
-// The host loader, inlined here as a plain-JS twin of src/reel-game-blob-loader.ts
-// (the browser entry main.ts imports the .ts; this node smoke harness cannot
-// import a raw .ts module, so it mirrors the trivial passthrough loader -- same
-// kind string, same passthrough behaviour). The src/ loader is what ships; this
-// twin only exists so the node smoke drives the identical loadByGuid dispatch.
-function reelGameBlobLoader() {
-  return {
-    kind: REEL_GAME_BLOB_KIND,
-    load(payload) {
-      return payload;
-    },
-  };
-}
+
+const { reelGameBlobKind, reelGameBlobDecoder } = await import('../src/reel-game-blob-loader.ts');
 
 const MANIFEST_PATH = resolve(distDir, 'shaders', 'manifest.json');
 if (!existsSync(MANIFEST_PATH)) {
@@ -307,7 +298,7 @@ if (assets === null || assets === undefined) {
 }
 
 // Step 3: register the host loader (runtime mirror of the build-time importer)
-assets.loaders.register(reelGameBlobLoader());
+assets.installDecoder(reelGameBlobKind, reelGameBlobDecoder);
 assets.configurePackIndex('/pack-index.json');
 
 // Step 4: an adjacent malformed GUID must fail without poisoning the registry
@@ -317,10 +308,10 @@ const malformedGuidOk = !malformedGuid.ok && malformedGuid.error.code === 'pack-
 // Step 5: a well-formed GUID missing from the production catalog must fail at load time.
 const catalogMissGuid = AssetGuid.parse('00000000-0000-4000-8000-000000000000');
 const catalogMissLoad = catalogMissGuid.ok
-  ? await assets.loadByGuid(catalogMissGuid.value)
+  ? await assets.load(catalogMissGuid.value, reelGameBlobKind)
   : undefined;
 const catalogMissOk =
-  catalogMissGuid.ok && !catalogMissLoad?.ok && catalogMissLoad.error.code === 'asset-not-imported';
+  catalogMissGuid.ok && !catalogMissLoad?.ok && catalogMissLoad.error.code === 'asset-not-found';
 
 // Step 6 (d): REAL recovery load through the production fetch chain
 const guidRes = AssetGuid.parse(REEL_GAME_LEVEL_1_GUID);
@@ -328,17 +319,17 @@ if (!guidRes.ok) {
   console.error(`[smoke] FAIL - GUID parse failed: ${guidRes.error.code}`);
   process.exit(1);
 }
-const loadRes = await assets.loadByGuid(guidRes.value);
+const loadRes = await assets.load(guidRes.value, reelGameBlobKind);
 let blob;
 if (loadRes.ok) {
-  blob = loadRes.value;
+  blob = assets.read(loadRes.value).unwrap();
   console.log(
     `[hello-custom-importer] loaded reel-game blob title=${JSON.stringify(blob.title)} reels=${
       Array.isArray(blob.reels) ? blob.reels.length : 'n/a'
     }`,
   );
 } else {
-  console.error(`[smoke] loadByGuid failed: ${JSON.stringify(loadRes.error)}`);
+  console.error(`[smoke] load failed: ${JSON.stringify(loadRes.error)}`);
 }
 const loadOk =
   loadRes.ok &&
@@ -349,7 +340,7 @@ const loadOk =
 const recoveryOk = malformedGuidOk && catalogMissOk && loadOk;
 if (recoveryOk) {
   console.log('[smoke] malformed GUID rejected: pack-guid-malformed; recovery load succeeded');
-  console.log('[smoke] catalog miss rejected: asset-not-imported; recovery load succeeded');
+  console.log('[smoke] catalog miss rejected: asset-not-found; recovery load succeeded');
 } else {
   console.error(
     `[smoke] fault/recovery failed: malformed=${
@@ -359,7 +350,12 @@ if (recoveryOk) {
 }
 
 // REAL use (e): spawn one cube per reel from the loaded blob
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 if (loadOk) {
@@ -370,7 +366,7 @@ if (loadOk) {
         data: {
           pos: [reel.x, (reel.symbols.length - 2) * 0.2, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
     );
   }
@@ -392,12 +388,11 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
   framesObserved++;
 }
 const device = sharedDevice;
@@ -478,7 +473,7 @@ if (!structuralOk) {
 }
 if (!packageV2Ok) failures.push('(c) reel-game-blob package is not an asset-local Pack v2 envelope');
 if (!loadOk) {
-  failures.push('(d) loadByGuid did not return a typed reel-game blob with title + 3 reels (REAL load)');
+  failures.push('(d) load/read did not return a typed reel-game blob with title + 3 reels (REAL load)');
 }
 if (!recoveryOk) {
   failures.push('(g/h) malformed GUID or catalog-miss rejection did not recover to the known-GUID load in the same process');
@@ -503,7 +498,7 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `[smoke] PASS - 8 criteria GREEN: backend=webgpu, frames=${framesObserved}, pack-index reel-game-blob row present, malformed GUID and catalog miss rejected then loadByGuid returned typed blob (title + 3 reels), scene rendered (maxDist=${maxDist.toFixed(4)}), RhiError count=0`,
+  `[smoke] PASS - 8 criteria GREEN: backend=webgpu, frames=${framesObserved}, pack-index reel-game-blob row present, malformed GUID and catalog miss rejected then load/read returned typed blob (title + 3 reels), scene rendered (maxDist=${maxDist.toFixed(4)}), RhiError count=0`,
 );
 
 device.destroy?.();

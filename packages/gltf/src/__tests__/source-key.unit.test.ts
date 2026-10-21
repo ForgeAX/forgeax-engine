@@ -28,7 +28,13 @@ describe('glTF producer sourceKey', () => {
       { kind: 'mesh', sourceIndex: 4, name: 'Hero' },
       { kind: 'material', sourceIndex: 0, name: 'Skin' },
     ]);
-    expect(result).toEqual({ ok: true, keys: ['mesh:Hero', 'material:Skin'], conflicts: [] });
+    expect(result).toEqual({
+      ok: true,
+      items: [
+        { kind: 'mesh', sourceIndex: 4, name: 'Hero', sourceKey: 'mesh:Hero' },
+        { kind: 'material', sourceIndex: 0, name: 'Skin', sourceKey: 'material:Skin' },
+      ],
+    });
   });
 
   it('reports duplicate semantic names as a structured conflict', () => {
@@ -42,7 +48,10 @@ describe('glTF producer sourceKey', () => {
 
   it('uses the semantic kind for one anonymous output, never sourceIndex', () => {
     const result = deriveGltfSourceKeys([{ kind: 'mesh', sourceIndex: 7 }]);
-    expect(result).toEqual({ ok: true, keys: ['mesh'], conflicts: [] });
+    expect(result).toEqual({
+      ok: true,
+      items: [{ kind: 'mesh', sourceIndex: 7, sourceKey: 'mesh' }],
+    });
   });
 
   it('persists an output display name in the generated sub-asset entry', () => {

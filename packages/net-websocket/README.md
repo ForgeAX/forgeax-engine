@@ -87,6 +87,10 @@ bytes while preserving message order. The Node adapter converts binary `ws`
 messages to exact byte slices. Neither adapter imports replication profiles,
 packet codecs, or gameplay policy.
 
+An active transport error retires the endpoint and closes its physical socket.
+Connection failure, cancellation, disconnect and queue overflow share terminal
+cleanup; detached client callbacks cannot append messages after retirement.
+
 ## Errors
 
 Every failed result is an `EndpointError`. Branch on its closed `.code` union;

@@ -17,18 +17,17 @@ export default defineFeature({
   run(checks) {
     let failing = true;
     let hookFailure: SkinJointPathUnresolvedError | undefined;
-    const guarded = new AssetRegistry(
-      {} as never,
-      undefined,
-      undefined,
-      (_world, _resolver, root) => {
+    const guarded = new AssetRegistry({
+      shaderRegistry: {} as never,
+      postSpawnHook: (_world, _resolver, root) => {
         if (!failing) return { ok: true };
         hookFailure = new SkinJointPathUnresolvedError(root, ['injected-post-spawn-joint'], 0);
         return { ok: false, error: hookFailure };
       },
-    );
+    });
     const Tag = defineComponent('FeatureLabSceneTag', { value: 'f32' });
-    const world = new World();
+    const world = new World({ assets: guarded });
+
     for (const component of [Tag, ChildOf, Children, SceneInstance])
       world.components.register(component).unwrap();
     const bystander = world.spawn({ component: Tag, data: { value: 99 } }).unwrap();
@@ -39,7 +38,7 @@ export default defineFeature({
         second: { components: { FeatureLabSceneTag: { value: 2 } } },
       },
     } as SceneAsset;
-    const handle = world.allocSharedRef('SceneAsset', scene);
+    const handle = guarded.create(scene).unwrap();
     const entities = world.inspect().entityCount;
     const refs = world.sharedRefs._liveCount();
 

@@ -1,4 +1,5 @@
 import { createMaterialProgramSetDigest } from '@forgeax/engine-pack/material-cook';
+import { encodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import type { MaterialProgramAbi } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { cloneRetainedPackPayload } from '../internal/retained-material-facts.js';
@@ -47,6 +48,27 @@ function parsed(text = JSON.stringify(publication())) {
 }
 
 describe('retained material publication facts', () => {
+  it('retains shared program tables before freezing either material record', () => {
+    const source = publication();
+    const pack = parsed(JSON.stringify(encodeMaterialProgramWire(source)));
+    expect(pack).toEqual(source);
+    const a = pack.assets[0]?.payload,
+      b = pack.assets[1]?.payload;
+    if (!a || !b) throw new Error('Missing fixture material');
+    expect(a.cooked.programs[0]).toBe(b.cooked.programs[0]);
+    expect(Object.isFrozen(a.cooked.programs[0])).toBe(true);
+    const cloned = cloneRetainedPackPayload(b) as typeof b;
+    expect(cloned.cooked).toBe(b.cooked);
+    cloned.values.roughness = 0.9;
+    expect(b.values.roughness).toBe(0.5);
+  });
+  it('rejects malformed wire references before retained ownership admission', () => {
+    const encoded = encodeMaterialProgramWire(publication()) as { pack: Publication };
+    const first = encoded.pack.assets[0];
+    if (!first) throw new Error('Missing fixture material');
+    (first.payload.cooked.programs as unknown[])[0] = 999;
+    expect(() => parseRetainedPackJson(JSON.stringify(encoded))).toThrow(SyntaxError);
+  });
   it('shares immutable ABI values while retaining each material record', () => {
     const pack = parsed();
     const first = pack.assets[0]?.payload;

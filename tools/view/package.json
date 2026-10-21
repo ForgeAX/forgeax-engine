@@ -63,7 +63,6 @@
     "./plugins/asset-references/identity": "./dist/modules/plugins/asset-references/identity.mjs",
     "./plugins/asset-references/frontend": "./dist/modules/plugins/asset-references/frontend.mjs",
     "./plugins/asset-references/session": "./dist/modules/plugins/asset-references/session.mjs",
-    "./plugins/asset-references/runtime": "./dist/modules/plugins/asset-references/runtime.mjs",
     "./workspace/presentation": "./dist/modules/workspace/presentation.mjs",
     "./pages/scene": "./dist/modules/pages/scene.mjs",
     "./shell/frontend": "./dist/modules/shell/frontend.mjs",
@@ -181,6 +180,7 @@
     "prepack": "pnpm run build",
     "test": "node --test scripts/release-npm.test.mjs test/*.test.mjs",
     "test:view": "node --test test/*.test.mjs",
+    "test:resource-preview": "node scripts/verify-resource-preview-lifecycle.mjs",
     "test:package": "node --test test/package-aggregate.test.mjs"
   },
   "license": "Apache-2.0",

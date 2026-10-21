@@ -1,16 +1,16 @@
-import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
-import { type FontAsset, type Handle } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   buildText2dFontRecoveryWorld,
   buildText2dWorld,
   createText2dFontRecoveryController,
-  registerSharedSampler,
   type Text2dFontRecoveryController,
   type Text2dFontRecoveryError,
   stepText2d,
@@ -30,7 +30,7 @@ bootstrap(canvas).catch((error: unknown) => {
 async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const result = await createApp(
     target,
-    {},
+    import.meta.env.DEV && runtimeBinding !== undefined ? { assetRuntimeBinding: runtimeBinding } : {},
     { ...forgeaxBundlerAdapter(), importTransport: createRuntimeAssetImportTransport(runtimeBinding) },
   );
   if (!result.ok) {
@@ -40,18 +40,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const app = result.value;
   const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   if (assets === undefined) {
     console.error('[bevy-text2d] assets unavailable');
     return;
   }
-  configureRuntimeAssetCatalog(assets, runtimeBinding);
-  registerSharedSampler(assets);
+
   const parsed = AssetGuid.parse(FONT_GUID);
   if (!parsed.ok) {
     console.error('[bevy-text2d] FONT_GUID parse failed:', parsed.error.code);
     return;
   }
-  const font = await assets.loadByGuid<FontAsset>(parsed.value);
+  const font = await assets.load(parsed.value, 'font');
   if (!font.ok) {
     console.error('[bevy-text2d] font load failed:', font.error.code, font.error.hint);
     return;
@@ -65,11 +65,24 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       ...(structured.expected === undefined ? {} : { expected: structured.expected }),
       ...(structured.detail === undefined ? {} : { detail: structured.detail }),
     });
-    console.error('[bevy-text2d] app error:', error.code, error.hint);
+    console.error('[bevy-text2d] app error:', JSON.stringify(error, (_key, value) => value instanceof Error ? Object.fromEntries(Object.getOwnPropertyNames(value).map((key) => [key, Reflect.get(value, key)])) : value));
   });
+  const stepRecoveryFrame = async (): Promise<void> => {
+    const deadline = performance.now() + 10_000;
+    const waitForCredit = async () => {
+      while (app.execution.report().frame.inFlight > 0) {
+        if (performance.now() >= deadline) throw new Error('Text2d frame receipt did not complete');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    await waitForCredit();
+    const stepped = app.stepFrame(1 / 60);
+    if (!stepped.ok) throw stepped.error;
+    await waitForCredit();
+  };
   let recoveryController: Text2dFontRecoveryController | undefined;
   if (m34RecoveryMode) {
-    const recoveryScene = buildText2dFontRecoveryWorld(app.world, font.value);
+    const recoveryScene = buildText2dFontRecoveryWorld(app.world, assets.read(font.value).unwrap());
     let m34Phase = 0;
     app.world.addSystem(Update, {
       name: 'text2d-m34-frame-keepalive',
@@ -82,15 +95,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     recoveryController = createText2dFontRecoveryController(
       app.world,
       recoveryScene,
-      async () => {
-        const stepped = app.stepFrame(1 / 60);
-        if (!stepped.ok) throw stepped.error;
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      },
+      stepRecoveryFrame,
       () => errors,
     );
   } else {
-    const fontHandle: Handle<'FontAsset', 'shared'> = app.world.allocSharedRef('FontAsset', font.value);
+    const fontHandle: AssetHandle<'font'> = font.value;
     const scene = buildText2dWorld(app.world, fontHandle);
     app.world.addSystem(Update, {
       name: 'text2d-motion',
@@ -120,8 +129,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (recoveryController !== undefined) debugGlobal.__bevyText2dM34 = recoveryController;
   debugGlobal.__prepareText2dCapture = async () => {
     if (m34RecoveryMode) {
-      const stepped = app.stepFrame(1 / 60);
-      if (!stepped.ok) throw stepped.error;
+      await stepRecoveryFrame();
     } else {
       const updated = app.world.update(1 / 60);
       if (!updated.ok) throw updated.error;

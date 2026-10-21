@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // Shared Bevy `text2d` scene for the browser app and the Dawn smoke.
 //
 // Bevy's source demonstrates Text2d as ordinary world-space text attached to
@@ -5,16 +6,15 @@
 // label. ForgeaX's public equivalent is GlyphText + Transform. The scene keeps
 // that mapping explicit so the smoke cannot silently test a different scene.
 
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { GlyphText } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
-import type { FontAsset, Handle } from '@forgeax/engine-types';
+import type { FontAsset } from '@forgeax/engine-types';
 
-export const SAMPLER_GUID = '019eb276-4d96-7313-b4f0-f5d55536acd2';
 export const TEXT2D_FONT_SIZE = 0.018;
 
 export const Text2dMotion = defineComponent('BevyText2dMotion', {
@@ -32,8 +32,7 @@ export interface Text2dFontRecoveryScene {
   readonly prefix: readonly EntityHandle[];
   readonly target: EntityHandle;
   readonly unrelated: EntityHandle;
-  readonly fonts: readonly Handle<'FontAsset', 'shared'>[];
-  readonly baseLiveRefs: number;
+  readonly fonts: readonly AssetHandle<'font'>[];
 }
 
 export interface Text2dFontRecoveryError {
@@ -42,47 +41,30 @@ export interface Text2dFontRecoveryError {
   readonly detail?: unknown;
 }
 
-export type Text2dFontRecoveryStage = 'idle' | 'baseline' | 'overflow' | 'recovered' | 'cleaned';
+export type Text2dFontRecoveryStage = 'idle' | 'baseline' | 'edited' | 'recovered' | 'cleaned';
 
 export interface Text2dFontRecoveryState {
   readonly stage: Text2dFontRecoveryStage;
-  readonly prefixAttached: number;
-  readonly targetAttached: boolean;
+  readonly labels: number;
+  readonly generatedComponents: number;
   readonly unrelatedPresent: boolean;
-  readonly liveRefs: number;
-  readonly baseLiveRefs: number;
-  readonly baselineLiveRefs: number | null;
-  readonly targetMeshHandle: number | null;
-  readonly targetMaterialHandle: number | null;
+  readonly liveFonts: number;
+  readonly targetFontHandle: number | null;
+  readonly targetGlyphs: number;
   readonly errorCount: number;
-  readonly lastError?: Text2dFontRecoveryError;
 }
 
 export interface Text2dFontRecoveryController {
   readonly read: () => Text2dFontRecoveryState;
   readonly baseline: () => Promise<Text2dFontRecoveryState>;
-  readonly overflow: () => Promise<Text2dFontRecoveryState>;
+  readonly edit: () => Promise<Text2dFontRecoveryState>;
   readonly recover: () => Promise<Text2dFontRecoveryState>;
   readonly cleanup: () => Promise<Text2dFontRecoveryState>;
 }
 
-export function registerSharedSampler(assets: AssetRegistry): void {
-  const parsed = AssetGuid.parse(SAMPLER_GUID);
-  if (!parsed.ok) throw new Error(`[bevy-text2d] SAMPLER_GUID parse failed: ${parsed.error.code}`);
-  assets.catalog(parsed.value, {
-    kind: 'sampler',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-    addressModeW: 'clamp-to-edge',
-    magFilter: 'linear',
-    minFilter: 'linear',
-    mipmapFilter: 'nearest',
-  });
-}
-
 export function buildText2dWorld(
   world: World,
-  fontHandle: Handle<'FontAsset', 'shared'>,
+  fontHandle: AssetHandle<'font'>,
 ): Text2dScene {
   const spawn = (
     text: string,
@@ -109,14 +91,16 @@ export function buildText2dFontRecoveryWorld(
   world: World,
   font: FontAsset,
 ): Text2dFontRecoveryScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   addText2dView(world);
-  const baseLiveRefs = world.sharedRefs._liveCount();
   const fonts = Array.from({ length: 9 }, () =>
-    world.allocSharedRef('FontAsset', {
+    sceneAssets.create({
       ...font,
       glyphs: { ...font.glyphs },
       common: { ...font.common },
-    }),
+    }).unwrap(),
   );
   const prefixPositions: readonly (readonly [number, number, number])[] = [
     [-4.5, 2.4, 0],
@@ -131,7 +115,7 @@ export function buildText2dFontRecoveryWorld(
   const prefix = prefixPositions.map((pos, index) =>
     spawnRecoveryLabel(
       world,
-      fonts[index] as Handle<'FontAsset', 'shared'>,
+      fonts[index] as AssetHandle<'font'>,
       `font-${index}`,
       pos,
       [0.35 + index * 0.07, 0.8, 1, 1],
@@ -139,7 +123,7 @@ export function buildText2dFontRecoveryWorld(
   );
   const target = spawnRecoveryLabel(
     world,
-    fonts[0] as Handle<'FontAsset', 'shared'>,
+    fonts[8] as AssetHandle<'font'>,
     'recovery',
     [0, -2.2, 0],
     [1, 0.8, 0.25, 1],
@@ -147,7 +131,7 @@ export function buildText2dFontRecoveryWorld(
   const unrelated = world
     .spawn({ component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } })
     .unwrap();
-  return { prefix, target, unrelated, fonts, baseLiveRefs };
+  return { prefix, target, unrelated, fonts };
 }
 
 export function createText2dFontRecoveryController(
@@ -156,112 +140,65 @@ export function createText2dFontRecoveryController(
   advanceFrame: () => Promise<void>,
   readErrors: () => readonly Text2dFontRecoveryError[],
 ): Text2dFontRecoveryController {
+  const assets = world.assets;
+  if (!(assets instanceof AssetRegistry)) throw new Error('Font recovery requires its asset owner');
+  const targetFont = scene.fonts[8];
+  if (targetFont === undefined) throw new Error('Missing ninth font');
+  const originalGlyphs = assets.read(targetFont).unwrap().glyphs;
   let stage: Text2dFontRecoveryStage = 'idle';
-  let baselineLiveRefs: number | null = null;
-
+  const entities = [...scene.prefix, scene.target];
   const read = (): Text2dFontRecoveryState => {
-    const errors = readErrors();
-    const latest = errors[errors.length - 1];
-    const targetFilter = world.get(scene.target, MeshFilter);
-    const targetRenderer = world.get(scene.target, MeshRenderer);
-    const targetMaterial = targetRenderer.ok
-      ? Number(
-          (
-            (targetRenderer.value as unknown as { materials: readonly number[] }).materials[0] ?? 0
-          ),
-        )
-      : 0;
-    const lastError =
-      latest === undefined
-        ? undefined
-        : {
-            code: latest.code,
-            ...(latest.expected === undefined ? {} : { expected: latest.expected }),
-            ...(latest.detail === undefined ? {} : { detail: latest.detail }),
-          };
+    const target = world.get(scene.target, GlyphText);
+    const font = assets.read(targetFont);
     return {
       stage,
-      prefixAttached: scene.prefix.filter(
-        (entity) => world.get(entity, MeshFilter).ok && world.get(entity, MeshRenderer).ok,
-      ).length,
-      targetAttached: targetFilter.ok && targetRenderer.ok,
-      unrelatedPresent: world.get(scene.unrelated, Transform).ok,
-      liveRefs: world.sharedRefs._liveCount(),
-      baseLiveRefs: scene.baseLiveRefs,
-      baselineLiveRefs,
-      targetMeshHandle: targetFilter.ok
-        ? Number((targetFilter.value as unknown as { assetHandle: number }).assetHandle)
-        : null,
-      targetMaterialHandle: targetMaterial === 0 ? null : targetMaterial,
-      errorCount: errors.length,
-      ...(lastError === undefined ? {} : { lastError }),
+      labels: entities.filter((entity) => world.hasComponent(entity, GlyphText)).length,
+      generatedComponents: entities.filter((entity) =>
+        world.hasComponent(entity, MeshFilter) || world.hasComponent(entity, MeshRenderer)).length,
+      unrelatedPresent: world.hasComponent(scene.unrelated, Transform),
+      liveFonts: scene.fonts.filter((handle) => assets.validate(handle, 'font').ok).length,
+      targetFontHandle: target.ok ? Number(target.value.fontHandle) : null,
+      targetGlyphs: font.ok ? Object.keys(font.value.glyphs).length : 0,
+      errorCount: readErrors().length,
     };
   };
-
-  const baseline = async (): Promise<Text2dFontRecoveryState> => {
-    if (stage === 'idle') {
-      await advanceFrame();
-      await advanceFrame();
-      await advanceFrame();
-      world.set(scene.unrelated, Transform, { pos: [0, 0, 0] }).unwrap();
-      await advanceFrame();
-      world.set(scene.target, GlyphText, { fontHandle: scene.fonts[1] as Handle<'FontAsset', 'shared'> }).unwrap();
-      await advanceFrame();
-      world.set(scene.target, GlyphText, { fontHandle: scene.fonts[0] as Handle<'FontAsset', 'shared'> }).unwrap();
-      await advanceFrame();
-      baselineLiveRefs = world.sharedRefs._liveCount();
-      stage = 'baseline';
-    }
+  const advance = async () => { for (let frame = 0; frame < 15; frame++) await advanceFrame(); };
+  const baseline = async () => {
+    if (stage === 'idle') { await advance(); stage = 'baseline'; }
     return read();
   };
-
-  const overflow = async (): Promise<Text2dFontRecoveryState> => {
+  const edit = async () => {
     if (stage === 'idle') await baseline();
     if (stage === 'baseline') {
-      world
-        .set(scene.target, GlyphText, {
-          fontHandle: scene.fonts[8] as Handle<'FontAsset', 'shared'>,
-        })
-        .unwrap();
-      await advanceFrame();
-      stage = 'overflow';
+      assets.update(targetFont, { glyphs: {} }).unwrap();
+      await advance();
+      stage = 'edited';
     }
     return read();
   };
-
-  const recover = async (): Promise<Text2dFontRecoveryState> => {
+  const recover = async () => {
     if (stage === 'idle') await baseline();
-    if (stage === 'baseline') await overflow();
-    if (stage === 'overflow') {
-      world
-        .set(scene.target, GlyphText, {
-          fontHandle: scene.fonts[1] as Handle<'FontAsset', 'shared'>,
-        })
-        .unwrap();
-      await advanceFrame();
-      await advanceFrame();
+    if (stage === 'baseline') await edit();
+    if (stage === 'edited') {
+      assets.update(targetFont, { glyphs: originalGlyphs }).unwrap();
+      await advance();
       stage = 'recovered';
     }
     return read();
   };
-
-  const cleanup = async (): Promise<Text2dFontRecoveryState> => {
+  const cleanup = async () => {
     if (stage === 'idle') await baseline();
-    if (stage === 'baseline') await overflow();
-    if (stage === 'overflow') await recover();
+    if (stage === 'baseline') await edit();
+    if (stage === 'edited') await recover();
     if (stage === 'recovered') {
-      for (const entity of [...scene.prefix, scene.target]) world.despawn(entity).unwrap();
-      await advanceFrame();
-      for (const fontHandle of scene.fonts) world.sharedRefs.release(fontHandle);
-      await advanceFrame();
+      for (const entity of entities) world.despawn(entity).unwrap();
+      for (const font of scene.fonts) assets.release(font).unwrap();
+      await advance();
       stage = 'cleaned';
-    } else if (stage === 'cleaned') {
-      await advanceFrame();
     }
     return read();
   };
-
-  return { read, baseline, overflow, recover, cleanup };
+  return { read, baseline, edit, recover, cleanup };
 }
 
 export function stepText2d(world: World, scene: Text2dScene, dt: number): void {
@@ -306,7 +243,7 @@ function addText2dView(world: World): void {
 
 function spawnRecoveryLabel(
   world: World,
-  fontHandle: Handle<'FontAsset', 'shared'>,
+  fontHandle: AssetHandle<'font'>,
   text: string,
   pos: readonly [number, number, number],
   color: readonly [number, number, number, number],

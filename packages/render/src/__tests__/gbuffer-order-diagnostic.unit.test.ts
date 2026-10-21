@@ -1,3 +1,4 @@
+import { vec3 } from '@forgeax/engine-math';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -12,6 +13,7 @@ import {
   isGBufferOrderDiagnosticEncode,
   orderGBufferDiagnostic,
 } from '../gpu-driven/gbuffer-order-diagnostic';
+import { MaterialResource } from '../material-resource';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
@@ -186,7 +188,12 @@ describe('GBuffer batch order diagnostic', () => {
     const source = {
       localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
       transform: { world },
-      material: {},
+      material: new MaterialResource({
+        passes: [],
+        baseColor: vec3.create(),
+        metallic: 0,
+        roughness: 0,
+      }),
       materials: [],
     } as unknown as RenderableSnapshot;
     const batch = {

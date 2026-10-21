@@ -1,7 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { NetEndpointConnector } from '../endpoint/endpoint';
 import type { EndpointError } from '../endpoint/errors';
-import { NetError, type NetErrorCode } from '../replication/errors';
+import { NetError } from '../replication/errors';
 
 declare const sessionIdBrand: unique symbol;
 
@@ -191,13 +190,3 @@ export function transitionNetSessionState(
     );
   return ok(to);
 }
-
-export type { NetEndpointConnector };
-
-export const RECOVERY_ERROR_CODES: readonly NetErrorCode[] = [
-  'protocol-unsupported-version',
-  'session-illegal-transition',
-  'recovery-policy-invalid',
-  'recovery-rejected',
-  'recovery-exhausted',
-];

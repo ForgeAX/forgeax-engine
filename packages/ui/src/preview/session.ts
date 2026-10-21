@@ -11,12 +11,7 @@ export interface UiPreviewRect {
   readonly height: number;
 }
 
-export interface UiPreviewAssetSource {
-  readonly invalidate: (guid: string) => void;
-  readonly loadByGuid: (guid: string) => Promise<UiPreviewAssetLoadResult>;
-}
-
-export type UiPreviewAssetLoadResult =
+export type UiPreviewAssetReadResult =
   | UiResult<UiAsset>
   | { readonly ok: false; readonly error: ImportError };
 
@@ -51,7 +46,8 @@ export type UiPreviewState = 'loading' | 'mounted' | 'rebuilding' | 'failed' | '
 
 export interface UiPreviewSessionOptions {
   readonly guid: string;
-  readonly assets: UiPreviewAssetSource;
+  /** Bind the host's existing source read; the UI owns no asset cache or invalidation. */
+  readonly readAsset: (guid: string) => Promise<UiPreviewAssetReadResult>;
   readonly root: HTMLElement;
   readonly rect: UiPreviewRect;
   readonly layer?: number;
@@ -165,7 +161,7 @@ export function createUiPreviewSession(options: UiPreviewSessionOptions): UiPrev
       state = 'failed';
       return error('invalid-preview-rect', 'rect width and height must be positive finite numbers');
     }
-    const loaded = await options.assets.loadByGuid(options.guid);
+    const loaded = await options.readAsset(options.guid);
     if (token !== generation)
       return error('preview-stale-completion', 'an older preview generation completed');
     if (!loaded.ok) {
@@ -233,7 +229,6 @@ export function createUiPreviewSession(options: UiPreviewSessionOptions): UiPrev
         return error('preview-invalid-transition', `rebuild is not valid from ${state}`);
       current?.dispose();
       current = null;
-      options.assets.invalidate(options.guid);
       const token = ++generation;
       state = 'rebuilding';
       return run(token);

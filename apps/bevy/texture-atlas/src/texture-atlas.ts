@@ -1,9 +1,14 @@
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
+
 import type { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { SpriteRegionOverride, SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const CELL_SIZE = 24;
 export const ATLAS_PADDING = 4;
@@ -108,10 +113,15 @@ function spriteMaterial(texture: number): MaterialAsset {
   };
 }
 
-function spawnSprite(world: World, material: Handle<'MaterialAsset', 'shared'>, position: readonly [number, number, number], scale: number, region: readonly [number, number, number, number]): void {
+function spawnSprite(world: World, material: AssetHandle<'material'>, position: readonly [number, number, number], scale: number, region: readonly [number, number, number, number]): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   world.spawn(
     { component: Transform, data: { pos: position, quat: [0, 0, 0, 1], scale: [scale, scale, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [material] } },
     { component: SpriteRegionOverride, data: { region: new Float32Array(region) } },
   );
@@ -121,7 +131,10 @@ export function buildTextureAtlasWorld(
   world: World,
   variants: ReadonlyArray<{ texture: number; atlas: AtlasTexture }>,
 ): void {
-  const materials = variants.map(({ texture }) => world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', spriteMaterial(texture)));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const materials = variants.map(({ texture }) => sceneAssets.create(spriteMaterial(texture)).unwrap());
   spawnSprite(world, materials[0]!, [-4.1, 1.75, 0], 2.35, [0, 0, 1, 1]);
   spawnSprite(world, materials[1]!, [4.1, 1.75, 0], 2.35, [0, 0, 1, 1]);
   const samples = [

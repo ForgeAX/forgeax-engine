@@ -15,7 +15,9 @@ import {
   TONEMAP_REINHARD,
 } from '@forgeax/engine-render';
 import type { Renderer } from '@forgeax/engine-render';
-import { createRenderer } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { drawReadyFrame } from '../../../../../../scripts/test/ready-render-frame.mjs';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { inspectToneFinalCapture } from '../../../src/report/tone-report';
@@ -123,10 +125,11 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
   } as unknown as HTMLCanvasElement;
 
   let renderer: Renderer;
+  let assets: AssetRegistry;
   try {
-    const created = await createRenderer(canvas, {}, { shaderManifestUrl: ENGINE_MANIFEST_URL });
+    const created = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: ENGINE_MANIFEST_URL });
     if (!created.ok) throw created.error;
-    renderer = created.value;
+    ({ renderer, assets } = created.value);
   } finally {
     navigator.gpu.requestAdapter = originalRequestAdapter;
   }
@@ -135,7 +138,7 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
   const plane = createPlaneGeometry(0.75, 0.75);
   expect(plane.ok).toBe(true);
   if (!plane.ok) throw new Error(`tone ramp plane failed: ${plane.error.code}`);
-  const world = new World();
+  const world = new World({ assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   const frameRequest = {
@@ -143,7 +146,7 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   };
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
+  const meshHandle = world.assets.create(plane.value).unwrap();
   const cases = TONE_REQUIRED_CASES.filter((entry) => entry.tone.mode === mode);
   expect(cases).toHaveLength(TONE_REQUIRED_SAMPLE_COUNT);
   const xPositions = [-1.5, -0.5, 0.5, 1.5];
@@ -152,7 +155,7 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
       [sceneCase.tone.color[0], sceneCase.tone.color[1], sceneCase.tone.color[2], 1],
       { renderState: { cullMode: 'none' } },
     );
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const materialHandle = world.assets.create(material).unwrap();
     world.spawn(
       { component: Transform, data: { pos: [xPositions[index] ?? 0, 0, 0] } },
       { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -173,12 +176,8 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
   ).unwrap();
 
   world.update().unwrap();
-  const drawn = renderer.draw(frameRequest);
-  expect(drawn.ok).toBe(true);
-  if (!drawn.ok) throw new Error(`tone ramp draw failed: ${drawn.error.code}`);
-  const completed = await drawn.value.completed;
-  expect(completed.ok).toBe(true);
-  if (!completed.ok) throw completed.error;
+  const receipt = await drawReadyFrame(renderer, frameRequest);
+  expect(receipt.presentation).toBe('ready');
   if (target === undefined) throw new Error('tone ramp target was not created');
   const bytes = await readPixels(device, target);
   for (const [index, sceneCase] of cases.entries()) {

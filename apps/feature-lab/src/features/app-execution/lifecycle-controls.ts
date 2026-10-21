@@ -1,8 +1,10 @@
 import type { App } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { Time, Update } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -20,8 +22,14 @@ export default defineFeature({
   expect:
     'All checks pass: no frames while paused, one frame per stepFrame, invalid steps return app-frame-step-invalid, stop makes pause return app-not-started.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.95, 0.75, 0.1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.95, 0.75, 0.1, 1] }), {
       pos: [0, 0.5, 0],
     });
     let memo: Promise<readonly FeatureCheck[]> | undefined;
@@ -53,8 +61,12 @@ async function probePrivate(): Promise<readonly FeatureCheck[]> {
     return c.items;
   }
   const app = created.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
+  const stageCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   spawnStage(app.world);
-  spawnMesh(app.world, MESH.cube, standard(app.world, { baseColor: [0.95, 0.75, 0.1, 1] }), {
+  spawnMesh(app.world, stageCube, standard(app.world, { baseColor: [0.95, 0.75, 0.1, 1] }), {
     pos: [0, 0.5, 0],
   });
   c.ok('private start() ok', app.start().ok);

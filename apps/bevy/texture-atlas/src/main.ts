@@ -1,6 +1,5 @@
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildTextureAtlasWorld, makeAtlas, type AtlasTexture } from './texture-atlas';
 
@@ -16,6 +15,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const appResult = await createApp(target, {}, forgeaxBundlerAdapter());
   if (!appResult.ok) { console.error('[bevy-texture-atlas] createApp failed:', appResult.error); return; }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   console.warn(`[bevy-texture-atlas] backend=${app.renderer.inspect().capabilities.backendKind}`);
   const atlases = [makeAtlas('unpadding'), makeAtlas('padding'), makeAtlas('unpadding'), makeAtlas('padding')];
   const variants: Array<{ texture: number; atlas: AtlasTexture }> = [];
@@ -29,8 +30,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       colorSpace: 'srgb' as const,
       mips: { kind: 'none' as const },
     };
-    const textureHandle = app.world.allocSharedRef('TextureAsset', texture);
-    variants.push({ texture: unwrapHandle(textureHandle), atlas });
+    const textureHandle = assets.create(texture).unwrap();
+    variants.push({ texture: textureHandle, atlas });
   }
   buildTextureAtlasWorld(app.world, variants);
   const started = app.start();

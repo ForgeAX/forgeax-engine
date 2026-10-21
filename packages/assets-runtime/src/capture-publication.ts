@@ -19,9 +19,10 @@ import {
   type PluginBuildTarget,
   type Result,
 } from '@forgeax/engine-types';
-import type { AssetRegistry, ParsedPackFile } from './asset-registry.js';
+import type { AssetRegistry } from './asset-registry.js';
 import type { CatalogSource } from './catalog-source.js';
 import { PackReader } from './internal/pack-reader.js';
+import { runtimeSourceReader } from './internal/runtime-assets.js';
 import { assetLoadCancelled } from './internal/wait-for-asset.js';
 import { readArtifact } from './registry/artifact-io.js';
 import { resolveCatalogAssetUrl } from './registry/catalog.js';
@@ -92,42 +93,36 @@ export async function captureAssetPublication(
       row.lifecycle === 'stale'
     )
       throw new TypeError('a fixed capture requires a current publication');
-    const request = { signal: options.signal ?? null };
-    const cached = options.registry?.packFiles.get(row.packageUrl)?.value;
-    const raw =
-      cached ??
-      (await (async () => {
-        const response = await bound(row.packageUrl, request);
-        if (!response.ok) throw new TypeError('fixed Pack is unavailable');
-        return response.json();
-      })());
-    options.signal?.throwIfAborted();
-    const packageScope =
-      scopeId ??
-      (raw !== null &&
-      typeof raw === 'object' &&
-      'scopeId' in raw &&
-      typeof raw.scopeId === 'string'
-        ? raw.scopeId
-        : undefined);
-    if (packageScope === undefined) throw new TypeError('fixed Pack is missing its scope identity');
-    const verifiedPack = reader.verify(raw, {
-      scopeId: packageScope,
-      generation: publication.generation,
-      digest: publication.digest,
-      outputSetDigest: publication.outputSetDigest,
-    });
+    const signal = options.signal ?? new AbortController().signal;
+    const request = { signal };
+    const existing = runtimeSourceReader(options.registry, source);
+    const verifiedPack =
+      existing === undefined
+        ? await (async () => {
+            const response = await bound(row.packageUrl, request);
+            if (!response.ok) throw new TypeError('fixed Pack is unavailable');
+            const raw = await response.json();
+            options.signal?.throwIfAborted();
+            const packageScope =
+              scopeId ??
+              (raw !== null &&
+              typeof raw === 'object' &&
+              'scopeId' in raw &&
+              typeof raw.scopeId === 'string'
+                ? raw.scopeId
+                : undefined);
+            if (packageScope === undefined)
+              throw new TypeError('fixed Pack is missing its scope identity');
+            return reader.verify(raw, {
+              scopeId: packageScope,
+              generation: publication.generation,
+              digest: publication.digest,
+              outputSetDigest: publication.outputSetDigest,
+            });
+          })()
+        : await existing.readPack(row, signal, bound);
     if (!verifiedPack.ok) return verifiedPack;
     const pack = verifiedPack.value;
-    if (options.registry)
-      options.registry.cachePackFile(row.packageUrl, {
-        ...pack,
-        assets: pack.assets.map((asset) => ({
-          ...asset,
-          payload: asset.payload as Record<string, unknown>,
-          refs: [...asset.refs],
-        })),
-      } as ParsedPackFile);
     const bodies = new Map<string, Promise<Result<Uint8Array<ArrayBuffer>, PackageResponse>>>();
     const executions: Partial<
       Record<
@@ -205,9 +200,8 @@ export async function captureAssetPublication(
         descriptor,
       })),
     );
-    const results: PromiseSettledResult<Result<Uint8Array, AssetArtifactError>>[] = new Array(
-      reads.length,
-    );
+    const results: PromiseSettledResult<Result<Uint8Array, AssetArtifactError | AssetLoadError>>[] =
+      new Array(reads.length);
     let next = 0;
     const worker = async () => {
       while (next < reads.length) {
@@ -217,41 +211,29 @@ export async function captureAssetPublication(
         const { asset, artifactKey, descriptor } = read;
         try {
           options.signal?.throwIfAborted();
-          const cacheKey = `${asset.guid.toLowerCase()}\0${row.packageUrl}\0${artifactKey}`;
+          if (existing !== undefined && descriptor.byteRange === undefined) {
+            const captured = await existing.readArtifact(
+              { packageUrl: row.packageUrl, guid: asset.guid, artifactKey, descriptor },
+              signal,
+              bound,
+            );
+            if (captured.ok)
+              bodies.set(
+                descriptor.path,
+                Promise.resolve(ok(captured.value.stored as Uint8Array<ArrayBuffer>)),
+              );
+            results[index] = {
+              status: 'fulfilled',
+              value: captured.ok ? ok(captured.value.decoded) : captured,
+            };
+            continue;
+          }
           const verified = await readArtifact(
             { packageUrl: row.packageUrl, guid: asset.guid, artifactKey, descriptor },
             async (url) => {
               let bytes = bodies.get(descriptor.path);
               if (bytes === undefined) {
                 bytes = (async () => {
-                  // Identity storage is already represented by the domain byte cache.
-                  // Recheck its bytes against this frozen descriptor below; encoded
-                  // artifacts still need their original transport bytes for replay.
-                  const identity = (descriptor.contentEncoding ?? 'identity') === 'identity';
-                  let resident = identity
-                    ? options.registry?.artifactCache.peek(cacheKey)
-                    : undefined;
-                  if (
-                    resident === undefined &&
-                    identity &&
-                    asset.kind === 'material' &&
-                    descriptor.integrity
-                  ) {
-                    // Raw read-cache bytes are weak; installed programs still belong
-                    // to the material artifact owner. Reuse those exact bytes rather
-                    // than downloading the same complete publication again after GC.
-                    const program = options.registry
-                      ?.getMaterialProjection(asset.guid)
-                      ?.passes.flatMap((pass) => pass.programs)
-                      .find((program) => program.artifactHash === descriptor.integrity?.digest);
-                    if (program)
-                      resident = options.registry?.getMaterialArtifact(
-                        program.specializationKey,
-                      )?.bytes;
-                  }
-                  if (resident !== undefined) {
-                    return ok(resident.slice());
-                  }
                   const response = await bound(url, request);
                   if (!response.ok) {
                     bodies.delete(descriptor.path);

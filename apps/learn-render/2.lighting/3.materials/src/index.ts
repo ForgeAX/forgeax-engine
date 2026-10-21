@@ -27,7 +27,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -40,6 +40,8 @@ import {
   createFirstPersonControls,
   createScrollFovAccumulator,
 } from '../../../../shared/src/learn-render-first-person';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example-specific glue
 
@@ -110,8 +112,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const renderer = app.renderer;
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   app.onError((e) => {
     console.error('[learn-render 2.lighting 3.materials] app.onError:', e.code, e.hint);
@@ -122,13 +128,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // HANDLE_CUBE is the builtin procedural cube; MeshFilter uses it directly.
 
   // feat-20260527 M1 / w4: pass-based MaterialAsset minted via allocSharedRef
-  const objectMatHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const objectMatHandle = app.assets.create(Materials.standard({
     baseColor: OBJECT_BASE_COLOR,
     metallic: MATERIAL_METALLIC,
     roughness: OBJECT_ROUGHNESS,
-  }));
+  })).unwrap();
 
-  const lampMatHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([1.0, 1.0, 1.0, 1.0]));
+  const lampMatHandle = app.assets.create(Materials.unlit([1.0, 1.0, 1.0, 1.0])).unwrap();
 
   // Spawn the object cube at origin (LO: model = identity).
   world
@@ -138,7 +144,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [objectMatHandle] } },
     )
     .unwrap();
@@ -156,7 +162,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [LIGHT_POS_X, LIGHT_POS_Y, LIGHT_POS_Z], quat: [0, 0, 0, 1], scale: [LAMP_SCALE, LAMP_SCALE, LAMP_SCALE],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [lampMatHandle] } },
       {
         component: PointLight,

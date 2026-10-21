@@ -491,6 +491,16 @@ textarea.fx-input {
 }
 .fx-panel-header__slot { display: flex; align-items: center; gap: var(--fx-space-control); min-width: 0; }
 .fx-toolbar { display: flex; align-items: center; gap: var(--fx-ref-space-4); }
+.fx-toolbar--viewport {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  min-height: calc(var(--fx-component-control-height-compact) + var(--fx-ref-space-12));
+  gap: var(--fx-ref-space-6);
+  padding: var(--fx-ref-space-6);
+  background: var(--fx-color-surface-canvas);
+}
+.fx-toolbar--viewport > [role="status"] { min-width: 0; overflow-wrap: anywhere; }
 .fx-search { position: relative; min-width: 0; }
 .fx-search .fx-input { padding-right: calc(var(--fx-ref-space-32) + var(--fx-ref-space-2)); padding-left: calc(var(--fx-ref-space-32) + var(--fx-ref-space-2)); }
 .fx-search__leading,
@@ -657,11 +667,11 @@ textarea.fx-input {
   color: var(--fx-ref-color-neutral-300);
 }
 .fx-tooltip--top {
-  bottom: calc(100% + var(--fx-ref-space-10));
+  bottom: calc(100% + var(--fx-ref-space-8));
   transform: translateX(-50%);
 }
 .fx-tooltip--bottom {
-  top: calc(100% + var(--fx-ref-space-10));
+  top: calc(100% + var(--fx-ref-space-8));
   transform: translateX(-50%);
 }
 .fx-tooltip--fixed {
@@ -671,6 +681,7 @@ textarea.fx-input {
   margin: 0;
   transform: none;
 }
+.fx-tooltip[popover] { inset: auto; margin: 0; border: 0; }
 .fx-tooltip--fixed.fx-tooltip--top {
   bottom: auto;
 }
@@ -945,3 +956,23 @@ textarea.fx-input {
 .fx-collapsible__heading { position: relative; display: flex; align-items: center; }
 .fx-collapsible__heading > .fx-collapsible__trigger { flex: 1; min-width: 0; }
 .fx-collapsible__actions { position: absolute; flex: none; right: var(--fx-space-2, 8px); }
+.fx-preview-stats {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  box-sizing: border-box;
+  max-width: calc(100% - 16px);
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fx-ref-color-neutral-950) 76%, transparent);
+  color: var(--fx-ref-color-neutral-0);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+.fx-preview-stats > div { display: flex; flex-wrap: wrap; gap: 0 4px; }
+.fx-preview-stats dt, .fx-preview-stats dd { margin: 0; overflow-wrap: anywhere; }

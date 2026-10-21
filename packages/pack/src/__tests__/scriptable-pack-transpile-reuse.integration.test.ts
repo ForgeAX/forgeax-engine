@@ -270,7 +270,6 @@ it('shares one metadata evaluation across the published scanner and Catalog entr
         disposition: 'publish' as const,
         expected: 'fixture importer',
         hint: 'fixture importer',
-        hostProvided: true,
       }),
     };
     const catalog = await buildCatalogProjection([f.root], catalogOptions);
@@ -325,7 +324,9 @@ it('actual metadata to lazy fresh realm preserves POD/import identity and transp
       expect(entry.outputText).not.toContain('forgeax-scriptable-pack-');
       expect(entry.outputText).not.toContain('?load=');
     }
-    expect(f.posted[0]?.transpiles).toEqual(entries);
+    expect(f.posted).toHaveLength(2);
+    expect(f.posted[0]?.transpiles).toEqual([]);
+    expect(f.posted[1]?.transpiles).toEqual(entries);
     expect(f.loaded[1]?.transpiles).toEqual(entries);
   });
 });
@@ -358,8 +359,9 @@ it('retains captured generation after same-size mtime-preserved mutation and giv
     } as never);
     if (!output.ok) throw output.error;
     expectPod(output.value, [1, 5, 5, 4]);
-    expect(f.posted).toHaveLength(2);
-    expect(f.posted[1]?.transpiles).toEqual([]);
+    expect(f.posted).toHaveLength(3);
+    expect(f.posted[0]?.transpiles).toEqual([]);
+    expect(f.posted[2]?.transpiles).toEqual([]);
     expect(await fresh.verify()).toEqual({ ok: true, value: undefined });
     await retired(f);
   });
@@ -378,8 +380,9 @@ it('reuses derived text without reusing module instances across later loadId on 
       expectPod(await build(sameWorkerFixture, snapshot, definition));
       expectPod(await build(sameWorkerFixture, snapshot, definition), [2, 3, 3, 4]);
       expect(f.workers.size).toBe(2); // one retired metadata realm, one two-task realm
-      expect(f.posted).toHaveLength(2);
-      expect(f.posted[0]?.transpiles).toEqual(f.posted[1]?.transpiles);
+      expect(f.posted).toHaveLength(3);
+      expect(f.posted[0]?.transpiles).toEqual([]);
+      expect(f.posted[1]?.transpiles).toEqual(f.posted[2]?.transpiles);
       expect(f.loaded[1]?.transpiles).toEqual(f.loaded[2]?.transpiles);
       await retired(sameWorkerFixture);
     } finally {

@@ -17,6 +17,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -79,7 +80,9 @@ it.each([
   );
   const renderer = host.renderer;
   const world = new World();
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1.6, 1.6, 1).unwrap());
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(1.6, 1.6, 1).unwrap())
+    .unwrap();
   const descriptor = {
     shape: '2d' as const,
     width: 32,
@@ -100,10 +103,9 @@ it.each([
           component: MeshRenderer,
           data: {
             materials: [
-              world.allocSharedRef(
-                'MaterialAsset',
-                Materials.unlit(index === 0 ? [1, 0, 0, 1] : [0, 1, 0, 1]),
-              ),
+              testAssets(world)
+                .create(Materials.unlit(index === 0 ? [1, 0, 0, 1] : [0, 1, 0, 1]))
+                .unwrap(),
             ],
           },
         },
@@ -400,12 +402,20 @@ it('reads the accepted cube face during a different continuous capture face on a
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(1.4, 1.4, 0.4).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(1.4, 1.4, 0.4).unwrap())
+            .unwrap(),
         },
       },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 1]))] },
+        data: {
+          materials: [
+            testAssets(world)
+              .create(Materials.unlit([1, 0, 0, 1]))
+              .unwrap(),
+          ],
+        },
       },
     )
     .unwrap();

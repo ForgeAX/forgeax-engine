@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
@@ -65,7 +67,7 @@ const canvas = {
 const manifest = JSON.parse(readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8'));
 const manifestUrl = `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
 const { World } = await import('@forgeax/engine-ecs');
-const { RuntimeMaterialValue } = await import('@forgeax/engine-assets-runtime');
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { createBoxGeometry } = await import('@forgeax/engine-geometry');
@@ -74,7 +76,9 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {
   gpu.requestAdapter = originalRequestAdapter;
 }
@@ -88,17 +92,17 @@ if (shaderEntry === undefined) throw new Error('animate shader manifest entry mi
 
 const geometry = createBoxGeometry(1, 1, 1);
 if (!geometry.ok) throw new Error(`${geometry.error.code}: ${geometry.error.hint}`);
-const world = new World();
+const assets = smokeAssets;
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const mesh = world.allocSharedRef('MeshAsset', geometry.value);
+const mesh = assets.create(geometry.value).unwrap();
 const values = { time: 0 };
-const material = world.allocSharedRef('MaterialAsset', {
+const material = assets.create({
   kind: 'material',
-  passes: [{ name: 'Forward', program: { module: shaderId }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 }],
+  passes: [{ name: 'Forward', program: { module: shaderId }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
   values,
-});
-const timeValue = world.spawn({ component: RuntimeMaterialValue, data: { asset: material, parameter: 'time', value: [0] } }).unwrap();
+}).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
   { component: MeshFilter, data: { assetHandle: mesh } },
@@ -139,7 +143,7 @@ async function capture(label) {
 }
 
 for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
-  world.set(timeValue, RuntimeMaterialValue, { value: [frame / 60] }).unwrap();
+  assets.update(material, { values: { time: frame / 60 } }).unwrap();
   world.update().unwrap();
   const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) console.error(`[smoke] draw frame ${frame} error: ${draw.error.code}`);

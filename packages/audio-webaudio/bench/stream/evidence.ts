@@ -1,10 +1,10 @@
+import { audioContribution } from '@forgeax/engine-audio';
 import { isExecutionReport } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { runtimeBinding, createRuntimeAssetImportTransport } from 'virtual:forgeax/pack-runtime';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AudioSource, audioTickSystem, createAudioIntentBackend } from '@forgeax/engine-audio';
 import { World } from '@forgeax/engine-ecs';
-import { audioLoader } from '../../src/audio-loader';
 import { createHostAudioConsumer } from '../../src/host-audio-consumer';
 import { WebAudioEngine } from '../../src/web-audio-engine';
 import { pcmWav, rms, magnitude, toneBuffer } from '../../src/__tests__/support-tone';
@@ -48,11 +48,12 @@ async function control(values: Record<string, unknown>) {
 }
 (globalThis as any).__streamEvidence = {
   async start(minutes: number, tier = 'main-serial', count = 1) {
-    registry = new AssetRegistry({} as never, createRuntimeAssetImportTransport(), [audioLoader], undefined, runtimeBinding);
+    registry = new AssetRegistry({ shaderRegistry: {} as never, importTransport: createRuntimeAssetImportTransport(), runtimeBinding: runtimeBinding });
+registry.installDecoder(audioContribution.kind, audioContribution.decoder);
     registry.configurePackIndex((globalThis as any).__audioCatalog);
     const before = performance.now();
-    const loaded = await registry.loadByGuid(registry.parseGuid(guid(minutes)));
-    if (!loaded.ok || loaded.value.kind !== 'audio') throw loaded.ok ? new Error('wrong audio kind') : loaded.error;
+    const loaded = await registry.load(guid(minutes), 'audio');
+    if (!loaded.ok) throw loaded.error;
     context = new AudioContext({ sampleRate: 48000 }); await context.resume();
     engine = new WebAudioEngine({ context }); consumer = createHostAudioConsumer(engine);
     backend = createAudioIntentBackend({ emit: intent => consumer.consume(intent) });
@@ -65,15 +66,16 @@ async function control(values: Record<string, unknown>) {
     if (tier === 'ecs-worker') {
       worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
       worker.onmessage = event => { if (event.data.kind === 'entity') entity = event.data.entity; else consumer.consume(event.data); };
-      worker.postMessage({ kind: 'start', clip: loaded.value, count });
+      worker.postMessage({ kind: 'start', clip: registry.read(loaded.value).unwrap(), count });
     } else {
-      world = new World();
-      const clip = world.allocSharedRef('AudioClipAsset', loaded.value);
+      world = new World({ assets: registry });
+      const clip = loaded.value;
       for (let i = 0; i < count; i++) {
         entity = world.spawn({ component: AudioSource, data: { clip, playing: true, loop: true, volume: 0.25 / count, bus: 'music' } }).unwrap() as number;
       }
       audioTickSystem(world, backend);
     }
+    registry.release(loaded.value).unwrap();
     await wait(() => consumer.state().activeSourceCount === count);
     await wait(() => recording.some(samples => rms(samples, 0, samples.length) > 0.001));
     report.start = { minutes, tier, count, assetMs: started - before, firstOutputMs: (firstOutputAt ?? performance.now()) - started, allVoicesMs: performance.now() - started,
@@ -146,26 +148,30 @@ async function control(values: Record<string, unknown>) {
     } finally { await app.dispose(); result.disposedAudio = consumer.state(); for (const ctx of contexts) if (ctx.state !== 'closed') await ctx.close(); channel.port1.close(); canvas.remove(); }
   },
   async gatedStart() {
-    registry = new AssetRegistry({} as never, createRuntimeAssetImportTransport(), [audioLoader], undefined, runtimeBinding);
+    registry = new AssetRegistry({ shaderRegistry: {} as never, importTransport: createRuntimeAssetImportTransport(), runtimeBinding: runtimeBinding });
+registry.installDecoder(audioContribution.kind, audioContribution.decoder);
     registry.configurePackIndex((globalThis as any).__audioCatalog);
-    const loaded = await registry.loadByGuid(registry.parseGuid(guid(60)));
-    if (!loaded.ok || loaded.value.kind !== 'audio') throw loaded.ok ? new Error('missing audio') : loaded.error;
+    const clip = (await registry.load(guid(60), 'audio')).unwrap();
     engine = new WebAudioEngine(); consumer = createHostAudioConsumer(engine); recording = []; capture();
-    consumer.consume({ kind: 'play', entityId: 1, sourceKey: loaded.value.sourceKey,
-      stream: loaded.value.stream, options: { loop: true, volume: 0.1, spatialBlend: 0, bus: 'music' } });
+    backend = createAudioIntentBackend({ emit: intent => consumer.consume(intent) });
+    backend.play(1, registry, clip, { loop: true, volume: 0.1, spatialBlend: 0, bus: 'music' });
+    registry.release(clip).unwrap();
     await sleep(250); return { audio: consumer.state(), recordedBlocks: recording.length, sampleRate: context.sampleRate };
   },
   gatedStop() { consumer.consume({ kind: 'stop', entityId: 1 }); return consumer.state(); },
   gatedSample() { return { audio: consumer.state(), nonzero: recording.some(samples => rms(samples, 0, samples.length) > 0.001) }; },
-  gatedDispose() { consumer.dispose(); registry.invalidateAll(); return consumer.state(); },
+  gatedDispose() { consumer.dispose(); registry.dispose(); return consumer.state(); },
   async fullDecode(minutes: number) {
-    const registry = new AssetRegistry({} as never, createRuntimeAssetImportTransport(), [audioLoader], undefined, runtimeBinding);
+    const registry = new AssetRegistry({ shaderRegistry: {} as never, importTransport: createRuntimeAssetImportTransport(), runtimeBinding: runtimeBinding });
+registry.installDecoder(audioContribution.kind, audioContribution.decoder);
     registry.configurePackIndex((globalThis as any).__audioCatalog);
-    const loaded = await registry.loadByGuid(registry.parseGuid(guid(minutes)));
-    if (!loaded.ok || loaded.value.kind !== 'audio' || !loaded.value.stream) throw new Error('baseline stream missing');
+    const clip = (await registry.load(guid(minutes), 'audio')).unwrap();
+    const loaded = registry.read(clip).unwrap();
+    registry.dispose();
+    if (!loaded.stream) throw new Error('baseline stream missing');
     context = new AudioContext({ sampleRate: 48000 });
     const start = performance.now();
-    const encoded = await (await fetch(loaded.value.stream.url, { cache: 'no-store' })).arrayBuffer();
+    const encoded = await (await fetch(loaded.stream.url, { cache: 'no-store' })).arrayBuffer();
     const buffer = await context.decodeAudioData(encoded.slice(0));
     (globalThis as any).__baselineBuffer = buffer;
     (globalThis as any).__baselineEncoded = encoded;
@@ -230,8 +236,7 @@ async function control(values: Record<string, unknown>) {
     if (world) audioTickSystem(world, backend);
     await sleep(150);
     const stopped = consumer.state();
-    consumer.dispose(); worker?.terminate(); worker = undefined; await context.close(); world = undefined;
-    registry.invalidateAll();
+    consumer.dispose(); worker?.terminate(); worker = undefined; await context.close(); registry.dispose(); world = undefined;
     return stopped;
   },
   wav() {

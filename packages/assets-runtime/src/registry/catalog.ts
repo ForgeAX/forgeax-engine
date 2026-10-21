@@ -1,14 +1,11 @@
-import { decodeCatalogWire } from '@forgeax/engine-pack';
+import { decodeCatalogWire } from '@forgeax/engine-pack/runtime';
 import { err, ok, type Result } from '@forgeax/engine-rhi';
 import {
   ASSET_ERROR_HINTS,
-  type Asset,
   type AssetAuthoringCapability,
-  type AssetEnvelope,
   AssetError,
   type AssetPublicationEnvelope,
   type AssetRelation,
-  authoringCapabilityForAssetKind,
   type CatalogDiagnostic,
   type CatalogEntry,
   type CatalogProjection,
@@ -18,32 +15,15 @@ import {
   type SourceOverrideDescriptor,
   type SourceOverrideMap,
 } from '@forgeax/engine-types';
-import type { AssetRegistry } from '../asset-registry';
 import { jsonOf, type PackageFetcher, readPackage } from '../internal/package-read.js';
 
 /**
  * Runtime catalog row parsed from the shared pack-index POD shape. GUID is the
  * catalog key, and inline assets have no source declaration to navigate.
  */
-export type CatalogRecord = Omit<CatalogEntry, 'guid' | 'sourcePath'> & {
+type CatalogRecord = Omit<CatalogEntry, 'guid' | 'sourcePath'> & {
   readonly sourcePath?: string;
 };
-
-/** Build the canonical row for an inline asset without inventing producer facts. */
-export function createInlineCatalogRecord(
-  envelope: AssetEnvelope<Asset>,
-  name: string,
-): CatalogRecord {
-  return {
-    packageUrl: '',
-    kind: envelope.payload.kind,
-    authoring: authoringCapabilityForAssetKind(envelope.payload.kind),
-    name,
-    ...(envelope.refs !== undefined && envelope.refs.length > 0
-      ? { refs: envelope.refs.map((ref) => ref.guid) }
-      : {}),
-  };
-}
 
 function parseError(
   expected: string,
@@ -89,7 +69,7 @@ export function checkExpectedRevision(
 
 /** Resolve a catalog entry URL against the configured pack-index URL. */
 export function resolveCatalogAssetUrl(
-  registry: Pick<AssetRegistry, 'packIndexUrl'>,
+  registry: { readonly packIndexUrl: string | undefined },
   packageUrl: string,
 ): string {
   const packIndexUrl = registry.packIndexUrl;
@@ -298,7 +278,15 @@ export async function fetchCatalog(
   expectedRevision?: ResourceRevision,
   expectedScope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>,
   requestInit?: { readonly cache?: 'no-store' },
-): Promise<Result<Map<string, CatalogRecord>, AssetError>> {
+): Promise<
+  Result<
+    {
+      readonly entries: Map<string, CatalogRecord>;
+      readonly scope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>;
+    },
+    AssetError
+  >
+> {
   const read = await readPackage(fetch, url, jsonOf, requestInit);
   if (!read.ok) {
     return err(
@@ -311,18 +299,15 @@ export async function fetchCatalog(
     );
   }
   const raw = read.value;
-  return parseCatalog(raw, resolveUrl, expectedRevision, expectedScope);
-}
-
-export function fetchPackIndex(
-  registry: AssetRegistry,
-): Promise<Result<Map<string, CatalogRecord>, AssetError>> {
-  return fetchCatalog(
-    registry.packIndexUrl as string,
-    globalThis.fetch,
-    (packageUrl) => resolveCatalogAssetUrl(registry, packageUrl),
-    undefined,
-    registry.runtimeBinding,
-    { cache: 'no-store' },
-  );
+  const parsed = parseCatalog(raw, resolveUrl, expectedRevision, expectedScope);
+  if (!parsed.ok) return parsed;
+  // parseCatalog has already validated this envelope and its authoritative scope.
+  const snapshot = raw as Pick<RuntimeAssetBinding, 'scopeId' | 'generation'> & {
+    schemaVersion?: string;
+  };
+  const scope =
+    snapshot?.schemaVersion === 'runtime-catalog-snapshot-v1'
+      ? { scopeId: snapshot.scopeId, generation: snapshot.generation }
+      : undefined;
+  return ok({ entries: parsed.value, ...(scope === undefined ? {} : { scope }) });
 }

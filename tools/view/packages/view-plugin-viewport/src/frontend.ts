@@ -29,7 +29,7 @@ function claimViewportPanel(panelHost: PanelHost) {
   });
 }
 
-function liveWorkspacePresentation(ctx: Context, config: ViewportFrontendConfig, { api, document }: { api: ViewWorkspaceClient; document: Document }): EngineWorkspacePresentation {
+function liveWorkspacePresentation(ctx: Context, config: ViewportFrontendConfig, { api, document, container }: { api: ViewWorkspaceClient; document: Document; container: HTMLElement }): EngineWorkspacePresentation {
   const read = () => readEnginePresentation(config, ctx);
   return new Proxy<EngineWorkspacePresentation>({}, {
     get(_, prop) {
@@ -37,6 +37,11 @@ function liveWorkspacePresentation(ctx: Context, config: ViewportFrontendConfig,
       const workspace = read();
       if (prop === 'attach') {
         return async (input: { target: EngineWorkspaceTarget; element: unknown; tabId?: string }) => {
+          if (workspace?.attachScene) {
+            const remove = workspace.attachScene({ target: input.target, container });
+            const detachResize = attachViewportRenderResizeSync({ api, surface: container, target: input.target });
+            return () => { detachResize(); remove(); };
+          }
           const remove = await workspace?.attach?.(input);
           const surface = input.element as HTMLElement | null | undefined;
           if (!surface?.style || !surface.parentElement) return remove;
@@ -82,10 +87,6 @@ const viewportSurfacePlugin = {
     if (workspace && !ctx.get('engineWorkspacePresentation', false)) {
       ctx.provide('engineWorkspacePresentation', workspace);
     }
-    const presentation = {
-      workspace: liveWorkspacePresentation(ctx, config, { api, document }),
-      display: createBrowserPagePresentation({ document }),
-    };
     let shell: ViewWorkspaceShell | undefined;
     let play: ReturnType<typeof mountPlayToolbar> | undefined;
     try {
@@ -103,7 +104,10 @@ const viewportSurfacePlugin = {
       play.surface.append(mainSurface);
       ctx.effect(() => ctx.get('viewPlayPresentation')!.attach(mainSurface));
       shell = new ViewWorkspaceShell({ document, element: mainSurface, mountId: element.id,
-        api, presentation,
+        api, presentation: {
+          workspace: liveWorkspacePresentation(ctx, config, { api, document, container: mainSurface }),
+          display: createBrowserPagePresentation({ document }),
+        },
         resourceBrowser: false, inspectorPanel: false, presentationOnly: true,
       });
       ctx.provide('viewWorkspaceShell', shell);

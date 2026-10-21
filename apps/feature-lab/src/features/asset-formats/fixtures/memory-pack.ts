@@ -1,4 +1,6 @@
 import { type AssetRegistry, createCatalogSource } from '@forgeax/engine/assets-runtime';
+import { decompressZstd } from '@forgeax/engine/codec';
+import { createRuntimePackPublication } from '@forgeax/engine/pack/runtime';
 
 export const PACKAGE_URL = 'https://feature-lab.invalid/asset-formats/lab.pack.json';
 
@@ -19,43 +21,87 @@ export interface PackEntry {
   readonly guid: string;
   readonly kind: string;
   readonly payload: unknown;
+  readonly sourceKey?: string;
   readonly refs?: readonly string[];
   readonly artifacts?: Readonly<Record<string, PackArtifact>>;
 }
 
-export function packDocument(entries: readonly PackEntry[]): unknown {
+async function packDocument(entries: readonly PackEntry[]) {
   return {
     schemaVersion: '2.0.0',
     kind: 'internal-text-package',
-    assets: entries.map((entry) => ({
-      guid: entry.guid,
-      kind: entry.kind,
-      payload: entry.payload,
-      refs: entry.refs ?? [],
-      artifacts: Object.fromEntries(
-        Object.entries(entry.artifacts ?? {}).map(([key, artifact]) => [
-          key,
-          {
-            path: artifact.path,
-            mediaType: artifact.mediaType,
-            ...(artifact.assetCodec === undefined ? {} : { assetCodec: artifact.assetCodec }),
-            contentEncoding: artifact.contentEncoding ?? 'identity',
-            byteLength: artifact.byteLength ?? artifact.bytes.byteLength,
-          },
-        ]),
-      ),
-    })),
+    assets: await Promise.all(
+      entries.map(async (entry) => ({
+        guid: entry.guid,
+        kind: entry.kind,
+        payload: entry.payload,
+        refs: entry.refs ?? [],
+        artifacts: Object.fromEntries(
+          await Promise.all(
+            Object.entries(entry.artifacts ?? {}).map(async ([key, artifact]) => {
+              let decoded = artifact.bytes;
+              if (artifact.contentEncoding === 'zstd') {
+                const decompressed = await decompressZstd(artifact.bytes);
+                if (!decompressed.ok) throw decompressed.error;
+                decoded = decompressed.value;
+              }
+              const hash = new Uint8Array(
+                await crypto.subtle.digest('SHA-256', decoded.slice().buffer),
+              );
+              return [
+                key,
+                {
+                  path: artifact.path,
+                  mediaType: artifact.mediaType,
+                  ...(artifact.assetCodec === undefined ? {} : { assetCodec: artifact.assetCodec }),
+                  contentEncoding: artifact.contentEncoding ?? 'identity',
+                  byteLength: artifact.byteLength ?? artifact.bytes.byteLength,
+                  integrity: {
+                    algorithm: 'sha256',
+                    digest: `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('')}`,
+                  },
+                },
+              ];
+            }),
+          ),
+        ),
+      })),
+    ),
   };
 }
 
 /** Serves one in-memory Pack v2 body and its artifacts to `assets` through a catalog source. */
-export function installMemoryPack(
+export async function installMemoryPack(
   assets: AssetRegistry,
   entries: readonly PackEntry[],
   packageUrl: string = PACKAGE_URL,
-): { readonly fetched: string[] } {
+): Promise<{ readonly fetched: string[] }> {
   const files = new Map<string, Uint8Array>();
-  files.set(packageUrl, new TextEncoder().encode(JSON.stringify(packDocument(entries))));
+  const pack = JSON.parse(
+    JSON.stringify(await packDocument(entries), (_key, value) =>
+      ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+    ),
+  );
+  const publication = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath: 'lab',
+    sourceRevision: 'fixture',
+    packageUrl,
+    sourceKeys: new Map(
+      entries.flatMap((entry) =>
+        entry.sourceKey === undefined ? [] : [[entry.guid, entry.sourceKey]],
+      ),
+    ),
+    pack,
+  });
+  files.set(
+    packageUrl,
+    new TextEncoder().encode(
+      JSON.stringify(publication.pack, (_key, value) =>
+        ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+      ),
+    ),
+  );
   for (const entry of entries) {
     for (const artifact of Object.values(entry.artifacts ?? {})) {
       files.set(new URL(artifact.path, packageUrl).href, artifact.bytes);
@@ -77,6 +123,8 @@ export function installMemoryPack(
         kind: entry.kind,
         packageUrl,
         sourcePath: 'lab',
+        publication: publication.publication,
+        ...(entry.sourceKey === undefined ? {} : { sourceKey: entry.sourceKey }),
       })),
     }),
     fetcher,

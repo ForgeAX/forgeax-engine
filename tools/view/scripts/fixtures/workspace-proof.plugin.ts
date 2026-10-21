@@ -1,7 +1,6 @@
 import { defineComponent, Update } from '@forgeax/engine/ecs';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { ChildOf, Name, Transform, worldDespawnScene } from '@forgeax/engine/scene';
-import type { SceneAsset } from '@forgeax/engine/types';
 
 const ProofClock = defineComponent('ProofClock', { frames: 'u32' });
 
@@ -13,12 +12,12 @@ const plugin: Plugin.Object<{ readonly scene: string }> = {
     const world = ctx.world;
     const assets = ctx.assets;
     if (!assets) throw new Error('workspace proof game requires assets');
-    const loaded = await assets.loadByGuid<SceneAsset>(assets.parseGuid(config.scene));
+    const loaded = await assets.load(assets.parseGuid(config.scene), 'scene');
     if (!loaded.ok) throw loaded.error;
     await ctx.effect(async function* () {
-      const handle = world.allocSharedRef('SceneAsset', loaded.value);
-      yield () => world.sharedRefs.release(handle).unwrap();
-      const root = assets.instantiate<SceneAsset>(handle, world).unwrap();
+      const handle = loaded.value;
+      yield () => assets.release(handle).unwrap();
+      const root = assets.instantiate(handle, world).unwrap();
       yield () => worldDespawnScene(world, root).unwrap();
     });
     let fail = false;

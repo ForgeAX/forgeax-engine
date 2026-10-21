@@ -9,10 +9,14 @@ it('shares ordered deferred attachment arguments across mixed shaders only withi
   const f = cpuSetupFixture(device, module);
   f.add({ entity: 1, submeshes: 1 });
   const other = f.add({ entity: 2, submeshes: 1 });
-  Object.assign(other.source.material, { materialShaderId: 'test::other-material' });
+  other.source.material.adopt({
+    ...other.source.material.snapshot,
+    materialShaderId: 'test::other-material',
+  });
   f.add({ entity: 3, submeshes: 1 });
   const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
   const record = (formats: readonly GPUTextureFormat[]) => {
+    f.acceptMaterials();
     const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
     try {
       recordGeometryDraws(
@@ -61,16 +65,23 @@ it('keeps absent, Standard fallback and authored output contracts distinct and r
   const f = cpuSetupFixture(device, module);
   f.add({ entity: 1, submeshes: 1 });
   const standard = f.add({ entity: 2, submeshes: 1 });
-  Object.assign(standard.source.material, { materialShaderId: 'forgeax::default-standard-pbr' });
+  standard.source.material.adopt({
+    ...standard.source.material.snapshot,
+    materialShaderId: 'forgeax::default-standard-pbr',
+  });
   const authored = f.add({ entity: 3, submeshes: 1 });
   const outputs = [
     { name: 'color', format: 'rgba8unorm' as const },
     { name: 'extra', format: 'rg16float' as const },
   ];
-  Object.assign(authored.source.material, { renderState: { outputs } });
+  authored.source.material.adopt({
+    ...authored.source.material.snapshot,
+    renderState: { outputs },
+  });
   Object.assign(f.c, { reflectionFallbackColorFormat: 'r32uint' });
   const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
   const record = (formats: readonly GPUTextureFormat[]) => {
+    f.acceptMaterials();
     const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
     try {
       recordGeometryDraws(

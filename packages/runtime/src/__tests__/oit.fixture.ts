@@ -17,6 +17,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { type OitFragment, oitComposite, sortedComposite } from '../../../render/src/oit/weight';
+import { testAssets } from './helpers/runtime-assets';
 
 export const OIT_SIZE = 96;
 const CAMERA_Z = 5;
@@ -140,12 +141,11 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
     if (event.kind === 'error') errors.push(event.error);
   });
   const quad = (w: number, h: number) =>
-    world.allocSharedRef('MeshAsset', createPlaneGeometry(w, h).unwrap());
+    testAssets(world).create(createPlaneGeometry(w, h).unwrap()).unwrap();
   const opaque = (color: [number, number, number]) =>
-    world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([...color, 1], { renderState: { cullMode: 'none' } }),
-    );
+    testAssets(world)
+      .create(Materials.unlit([...color, 1], { renderState: { cullMode: 'none' } }))
+      .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -3] } },
@@ -162,12 +162,13 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
     .unwrap();
   const layerMesh = quad(3, 1.2);
   const layerMaterial = (layer: Layer, renderState: MaterialRenderState = {}) =>
-    world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([...layer.color, layer.alpha], {
-        renderState: { cullMode: 'none', blend: STRAIGHT_OVER, ...renderState },
-      }),
-    );
+    testAssets(world)
+      .create(
+        Materials.unlit([...layer.color, layer.alpha], {
+          renderState: { cullMode: 'none', blend: STRAIGHT_OVER, ...renderState },
+        }),
+      )
+      .unwrap();
   let layers: EntityHandle[] = [];
   const spawnLayers = (order: readonly number[], renderState: MaterialRenderState = {}) => {
     for (const entity of layers) world.despawn(entity).unwrap();

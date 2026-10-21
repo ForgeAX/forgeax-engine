@@ -18,7 +18,7 @@
 //       outline band surrounding each cube.
 //
 // Textures are loaded through the GUID asset pipeline:
-//   configureRuntimeAssetCatalog(...) + loadByGuid<TextureAsset>.
+//   configureRuntimeAssetCatalog(...) + assets.load(guid, 'texture').
 //
 // LO exact stencil parameters (research Finding LO-SCENE section 2):
 //   - outline color: vec4(0.04, 0.28, 0.26, 1.0) -- cyan-green
@@ -37,15 +37,15 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App } from '@forgeax/engine-app';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { RenderQueue, unwrapHandle } from '@forgeax/engine-types';
+
+import { RenderQueue } from '@forgeax/engine-types';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
@@ -53,6 +53,8 @@ import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-
 // 2. example glue
 
 import './outline-solid.wgsl';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const OUTLINE_SHADER_ID = 'learn_render::outline_solid';
 
@@ -111,7 +113,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 4.2 stencil-testing] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -135,11 +143,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Load textures through the GUID asset pipeline.
-  const metalHandleRes = await assets.loadByGuid<TextureAsset>(metalGuidRes.value);
-  const marbleHandleRes = await assets.loadByGuid<TextureAsset>(marbleGuidRes.value);
+  const metalHandleRes = await assets.load(metalGuidRes.value, 'texture');
+  const marbleHandleRes = await assets.load(marbleGuidRes.value, 'texture');
   if (!metalHandleRes.ok || !marbleHandleRes.ok) {
     console.error(
-      '[learn-render 4.2 stencil-testing] loadByGuid failed:',
+      '[learn-render 4.2 stencil-testing] load failed:',
       metalHandleRes.ok ? null : metalHandleRes.error.code,
       marbleHandleRes.ok ? null : marbleHandleRes.error.code,
     );
@@ -150,12 +158,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     }
     return;
   }
-  const metalTex = unwrapHandle(world.allocSharedRef('TextureAsset', metalHandleRes.value));
-  const marbleTex = unwrapHandle(world.allocSharedRef('TextureAsset', marbleHandleRes.value));
+  const metalTex = Number(metalHandleRes.value);
+  const marbleTex = Number(marbleHandleRes.value);
 
   // ── Floor material: PBR with stencilWriteMask=0x00 ────────────────
   // AC-01: stencilWriteMask: 0x00 as a top-level literal with no `as`.
-  const floorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const floorMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { ...{
@@ -168,11 +176,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       roughness: 0.9,
       baseColorTexture: metalTex,
     },
-  });
+  }).unwrap();
 
   // ── Cube material: PBR with stencil write (ref=1, mask=0xFF) ─────
   // Normal pass writes stencil ref=1 everywhere the cube rasterizes.
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const cubeMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { ...{
@@ -186,14 +194,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       roughness: 0.5,
       baseColorTexture: marbleTex,
     },
-  });
+  }).unwrap();
 
   // ── Outline material: unlit solid color, stencil test only ───────
   // Outline passes where stencil != 1 (only the band outside the
   // cube interior, since the normal cube pass wrote 1 everywhere and
   // the floor wrote nothing). depthWriteEnabled=false mirrors
   // LO glDisable(GL_DEPTH_TEST) so the outline always draws.
-  const outlineMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const outlineMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'ForwardOutline', program: { module: OUTLINE_SHADER_ID }, renderState: { ...{
@@ -205,7 +213,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     values: {
       baseColor: OUTLINE_COLOR,
     },
-  });
+  }).unwrap();
 
   // ── Spawn entities ────────────────────────────────────────────────
 
@@ -216,7 +224,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [0, FLOOR_Y, 0], quat: [SIN_NEG_90, 0, 0, COS_NEG_90], scale: [FLOOR_SCALE, FLOOR_SCALE, FLOOR_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [floorMat] } },
   ).unwrap();
 
@@ -227,7 +235,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE1_POS[0], CUBE1_POS[1], CUBE1_POS[2]],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   ).unwrap();
 
@@ -238,7 +246,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE2_POS[0], CUBE2_POS[1], CUBE2_POS[2]],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   ).unwrap();
 
@@ -249,7 +257,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE1_POS[0], CUBE1_POS[1], CUBE1_POS[2]], scale: [OUTLINE_SCALE, OUTLINE_SCALE, OUTLINE_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [outlineMat] } },
   ).unwrap();
 
@@ -260,7 +268,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE2_POS[0], CUBE2_POS[1], CUBE2_POS[2]], scale: [OUTLINE_SCALE, OUTLINE_SCALE, OUTLINE_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [outlineMat] } },
   ).unwrap();
 

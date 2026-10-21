@@ -17,6 +17,8 @@ import { writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const FALSIFY = process.env.FALSIFY ?? '';
@@ -176,9 +178,7 @@ const {
   PointLight,
 } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const profiler =
   PROFILE_CAPTURE_PATH === undefined
@@ -246,6 +246,8 @@ if (assets === null) {
 }
 
 const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
 // --- 5. Spawn 9 cubes in 3x3 grid ---
 
@@ -263,7 +265,7 @@ for (let row = 0; row < 3; row++) {
     const [r, g, b] = cubeColors[idx];
 
     const mat = Materials.standard({ baseColor: [r, g, b, 1] });
-    const matHandle = world.allocSharedRef('MaterialAsset', mat);
+    const matHandle = world.assets.create(mat).unwrap();
     cubeHandles.push(matHandle);
 
     world.spawn(
@@ -272,7 +274,7 @@ for (let row = 0; row < 3; row++) {
         data: {
           pos: [cx, CUBE_Y, cz], quat: [0, 0, 0, 1], scale: [CUBE_SCALE, CUBE_SCALE, CUBE_SCALE],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     ).unwrap();
     idx++;
@@ -337,7 +339,7 @@ for (let i = 0; i < NUM_LIGHTS; i++) {
       data: {
         pos: [px, py, pz], quat: [0, 0, 0, 1], scale: [0.125, 0.125, 0.125],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeHandles[0]] } },
   );
 }

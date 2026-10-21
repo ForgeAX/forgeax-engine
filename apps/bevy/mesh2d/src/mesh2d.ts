@@ -1,9 +1,11 @@
 import type { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import type { MeshAsset } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 type Vertex = readonly [number, number, number];
 
@@ -53,8 +55,11 @@ const DIAMOND = planeMesh([[0, 180, 0], [160, 0, 0], [0, -180, 0], [-160, 0, 0]]
 const QUAD = planeMesh([[-150, 120, 0], [150, 120, 0], [150, -120, 0], [-150, -120, 0]], [0, 3, 2, 0, 2, 1]);
 
 function spawnMesh(world: World, mesh: MeshAsset, pos: readonly [number, number, number], color: readonly [number, number, number, number]): void {
-  const asset = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit(color));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const asset = sceneAssets.create(mesh).unwrap();
+  const material = sceneAssets.create(Materials.unlit(color)).unwrap();
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: asset } },

@@ -5,7 +5,7 @@
 // old `SceneInstance` + `SceneInstanceContainer` pair (deleted
 // in M3). Schema fits the ECS schema vocab (3 single-identifier fields):
 //
-//   { source:  'shared<SceneAsset>',
+//   { source:  'asset<scene>',
 //     mapping: 'array<entity>',
 //     state:   'unique<SceneInstanceState>' }
 //
@@ -65,7 +65,7 @@ export type { SceneInstanceOverrideRecord, SceneInstanceState } from '@forgeax/e
  * apply unchanged (plan-strategy §D-5).
  *
  * @example Materialise + inspect a SceneAsset:
- *   const { root, diagnostics } = world.instantiateScene(handle).value;
+ *   const { root } = world.instantiateScene(handle).value;
  *   const inst = world.get(root, SceneInstance).value;
  *   // inst.source === handle, inst.mapping is Uint32Array(totalSlots)
  *   // inst.state holds entityToLocalId / detachedLocalIds / overrides /
@@ -74,7 +74,7 @@ export type { SceneInstanceOverrideRecord, SceneInstanceState } from '@forgeax/e
 export const SceneInstance = defineComponent(
   'SceneInstance',
   {
-    source: { type: 'shared<SceneAsset>' },
+    source: { type: 'asset<scene>' },
     mapping: { type: 'array<entity>' },
     // The unique slot is the ECS storage seam for the instance's structured
     // runtime payload; keep the nested semantic visible to schema consumers.

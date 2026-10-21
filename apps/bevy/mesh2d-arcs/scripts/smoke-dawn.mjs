@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -61,14 +63,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { World } = await import('@forgeax/engine-ecs');
 const { propagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { buildMesh2dArcsWorld, makeTextureAsset, makeTexturePixels, TEXTURE_SIZE } = await import(resolve(here, '..', 'src', 'mesh2d-arcs.ts'));
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifest, 'utf8'))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (error) {
   console.error(`[smoke] FAIL - renderer: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -78,13 +81,13 @@ try {
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const pixels = makeTexturePixels();
 const texture = makeTextureAsset(pixels);
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-buildMesh2dArcsWorld(world, unwrapHandle(textureHandle));
+const textureHandle = world.assets.create(texture).unwrap();
+buildMesh2dArcsWorld(world, textureHandle);
 propagateTransforms(world);
 
 async function capture() {

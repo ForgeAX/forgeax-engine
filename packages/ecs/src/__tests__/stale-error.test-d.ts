@@ -167,7 +167,6 @@ describe('[w13] EcsErrorCode union completeness — stale codes present', () => 
         case 'shared-ref-double-release':
         case 'shared-ref-payload-invalid':
         case 'shared-ref-stale':
-        case 'builtin-slot-not-owned':
         case 'managed-buffer-out-of-bounds':
         case 'managed-buffer-shrink-not-supported':
         case 'fixed-size-mismatch':
@@ -186,6 +185,7 @@ describe('[w13] EcsErrorCode union completeness — stale codes present', () => 
         case 'schedule-scope-mismatch':
         case 'component-field-invalid-value':
         case 'component-numeric-value-invalid':
+        case 'derived-write-active':
         case 'shared-kernel-ineligible':
         case 'shared-kernel-failed':
         case 'world-poisoned':

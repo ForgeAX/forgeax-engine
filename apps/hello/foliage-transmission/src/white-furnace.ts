@@ -5,6 +5,8 @@ import { Camera, Materials, MeshFilter, MeshRenderer, Skylight, perspective } fr
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { withFoliageMaterialModule } from './material-contract.ts';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 /**
  * `split` is the shipped model: the factor moves energy from reflection to
@@ -35,9 +37,12 @@ const WHITE = { baseColor: [1, 1, 1, 1] as const, metallic: 0, roughness: 0.65 }
  * for any factor. An additive layer reaches about `1 + factor` times it.
  */
 export function buildWhiteFurnaceWorld(world: World, options: FurnaceOptions): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const plane = createPlaneGeometry(1.6, 2.2);
   if (!plane.ok) throw new Error(`furnace plane failed: ${plane.error.code}`);
-  const mesh = world.allocSharedRef('MeshAsset', plane.value);
+  const mesh = sceneAssets.create(plane.value).unwrap();
   const panelMaterial = (factor: number | null): MaterialAsset => {
     if (factor === null) return Materials.standard(WHITE);
     // Emission equal to the diffuse energy the split removed from the front lobe.
@@ -62,7 +67,7 @@ export function buildWhiteFurnaceWorld(world: World, options: FurnaceOptions): v
         { component: MeshFilter, data: { assetHandle: mesh } },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', panelMaterial(factor))] },
+          data: { materials: [sceneAssets.create(panelMaterial(factor)).unwrap()] },
         },
       )
       .unwrap();

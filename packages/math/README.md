@@ -115,7 +115,7 @@ Pure-function ray primitives for screen-ray unprojection, ray-AABB slab intersec
 | Function | Signature | Purpose | Notes |
 |:--|:--|:--|:--|
 | `ray.create(out?, origin?, direction?)` | `(out?, origin?, direction?) => Ray` | Allocate a Ray (6 floats: rx,ry,rz,dx,dy,dz) | Direction auto-normalized; zero-length dir falls back to `(0,0,0)` |
-| `ray.screenToRay(out, sx, sy, vpW, vpH, view, proj, kind)` | `(Ray, number, number, number, number, Mat4Like, Mat4Like, 'perspective' \| 'orthographic') => Ray` | Unproject a screen coordinate into a world-space ray | Projection-aware two-point unproject (forward or Reverse-Z, including infinite far); y-flip: DOM y-down to NDC y-up; NaN/Inf input falls back to centre ray |
+| `ray.screenToRay(out, sx, sy, vpW, vpH, view, proj)` | `(Ray, number, number, number, number, Mat4Like, Mat4Like) => Ray` | Unproject a screen coordinate into a world-space ray | Projection-aware two-point unproject (forward or Reverse-Z, including infinite far); y-flip: DOM y-down to NDC y-up; NaN/Inf input falls back to centre ray |
 | `ray.worldToScreen(out, worldPos, viewProj, canvasW, canvasH)` | `(Vec2, Vec3Like, Mat4Like, number, number) => WorldToScreenResult` | Project a world-space point to screen-space pixel coordinates | Returns `{ onScreen, behind }` flags; `behind=true` means the point is behind the camera and `out` is meaningless; degenerate viewport returns `{ onScreen: false, behind: false }` |
 | `ray.rayAabbIntersects(r, aabb)` | `(RayLike, Box3Like) => RayAabbResult` | Slab-method ray-AABB intersection | Returns `{ hit, tmin }`; six degenerate cases handled per research Finding 2; NaN-safe edge/corner via `Number.isNaN` guard |
 | `ray.rayTriangleIntersects(r, a, b, c)` | `(RayLike, Vec3Like, Vec3Like, Vec3Like) => RayTriResult` | Moller-Trumbore ray-triangle intersection | Returns `{ hit, t, u, v }` (t=ray parameter, u/v=barycentric); double-sided (`abs(det) < epsilon`); degenerate/collinear triangles return `hit=false` to prevent NaN propagation; `t <= 0` rejected (behind ray origin); NaN guard on all inputs |
@@ -126,7 +126,7 @@ import { mat4 } from '@forgeax/engine-math';
 
 // Screen coordinate to world-space ray (for picking)
 const r = ray.create();
-ray.screenToRay(r, mouseX, mouseY, canvasW, canvasH, view, proj, 'perspective');
+ray.screenToRay(r, mouseX, mouseY, canvasW, canvasH, view, proj);
 
 // Ray-AABB intersection (coarse entity culling)
 const hit = ray.rayAabbIntersects(r, entityWorldAabb);
@@ -306,7 +306,7 @@ const projReverseZ = mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 16 / 9
 forward and Reverse-Z matrices. Plane slots 4/5 are the lower/upper Z clip
 boundaries, respectively; their near/far roles reverse with the projection.
 `screenToRay` derives depth direction from the perspective/orthographic
-projection and uses an interior unprojection point, so infinite far planes
+projection matrix and uses an interior unprojection point, so infinite far planes
 still produce a finite forward ray. Engine rendering selects the existing
 `perspectiveReverseZ` / `orthographicReverseZ` functions; the Math functions
 with short names retain their forward-Z mathematical meaning.

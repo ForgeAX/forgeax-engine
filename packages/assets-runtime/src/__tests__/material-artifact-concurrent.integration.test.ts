@@ -1,7 +1,8 @@
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
-import { loadMaterialReadyByGuid } from '../registry/load-by-guid.js';
+import { runtimeAssets } from '../internal/runtime-assets';
 import { materialProductionFixture } from './fixtures/material-production.js';
 import { materialRecordFixture } from './fixtures/material-publication.js';
 
@@ -30,15 +31,10 @@ async function deferredMaterial() {
       },
     } as never,
   });
-  const registry = new AssetRegistry(shaders);
+  const registry = new AssetRegistry({ shaderRegistry: shaders });
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   registry.configurePackIndex('/pack-index.json');
-  const specializationKey = record.specializationKey;
-  if (specializationKey === undefined) throw new Error('missing fixture specialization');
-  const load = () =>
-    loadMaterialReadyByGuid(registry, {
-      guid: record.guid,
-      specializationKey,
-    });
+  const load = () => registry.load(record.guid, 'material');
   const good = (request: (typeof requests)[number]) => {
     const file = fixture.files.get(request.url.slice(1));
     if (!file) throw new Error(`missing fixture ${request.url}`);
@@ -68,8 +64,18 @@ it('starts all distinct verified artifacts before any response and restores iden
     await vi.waitFor(() => expect(f.requests).toHaveLength(2), { timeout: 300, interval: 5 });
     for (const request of [...f.requests].reverse()) request.release(f.good(request));
     const ready = await pending;
-    expect(ready).toMatchObject({ status: 'Ready' });
-    if (ready.status === 'Ready') expect(ready.record).toEqual(f.record);
+    expect(ready.ok).toBe(true);
+    if (ready.ok)
+      expect(
+        f.registry.getMaterialProjectionForPayload(
+          runtimeAssets(f.registry)
+            .borrow<import('@forgeax/engine-types').MaterialAsset>(ready.value)
+            .unwrap(),
+        ),
+      ).toMatchObject({
+        artifactHash: f.record.artifactDigest,
+        publicationGeneration: f.record.publicationGeneration,
+      });
     expect(JSON.stringify(f.fixture.pack)).toBe(f.originalPack);
   } finally {
     await f.drain();
@@ -89,10 +95,13 @@ it('retains the first program failure when the second corrupt response completes
     first.release(new Response(new Uint8Array(7)));
     const result = await pending;
     expect(result).toMatchObject({
-      status: 'Error',
-      error: { code: 'asset-artifact-integrity-mismatch', detail: { actual: '7' } },
+      ok: false,
+      error: {
+        code: 'asset-integrity-failed',
+        detail: { artifactKey: first.url.replace(/^\/assets\//, '') },
+      },
     });
-    if (result.status === 'Error')
+    if (!result.ok)
       expect(result.error.expected).toBe(
         `decoded artifact byteLength ${f.fixture.firstProgram.artifact.bytes.length}`,
       );
@@ -102,18 +111,17 @@ it('retains the first program failure when the second corrupt response completes
   }
 });
 
-it('does not publish or retain artifact cache entries after in-flight GUID invalidation', async () => {
+it('does not publish material program facts after in-flight GUID invalidation', async () => {
   const f = await deferredMaterial();
   const pending = f.load();
   try {
     await vi.waitFor(() => expect(f.requests).toHaveLength(2), { timeout: 300, interval: 5 });
     f.registry.invalidate(f.record.guid);
     for (const request of f.requests) request.release(f.good(request));
-    expect(await pending).not.toMatchObject({ status: 'Ready' });
-    expect(f.registry.getMaterialReadiness(f.record.guid)).not.toMatchObject({ status: 'Ready' });
+    expect(await pending).toMatchObject({ ok: false });
     expect(
-      (f.registry.artifactCache as unknown as { cache: Map<string, unknown> }).cache.size,
-    ).toBe(0);
+      f.registry.getMaterialArtifact(f.record.programs[0]?.specializationKey ?? ''),
+    ).toBeUndefined();
   } finally {
     await f.drain();
     await pending;
@@ -127,8 +135,8 @@ it('deduplicates the actual shared reads across two simultaneous material caller
   try {
     await vi.waitFor(() => expect(f.requests).toHaveLength(2), { timeout: 300, interval: 5 });
     for (const request of f.requests) request.release(f.good(request));
-    expect(await first).toMatchObject({ status: 'Ready' });
-    expect(await second).toMatchObject({ status: 'Ready' });
+    expect(await first).toMatchObject({ ok: true });
+    expect(await second).toMatchObject({ ok: true });
     expect(f.requests).toHaveLength(2);
   } finally {
     await f.drain();

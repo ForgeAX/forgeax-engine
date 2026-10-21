@@ -31,7 +31,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
   );
   if (!constructed.ok) throw constructed.error;
   const { renderer, assets } = constructed.value;
-  const world = new World();
+  const world = new World({ assets });
   const channel = new MessageChannel();
   const source = new SourceMeshResidency(world, () => ({
     ...identity,
@@ -58,10 +58,10 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
     publishedFixedStep: (sourceWorld) => source.publishedFixedStep(sourceWorld),
   });
   const publisher = createRenderPublisher(world, assets, identity, renderer.inspect().capabilities);
-  const previous = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+  const previous = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const mesh = createBoxGeometry(2, 2, 2).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 1]));
+  const meshHandle = assets.create(mesh).unwrap();
+  const material = assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 5] } },
@@ -80,7 +80,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
     .unwrap();
   try {
     let candidate = (
-      await host.prepareDynamicGeometry({ world, entity, mesh, meshHandle, revision: 1 })
+      await host.prepareDynamicGeometry({ world, entity, meshHandle, revision: 1 })
     ).unwrap();
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(previous);
     expect(mesh.vertices.byteLength).toBeGreaterThan(0);
@@ -132,7 +132,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
     // Those completed transfers must not exhaust the next preparation batch.
     for (let index = 1; index < 33; index++) {
       const nextMesh = createBoxGeometry(1 + index / 100, 1, 1).unwrap();
-      const nextHandle = world.allocSharedRef('MeshAsset', nextMesh);
+      const nextHandle = assets.create(nextMesh).unwrap();
       const nextEntity = world
         .spawn(
           { component: Transform, data: {} },
@@ -144,7 +144,6 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
         await host.prepareDynamicGeometry({
           world,
           entity: nextEntity,
-          mesh: nextMesh,
           meshHandle: nextHandle,
           revision: 1,
         })
@@ -198,7 +197,7 @@ it.each([
   );
   if (!constructed.ok) throw constructed.error;
   const { renderer, assets } = constructed.value;
-  const world = new World();
+  const world = new World({ assets });
   const channel = new MessageChannel();
   const occupied = new Set<number>(),
     standalone = new Set<number>();
@@ -244,9 +243,9 @@ it.each([
     publishedFixedStep: (sourceWorld) => source.publishedFixedStep(sourceWorld),
   });
   const publisher = createRenderPublisher(world, assets, identity, renderer.inspect().capabilities);
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0, 1, 0, 1]));
+  const material = assets.create(Materials.unlit([0, 1, 0, 1])).unwrap();
   const previousMesh = createBoxGeometry(0.1, 0.1, 0.1).unwrap();
-  const previous = world.allocSharedRef('MeshAsset', previousMesh);
+  const previous = assets.create(previousMesh).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 5] } },
@@ -258,7 +257,7 @@ it.each([
     .unwrap();
   const inputs = Array.from({ length: 33 * batches }, (_, index) => {
     const mesh = createBoxGeometry(1 + index / 100, 1, 1).unwrap();
-    const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+    const meshHandle = assets.create(mesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -270,7 +269,7 @@ it.each([
   });
   try {
     const lease = (
-      await source.prepare({ world, meshHandle: previous, mesh: previousMesh })
+      await source.prepare({ world, meshHandle: previous, mesh: previousMesh, assetRevision: 1 })
     ).unwrap();
     let groups = (
       await Promise.all(

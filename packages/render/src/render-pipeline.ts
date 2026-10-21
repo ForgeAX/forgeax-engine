@@ -1,3 +1,4 @@
+import type { MaterialResource } from './material-resource';
 // @forgeax/engine-render - typed render-pipeline topology contract.
 //
 // `RenderPipeline` is the typed topology contribution used by the Standard host.
@@ -44,7 +45,6 @@ import type { RenderError } from './errors/render';
 import type { RenderFeatureTargetKind } from './features/targets';
 import type { RenderFeaturePlacement } from './features/types';
 import type { ShadowViewIdentity, ShadowViewProjection } from './gpu-driven/shadow-views';
-import type { StaticShadowLayers } from './gpu-driven/static-shadow-layers';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -54,8 +54,10 @@ import type { StandardTopologyInputValue } from './pipeline/standard-lighting/to
 import { STANDARD_POST_STAGE_NAMES, type StandardProfile } from './pipeline/standard-profile';
 import type { SurfaceProfile } from './record/render-context';
 import type { FrameObservationDomain, RenderPipelineContext } from './render-contract';
+import type { ShadowDepthLayers } from './shadow-depth-layers';
 import type { SsrSpatialAdmission } from './ssr/admission';
 import type { TransmissionDemand } from './transmission/projection';
+import type { VolumetricFogLightKind } from './volume/capability';
 
 export type { RenderPipelineContext } from './render-contract';
 
@@ -271,6 +273,7 @@ export interface RenderPipelineTopology {
     readonly colorLut: boolean;
     readonly colorLutStrength: number;
     readonly lutSourceKey?: string;
+    readonly lutSize?: number;
   };
   /** Detached spatial SSR admission; graph resources remain renderer-owned. */
   readonly ssr?: SsrSpatialAdmission | undefined;
@@ -286,6 +289,7 @@ export interface RenderPipelineTopology {
           readonly cascadeCount: 1 | 2 | 3 | 4;
           readonly terrainReceivers?: readonly import('./terrain/shadow-family').TerrainShadowReceiver[];
         };
+    readonly variance?: { readonly directional: boolean; readonly spots: readonly number[] };
     readonly spotMapSize: number;
     readonly pointCount: number;
     readonly pointFaceSize: number;
@@ -301,7 +305,7 @@ export interface RenderPipelineTopology {
       readonly format: TextureFormat;
       readonly extent: { readonly width: number; readonly height: number; readonly depth: number };
     }[];
-    readonly lightKind?: 'directional' | 'point' | 'spot' | undefined;
+    readonly lightKind?: VolumetricFogLightKind | undefined;
     readonly lightEntity?: number | undefined;
     readonly pointLightEntity?: number | undefined;
     readonly spotLightEntity?: number | undefined;
@@ -500,6 +504,7 @@ export interface RenderPipelineGpuDrivenProjection {
     entries?: readonly import('./record/frame-snapshot').ValidatedRenderable[],
     artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
     onPending?: (reason: import('./render-contract').FramePresentationPendingReason) => void,
+    materials?: import('./scene/material-dispatch').MaterialFrame,
   ) => boolean;
   /** Live CPU eligibility, before material/view culling; false proves no indirect work. */
   hasWork(filter?: RenderPipelineGpuDrivenFilter, fragmentEntryPoint?: string): boolean;
@@ -552,12 +557,16 @@ export interface RenderPipelineSurfaceMediumPair {
 }
 /** Producer-owned Standard PBR resources resolved during graph execution. */
 export interface GpuDrivenStandardPbrFrameResources {
+  /** Current display-camera rejection for a batch containing exactly one candidate. */
+  cameraVisible?: (source: import('./render-system-extract').RenderableSnapshot) => boolean;
   /** Resource generation of the actual scene-index/indirect producer. */
   readonly resourceGeneration?: number;
-  readonly materialBindGroups: (BindGroup | undefined)[];
-  /** Frame-global material slots keyed by the retained scene entity identity. */
-  readonly materialSlotIndicesByEntity: Map<number, readonly number[]>;
-  readonly materialStride: number;
+  /** Called only for a batch actually being recorded; prepares its exact physical binding. */
+  prepareMaterialBinding(
+    slot: number,
+  ): { readonly group: BindGroup; readonly byteOffset: number } | undefined;
+  /** Frame-global material slots keyed by shared binding and its physical resource class. */
+  readonly materialSlotIndicesByBinding: Map<MaterialResource, Map<string, number>>;
   /** The current pass selects material membership and attachment formats. */
   selectedMaterialSlots?: ReadonlySet<number>;
   colorFormats?: readonly TextureFormat[];
@@ -658,13 +667,7 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
       /** Authored camera/time parameters consumed by the GPU adapt stage. */
       readonly parameters: GraphBuffer;
     };
-    readonly colorLut?: {
-      readonly view: GraphTextureView;
-      readonly sampler: import('@forgeax/engine-rhi').Sampler;
-      readonly strength: number;
-      readonly bindGroupLayout: import('@forgeax/engine-rhi').BindGroupLayout;
-      readonly bindGroup: BindGroup;
-    };
+    readonly colorLut?: import('./pipeline/standard-output/lut-gpu').StandardLutGraphProjection;
   };
   /**
    * Renderer-owned TAA history targets. The graph sees only imported typed
@@ -725,23 +728,21 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     cameraPyramid?: GraphTextureView,
   ): Result<ShadowViewProjection | undefined, RenderGraphError>;
   /** Renderer-owned static shadow layers the graph imports instead of allocating. */
-  readonly gpuDrivenStaticShadowLayers?: StaticShadowLayers;
-  contributeFeatures(
-    targets: readonly RenderPipelineFeatureTarget[],
-    semanticTargets?: readonly RenderPipelineTarget[],
-    namedTargets?: Readonly<Record<string, RenderPipelineTarget>>,
-    standardSurfaceAccesses?: readonly GraphAccess[],
-    featureSelectionOrPlacement?:
-      | {
-          /** Project only these identities at this ordered stage. */
-          readonly include?: readonly string[];
-          /** Keep these identities for a later ordered stage. */
-          readonly exclude?: readonly string[];
-        }
-      | RenderFeaturePlacement,
-    passNames?: readonly string[],
-    atmosphere?: import('./environment/luts').GraphAtmosphere,
-  ): Result<void, RenderPipelineBuildError>;
+  readonly gpuDrivenShadowDepthLayers?: ShadowDepthLayers;
+  readonly shadowDepthLayers?: ShadowDepthLayers;
+  contributeFeatures(input: {
+    readonly targets: readonly RenderPipelineFeatureTarget[];
+    readonly semanticTargets?: readonly RenderPipelineTarget[] | undefined;
+    readonly namedTargets?: Readonly<Record<string, RenderPipelineTarget>> | undefined;
+    readonly standardSurfaceAccesses?: readonly GraphAccess[] | undefined;
+    readonly placement?: RenderFeaturePlacement | undefined;
+    /** Project only these identities at this ordered stage. */
+    readonly include?: readonly string[] | undefined;
+    /** Keep these identities for a later ordered stage. */
+    readonly exclude?: readonly string[] | undefined;
+    readonly passNames?: readonly string[] | undefined;
+    readonly atmosphere?: import('./environment/luts').GraphAtmosphere | undefined;
+  }): Result<void, RenderPipelineBuildError>;
   /** Prepare feature-owned shadow draws and their early compute producers once. */
   contributeShadowFeatures?(): Result<
     import('./features/render-graph-raster').RenderFeatureShadowDraws<FrameCtx> | undefined,

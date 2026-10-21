@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 // clamp-to-last.e2e.browser.test.ts -- feat-20260629-multi-uv-set-support m3-w6 fixup
 //
 // Browser e2e test for clamp-to-last: AC-08 + AC-12 combined gate.
@@ -32,7 +34,6 @@
 //
 // Runs via pnpm test:browser against wgpu-wasm/WebGL2 backend.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -158,7 +159,12 @@ describe('clamp-to-last e2e browser (m3-w6)', () => {
           scale: [1, 1, 1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: {} },
     );
     world.spawn(

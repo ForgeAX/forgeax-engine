@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -56,14 +57,16 @@ const { buildViewportToWorldWorld, stepViewportToWorld } = await import(
   resolve(here, '..', 'src', 'viewport-to-world.ts'),
 );
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, {
+const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, {
   shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifest, 'utf8'))}`,
 });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 console.log(`[bevy-viewport-to-world] backend=${rendererBackend(renderer)}`);
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push({ code: error.code, hint: error.hint }));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const scene = buildViewportToWorldWorld(world);

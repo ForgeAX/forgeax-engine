@@ -1,11 +1,14 @@
-import { decodeMeshBinary, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import {
+  decodeMeshBinary,
+  deriveVertexLayoutProjection,
+  unpackMeshBin,
+} from '@forgeax/engine-geometry';
 import {
   MESH_BIN_HEADER_BYTES,
   type MeshBinHeader,
   writeMeshBinHeader,
 } from '@forgeax/engine-pack';
 import { describe, expect, it, vi } from 'vitest';
-import { unpackMeshBin } from '../mesh-bin';
 
 function makeArtifact(
   options: {

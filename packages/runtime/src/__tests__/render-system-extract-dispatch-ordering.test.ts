@@ -1,3 +1,6 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 // bug-20260709-builtin-quad-withoutaabb-disables-sprite-frustum-cu M2 / AC-06.
 //
 // Regression lock for the M2.5 `pendingDispatch` + `flushPendingDispatch`
@@ -49,11 +52,10 @@
 // cross-stage checks live in the hello-shadow-opt-out / deferred-shading
 // dawn smokes (per plan-strategy §5.5).
 
-import { AssetRegistry, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, Instances, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
@@ -104,37 +106,28 @@ function spawnFrontFacingCamera(world: World): void {
 }
 
 function registerUnlitMaterial(world: World, rgb: readonly [number, number, number]) {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-unlit' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [rgb[0], rgb[1], rgb[2]] },
-  });
+  return testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-unlit' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [rgb[0], rgb[1], rgb[2]] },
+    })
+    .unwrap();
 }
 
-function expectSlotAlignment(
-  frame: ReturnType<typeof extractFrame>,
-  { requireBaseColorEquality }: { requireBaseColorEquality: boolean },
-): void {
-  // Every dispatch entry's renderableIndex must land inside [0, renderables.length).
-  for (const de of frame.dispatch) {
-    expect(de.renderableIndex).toBeGreaterThanOrEqual(0);
-    expect(de.renderableIndex).toBeLessThan(frame.renderables.length);
-    const target = frame.renderables[de.renderableIndex];
+function expectSlotAlignment(frame: ReturnType<typeof extractFrame>): void {
+  for (const entry of frame.dispatch) {
+    expect(entry.renderableIndex).toBeGreaterThanOrEqual(0);
+    expect(entry.renderableIndex).toBeLessThan(frame.renderables.length);
+    const target = frame.renderables[entry.renderableIndex];
     expect(target).toBeDefined();
-    if (requireBaseColorEquality) {
-      // paramSnapshot.baseColor is the closest AI-user-observable proxy for
-      // "does this dispatch entry belong to this renderable" without crossing
-      // into the record stage's materialHandle resolution.
-      const deColor = (de.paramSnapshot?.baseColor ?? []) as readonly number[];
-      const targetColor = (target?.material.paramSnapshot?.baseColor ?? []) as readonly number[];
-      expect(deColor).toEqual(targetColor);
-    }
+    expect(entry.materialHandle).toBe(target?.material.snapshot.materialHandle);
   }
 }
 
@@ -146,7 +139,9 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     // renderable pushes into slot 0. Distinct materials make the aliasing
     // observable via paramSnapshot.baseColor equality.
     const world = new World();
-    const assets = new AssetRegistry(makeMockShaderRegistry());
+    const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     spawnFrontFacingCamera(world);
 
     const matGreen = registerUnlitMaterial(world, [0, 1, 0]);
@@ -155,14 +150,24 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     world
       .spawn(
         { component: Transform, data: transformAtZ(100) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [matGreen] } },
       )
       .unwrap();
     world
       .spawn(
         { component: Transform, data: identityTransform() },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [matRed] } },
       )
       .unwrap();
@@ -174,11 +179,12 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     // One matched Forward pass per surviving entity — pre-M2.5 this would be 2
     // (the culled green entity's dispatch push at push-site A already ran).
     expect(frame.dispatch).toHaveLength(1);
-    expect(frame.dispatch[0]?.renderableIndex).toBe(0);
-    expect(frame.dispatch[0]?.tags).toEqual({ LightMode: 'Forward' });
-    expect(frame.dispatch[0]?.renderState).toBeUndefined();
-    expect(frame.renderables[0]?.material.renderState).toBeUndefined();
-    expectSlotAlignment(frame, { requireBaseColorEquality: true });
+    expect(frame.dispatch.at(0)?.renderableIndex).toBe(0);
+    expect(frame.dispatch.at(0)?.tags).toEqual({ LightMode: 'Forward' });
+    expect(frame.dispatch.at(0)?.renderState).toBeUndefined();
+    expect(frame.renderables[0]?.material.snapshot.renderState).toBeUndefined();
+    expect(frame.renderables[0]?.material.snapshot.paramSnapshot?.baseColor).toEqual([1, 0, 0]);
+    expectSlotAlignment(frame);
     // Frustum-stat sanity: cull loop actually ran (Stage 1 aabb restore).
     expect(frame.frustumStats.total).toBeGreaterThanOrEqual(2);
     expect(frame.frustumStats.culled).toBeGreaterThanOrEqual(1);
@@ -195,14 +201,24 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     world
       .spawn(
         { component: Transform, data: transformAtZ(100) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: {} as never },
       )
       .unwrap();
     world
       .spawn(
         { component: Transform, data: identityTransform() },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: {} as never },
       )
       .unwrap();
@@ -222,7 +238,7 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     // push C both flushed through the same flush site (flush 3).
     const lightModes = frame.dispatch.map((de) => de.tags.LightMode).sort();
     expect(lightModes).toEqual(['Forward', 'ShadowCaster']);
-    expectSlotAlignment(frame, { requireBaseColorEquality: false });
+    expectSlotAlignment(frame);
   });
 
   it('push A + flush 2 (resolved material, instances-success): culled instances entity does not leave dangling dispatch', () => {
@@ -231,7 +247,9 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     // Transform + local aabb (pre-instance transforms), so an Instances
     // entity at posZ=100 is culled the same way a plain entity is.
     const world = new World();
-    const assets = new AssetRegistry(makeMockShaderRegistry());
+    const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     spawnFrontFacingCamera(world);
 
     const matBlue = registerUnlitMaterial(world, [0, 0, 1]);
@@ -250,7 +268,12 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     world
       .spawn(
         { component: Transform, data: transformAtZ(100) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [matBlue] } },
         { component: Instances, data: { transforms: instanceTransforms } },
       )
@@ -258,7 +281,12 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     world
       .spawn(
         { component: Transform, data: identityTransform() },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [matYellow] } },
         { component: Instances, data: { transforms: instanceTransforms } },
       )
@@ -272,8 +300,9 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     expect(frame.renderables[0]?.instances?.instanceCount).toBe(4);
     // One resolved-material Forward pass per surviving instances entity.
     expect(frame.dispatch).toHaveLength(1);
-    expect(frame.dispatch[0]?.renderableIndex).toBe(0);
-    expectSlotAlignment(frame, { requireBaseColorEquality: true });
+    expect(frame.dispatch.at(0)?.renderableIndex).toBe(0);
+    expect(frame.renderables[0]?.material.snapshot.paramSnapshot?.baseColor).toEqual([1, 1, 0]);
+    expectSlotAlignment(frame);
   });
 
   it('push A + flush 3 negative path (all HANDLE_QUAD entities out of view): zero renderables and zero dispatch', () => {
@@ -282,7 +311,9 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
     // per-entity `pendingDispatch` is dropped on every cull `continue` so
     // no dangling entries leak into the shared `dispatch[]`.
     const world = new World();
-    const assets = new AssetRegistry(makeMockShaderRegistry());
+    const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+    installDefaultAssetDecoders(assets);
+    world.bindAssets(assets).unwrap();
     spawnFrontFacingCamera(world);
 
     const matGrey = registerUnlitMaterial(world, [0.5, 0.5, 0.5]);
@@ -290,7 +321,12 @@ describe('render-system-extract M2.5 dispatch/renderable slot pairing (AC-06)', 
       world
         .spawn(
           { component: Transform, data: transformAtZ(100 + n) },
-          { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+          {
+            component: MeshFilter,
+            data: {
+              assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+            },
+          },
           { component: MeshRenderer, data: { materials: [matGrey] } },
         )
         .unwrap();

@@ -29,6 +29,21 @@
     "white": "White",
     "grayscale": "Grayscale",
     "rotateHint": "Drag to rotate · Scroll to zoom",
-    "panHint": "Drag to pan · Scroll to zoom"
+    "panHint": "Drag to pan · Scroll to zoom",
+    "information": "Texture Information",
+    "valueUnavailable": "Unavailable",
+    "yes": "Yes",
+    "no": "No",
+    "stats": {
+      "dimensions": "Data dimensions",
+      "dimension": "Texture dimension",
+      "layers": "Array layers",
+      "depth": "Depth",
+      "format": "Format",
+      "colorSpace": "Color space",
+      "mipPolicy": "Mip policy",
+      "packedMips": "Packed mip levels",
+      "dataBytes": "Pixel data (bytes)"
+    }
   }
 }

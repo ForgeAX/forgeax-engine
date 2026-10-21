@@ -40,6 +40,8 @@ import type {
   VertexColorSemanticFixture,
 } from '../contracts/types';
 import { VERTEX_COLOR_REQUIRED_CASES } from '../coverage/required-cases';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 const WIDTH = 128;
 const HEIGHT = 128;
@@ -438,16 +440,16 @@ async function copyForgeaxSurface(device: RhiDevice, canvas: HTMLCanvasElement):
   return copyTextureBytes(device, texture.value, WIDTH, HEIGHT, 4);
 }
 
-function setupWorld(fixture: VertexColorSemanticFixture, forceWhite = false): World {
-  const world = new World();
+function setupWorld(assets: AssetRegistry, fixture: VertexColorSemanticFixture, forceWhite = false): World {
+  const world = new World({ assets });
   const alphaCutoff = typeof fixture.alphaCutoff === 'number' ? fixture.alphaCutoff : undefined;
   const material = Materials.unlit([1, 1, 1, 1], {
     renderState: { cullMode: 'none' },
     ...(alphaCutoff === undefined ? {} : { alphaCutoff }),
   });
-  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  const materialHandle = assets.create(material).unwrap();
   const spawnMesh = (mesh: MeshAsset): void => {
-    const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+    const meshHandle = assets.create(mesh).unwrap();
     world.spawn(
       { component: Transform, data: {} },
       { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -486,11 +488,12 @@ async function captureForgeaxWithAssembly(
   const { renderer, debugDrawHost } = assembly;
   const legacyHost = debugDrawHost as unknown as RendererLegacyHostAdapter;
   const device = debugDrawHost.device;
-  const world = setupWorld(fixture, vertexColorFalsifier === 'white-color');
-  const attached = renderer.attach(world);
-  if (!attached.ok) throw attached.error;
-  const lease = attached.value;
+  const assets = new AssetRegistry({ shaderRegistry: assembly.assets.shaderRegistry });
+  const world = setupWorld(assets, fixture, vertexColorFalsifier === 'white-color');
   try {
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const lease = attached.value;
     for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
       world.update().unwrap();
       const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
@@ -527,6 +530,7 @@ async function captureForgeaxWithAssembly(
     // The device stays alive for the next fixture. Detaching the lease removes
     // the World-owned derived systems and read lease before the next capture.
     legacyHost.detachScene(world);
+    assets.dispose();
   }
 }
 

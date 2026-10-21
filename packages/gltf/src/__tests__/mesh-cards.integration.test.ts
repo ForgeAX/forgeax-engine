@@ -1,4 +1,3 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   decodeMeshBinary,
   distanceFieldMeshDigest,
@@ -7,9 +6,12 @@ import {
   packMeshBin,
 } from '@forgeax/engine-geometry';
 import { ImporterRegistry, type RunImportOk, runImport } from '@forgeax/engine-import';
-import type { LoadContext, MeshAsset } from '@forgeax/engine-types';
+import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { describe, expect, it } from 'vitest';
-import { meshLoader } from '../../../assets-runtime/src/loaders/inline-pack';
+import {
+  importedMesh,
+  importedSource,
+} from '../../../import/src/__tests__/fixtures/runtime-import';
 import { gltfImporter } from '../gltf-importer';
 
 const GUIDS = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
@@ -99,18 +101,32 @@ describe('mesh-owned card publication', () => {
     if (!result.ok) throw result.error;
     if ('skipped' in result.value) throw new Error('expected mesh products');
     expect(result.value.pack.assets.map((asset) => asset.guid)).toEqual(GUIDS);
-    const runtime = new AssetRegistry({} as never);
+    const { assets: runtime } = importedSource(result.value.pack);
     for (const row of result.value.pack.assets) {
       const bytes = row.artifacts.body?.bytes;
       expect(bytes).toBeInstanceOf(Uint8Array);
       const geometry = required(decodeMeshBinary(required(bytes), row.refs));
+      expect(row.payload).toEqual({ kind: 'mesh' });
       const json = required(
-        normalizeMeshPayload(JSON.parse(JSON.stringify(row.payload)), row.refs),
+        normalizeMeshPayload(
+          JSON.parse(
+            JSON.stringify(
+              {
+                ...geometry,
+                lods: geometry.lods?.map((lod) => ({
+                  ...lod,
+                  mesh: AssetGuid.format(lod.mesh as never),
+                })),
+              },
+              (_key, value) =>
+                ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+            ),
+          ),
+          row.refs,
+        ),
       );
-      const loaded = required(meshLoader.loadPack)(
-        { guid: row.guid, payload: {}, refs: row.refs, artifacts: row.artifacts } as never,
-        {} as LoadContext,
-      ) as MeshAsset;
+      const handle = (await runtime.load(row.guid, 'mesh')).unwrap();
+      const loaded = runtime.read(handle).unwrap();
       expect(loaded.kind).toBe('mesh');
       expect(geometry.submeshes).toEqual(loaded.submeshes);
       expect(json.submeshes).toEqual(loaded.submeshes);
@@ -127,22 +143,18 @@ describe('mesh-owned card publication', () => {
       expect(layout.meshDigest).toBe(
         await distanceFieldMeshDigest(loaded.attributes.position as Float32Array, indices),
       );
-      expect(runtime.catalog(row.guid, loaded).ok).toBe(true);
-      const byGuid = await runtime.loadByGuid<MeshAsset>(runtime.parseGuid(row.guid));
-      if (!byGuid.ok) throw byGuid.error;
-      expect(byGuid.value.submeshes).toEqual(loaded.submeshes);
       if (row.guid === GUIDS[0]) {
         expect(layout.sidednessDigest).toBe(await meshCardSidednessDigest(new Uint8Array([0, 1])));
         expect(loaded.submeshes.map((section) => section.materialSlot)).toEqual([0, 1]);
         expect(loaded.lods).toHaveLength(1);
       }
       const invalid = {
-        ...loaded,
+        ...geometry,
         cardLayout: { ...layout, cards: [{ ...required(layout.cards[0]), depth: -1 }] },
       };
       expect(packMeshBin(invalid, row.guid, row.refs).ok).toBe(false);
       expect(normalizeMeshPayload(invalid, row.refs)).toBeUndefined();
-      expect(meshLoader.load(invalid as never, row.refs, {} as LoadContext)).toBeUndefined();
+      expect(runtime.replace(handle, invalid).ok).toBe(false);
     }
   });
 
@@ -159,14 +171,13 @@ describe('mesh-owned card publication', () => {
       if ('skipped' in result.value) throw new Error('expected mesh products');
       outputs.push(result.value);
     }
-    const omitted = required(required(outputs[0]).pack.assets[0]).payload as unknown as MeshAsset;
+    const omitted = importedMesh(required(required(outputs[0]).pack.assets[0]));
     expect(omitted.cardLayout).toBeUndefined();
     expect(
       new Set(outputs.map((output) => required(output.cookProducts[0]).receipt.outputDigest)).size,
     ).toBe(4);
     const layoutAt = (index: number) => {
-      const mesh = required(required(outputs[index]).pack.assets[0])
-        .payload as unknown as MeshAsset;
+      const mesh = importedMesh(required(required(outputs[index]).pack.assets[0]));
       return required(mesh.cardLayout);
     };
     const original = layoutAt(1),

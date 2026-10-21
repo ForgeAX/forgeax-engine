@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureAssetPublication, createCatalogSource } from '@forgeax/engine-assets-runtime';
@@ -133,8 +133,11 @@ describe('authored development pack serving', () => {
     );
     expect(capture.ok, JSON.stringify(capture)).toBe(true);
 
+    const sourceTime = await stat(sourcePath);
     const updatedBody = `${source('updated')}\n`;
     await writeFile(sourcePath, updatedBody);
+    await utimes(sourcePath, sourceTime.atime, sourceTime.mtime);
+    expect(Math.abs((await stat(sourcePath)).mtimeMs - sourceTime.mtimeMs)).toBeLessThan(1);
 
     const secondResponse = await request(middlewares, entry.packageUrl);
     expect(secondResponse.statusCode).toBe(200);
@@ -206,5 +209,62 @@ describe('authored development pack serving', () => {
     expect(refreshed.assets[0]?.payload.marker).toBe('updated');
 
     await plugin.closeBundle();
+  });
+  it.each([
+    'direct',
+    'scriptable',
+  ] as const)('orders %s cooked publications independently from source mtime', async (format) => {
+    root = await mkdtemp(join(tmpdir(), 'forgeax-publication-clock-'));
+    const sourcePath = join(root, format === 'direct' ? 'clock.pack.json' : 'clock.pack.ts');
+    const source = (marker: number) =>
+      format === 'direct'
+        ? JSON.stringify({
+            schemaVersion: '3.0.0',
+            packageId: '019ffa97-0000-7000-8000-000000000052',
+            assets: {
+              item: { kind: 'clock-fixture', payload: { marker }, refs: [] },
+            },
+          })
+        : `export default { schemaVersion: '2.0.0', packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,82]),
+          build: () => ({ ok: true, value: { item: { kind: 'clock-fixture', execution: 'cooked', source: { marker: ${marker} } } } }) };`;
+    await writeFile(sourcePath, source(1));
+    // Avoid rounding a fractional filesystem timestamp across a millisecond boundary.
+    await utimes(sourcePath, 1, 1);
+    const sourceTime = await stat(sourcePath);
+    const plugin = pluginPack({
+      roots: [root],
+      watch: false,
+      ddc: { projectDdcRoot: join(root, 'ddc') },
+      cookers: [
+        {
+          key: 'clock-fixture',
+          cook: ({ guid, source }) => ({
+            guid,
+            payload: { kind: 'clock-fixture', ...(source as object) },
+            refs: [],
+            artifacts: {},
+            inputFingerprint: JSON.stringify(source),
+          }),
+        },
+      ],
+    });
+    plugin.configureServer({ middlewares: { use: () => {} }, ws: { send: () => {} } });
+    try {
+      await plugin.rebind(runtimeBinding(), [root], join(root, 'ddc'));
+      const before = plugin.catalogSnapshot()[0];
+      expect(before?.publication?.generation).toBeGreaterThan(0);
+      expect(before?.revision?.observedAt).toBeGreaterThan(0);
+      await writeFile(sourcePath, source(2));
+      await utimes(sourcePath, sourceTime.atime, sourceTime.mtime);
+      expect(Math.abs((await stat(sourcePath)).mtimeMs - sourceTime.mtimeMs)).toBeLessThan(1);
+      await plugin.rebuildCatalogInPlace([sourcePath]);
+      const after = plugin.catalogSnapshot()[0];
+      expect(after?.publication?.generation).toBeGreaterThan(before?.publication?.generation ?? 0);
+      // Source observation remains provenance; publication order has its own clock.
+      expect(after?.revision?.observedAt).toBe(before?.revision?.observedAt);
+      expect(after?.revision?.digest).not.toBe(before?.revision?.digest);
+    } finally {
+      await plugin.closeBundle();
+    }
   });
 });

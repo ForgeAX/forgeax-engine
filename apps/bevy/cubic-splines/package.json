@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `cubic_splines` example (a smooth curve passing through control points) \u2014 a STATIC demo exercising the new vec3.catmullRom Catmull-Rom spline sampler (mapping Bevy's CubicCardinalSpline::new_catmull_rom), baking a bead polyline through a fixed control polygon.",
+  "description": "Reproduction of Bevy's `cubic_splines` example (a smooth curve passing through control points) — a STATIC demo exercising the new vec3.catmullRom Catmull-Rom spline sampler (mapping Bevy's CubicCardinalSpline::new_catmull_rom), baking a bead polyline through a fixed control polygon.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -49,7 +49,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

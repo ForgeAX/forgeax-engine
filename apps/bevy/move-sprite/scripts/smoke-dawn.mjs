@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `move_sprite`: a real sprite follows Time-driven motion,
@@ -45,7 +46,6 @@ const canvas = {
 const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { propagateTransforms } = await import('@forgeax/engine-scene');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { buildMoveSpriteWorld, makeSpritePixels, readSpriteMotion, SPRITE_SIZE, stepMoveSprite, MIN_X, MAX_X } = await import(resolve(here, '..', 'src', 'move-sprite.ts'));
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
@@ -58,13 +58,15 @@ gpu.requestAdapter = async (options) => {
   adapter.requestDevice = async (descriptor) => { device = await originalRequestDevice(descriptor); return device; };
   return adapter;
 };
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;
 console.log(`[bevy-move-sprite] backend=${rendererBackend(renderer)}`);
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const pixels = makeSpritePixels();
@@ -76,8 +78,8 @@ const texture = {
   colorSpace: 'srgb',
   mips: { kind: 'none' },
 };
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-buildMoveSpriteWorld(world, unwrapHandle(textureHandle));
+const textureHandle = world.assets.create(texture).unwrap();
+buildMoveSpriteWorld(world, textureHandle);
 
 const positions = [];
 const directions = [];

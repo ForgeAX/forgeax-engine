@@ -4,7 +4,6 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   buildEasedMotionWorld,
   createEasedMotionClip,
-  EASED_MOTION_CLIP_GUID,
   readEasedMotionState,
 } from './eased-motion';
 
@@ -25,7 +24,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const clip = createEasedMotionClip();
-  app.assets.catalog(EASED_MOTION_CLIP_GUID, clip).unwrap();
   const state = buildEasedMotionWorld(app.world, clip);
   Object.assign(globalThis, {
     __bevyEasedMotionReady: true,

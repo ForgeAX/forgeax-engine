@@ -25,7 +25,8 @@ const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-
 const { fbxImporter } = await import('@forgeax/engine-fbx');
 const { gltfImporter } = await import('@forgeax/engine-gltf');
 const { ImporterRegistry, runImport } = await import('@forgeax/engine-import');
-const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
+const { createCatalogSource } = await import('@forgeax/engine-assets-runtime');
+const { createRuntimePackPublication } = await import('@forgeax/engine-pack/runtime');
 const { createShaderModule, rhi } = await import('@forgeax/engine-rhi-webgpu');
 
 const requiredFrames = 60;
@@ -52,7 +53,25 @@ function boundsFor(positions) {
   return { min, max };
 }
 
-async function loadImportedMorph() {
+function publishImported(assets, imported, sourcePath) {
+  const packageUrl = `https://morph-source.invalid/${sourcePath}/pack.json`;
+  const bodies = new Map();
+  const rows = imported.pack.assets.map(row => ({ ...row, artifacts: Object.fromEntries(Object.entries(row.artifacts).map(([key, body]) => {
+    const path = `${row.guid}-${key}.bin`;
+    bodies.set(new URL(path, packageUrl).href, body.bytes);
+    return [key, {path, mediaType: body.mediaType, ...(body.assetCodec === undefined ? {} : {assetCodec: body.assetCodec}), contentEncoding: 'identity', byteLength: body.bytes.byteLength, integrity: {algorithm: 'sha256', digest: `sha256:${sha256(body.bytes)}`}}];
+  })) }));
+  const publication = createRuntimePackPublication({scopeId: 'asset-runtime', sourcePath, sourceRevision: 'smoke', packageUrl, pack: {assets: rows}});
+  const json = JSON.stringify(publication.pack, (_key, value) => ArrayBuffer.isView(value) ? Array.from(value) : value);
+  assets.setCatalogSource(createCatalogSource({entries: rows.map(row => ({guid: row.guid, kind: row.kind, sourcePath, packageUrl, publication: publication.publication})), fetch: async input => {
+    const url = String(input);
+    if (url === packageUrl) return new Response(json);
+    const body = bodies.get(url);
+    return body === undefined ? new Response(null, {status: 404}) : new Response(body.slice().buffer);
+  }}));
+}
+
+async function loadImportedMorph(assets) {
   const [gltfBytes, fbxBytes] = await Promise.all([
     readFile(gltfFixturePath),
     readFile(fbxFixturePath),
@@ -78,30 +97,16 @@ async function loadImportedMorph() {
   if (meshEntry === undefined || animationEntry === undefined) {
     throw new Error('gltf importer did not emit the declared morph assets');
   }
-  const registry = new AssetRegistry({});
-  const mesh = registry.parseAssetPayload('mesh', meshEntry.payload);
-  const animation = registry.parseAssetPayload('animation-clip', animationEntry.payload);
-  if (mesh === undefined || mesh.kind !== 'mesh') throw new Error('gltf mesh payload was rejected');
-  if (animation === undefined || animation.kind !== 'animation-clip') {
-    throw new Error('gltf animation payload was rejected');
-  }
-  if (!registry.catalog(gltfMeta.subAssets[0].guid, mesh).ok) throw new Error('gltf mesh catalog failed');
-  if (!registry.catalog(gltfMeta.subAssets[1].guid, animation).ok) throw new Error('gltf animation catalog failed');
-  const loadedMesh = await registry.loadByGuid(registry.parseGuid(gltfMeta.subAssets[0].guid));
-  const loadedAnimation = await registry.loadByGuid(registry.parseGuid(gltfMeta.subAssets[1].guid));
-  if (!loadedMesh.ok || loadedMesh.value.kind !== 'mesh') throw new Error('gltf mesh loadByGuid failed');
-  if (!loadedAnimation.ok || loadedAnimation.value.kind !== 'animation-clip') {
-    throw new Error('gltf animation loadByGuid failed');
-  }
-  const loaded = loadedMesh.value;
+  publishImported(assets, imported.value, 'gltf');
+  const meshHandle = (await assets.load(gltfMeta.subAssets[0].guid, 'mesh')).unwrap();
+  const animationHandle = (await assets.load(gltfMeta.subAssets[1].guid, 'animation-clip')).unwrap();
+  const loaded = assets.read(meshHandle).unwrap();
+  const animation = assets.read(animationHandle).unwrap();
   const targetCount = loaded.morphTargets?.length ?? 0;
-  const vertexCount = loaded.vertices.length / 12;
+  const basePositions = loaded.attributes.position;
+  const vertexCount = basePositions.length / 3;
   if (targetCount < 2 || loaded.morphWeights?.length !== targetCount) {
     throw new Error('imported morph target and weight cardinality mismatch');
-  }
-  const basePositions = new Float32Array(vertexCount * 3);
-  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-    basePositions.set(loaded.vertices.slice(vertex * 12, vertex * 12 + 3), vertex * 3);
   }
   const targetDeltas = new Float32Array(targetCount * vertexCount * 3);
   const targetBounds = [];
@@ -133,14 +138,12 @@ async function loadImportedMorph() {
   }
   const fbxEntry = importedFbx.value.pack.assets[0];
   if (fbxEntry === undefined) throw new Error('fbx importer emitted no mesh asset');
-  const fbxMesh = registry.parseAssetPayload('mesh', fbxEntry.payload);
-  if (fbxMesh === undefined || fbxMesh.kind !== 'mesh') throw new Error('fbx mesh payload was rejected');
-  if (!registry.catalog(fbxMeta.subAssets[0].guid, fbxMesh).ok) throw new Error('fbx mesh catalog failed');
-  const loadedFbx = await registry.loadByGuid(registry.parseGuid(fbxMeta.subAssets[0].guid));
-  if (!loadedFbx.ok || loadedFbx.value.kind !== 'mesh') throw new Error('fbx mesh loadByGuid failed');
+  publishImported(assets, importedFbx.value, 'fbx');
+  const fbxHandle = (await assets.load(fbxMeta.subAssets[0].guid, 'mesh')).unwrap();
+  assert.equal(assets.read(fbxHandle).unwrap().kind, 'mesh');
 
   return {
-    mesh: loaded,
+    meshHandle,
     renderable: {
       vertexCount,
       baseBounds: boundsFor(basePositions),
@@ -149,10 +152,10 @@ async function loadImportedMorph() {
       targetDeltas,
     },
     baseWeights: loaded.morphWeights,
-    animation: loadedAnimation.value,
+    animation,
     source: {
-      gltf: { path: gltfFixturePath, sha256: sha256(gltfBytes), importer: 'gltfImporter -> Pack -> AssetRegistry.loadByGuid' },
-      fbx: { path: fbxFixturePath, sha256: sha256(fbxBytes), importer: 'fbxImporter -> Pack -> AssetRegistry.loadByGuid', animation: 'static fixture' },
+      gltf: { path: gltfFixturePath, sha256: sha256(gltfBytes), importer: 'gltfImporter -> Pack -> AssetRegistry.load' },
+      fbx: { path: fbxFixturePath, sha256: sha256(fbxBytes), importer: 'fbxImporter -> Pack -> AssetRegistry.load', animation: 'static fixture' },
     },
   };
 }
@@ -209,7 +212,6 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
-const importedMorph = await loadImportedMorph();
 const phases = { standardFrames: 0, baseWeightFrames: 0, zeroWeightFrames: 0, animatedFrames: 0 };
 let currentFrame = 0;
 
@@ -227,23 +229,17 @@ if (!constructed.ok) {
 
 const renderer = constructed.value.renderer;
 const assets = constructed.value.assets;
-const meshGuid = AssetGuid.parse('11111111-1111-4111-8111-111111111111');
-const materialGuid = AssetGuid.parse('33333333-3333-4333-8333-333333333334');
-if (!meshGuid.ok || !materialGuid.ok) throw new Error('Morph smoke asset GUID parsing failed');
-if (!assets.catalog(meshGuid.value, importedMorph.mesh).ok) throw new Error('Morph smoke mesh catalog failed');
+const importedMorph = await loadImportedMorph(assets);
 const material = Materials.unlit([0.2, 0.8, 0.45, 1], {
   renderState: { cullMode: 'none' },
 });
-if (!assets.catalog(materialGuid.value, material).ok) throw new Error('Morph smoke material catalog failed');
-const loadedMesh = await assets.loadByGuid(meshGuid.value);
-if (!loadedMesh.ok || loadedMesh.value.kind !== 'mesh') throw new Error('Morph smoke mesh loadByGuid failed');
-const world = new World();
+const world = new World({ assets: assets });
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 5], quat: [0, 0, 0, 1] } },
   { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: testQuality.viewport.width / testQuality.viewport.height, near: 0.1, far: 100 }) },
 ).unwrap();
-const meshHandle = world.allocSharedRef('MeshAsset', loadedMesh.value);
-const materialHandle = world.allocSharedRef('MaterialAsset', material);
+const meshHandle = importedMorph.meshHandle;
+const materialHandle = world.assets.create(material).unwrap();
 const morphEntity = world.spawn(
   { component: Transform, data: { scale: [60, 60, 60] } },
   { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -284,7 +280,7 @@ await writeEvidence({
     maxAbsError: null,
   },
   falsifiers: { zeroWeights: 'pass', standardLane: 'pass', staleWeights: 'pass' },
-  producer: { status: 'pass', kind: 'imported-loadByGuid', source: importedMorph.source },
+  producer: { status: 'pass', kind: 'imported-source-load', source: importedMorph.source },
   observed: 'Dawn executed the imported mesh through ECS MorphWeights and the Standard MeshFilter/MeshRenderer lane for 60 receipt-bound frames.',
   verdict: 'pass',
   confidence: 'high',

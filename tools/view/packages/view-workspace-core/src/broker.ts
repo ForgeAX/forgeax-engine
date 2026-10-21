@@ -1,4 +1,4 @@
-import type { EngineWorkspaceRuntime, EngineWorkspacePreview, EngineWorkspacePlay, EngineWorkspaceProjectHandle, EngineWorkspaceCameraResult } from '@forgeax/engine/app';
+import type { EngineWorkspaceRuntime, EngineWorkspacePreview, EngineWorkspacePlay, EngineWorkspaceProjectHandle, EngineWorkspaceCameraResult, PackDraftRequest, PackDraftReply } from '@forgeax/engine/app';
 import type { ToolApi, ToolCallerIdentity } from '@forgeax/engine-tool-runtime';
 import type { WorkspaceAsset, WorkspaceInspection, WorkspaceOpenRequest, WorkspaceSceneSelection, WorkspaceState, WorkspaceSummary, WorkspacePages, WorkspacePackReveal, WorkspacePreview, WorkspaceRequest, WorkspaceResourceOpen, WorkspaceTab } from './contract.ts';
 import type { HostCallerIdentity, HostTransportServer } from '@forgeax/engine-host/transport';
@@ -15,6 +15,7 @@ import {
   workspaceUiFingerprint,
 } from './contract.ts';
 import { createWorkspaceId } from './id.ts';
+import { createRequestSharing } from './request-sharing.ts';
 import {
   sceneTargetIds,
   isSceneWorkspaceAsset,
@@ -62,6 +63,12 @@ const PAGE_OPERATIONS = new Set([
 
 /** View bindings and display snapshots. Engine owns all project and target resources. */
 export class ViewWorkspaceBroker {
+  private readonly resourceFlights = createRequestSharing();
+  private resourceLifetime = new AbortController();
+  private resourceBrowserGeneration = -1;
+  private resourceCatalogEpoch = -1;
+  private readonly resourceRequests = new Map<string, AbortController>();
+  private readonly closingPreviews = new Set<string>();
   declare readonly engine: EngineWorkspaceRuntime | undefined;
   declare readonly engineForCaller: BrokerOptions['engineForCaller'];
   declare readonly projectIntent: BrokerOptions['projectIntent'];
@@ -178,6 +185,17 @@ export class ViewWorkspaceBroker {
     return this.snapshot();
   }
   syncBindings() {
+    const browserGeneration = this.engine?.project?.browserGeneration ?? 0;
+    const replaced = this.projectOwner !== this.engine?.project || this.resourceBrowserGeneration !== browserGeneration;
+    if (replaced || this.resourceCatalogEpoch !== this.catalogEpoch) {
+      if (replaced && this.resourceBrowserGeneration !== -1) { this.resourceOpens.clear(); this.openRequest = null; }
+      this.resourceLifetime.abort();
+      this.resourceLifetime = new AbortController();
+      this.resourceFlights.fence();
+      this.resourceRequests.clear();
+      this.resourceBrowserGeneration = browserGeneration;
+      this.resourceCatalogEpoch = this.catalogEpoch;
+    }
     if (this.playOwner !== this.engine?.play) {
       this.playOwner = this.engine?.play;
       this.targetBinding = this.playOwner ? 'play' : 'scene';
@@ -230,9 +248,13 @@ export class ViewWorkspaceBroker {
   }
 
   pages(): WorkspacePages {
-    const entries = [...this.pageSessions.entries()];
+    const entries = this.pageConnections();
     return { pages: entries.slice(0, 16).map(([connectionId, page]) => ({ connectionId, ...page.broker.summary() })),
       hasMorePages: entries.length > 16 };
+  }
+
+  pageConnections() {
+    return [...this.pageSessions.entries()].filter(([connectionId, page]) => page.broker.caller?.connectionId === connectionId);
   }
 
   snapshot(): WorkspaceState {
@@ -320,12 +342,17 @@ export class ViewWorkspaceBroker {
       return page.broker.call({...request,args},{signal,caller});
     }
     const page = caller?.connectionId && this.pageSessions.get(caller.connectionId);
-    if (page) return page.broker.call(rawRequest, { signal, caller });
+    if (page) {
+      if (caller?.connectionId !== page.broker.caller?.connectionId && this.engineForCaller?.(caller) !== page.broker.engine)
+        throw workspaceError('view-page-gone', 'the embedded document to retain its admitted Engine runtime', 'Reconnect the current project document.');
+      return page.broker.call(rawRequest, { signal, caller });
+    }
     await this.authorizeRequest(request, caller);
     if (PAGE_OPERATIONS.has(request.operation) && this.pageSessions.size > 0) {
-      if (this.pageSessions.size !== 1) throw workspaceError('view-page-ambiguous',
+      const pages = this.pageConnections();
+      if (pages.length !== 1) throw workspaceError('view-page-ambiguous',
         'one View page for this page operation', 'Select the exact View page before retrying.');
-      return this.pageSessions.values().next().value!.broker.call(request, { signal, caller });
+      return pages[0]![1].broker.call(request, { signal, caller });
     }
     const ui = UI_OPERATIONS[request.operation];
     if (ui) return ui(this, request.args, { signal, caller, clientId: request.clientId });
@@ -340,7 +367,105 @@ export class ViewWorkspaceBroker {
     }
     return this.invoke(request.operation, request.args, { signal, caller, clientId: request.clientId, token: request.token, requestId: request.requestId });
   }
-  async invoke(operation: string, args: Args = {}, { signal, caller, clientId = 'view-owner', token, requestId }: WorkspaceCallContext = {}) {
+  async invoke(operation: string, args: Args = {}, context: WorkspaceCallContext = {}): Promise<unknown> {
+    const knownAsset = operation === 'asset.open' ? this.assets?.find(entry => entry.guid === args.guid) : undefined;
+    if (operation === 'asset.open' && args.detailsOnly !== true && (!knownAsset || isTypePreviewAsset(knownAsset))) {
+      this.syncBindings();
+      if (!this.assets && this.project && this.toolApi?.describe('engine.assets.list', ENGINE_SOURCE).some(item => item.callable)) await this.invokeDomain('assets.list', { projectId: args.projectId }, context);
+      const asset = this.assets?.find(entry => entry.guid === args.guid) ?? knownAsset;
+      if (asset && isTypePreviewAsset(asset) && asset.previewable !== false) return this.openResourceAsset(asset, args, context);
+    }
+    if (operation !== 'preview.close') return this.invokeDomain(operation, args, context);
+    const id = String(args.targetId);
+    this.closingPreviews.add(id);
+    try { return await this.invokeDomain(operation, args, context); }
+    finally { this.closingPreviews.delete(id); }
+  }
+  private openResourceAsset(asset: WorkspaceAsset, args: Args, context: WorkspaceCallContext) {
+    const project = this.engine?.project;
+    const projectTarget = project?.target;
+    if (!project || args.projectId !== project.project.id || this.workspaceTargetLost || project.failure || project.phase === 'failed')
+      return Promise.reject(workspaceError('view-workspace-project-stale', 'The current project', 'Refresh tabs.get.'));
+    if (args.targetId !== undefined && args.targetId !== projectTarget?.targetId)
+      return Promise.reject(workspaceError('view-workspace-target-mismatch', 'The current project target', 'Refresh tabs.get.'));
+    const addressed = this.scenePreview()?.target ?? projectTarget;
+    const suppliedTarget = [addressed, projectTarget].find(target => target && target.targetId === (args.targetId ?? projectTarget?.targetId)
+      && (args.targetGeneration === undefined || target.generation === args.targetGeneration));
+    if (args.targetGeneration !== undefined && !suppliedTarget)
+      return Promise.reject(workspaceError('view-workspace-target-mismatch', 'The current project target generation', 'Refresh tabs.get.'));
+    const lifetime = this.resourceLifetime.signal;
+    const key = JSON.stringify([project.project.id, projectTarget?.targetId, this.resourceBrowserGeneration, asset.guid, this.catalogEpoch]);
+    return this.resourceFlights.read(key, async sharedSignal => {
+      const request = new AbortController();
+      this.resourceRequests.get(asset.kind)?.abort();
+      this.resourceRequests.set(asset.kind, request);
+      const signal = AbortSignal.any([sharedSignal, lifetime, request.signal]);
+      const requestId = context.requestId ?? createWorkspaceId('open');
+      const current = () => !signal.aborted && !this.disposing && this.engine?.project === project;
+      const started = performance.now();
+      const trace = (stage: string, extra: Args = {}) => logResourceOpen('timing', { requestId, stage, at: Date.now(), elapsedMs: Math.round(performance.now() - started), ...extra });
+      const publish = (phase: 'opening' | 'failed', failure?: WorkspaceOpenRequest['failure']) => {
+        this.openRequest = { requestId, sequence: ++this.openRequestSequence, asset, phase, ...(failure ? { failure } : {}) };
+        this.resourceOpens.set(asset.kind, { ...(this.resourceOpens.get(asset.kind) ?? { asset }), pending: this.openRequest });
+        this.changed();
+      };
+      try {
+        signal.throwIfAborted();
+        const retained = this.resourceOpens.get(asset.kind);
+        let existing = [...this.previews()].reverse().find(preview => retained?.preview?.target.targetId === preview.target.targetId && retained.preview.target.generation === preview.target.generation && retained.asset.guid === asset.guid && retained.catalogEpoch === this.catalogEpoch && preview.asset?.guid === asset.guid && !this.closingPreviews.has(preview.target.targetId)
+          && (!projectTarget || preview.target.sessionId === projectTarget.sessionId));
+        if (existing?.assetBinding?.publication && this.toolApi?.describe('engine.asset.inspect', ENGINE_SOURCE).some(record => record.callable)) {
+          const inspected = await this.invokeDomain('asset.inspect', { projectId: project.project.id, guid: asset.guid,
+            ...(args.targetId === undefined ? {} : { targetId: args.targetId }),
+            ...(args.targetGeneration === undefined ? {} : { targetGeneration: args.targetGeneration }),
+          }, { ...context, signal }) as WorkspaceDomainResult;
+          signal.throwIfAborted();
+          if (!current()) throw new DOMException('Resource open became stale', 'AbortError');
+          const publication = inspected.inspection?.source?.publication ?? inspected.inspection?.publication;
+          const bound = existing.assetBinding?.publication;
+          if (publication && (!bound || (['schemaVersion', 'sourcePath', 'sourceRevision', 'generation', 'digest', 'outputSetDigest'] as const)
+            .some(key => publication[key] !== bound[key]))) existing = undefined;
+        }
+        if (existing) {
+          this.recordOpenRequest({ requestId, result: { preview: { target: existing.target, asset, assetBinding: existing.assetBinding } }, guid: asset.guid });
+          this.changed();
+          trace('reused', { targetId: existing.target.targetId });
+          return this.snapshot();
+        }
+        publish('opening');
+        trace('opening');
+        trace('engine-operation-start');
+        const result = await this.invokeDomain('asset.open', args, { ...context, requestId, signal }, false) as WorkspaceDomainResult;
+        trace('engine-operation-end');
+        signal.throwIfAborted();
+        if (!current()) throw new DOMException('Resource open became stale', 'AbortError');
+        const preview = result.preview;
+        if (!preview) throw workspaceError('view-preview-target-unavailable', 'The admitted resource target', 'Refresh tabs.get.');
+        this.recordOpenRequest({ requestId, result: { preview: { target: preview.target, asset, assetBinding: preview.assetBinding } }, guid: asset.guid });
+        this.changed();
+        trace('target-admitted', { targetId: preview.target.targetId });
+        return this.snapshot();
+      } catch (error) {
+        if (current()) {
+          const failure = resolveWorkspaceFailure(error);
+          publish('failed', { code: failure.code ?? 'view-resource-open-failed', expected: failure.expected ?? 'The asset preview to open', hint: failure.hint ?? (error instanceof Error ? error.message : String(error)) });
+          trace('failed');
+        } else if (this.engine?.project === project) {
+          if (this.openRequest?.requestId === requestId) this.openRequest = null;
+          const entry = this.resourceOpens.get(asset.kind);
+          if (entry?.pending?.requestId === requestId) {
+            if (entry.preview) { const { pending: _pending, ...accepted } = entry; this.resourceOpens.set(asset.kind, accepted); }
+            else this.resourceOpens.delete(asset.kind);
+          }
+          this.changed();
+        }
+        throw error;
+      } finally {
+        if (this.resourceRequests.get(asset.kind) === request) this.resourceRequests.delete(asset.kind);
+      }
+    }, context.signal);
+  }
+  private async invokeDomain(operation: string, args: Args = {}, { signal, caller, clientId = 'view-owner', token, requestId }: WorkspaceCallContext = {}, publishOpen = true): Promise<unknown> {
     const requestedAsset = operation === 'asset.open' ? this.assets?.find(asset => asset.guid === args.guid) : undefined;
     if (operation === 'asset.open' && (args.detailsOnly === true || requestedAsset?.previewable === false
       || (requestedAsset && !['scene', 'mesh', 'material', 'texture', 'equirect'].includes(requestedAsset.kind)))) {
@@ -367,7 +492,14 @@ export class ViewWorkspaceBroker {
       input.targetId = this.projectTarget.targetId;
     const owner = this.toolApi?.describe(id, sourceId).find(record => record.callable)?.owner;
     if (!owner) throw workspaceError('view-workspace-operation-unavailable', `Engine operation ${operation} to be installed`, 'Enable the Engine capability; UI plugins do not provide domain APIs.', { operation });
-    this.syncBindings();
+    const draftRequest = operation === 'asset.source.draft' ? input.request as PackDraftRequest | undefined : undefined;
+    if (operation !== 'asset.source.draft') this.syncBindings();
+    if (operation === 'asset.source.draft' && draftRequest?.action === 'generate' &&
+      this.sceneSelection?.targetId === input.previewTargetId) {
+      this.selectionAbort?.abort();
+      this.sceneSelection = null;
+      this.changed();
+    }
     const play = this.engine?.play;
     if (operation === 'play.stop' && this.targetBinding === 'play' && play &&
       input.targetId === play.target.targetId && input.targetGeneration === play.target.generation) {
@@ -396,21 +528,35 @@ export class ViewWorkspaceBroker {
       this.changed();
       throw workspaceError(resolved.code, resolved.expected, resolved.hint, resolved.detail);
     }
+    signal?.throwIfAborted();
     const result = terminal.result;
+    // Draft deltas have their own event stream; dragging must not copy the Catalog or workspace.
+    if (operation === 'asset.source.draft') {
+      const reply = result as unknown as PackDraftReply;
+      if (draftRequest?.action === 'generate' && 'preview' in reply && reply.preview === 'ready' && !reply.error) {
+        this.changed();
+      }
+      return cloneWorkspaceValue(result);
+    }
     if (Array.isArray(result?.assets)) this.assets = result.assets.map(asset => serializeWorkspaceAsset({ ...asset, ...(asset.ddc || !asset.cookReceiptUrl ? {} : { ddc: { receiptUrl: asset.cookReceiptUrl } }) }));
     if (result?.inspection) this.inspection = serializeWorkspaceInspection(result.inspection);
+    if (operation === 'preview.close') {
+      for (const [kind, entry] of this.resourceOpens) if (entry.preview?.target.targetId === input.targetId) this.resourceOpens.delete(kind);
+      if (this.openRequest?.preview?.target.targetId === input.targetId) this.openRequest = null;
+    }
     if (operation === 'asset.open') this.bindOpenedAsset(result, input.guid);
     if (operation === 'preview.close' && input.targetId != null && String(input.targetId) === this.sceneTargetId) {
       this.sceneTargetId = undefined;
     }
     this.syncBindings();
-    if (operation === 'asset.open') this.recordOpenRequest({ requestId, result, guid: input.guid });
+    if (operation === 'asset.open' && publishOpen) this.recordOpenRequest({ requestId, result, guid: input.guid });
     if ((operation.startsWith('camera.') || operation === 'target.control') && this.previewProjection && this.boundTarget() === requestedPreview) {
       this.previewProjection.camera = result?.camera;
       this.previewProjection.cameraVersion = result?.version;
       this.previewProjection.interaction = result?.interaction ?? null;
     }
-    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'preview.texture.get', 'assets.thumbnails'].includes(operation)) this.changed();
+    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'preview.texture.get', 'preview.display.get', 'assets.thumbnails'].includes(operation)) this.changed();
+    if (operation === 'asset.open' && !publishOpen) return cloneWorkspaceValue(result);
     if (['project.open', 'project.close', 'project.reopen', 'asset.open', 'preview.close', 'camera.abort', 'play.start', 'play.ready', 'play.stop'].includes(operation)) {
       if (operation === 'project.open' || operation === 'project.reopen') this.workspaceTargetLost = false;
       return this.snapshot();
@@ -480,7 +626,7 @@ export class ViewWorkspaceBroker {
       throw error;
     }
   }
-  openProject(args: Args, context?: WorkspaceCallContext) { return this.invoke('project.open', args, context); }
+  async openProject(args: Args, context?: WorkspaceCallContext) { await this.invoke('project.open', args, context); return this.snapshot(); }
   async reopenProject(args: Args = {}, context?: WorkspaceCallContext) {
     const root = resolveWorkspaceReopenRoot(this.snapshot(), args.root);
     const { tabId, ...rest } = args;
@@ -497,8 +643,7 @@ export class ViewWorkspaceBroker {
       ?? this.assets?.find((entry) => entry?.guid === guid)?.kind;
     if (kind === 'scene') {
       const targetId = result?.preview?.target?.targetId
-        ?? result?.target?.targetId
-        ?? this.previews().find((entry) => this.hydrateAsset(entry.asset)?.guid === guid)?.target?.targetId;
+        ?? result?.target?.targetId;
       if (targetId != null) {
         this.sceneTargetId = String(targetId);
         this.previewTargetId = this.sceneTargetId;
@@ -515,10 +660,7 @@ export class ViewWorkspaceBroker {
       this.classifiedPreviews(),
       scene ? { target: scene.target, asset: this.hydrateAsset(scene.asset) } : undefined,
     );
-    const extras = this.previews().filter((entry) =>
-      entry?.target?.targetId && !sceneIds.has(String(entry.target.targetId)),
-    );
-    const preview = [result?.preview, ...extras].find((entry) =>
+    const preview = [result?.preview].find((entry) =>
       entry?.target &&
       !sceneIds.has(String(entry.target.targetId)) &&
       (!entry.asset || requested === undefined || entry.asset.guid === requested),
@@ -544,7 +686,6 @@ export class ViewWorkspaceBroker {
         resultPreview: summarizeResourceAsset(result?.preview?.asset),
         resultAsset: summarizeResourceAsset(result?.asset),
         extraPreview: summarizeResourceAsset(preview?.asset),
-        extraPreviewCount: extras.length,
         catalog: summarizeResourceAsset(catalogAsset),
         sceneTargetId: this.sceneTargetId ?? null,
       }, { level: 'warn' });
@@ -556,18 +697,21 @@ export class ViewWorkspaceBroker {
         ? result.inspection
         : (this.inspection?.guid === asset.guid ? this.inspection : undefined);
     const previewMatches = preview?.target && (!preview.asset || preview.asset.guid === asset.guid);
-    const recordedPreview = previewMatches ? { asset, target: preview.target } : undefined;
+    const recordedPreview = previewMatches ? { asset, target: preview.target, assetBinding: preview.assetBinding } : undefined;
     this.openRequest = serializeWorkspaceOpenRequest({
       requestId: typeof requestId === 'string' && requestId.trim() !== ''
         ? requestId
         : createWorkspaceId('open'),
       sequence: this.openRequestSequence,
       asset,
+      phase: 'ready',
       preview: detailsOnly ? undefined : recordedPreview,
       ...(detailsOnly ? { detailsOnly: true } : {}),
       ...(inspection === undefined ? {} : { inspection }),
     });
     this.resourceOpens.set(asset.kind, {
+      requestId: this.openRequest.requestId,
+      catalogEpoch: this.catalogEpoch,
       asset,
       preview: detailsOnly ? undefined : recordedPreview,
       sequence: this.openRequestSequence,
@@ -603,7 +747,8 @@ export class ViewWorkspaceBroker {
     if (page) {
       this.pageSessions.delete(connectionId);
       page.unsubscribe();
-      await page.broker.dispose();
+      if (![...this.pageSessions.values()].some(other => other.broker === page.broker))
+        await page.broker.dispose();
     }
     for (const preview of [this.engine?.preview, this.engine?.play]) {
     if (!preview) continue;
@@ -628,7 +773,13 @@ export class ViewWorkspaceBroker {
     const projectTarget = engine?.project?.target;
     const projectCaller = projectTarget && caller.sourceId === `forgeax-workspace:${projectTarget.sessionId}:${projectTarget.targetId}`;
     if (caller.kind !== 'frontend' || (caller.sourceId !== 'view-frontend' && !projectCaller) || this.pageSessions.has(caller.connectionId)) return;
-    const broker = new ViewWorkspaceBroker({
+    // An embedded canvas is the admitted target of its retained entry Shell,
+    // not a second View page. Engine's resolver supplies the exact shared owner.
+    const shell = this.engineForCaller && projectCaller
+      ? this.pageConnections().find(([, page]) => page.broker.caller?.sourceId === 'view-frontend'
+        && page.broker.engine === engine)?.[1]
+      : undefined;
+    const broker = shell?.broker ?? new ViewWorkspaceBroker({
       engine, toolApi: this.toolApi, display: () => this.display(caller),
       ...(this.engineForCaller && caller.sourceId === 'view-frontend'
         ? { projectIntent: () => this.project?.root } : {}),
@@ -694,9 +845,9 @@ export class ViewWorkspaceBroker {
     });
   }
   resolvePageConnection(caller:ToolCallerIdentity|undefined,requested:unknown) {
-      const own = caller && this.pageSessions.has(caller.connectionId) ? caller.connectionId : undefined;
+      const own = caller && this.pageSessions.get(caller.connectionId)?.broker.caller?.connectionId;
       if (caller?.kind === 'frontend') {
-        if (!own || (requested !== undefined && requested !== own)) throw workspaceError('view-presentation-page-denied', 'the frontend\'s own accepted View document', 'Use this document\'s connection identity.');
+        if (!own || !this.pageSessions.has(own) || (requested !== undefined && requested !== own)) throw workspaceError('view-presentation-page-denied', 'the frontend\'s own accepted View document', 'Use this document\'s connection identity.');
         return own;
       }
       if (requested !== undefined) {
@@ -704,8 +855,9 @@ export class ViewWorkspaceBroker {
         if (!this.pageSessions.has(id)) throw workspaceError('view-page-gone', 'a connected View document', 'Read pages.list.');
         return id;
       }
-      if (this.pageSessions.size !== 1) throw workspaceError(this.pageSessions.size ? 'view-page-ambiguous' : 'view-page-unavailable', 'one connected View document', 'Read pages.list and pass its connectionId.');
-      return this.pageSessions.keys().next().value!;
+      const pages = this.pageConnections();
+      if (pages.length !== 1) throw workspaceError(pages.length ? 'view-page-ambiguous' : 'view-page-unavailable', 'one connected View document', 'Read pages.list and pass its connectionId.');
+      return pages[0]![0];
   }
   registerTransport(transport: HostTransportServer, { routeThroughTools = false } = {}) {
     this.transport = transport;
@@ -808,6 +960,7 @@ export class ViewWorkspaceBroker {
     return () => { presentation.dispose(); if (this.presentation === presentation) this.presentation = undefined; if (this.transport === transport) this.transport = undefined; capabilities(); call(); fileGet(); htmlFiles(); packSources(); revealAck(); subscription(); removeConnect(); removeDisconnect(); engineSubscription(); observer.close(); };
   }
   async dispose() {
+    this.resourceLifetime.abort();
     this.selectionAbort?.abort(); this.disposing = true; this.listeners.clear();
     this.presentation?.dispose(); this.presentation = undefined;
     for (const [requestId, pending] of this.pendingReveals) {

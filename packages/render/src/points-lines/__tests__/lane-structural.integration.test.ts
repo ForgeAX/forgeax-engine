@@ -6,7 +6,7 @@ import {
   createPointsLinesLaneContract,
   createPointsLinesRecordPlan,
 } from '../record';
-import { createPointsLinesSnapshot } from '../snapshot';
+import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 
 function mesh(topology: 'point-list' | 'line-list', count: number): MeshAsset {
   const vertices = new Float32Array(
@@ -111,7 +111,7 @@ describe('Points/Lines structural lane contract', () => {
 
     expect(contract.capabilities).toEqual({ compute: false, storage: false, indirect: false });
     expect(contract.material).toMatchObject({
-      source: 'MaterialAsset',
+      source: 'material',
       shadingModel: 'unlit',
       clusteredLighting: false,
       lit: false,

@@ -1,6 +1,6 @@
 // Realm-neutral controls and observations; native playback belongs to the Host.
 
-import type { AudioClipAsset, AudioError } from '@forgeax/engine-types';
+import type { AssetHandle, AssetReferenceOwner, AudioError } from '@forgeax/engine-types';
 import type { AcousticEnvironment, AcousticRoutes } from './acoustic-controls';
 import type { AudioBus } from './audio-buses';
 import type { MusicCommand, MusicState } from './music';
@@ -75,13 +75,22 @@ export interface AudioState {
 
 export interface AudioBackend {
   /** Decode buffered clips without creating or playing voices. Request IDs must be fresh. */
-  prepareClips?(requestId: string, clips: readonly AudioClipAsset[]): () => void;
+  prepareClips?(
+    requestId: string,
+    assets: AssetReferenceOwner,
+    clips: readonly AssetHandle<'audio'>[],
+  ): () => void;
   /** prepare is Host-only; Worker intent backends reject it before publication. */
   music(command: MusicCommand): void;
   setAcousticRoutes(entityId: number, routes: AcousticRoutes): void;
   setAcousticEnvironment(environment: readonly AcousticEnvironment[]): void;
   reportError(error: AudioError): void;
-  play(entityId: number, clip: AudioClipAsset, opts: AudioPlayOptions): void;
+  play(
+    entityId: number,
+    assets: AssetReferenceOwner,
+    clip: AssetHandle<'audio'>,
+    opts: AudioPlayOptions,
+  ): void;
   stop(entityId: number): void;
   setVolume(entityId: number, volume: number): void;
   setPlaybackRate(entityId: number, playbackRate: number): void;

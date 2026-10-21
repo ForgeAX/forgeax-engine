@@ -1,10 +1,16 @@
 import { type CookedMaterialRecord, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { finalizePackageTransportSource } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import {
+  createRuntimePackPublication,
+  encodeMaterialProgramWire,
+} from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { ArtifactDescriptor, MaterialAsset, MaterialParameter } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry';
+import { runtimeAssetReference, runtimeAssets } from '../internal';
 import { MaterialGenerationCache } from '../material/generation-cache';
 import { inspectMaterialRuntime } from '../material/inspection.js';
 import { createMaterialLoader, type MaterialPublication } from '../material/loader.js';
@@ -26,6 +32,14 @@ function parseGuid(value: string) {
   return result.value;
 }
 
+function projection(registry: AssetRegistry, guid: string) {
+  const handle = runtimeAssetReference(registry, guid);
+  if (handle === undefined) throw new Error('missing accepted material');
+  return registry.getMaterialProjectionForPayload(
+    runtimeAssets(registry).borrow<MaterialAsset>(handle).unwrap(),
+  );
+}
+
 function load(publication: MaterialPublication | undefined, references = true) {
   return createMaterialLoader({
     loadPublication: async () => publication,
@@ -39,7 +53,7 @@ function load(publication: MaterialPublication | undefined, references = true) {
 
 async function withPack(
   record: CookedMaterialRecord,
-  transport: 'inline' | 'hex' | 'base64' | 'finalized',
+  transport: 'inline' | 'hex' | 'base64' | 'finalized' | 'shared',
   run: (registry: AssetRegistry, shaders: ShaderRegistry) => Promise<void>,
   cooked = true,
 ) {
@@ -48,7 +62,7 @@ async function withPack(
 
 async function withPackRecords(
   records: readonly CookedMaterialRecord[],
-  transport: 'inline' | 'hex' | 'base64' | 'finalized',
+  transport: 'inline' | 'hex' | 'base64' | 'finalized' | 'shared',
   run: (registry: AssetRegistry, shaders: ShaderRegistry) => Promise<void>,
   cooked = true,
 ) {
@@ -62,6 +76,7 @@ async function withPackRecords(
         descriptors[artifact.path] = {
           path: artifact.path,
           mediaType: artifact.mediaType,
+          contentEncoding: 'identity',
           byteLength: artifact.bytes.byteLength,
           integrity: {
             algorithm: 'sha256',
@@ -114,15 +129,32 @@ async function withPackRecords(
           )
         ).pack
       : inlinePack;
+  const publication = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath: 'materials.pack',
+    sourceRevision: 'fixture',
+    packageUrl,
+    pack: { assets: pack.assets },
+  });
+  const body =
+    transport === 'shared' ? encodeMaterialProgramWire(publication.pack) : publication.pack;
+  if (transport === 'shared')
+    expect(body).toMatchObject({ schemaVersion: 'pack-material-programs/1' });
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith('/pack-index.json'))
       return new Response(
         JSON.stringify(
-          records.map((record) => ({ guid: record.guid, packageUrl, kind: 'material' })),
+          records.map((record) => ({
+            guid: record.guid,
+            packageUrl,
+            kind: 'material',
+            sourcePath: 'materials.pack',
+            publication: publication.publication,
+          })),
         ),
       );
-    if (url.endsWith('.pack.json')) return new Response(JSON.stringify(pack));
+    if (url.endsWith('.pack.json')) return new Response(JSON.stringify(body));
     const program = records
       .flatMap((record) => record.programs)
       .find(({ artifact }) => url.endsWith(artifact.path));
@@ -139,7 +171,8 @@ async function withPackRecords(
     manifestUrl: undefined,
   });
   try {
-    const registry = new AssetRegistry(shaders);
+    const registry = new AssetRegistry({ shaderRegistry: shaders });
+    registry.installDecoder(materialContribution.kind, materialContribution.decoder);
     registry.configurePackIndex('/pack-index.json');
     await run(registry, shaders);
     expect(fetcher).toHaveBeenCalled();
@@ -159,6 +192,37 @@ async function withPackRecords(
 }
 
 describe('material runtime readiness', () => {
+  it('loads shared program metadata through the public GUID path with distinct material values', async () => {
+    const parameters = [{ name: 'roughness', type: 'f32' as const, default: 0.5 }];
+    const first = materialRecordFixture({
+      guid: '019f0000-0000-7000-8000-000000000711',
+      parameters,
+      values: { roughness: 0.2 },
+    });
+    const second = materialRecordFixture({
+      guid: '019f0000-0000-7000-8000-000000000712',
+      parameters,
+      values: { roughness: 0.8 },
+    });
+    await withPackRecords([first, second], 'shared', async (registry) => {
+      const a = await registry.load(first.guid, 'material');
+      const b = await registry.load(second.guid, 'material');
+      expect(a).toMatchObject({ ok: true });
+      expect(b).toMatchObject({ ok: true });
+      expect(projection(registry, first.guid)).toMatchObject({
+        artifactHash: first.artifactDigest,
+      });
+      expect(projection(registry, second.guid)).toMatchObject({
+        artifactHash: second.artifactDigest,
+      });
+      expect(
+        runtimeAssets(registry).borrow<MaterialAsset>(a.unwrap()).unwrap().values?.roughness,
+      ).toBe(0.2);
+      expect(
+        runtimeAssets(registry).borrow<MaterialAsset>(b.unwrap()).unwrap().values?.roughness,
+      ).toBe(0.8);
+    });
+  });
   it('retains the float-data texture contract across runtime projection', () => {
     expect(
       materialParametersToParamSchema([
@@ -363,7 +427,6 @@ describe('material runtime readiness', () => {
   it.each([
     'inline',
     'hex',
-    'base64',
     'finalized',
   ] as const)('loads every program through GUID and %s transport without registering authored module IDs', async (transport) => {
     const record = materialRecordFixture({
@@ -373,12 +436,10 @@ describe('material runtime readiness', () => {
       ],
     });
     await withPack(record, transport, async (registry, shaders) => {
-      expect(await registry.loadByGuid(parseGuid(record.guid))).toMatchObject({
-        ok: true,
-      });
-      expect(registry.getMaterialReadiness(record.guid)).toMatchObject({
-        status: 'Ready',
-        artifactDigest: record.artifactDigest,
+      const loaded = await registry.load(record.guid, 'material');
+      expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
+      expect(projection(registry, record.guid)).toMatchObject({
+        artifactHash: record.artifactDigest,
       });
       for (const program of record.programs)
         expect(shaders.findMaterialArtifact(program.specializationKey)).toMatchObject({
@@ -387,6 +448,18 @@ describe('material runtime readiness', () => {
         });
       for (const pass of record.resolved.passes)
         expect(shaders.findMaterialArtifact(pass.program.module).ok).toBe(false);
+    });
+  });
+
+  it('rejects noncanonical Pack artifact digests before Material admission', async () => {
+    const record = materialRecordFixture();
+    await withPack(record, 'base64', async (registry, shaders) => {
+      expect(await registry.load(record.guid, 'material')).toMatchObject({
+        ok: false,
+        error: { code: 'asset-package-invalid' },
+      });
+      for (const program of record.programs)
+        expect(shaders.findMaterialArtifact(program.specializationKey).ok).toBe(false);
     });
   });
 
@@ -422,15 +495,13 @@ describe('material runtime readiness', () => {
       },
     });
     await withPackRecords([first, second], 'inline', async (registry) => {
-      expect(await registry.loadByGuid(parseGuid(first.guid))).toMatchObject({ ok: true });
-      expect(await registry.loadByGuid(parseGuid(second.guid))).toMatchObject({ ok: true });
-      expect(registry.getMaterialReadiness(first.guid)).toMatchObject({ status: 'Ready' });
-      expect(registry.getMaterialReadiness(second.guid)).toMatchObject({ status: 'Ready' });
-      expect(registry.getMaterialProjection(first.guid)?.surface).toMatchObject({
+      expect(await registry.load(first.guid, 'material')).toMatchObject({ ok: true });
+      expect(await registry.load(second.guid, 'material')).toMatchObject({ ok: true });
+      expect(projection(registry, first.guid)?.surface).toMatchObject({
         model: 'single-layer-medium',
         module: 'game::water_surface_a',
       });
-      expect(registry.getMaterialProjection(second.guid)?.surface).toMatchObject({
+      expect(projection(registry, second.guid)?.surface).toMatchObject({
         model: 'single-layer-medium',
         module: 'game::water_surface_b',
       });
@@ -456,13 +527,12 @@ describe('material runtime readiness', () => {
       contexts: [MATERIAL_CONTEXT, fallback],
     });
     await withPack(record, 'inline', async (registry, shaders) => {
-      expect(await registry.loadByGuid(parseGuid(record.guid))).toMatchObject({
-        ok: true,
-      });
-      const projection = registry.getMaterialProjection(record.guid);
-      if (projection === undefined) throw new Error('Missing projection');
-      const native = selectMaterialPassProgram(projection, 'Forward', MATERIAL_CONTEXT);
-      const downlevel = selectMaterialPassProgram(projection, 'Forward', fallback);
+      const loaded = await registry.load(record.guid, 'material');
+      expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
+      const projected = projection(registry, record.guid);
+      if (projected === undefined) throw new Error('Missing projection');
+      const native = selectMaterialPassProgram(projected, 'Forward', MATERIAL_CONTEXT);
+      const downlevel = selectMaterialPassProgram(projected, 'Forward', fallback);
       expect(native.specializationKey).not.toBe(downlevel.specializationKey);
       expect(shaders.findMaterialArtifact(native.specializationKey).ok).toBe(true);
       expect(shaders.findMaterialArtifact(downlevel.specializationKey).ok).toBe(true);
@@ -517,10 +587,10 @@ describe('material runtime readiness', () => {
       record,
       'inline',
       async (registry) => {
-        expect(await registry.loadByGuid(parseGuid(record.guid))).toMatchObject({
+        expect(await registry.load(record.guid, 'material')).toMatchObject({
           ok: true,
         });
-        expect(registry.getMaterialReadiness(record.guid)).toBeUndefined();
+        expect(projection(registry, record.guid)).toBeUndefined();
       },
       false,
     );
@@ -541,7 +611,7 @@ describe('static publication selection', () => {
       expect.objectContaining({ code: 'material-specialization-not-cooked' }),
     );
   });
-  it('refuses an unpublished child switch before falling back to its parent', async () => {
+  it('admits inherited programs during creation and refuses an unpublished child switch', async () => {
     const base = materialRecordFixture();
     const record = {
       ...base,
@@ -555,23 +625,32 @@ describe('static publication selection', () => {
       resolved: { ...base.resolved, staticSwitches: { textures: false } },
     };
     await withPack(record, 'inline', async (registry) => {
-      await registry.loadByGuid(parseGuid(record.guid));
-      const parent = registry.lookup(record.guid);
+      const parentHandle = (await registry.load(record.guid, 'material')).unwrap();
+      const parent = runtimeAssets(registry).borrow<MaterialAsset>(parentHandle).unwrap();
       expect(parent?.kind).toBe('material');
-      expect(
-        registry.getMaterialProjectionForPayload({
+      const child = registry
+        .create({
           kind: 'material',
           parent: parseGuid(record.guid),
           values: {},
-        }),
-      ).toBeDefined();
-      expect(() =>
-        registry.getMaterialProjectionForPayload({
+        })
+        .unwrap();
+      expect(registry.read(child).unwrap().parent).toBeUndefined();
+      expect(
+        registry.create({
           kind: 'material',
           parent: parseGuid(record.guid),
           staticSwitches: { textures: false },
-        }),
-      ).toThrowError(expect.objectContaining({ code: 'material-specialization-not-cooked' }));
+        }).ok,
+      ).toBe(true);
+      const unpublished = registry.create({
+        kind: 'material',
+        parent: parseGuid(record.guid),
+        staticSwitches: { textures: true },
+      });
+      expect(unpublished.ok).toBe(false);
+      if (!unpublished.ok)
+        expect(unpublished.error.code).toBe('material-specialization-not-cooked');
     });
   });
 });

@@ -1,5 +1,7 @@
-import { AssetRegistry, HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   rhi as nullRhi,
   RhiNullCommandEncoder,
@@ -54,16 +56,18 @@ it('rehydrates submitted published feature data through the real Renderer recove
         },
       }),
   };
-  const world = new World();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 3] } },
       { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 1 }) },
     )
     .unwrap();
-  const asset = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE).unwrap();
-  const handle = world.allocSharedRef('MeshAsset', asset);
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const handle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const asset = runtimeAssets(assets).resolveAsset<MeshAsset>(handle).unwrap();
   const seen: unknown[] = [];
   let receiverExtracts = 0;
   let submitted = 0;

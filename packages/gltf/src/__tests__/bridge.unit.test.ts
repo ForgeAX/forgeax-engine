@@ -12,14 +12,14 @@
 // Paradigm: each block-scoped describe('<source-filename>.test.ts', ...) preserves
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
-import type { Handle, SceneAsset } from '@forgeax/engine-types';
+import type { AssetHandle, SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { gltfDocToSceneAsset, toMaterialAsset } from '../bridge.js';
 import type { GltfDoc, GltfMaterialIr, GltfMeshIr } from '../parse-gltf.js';
 import { unwrapMeshAsset as meshIrToMeshAsset } from './bridge-test-helpers.js';
 
-function fakeMeshHandle(id: number): Handle<'MeshAsset', 'shared'> {
-  return id as unknown as Handle<'MeshAsset', 'shared'>;
+function fakeMeshHandle(id: number): AssetHandle<'mesh'> {
+  return id as unknown as AssetHandle<'mesh'>;
 }
 
 {
@@ -69,12 +69,12 @@ function fakeMeshHandle(id: number): Handle<'MeshAsset', 'shared'> {
   });
 }
 
-function fakeMaterialHandle(id: number): Handle<'MaterialAsset', 'shared'> {
-  return id as unknown as Handle<'MaterialAsset', 'shared'>;
+function fakeMaterialHandle(id: number): AssetHandle<'material'> {
+  return id as unknown as AssetHandle<'material'>;
 }
 
-const FAKE_TEXTURE_HANDLE = 1 as unknown as Handle<'TextureAsset', 'shared'>;
-const FAKE_SAMPLER_HANDLE = 2 as unknown as Handle<'SamplerAsset', 'shared'>;
+const FAKE_TEXTURE_HANDLE = 1 as unknown as AssetHandle<'texture'>;
+const FAKE_SAMPLER_HANDLE = 2 as unknown as AssetHandle<'sampler'>;
 
 const STANDARD_MATERIAL: GltfMaterialIr = {
   name: 'TestMat',

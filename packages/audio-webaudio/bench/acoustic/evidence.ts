@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 /// <reference types="vite/client" />
 import { type App } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
@@ -95,11 +96,14 @@ async function assetApp() {
   if(!app.assets)throw new Error('asset provider absent');
   if(import.meta.env.DEV){if(!runtimeBinding)throw new Error('Pack binding absent');app.assets.configureRuntimeBinding(runtimeBinding);}else app.assets.configurePackIndex(new URL('/pack-index.json',location.href).href);
   const guid=AssetGuid.derive(definePackageId('01a11253-2200-7000-8000-000000000000'),'rooms');
-  const loaded=(await app.assets.loadByGuid<SceneAsset>(guid)).unwrap();
-  const reloaded=(await app.assets.loadByGuid<SceneAsset>(guid)).unwrap();
-  check(JSON.stringify(loaded)===JSON.stringify(reloaded),'saved scene reload mismatch');
-  const clip=(await app.assets.loadByGuid<AudioClipAsset>(app.assets.parseGuid('01a11253-2200-7000-8000-000000000001'))).unwrap();
-  const root=app.assets.instantiate(app.world.allocSharedRef('SceneAsset',loaded),app.world).unwrap();
+  const sceneHandle=(await app.assets.load(AssetGuid.format(guid), 'scene')).unwrap();
+  const reloaded=(await app.assets.load(AssetGuid.format(guid), 'scene')).unwrap();
+  check(sceneHandle===reloaded,'saved scene identity mismatch');
+  const loaded=app.assets.read(sceneHandle).unwrap();
+  const clipHandle=(await app.assets.load('01a11253-2200-7000-8000-000000000001', 'audio')).unwrap();
+  const clip=app.assets.read(clipHandle).unwrap();
+  const root=app.assets.instantiate(sceneHandle,app.world).unwrap();
+  app.assets.release(sceneHandle).unwrap();app.assets.release(reloaded).unwrap();app.assets.release(clipHandle).unwrap();
   const source=[...app.world.query({read:[AudioSource]}).unwrap()][0]!.entity;
   const listener=[...app.world.query({with:[AudioListener]}).unwrap()][0]!.entity;
   app.start().unwrap();app.pause().unwrap();const frames:number[]=[];const errors:unknown[]=[];app.onError(error=>errors.push(errorRecord(error)));
@@ -216,8 +220,8 @@ async function selectionSignal(clip:AudioClipAsset){
     {id:'room',parent:'master',volume:.5},{id:'outside',parent:'master',volume:.8}]).unwrap();
   const consumer=createHostAudioConsumer(engine),intents:unknown[]=[];
   const backend=createAudioIntentBackend({emit:intent=>{intents.push(structuredClone(intent));consumer.consume(intent);}});
-  const world=new World(),realm=await createWorldContext(world,[scenePlugin(),{name:'audio-host',provide:'audio',apply(ctx){ctx.provide('audio',backend);}},audioPlugin()]);
-  const clipRef=world.allocSharedRef('AudioClipAsset',clip);
+  const assets=new AssetRegistry(),world=new World({assets}),realm=await createWorldContext(world,[scenePlugin(),{name:'audio-host',provide:'audio',apply(ctx){ctx.provide('audio',backend);}},audioPlugin()]);
+  const clipRef=assets.create(clip).unwrap();
   const source=world.spawn({component:Transform,data:{}},{component:AudioSource,data:{clip:clipRef,playing:true,loop:true}}).unwrap();
   // Distinct listener position: source selection must not borrow its pose.
   world.spawn({component:Transform,data:{pos:[4,0,0]}},{component:AudioListener,data:{}}).unwrap();
@@ -247,15 +251,15 @@ async function selectionSignal(clip:AudioClipAsset){
   for(let n=0;n<48000;n++){const time=n/48000;while(event<events.length&&events[event]!.time<=time){const next=events[event++]!;envelope={from:value(envelope,next.time),to:next.gain,at:next.time};}
     for(let c=0;c<2;c++){const expected=decoded.getChannelData(c)[n]!*value(envelope,time);oracle[c]![n]=expected;const error=channels[c]![n]!-expected;maxError=Math.max(maxError,Math.abs(error));sumError+=error*error;sumSignal+=expected*expected;}}
   const error={max:maxError,relativeRms:Math.sqrt(sumError/sumSignal)};check(error.max<=2e-4&&error.relativeRms<=.01,`overlap/priority/removal PCM oracle ${JSON.stringify(error)}`);
-  const beforeStop=resources();consumer.dispose();await realm.fiber.dispose();world.despawn(source).unwrap();world.sharedRefs.release(clipRef).unwrap();const afterStop=resources();check(afterStop.connections===0,'selection native connections released');
+  const beforeStop=resources();consumer.dispose();await realm.fiber.dispose();world.despawn(source).unwrap();assets.release(clipRef).unwrap();assets.dispose();const afterStop=resources();check(afterStop.connections===0,'selection native connections released');
   return{events,intents,error,resources:{beforeStop,afterStop},rawSamples:channels.map(c=>[...c]),oracle:oracle.map(c=>[...c]),
     audioFiles:{'selection.wav':wav(channels),'selection-oracle.wav':wav(oracle)}};
 }
 async function signal(clip:AudioClipAsset, mode:'enabled'|'off'|'zero-wet'|'send-off') {
   const context=new OfflineAudioContext(2,48000*3,48000),engine=new WebAudioEngine({context});const resources=instrument(context);graph(engine);
   const consumer=createHostAudioConsumer(engine);const intents:unknown[]=[];const backend=createAudioIntentBackend({emit:intent=>{intents.push(structuredClone(intent));consumer.consume(intent);}});
-  const world=new World();const realm=await createWorldContext(world,[scenePlugin(),{name:'audio-host',provide:'audio',apply(ctx){ctx.provide('audio',backend);}},audioPlugin()]);
-  const clipRef=world.allocSharedRef('AudioClipAsset',clip);
+  const assets=new AssetRegistry(),world=new World({assets});const realm=await createWorldContext(world,[scenePlugin(),{name:'audio-host',provide:'audio',apply(ctx){ctx.provide('audio',backend);}},audioPlugin()]);
+  const clipRef=assets.create(clip).unwrap();
   const source=world.spawn({component:Transform,data:{pos:[3,0,0]}},{component:AudioSource,data:{clip:clipRef,playing:true,loop:true}}).unwrap();
   const listener=world.spawn({component:Transform,data:{pos:[3,0,0]}},{component:AudioListener,data:{}}).unwrap();
   if(mode!=='off')world.spawn({component:Transform,data:{scale:[2,1,1]}},{component:AcousticRegion,data:{sourceBus:'room',listenerWetBus:'echo',wet:mode==='zero-wet'?0:1,listenerSendBus:'room',listenerSendTarget:'echo',sendGain:mode==='send-off'?0:.5,blendDistance:.5}}).unwrap();
@@ -274,7 +278,7 @@ async function signal(clip:AudioClipAsset, mode:'enabled'|'off'|'zero-wet'|'send
     for(let c=0;c<2;c++){const input=decoded.getChannelData(c),sample=input[n%input.length]!,sent=sendSignal[c]!;sent[n]=sample*r*s;expected[c]![n]=sample*(1-r+.5*r)+(1-w)*sent[n]!+w*(.6*(sent[n-4800]??0)+.3*(sent[n-9600]??0));}}
   let maxError=0,sumError=0,sumSignal=0;for(let n=0;n<expected[0]!.length;n++){for(let c=0;c<2;c++){const e=channels[c]![n]!-expected[c]![n]!;maxError=Math.max(maxError,Math.abs(e));sumError+=e*e;sumSignal+=expected[c]![n]!**2;}}
   const error={max:maxError,relativeRms:Math.sqrt(sumError/sumSignal)};check(error.max<=2e-4&&error.relativeRms<=.01,`${mode} PCM oracle ${JSON.stringify(error)}`);
-  const beforeStop=resources();consumer.dispose();await realm.fiber.dispose();world.despawn(source).unwrap();world.sharedRefs.release(clipRef).unwrap();const afterStop=resources();check(consumer.state().activeSourceCount===0,`${mode} source cleanup`);check(afterStop.connections===0,`${mode} retained native connections`);
+  const beforeStop=resources();consumer.dispose();await realm.fiber.dispose();world.despawn(source).unwrap();assets.release(clipRef).unwrap();assets.dispose();const afterStop=resources();check(consumer.state().activeSourceCount===0,`${mode} source cleanup`);check(afterStop.connections===0,`${mode} retained native connections`);
   return{mode,timeline,intents,error,resources:{beforeStop,afterStop},samples:channels,expected};
 }
 async function cost(clip:AudioClipAsset,round:number,count:number,regions:number,overlap:number,moving:number,enabled:boolean){
@@ -306,7 +310,7 @@ async function cost(clip:AudioClipAsset,round:number,count:number,regions:number
   const beforeHeap=heap(),coldStart=performance.now(),entities:EntityHandle[]=[],regionEntities:EntityHandle[]=[];const groups=Math.ceil(regions/overlap);
   for(let i=0;i<regions;i++)regionEntities.push(world.spawn({component:Transform,data:{pos:[Math.floor(i/overlap)*10,0,0]}},{component:AcousticRegion,data:{enabled,sourceBus:i%2?'sfx':'room',listenerWetBus:'echo',wet:1,listenerSendBus:'room',listenerSendTarget:'echo',sendGain:1,halfExtents:new Float32Array([1.5,1.5,1.5]),blendDistance:1}}).unwrap());
   const listener=world.spawn({component:Transform,data:{}},{component:AudioListener,data:{}}).unwrap();
-  const shared=world.allocSharedRef('AudioClipAsset',clip);for(let i=0;i<count;i++)entities.push(world.spawn({component:Transform,data:{pos:[(i%groups)*10,0,0]}},{component:AudioSource,data:{clip:shared,playing:true,loop:true,volume:.01/count}}).unwrap());
+  const shared=app.assets!.create(clip).unwrap();for(let i=0;i<count;i++)entities.push(world.spawn({component:Transform,data:{pos:[(i%groups)*10,0,0]}},{component:AudioSource,data:{clip:shared,playing:true,loop:true,volume:.01/count}}).unwrap());
   audioMs=hostMs=worldMs=0;app.stepFrame(1/60).unwrap();const initialUpdate={audioMs,hostMs,worldMs,bytes,acousticIntents:acoustic};await wait(()=>consumer.state().activeSourceCount===count&&app.execution.report().frame.completed>=1);const coldMs=performance.now()-coldStart;
   const samples:number[]=[],rawAppUpdateMs:number[]=[],rawCompletionMs:number[]=[],rawBytes:number[]=[],rawIntents:number[]=[],rawAudioMs:number[]=[],rawHostMs:number[]=[],rawWorldMs:number[]=[],rawPoseUpdateMs:number[]=[];let peakHeap=heap()??0;
   for(let frame=0;frame<304;frame++){
@@ -324,7 +328,7 @@ async function cost(clip:AudioClipAsset,round:number,count:number,regions:number
       check(resources().created===beforeNodes,`native node allocation in warm movement ${round}/${count}/${regions}/${overlap}/${moving}/${enabled}`);}
   }
   const active=consumer.state(),peakResources=resources(),completed=app.execution.report().frame.completed;
-  for(const entity of [...entities,...regionEntities,listener])world.despawn(entity).unwrap();world.sharedRefs.release(shared).unwrap();app.stepFrame(1/60).unwrap();const stopped=consumer.state();await app.dispose();consumer.dispose();await context.close();const afterResources=resources();resources.releaseObserver();(globalThis as any).gc?.();canvas.remove();
+  for(const entity of [...entities,...regionEntities,listener])world.despawn(entity).unwrap();app.assets!.release(shared).unwrap();app.stepFrame(1/60).unwrap();const stopped=consumer.state();await app.dispose();consumer.dispose();await context.close();const afterResources=resources();resources.releaseObserver();(globalThis as any).gc?.();canvas.remove();
   const result={round,count,regions,overlap,moving,enabled,startup:{contextMs,appMs,scenePlayMs:coldMs},coldMs,initialUpdate,completed,samples,summary:summary(samples),frameCpuMethod:'controlled source/region/listener pose writes plus synchronous App.stepFrame; completion wait reported separately',rawAppUpdateMs,appUpdateSummary:summary(rawAppUpdateMs),rawCompletionMs,completionSummary:summary(rawCompletionMs),rawAudioMs,audioSummary:summary(rawAudioMs),rawHostMs,hostSummary:summary(rawHostMs),rawWorldMs,worldSummary:summary(rawWorldMs),rawPoseUpdateMs,rawBytes,rawIntents,maxBatch,
     cache:{encodedBytes:clip.bytes?.byteLength,decodedBytes,decodeCalls,pendingAdmissionHighWater,pendingAdmissionAfterStop:awaitingAdmission.size},publicationBytes:'UTF-8 JSON size of each actual emitted POD intent; not a native Worker wire-byte measurement',heap:{before:beforeHeap,peak:peakHeap,afterObserverRelease:heap()},native:{peak:peakResources,after:afterResources},host:{active,stopped},errors};
   check(decodeCalls===1,'one decoded shared clip per Host');check(errors.length===0,'cost App errors');check(completed>=305,'cost completed frames');check(coldMs<=250,`cold preparation ${coldMs} ms`);check(result.audioSummary.p95<=8,`Audio p95 ${result.audioSummary.p95} ms`);check(result.summary.p95<=16.67&&result.worldSummary.p95<=16.67,`full App/World p95 ${result.summary.p95}/${result.worldSummary.p95} ms`);

@@ -113,7 +113,7 @@ describe('t41 (b) -- 6-module ibl-* family naga_oil composition', () => {
   );
 
   it.skipIf(!dawnReady)(
-    '(b3) ibl_shared + ibl_prefilter compose (dual-uniform @group(0))',
+    '(b3) ibl_shared + PMREM prefilter compose (level/face uniform @group(0))',
     async () => {
       const shared = readSourceSync('ibl-shared.wgsl');
       const prefilter = readSourceSync('ibl-prefilter.wgsl');
@@ -132,6 +132,7 @@ describe('t41 (b) -- 6-module ibl-* family naga_oil composition', () => {
           'forgeax_pbr::ibl_shared': shared,
           'forgeax_pbr::brdf': readSourceSync('brdf.wgsl'),
           'forgeax_pbr::ibl_prefilter': prefilter,
+          'forgeax_pbr::pmrem': readSourceSync('ibl-pmrem.wgsl'),
         },
         {},
       );
@@ -165,6 +166,7 @@ describe('t41 (b) -- 6-module ibl-* family naga_oil composition', () => {
           'forgeax_pbr::ibl_shared': shared,
           'forgeax_pbr::brdf': readSourceSync('brdf.wgsl'),
           'forgeax_pbr::ibl_sampling': sampling,
+          'forgeax_pbr::pmrem': readSourceSync('ibl-pmrem.wgsl'),
         },
         {},
       );

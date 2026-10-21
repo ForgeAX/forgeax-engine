@@ -2,7 +2,7 @@
 // SceneAsset handle-field extraction (plan-strategy D-4 / requirements B-5).
 //
 // `buildSceneChildContext` (breadcrumb)
-// consume this helper so the "identify shared<...> / array<shared<...>> schema
+// consume this helper so the "identify asset<...> / array<asset<...>> schema
 // fields + read GUID string" logic has exactly one authoritative location
 // (Derive, Don't Duplicate).
 //
@@ -108,8 +108,8 @@ export function extractSceneEntityHandleGuids(
 /**
  * Shared handle-GUID identification core (feat-20260713 M3 / w12 SSOT): given a
  * schema `fieldType` and a `value`, invoke `sink(guidString, arrayIndex?)` for
- * every GUID string the field binds — once for a `shared<T>` scalar string, once
- * per string element of an `array<shared<T>>`. Non-shared fields, non-string
+ * every GUID string the field binds — once for a `asset<T>` scalar string, once
+ * per string element of an `array<asset<T>>`. Non-shared fields, non-string
  * scalars, and non-string array elements (already-resolved handle numbers, D-8)
  * are skipped. Both the entity walk and the override walk route through here so
  * the "is this a shared handle field + read its GUID" logic has one home
@@ -121,12 +121,12 @@ function forEachHandleGuid(
   sink: (guidString: string, arrayIndex?: number) => void,
 ): void {
   if (fieldType === undefined || typeof fieldType !== 'string') return;
-  if (fieldType.startsWith('shared<')) {
+  if (fieldType.startsWith('asset<')) {
     if (typeof value === 'string') sink(value);
     return;
   }
   if (
-    parseManagedArraySchema(fieldType)?.elementType.startsWith('shared<') &&
+    parseManagedArraySchema(fieldType)?.elementType.startsWith('asset<') &&
     Array.isArray(value)
   ) {
     for (let elemIdx = 0; elemIdx < value.length; elemIdx++) {

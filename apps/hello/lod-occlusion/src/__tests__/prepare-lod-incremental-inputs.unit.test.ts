@@ -3,20 +3,22 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AssetRegistry, materialLoader, meshLoader } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { gltfImporter } from '@forgeax/engine-gltf';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { meshAssetContribution } from '@forgeax/engine-geometry';
+import { materialContribution } from '@forgeax/engine-render';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { ok } from '@forgeax/engine-types';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type {
-  ArtifactDescriptor,
-  Asset,
+  AssetRuntimeArtifactDescriptor,
   AssetRef,
   ImportResult,
-  LoadContext,
   MeshAsset,
 } from '@forgeax/engine-types';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { loadLodProducerAssets } from '../../scripts/lod-acceptance-evidence.mjs';
 import { prepareLodIncrementalInputs } from '../../scripts/prepare-lod-incremental-inputs.mjs';
 
 type Manifest = Awaited<ReturnType<typeof prepareLodIncrementalInputs>>;
@@ -25,20 +27,10 @@ interface AssetRow {
   kind: string;
   payload: Record<string, unknown>;
   refs: AssetRef[];
-  artifacts: Record<string, ArtifactDescriptor>;
+  artifacts: Record<string, AssetRuntimeArtifactDescriptor>;
 }
 const app = fileURLToPath(new URL('../../', import.meta.url));
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
-const context: LoadContext = {
-  fetchBinary: async () => {
-    throw new Error('Artifact bytes are supplied explicitly');
-  },
-  resolveRef: async () => {
-    throw new Error('Pure decoding must not eagerly load a ref');
-  },
-  transcodeCaps: { bc: false, etc2: false, astc: false },
-  device: undefined,
-};
 let temp: string;
 let directory: string;
 let manifest: Manifest;
@@ -53,33 +45,24 @@ async function wire(guid: string): Promise<AssetRow> {
   return JSON.parse(bytes.toString('utf8')) as AssetRow;
 }
 
-async function decode(guid: string): Promise<Asset> {
-  const row = await wire(guid);
-  const refs = row.refs.map((ref) => ref.guid);
-  const artifacts: Record<string, { descriptor: ArtifactDescriptor; bytes: Uint8Array }> = {};
-  for (const [key, descriptor] of Object.entries(row.artifacts)) {
-    const bytes = await readFile(resolve(directory, descriptor.path));
-    expect(hash(bytes)).toBe(descriptor.integrity?.digest);
-    expect(bytes.byteLength).toBe(descriptor.byteLength);
-    artifacts[key] = { descriptor, bytes };
-  }
-  const value =
-    row.kind === 'mesh'
-      ? await meshLoader.loadPack?.(
-          { guid, kind: row.kind, payload: row.payload, refs, artifacts },
-          context,
-        )
-      : await materialLoader.load(row.payload, refs, context);
-  if (!value || 'ok' in value)
-    throw new Error(`Public loader rejected ${guid}: ${JSON.stringify(value)}`);
-  return value;
+function registry() {
+  const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  assets.installDecoder(materialContribution.kind, materialContribution.decoder);
+  return assets;
 }
 
-async function admit(registry: AssetRegistry, guids: readonly string[]) {
-  for (const guid of guids) {
-    const row = await wire(guid);
-    registry.catalog(guid, await decode(guid), row.refs).unwrap();
-  }
+async function decodeMesh(row: AssetRow, body?: Uint8Array) {
+  return meshAssetContribution.decoder.decode({
+    envelope: { ...row, payload: row.payload as unknown as MeshAsset, refs: row.refs.map(ref => ref.guid) },
+    artifacts: { read: async descriptor => ok(body ?? new Uint8Array(await readFile(resolve(directory, descriptor.path)))) },
+    signal: new AbortController().signal,
+  });
+}
+
+function nativeMesh(value: NonNullable<MeshAsset['lods']>[number]['mesh']) {
+  if (typeof value !== 'number') throw new Error('Source LOD was not adopted as a runtime handle');
+  return value;
 }
 
 describe('E03 real build-time incremental inputs', () => {
@@ -127,13 +110,7 @@ describe('E03 real build-time incremental inputs', () => {
         // Plain JSON loses native typed arrays and GUID bytes. The emitted
         // binary publication must cross the public loader instead.
         const unprepared = JSON.parse(JSON.stringify(original.payload));
-        expect(
-          await meshLoader.load(
-            unprepared,
-            original.refs.map((ref) => ref.guid),
-            context,
-          ),
-        ).toBeUndefined();
+        expect((await decodeMesh({ ...await wire(original.guid), payload: unprepared, artifacts: {} })).ok).toBe(false);
         plainJsonRejected.push(original.guid);
       }
       for (const [key, body] of Object.entries(original.artifacts)) {
@@ -160,98 +137,58 @@ describe('E03 real build-time incremental inputs', () => {
     };
   });
 
-  it('round-trips real binary meshes, then admits the same low GUID without changing root identity or refs', async () => {
-    const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-    await admit(registry, manifest.admission.initial);
-    const root = registry.lookup<MeshAsset>(manifest.roles.root);
-    expect(root?.kind).toBe('mesh');
-    if (!root) throw new Error('Root mesh was not admitted');
-    expect(root.vertices).toBeInstanceOf(Float32Array);
-    expect(root.lods?.map((lod) => AssetGuid.format(lod.mesh))).toEqual([
-      manifest.roles.middle,
-      manifest.roles.lowest,
-    ]);
-    expect(registry.lookup(manifest.roles.lowest)).toBeUndefined();
-    const originalRootRefs = (await wire(manifest.roles.root)).refs;
-    const world = new World();
+  it('reloads a complete expanded closure on the original root handle and preserves held versions', async () => {
+    const assets = registry();
+    const staged = await loadLodProducerAssets(assets, manifest, async path => new Uint8Array(await readFile(resolve(directory, path))), manifest.roles);
+    const root = staged.root;
+    const initial = assets.read(root).unwrap();
+    expect(initial.vertices).toBeInstanceOf(Float32Array);
+    expect(initial.lods).toHaveLength(1);
+    expect(assets.source(nativeMesh(initial.lods![0]!.mesh)).unwrap()?.guid).toBe(manifest.roles.middle);
+    const held = assets.snapshot(root).unwrap();
+    const world = new World({ assets });
     const identity = world.identity;
-    const handle = world.sharedRefs.acquire('MeshAsset', root);
-    expect(world.sharedRefs.resolve(handle).unwrap()).toBe(root);
-    expect(world.sharedRefs.refcount(handle)).toBe(1);
-    await admit(registry, manifest.admission.later);
-    const lowest = registry.lookup<MeshAsset>(manifest.roles.lowest);
-    expect(lowest?.kind).toBe('mesh');
-    expect(registry.lookup(manifest.roles.root)).toBe(root);
-    expect((await wire(manifest.roles.root)).refs).toEqual(originalRootRefs);
+    await staged.admitLowest();
+    const current = assets.snapshot(root).unwrap();
+    const complete = assets.read(root).unwrap();
+    expect(complete.lods).toHaveLength(2);
+    const lowest = nativeMesh(complete.lods![1]!.mesh);
+    expect(assets.source(lowest).unwrap()?.guid).toBe(manifest.roles.lowest);
+    expect(assets.read(lowest).unwrap().vertices).toBeInstanceOf(Float32Array);
+    expect(current.version(root).unwrap()).toBeGreaterThan(held.version(root).unwrap());
+    expect(held.read<MeshAsset>(root).unwrap().lods).toHaveLength(1);
     expect(world.identity).toBe(identity);
-    expect(world.sharedRefs.resolve(handle).unwrap()).toBe(root);
-    expect(world.sharedRefs.refcount(handle)).toBe(1);
-    expect(registry.lookup(manifest.roles.scene)).toBeUndefined();
-    evidence.incremental = {
-      worldIdentity: identity,
-      handle: Number(handle),
-      refcount: 1,
-      lowestAbsentInitially: true,
-      lowestReadyAfterCatalog: true,
-      rootIdentityPreserved: true,
-      rootRefsUnchanged: true,
-      sceneNotAdmitted: true,
-      rootVertexBytes: root.vertices.byteLength,
-      lowestVertexBytes: lowest?.vertices.byteLength,
-      gpuReadiness: 'unverified',
-    };
-    world.sharedRefs.release(handle).unwrap();
+    expect(assets.validate(root).ok).toBe(true);
+    evidence.incremental = { handle: Number(root), rootIdentityPreserved: true, versionAdvanced: true, completeInitialClosure: true, lowestReadyAfterReload: true, gpuReadiness: 'unverified' };
+    held.dispose();
+    current.dispose();
+    assets.release(root).unwrap();
   });
 
-  it('normal all-catalog control admits all three actual decoded meshes', async () => {
-    const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-    await admit(registry, [...manifest.admission.initial, ...manifest.admission.later]);
-    for (const guid of [manifest.roles.root, manifest.roles.middle, manifest.roles.lowest]) {
-      expect(registry.lookup<MeshAsset>(guid)?.vertices).toBeInstanceOf(Float32Array);
-    }
-    evidence.normalCatalog = { allThreeActualMeshesReady: true };
-  });
-
-  it('normal root loadByGuid still eagerly loads the actual lowest producer output', async () => {
-    const rows = await Promise.all(manifest.assets.map((row) => wire(row.guid)));
-    const pack = {
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: rows.map((row) => ({
-        ...row,
-        refs: row.refs.map((ref) => ref.guid),
-      })),
-    };
-    const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-    registry.configurePackIndex('https://e03.invalid/pack-index.json');
+  it('normal source root load eagerly decodes the complete original producer closure', async () => {
+    const rows = await Promise.all(manifest.assets.filter(row => row.kind !== 'scene').map(row => wire(row.guid)));
+    const packageUrl = 'https://e03.invalid/inputs.pack.json';
+    const publication = createRuntimePackPublication({ scopeId: 'asset-runtime', sourcePath: 'lod-scene.gltf', sourceRevision: 'complete', packageUrl, pack: { assets: rows.map(row => ({...row, refs: row.refs.map(ref => ref.guid), artifacts: Object.fromEntries(Object.entries(row.artifacts).map(([key, descriptor]) => [key, {...descriptor, integrity: {...descriptor.integrity, digest: `sha256:${descriptor.integrity!.digest}`}}]))})) } });
+    const assets = registry();
     const calls: string[] = [];
-    vi.stubGlobal('fetch', async (input: string | URL | Request) => {
-      const url = String(input);
-      calls.push(url);
-      if (url.endsWith('/pack-index.json'))
-        return new Response(
-          JSON.stringify(
-            rows.map((row) => ({
-              guid: row.guid,
-              kind: row.kind,
-              sourcePath: 'lod-scene.gltf',
-              packageUrl: 'https://e03.invalid/inputs.pack.json',
-            })),
-          ),
-        );
-      if (url.endsWith('/inputs.pack.json')) return new Response(JSON.stringify(pack));
-      const path = new URL(url).pathname.slice(1);
-      return new Response(await readFile(resolve(directory, path)));
-    });
-    try {
-      expect(registry.lookup(manifest.roles.lowest)).toBeUndefined();
-      (await registry.loadByGuid(registry.parseGuid(manifest.roles.root))).unwrap();
-      expect(registry.lookup(manifest.roles.lowest)?.kind).toBe('mesh');
-      expect(registry.loaders.referencePolicy('mesh')).toBe('eager');
-      evidence.normalPack = { actualProducerBytes: true, lowestEagerReady: true, calls };
-    } finally {
-      vi.unstubAllGlobals();
+    assets.setCatalogSource(createCatalogSource({
+      entries: rows.map(row => ({ guid: row.guid, kind: row.kind, packageUrl, sourcePath: 'lod-scene.gltf', publication: publication.publication })),
+      fetch: async input => {
+        const url = String(input);
+        calls.push(url);
+        if (url === packageUrl) return new Response(JSON.stringify(publication.pack));
+        return new Response(await readFile(resolve(directory, new URL(url).pathname.slice(1))));
+      },
+    }));
+    const root = (await assets.load(manifest.roles.root, 'mesh')).unwrap();
+    const value = assets.read(root).unwrap();
+    expect(value.lods).toHaveLength(2);
+    for (const handle of [root, ...value.lods!.map(lod => nativeMesh(lod.mesh))]) {
+      expect(assets.read(handle).unwrap().vertices).toBeInstanceOf(Float32Array);
     }
+    expect(assets.source(nativeMesh(value.lods![1]!.mesh)).unwrap()?.guid).toBe(manifest.roles.lowest);
+    evidence.normalPack = { actualProducerBytes: true, lowestEagerReady: true, calls };
+    assets.release(root).unwrap();
   });
 
   it('rejects truncated actual binary data through the public mesh decoder', async () => {
@@ -261,17 +198,8 @@ describe('E03 real build-time incremental inputs', () => {
     if (!descriptor) throw new Error('Missing lowest mesh body artifact descriptor');
     const bytes = await readFile(resolve(directory, descriptor.path));
     expect(hash(bytes.subarray(0, 16))).not.toBe(descriptor.integrity?.digest);
-    const rejected = await meshLoader.loadPack?.(
-      {
-        guid: row.guid,
-        kind: row.kind,
-        payload: row.payload,
-        refs: row.refs.map((ref) => ref.guid),
-        artifacts: { body: { descriptor, bytes: bytes.subarray(0, 16) } },
-      },
-      context,
-    );
-    expect(rejected && 'ok' in rejected && rejected.ok === false).toBe(true);
+    const rejected = await decodeMesh(row, bytes.subarray(0, 16));
+    expect(rejected.ok).toBe(false);
     evidence.truncatedBinaryCounterexample = {
       guid: row.guid,
       originalBytes: bytes.byteLength,

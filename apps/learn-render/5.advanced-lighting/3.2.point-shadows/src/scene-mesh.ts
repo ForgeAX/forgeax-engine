@@ -1,5 +1,8 @@
-import { BUILTIN_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { createMeshBuilder } from '@forgeax/engine-geometry';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 /** LearnOpenGL face-local UV axes; an interior also reverses normals/winding. */
 export function createSceneCubeMesh(inward: boolean) {

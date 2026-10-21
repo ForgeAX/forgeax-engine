@@ -53,5 +53,3 @@ export function projectDdcStatusForBrowser(status: DdcStatus): BrowserDdcStatus 
     })),
   };
 }
-
-export const toBrowserDdcStatus = projectDdcStatusForBrowser;

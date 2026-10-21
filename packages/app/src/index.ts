@@ -1,3 +1,9 @@
+export type {
+  PackDraftField,
+  PackDraftReply,
+  PackDraftRequest,
+  PackDraftSnapshot,
+} from './workspace';
 // App owns frame progress; callers supply native host facts.
 // Browser construction is the explicit @forgeax/engine/app/browser entry.
 
@@ -14,7 +20,7 @@ export {
   type FullscreenRenderFeatureOptions,
 } from '@forgeax/engine-render/authoring';
 export type {
-  AssetDecoderContribution,
+  AssetDecoderContributionRef,
   AssetRuntimeAssembly,
   AssetRuntimeAssemblyError,
   AssetRuntimeAssemblyOptions,
@@ -147,6 +153,8 @@ export type {
   EngineWorkspacePlay,
   EngineWorkspacePresentation,
   EngineWorkspacePreview,
+  EngineWorkspacePreviewDisplay,
+  EngineWorkspacePreviewDisplayOptions,
   EngineWorkspaceProject,
   EngineWorkspaceProjectHandle,
   EngineWorkspaceProjectSession,
@@ -175,6 +183,20 @@ export {
   loadEngineWorkspaceMaterialSlots,
   projectEngineWorkspaceAssets,
 } from './workspace';
+export type {
+  EngineWorkspaceAssetFacts,
+  WorkspaceMaterialFacts,
+  WorkspaceMeshFacts,
+  WorkspaceTextureFacts,
+} from './workspace-asset-facts';
+export type {
+  EngineWorkspaceAssetReference,
+  EngineWorkspaceAssetReferences,
+} from './workspace-asset-references';
+export {
+  createWorkspaceMeshDisplay,
+  workspaceMeshDisplayPlugin,
+} from './workspace-preview-display';
 export type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 export {
   type EngineWorkspaceTargetTools,
@@ -229,12 +251,6 @@ export {
   toolPreviewSubjectDrawn,
 } from './tool-preview/bootstrap';
 export {
-  createToolPreviewEvidence,
-  joinResourcePreviewEvidence,
-  joinToolPreviewEvidence,
-  type ToolPreviewEvidence,
-} from './tool-preview/evidence';
-export {
   fitToolPreviewCameraToAabb,
   type ToolPreviewCameraFrame,
 } from './tool-preview/framing';
@@ -246,7 +262,6 @@ export {
   type ToolPreviewRecipeOptions,
   type ToolPreviewTrace,
   type ToolPreviewTraceEvent,
-  validateToolPreviewTrace,
 } from './tool-preview/recipe';
 export type {
   App,

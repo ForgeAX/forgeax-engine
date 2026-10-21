@@ -6,7 +6,7 @@
 //   - high 4 bits, MSB -> LSB: flipHorizontal, flipVertical, flipDiagonal,
 //     flipHex120 (the latter is the Tiled hex 120deg flip slot; preserved for
 //     wire fidelity even though M0 does not consume it).
-//   - tileId === 0 means "empty cell" downstream in TileLayer.tiles (sentinel).
+//   - tileId === 0 means "empty cell" downstream in Tilemap.tiles (sentinel).
 //
 // Anchors: requirements integration points (engine-runtime); plan-tasks m0-t3.
 

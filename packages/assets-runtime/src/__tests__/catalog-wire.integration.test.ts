@@ -1,11 +1,12 @@
 import { decodeCatalogWire, encodeCatalogWire } from '@forgeax/engine-pack';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { samplerContribution } from '@forgeax/engine-render';
 import {
   catalogOperationsFor,
   createStandaloneRuntimeAssetBinding,
   type RuntimeCatalogSnapshot,
 } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry.js';
 import { createCatalogSource } from '../catalog-source.js';
 import { parseCatalog } from '../registry/catalog.js';
@@ -70,16 +71,16 @@ it.each([
     fetch: fetcher,
     ...(scoped ? { expectedScope: binding } : {}),
   });
-  const registry = new AssetRegistry({} as never);
+  const registry = new AssetRegistry({ scopeId: binding.scopeId });
+  registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   if (scoped) registry.configureRuntimeBinding(binding);
   registry.configurePackIndex(indexUrl);
   registry.setCatalogSource(source, fetcher);
   try {
     for (const guid of guids) {
-      const loaded = await registry.loadByGuid(registry.parseGuid(guid));
+      const loaded = await registry.load(guid, 'sampler');
       if (!loaded.ok) throw loaded.error;
-      expect(loaded.ok).toBe(true);
-      expect(loaded.value.kind).toBe('sampler');
+      expect(registry.read(loaded.value).unwrap().kind).toBe('sampler');
     }
     const catalog = (await source.enumerate()).unwrap();
     expect(catalog.map((row) => row.publication)).toEqual(rows.map((row) => row.publication));
@@ -87,7 +88,7 @@ it.each([
     expect(catalog[0]?.projection).toBe(catalog[1]?.projection);
     expect(fetcher.mock.calls.filter(([url]) => String(url) === packageUrl)).toHaveLength(1);
   } finally {
-    registry.clearCatalogSource();
+    registry.dispose();
   }
 });
 
@@ -134,4 +135,44 @@ it('keeps malformed scoped authority rejected before compact admission', () => {
       .unwrap()
       .map((row) => row.guid),
   ).toEqual(guids);
+});
+
+it('binds an unconfigured URL source to its verified snapshot scope before loading a Pack', async () => {
+  let current = snapshot;
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === indexUrl) return new Response(JSON.stringify(encodeCatalogWire(current)));
+    if (String(input) === packageUrl) return new Response(JSON.stringify(published.pack));
+    return new Response('', { status: 404 });
+  });
+  const source = createCatalogSource({ url: indexUrl, fetch: fetcher });
+  const registry = new AssetRegistry();
+  registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  registry.setCatalogSource(source);
+  try {
+    const guid = guids[0];
+    assert(guid !== undefined);
+    const handle = (await registry.load(guid, 'sampler')).unwrap();
+    expect(registry.read(handle).unwrap()).toMatchObject({ kind: 'sampler', magFilter: 'linear' });
+    expect(source.expectedScope).toEqual({
+      scopeId: snapshot.scopeId,
+      generation: snapshot.generation,
+    });
+    current = { ...snapshot, scopeId: 'foreign' };
+    expect(await source.enumerate()).toMatchObject({
+      ok: false,
+      error: { code: 'asset-parse-failed' },
+    });
+    expect(registry.read(handle).unwrap().kind).toBe('sampler');
+    current = { ...snapshot, generation: snapshot.generation + 1 };
+    expect(await source.enumerate()).toMatchObject({
+      ok: false,
+      error: { code: 'asset-parse-failed' },
+    });
+    expect(source.expectedScope).toEqual({
+      scopeId: snapshot.scopeId,
+      generation: snapshot.generation,
+    });
+  } finally {
+    registry.dispose();
+  }
 });

@@ -1,62 +1,52 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { RuntimePackAssetInput } from '@forgeax/engine-pack/runtime';
 import { Instances } from '@forgeax/engine-render';
 import { worldDespawnScene } from '@forgeax/engine-scene';
-import type { SceneAsset } from '@forgeax/engine-types';
+import type { AssetHandle, SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { rootsToSceneAsset, serializeSceneAssetToPack } from '../collect-scene-asset';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
+import { publishTestAssets } from './helpers/publish-runtime-assets';
 import { registerSceneComponents } from './helpers/register-scene-components';
+import { testAssets } from './helpers/runtime-assets';
 
 const GUID = '019d0000-0000-7000-8000-000000000007';
-const parsedGuid = AssetGuid.parse(GUID);
-if (!parsedGuid.ok) throw parsedGuid.error;
-const guid = parsedGuid.value;
 const MATRICES = [
   1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, -5, 6, 7, 1,
 ];
 
-function instantiate(registry: AssetRegistry, world: World, asset: SceneAsset) {
+function instantiate(registry: AssetRegistry, world: World, asset: AssetHandle<'scene'>) {
   registerSceneComponents(world, [Instances]);
-  return registry.instantiate(world.allocSharedRef('SceneAsset', asset), world);
+  return registry.instantiate(asset, world);
 }
 
 describe('Instances Scene asset authority', () => {
-  it('saves, serializes and reopens the same layout independently without any Renderer', () => {
-    const registry = new AssetRegistry(makeMockShaderRegistry());
+  it('saves, serializes and reopens the same layout independently without any Renderer', async () => {
     const source: SceneAsset = {
       kind: 'scene',
       entities: { forest: { components: { Instances: { transforms: MATRICES } } } },
     };
     const world = new World();
-    expect(registry.catalog(guid, source).ok).toBe(true);
-    const root = instantiate(registry, world, source).unwrap();
+    registerSceneComponents(world, [Instances]);
+    const registry = testAssets(world);
+    const root = instantiate(registry, world, registry.create(source).unwrap()).unwrap();
     const saved = rootsToSceneAsset(registry, world, [root]).unwrap();
     expect(saved.entities.forest?.components.Instances).toEqual({ transforms: MATRICES });
 
     const serialized = serializeSceneAssetToPack(saved, world.components.entries(), GUID).unwrap();
     // Exercise the real JSON transport boundary as well as native scene compilation.
     const wire = JSON.parse(JSON.stringify(serialized)) as {
-      assets: { guid: string; payload: Record<string, unknown>; refs: string[] }[];
+      assets: RuntimePackAssetInput[];
     };
     const row = wire.assets[0];
     if (row === undefined) throw new Error('missing serialized Scene');
     expect(row.guid).toBe(GUID);
     expect(JSON.stringify(wire)).not.toContain('collectionId');
-    const reopenedRegistry = new AssetRegistry(makeMockShaderRegistry());
-    const decoded = (
-      reopenedRegistry as unknown as {
-        parseAssetPayload(
-          kind: string,
-          payload: Record<string, unknown>,
-          refs: string[],
-        ): SceneAsset;
-      }
-    ).parseAssetPayload('scene', row.payload, row.refs);
-    expect(reopenedRegistry.catalog(guid, decoded).ok).toBe(true);
-
     const reopenedWorld = new World();
+    registerSceneComponents(reopenedWorld, [Instances]);
+    const reopenedRegistry = testAssets(reopenedWorld);
+    publishTestAssets(reopenedRegistry, wire.assets as RuntimePackAssetInput[]);
+    const decoded = (await reopenedRegistry.load(GUID, 'scene')).unwrap();
     const first = instantiate(reopenedRegistry, reopenedWorld, decoded).unwrap();
     instantiate(reopenedRegistry, reopenedWorld, decoded).unwrap();
     const entities = Array.from(
@@ -81,11 +71,16 @@ describe('Instances Scene asset authority', () => {
   });
 
   it('rejects a renderer-local collection identity as Scene author data', () => {
-    const registry = new AssetRegistry(makeMockShaderRegistry());
-    const result = instantiate(registry, new World(), {
-      kind: 'scene',
-      entities: { forest: { components: { Instances: { collectionId: 7 } } } },
-    });
+    const world = new World();
+    registerSceneComponents(world, [Instances]);
+    const registry = testAssets(world);
+    const asset = registry
+      .create({
+        kind: 'scene',
+        entities: { forest: { components: { Instances: { collectionId: 7 } } } },
+      })
+      .unwrap();
+    const result = instantiate(registry, world, asset);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatchObject({ code: 'asset-package-invalid' });
   });

@@ -149,27 +149,18 @@ describe('PersistentRenderScene probe projection', () => {
     expect('skyResidualFraction' in (result.records[0] ?? {})).toBe(false);
   });
 
-  it('publishes a zero-local sentinel only for an explicit retained consumer', () => {
+  it('keeps sky-only consumers out of the local probe record table', () => {
     const projection = new ProbeBlendSceneProjection();
     const result = projection.apply({
       objects: [object(7)],
       probes: [],
-      retainSkyResidualRecords: true,
       skyIrradiance: [0.25, 0.5, 0.75],
       lastKnownGood: false,
     });
 
-    expect(result.records).toHaveLength(1);
-    expect(result.records[0]).toMatchObject({
-      objectKey: 7,
-      generation: 0,
-      localBlendFraction: 0,
-      candidate: true,
-      accepted: false,
-      lastKnownGood: false,
-      sentinel: 'no-lkg',
-    });
-    expect(result.records[0]?.shPreblend).toEqual(new Array(27).fill(0));
+    expect(result.records).toHaveLength(0);
+    expect(projection.recordBufferProjection().capacity).toBe(1);
+    expect(result.uploads).toBe(0);
   });
 
   it('exposes numeric record, admission, and fail-closed receipt facts', () => {

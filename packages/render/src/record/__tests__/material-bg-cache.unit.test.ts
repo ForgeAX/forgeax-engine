@@ -11,17 +11,19 @@ describe('material bind-group assembly cache', () => {
       material: { textureHandles: left },
       materialBgl: {},
       materialBuffer: {},
-      materialResourceEpoch: 7,
+      materialResources: [],
+      preparedTextures: [],
+      uniformResources: [],
       skylightResources: {},
       bindGroup: {},
-    } as MaterialBgAssemblyCacheEntry;
+    } as unknown as MaterialBgAssemblyCacheEntry;
     return isMaterialBgAssemblyCacheHit(
       cached,
       { textureHandles: right } as MaterialSnapshot,
       cached.materialBgl,
       cached.materialBuffer,
       cached.skylightResources,
-      7,
+      true,
     );
   };
 
@@ -90,14 +92,16 @@ describe('material bind-group assembly cache', () => {
       standardTextureMask: 0,
       paramSnapshot: { roughness: 0.5 },
     } as unknown as MaterialSnapshot;
-    const cached = {
+    const cached: MaterialBgAssemblyCacheEntry = {
       material,
-      materialBgl: {},
-      materialBuffer: {},
-      materialResourceEpoch: 7,
-      skylightResources: {},
-      bindGroup: {},
-    } as MaterialBgAssemblyCacheEntry;
+      materialBgl: {} as BindGroupLayout,
+      materialBuffer: {} as Buffer,
+      uniformResources: [],
+      materialResources: [],
+      preparedTextures: [],
+      skylightResources: {} as MaterialBgAssemblyCacheEntry['skylightResources'],
+      bindGroup: {} as BindGroup,
+    };
     const hit = (next: MaterialSnapshot) =>
       isMaterialBgAssemblyCacheHit(
         cached,
@@ -105,7 +109,7 @@ describe('material bind-group assembly cache', () => {
         cached.materialBgl,
         cached.materialBuffer,
         cached.skylightResources,
-        7,
+        true,
       );
     expect(hit(structuredClone(material))).toBe(true);
     expect(hit({ ...structuredClone(material), paramSnapshot: { roughness: 0.9 } })).toBe(true);
@@ -139,7 +143,9 @@ describe('material bind-group assembly cache', () => {
     } as MaterialBgAssemblyCacheEntry['skylightResources'];
     const cached: MaterialBgAssemblyCacheEntry = {
       material,
-      materialResourceEpoch: 7,
+      uniformResources: [],
+      materialResources: [],
+      preparedTextures: [],
       materialBgl,
       materialBuffer: oldBuffer,
       skylightResources,
@@ -147,10 +153,24 @@ describe('material bind-group assembly cache', () => {
     };
 
     expect(
-      isMaterialBgAssemblyCacheHit(cached, material, materialBgl, oldBuffer, skylightResources, 7),
+      isMaterialBgAssemblyCacheHit(
+        cached,
+        material,
+        materialBgl,
+        oldBuffer,
+        skylightResources,
+        true,
+      ),
     ).toBe(true);
     expect(
-      isMaterialBgAssemblyCacheHit(cached, material, materialBgl, newBuffer, skylightResources, 7),
+      isMaterialBgAssemblyCacheHit(
+        cached,
+        material,
+        materialBgl,
+        newBuffer,
+        skylightResources,
+        true,
+      ),
     ).toBe(false);
     expect(
       isMaterialBgAssemblyCacheHit(
@@ -159,7 +179,7 @@ describe('material bind-group assembly cache', () => {
         materialBgl,
         oldBuffer,
         { ...skylightResources, skylightPrefilterView: {} as TextureView },
-        7,
+        true,
       ),
     ).toBe(false);
     const targetMaterial = {
@@ -173,7 +193,7 @@ describe('material bind-group assembly cache', () => {
         materialBgl,
         oldBuffer,
         skylightResources,
-        7,
+        true,
       ),
     ).toBe(false);
     const sceneCached = { ...cached, sceneMaterialBuffer: oldBuffer };
@@ -184,7 +204,7 @@ describe('material bind-group assembly cache', () => {
         materialBgl,
         oldBuffer,
         skylightResources,
-        7,
+        true,
         undefined,
         oldBuffer,
       ),
@@ -196,7 +216,7 @@ describe('material bind-group assembly cache', () => {
         materialBgl,
         oldBuffer,
         skylightResources,
-        7,
+        true,
         undefined,
         newBuffer,
       ),
@@ -208,11 +228,8 @@ describe('material bind-group assembly cache', () => {
         materialBgl,
         oldBuffer,
         skylightResources,
-        7,
+        true,
       ),
-    ).toBe(false);
-    expect(
-      isMaterialBgAssemblyCacheHit(cached, material, materialBgl, oldBuffer, skylightResources, 8),
     ).toBe(false);
     expect(
       isMaterialBgAssemblyCacheHit(
@@ -221,7 +238,17 @@ describe('material bind-group assembly cache', () => {
         materialBgl,
         oldBuffer,
         skylightResources,
-        7,
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      isMaterialBgAssemblyCacheHit(
+        cached,
+        material,
+        materialBgl,
+        oldBuffer,
+        skylightResources,
+        true,
         {} as TextureView,
       ),
     ).toBe(false);

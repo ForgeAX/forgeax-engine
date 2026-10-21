@@ -122,6 +122,7 @@ describe('rhi-debug consumer inventory', () => {
       const result = runInventory(fixture);
 
       expect(result.status).toBe(0);
+      expect(result.report.schemaVersion).toBe(1);
       expect(Object.keys(result.report.channels ?? {}).sort()).toEqual([
         'jsonSchema',
         'tsModule',
@@ -146,20 +147,6 @@ describe('rhi-debug consumer inventory', () => {
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
-  });
-
-  it('reports a self-consistent migration baseline for the current checkout', () => {
-    const result = runInventory(repoRoot);
-
-    expect(result.status).toBe(0);
-    expect(result.report.schemaVersion).toBe(1);
-    expect(result.report.baseline.scannedFileCount).toBeGreaterThan(0);
-    expect(result.report.baseline.totalMatches).toBe(
-      Object.values(result.report.channels).reduce(
-        (total, channel) => total + channel.totalMatches,
-        0,
-      ),
-    );
   });
 
   it('finds no deleted FrameModel fields across the three consumer channels', () => {

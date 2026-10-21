@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { createProfiler } from '@forgeax/engine-profiler';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import {
@@ -1047,7 +1048,9 @@ describe('factory contract', () => {
       errors.push(error.code);
       errorDetails.push(error);
     });
-    const world = new World();
+    const assets = new AssetRegistry();
+    const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+    const world = new World({ assets });
     const attached = renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
@@ -1080,7 +1083,7 @@ describe('factory contract', () => {
     });
     world.spawn(
       { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: {} },
     );
     expect(world.update().ok).toBe(true);

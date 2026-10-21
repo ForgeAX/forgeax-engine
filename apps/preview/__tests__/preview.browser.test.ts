@@ -133,7 +133,10 @@ describe('apps/preview e2e -- apps/game-capability-lab loads + renders error-fre
     if (assets === undefined) throw new Error('preview App did not expose its asset registry');
     assets.configureRuntimeBinding(runtimeBinding);
 
-    expect(await assets.refreshCatalog(), 'prepared Pack catalog must be authoritative').toBe(true);
+    const catalog = await assets.catalogSource?.enumerate();
+    if (catalog === undefined) throw new Error('preview App did not configure a Catalog source');
+    expect(catalog.ok, 'prepared Pack catalog must be authoritative').toBe(true);
+    if (!catalog.ok) throw catalog.error;
 
     const uiRoot = document.createElement('div');
     uiRoot.dataset.testUiRoot = 'preview-bootstrap';

@@ -2,6 +2,8 @@ import {
   AssetError,
   isMaterialTextureParameterType,
   type MaterialAsset,
+  type MaterialParameter,
+  validateMaterialValues,
 } from '@forgeax/engine-types';
 import type { AssetRegistry } from '../asset-registry';
 
@@ -39,10 +41,10 @@ export function validateMaterialPasses(asset: MaterialAsset): AssetError | null 
 
   // The first declaration of each asset parameter owns its value contract.
   const missingParams: string[] = [];
-  const seen = new Set<string>();
+  const declarations = new Map<string, MaterialParameter>();
   for (const entry of asset.parameters ?? []) {
-    if (seen.has(entry.name)) continue;
-    seen.add(entry.name);
+    if (declarations.has(entry.name)) continue;
+    declarations.set(entry.name, entry);
     const value = values[entry.name];
     if (value === undefined) {
       if (
@@ -56,16 +58,29 @@ export function validateMaterialPasses(asset: MaterialAsset): AssetError | null 
       continue;
     }
     if (value === null && entry.optional) continue;
-    // Type-check supplied values
-    const typeOk = validateParamType(entry.type, value);
-    if (!typeOk) {
-      return new AssetError({
-        code: 'asset-invalid-value',
-        expected: `values.${entry.name} to be of type ${entry.type}`,
-        hint: `values['${entry.name}'] has type ${typeof value} but paramSchema declares ${entry.type}`,
-        detail: { paramName: entry.name, expectedType: entry.type, got: typeof value },
-      });
-    }
+  }
+
+  const supplied = validateMaterialValues(
+    '<material>',
+    asset.values ?? {},
+    asset.parameters === undefined ? undefined : declarations,
+  );
+  if (!supplied.ok) {
+    const error = supplied.error;
+    return new AssetError({
+      code: 'asset-invalid-value',
+      expected: supplied.error.expected,
+      hint: supplied.error.hint,
+      ...(error.code === 'material-value-type-mismatch'
+        ? {
+            detail: {
+              paramName: error.detail.parameter,
+              expectedType: error.detail.expectedType,
+              got: typeof values[error.detail.parameter],
+            },
+          }
+        : {}),
+    });
   }
 
   if (missingParams.length > 0) {
@@ -216,87 +231,6 @@ export function validateSpriteSlices(asset: MaterialAsset): AssetError | null {
     });
   }
   return null;
-}
-
-export function validateParamType(type: string, value: unknown): boolean {
-  switch (type) {
-    case 'f32':
-    case 'i32':
-    case 'u32':
-      return typeof value === 'number';
-    case 'vec2':
-      return Array.isArray(value) && value.length >= 2 && value.every((v) => typeof v === 'number');
-    case 'vec3':
-      return Array.isArray(value) && value.length >= 3 && value.every((v) => typeof v === 'number');
-    case 'vec4':
-      return Array.isArray(value) && value.length >= 4 && value.every((v) => typeof v === 'number');
-    case 'color':
-      return (
-        Array.isArray(value) &&
-        (value.length === 3 || value.length === 4) &&
-        value.every((v) => typeof v === 'number')
-      );
-    case 'texture':
-    case 'texture_2d_array':
-    case 'texture_3d':
-    case 'texture_cube':
-    case 'texture_external':
-      // A cooked pack may keep an asset GUID as the compact texture
-      // shorthand. The render material resolver expands that reference at
-      // the resource boundary; rejecting it here makes authored packs fail
-      // before the same value can reach the resolver.
-      return (
-        typeof value === 'string' ||
-        (typeof value === 'object' && value !== null && !Array.isArray(value))
-      );
-    case 'bool':
-      return typeof value === 'boolean';
-    default:
-      return false;
-  }
-}
-
-/**
- * feat-20260527-sprite-nineslice M4 / w18 (D-9): register-time soft-warn
- * for sliceMode=1 (tile) bound to a sampler whose addressMode is not
- * 'repeat'. Bumps `nineslice.tile-needs-repeat-sampler` once per offending
- * catalogue call. Never throws -- the counter is the sole AI-user-facing
- * signal (charter P3 machine-readable; AC-08 closed, never extends
- * AssetErrorCode).
- *
- * feat-20260614 M8 (D-19): `values.sampler` is now an embedded GUID
- * string (dash-form), resolved against the catalogue rather than a handle.
- */
-export function detectTileNeedsRepeatSampler(registry: AssetRegistry, asset: MaterialAsset): void {
-  if (registry.metrics === null) return;
-  const passes = asset.passes;
-  if (passes === undefined || passes.length === 0) return;
-  const firstPass = passes[0];
-  if (
-    firstPass === undefined ||
-    (firstPass.program.module !== 'forgeax_material::sprite' &&
-      firstPass.program.module !== 'forgeax::sprite')
-  )
-    return;
-  const pv = (asset.values ?? {}) as Record<string, unknown>;
-  const slicesAndMode = pv.slicesAndMode;
-  const encodedTile =
-    Array.isArray(slicesAndMode) && typeof slicesAndMode[3] === 'number'
-      ? slicesAndMode[3] < 0
-      : false;
-  const legacyTile = typeof pv.sliceMode === 'number' && pv.sliceMode === 1;
-  if (!encodedTile && !legacyTile) return;
-  const samplerGuid = typeof pv.sampler === 'string' ? pv.sampler : undefined;
-  if (samplerGuid === undefined) return;
-  const samplerEnvelope = registry.assetCatalog.get(samplerGuid.toLowerCase());
-  if (samplerEnvelope === undefined || samplerEnvelope.kind !== 'sampler') return;
-  const samplerAsset = samplerEnvelope.payload;
-  if (samplerAsset.kind !== 'sampler') return;
-  const u = samplerAsset.addressModeU;
-  const v = samplerAsset.addressModeV;
-  if (u !== 'repeat' || v !== 'repeat') {
-    registry.metrics.increment('nineslice.tile-needs-repeat-sampler');
-  }
 }
 
 /**

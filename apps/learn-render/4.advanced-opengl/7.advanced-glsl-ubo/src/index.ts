@@ -22,15 +22,17 @@
 // 1. engine usage
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App } from '@forgeax/engine-app';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example glue
 
@@ -67,8 +69,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const renderer = app.renderer;
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 4.7 advanced-glsl-ubo] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -78,14 +84,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Standard PBR material shared by all three cubes.
   // The engine places this material in the Forward pass which reads the
   // View UBO (@group(0)@binding(0)) for camera + light data automatically.
-  const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const matHandle = app.assets.create(Materials.standard({
       baseColor: [0.8, 0.8, 0.8, 1],
       metallic: 0.3,
       roughness: 0.7,
-    }),
-  );
+    })).unwrap();
 
   // Three cubes — minimal scene proof that the View UBO is live.
   // No explicit UBO code: Camera + DirectionalLight spawns -> engine extracts
@@ -97,7 +100,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [px, py, pz]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     );
   }

@@ -9,7 +9,7 @@ import { createGltfMeshSwap, resetGltfMeshSwap, type GltfMeshSwap } from './gltf
 import { createJpegTextureSwap, resetJpegTextureSwap, type JpegTextureSwap } from './jpeg-texture-swap';
 import { createMeshHandleSwap, resetMeshHandleSwap, type MeshHandleSwap } from './mesh-handle-swap';
 import { createTargetProfileLoop, targetProfileSnapshot, toggleTargetProfile, type TargetProfileLoop } from './target-profile-loop';
-import { targetProfileLoader } from './target-profile-loader';
+import { TARGET_PROFILE, targetProfileDecoder } from './target-profile-decoder';
 import { createVideoTexturePanel, type VideoTexturePanel } from './video-texture-panel';
 import { installTargetDisabling, type TargetDisablingHandle } from './target-disabling';
 import { installTargetHealth, TargetHealth, type TargetHealthHandle } from './target-health';
@@ -61,15 +61,18 @@ export async function createGameplayTargetFeatures(
   // existing scored target into a real source-format lesson without creating a
   // second gameplay owner.
   const comparisonEvidenceMode = options.comparisonEvidenceMode === true;
-  const meshHandleSwap = comparisonEvidenceMode ? createMeshHandleSwap(world, primaryTarget()) : undefined;
+  const meshHandleSwap = comparisonEvidenceMode && host?.assets !== undefined ? createMeshHandleSwap(world, host.assets, primaryTarget()) : undefined;
   const fbxMeshSwap = comparisonEvidenceMode ? await createFbxMeshSwap(world, host?.assets, primaryTarget()) : undefined;
   const gltfMeshSwap = comparisonEvidenceMode ? await createGltfMeshSwap(world, host?.assets, primaryTarget()) : undefined;
 
   const assets = host?.assets;
   if (assets !== undefined) {
     context.effect(
-      () => assets.loaders.register(targetProfileLoader()),
-      'game-default/target-profile-loader',
+      () => {
+        const lease = assets.installDecoder(TARGET_PROFILE, targetProfileDecoder);
+        return () => lease.dispose();
+      },
+      'game-default/target-profile-decoder',
     );
   }
 
@@ -89,6 +92,20 @@ export async function createGameplayTargetFeatures(
         : { world, assets: host?.assets, target: guidedFbxTarget, ...(physics === undefined ? {} : { physics }) },
     ),
   ]);
+  if (assets !== undefined) context.effect(() => () => {
+    if (meshHandleSwap !== undefined) assets.release(meshHandleSwap.alternate).unwrap();
+    if (fbxMeshSwap !== undefined) assets.release(fbxMeshSwap.fbx).unwrap();
+    for (const variant of [gltfMeshSwap?.glb, gltfMeshSwap?.gltf]) {
+      if (variant === undefined) continue;
+      assets.release(variant.mesh).unwrap();
+      assets.release(variant.material).unwrap();
+    }
+    for (const material of targetProfile?.profileMaterials ?? []) assets.release(material).unwrap();
+    if (jpegTextureSwap !== undefined) {
+      for (const material of jpegTextureSwap.jpegMaterials) assets.release(material).unwrap();
+      assets.release(jpegTextureSwap.texture).unwrap();
+    }
+  }, 'game-default/comparison-assets');
   context.effect(() => () => resonanceForge.dispose(), 'game-default/resonance-forge');
   context.effect(() => () => videoTexturePanel?.dispose(), 'game-default/video-texture-panel');
   context.effect(() => () => fbxSkinnedTarget?.dispose(), 'game-default/fbx-skinned-target');

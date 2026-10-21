@@ -1,4 +1,3 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
 import { DISPLAY_ENCODED_DOMAIN, LINEAR_HDR_DOMAIN, LINEAR_LDR_DOMAIN } from './color-transform';
 import type {
   StandardOutputLogicalStage,
@@ -6,21 +5,6 @@ import type {
   StandardOutputPlan,
   StandardOutputRequest,
 } from './types';
-
-export class StandardOutputPlanError extends Error {
-  readonly code = 'standard-output-plan-invalid' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: { readonly field: string; readonly actual: string };
-
-  constructor(field: string, actual: string, expected: string) {
-    super(`standard-output-plan-invalid: ${field} ${actual}; expected ${expected}`);
-    this.name = 'StandardOutputPlanError';
-    this.expected = expected;
-    this.hint = `repair the ${field} projection before recording the Standard graph`;
-    this.detail = { field, actual };
-  }
-}
 
 function requestedStages(input: StandardOutputRequest): StandardOutputLogicalStage[] {
   const stages: StandardOutputLogicalStage[] = [];
@@ -86,7 +70,6 @@ export function createStandardOutputPlan(input: StandardOutputRequest): Standard
     (input.barrelDistortion === true ? 3 : 0) +
     (input.lensEffects === true ? 3 : 0);
   return {
-    lane: input.lane,
     features: {
       temporal: input.temporal,
       meter: input.meter,
@@ -102,67 +85,9 @@ export function createStandardOutputPlan(input: StandardOutputRequest): Standard
       fxaa: input.fxaa,
       smaa: input.smaa === true,
     },
-    outputEncoding: input.outputEncoding,
     logicalStages,
     physicalStages: physicalStages(logicalStages),
-    finalWriterCount: 1,
-    outputEncodingCount: 1,
     incrementalResources,
     incrementalBindings,
-    incrementalTimestamps: 0,
   };
-}
-
-function invalid(
-  field: string,
-  actual: string,
-  expected: string,
-): Result<never, StandardOutputPlanError> {
-  return err(new StandardOutputPlanError(field, actual, expected));
-}
-
-export function validateStandardOutputPlan(
-  plan: StandardOutputPlan,
-): Result<StandardOutputPlan, StandardOutputPlanError> {
-  const expected = requestedStages({
-    lane: plan.lane,
-    ...plan.features,
-    outputEncoding: plan.outputEncoding,
-  });
-  if (
-    plan.logicalStages.length !== expected.length ||
-    plan.logicalStages.some((stage, index) => stage !== expected[index])
-  ) {
-    return invalid('logicalStages', plan.logicalStages.join(','), expected.join(','));
-  }
-  if (plan.finalWriterCount !== 1)
-    return invalid('finalWriterCount', String(plan.finalWriterCount), '1');
-  if (plan.outputEncodingCount !== 1)
-    return invalid('outputEncodingCount', String(plan.outputEncodingCount), '1');
-  if (plan.physicalStages.length !== plan.logicalStages.length) {
-    return invalid(
-      'physicalStages',
-      String(plan.physicalStages.length),
-      String(plan.logicalStages.length),
-    );
-  }
-  const expectedPhysical = physicalStages(expected);
-  for (let index = 0; index < expectedPhysical.length; index += 1) {
-    const actual = plan.physicalStages[index];
-    const wanted = expectedPhysical[index];
-    if (
-      actual?.name !== wanted?.name ||
-      actual?.input !== wanted?.input ||
-      actual?.output !== wanted?.output
-    ) {
-      return invalid(`physicalStages[${index}]`, JSON.stringify(actual), JSON.stringify(wanted));
-    }
-  }
-  if (
-    plan.outputEncoding === 'explicit-oetf' &&
-    plan.physicalStages.at(-1)?.output !== DISPLAY_ENCODED_DOMAIN
-  ) {
-    return invalid('outputEncoding', plan.outputEncoding, 'one final display-encoded writer');
-  }
-  return ok(plan);
 }

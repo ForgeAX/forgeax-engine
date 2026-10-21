@@ -1,17 +1,17 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import type { MeshAsset, Handle } from '@forgeax/engine-types';
 
 /** Mesh sub-asset emitted by the vendor cube.fbx sidecar. */
 export const GAME_DEFAULT_FBX_MESH_GUID = '019ecd87-179a-7435-b383-6846514b9535';
 
 export type FbxMeshSwap = {
   readonly entity: EntityHandle;
-  readonly original: Handle<'MeshAsset', 'shared'>;
-  readonly originalMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
-  readonly fbx: Handle<'MeshAsset', 'shared'>;
+  readonly original: AssetHandle<'mesh'>;
+  readonly originalMaterials: readonly AssetHandle<'material'>[];
+  readonly fbx: AssetHandle<'mesh'>;
   active: 'original' | 'fbx';
   swaps: number;
 };
@@ -31,12 +31,12 @@ export async function createFbxMeshSwap(
     console.warn(`[game] FBX mesh GUID invalid: ${guid.error.code}`);
     return undefined;
   }
-  const loaded = await assets.loadByGuid<MeshAsset>(guid.value);
+  const loaded = await assets.load(guid.value, 'mesh');
   if (!loaded.ok) {
     console.warn(`[game] FBX mesh unavailable: ${loaded.error.code} — ${loaded.error.hint}`);
     return undefined;
   }
-  const fbx = world.allocSharedRef('MeshAsset', loaded.value);
+  const fbx = loaded.value;
   return {
     entity,
     original: original.value.assetHandle,

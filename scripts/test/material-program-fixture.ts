@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 import { createMaterialPackCooker } from '../../packages/shader-compiler/src/material/pack-cooker';
@@ -15,7 +16,7 @@ export function materialProgramFixture(mixed = false, allTransparent = false): P
     color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
     alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   };
-  let publication: Promise<string> | undefined;
+  let publication: ReturnType<typeof build> | undefined;
   const build = async () => {
     const root = fileURLToPath(
       new URL('../../packages/runtime/src/__tests__/fixtures/material-programs/', import.meta.url),
@@ -63,14 +64,23 @@ export function materialProgramFixture(mixed = false, allTransparent = false): P
       ],
     };
     const cooked = await createMaterialPackCooker([root]).cook({ guid, source: material });
-    return JSON.stringify(
-      {
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [{ guid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} }],
-      },
-      (_key, value) => (value instanceof Uint8Array ? [...value] : value),
+    const sourcePath = `${prefix}material.pack.json`;
+    const pack = JSON.parse(
+      JSON.stringify(
+        {
+          assets: [{ guid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} }],
+        },
+        (_key, value) => (value instanceof Uint8Array ? [...value] : value),
+      ),
     );
+    const published = createRuntimePackPublication({
+      scopeId: 'asset-runtime',
+      sourcePath,
+      sourceRevision: 'fixture',
+      packageUrl: sourcePath,
+      pack,
+    });
+    return { pack: JSON.stringify(published.pack), publication: published.publication };
   };
   return {
     name: mixed ? 'material-program-mixed-regression' : 'material-program-regression',
@@ -79,20 +89,23 @@ export function materialProgramFixture(mixed = false, allTransparent = false): P
         if (!request.url?.startsWith(prefix)) return next();
         response.setHeader('content-type', 'application/json');
         try {
-          if (request.url === `${prefix}pack-index.json`)
+          if (request.url === `${prefix}pack-index.json`) {
+            publication ??= build();
+            const published = await publication;
             response.end(
               JSON.stringify([
                 {
                   guid,
                   kind: 'material',
                   packageUrl: `${prefix}material.pack.json`,
-                  sourcePath: guid,
+                  sourcePath: `${prefix}material.pack.json`,
+                  publication: published.publication,
                 },
               ]),
             );
-          else if (request.url === `${prefix}material.pack.json`) {
+          } else if (request.url === `${prefix}material.pack.json`) {
             publication ??= build();
-            response.end(await publication);
+            response.end((await publication).pack);
           } else {
             response.statusCode = 404;
             response.end('{}');

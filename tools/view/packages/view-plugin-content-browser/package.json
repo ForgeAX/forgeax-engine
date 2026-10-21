@@ -19,7 +19,8 @@
     "@forgeax/view-workspace-core": "workspace:*",
     "lucide-react": "^0.460.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "@forgeax/engine-pack": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "19.3.0",

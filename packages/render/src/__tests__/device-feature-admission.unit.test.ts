@@ -48,12 +48,12 @@ describe('shared device feature admission', () => {
     expect(partial.requiredLimits).toBeUndefined();
   });
   it('admits visible-surface features only with the complete attachment capability', () => {
-    const limits = { maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 48 };
+    const limits = { maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 52 };
     const admitted = deriveDeviceFeatureAdmission(adapter(['primitive-index'], limits));
     expect(admitted.requiredFeatures).toContain('primitive-index');
-    expect(admitted.requiredLimits?.maxColorAttachmentBytesPerSample).toBe(48);
+    expect(admitted.requiredLimits?.maxColorAttachmentBytesPerSample).toBe(52);
     // The seven-target opt-in must not lower WebGPU's ordinary eight-target default.
-    expect(admitted.requiredLimits).toEqual({ maxColorAttachmentBytesPerSample: 48 });
+    expect(admitted.requiredLimits).toEqual({ maxColorAttachmentBytesPerSample: 52 });
     for (const [features, supported] of [
       [[], limits],
       [['primitive-index'], { ...limits, maxColorAttachmentBytesPerSample: 32 }],
@@ -66,19 +66,20 @@ describe('shared device feature admission', () => {
   });
   it.each([
     [[], 32, undefined],
-    [[], 36, undefined],
+    [[], 36, 36],
     [[], 40, 40],
     [[], 44, 44],
     [[], 48, 48],
     [[], 52, 52],
-    [[], 64, 52],
+    [[], 64, 56],
     [['primitive-index'], 48, 48],
     [['primitive-index'], 52, 52],
     [['primitive-index'], 56, 56],
     [['primitive-index'], 60, 60],
     [['primitive-index'], 64, 64],
     [['primitive-index'], 68, 68],
-    [['primitive-index'], 128, 68],
+    [['primitive-index'], 72, 72],
+    [['primitive-index'], 128, 72],
   ] as const)('requests supported temporal MRT capacity for %j / %i bytes', (features, bytes, requested) => {
     const admitted = deriveDeviceFeatureAdmission(
       adapter([...features], {
@@ -118,12 +119,13 @@ describe('shared device feature admission', () => {
   });
 
   it.each([
-    [48, 31],
-    [31, 31],
-    [30, 26],
-    [26, 26],
-    [25, 24],
-    [24, 24],
+    [48, 32],
+    [32, 32],
+    [31, 27],
+    [27, 27],
+    [26, 25],
+    [25, 25],
+    [24, 21],
     [23, 21],
     [21, 21],
     [20, undefined],

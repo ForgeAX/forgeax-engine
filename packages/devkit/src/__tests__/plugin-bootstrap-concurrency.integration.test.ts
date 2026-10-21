@@ -32,7 +32,7 @@ async function fixture(failure: boolean) {
       globalThis.bootstrapVisits = (globalThis.bootstrapVisits ?? 0) + 1;
       const delay = () => new Promise(resolve => setTimeout(resolve, 5));
       export default {
-        schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(index + 1),
+        schemaVersion: '2.0.0', plugins: true, packageId: new Uint8Array(16).fill(index + 1),
         async build(context) {
           appendFileSync(events, JSON.stringify({ stage: 'begin', index, visits: globalThis.bootstrapVisits }) + '\\n');
           const entries = () => readFileSync(events, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse);
@@ -102,7 +102,7 @@ it('discovers plugin sources from the verified Pack product without executing bu
         sourcePath,
         `import { appendFileSync } from 'node:fs';
          export default {
-           schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(1),
+           schemaVersion: '2.0.0', plugins: true, packageId: new Uint8Array(16).fill(1),
            build() {
              appendFileSync(${JSON.stringify(events)}, 'build\\n');
              return { ok: true, value: { 'plugin/main': {

@@ -2,8 +2,8 @@
 // (tweak-20260714-runtime-image-bytes-decoder-add-decodeimagebytes M3 / m3-1).
 //
 // Runs under the vitest browser project (chromium + real createImageBitmap +
-// OffscreenCanvas 2D). Anchors the end-to-end "bytes -> POD -> world column
-// handle" happy path that the Node-side unit test cannot exercise (Node has
+// OffscreenCanvas 2D). Anchors the end-to-end "bytes -> POD -> managed
+// asset" happy path that the Node-side unit test cannot exercise (Node has
 // no createImageBitmap; unit test only covers the structured-failure arms).
 //
 // Coverage:
@@ -12,11 +12,8 @@
 //     mipLevelCount); default (opts omitted) drives srgb + mipmap=true, and a
 //     second run with opts.colorSpace='linear' + opts.mipmap=false confirms
 //     the two POD fields the opts derive (format + mipLevelCount).
-//   - AC-02: the returned POD is accepted by `world.allocSharedRef(
-//     'TextureAsset', pod)` -- the SSOT runtime column-handle path (charter
-//     P4 consistent abstraction: the same POD any static loader would
-//     produce). The handle is a live u32 whose resolve returns payload
-//     identity (structural equivalence, not deep-copy).
+//   - AC-02: decoded pixels enter the managed owner and detached reads preserve
+//     content without exposing the mutable source arrays.
 //   - AC-03 (regression): running this file alongside the existing browser
 //     project confirms the pre-existing static loader path is unaffected
 //     (checked by the M3 boundary sweep `pnpm test:browser`, no new arms
@@ -27,8 +24,9 @@
 // the test does not need to chase a binary fixture (charter F1 single-page).
 
 import { World } from '@forgeax/engine-ecs';
-import type { TextureAsset } from '@forgeax/engine-types';
+import { textureContribution } from '@forgeax/engine-image';
 import { describe, expect, it } from 'vitest';
+import { AssetRegistry } from '../asset-registry';
 import { decodeImageBytes } from '../decode-image-bytes';
 
 // 1x1 red PNG (RGBA 8-bit). Universally decodable by browser createImageBitmap.
@@ -73,27 +71,26 @@ describe('decodeImageBytes browser real-PNG happy path (AC-01)', () => {
 });
 
 describe('decodeImageBytes browser structural equivalence with static loader path (AC-02)', () => {
-  it('AC-02: POD is accepted by world.allocSharedRef and resolves back to the same identity', async () => {
+  it('AC-02: decoded pixels become detached managed texture content', async () => {
     const result = await decodeImageBytes(pngBytes(), 'image/png');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const pod = result.value;
 
-    const world = new World();
-    const handle = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', pod);
-    // Handle is a branded u32 -- must be a finite non-negative integer.
-    expect(typeof handle).toBe('number');
-    expect(Number.isFinite(handle as unknown as number)).toBe(true);
-    expect(handle as unknown as number).toBeGreaterThan(0);
-
-    // Structural equivalence: the shared-ref store round-trips the SAME POD
-    // reference (identity preserved, no deep-copy) -- what any static
-    // texture loader path produces after allocSharedRef.
-    const resolved = world.sharedRefs.resolve<'TextureAsset', TextureAsset>(handle);
+    const assets = new AssetRegistry();
+    assets.installDecoder(textureContribution.kind, textureContribution.decoder);
+    const world = new World({ assets });
+    const handle = assets.create(pod).unwrap();
+    expect(world.assets).toBe(assets);
+    const resolved = assets.read(handle);
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
-    expect(resolved.value).toBe(pod);
+    expect(resolved.value).not.toBe(pod);
+    expect(resolved.value.data).not.toBe(pod.data);
+    expect(resolved.value.data).toEqual(pod.data);
     expect(resolved.value.kind).toBe('texture');
     expect(resolved.value.format).toBe('rgba8unorm-srgb');
+    assets.release(handle).unwrap();
+    assets.dispose();
   });
 });

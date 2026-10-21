@@ -42,14 +42,14 @@ All errors carry the standard 4-field surface: `.code` / `.expected` / `.hint` /
 
 Per-frame, per-token, the `transitionStatesSystem` (registered by `registerStatesPlugin`) executes 8 steps:
 
-1. Read `NextState` Resource -- if undefined, skip (zero-cost continue)
+1. Read the pending request from the token resource -- if undefined, skip (zero-cost continue)
 2. If `prev === next` and `!force`, clear `NextState` and skip (same-state no-op)
-3. Write `PreviousState = prev`, flip `State = next`
+3. Publish the previous and current values together in the token resource
 4. Despawn exit-scoped entities (`__scopedTo__<name>` with mode=0, value=prev)
 5. Dispatch `OnExit` callbacks for prev variant (errors bubble -- see Constraints)
 6. Despawn enter-scoped entities (mode=1, value=next)
 7. Dispatch `OnEnter` callbacks for next variant (errors bubble -- see Constraints)
-8. Clear `NextState = undefined` (unless callbacks wrote a new payload)
+8. Clear the consumed request by identity (a new request, even with equal fields, survives for the next frame)
 
 Schedule anchors are scoped to `Update`: `after: ['input-frame-start-scan']`, `before: ['propagateTransforms']`.
 
@@ -57,7 +57,7 @@ Schedule anchors are scoped to `Update`: `after: ['input-frame-start-scan']`, `b
 
 - **Module-level definition**: `defineState` must be called at module level. It writes to a global registry; duplicate names throw.
 - **One scoped component per entity per token**: `__scopedTo__<tokenName>` uses ECS default `exclusive=false`. Adding a second scoped marker on the same entity throws `ComponentAlreadyPresentError`.
-- **Transition is deferred one frame**: `setNextState` writes `NextState` Resource; `getState` returns the current value until `transitionStatesSystem` flips it.
+- **Transition is deferred one frame**: `setNextState` replaces the token resource's pending request; `getState` returns the current value until `transitionStatesSystem` flips it.
 - **`force` flag**: `setNextStateForce` bypasses the same-state no-op guard. Use for restart/retry semantics.
 - **Callback errors bubble**: `OnEnter`/`OnExit` callbacks are *not* wrapped in try-catch. A throwing callback aborts `transitionStatesSystem` and propagates to the ECS schedule (per requirements sec 7). The `State` flip in step 3 has already committed and is not rolled back; later tokens in the same frame do not transition. Keep callbacks total -- validate inside them and return rather than throw.
 - **Despawn tolerance**: Entities already dead at scoped-despawn time are silently skipped (ECS `world.despawn` is idempotent on already-despawned entities).
@@ -84,7 +84,7 @@ The state package has zero custom ECS primitives. It consumes only:
 
 - `defineComponent` -- for `__scopedTo__<tokenName>` component schemas
 - `world.addSystem` -- for `transitionStates` system registration
-- `world.insertResource` / `world.getResource` / `world.hasResource` -- for per-token `State`/`NextState`/`PreviousState` Resource CRUD
+- `world.insertResource` / `world.getResource` / `world.hasResource` -- for one per-token resource holding current, previous and pending values
 - `world.query` row iteration -- for collecting scoped entities
 - `resolveComponent` -- for looking up scoped component schemas
 - `world.despawn` -- for scoped entity teardown
@@ -108,3 +108,13 @@ the entity and call the same disposer again. Reinstallation remains blocked by
 the existing runtime ownership until retirement finishes. Completed disposal is
 idempotent. Callback labels encode name, transition kind and variant as a JSON
 tuple, so separators or Unicode in a legal name cannot alias another state.
+
+Each token has one World resource, so activation, reads, transitions and retirement
+share one presence check and one key. A transition publishes current/previous
+values together; a callback may queue a new request for the next frame. Request
+identity distinguishes a new forced restart from the request being consumed,
+even when both requests have equal value and force fields.
+
+Scoped component reads and writes retain the concrete enum schema returned by
+the component factory. Reflection labels derive from the StateToken’s existing
+name-to-index map.

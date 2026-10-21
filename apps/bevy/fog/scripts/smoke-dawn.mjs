@@ -190,7 +190,8 @@ const recordError = (error) => {
 app.onError(recordError);
 
 const world = app.world;
-const resourceWorld = new World();
+const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
+const resourceWorld = new World({ assets: await createPublicationAssets({ shaderManifestUrl: manifestUrl }) });
 let resourceOwner = 0;
 app.setDrawSource(() => ({
   worlds: [world, resourceWorld],
@@ -211,30 +212,15 @@ const densityAsset = {
   mips: { kind: 'none' },
   data: densityData,
 };
-const densityHandle = world.allocSharedRef('TextureAsset', densityAsset);
-const resourceDensityHandle = resourceWorld.allocSharedRef('TextureAsset', densityAsset);
-const ground = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: fogScene.materials.ground, roughness: 0.92 }),
-);
-const tick = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: fogScene.materials.tick, roughness: 0.88 }),
-);
-const gate = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: fogScene.materials.gate, roughness: 0.72 }),
-);
-const marker = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: fogScene.materials.marker, metallic: 0.1, roughness: 0.28 }),
-);
-const structure = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: fogScene.materials.structure, roughness: 0.86 }),
-);
-const cubeMesh = world.internSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-const sphereMesh = world.internSharedRef('MeshAsset', createSphereGeometry(1).unwrap());
+const densityHandle = world.assets.create(densityAsset).unwrap();
+const resourceDensityHandle = resourceWorld.assets.create(densityAsset).unwrap();
+const ground = world.assets.create(Materials.standard({ baseColor: fogScene.materials.ground, roughness: 0.92 })).unwrap();
+const tick = world.assets.create(Materials.standard({ baseColor: fogScene.materials.tick, roughness: 0.88 })).unwrap();
+const gate = world.assets.create(Materials.standard({ baseColor: fogScene.materials.gate, roughness: 0.72 })).unwrap();
+const marker = world.assets.create(Materials.standard({ baseColor: fogScene.materials.marker, metallic: 0.1, roughness: 0.28 })).unwrap();
+const structure = world.assets.create(Materials.standard({ baseColor: fogScene.materials.structure, roughness: 0.86 })).unwrap();
+const cubeMesh = world.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+const sphereMesh = world.assets.create(createSphereGeometry(1).unwrap()).unwrap();
 function spawnCube(pos, scale, material) {
   world.spawn(
     { component: Transform, data: { pos, scale } },

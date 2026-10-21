@@ -1,54 +1,14 @@
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
-// user-handle-mesh-render.dawn.test.ts -- T-M2-1 V-3 punt regression lock.
-//
-// Background (plan-decisions.md D-3 / requirements §10 V-3 / AC-10 / AC-11):
-//   The 4 learn-render examples (4.textures / 5.transformations /
-//   6.coordinate-systems / 7.camera) historically bound `MeshFilter.assetHandle`
-//   to the engine-builtin `HANDLE_CUBE` literal even after staging a
-//   user-tier cube MeshAsset alias --
-//   user-handle ids (>= BUILTIN_BASE=1024 minted by the SharedRefStore) used to
-//   miss the `pipelineState.meshes` map (legacy `[HANDLE_CUBE, HANDLE_TRIANGLE]`-only
-//   loop in `createRenderer` step 3) so the render-system fired
-//   `asset-not-registered` RhiError once per renderable per frame and the
-//   cube was silently culled (charter P3 explicit failure: the structured
-//   error fired, but the frame still composited pure clearColor).
-//
-//   feat-20260601-device/gpu-residency-extraction M1 closed the engine path via
-//   the pull model (the prior register-time auto-upload push was severed):
-//     - render-system-record.ts: a user-handle mesh (id >= 1024) misses the
-//       builtin `pipelineState.meshes` alias map, so the record stage pulls it
-//       through `gpuStore.ensureResident(handle, pod)` on first draw access and
-//       resolves the GPU buffers via `gpuStore.getMeshGpuHandles(handle)` (D-1
-//       keeps builtins on the direct path; user meshes pull through the store).
-//   This test exercises that end-to-end through `renderer.draw` -- it never
-//   calls the store directly; the pull happens inside the record stage.
-//
-//   This dawn test is the regression lock for that engine surface (D-3
-//   "engine path already works"). M-2 of feat-20260519 retracts the V-3
-//   punt at the demo layer: the 4 examples switch their `MeshFilter.assetHandle`
-//   from `HANDLE_CUBE` to a user-tier handle minted via `world.allocSharedRef`.
-//   If anything in the engine regresses the user-handle
-//   render path, this test fires before the demo smoke does.
-//
-// AC scope:
-//   AC-10 / AC-11 (V-3 punt retraction): a user-tier MeshAsset minted via
-//   `world.allocSharedRef` produces a non-empty rendered frame. The test asserts
-//   the center pixel is NOT clear-color (i.e. the cube actually drew).
-//
-// Trigger: root vitest.config.ts `dawn` project (`*.dawn.test.ts` glob).
-// Environment: dawn-node native binding (vitest.setup-webgpu.ts injects
-// globalThis.navigator.gpu); same mock-canvas + offscreen `RENDER_ATTACHMENT |
-// COPY_SRC` GPUTexture pattern as
-// apps/learn-render/.../4.textures/src/__tests__/textures-pixel.dawn.test.ts.
+// A procedural mesh owned by AssetRegistry must reach the real Dawn renderer
+// and produce visible red pixels through ordinary first-use GPU residency.
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { drawPublished } from '../draw-published';
@@ -85,7 +45,7 @@ const ENGINE_MANIFEST = await (async () => {
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 
 describe('T-M2-1 user-handle mesh render regression (AC-10 / AC-11, dawn)', () => {
-  it('allocSharedRef user-handle (>=1024) renders non-clear-color center pixel', async () => {
+  it('a runtime-created mesh renders non-clear-color center pixels', async () => {
     const dawnAvailable = typeof globalThis.navigator?.gpu?.requestAdapter === 'function';
     if (!dawnAvailable) {
       throw new Error('dawn-node navigator.gpu not injected; vitest.setup-webgpu.ts regressed');
@@ -162,44 +122,35 @@ describe('T-M2-1 user-handle mesh render regression (AC-10 / AC-11, dawn)', () =
     expect(assets).toBeInstanceOf(AssetRegistry);
     expect(renderer.inspect().state).toBe('alive');
 
-    // 1. Mint a procedural cube MeshAsset, catalogue it under a fresh UUIDv7
-    //    GUID in the AssetRegistry (GUID->payload SSOT, no handle), then mint a
-    //    user-tier column handle via `world.allocSharedRef`. The minted slot id
-    //    is >= BUILTIN_BASE (1024), so the builtin `pipelineState.meshes` alias
-    //    map (HANDLE_CUBE / HANDLE_TRIANGLE only) misses; the engine path under
-    //    test pulls the user mesh through `gpuStore.ensureResident(handle, pod)`
-    //    + `gpuStore.getMeshGpuHandles(handle)` on first draw access.
+    // The ordinary runtime owner creates a procedural mesh and uploads it on first draw.
     const meshRes = createBoxGeometry(1, 1, 1);
     expect(meshRes.ok).toBe(true);
     if (!meshRes.ok) return;
     const cubeAsset: MeshAsset = meshRes.value;
 
-    const world = new World();
+    const world = new World({ assets });
 
-    const cubeGuid = AssetGuid.random();
-    assets.catalog(cubeGuid, cubeAsset);
-    const cubeHandle = world.allocSharedRef('MeshAsset', cubeAsset);
+    const cubeHandle = testAssets(world).create(cubeAsset).unwrap();
 
-    // The handle MUST be a user-tier handle (>= 1024 = BUILTIN_BASE). If this
-    // assertion fails the SharedRefStore base shifted; the regression lock is
-    // moot until the BUILTIN_BASE invariant is re-established.
-    expect(unwrapHandle(cubeHandle)).toBeGreaterThanOrEqual(1024);
+    expect(assets.read(cubeHandle).unwrap().kind).toBe('mesh');
 
     // 2. Build a solid-color unlit material so the assertion is purely
     //    about "did the cube draw" -- no texture decode, no mip path,
     //    no UV variance. Bright red baseColor (visible against the
     //    clear-color teal).
-    const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-unlit' },
-          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-        },
-      ],
-      values: { baseColor: [1, 0, 0, 1] },
-    });
+    const matHandle = testAssets(world)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-unlit' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: { baseColor: [1, 0, 0, 1] },
+      })
+      .unwrap();
 
     // 3. Spawn cube + camera (axis-aligned, camera 3 units in front).
     world.spawn(

@@ -31,6 +31,7 @@ import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { CHANNEL_EPSILON, CHANNEL_SIZE } from './lighting-channels.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -48,7 +49,7 @@ export async function verifyChannelViews(
 ) {
   const targetOwner = publication === undefined ? undefined : new RenderPublicationTargetOwner();
   const targets = targetOwner?.authoring ?? renderer;
-  const world = new World();
+  const world = new World(publication === undefined ? {} : { assets: publication.assets });
   const makeTarget = (shape: '2d' | 'cube') =>
     renderValue(
       targets.createRenderTarget({
@@ -65,16 +66,19 @@ export async function verifyChannelViews(
   const auxiliary = makeTarget('2d'),
     cube = makeTarget('cube'),
     reflection = makeTarget('2d');
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 0.05).unwrap());
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.5, 0.5, 0.5, 1],
-      roughness: 0.7,
-      emissive: [0.02, 0.02, 0.02],
-      emissiveIntensity: 1,
-    }),
-  );
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(2, 2, 0.05).unwrap())
+    .unwrap();
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.5, 0.5, 0.5, 1],
+        roughness: 0.7,
+        emissive: [0.02, 0.02, 0.02],
+        emissiveIntensity: 1,
+      }),
+    )
+    .unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -4] } },

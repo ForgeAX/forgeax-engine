@@ -1,4 +1,5 @@
 import * as SceneOwner from '@forgeax/engine-scene';
+import { testAssets } from './helpers/runtime-assets';
 
 // w9 — writeback round-trip semantic equivalence tests, migrated to
 // rootsToSceneAsset (plan-strategy D-1: semantic equivalence not byte
@@ -21,15 +22,12 @@ import * as SceneOwner from '@forgeax/engine-scene';
 //   component-level keys, not entity-level entries.
 //   VERDICT: zero expectations encoded pre-fix bug.
 
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type Component, defineComponent as defineEcsComponent, World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { SceneInstance } from '@forgeax/engine-render';
 import { ChildOf, Children, Transform } from '@forgeax/engine-scene';
 import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { rootsToSceneAsset, serializeSceneAssetToPack } from '../collect-scene-asset';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
 const TEST_COMPONENTS: Component[] = [];
 
@@ -45,14 +43,10 @@ function registerSceneComponents(world: World): void {
   }
 }
 
-function makeRegistry(): AssetRegistry {
-  return new AssetRegistry(makeMockShaderRegistry());
-}
-
 // biome-ignore lint/suspicious/noExplicitAny: allocSharedRef('SceneAsset') returns branded Handle<"SceneAsset", ...> but instantiateScene expects Handle<string, ...>
 function registerSceneAsset(world: World, asset: SceneAsset): any {
   registerSceneComponents(world);
-  return world.allocSharedRef('SceneAsset', asset);
+  return testAssets(world).create(asset).unwrap();
 }
 
 function comp(entity: SceneEntity, name: string): Record<string, unknown> | undefined {
@@ -94,9 +88,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -128,9 +120,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -162,9 +152,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -185,9 +173,7 @@ describe('w9 — round-trip semantic equivalence', () => {
   it('(d) empty scene (no entities) round-trips to empty entities[]', () => {
     const asset: SceneAsset = { kind: 'scene', entities: {} };
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     // Empty scene may still instantiate; root should be present.
@@ -215,9 +201,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -253,9 +237,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -285,9 +267,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -384,9 +364,7 @@ describe('w9 — round-trip semantic equivalence', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -450,9 +428,7 @@ describe('w1 — field-level transient collect skip (AC-02 + AC-03)', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -502,9 +478,7 @@ describe('w1 — field-level transient collect skip (AC-02 + AC-03)', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -534,9 +508,7 @@ describe('w1 — field-level transient collect skip (AC-02 + AC-03)', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -565,9 +537,7 @@ describe('marker component scene-pack round-trip', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const instantiated = SceneOwner.worldInstantiateScene(world, handle);
     expect(instantiated.ok).toBe(true);
@@ -604,7 +574,7 @@ describe('w4 -- Transform vec serialization shape (AC-05)', () => {
   it('rootsToSceneAsset emits pos/quat/scale plain arrays, no per-axis keys, no world', () => {
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
+    const reg = testAssets(world);
     const e = world
       .spawn({
         component: Transform,
@@ -649,13 +619,10 @@ describe('w4 -- old-shape scene JSON validation (research Finding 3)', () => {
     };
 
     const world = new World();
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(false);
-    if (!res.ok) return;
+    if (res.ok) throw new Error('Malformed component fields were accepted');
     expect(res.error).toMatchObject({
       code: 'asset-package-invalid',
       detail: {

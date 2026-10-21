@@ -1,7 +1,7 @@
 /** Public RenderFeature lifecycle, diagnostics, and host-context declarations. */
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
-import type { Asset, Handle, Result } from '@forgeax/engine-types';
+import type { Asset, Result } from '@forgeax/engine-types';
 import type { RenderError, RenderFeatureErrorDescriptor } from '../errors/render';
 import type { VisibilitySnapshot } from '../extract/visibility';
 import type { CameraSnapshot } from '../render-contract';
@@ -68,10 +68,6 @@ export type RenderFeaturePlacement = 'scene' | 'post';
  * the validation boundary for that mode.
  */
 export type RenderFeatureShaderModuleMode = 'validated' | 'immediate';
-
-export interface RenderFeatureResourceHandle {
-  readonly __renderFeatureResource: unique symbol;
-}
 
 /** One World-local visibility snapshot prepared for the current frame batch. */
 export interface RenderFeatureWorldVisibilitySnapshot {
@@ -143,11 +139,16 @@ export interface RenderFeatureExtractContext {
    * inline value authoritative (for example a custom provider's mesh).
    * Declare accepted handles through assetDependencies and resolve them in plan.
    */
+  /** Capture a held exact version for in-flight work. The source asset identity stays unchanged. */
+  readonly referenceAssetVersion?: (
+    sourceWorldIndex: number,
+    version: { readonly handle: number; readonly revision: number; readonly value: Asset },
+  ) => void;
   readonly referenceAsset?: (
     sourceWorldIndex: number,
-    identity: string | Handle<string, 'shared'>,
+    identity: string | number,
     captured: Asset,
-  ) => Handle<string, 'shared'> | undefined;
+  ) => number | undefined;
 }
 
 /**
@@ -206,7 +207,7 @@ export interface RenderFeature<FrameData> {
   }[];
   extract(context: RenderFeatureExtractContext): Result<FrameData, RenderError>;
   /** GUID closures or exact immutable handles consumed by the declarative plan. */
-  assetDependencies?(data: FrameData): readonly (string | Handle<string, 'shared'>)[];
+  assetDependencies?(data: FrameData): readonly (string | number)[];
   /**
    * Explicit source resource intent that must survive a failed plan. Returning
    * true keeps presentation pending when this frame cannot be planned/prepared.

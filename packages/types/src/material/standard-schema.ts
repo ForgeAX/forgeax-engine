@@ -22,6 +22,9 @@ export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'alphaCutoff', type: 'f32', default: 0 },
   { name: 'specular', type: 'f32', default: 1 },
   { name: 'alphaHash', type: 'f32', default: 0 },
+  { name: 'shadowAlphaMode', type: 'f32', default: 0 },
+  { name: 'alphaMode', type: 'f32', default: 0 },
+  { name: 'alphaToCoverage', type: 'f32', default: 0 },
   { name: 'specularColor', type: 'vec3', colorSpace: 'srgb', default: [1, 1, 1] },
   { name: 'normalScale', type: 'vec2', default: [1, 1] },
   { name: 'bumpScale', type: 'f32', default: 1 },
@@ -76,6 +79,8 @@ export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'triplanarSharpness', type: 'f32', default: 1 },
   // 0 = tangent-space normal map, 1 = object-space normal map.
   { name: 'normalMapSpace', type: 'f32', default: 0 },
+  // Optional shading mode: use primitive geometry instead of interpolated normals.
+  { name: 'flatShading', type: 'u32', default: 0 },
   // Optional resource capability: 0 uses the fit, nonzero samples the shared LUT.
   // Declaration is explicit; no baseline or canonical material acquires this field.
   { name: 'directMultiscatteringLut', type: 'u32', default: 1 },
@@ -93,6 +98,7 @@ export const STANDARD_SURFACE_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
     (entry) =>
       !entry.type.startsWith('texture') &&
       entry.name !== 'directMultiscatteringLut' &&
+      entry.name !== 'flatShading' &&
       !STANDARD_PHYSICAL_PARAMETER_NAMES.has(entry.name) &&
       (!STANDARD_TRANSMISSION_PARAMETER_NAMES.has(entry.name) || entry.name === 'ior'),
   );

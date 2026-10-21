@@ -7,14 +7,15 @@ import {
   ok,
 } from '@forgeax/engine-types';
 
-function parseGuid(value: unknown): FontAsset['atlas'] | undefined {
-  if (value instanceof Uint8Array && value.length === 16) return value as FontAsset['atlas'];
+function parseGuid(value: unknown): import('@forgeax/engine-types').AssetGuid | undefined {
+  if (value instanceof Uint8Array && value.length === 16)
+    return value as import('@forgeax/engine-types').AssetGuid;
   if (
     Array.isArray(value) &&
     value.length === 16 &&
     value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)
   ) {
-    return Uint8Array.from(value) as FontAsset['atlas'];
+    return Uint8Array.from(value) as import('@forgeax/engine-types').AssetGuid;
   }
   if (typeof value !== 'string') return undefined;
   const parsed = AssetGuid.parse(value);
@@ -31,7 +32,7 @@ function validCommon(value: unknown): value is FontAsset['common'] {
 
 export const fontContribution: AssetDecoderContribution<FontAsset, 'font'> = {
   kind: { kind: 'font' } as AssetKind<FontAsset, 'font'>,
-  consumer: 'GlyphTextLayout',
+  consumer: 'GlyphText',
   decoder: {
     async decode({ envelope }) {
       const payload = envelope.payload as unknown;
@@ -43,6 +44,9 @@ export const fontContribution: AssetDecoderContribution<FontAsset, 'font'> = {
           (source.kind === undefined || source.kind === 'font') &&
           atlas !== undefined &&
           sampler !== undefined &&
+          envelope.refs.length === 2 &&
+          envelope.refs.includes(AssetGuid.format(atlas)) &&
+          envelope.refs.includes(AssetGuid.format(sampler)) &&
           source.glyphs !== null &&
           typeof source.glyphs === 'object' &&
           validCommon(source.common)

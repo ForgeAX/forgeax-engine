@@ -1,630 +1,108 @@
-// @ts-nocheck — merged file: indexed-access checks cascade across noUncheckedIndexedAccess for blocks originally outside src/ rootDir
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
-// biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
-//
-// Source files (N=44):
-//   - packages/runtime/__tests__/antialias-from-f32.test.ts
-//   - packages/runtime/src/__tests__/bloom-gating.test.ts
-//   - packages/runtime/src/__tests__/camera-antialias.test.ts
-//   - packages/runtime/src/__tests__/camera-bloom.test.ts
-//   - packages/runtime/src/__tests__/camera-clear-schema.test.ts
-//   - packages/runtime/src/__tests__/camera-ortho.test.ts
-//   - packages/runtime/src/__tests__/fxaa-intermediate-texture.test.ts
-//   - packages/runtime/src/__tests__/fxaa-pipeline.test.ts
-//   - packages/runtime/src/__tests__/ibl-pipeline-cache.test.ts
-//   - packages/runtime/src/__tests__/ibl-runtime-probe.test.ts
-//   - packages/runtime/src/__tests__/render-system-record-warn-once.test.ts
-//   - packages/runtime/src/__tests__/shadow-skip-non-triangle.test.ts
-//   - packages/runtime/src/__tests__/skin-errors-kebab-case.test.ts
-//   - packages/runtime/src/__tests__/skybox-error.test.ts
-//   - packages/runtime/src/__tests__/skybox-shader-compile.test.ts
-//   - packages/runtime/src/__tests__/skylight-bind-group.test.ts
-//   - packages/runtime/src/__tests__/skylight-component.test.ts
-//   - packages/runtime/src/__tests__/skylight-fallback-path.test.ts
-//   - packages/runtime/src/__tests__/skylight-pipeline-layout.test.ts
-//   - packages/runtime/src/__tests__/tonemap-hdr-target.test.ts
-//   - packages/runtime/src/__tests__/tonemap-pipeline-split.test.ts
-//   - packages/runtime/src/__tests__/zero-camera-clear-fallback.test.ts
-//   - packages/runtime/src/components/__tests__/skin.test.ts
-//   - packages/runtime/src/systems/__tests__/advance-animation-player.test.ts
-//   - packages/runtime/src/systems/__tests__/graph-skybox.test.ts
-//   - packages/runtime/src/systems/__tests__/propagate-transforms.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-cap-gate.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-instances-coexist.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-palette-extract.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-pipeline-routing.test.ts
-//   - packages/runtime/src/systems/__tests__/skybox-extract.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-boundary.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-clamp.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-frame-duration-negative.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-frame-duration-zero.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-loop.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-override-probe.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-regions-mismatch.test.ts
-//   - packages/runtime/src/systems/__tests__/tonemap.test.ts
-//   - packages/runtime/src/systems/__tests__/transparent-sort-config-get.test.ts
-//   - packages/runtime/src/systems/__tests__/transparent-sort-config-set.test.ts
-//   - packages/runtime/src/systems/__tests__/transparent-sort.test.ts
-//   - packages/runtime/src/__tests__/render-system-multi-material.test.ts
-//   - packages/runtime/src/__tests__/render-system-record-submesh.test.ts
-//
-// Paradigm: each block-scope wraps a source file. ancestorTitles[0] is the
-// source-preserved inner describe (NOT the source filename for these 3 files
-// — recovery path: vitest report ancestorTitles -> grep this file -> upstream
-// `// ─── from <name>.test.ts ───` block separator -> source filename).
-// Top-level imports merged + deduped.
-
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { AnimationPlayer } from '@forgeax/engine-animation';
-import type { AssetRuntimeErrorCode } from '@forgeax/engine-assets-runtime';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World as WorldType } from '@forgeax/engine-ecs';
-import { ENTITY_NULL_RAW, World } from '@forgeax/engine-ecs';
-import { SpriteAnimationInvalidError } from '@forgeax/engine-ecs/projection';
-import { buildMeshAttributeMapForUvSets } from '@forgeax/engine-geometry';
-import { mat4, vec3 } from '@forgeax/engine-math';
-import type { RenderErrorCode, Renderer as RendererType } from '@forgeax/engine-render';
-import {
-  ANTIALIAS_FXAA,
-  ANTIALIAS_NONE,
-  BLOOM_DISABLED,
-  BLOOM_ENABLED,
-  CAMERA_PROJECTION_ORTHOGRAPHIC,
-  CAMERA_PROJECTION_PERSPECTIVE,
-  Camera,
-  MeshFilter,
-  MeshRenderer,
-  SkyboxBackground,
-  Skylight,
-} from '@forgeax/engine-render';
-import type { BindGroupEntry, Buffer, Sampler, Texture, TextureView } from '@forgeax/engine-rhi';
-import { ok as rhiOk } from '@forgeax/engine-rhi';
-import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { TONEMAP_LUMINANCE_EPSILON } from '@forgeax/engine-shader';
-import type { SkinErrorCode } from '@forgeax/engine-skinning';
-import {
-  Skin,
-  SkinInstancesCoexistForbiddenError,
-  SkinJointCountExceededError,
-  SkinJointDespawnedError,
-  SkinJointPathUnresolvedError,
-} from '@forgeax/engine-skinning';
-import type {
-  Handle,
-  MaterialAsset,
-  MeshAsset,
-  SkeletonAsset,
-  TextureFormat,
-} from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { worldInternal } from '../../../ecs/src/world-internal';
-import {
-  SPRITE_PLAYBACK_MODE_CLAMP,
-  SPRITE_PLAYBACK_MODE_LOOP,
-  SpriteAnimation,
-  SpriteRegionOverride,
-} from '../../../render/src/components';
-import {
-  type CameraProjection,
-  cameraProjectionFromF32,
-} from '../../../render/src/components/camera';
-import {
-  assembleMaterialWithSkylightEntries,
-  createSkylightFallback,
-} from '../../../render/src/ibl/skylight-bind-group';
-import { buildPbrPipelineLayouts, buildUnlitMaterialBgl } from '../../../render/src/pbr-pipeline';
-import { INSTANCE_STORAGE_STRIDE_FLOATS } from '../../../render/src/record/mesh-ssbo';
-import { selectSwapChainFormat } from '../../../render/src/render-system';
-import { createSkinPaletteAllocator } from '../../../render/src/systems/skin-palette-allocator';
-import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
-import { drawWithOwners } from './renderer-test-utils';
-
-function componentFieldType(component: { fields: Record<string, { type: string }> }, name: string) {
-  return component.fields[name]?.type;
-}
-
-function componentFieldDefault(
-  component: { fields: Record<string, { default?: unknown }> },
-  name: string,
-) {
-  return component.fields[name]?.default;
-}
-
-function componentSchemaTypes(component: { fields: Record<string, { type: string }> }) {
-  return Object.fromEntries(
-    Object.entries(component.fields).map(([name, field]) => [name, field.type]),
-  );
-}
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import { rhi } from '@forgeax/engine-rhi-null';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { Skin } from '@forgeax/engine-skinning';
+import { afterEach, expect, it, vi } from 'vitest';
+import { createSkinPaletteOwner } from '../../../render/src/assembly/skin-palette-owner';
+import { extractFrames } from '../../../render/src/render-system-extract-tail';
 
 afterEach(() => vi.restoreAllMocks());
-
-type RendererErrorObservation = {
-  readonly code: string;
-  readonly detail?: unknown;
-  readonly hint?: string;
-};
-
-function unwrapRendererError(value: unknown): RendererErrorObservation {
-  let current = value as RendererErrorObservation;
-  while (
-    current.detail !== undefined &&
-    typeof current.detail === 'object' &&
-    current.detail !== null
-  ) {
-    const cause = (current.detail as { cause?: unknown }).cause;
-    if (
-      cause === undefined ||
-      typeof cause !== 'object' ||
-      cause === null ||
-      typeof (cause as { code?: unknown }).code !== 'string'
-    ) {
-      break;
-    }
-    current = cause as RendererErrorObservation;
-  }
-  return current;
-}
-
-function subscribeRendererErrors(
-  renderer: RendererType,
-  listener: (error: RendererErrorObservation) => void,
-): () => void {
-  return renderer.subscribe((event) => {
-    if (event.kind === 'error') listener(unwrapRendererError(event.error));
-  });
-}
-
-function drawPublished(renderer: RendererType, world: WorldType) {
-  const attached = renderer.attach(world);
-  if (!attached.ok) throw attached.error;
-  world.update().unwrap();
-  return drawWithOwners(renderer, world);
-}
-
-// feat-20260704-runtime-tier1-decomposition M2 / w12: reconstitute the
-// eliminated top-level RuntimeErrorCode aggregate union (D-3) as a test-local
-// alias so the exhaustive-switch bodies below stay byte-identical (AC-09).
-type RuntimeLayerErrorCode = RenderErrorCode | AssetRuntimeErrorCode | SkinErrorCode;
-
-import {
-  AnimationTargetId,
-  bindAnimationTargets,
-  advanceAnimationPlayer as canonicalAdvanceAnimationPlayer,
-} from '@forgeax/engine-animation';
-import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
-import { DeviceScope } from '../../../render/src/device/device-scope';
-import { GpuBuffer } from '../../../render/src/gpu-resource';
-import { getOrCreateIblCache, hasIblCache } from '../../../render/src/ibl/IblPipelineCache';
-import {
-  disposeInstanceBuffers,
-  type InstanceBufferCacheEntry,
-} from '../../../render/src/instance-buffer-cache';
-import { standardPipeline as urpPipeline } from '../../../render/src/pipeline/standard-pipeline';
-import { ZERO_CAMERA_CLEAR_FALLBACK } from '../../../render/src/record/frame-snapshot';
-import {
-  warnMultiLightDirectional,
-  warnMultiLightPoint,
-  warnMultiLightSpot,
-} from '../../../render/src/record/helpers';
-import type { CameraSnapshot } from '../../../render/src/render-contract';
-import {
-  type ExtractedLights,
-  prepareExtractContext,
-} from '../../../render/src/render-system-extract';
-import { extractFrame, extractFrames } from '../../../render/src/render-system-extract-tail';
-import {
-  getTransparentSortConfig,
-  setTransparentSortConfig,
-  TRANSPARENT_SORT_CONFIG_KEY,
-  TRANSPARENT_SORT_MODE_LAYER_Y,
-  TRANSPARENT_SORT_MODE_LAYER_YZ,
-  TRANSPARENT_SORT_MODE_LAYER_Z,
-} from '../../../render/src/systems/transparent-sort-config';
-import { spriteAnimationTickSystem } from '../systems/sprite-animation-tick';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
-
-void [
-  ANTIALIAS_FXAA,
-  ANTIALIAS_NONE,
-  AnimationPlayer,
-  AnimationTargetId,
-  AssetRegistry,
-  BLOOM_DISABLED,
-  BLOOM_ENABLED,
-  CAMERA_PROJECTION_ORTHOGRAPHIC,
-  CAMERA_PROJECTION_PERSPECTIVE,
-  Camera,
-  ChildOf,
-  DeviceScope,
-  ENTITY_NULL_RAW,
-  GpuBuffer,
-  INSTANCE_STORAGE_STRIDE_FLOATS,
-  MeshFilter,
-  MeshRenderer,
-  Name,
-  SPRITE_PLAYBACK_MODE_CLAMP,
-  SPRITE_PLAYBACK_MODE_LOOP,
-  Skin,
-  SkinInstancesCoexistForbiddenError,
-  SkinJointCountExceededError,
-  SkinJointDespawnedError,
-  SkinJointPathUnresolvedError,
-  SkyboxBackground,
-  Skylight,
-  SpriteAnimation,
-  SpriteAnimationInvalidError,
-  SpriteRegionOverride,
-  TONEMAP_LUMINANCE_EPSILON,
-  TRANSPARENT_SORT_CONFIG_KEY,
-  TRANSPARENT_SORT_MODE_LAYER_Y,
-  TRANSPARENT_SORT_MODE_LAYER_YZ,
-  TRANSPARENT_SORT_MODE_LAYER_Z,
-  Transform,
-  World,
-  ZERO_CAMERA_CLEAR_FALLBACK,
-  afterEach,
-  assembleMaterialWithSkylightEntries,
-  beforeAll,
-  beforeEach,
-  bindAnimationTargets,
-  buildPbrPipelineLayouts,
-  buildUnlitMaterialBgl,
-  cameraProjectionFromF32,
-  canonicalAdvanceAnimationPlayer,
-  componentFieldDefault,
-  componentFieldType,
-  componentSchemaTypes,
-  createSkinPaletteAllocator,
-  createSkylightFallback,
-  deriveAnimationTargetId,
-  describe,
-  disposeInstanceBuffers,
-  drawPublished,
-  drawWithOwners,
-  expect,
-  extractFrame,
-  extractFrames,
-  fileURLToPath,
-  getOrCreateIblCache,
-  getTransparentSortConfig,
-  hasIblCache,
-  it,
-  makeMockShaderRegistry,
-  mat4,
-  prepareExtractContext,
-  propagateTransforms,
-  readFileSync,
-  resolve,
-  rhiOk,
-  selectSwapChainFormat,
-  setTransparentSortConfig,
-  spriteAnimationTickSystem,
-  standardMaterialShaderVariants,
-  subscribeRendererErrors,
-  toShared,
-  unwrapRendererError,
-  urpPipeline,
-  vec3,
-  vi,
-  warnMultiLightDirectional,
-  warnMultiLightPoint,
-  warnMultiLightSpot,
-  worldInternal,
-];
-type __MergedKeep =
-  | AssetRuntimeErrorCode
-  | BindGroupEntry
-  | Buffer
-  | CameraProjection
-  | CameraSnapshot
-  | EntityHandle
-  | ExtractedLights
-  | Handle
-  | InstanceBufferCacheEntry
-  | MaterialAsset
-  | MeshAsset
-  | RenderErrorCode
-  | RendererErrorObservation
-  | RendererType
-  | RuntimeLayerErrorCode
-  | Sampler
-  | SkeletonAsset
-  | SkinErrorCode
-  | Texture
-  | TextureFormat
-  | TextureView
-  | WorldType;
-
-// Split source block: skin M2 extract happy path.
-// ── feat-20260612-skin-palette-per-frame-upload M2: extractFrame hasSkin ──
-// Helpers shared by m2-1..m2-4 tests covering the T-21 placeholder retirement
-// (real allocator wiring + 3 new SkinExtractErrorCode routings + assets===null
-// bind-pose equivalence).
-
-const SKIN_M2_AABB = new Float32Array([-1, -1, -1, 1, 1, 1]);
-// Skinned: 18 floats / vertex × 3 vertices = 54 (12 base + skinIndex u16x4 packed in 2 floats at slots 12-13 + skinWeight vec4 at slots 14-17).
-// validateMeshPayload (asset-registry feat: validateMeshPayload skin-aware stride) rejects skin meshes at the 12F stride.
-const SKIN_M2_TRIANGLE_VERTICES = new Float32Array([
-  // v0: pos (0,0,0) | normal (0,0,1) | uv (0,0) | tangent (0,0,0,1) | skin (0,0) | weight (0,0,0,0)
-  0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-  // v1: pos (1,0,0) | normal (0,0,1) | uv (1,0) | tangent (0,0,0,1) | skin (0,0) | weight (0,0,0,0)
-  1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-  // v2: pos (0,1,0) | normal (0,0,1) | uv (0,1) | tangent (0,0,0,1) | skin (0,0) | weight (0,0,0,0)
-  0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-]);
-const SKIN_M2_TRIANGLE_POSITIONS = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-
-const SKIN_M2_IDENTITY_TRANSFORM = {
-  pos: [0, 0, 0],
-  quat: [0, 0, 0, 1],
-  scale: [1, 1, 1],
-} as const;
-
-function makeSkinM2AssetRegistry(): AssetRegistry {
-  const shaderRegistry = makeMockShaderRegistry();
-  shaderRegistry.installMaterialArtifact('forgeax::pbr-skin', {
-    source: 'fn main() {}',
-    paramSchema: [
-      { name: 'baseColor', type: 'color', default: [1.0, 1.0, 1.0, 1.0] },
-      { name: 'metallic', type: 'f32', default: 0.0 },
-      { name: 'roughness', type: 'f32', default: 0.5 },
-    ],
-  });
-  return new AssetRegistry(shaderRegistry);
-}
-
-function registerSkinM2Mesh(world: World): Handle<'MeshAsset', 'shared'> {
-  return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-    kind: 'mesh',
-    vertices: SKIN_M2_TRIANGLE_VERTICES,
-    indices: new Uint16Array([0, 1, 2]),
-    attributes: {
-      ...buildMeshAttributeMapForUvSets(1),
-      position: SKIN_M2_TRIANGLE_POSITIONS,
-      skinIndex: new Uint16Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-      skinWeight: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
-    },
-    aabb: SKIN_M2_AABB,
-    materialSlots: [{ slotName: 'Default' }],
-    submeshes: [
-      {
-        indexOffset: 0,
-        indexCount: 3,
-        vertexCount: 3,
-        materialSlot: 0,
-        topology: 'triangle-list',
-      },
-    ],
-  });
-}
-
-function registerSkinM2PbrSkinMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::pbr-skin' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [1, 1, 1] },
-  });
-}
-
-function registerSkinM2Skeleton(
-  world: World,
-  jointCount: number,
-): Handle<'SkeletonAsset', 'shared'> {
-  const ibm = new Float32Array(jointCount * 16);
-  for (let j = 0; j < jointCount; j++) {
-    ibm[j * 16 + 0] = 1;
-    ibm[j * 16 + 5] = 1;
-    ibm[j * 16 + 10] = 1;
-    ibm[j * 16 + 15] = 1;
-  }
-  return world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
-    kind: 'skeleton',
-    inverseBindMatrices: ibm,
-    jointCount,
-  });
-}
-
-function spawnSkinM2Camera(world: World): void {
-  world
-    .spawn(
-      { component: Transform, data: { ...SKIN_M2_IDENTITY_TRANSFORM, pos: [0, 0, 5] } },
-      {
-        component: Camera,
-        data: {
-          fov: Math.PI / 4,
-          aspect: 1,
-          near: 0.1,
-          far: 100,
-          projection: 0,
-          left: -1,
-          right: 1,
-          bottom: -1,
-          top: 1,
-        },
-      },
-    )
+async function fixture() {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const base = createPrimitiveMesh('triangle').unwrap();
+  const attributes = {
+    ...base.attributes,
+    skinIndex: new Uint16Array(12),
+    skinWeight: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+  };
+  const mesh = assets
+    .create({
+      ...base,
+      attributes,
+      vertices: packInterleavedVertexAttributes(attributes, 3).unwrap().vertices,
+    })
     .unwrap();
-}
-
-function spawnSkinM2Joint(world: World): EntityHandle {
-  return world
-    .spawn({ component: Transform, data: SKIN_M2_IDENTITY_TRANSFORM })
-    .unwrap() as unknown as EntityHandle;
-}
-
-function spawnSkinM2SkinnedEntity(
-  world: World,
-  meshHandle: Handle<'MeshAsset', 'shared'>,
-  matHandle: Handle<'MaterialAsset', 'shared'>,
-  skeletonHandle: Handle<'SkeletonAsset', 'shared'>,
-  jointEntities: readonly EntityHandle[],
-): EntityHandle {
-  const joints = new Uint32Array(jointEntities.length);
-  for (let j = 0; j < jointEntities.length; j++) {
-    joints[j] = jointEntities[j] as unknown as number;
-  }
-  return world
-    .spawn(
-      { component: Transform, data: SKIN_M2_IDENTITY_TRANSFORM },
-      { component: MeshFilter, data: { assetHandle: meshHandle } },
-      { component: MeshRenderer, data: { materials: [matHandle] } },
-      { component: Skin, data: { skeleton: skeletonHandle, joints } },
-    )
-    .unwrap() as unknown as EntityHandle;
-}
-
-type SkinM2StubAllocator = {
-  buffer: null;
-  allocatePersistentSlice(input: {
-    identity: string;
-    generation: number;
-    jointCount: number;
-    bounds?: Float32Array;
-  }): SkinM2PersistentReceipt;
-  observePersistentJoints(
-    identity: string,
-    ibms: readonly Float32Array[],
-    jointWorlds: readonly Float32Array[],
-  ): readonly number[];
-  allocateSlice(jointCount: number): { jointCount: number; byteOffset: number; buffer: null };
-  writeJointPalette(
-    slice: { jointCount: number; byteOffset: number },
-    ibms: readonly Float32Array[],
-    jointWorlds: readonly Float32Array[],
-  ): void;
-  beginFrame(): void;
-  endFrame(): void;
-  releasePersistentSlice(identity: string): void;
-  writePersistentJointPalette(receipt: SkinM2PersistentReceipt): void;
-  resetForFrame(): void;
-  _resetCount(): number;
-  _writeCount(): number;
-};
-
-type SkinM2PersistentReceipt = {
-  identity: string;
-  generation: number;
-  jointCount: number;
-  byteOffset: number;
-  buffer: null;
-};
-
-function makeSkinM2StubAllocator(): SkinM2StubAllocator {
-  let cursor = 0;
-  let resetCount = 0;
-  let writeCount = 0;
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const allocator = createSkinPaletteOwner(device, true);
+  const joint = () => world.spawn({ component: Transform, data: {} }).unwrap() as EntityHandle;
+  const spawn = (count: number, joints: EntityHandle[]) => {
+    const inverseBindMatrices = new Float32Array(count * 16);
+    for (let index = 0; index < count; index++)
+      for (const diagonal of [0, 5, 10, 15]) inverseBindMatrices[index * 16 + diagonal] = 1;
+    const skeleton = assets
+      .create({ kind: 'skeleton', jointCount: count, inverseBindMatrices })
+      .unwrap();
+    return world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: {} },
+        { component: Skin, data: { skeleton, joints } },
+      )
+      .unwrap();
+  };
+  const extract = () => {
+    propagateTransforms(world);
+    return extractFrames(
+      [world],
+      { cameraOwner: 0, resourceOwner: 0 },
+      assets,
+      { skinPaletteAllocator: allocator },
+      undefined,
+      { cull: 'none' },
+    );
+  };
   return {
-    buffer: null,
-    allocateSlice(jointCount: number) {
-      const offset = cursor;
-      // 256-aligned bump (mirrors real allocator dyn-offset alignment).
-      cursor = (cursor + jointCount * 64 + 255) & ~255;
-      return { jointCount, byteOffset: offset, buffer: null };
+    assets,
+    world,
+    allocator,
+    joint,
+    spawn,
+    extract,
+    dispose() {
+      allocator.dispose();
+      assets.dispose();
     },
-    writeJointPalette() {
-      writeCount++;
-    },
-    observePersistentJoints() {
-      return [];
-    },
-    allocatePersistentSlice(input) {
-      const slice = this.allocateSlice(input.jointCount);
-      return {
-        ...slice,
-        identity: input.identity,
-        generation: input.generation,
-        fence: 1,
-        customDataStart: 0,
-        storageOrUniform: 'storage',
-        dirtyRanges: [{ startJoint: 0, jointCount: input.jointCount }],
-        uploadBytes: input.jointCount * 64,
-        ...(input.bounds === undefined ? {} : { bounds: input.bounds }),
-      };
-    },
-    writePersistentJointPalette() {
-      writeCount++;
-    },
-    beginFrame() {},
-    endFrame() {},
-    releasePersistentSlice() {},
-    resetForFrame() {
-      cursor = 0;
-      resetCount++;
-    },
-    _resetCount: () => resetCount,
-    _writeCount: () => writeCount,
   };
 }
 
-type ExtractFramesWithPipeline = (
-  worlds: readonly World[],
-  owner: number,
-  a: AssetRegistry | null,
-  p: { skinPaletteAllocator: SkinM2StubAllocator },
-) => ReturnType<typeof extractFrames>;
+it('allocates distinct aligned palettes for two entities sharing managed geometry', async () => {
+  const f = await fixture();
+  try {
+    f.spawn(2, [f.joint(), f.joint()]);
+    f.spawn(2, [f.joint(), f.joint()]);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const frame = f.extract();
+    expect(error).not.toHaveBeenCalled();
+    expect(frame.renderables).toHaveLength(2);
+    const skins = frame.renderables.map((row) => row.skin);
+    expect(skins.every((skin) => skin?.jointCount === 2 && skin.byteOffset % 256 === 0)).toBe(true);
+    expect(skins[0]?.byteOffset).not.toBe(skins[1]?.byteOffset);
+  } finally {
+    f.dispose();
+  }
+});
 
-{
-  // --- m2-1: hasSkin happy path -> non-zero byteOffset ---
-  describe('feat-20260612 M2 / m2-1: hasSkin happy path -> non-zero byteOffset', () => {
-    it('two skinned entities -> first slice byteOffset>=0, second>0; writeJointPalette called twice (m2-1)', () => {
-      const world = new World();
-      const assets = makeSkinM2AssetRegistry();
-      const meshHandle = registerSkinM2Mesh(world);
-      const matHandle = registerSkinM2PbrSkinMaterial(world);
-      const skeletonHandle = registerSkinM2Skeleton(world, 2);
-      spawnSkinM2Camera(world);
-      const joint0a = spawnSkinM2Joint(world);
-      const joint0b = spawnSkinM2Joint(world);
-      const joint1a = spawnSkinM2Joint(world);
-      const joint1b = spawnSkinM2Joint(world);
-      spawnSkinM2SkinnedEntity(world, meshHandle, matHandle, skeletonHandle, [joint0a, joint0b]);
-      spawnSkinM2SkinnedEntity(world, meshHandle, matHandle, skeletonHandle, [joint1a, joint1b]);
-      propagateTransforms(world);
-
-      const allocator = makeSkinM2StubAllocator();
-      const pipelineState = { skinPaletteAllocator: allocator };
-      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-      const frame = (extractFrames as unknown as ExtractFramesWithPipeline)(
-        [world],
-        0,
-        assets,
-        pipelineState,
-      );
-
-      // resetForFrame called exactly once at extractFrames entry (D-9 revised M2/D-2).
-      expect(allocator._resetCount()).toBe(1);
-      // writeJointPalette called once per skinned entity (count=2).
-      expect(allocator._writeCount()).toBe(2);
-      // No errors fired on happy path.
-      expect(errorSpy).not.toHaveBeenCalled();
-      // Both renderables emerge with .skin populated.
-      const skinned = frame.renderables.filter((r) => r.skin !== undefined);
-      expect(skinned.length).toBe(2);
-      const s0 = skinned[0];
-      const s1 = skinned[1];
-      if (s0?.skin === undefined || s1?.skin === undefined) {
-        throw new Error('expected both renderables to carry skin slice');
-      }
-      // m2-1 acceptanceCheck: byteOffset !== 0 (or toBeGreaterThan(-1))
-      // + jointCount === N. Truth-value of the allocator: first slice has
-      // byteOffset === 0 (cursor start) AND second has byteOffset > 0.
-      expect(s0.skin.jointCount).toBe(2);
-      expect(s1.skin.jointCount).toBe(2);
-      expect(s0.skin.byteOffset).toBeGreaterThan(-1);
-      expect(s1.skin.byteOffset).toBeGreaterThan(-1);
-      expect(s1.skin.byteOffset).not.toBe(0);
-      expect(s0.skin.byteOffset % 256).toBe(0);
-      expect(s1.skin.byteOffset % 256).toBe(0);
-    });
-  });
-}
+it.each([
+  'joint-count-mismatch',
+  'joint-entity-dangling',
+] as const)('isolates %s while a valid sibling keeps its palette', async (code) => {
+  const f = await fixture();
+  try {
+    const joint = f.joint();
+    f.spawn(code === 'joint-count-mismatch' ? 2 : 1, [joint]);
+    f.spawn(1, [f.joint()]);
+    if (code === 'joint-entity-dangling') f.world.despawn(joint).unwrap();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const frame = f.extract();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[1]).toMatchObject({ code });
+    expect(frame.renderables.filter((row) => row.skin !== undefined)).toHaveLength(1);
+  } finally {
+    f.dispose();
+  }
+});

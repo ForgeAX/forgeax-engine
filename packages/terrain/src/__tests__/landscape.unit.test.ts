@@ -1,3 +1,4 @@
+import { normalizeMeshPayload } from '@forgeax/engine-geometry';
 import type { TerrainSource } from '@forgeax/engine-types';
 import { type Asset, type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -26,16 +27,20 @@ describe('Landscape foundation falsifiers', () => {
       width: 1,
       lod: 0,
       neighbors: [0, 0, 0, 0],
-      heightRange: cancellation.heightRange,
-      heights: defined(cancellation.sections[0]).height.data,
+      textureWidth: cancellation.height.shape.extent.width,
+      textureHeight: cancellation.height.shape.extent.height,
+      sectionIndex: 0,
+      heights: cancellation.height.data,
     };
     expect(terrainSurfaceVertex(surface, 1, 1)[1]).toBe(Math.fround(-0.1));
     expect(terrainSurfaceHeight(surface, 1, 1)).toBe(Math.fround(-0.1));
     const shifted = cookTerrain(source(2, 2, [0.1, 0.1, 0.1, 10000])).unwrap();
     const shiftedSurface = {
       ...surface,
-      heightRange: shifted.heightRange,
-      heights: defined(shifted.sections[0]).height.data,
+      textureWidth: shifted.height.shape.extent.width,
+      textureHeight: shifted.height.shape.extent.height,
+      sectionIndex: 0,
+      heights: shifted.height.data,
     };
     const local = terrainSurfaceVertex(shiftedSurface, 0, 0);
     const posed = terrainSurfaceVertex(shiftedSurface, 0, 0, [7, 13], [100, 10000, 200]);
@@ -52,20 +57,19 @@ describe('Landscape foundation falsifiers', () => {
         {
           ...surface,
           width: 1e-7,
-          heightRange: tiny.heightRange,
-          heights: defined(tiny.sections[0]).height.data,
+          textureWidth: tiny.height.shape.extent.width,
+          textureHeight: tiny.height.shape.extent.height,
+          sectionIndex: 0,
+          heights: tiny.height.data,
         },
         5e-8,
         5e-8,
       ),
     ).toBeCloseTo(1, 6);
   });
-  it('rejects a successful source whose cooked range is not representable', () => {
-    expect(cookTerrain(source(2, 2, [1e12, 1e12, 1e12, 1e12]))).toMatchObject({
-      ok: false,
-      error: { code: 'terrain-input-invalid', detail: { field: 'heightRange' } },
-    });
-    expect(cookTerrain(source(2, 2, [-3e38, 3e38, -3e38, 3e38])).ok).toBe(false);
+  it('retains wide finite f32 heights and rejects overflowing GPU bounds', () => {
+    expect(cookTerrain(source(2, 2, [1e12, 1e12, 1e12, 1e12])).ok).toBe(true);
+    expect(cookTerrain(source(2, 2, [-3e38, 3e38, -3e38, 3e38])).ok).toBe(true);
     expect(
       cookTerrain(source(2, 2, [0, 3.4028234663852886e38, 0, 3.4028234663852886e38])),
     ).toMatchObject({
@@ -88,7 +92,7 @@ describe('Landscape foundation falsifiers', () => {
       });
     }
   });
-  it('builds deterministic GUID-linked Standard arrays and rejects unsupported layer shaders', () => {
+  it('builds deterministic GUID-linked Standard layer declarations and rejects unsupported layer shaders', () => {
     const terrain = source(2, 2, [0, 0, 0, 1]);
     const material: MaterialAsset = {
       kind: 'material',
@@ -102,12 +106,11 @@ describe('Landscape foundation falsifiers', () => {
       kind: 'terrain',
       materialEncoding: { kind: 'weights' },
       grids: ['grid/0'],
-      sections: [{ heightTexture: 'section/0/height', material: 'section/0/material' }],
+      sections: [{ heightTexture: 'height', material: 'section/0/material' }],
     });
-    expect(built['section/0/terrain-color-layers']).toMatchObject({
-      kind: 'texture',
-      format: 'rgba16float',
-      shape: { viewDimension: '2d-array', extent: { layers: 4 } },
+    expect(Object.keys(built).some((key) => key.includes('color-layers'))).toBe(false);
+    expect(built['section/0/material']).toMatchObject({
+      values: { terrainLayerIndices: [0, -1, -1, -1] },
     });
     expect(
       buildTerrainAssets(terrain, (key) => key, {
@@ -123,22 +126,23 @@ describe('Landscape foundation falsifiers', () => {
       }).ok,
     ).toBe(false);
   });
-  it('queries the actual quantized and morphed triangles rather than author heights', () => {
+  it('queries the actual sampled and morphed triangles', () => {
     const n = 8,
       heights = Array.from(
         { length: n * n },
         (_, i) => Math.sin((i % 8) * 2.3 + Math.floor(i / 8) * 1.7) * 2,
       );
     const terrain = { ...source(n, n, heights), subsectionVertices: n };
-    const cooked = cookTerrain(terrain).unwrap(),
-      section = defined(cooked.sections[0]);
+    const cooked = cookTerrain(terrain).unwrap();
     const surface = {
       vertices: n,
       width: n - 1,
       lod: 1.5,
       neighbors: [2, 1.5, 1.5, 1.5],
-      heightRange: cooked.heightRange,
-      heights: section.height.data,
+      textureWidth: cooked.height.shape.extent.width,
+      textureHeight: cooked.height.shape.extent.height,
+      sectionIndex: 0,
+      heights: cooked.height.data,
     };
     const vertex = terrainSurfaceVertex(surface, 2, 1);
     expect(terrainSurfaceHeight(surface, vertex[0], vertex[2])).toBeCloseTo(vertex[1], 5);
@@ -184,7 +188,9 @@ describe('Landscape foundation falsifiers', () => {
           width: 254,
           lod: 0.5,
           neighbors: [0.5, 0.5, 0.5, 0.5],
-          heightRange: [0, 1],
+          textureWidth: 128,
+          textureHeight: 128,
+          sectionIndex: 0,
           heights: new Uint8Array(128 * 128 * 8),
         },
         111,
@@ -229,12 +235,12 @@ describe('Landscape foundation falsifiers', () => {
   it('cooks identical shared-edge bytes and retains conservative source bounds', () => {
     const terrain = source(3, 2, [0, 1, 2, 3, 4, 5]);
     const cooked = cookTerrain(terrain).unwrap();
-    const [a, b] = cooked.sections;
-    expect(a?.height.data.slice(4, 8)).toEqual(b?.height.data.slice(0, 4));
-    expect(a?.height.data.slice(12, 16)).toEqual(b?.height.data.slice(8, 12));
+    const [a] = cooked.sections;
+    const bytes = cooked.height.data;
+    expect(bytes.slice(4, 8)).toEqual(bytes.slice(8, 12));
+    expect(bytes.slice(20, 24)).toEqual(bytes.slice(24, 28));
     expect(a).toMatchObject({ minHeight: 0, maxHeight: 4 });
-    expect(cooked.heightError).toBeLessThan(0.0001);
-    expect(cookTerrain(terrain).unwrap().sections[0]?.height.data).toEqual(a?.height.data);
+    expect(cookTerrain(terrain).unwrap().height.data).toEqual(cooked.height.data);
   });
 });
 
@@ -242,6 +248,39 @@ function defined<T>(value: T | undefined | null): T {
   if (value === undefined || value === null) throw new Error('expected defined test value');
   return value;
 }
+
+it('admits identical grid topology after JSON decode narrows index storage', () => {
+  const layer: MaterialAsset = {
+    kind: 'material',
+    parameters: standardSurfaceParameters([]),
+    passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+  };
+  const outputs = buildTerrainAssets(
+    { ...source(8, 8, new Array(64).fill(0)), subsectionVertices: 8 },
+    (key) => key,
+    { material: layer },
+  ).unwrap();
+  const root = outputs.terrain;
+  if (root?.kind !== 'terrain') throw new Error('expected terrain');
+  const closure = new Map<string, Asset>(Object.entries({ material: layer, ...outputs }));
+  for (const [key, asset] of closure) {
+    if (asset.kind !== 'mesh') continue;
+    const payload = JSON.parse(
+      JSON.stringify(asset, (_key, value) =>
+        ArrayBuffer.isView(value) ? Array.from(value as Uint32Array) : value,
+      ),
+    );
+    const decoded = normalizeMeshPayload(payload, []);
+    if (decoded === undefined) throw new Error('expected a decoded grid');
+    expect(decoded.indices).toBeInstanceOf(Uint16Array);
+    closure.set(key, decoded);
+  }
+  expect(terrainDerivedClosureValid(root, closure)).toBe(true);
+  const first = closure.get('grid/0');
+  if (first?.kind !== 'mesh' || first.indices === undefined) throw new Error('expected a grid');
+  first.indices[0] = 1;
+  expect(terrainDerivedClosureValid(root, closure)).toBe(false);
+});
 
 it.each([
   2, 8,
@@ -273,8 +312,10 @@ it.each([
       width: (n - 1) * root.spacing,
       lod: 0,
       neighbors: [0, 0, 0, 0],
-      heightRange: cooked.heightRange,
-      heights: section.height.data,
+      textureWidth: cooked.height.shape.extent.width,
+      textureHeight: cooked.height.shape.extent.height,
+      sectionIndex: index,
+      heights: cooked.height.data,
     };
     for (let z = 0; z < n; z++)
       for (let x = 0; x < n; x++) {

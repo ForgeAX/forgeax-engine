@@ -4,17 +4,15 @@ import type { AssetReferenceService } from '@forgeax/view-workspace-core/asset-r
 import { sameAssetReferenceScope } from '@forgeax/view-workspace-core/asset-references';
 import { FRONTEND_PLUGIN_ID } from './identity.ts';
 import { assetReferenceScope, createAssetReferenceSession } from './session.ts';
-import assetReferenceProgram from './runtime/program.ts';
 
 export default {
   name: FRONTEND_PLUGIN_ID,
-  inject: ['viewOperationClient', 'toolApi'],
+  inject: ['viewOperationClient'],
   provide: ['viewAssetReferences'],
   apply(ctx: Context, config: FrontendConfig = {}) {
     const client = ctx.get('viewOperationClient');
-    const api = ctx.get('toolApi');
-    if (!client || !api) return;
-    const session = createAssetReferenceSession({ client, api, program: assetReferenceProgram });
+    if (!client) return;
+    const session = createAssetReferenceSession({ client });
     const service: AssetReferenceService = { ...session, open: async guid => {
       const scope = session.getState().scope;
       if (!scope) return Promise.reject(new Error('asset-reference-scene-unavailable'));

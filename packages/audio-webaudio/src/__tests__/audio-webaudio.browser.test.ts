@@ -32,45 +32,7 @@
 //     which reports pass/fail to the orchestrator — no self-reported image claims.
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { audioLoader } from '../audio-loader';
 import { WebAudioEngine } from '../web-audio-engine';
-
-describe('M6 Pack v2 audio loader contract', () => {
-  it('rejects missing local artifacts and reports invalid media structurally', async () => {
-    const missingArtifact = (await audioLoader.loadPack?.(
-      {
-        guid: 'audio-guid',
-        kind: 'audio',
-        payload: { kind: 'audio' },
-        refs: [],
-        artifacts: {},
-      } as never,
-      {} as never,
-    )) as { ok: boolean; error?: { code?: string } };
-    expect(missingArtifact.ok).toBe(false);
-    if (!missingArtifact.ok)
-      expect(missingArtifact.error?.code).toBe('asset-artifact-media-unsupported');
-
-    const invalidArtifact = (await audioLoader.loadPack?.(
-      {
-        guid: 'audio-guid',
-        kind: 'audio',
-        payload: { kind: 'audio' },
-        refs: [],
-        artifacts: {
-          source: {
-            descriptor: { path: 'audio.ogg', mediaType: 'application/octet-stream' },
-            bytes: Uint8Array.of(0, 1, 2),
-          },
-        },
-      } as never,
-      {} as never,
-    )) as { ok: boolean; error?: { code?: string } };
-    expect(invalidArtifact.ok).toBe(false);
-    if (!invalidArtifact.ok)
-      expect(invalidArtifact.error?.code).toBe('asset-artifact-media-unsupported');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
-import {
-  AssetRegistry,
-  RuntimeMeshVertices,
-  resolveAssetHandle,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
@@ -33,11 +30,13 @@ it.each(
   steps,
   deferThird,
 }) => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const identity = { source: 'cpu-successor-ownership', epoch: 1 };
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const handle = world.allocSharedRef('MeshAsset', mesh);
+  const handle = assets.create(mesh).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -52,9 +51,6 @@ it.each(
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
-  const content = world
-    .spawn({ component: RuntimeMeshVertices, data: { asset: handle, vertices: mesh.vertices } })
-    .unwrap();
   world
     .addSystem(FixedUpdate, {
       name: 'author-dynamic-mesh',
@@ -63,7 +59,7 @@ it.each(
         const tick = world.getResource(FixedTime).tick;
         const vertices = new Float32Array(mesh.vertices);
         vertices[0] = tick;
-        world.set(content, RuntimeMeshVertices, { vertices }).unwrap();
+        assets.update(handle, { vertices }).unwrap();
         world.set(entity, Transform, { pos: [tick, 0, 0] }).unwrap();
       },
     })
@@ -135,7 +131,7 @@ it.each(
     world.update(steps / 60).unwrap();
     const successorTick = world.getResource(FixedTime).tick;
     expect(successorTick).toBe(3 + steps);
-    expect(resolveAssetHandle(world, handle).unwrap()).not.toBe(retainedMesh);
+    expect(runtimeAssets(assets).borrow(handle).unwrap()).not.toBe(retainedMesh);
     expect(extracted).toEqual([1, 2, 3]);
     expect(publisher.prepare(0)).toMatchObject({
       ok: false,
@@ -176,5 +172,6 @@ it.each(
   } finally {
     receiver.dispose();
     publisher.dispose();
+    assets.dispose();
   }
 });

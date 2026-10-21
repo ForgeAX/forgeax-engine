@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { SkyboxBackground, Skylight, TONEMAP_ACES_FILMIC } from '@forgeax/engine/render';
 import type { EquirectAsset } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 import { proceduralEquirect } from './support/scene';
 
 // An 8-bit equirect is outside the linear-HDR projection contract.
@@ -26,18 +28,28 @@ export default defineFeature({
   expect:
     'ON: the background is the procedural sky: blue above, a white horizon band, orange below. OFF: the SkyboxBackground entity is despawned; the sphere keeps its IBL lighting but the background falls back to the camera clear color. Check: an 8-bit equirect source reports invalid-source-format.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, {
       eye: [0, 0, 4],
       target: [0, 0, 0],
       data: { tonemap: TONEMAP_ACES_FILMIC },
     });
-    const equirect = world.allocSharedRef('EquirectAsset', proceduralEquirect());
+    const equirect = sceneAssets.create(proceduralEquirect()).unwrap();
     const skylight = world
       .spawn({ component: Skylight, data: { equirect, intensity: 1 } as never })
       .unwrap();
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [1, 1, 1, 1], metallic: 1, roughness: 0.1 }),
       { pos: [0, 0, 0], scale: [0.6, 0.6, 0.6] },
     );
@@ -62,7 +74,7 @@ export default defineFeature({
         });
         world.despawn(skybox).unwrap();
         world.despawn(skylight).unwrap();
-        const invalid = world.allocSharedRef('EquirectAsset', ldrEquirect());
+        const invalid = sceneAssets.create(ldrEquirect()).unwrap();
         world.spawn({ component: SkyboxBackground, data: { equirect: invalid } as never }).unwrap();
         await frames(6);
         stop();

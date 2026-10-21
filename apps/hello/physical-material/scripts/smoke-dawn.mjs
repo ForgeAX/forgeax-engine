@@ -286,6 +286,7 @@ const fullPhysicalMaterialGuid = '8a5a0001-0000-4000-8000-000000000008';
 const hdrEntry = packIndex.find((entry) => entry.guid === hdrGuid);
 const fullPhysicalMaterialEntry = packIndex.find((entry) => entry.guid === fullPhysicalMaterialGuid);
 let hdrPod;
+let hdrHandle;
 let hdrReceipt;
 let fullPhysicalMaterial;
 let fullPhysicalMaterialLoad;
@@ -337,20 +338,20 @@ assets.configurePackIndex('/pack-index.json');
 try {
   const fullMaterialGuid = AssetGuid.parse(fullPhysicalMaterialGuid);
   if (!fullMaterialGuid.ok) throw new Error(`invalid physical material GUID: ${fullPhysicalMaterialGuid}`);
-  const loadedMaterial = await assets.loadByGuid(fullMaterialGuid.value);
+  const loadedMaterial = await assets.load(fullMaterialGuid.value, 'material');
   if (!loadedMaterial.ok) {
     throw new Error(`full physical material load failed: ${loadedMaterial.error.code} expected=${loadedMaterial.error.expected} hint=${loadedMaterial.error.hint}`);
   }
-  fullPhysicalMaterial = loadedMaterial.value;
+  fullPhysicalMaterial = assets.read(loadedMaterial.value).unwrap();
   for (const root of physicalMaterialRoots) {
     if (root.guid === fullPhysicalMaterialGuid) continue;
-    const loaded = await assets.loadByGuid(root.parent);
+    const loaded = await assets.load(root.parent, 'material');
     if (!loaded.ok) throw new Error(`physical root ${root.guid} load failed: ${loaded.error.code}`);
   }
   fullPhysicalMaterialLoad = {
     status: 'ok',
     guid: fullPhysicalMaterialGuid,
-    route: 'assets.loadByGuid',
+    route: 'assets.load',
     shader: fullPhysicalMaterial.passes?.[0]?.program.module,
     parameterNames: fullPhysicalMaterial.parameters?.map((parameter) => parameter.name),
   };
@@ -367,9 +368,10 @@ try {
       const bodyPath = resolve(dirname(packagePath), body.path);
       const parsedGuid = AssetGuid.parse(hdrGuid);
       if (parsedGuid.ok) {
-        const loaded = await assets.loadByGuid(parsedGuid.value);
+        const loaded = await assets.load(parsedGuid.value, 'equirect');
         if (loaded.ok) {
-          hdrPod = loaded.value;
+          hdrHandle = loaded.value;
+          hdrPod = assets.read(hdrHandle).unwrap();
           const bodyBytes = new Uint8Array(readFileSync(bodyPath));
           hdrReceipt = {
             sourceGuid: hdrGuid,
@@ -394,7 +396,7 @@ try {
               expectedDigest: body.integrity?.digest,
               actualDigest: `sha256:${createHash('sha256').update(bodyBytes).digest('hex')}`,
             },
-            load: 'assets.loadByGuid',
+            load: 'assets.load',
           };
           if (process.env.PHYSICAL_MATERIAL_DIAGNOSTICS === '1') {
             console.error(`[physical-material] IBL source receipt: ${JSON.stringify(hdrReceipt)}`);
@@ -407,7 +409,7 @@ try {
   globalThis.fetch = originalFetch;
 }
 const restoreConsole = captureWorldErrors(errors);
-const world = new World();
+const world = new World({ assets: assets });
 const { renderComponentsPlugin } = await import('@forgeax/engine-render');
 const { scenePlugin } = await import('@forgeax/engine-scene');
 await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
@@ -416,43 +418,28 @@ if (!meshResult.ok) {
   console.error(`[physical-material] geometry failed: ${meshResult.error.code}`);
   process.exit(1);
 }
-const rigidMeshHandle = world.allocSharedRef('MeshAsset', meshResult.value);
-const skinnedVertices = new Float32Array(3 * 18);
+const rigidMeshHandle = world.assets.create(meshResult.value).unwrap();
 const skinnedFixture = caseInput.geometry.skinned;
-const skinnedIndices = skinnedFixture.jointIndices.map((indices) => [...indices, 0, 0]);
-const skinnedWeights = skinnedFixture.weights.map((weights) => [...weights, 0, 0]);
-const skinnedBaseVertices = skinnedFixture.positions.map((position, vertex) => [
-  ...position,
-  0, 0, 1,
-  ...skinnedFixture.uv[vertex],
-  ...skinnedIndices[vertex],
-  ...skinnedWeights[vertex],
-]);
-const skinnedVertexU16 = new Uint16Array(skinnedVertices.buffer);
-for (let vertex = 0; vertex < skinnedBaseVertices.length; vertex += 1) {
-  const floatOffset = vertex * 18;
-  skinnedVertices.set(skinnedBaseVertices[vertex], floatOffset);
-  const uint16Offset = floatOffset * 2 + 24;
-  skinnedVertexU16.set(skinnedIndices[vertex], uint16Offset);
-  skinnedVertices.set(skinnedWeights[vertex], floatOffset + 14);
-}
+const skinnedAttributes = {
+  position: new Float32Array(skinnedFixture.positions.flat()),
+  normal: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+  uv: new Float32Array(skinnedFixture.uv.flat()),
+  tangent: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
+  skinIndex: new Uint16Array(skinnedFixture.jointIndices.flatMap((indices) => [...indices, 0, 0])),
+  skinWeight: new Float32Array(skinnedFixture.weights.flatMap((weights) => [...weights, 0, 0])),
+};
+const { packInterleavedVertexAttributes } = await import('@forgeax/engine-geometry');
+const skinnedVertices = packInterleavedVertexAttributes(skinnedAttributes, 3).unwrap().vertices;
 const skinnedMesh = {
   kind: 'mesh',
   vertices: skinnedVertices,
   indices: new Uint16Array([0, 1, 2]),
-  attributes: {
-    position: new Float32Array([-0.55, -0.55, 0, 0.55, -0.55, 0, 0, 0.55, 0]),
-    normal: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-    uv: new Float32Array([0, 0, 1, 0, 0.5, 1]),
-    tangent: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
-    skinIndex: new Uint16Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    skinWeight: new Float32Array([0.75, 0.25, 0, 0, 0.35, 0.65, 0, 0, 0.6, 0.4, 0, 0]),
-  },
+  attributes: skinnedAttributes,
   aabb: new Float32Array([-0.55, -0.55, 0, 0.55, 0.55, 0]),
   materialSlots: [{ slotName: 'Default' }],
   submeshes: [{ indexOffset: 0, indexCount: 3, vertexCount: 3, materialSlot: 0, topology: 'triangle-list' }],
 };
-const skinnedMeshHandle = world.allocSharedRef('MeshAsset', skinnedMesh);
+const skinnedMeshHandle = world.assets.create(skinnedMesh).unwrap();
 const skeletonMatrix = new Float32Array(16);
 skeletonMatrix[0] = 1;
 skeletonMatrix[5] = 1;
@@ -463,11 +450,11 @@ secondInverseBind[0] = 1;
 secondInverseBind[5] = 1;
 secondInverseBind[10] = 1;
 secondInverseBind[15] = 1;
-const skeletonHandle = world.allocSharedRef('SkeletonAsset', {
+const skeletonHandle = world.assets.create({
   kind: 'skeleton',
   inverseBindMatrices: new Float32Array([...skeletonMatrix, ...secondInverseBind]),
   jointCount: 2,
-});
+}).unwrap();
 
 function makeTexture(channel) {
   const data = new Uint8Array(4 * 4 * 4);
@@ -477,14 +464,14 @@ function makeTexture(channel) {
     data[index + 2] = channel === 'RG' ? 255 : 0;
     data[index + 3] = 255;
   }
-  return world.allocSharedRef('TextureAsset', {
+  return world.assets.create({
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
     format: 'rgba8unorm',
     data,
     colorSpace: 'linear',
     mips: { kind: 'none' },
-  });
+  }).unwrap();
 }
 
 function makeMaterial(item) {
@@ -502,7 +489,7 @@ function makeMaterial(item) {
   const module = physicalMaterialModule(item);
   const material = physicalMaterialChild(standardMaterial, module);
   describeMaterial(item, material);
-  return world.allocSharedRef('MaterialAsset', material);
+  return world.assets.create(material).unwrap();
 }
 
 const directCases = caseManifest.cases.filter((item) => item.lighting === 'direct');
@@ -739,6 +726,7 @@ const anchorEntity = directEntityByCaseId.get('direct-rigid-factor-r');
 let frameCapture;
 const directReceipt = await runRenderPhase({
   phase: 'direct',
+  maxPendingFrames: 120,
   frameCount: FRAME_COUNT,
   world,
   renderer,
@@ -821,9 +809,9 @@ const directMaterialBindingReceipt = renderer.inspect().meshMaterialBindings.map
 }));
 let directAnchorScalarCoverage;
 if (process.env.PHYSICAL_MATERIAL_RUN_ANCHOR_PROBE === '1' && anchorEntity !== undefined) {
-  const directProbeMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const directProbeMaterial = world.assets.create(Materials.standard({
     baseColor: [0.62, 0.14, 0.04, 1], metallic: 0, roughness: 0.42,
-  }));
+  })).unwrap();
   world.set(anchorEntity, MeshRenderer, { materials: [directProbeMaterial] }).unwrap();
   world.update().unwrap();
   const directProbeReceipt = renderer.draw(frameRequest);
@@ -952,7 +940,7 @@ async function capturePairMaterial(
   pairObservationHost = observationHost,
   pairFrameRequest = frameRequest,
 ) {
-  const handle = world.allocSharedRef('MaterialAsset', material);
+  const handle = world.assets.create(material).unwrap();
   const entity = directEntityByCaseId.get('direct-rigid-factor-r');
   if (entity === undefined) return { ok: false, error: new Error('paired entity is missing') };
   const resolvedMaterial = resolveMaterialAsset('pair', { pair: material, [fullPhysicalMaterialGuid]: fullPhysicalMaterial }).unwrap().asset;
@@ -961,7 +949,7 @@ async function capturePairMaterial(
   // Keep transition submissions separate from the final paired HDR witness.
   const warmupFrames = pairRenderer === renderer ? 1 : 2;
   const receipt = await runRenderPhase({
-    phase: 'paired', frameCount: warmupFrames + 1, world, renderer: pairRenderer,
+    phase: 'paired', maxPendingFrames: 120, frameCount: warmupFrames + 1, world, renderer: pairRenderer,
     frameRequest: pairFrameRequest, yieldFrame: yieldToFrameLoop,
     afterDraw: (_frame, current) => requireCurrentMaterials(current, pairRenderer),
   });
@@ -1086,12 +1074,12 @@ if (!mutantConstructed.ok) {
   errors.push('additive-mutant-host-construction-failed');
 } else {
   const mutantAssets = mutantConstructed.value.assets;
-  mutantAssets.configurePackIndex('/pack-index.json');
   globalThis.fetch = fetchPublished;
+  mutantAssets.configurePackIndex('/pack-index.json');
   try {
     for (const root of physicalMaterialRoots) {
-      const loaded = await mutantAssets.loadByGuid(root.parent);
-      if (!loaded.ok) throw new Error(`mutant root ${root.guid} load failed: ${loaded.error.code}`);
+      const loaded = await mutantAssets.load(root.parent, 'material');
+      if (!loaded.ok) throw new Error(`mutant root ${root.guid} load failed: ${JSON.stringify(loaded.error)}`);
     }
   } finally {
     globalThis.fetch = originalFetch;
@@ -1141,7 +1129,7 @@ if (hdrPod === undefined) {
   errors.push('ibl-guid-load-failed');
 } else {
   world.despawn(directionalLight).unwrap();
-  const equirect = world.allocSharedRef('EquirectAsset', hdrPod);
+  const equirect = hdrHandle;
   world.spawn({ component: Skylight, data: { equirect, intensity: 1 } }).unwrap();
   // Paired sentinel capture temporarily rebinds the shared anchor entity to
   // the additive-mutant material. Re-project every IBL case onto its own

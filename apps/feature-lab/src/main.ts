@@ -190,15 +190,18 @@ async function bootApp(def: AppFeature): Promise<void> {
   const app = created.value;
   const waiters: { target: number; resolve: () => void }[] = [];
   app.renderer.subscribe((event) => {
-    if (event.kind !== 'frame-submitted') return;
-    api.frame += 1;
-    for (let i = waiters.length - 1; i >= 0; i--) {
-      const waiter = waiters[i] as (typeof waiters)[number];
-      if (api.frame >= waiter.target) {
-        waiters.splice(i, 1);
-        waiter.resolve();
+    if (event.kind !== 'frame-submitted' || event.receipt.presentation !== 'ready') return;
+    void event.receipt.completed.then((completed) => {
+      if (!completed.ok) return;
+      api.frame += 1;
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        const waiter = waiters[i] as (typeof waiters)[number];
+        if (api.frame >= waiter.target) {
+          waiters.splice(i, 1);
+          waiter.resolve();
+        }
       }
-    }
+    });
   });
   app.onError((error) => {
     const cause = (error as { detail?: { cause?: unknown } }).detail?.cause;

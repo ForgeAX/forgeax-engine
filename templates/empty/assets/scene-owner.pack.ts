@@ -4,28 +4,27 @@ import { ok } from '@forgeax/engine/types';
 import type {} from '@forgeax/engine/assets-runtime';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { worldDespawnScene } from '@forgeax/engine/scene';
-import type { SceneAsset } from '@forgeax/engine/types';
 
 export const sceneOwner: Plugin.Object<{ readonly scene: string }> = {
   name: 'empty/scene',
   inject: ['assets', 'world'],
   async apply(ctx, config) {
     if (!ctx.assets) throw new Error('scene requires the asset service');
-    const loaded = await ctx.assets.loadByGuid<SceneAsset>(ctx.assets.parseGuid(config.scene));
+    const loaded = await ctx.assets.load(ctx.assets.parseGuid(config.scene), 'scene');
     if (!loaded.ok) throw loaded.error;
     ctx.effect(function* () {
-      const handle = ctx.world.allocSharedRef('SceneAsset', loaded.value);
+      const handle = loaded.value;
       yield () => {
-        ctx.world.sharedRefs.release(handle).unwrap();
+        ctx.assets!.release(handle).unwrap();
       };
-      const root = ctx.assets!.instantiate<SceneAsset>(handle, ctx.world).unwrap();
+      const root = ctx.assets!.instantiate(handle, ctx.world).unwrap();
       yield () => worldDespawnScene(ctx.world, root).unwrap();
     });
   },
 };
 
 export default definePack({
-  schemaVersion: '2.0.0',
+  schemaVersion: '2.0.0', plugins: true,
   packageId: definePackageId('019fb7ce-1100-7000-8000-000000000000'),
   build: () => ok({
     'plugin/scene': {

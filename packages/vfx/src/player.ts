@@ -6,7 +6,7 @@ import type { ParticleEffectInstance } from './instance.js';
 export const ParticleEffectPlayer = defineComponent('ParticleEffectPlayer', {
   // The VFX render owner re-resolves the compiled effect on the target world;
   // playback intent remains portable simulation state.
-  effect: { type: 'shared<ParticleEffectAsset>' },
+  effect: { type: 'asset<particle-effect>' },
   playing: { type: 'bool', default: true },
   // Keep effect GPU programs and storage ready while paused, without simulation or drawing.
   preparePipelines: { type: 'bool', default: false },

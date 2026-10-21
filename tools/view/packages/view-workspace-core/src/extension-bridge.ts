@@ -12,7 +12,7 @@ export const VIEW_EXTENSION_CAPABILITIES = Object.freeze({
   inspect: 'view.plugins.read',
 });
 
-const AUTHORING_OPERATIONS = new Set(['asset.source.rebuild', 'asset.source.cold-cook']);
+const AUTHORING_OPERATIONS = new Set(['asset.source.rebuild', 'asset.source.cold-cook', 'asset.source.draft']);
 const WORKSPACE_OPERATIONS = new Set(VIEW_WORKSPACE_DOMAIN_OPERATIONS);
 
 function requiredCapability(service: string, request: unknown) {

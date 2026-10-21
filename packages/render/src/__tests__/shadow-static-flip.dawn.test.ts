@@ -18,11 +18,14 @@ import {
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { addTypedShadowPasses } from '../typed-shadow-passes';
+import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
+import { updateShadowView } from './helpers/gpu-input-read-domain';
 
 // The real classifier and view pool decide every cache hit; only the leaf
 // caster encoders become constant-depth full-viewport draws, so a static-layer
@@ -66,17 +69,13 @@ vi.mock('../record/shadow-pass', async (importOriginal) => {
 const GPU_MAP_MODE_READ = 0x0001;
 const MAP_SIZE = 16;
 
-const material = {
-  baseColor: new Float32Array([1, 1, 1]),
-  metallic: 0,
-  roughness: 1,
-} as MaterialSnapshot;
+const material = new MaterialResource(defaultMaterialSnapshot());
 
 function placed(entityKey: number, x: number): RenderableSnapshot {
   const world = new Float32Array(mat4.identity(mat4.create()));
   world[12] = x;
-  return {
-    assetHandle: 3,
+  return preparedPbrSnapshot({
+    assetHandle: entityKey + 3,
     transform: { world },
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
     material,
@@ -96,7 +95,7 @@ function placed(entityKey: number, x: number): RenderableSnapshot {
         materialResourceClass: 'plain',
       },
     ],
-  };
+  });
 }
 
 function topology(): RenderPipelineTopology {
@@ -157,21 +156,17 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
   const availability = GpuScene.create(device, 4).unwrap();
   if (availability.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = availability.scene;
-  const apply = (values: readonly RenderableSnapshot[]) =>
-    scene
-      .sync(
-        projection.apply(
-          values.map((value) => ({
-            kind: 'update' as const,
-            worldId: value.worldId,
-            entityKey: value.entityKey,
-            snapshot: value,
-          })),
-        ),
-        undefined,
-        boundsOf,
-      )
-      .unwrap();
+  const apply = (values: readonly RenderableSnapshot[]) => {
+    const delta = projection.apply(
+      values.map((value) => ({
+        kind: 'update' as const,
+        worldId: value.worldId,
+        entityKey: value.entityKey,
+        snapshot: value,
+      })),
+    );
+    return scene.sync(delta, undefined, boundsOf).unwrap();
+  };
   apply(initial);
   const batches = new BatchTopology();
   batches.rebuild(projection.slotsSnapshot());
@@ -189,7 +184,9 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
   const staticIdentity: ShadowViewIdentity = { ...finalIdentity, layer: 'static' };
 
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-  const targets = addTypedShadowPasses(graph, topology(), () => ok(undefined)).unwrap();
+  const targets = addTypedShadowPasses(graph, topology(), {
+    projectGpuDrivenShadow: () => ok(undefined),
+  }).unwrap();
   const directional = targets.directional;
   if (directional === undefined) throw new Error('directional shadow target missing');
   const readback = device
@@ -228,28 +225,27 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
   const ledger = new ShadowRasterLedger();
   /** One production-shaped frame; returns the static cache decision and centre depth. */
   const frame = async () => {
-    const classes = classifier.update(projection.slotsSnapshot(), scene);
-    const sourcePlan = batches.plan();
-    pool
-      .update({
-        identity: staticIdentity,
-        sourcePlan,
-        scene,
-        planes,
-        ...(matrix === undefined ? {} : { matrix }),
-        candidatePrimitiveIndices: classes.staticSlots,
-        ignoredChangeSlots: classes.dynamicSet,
-      })
-      .unwrap();
-    pool
-      .update({
-        identity: finalIdentity,
-        sourcePlan,
-        scene,
-        planes,
-        candidatePrimitiveIndices: classes.dynamicSlots,
-      })
-      .unwrap();
+    const classes = classifier.update(
+      { slots: projection.slotsSnapshot(), slotAt: (slot) => projection.slotAt(slot) },
+      scene,
+    );
+    const sourcePlan = batches.query(batches.sourcePlan(), undefined);
+    updateShadowView(pool, {
+      identity: staticIdentity,
+      sourcePlan,
+      scene,
+      planes,
+      ...(matrix === undefined ? {} : { matrix }),
+      candidatePrimitiveIndices: classes.staticSlots,
+      ignoredChangeSlots: classes.dynamicSlots,
+    }).unwrap();
+    updateShadowView(pool, {
+      identity: finalIdentity,
+      sourcePlan,
+      scene,
+      planes,
+      candidatePrimitiveIndices: classes.dynamicSlots,
+    }).unwrap();
     const encoder = device.createCommandEncoder().unwrap();
     ledger.begin();
     compiled
@@ -295,17 +291,16 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
     },
     frame,
     dispose,
-    meshChanged: (slots: ReadonlySet<number>) => scene.noteMeshContentChanged(slots),
   };
 }
 
 /** Frames until both casters are static; the static layer then holds `raster.staticDepth`. */
-async function settleBoth(frame: () => Promise<{ readonly staticSlots: readonly number[] }>) {
+async function settleBoth(frame: () => Promise<{ readonly staticSlots: ReadonlySet<number> }>) {
   const limit = SHADOW_CASTER_SETTLE_FRAMES + 2 * SHADOW_CASTER_PROMOTE_WINDOW;
   let settled = await frame();
-  for (let step = 0; step < limit && settled.staticSlots.length < 2; step += 1)
+  for (let step = 0; step < limit && settled.staticSlots.size < 2; step += 1)
     settled = await frame();
-  expect(settled.staticSlots).toEqual([0, 1]);
+  expect([...settled.staticSlots]).toEqual([0, 1]);
 }
 
 describe('static shadow layer across caster class flips (Dawn pixel readback)', () => {
@@ -322,7 +317,7 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
       apply([bounds === 'bounded' ? moved : unbounded]);
       const cleared = await frame();
       expect(cleared.cache).toBe('miss');
-      expect(cleared.staticSlots).toEqual([0]);
+      expect([...cleared.staticSlots]).toEqual([0]);
       const baseline = await frame();
       expect(baseline.cache).toBe('hit');
       expect(baseline.centre).toBeCloseTo(0.3, 5);
@@ -332,7 +327,7 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
       remove(2);
       const removed = await frame();
       expect(removed.cache).toBe('hit');
-      expect(removed.staticSlots).toEqual([0]);
+      expect([...removed.staticSlots]).toEqual([0]);
       expect(raster.staticDraws).toBe(staticDraws);
       expect(removed.centre).toBe(baseline.centre);
     } finally {
@@ -356,24 +351,24 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
     const drawsBefore = raster.staticDraws;
     apply([placed(2, 60)]);
     const flipped = await frame();
-    expect(flipped.staticSlots).toEqual([0]);
+    expect([...flipped.staticSlots]).toEqual([0]);
     expect(flipped.cache).toBe('hit');
     expect(flipped.centre).toBe(baseline);
     // The out-of-view caster stays dynamic, then settles back: no static raster.
     // A move right after promotion may back off its settle threshold.
     let rejoined = flipped;
-    for (let step = 0; step < 4 * settleLimit && rejoined.staticSlots.length < 2; step += 1) {
+    for (let step = 0; step < 4 * settleLimit && rejoined.staticSlots.size < 2; step += 1) {
       rejoined = await frame();
       expect(rejoined.cache).toBe('hit');
       expect(rejoined.centre).toBe(baseline);
     }
-    expect(rejoined.staticSlots).toEqual([0, 1]);
+    expect([...rejoined.staticSlots]).toEqual([0, 1]);
     expect(raster.staticDraws).toBe(drawsBefore);
 
     // Falsifier: the in-view caster flipping must re-raster the static layer.
     apply([placed(1, 0.25)]);
     const inView = await frame();
-    expect(inView.staticSlots).toEqual([1]);
+    expect([...inView.staticSlots]).toEqual([1]);
     expect(inView.cache).toBe('miss');
     expect(raster.staticDraws).toBe(drawsBefore + 1);
     expect(inView.centre).toBeCloseTo(0.9, 5);
@@ -389,10 +384,7 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
     const ortho = mat4.orthographic(mat4.create(), -32, 32, -32, 32, 0.1, 100);
     const lookAt = mat4.lookAt(mat4.create(), [0, 50, 0], [0, 0, 0], [0, 0, -1]);
     const matrix = new Float32Array(mat4.multiply(mat4.create(), ortho, lookAt));
-    const { apply, frame, dispose, meshChanged } = await harness(
-      [placed(1, -10), placed(2, 10)],
-      matrix,
-    );
+    const { apply, frame, dispose } = await harness([placed(1, -10), placed(2, 10)], matrix);
     const texel = (x: number, depth: Float32Array) =>
       depth[(MAP_SIZE / 2) * 64 + Math.floor(((x + 32) / 64) * MAP_SIZE)];
 
@@ -406,9 +398,9 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
     raster.staticDepth = 0.9;
     const partialBefore = raster.partialDraws;
     if (change === 'transform') apply([placed(1, -12)]);
-    else meshChanged(new Set([0]));
+    else apply([{ ...placed(1, -10), assetHandle: 99 }]);
     const moved = await frame();
-    expect(moved.staticSlots).toEqual([1]);
+    expect([...moved.staticSlots]).toEqual([1]);
     expect(moved.cache).toBe('miss');
     expect(moved.dirtyRects).toHaveLength(1);
     expect(raster.partialDraws).toBe(partialBefore + 1);

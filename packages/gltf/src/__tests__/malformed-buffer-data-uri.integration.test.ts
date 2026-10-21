@@ -4,9 +4,7 @@ import {
   type RunImportMeta,
   runImport,
 } from '@forgeax/engine-import';
-import type { ImportContext } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { extractImageBytes } from '../extract-image-bytes.js';
 import { gltfImporter } from '../gltf-importer.js';
 import { parseGltf } from '../parse-gltf.js';
 
@@ -106,35 +104,22 @@ describe('malformed glTF buffer data URI recovery', () => {
     expect(registry.registeredImporters()).toEqual(['gltf']);
   });
 
-  it('turns a malformed bufferView image data URI into an extraction failure', async () => {
-    const source = new TextEncoder().encode(
-      JSON.stringify({
+  it('rejects malformed image backing buffers through the document parser', async () => {
+    const result = await parseGltf(
+      {
         asset: { version: '2.0' },
         buffers: [{ uri: 'data:application/octet-stream;base64,%%%%', byteLength: 4 }],
         bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 4 }],
         images: [{ bufferView: 0, mimeType: 'image/png' }],
-      }),
+      },
+      async () => new ArrayBuffer(0),
+      'image-buffer.gltf',
     );
-    const context: ImportContext = {
-      source: 'image-buffer.gltf',
-      readSource: async () => ({ ok: true as const, value: source }),
-      readSibling: async () => ({ ok: true as const, value: new Uint8Array() }),
-      decodeImage: async () => {
-        throw new Error('decodeImage should not run for a failed extraction');
-      },
-      subAssets: [],
-      importSettings: {},
-    };
-
-    const result = await extractImageBytes(source, context.source, context);
-
-    expect(result.extracted.size).toBe(0);
-    expect(result.failures).toEqual([
-      {
-        imageIndex: 0,
-        source: 'bufferView',
-        reason: expect.stringContaining('buffer 0 data URI base64 decode failed'),
-      },
-    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected buffer failure');
+    expect(result.error.code).toBe('source-validation-failed');
+    expect(result.error.detail).toMatchObject({
+      diagnostics: [{ code: 'gltf-buffer-data-uri-invalid' }],
+    });
   });
 });

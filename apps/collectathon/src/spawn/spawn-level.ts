@@ -16,6 +16,7 @@
 // standard PBR needs a light already spawned (D-7) -- main.ts spawns the
 // DirectionalLight before calling spawnLevel.
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import {
@@ -26,8 +27,6 @@ import {
 } from '@forgeax/engine-physics';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
-
 import { LEVEL_GROUPS } from '../collision-groups';
 
 /** Half-extent of the square level (30m x 30m -> half 15m). */
@@ -73,17 +72,20 @@ export function spawnLevel(world: World): EntityHandle[] {
 // slab and break the KCC floor contact.
 
 function spawnGroundVisual(world: World): EntityHandle {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   // Visible 30x30 plane laid flat in the XZ plane (rotated -90 deg about X so the
   // +Z-facing plane mesh becomes a +Y-facing floor at y=0).
   const planeRes = createPlaneGeometry(LEVEL_HALF * 2, LEVEL_HALF * 2);
   if (!planeRes.ok) {
     throw new Error(`collectathon: createPlaneGeometry failed: ${planeRes.error.code}`);
   }
-  const groundMesh = world.allocSharedRef('MeshAsset', planeRes.value);
-  const groundMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.28, 0.3, 0.34, 1], roughness: 0.9, metallic: 0 }),
-  );
+  const groundMesh = sceneAssets.create(planeRes.value).unwrap();
+  const groundMat = sceneAssets
+    .create(Materials.standard({ baseColor: [0.28, 0.3, 0.34, 1], roughness: 0.9, metallic: 0 }))
+    .unwrap();
   return world
     .spawn(
       {

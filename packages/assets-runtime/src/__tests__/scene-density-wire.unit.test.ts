@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveSceneComponentFields } from '../scene-payload';
 
 const numeric = defineComponent('DensityNumberFixture', { density: 'f32' });
-const sampled = defineComponent('DensityTextureFixture', { density: 'shared<TextureAsset>' });
+const sampled = defineComponent('DensityTextureFixture', { density: 'asset<texture>' });
 
 describe('schema-owned density interpretation', () => {
   it('distinguishes identical field names from schema rather than component names', () => {

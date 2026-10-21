@@ -7,23 +7,58 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
-    "types": ["@webgpu/types"]
+    "types": [
+      "@webgpu/types"
+    ]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../ui" },
-    { "path": "../codec" },
-    { "path": "../ecs" },
-    { "path": "../geometry" },
-    { "path": "../graphics-extras" },
-    { "path": "../image" },
-    { "path": "../pack" },
-    { "path": "../plugin" },
-    { "path": "../rhi" },
-    { "path": "../shader" },
-    { "path": "../scene" },
-    { "path": "../skinning" },
-    { "path": "../types" },
-    {"path": "../terrain"}
+    {
+      "path": "../ui"
+    },
+    {
+      "path": "../codec"
+    },
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../geometry"
+    },
+    {
+      "path": "../graphics-extras"
+    },
+    {
+      "path": "../image"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../plugin"
+    },
+    {
+      "path": "../rhi"
+    },
+    {
+      "path": "../shader"
+    },
+    {
+      "path": "../scene"
+    },
+    {
+      "path": "../skinning"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../terrain"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

@@ -1,4 +1,6 @@
 import type { CreateAppOptions } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   DEFAULT_STANDARD_PROFILE,
   Skylight,
@@ -7,7 +9,7 @@ import {
 } from '@forgeax/engine/render';
 import type { TextureAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
+import { spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
 import { spawnPointLight } from './support/scene';
 
 const SIZE = 8;
@@ -29,6 +31,18 @@ export default defineFeature({
   expect:
     'ON: a glowing orange haze fills the box around the light, visible against the dark background. OFF: the VolumetricFog entity is despawned; only the light pool on the floor remains.',
   setup({ world, app }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnGround(world, [0.3, 0.3, 0.32, 1]);
     spawnCamera(world, {
       eye: [0, 1.5, 5],
@@ -38,11 +52,11 @@ export default defineFeature({
     world
       .spawn({ component: Skylight, data: { color: [0.4, 0.4, 0.5], intensity: 0.03 } as never })
       .unwrap();
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.5, 1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.5, 1, 1] }), {
       pos: [0.9, 0.5, 0],
       scale: [0.5, 1, 0.5],
     });
-    spawnMesh(world, MESH.sphere, unlit(world, [1, 0.7, 0.3, 1]), {
+    spawnMesh(world, stageSphere, unlit(world, [1, 0.7, 0.3, 1]), {
       pos: [0, 1.2, 0],
       scale: [0.08, 0.08, 0.08],
     });
@@ -55,7 +69,7 @@ export default defineFeature({
       mips: { kind: 'none' },
       data: new Uint8Array(SIZE * SIZE * SIZE).fill(200),
     };
-    const density = world.allocSharedRef('TextureAsset', asset);
+    const density = sceneAssets.create(asset).unwrap();
     const data = {
       light,
       density,

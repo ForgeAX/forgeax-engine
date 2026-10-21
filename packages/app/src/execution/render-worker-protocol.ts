@@ -90,6 +90,8 @@ export type RenderWorkerInput =
       readonly worldIdentity: string;
       readonly rhiCapture?: boolean;
       readonly gpuPassTiming?: GpuPassTimingOptions;
+      /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
+      readonly shadowWorkload?: boolean;
       readonly geometryLane?: ExecutionDiagnosticsOptions['geometryLane'];
       readonly featureReadOnlyDepthBatchDiagnostic?: ExecutionDiagnosticsOptions['featureReadOnlyDepthBatchDiagnostic'];
       readonly gbufferBatchOrderDiagnostic?: ExecutionDiagnosticsOptions['gbufferBatchOrderDiagnostic'];

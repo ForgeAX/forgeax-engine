@@ -23,9 +23,9 @@ export default defineFeature({
   catalog: 'Asset authoring commands',
   kind: 'headless',
   summary:
-    'asset import --path creates or reuses an external source sidecar (<file>.meta.json) with a stable GUID; --dry-run reports the same shape without writing. There is no asset add command.',
+    'asset import creates or reuses sidecars with stable GUIDs. asset inspect --parameters-only checks a Pack declaration without execution or project scanning.',
   expect:
-    'dry-run returns a GUID and writes no meta; a real import writes the meta; re-import reuses the same GUID; asset add is tool-command-not-found; a missing path fails structurally.',
+    'dry-run writes no meta; import/re-import retain the GUID; invalid commands and paths fail structurally; parameter inspection reports generation/runtime modes despite throwing module code and malformed sibling assets.',
   async run(checks) {
     const fixture = emptyProject();
     try {
@@ -85,6 +85,41 @@ export default defineFeature({
         'asset add does not exist',
         code(await forgeax(['asset', 'add'])),
         'tool-command-not-found',
+      );
+      writeFileSync(join(fixture.root, 'assets', 'broken.pack.json'), '{');
+      writeFileSync(
+        join(fixture.root, 'assets', 'scene.pack.ts'),
+        `
+throw new Error('declaration inspection must not execute');
+const packageId = definePackageId('01900000-0000-7000-8000-000000000001');
+export default definePack({ packageId, parameters: [
+  { name: 'segments', type: 'u32', default: 12 },
+  { name: 'sunIntensity', type: 'f32', default: 3.2,
+    apply: { asset: 'scene/main', path: ['entities','sun','components','DirectionalLight','intensity'] } },
+], build() { throw new Error('must not build'); } });
+`,
+      );
+      const parameters = await forgeax([
+        'asset',
+        'inspect',
+        'assets/scene.pack.ts',
+        '--root',
+        fixture.root,
+        '--parameters-only',
+      ]);
+      checks.ok(
+        'parameter inspection bypasses execution and malformed siblings',
+        parameters.ok === true,
+        code(parameters),
+      );
+      checks.equal(
+        'generation and runtime modes are explicit',
+        JSON.stringify(
+          (parameters.value?.parameters as { mode: string }[] | undefined)?.map(
+            (value) => value.mode,
+          ),
+        ),
+        '["generation","runtime"]',
       );
     } finally {
       fixture.dispose();

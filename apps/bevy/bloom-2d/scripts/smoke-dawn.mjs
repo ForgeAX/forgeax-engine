@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -55,12 +56,14 @@ const { BLOOM_DISABLED, BLOOM_ENABLED, Camera } = await import('@forgeax/engine/
 const { buildBloom2dWorld } = await import(resolve(here, '..', 'dist', 'bloom-2d.mjs')).catch(async () => import(resolve(here, '..', 'src', 'bloom-2d.ts')));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const scene = buildBloom2dWorld(world);

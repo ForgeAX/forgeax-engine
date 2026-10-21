@@ -1,15 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ReflectionProbe, Skylight } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import {
-  MESH,
-  spawnCamera,
-  spawnMesh,
-  spawnSun,
-  standard,
-  unlit,
-  type Vec3,
-} from '../../lab/stage';
+import { spawnCamera, spawnMesh, spawnSun, standard, unlit, type Vec3 } from '../../lab/stage';
 import { serial } from './support/serial';
 
 const PANELS: readonly {
@@ -32,16 +26,24 @@ export default defineFeature({
   expect:
     'ON: the chrome sphere mirrors the red, green, blue and yellow panels. OFF: the probe is removed and the sphere only reflects the pale Skylight.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnCamera(world, { eye: [0, 1.2, 4.5], target: [0, 0.6, 0] });
     spawnSun(world);
     world
       .spawn({ component: Skylight, data: { color: [0.8, 0.85, 1], intensity: 1 } as never })
       .unwrap();
     for (const panel of PANELS)
-      spawnMesh(world, MESH.cube, unlit(world, panel.rgba), { pos: panel.pos, scale: panel.scale });
+      spawnMesh(world, stageCube, unlit(world, panel.rgba), { pos: panel.pos, scale: panel.scale });
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [1, 1, 1, 1], metallic: 1, roughness: 0.05 }),
       { pos: [0, 0.6, 0], scale: [1.6, 1.6, 1.6] },
     );

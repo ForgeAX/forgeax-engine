@@ -15,6 +15,7 @@ import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 it('renders overlapping local fog, independently removes owners, and retires the collection', async () => {
   const lightweight = import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1';
@@ -83,17 +84,19 @@ it('renders overlapping local fog, independently removes owners, and retires the
       mips: { kind: 'none' },
       data,
     };
-    const density = world.allocSharedRef('TextureAsset', texture);
+    const density = testAssets(world).create(texture).unwrap();
     const coloredBytes = new Uint8Array(data.length * 4);
     for (let index = 0; index < data.length; index++) {
       const value = data[index] ?? 0;
       coloredBytes.set([Math.round(value / 4), Math.round(value / 2), value, value], index * 4);
     }
-    const coloredDensity = world.allocSharedRef('TextureAsset', {
-      ...texture,
-      format: 'rgba8unorm',
-      data: coloredBytes,
-    } satisfies TextureAsset);
+    const coloredDensity = testAssets(world)
+      .create({
+        ...texture,
+        format: 'rgba8unorm',
+        data: coloredBytes,
+      } satisfies TextureAsset)
+      .unwrap();
     const spawn = (x: number, emission: readonly number[], extinction = 2, colored = false) =>
       world
         .spawn({
@@ -118,8 +121,12 @@ it('renders overlapping local fog, independently removes owners, and retires the
     const additional = Array.from({ length: 7 }, (_, index) =>
       spawn((index - 3) * 0.175, [0.04, 0.12, 0.02], 0.15, index % 2 === 0),
     );
-    const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(0.12, 1.7, 0.15).unwrap());
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.8, 0.8, 1]));
+    const mesh = testAssets(world)
+      .create(createBoxGeometry(0.12, 1.7, 0.15).unwrap())
+      .unwrap();
+    const material = testAssets(world)
+      .create(Materials.unlit([0.8, 0.8, 0.8, 1]))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 1.3] } },

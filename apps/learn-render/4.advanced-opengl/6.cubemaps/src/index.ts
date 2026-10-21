@@ -17,7 +17,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App } from '@forgeax/engine-app';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 
 import { Transform } from '@forgeax/engine-scene';
 
@@ -25,10 +25,12 @@ import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/eng
 import { perspective, TONEMAP_REINHARD_EXTENDED } from '@forgeax/engine-render';
 import { Materials, SKYBOX_MODE_CUBEMAP, SkyboxBackground, Skylight } from '@forgeax/engine-render';
 
-import { type EquirectAsset, type MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example glue
 
@@ -61,7 +63,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 4.6 cubemaps] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -82,21 +88,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  // Load HDR equirect through the GUID asset pipeline. loadByGuid returns the
-  // EquirectAsset PAYLOAD (D-17); mint a user-tier column handle for it. The
-  // equirect->cubemap + IBL projection is now INTERNAL to the engine (lazy, in
-  // the render record arm) -- no manual cubemap upload call. LO 4.6's 6-PNG
-  // cubemap loader is replaced by this single equirect HDR source.
-  const hdrHandleRes = await assets.loadByGuid<EquirectAsset>(guidRes.value);
+  // Load a managed equirect handle. The renderer prepares its cubemap and
+  // IBL projection from this single HDR source.
+  const hdrHandleRes = await assets.load(guidRes.value, 'equirect');
   if (!hdrHandleRes.ok) {
     console.error(
-      `[learn-render 4.6 cubemaps] loadByGuid(newport_loft.hdr) failed: ${hdrHandleRes.error.code}`,
+      `[learn-render 4.6 cubemaps] load(newport_loft.hdr) failed: ${hdrHandleRes.error.code}`,
     );
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: hdrHandleRes.error.code, hint: hdrHandleRes.error.hint });
     return;
   }
-  const equirect = world.allocSharedRef('EquirectAsset', hdrHandleRes.value);
+  const equirect = hdrHandleRes.value;
 
   // Skylight provides PBR IBL diffuse+specular illumination for the whole scene.
   // It holds the equirect handle directly; the engine projects the cubemap lazily.
@@ -114,41 +117,35 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   console.warn('[learn-render 4.6 cubemaps] Skylight + SkyboxBackground active: equirect HDR skybox visible, PBR IBL reflections active');
 
   // Reflective cube (metallic=1, roughness=0) at left — mirrors IBL environment.
-  const reflectiveMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const reflectiveMatHandle = assets.create(Materials.standard({
       baseColor: [0.8, 0.8, 0.8, 1],
       metallic: 1,
       roughness: 0,
-    }),
-  );
+    })).unwrap();
   world
     .spawn(
       {
         component: Transform,
         data: { pos: [-1.5, 0, 0]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [reflectiveMatHandle] } },
     )
     .unwrap();
 
   // Non-reflective cube (metallic=0) at right — matte surface, no IBL mirror.
-  const nonReflectiveMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const nonReflectiveMatHandle = assets.create(Materials.standard({
       baseColor: [0.8, 0.8, 0.8, 1],
       metallic: 0,
       roughness: 0.5,
-    }),
-  );
+    })).unwrap();
   world
     .spawn(
       {
         component: Transform,
         data: { pos: [1.5, 0, 0]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [nonReflectiveMatHandle] } },
     )
     .unwrap();

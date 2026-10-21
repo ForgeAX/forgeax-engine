@@ -11,6 +11,7 @@ import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry'
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { RenderScene } from '../scene/render-scene';
 import {
+  admitGpuFixture,
   mesh,
   preparedSnapshot,
   standardPbrInputs,
@@ -25,7 +26,7 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const viewBindGroup = device.createBindGroup({ layout: viewLayout, entries: [] }).unwrap();
   const inputs = standardPbrInputs(device, shader, viewLayout);
-  const sourceArtifact = inputs.standardPbrArtifact;
+  const sourceArtifact = inputs.materialArtifact;
   if (sourceArtifact === undefined) throw Error('missing material artifact');
   let artifactCopies = 0;
   // deps is not a pipeline input. Its stable getter witnesses actual artifact
@@ -51,20 +52,23 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
   topology.rebuild(scene.slotsSnapshot());
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const prepared = production
-    .prepare({
-      ...inputs,
-      standardPbrArtifact: artifact,
-      scene: {
-        scene: availability.scene,
-        plan: topology.plan(),
-        slots: scene.slotsSnapshot(),
-        slotAt: scene.slotAt,
-      },
-      camera: makeZeroCameraFallbackSnapshot(),
-      meshBySlot: new Map(Array.from({ length: classCount }, (_, index) => [index, mesh(device)])),
-      viewBindGroupLayout: viewLayout,
-      meshResidencyEpoch: 1,
-    })
+    .prepare(
+      admitGpuFixture({
+        ...inputs,
+        materialArtifact: artifact,
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: scene.slotsSnapshot(),
+          slotAt: scene.slotAt,
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: new Map(
+          Array.from({ length: classCount }, (_, index) => [index, mesh(device)]),
+        ),
+        viewBindGroupLayout: viewLayout,
+      }),
+    )
     .unwrap();
   if (prepared?.standardPbrFrameResources === undefined) throw Error('missing GPU projection');
   const pipelineQueries = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'pipeline');
@@ -84,11 +88,12 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
     return createPipeline(descriptor);
   });
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+  // Admission owns the immutable artifact; projection and recording must not copy it.
   artifactCopies = 0;
   const gpu = prepared.project(graph, 'rgba8unorm', 1, undefined, undefined, false, true).unwrap();
   try {
     expect(pipelineQueries).toHaveBeenCalledTimes(1);
-    expect(artifactCopies).toBe(1);
+    expect(artifactCopies).toBe(0);
     expect(pipelineQueries.mock.calls.every((call) => call[7]?.fragmentEntry === 'fs_opaque')).toBe(
       true,
     );
@@ -98,8 +103,14 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
     const colorView = graph.view(color).unwrap();
     const frameResources = {
       ...prepared.standardPbrFrameResources,
-      materialSlotIndicesByEntity: new Map<number, readonly number[]>(),
-      materialBindGroups: [viewBindGroup],
+      materialSlotIndicesByBinding: new Map(),
+      prepareMaterialBinding: (
+        (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+        (slot: number) => {
+          const group = groups[slot];
+          return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+        }
+      )([viewBindGroup]),
     };
     let fragment = STANDARD_OPAQUE_FRAGMENT_ENTRY;
     graph
@@ -131,16 +142,16 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
     try {
       for (let frame = 0; frame < 60; frame += 1) encode().unwrap();
       expect(device.totalDrawCount).toBe(60 * classCount);
-      expect(artifactCopies).toBe(1);
+      expect(artifactCopies).toBe(0);
       expect(pipelineQueries).toHaveBeenCalledTimes(1);
       fragment = 'fs_gbuffer';
       const failed = encode();
       expect(failed.ok).toBe(false);
       if (!failed.ok) expect(failed.error.code).toBe('pass-encode-failed');
-      expect(artifactCopies).toBe(2);
+      expect(artifactCopies).toBe(0);
       const failedArtifact = pipelineQueries.mock.calls.at(-1)?.[7];
       encode().unwrap();
-      expect(artifactCopies).toBe(2);
+      expect(artifactCopies).toBe(0);
       expect(pipelineQueries.mock.calls[2]?.[7]).toBe(failedArtifact);
       expect(pipelineQueries).toHaveBeenCalledTimes(3);
       const admittedGbuffer = pipelines.mock.calls.filter(
@@ -150,7 +161,7 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
       for (let frame = 0; frame < 60; frame += 1) encode().unwrap();
       fragment = STANDARD_OPAQUE_FRAGMENT_ENTRY;
       encode().unwrap();
-      expect(artifactCopies).toBe(2);
+      expect(artifactCopies).toBe(0);
       expect(pipelineQueries).toHaveBeenCalledTimes(3);
       expect(device.totalDrawCount).toBe(122 * classCount);
     } finally {

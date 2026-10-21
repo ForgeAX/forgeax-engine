@@ -64,14 +64,30 @@ export function extractIssueMergeSha(body) {
  * `sha-rerun-green` — same head_sha rerun turned green (possibly transient
  *                     flake, not a real fix; charter proposition 4 do not
  *                     mask).
- * `sha-progressed`  — newer push sha overtook the previous red sha.
+ * `sha-progressed`  — a successful descendant commit passed CI after the red sha.
  *
  * @param {{ html_url: string, head_sha: string }} workflowRun
- * @param {string} issueMergeSha
+ * @param {string | null} issueMergeSha
+ * @param {string} runSha
+ * @param {string} comparisonStatus
+ */
+export function classifyGreenRun(issueMergeSha, runSha, comparisonStatus) {
+  if (typeof issueMergeSha !== 'string' || issueMergeSha.length === 0) return null;
+  if (typeof runSha !== 'string' || runSha.length === 0) return null;
+  if (issueMergeSha === runSha) return 'sha-rerun-green';
+  return comparisonStatus === 'ahead' ? 'sha-progressed' : null;
+}
+
+/**
+ * Build the evidence comment body for an already-classified green run.
+ * The caller must prove the successful commit is the tracked commit or its
+ * descendant before this helper is used.
+ *
+ * @param {{ html_url: string, head_sha: string }} workflowRun
+ * @param {'sha-rerun-green' | 'sha-progressed'} scenario
  * @param {string} isoTimestamp
  */
-export function buildEvidenceComment(workflowRun, issueMergeSha, isoTimestamp) {
-  const scenario = issueMergeSha === workflowRun.head_sha ? 'sha-rerun-green' : 'sha-progressed';
+export function buildEvidenceComment(workflowRun, scenario, isoTimestamp) {
   const body = [
     'Auto-closed by post-merge-monitor: main ci.yml run turned green.',
     '',

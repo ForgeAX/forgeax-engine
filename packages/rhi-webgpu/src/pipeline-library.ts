@@ -87,6 +87,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private readonly layoutKeys = new Map<string, number>();
   private readonly layouts: { groups: number[]; handle: GPUPipelineLayout }[] = [];
   private readonly programs = new Map<string, Program>();
+  private readonly computeEntryModules = new Map<number, Map<string, number>>();
   private readonly counts = {
     shaderHits: 0,
     pipelineHits: 0,
@@ -236,7 +237,22 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     return this.createSync('render', descriptor) as GPURenderPipeline;
   }
   createComputePipeline(descriptor: GPUComputePipelineDescriptor): GPUComputePipeline {
-    return this.createSync('compute', descriptor) as GPUComputePipeline;
+    return this.createSync('compute', this.computeDescriptor(descriptor)) as GPUComputePipeline;
+  }
+  private computeDescriptor(
+    descriptor: GPUComputePipelineDescriptor,
+  ): GPUComputePipelineDescriptor {
+    const id = this.shaderIds.get(descriptor.compute.module);
+    const specialized =
+      id === undefined || descriptor.compute.entryPoint === undefined
+        ? undefined
+        : this.computeEntryModules.get(id)?.get(descriptor.compute.entryPoint);
+    return specialized === undefined
+      ? descriptor
+      : {
+          ...descriptor,
+          compute: { ...descriptor.compute, module: entry(this.shaders, specialized).handle },
+        };
   }
   private createSync(
     kind: 'render' | 'compute',
@@ -271,7 +287,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   createComputePipelineAsync(
     descriptor: GPUComputePipelineDescriptor,
   ): GPUComputePipeline | Promise<GPUComputePipeline> {
-    return this.createAsync('compute', descriptor) as
+    return this.createAsync('compute', this.computeDescriptor(descriptor)) as
       | GPUComputePipeline
       | Promise<GPUComputePipeline>;
   }
@@ -380,6 +396,13 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           const d = p.recipe as PipelineLibraryCompute;
           return { ...d, layout: layout(d.layout), compute: stage(d.compute) };
         });
+      const computeEntryModules = [...this.computeEntryModules].flatMap(([module, entries]) =>
+        [...entries].map(([entryPoint, specializedModule]) => ({
+          module: intern(shaderIds, module),
+          entryPoint,
+          specializedModule: intern(shaderIds, specializedModule),
+        })),
+      );
       return ok(
         structuredClone({
           version: 1,
@@ -391,6 +414,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           ),
           renderPipelines,
           computePipelines,
+          ...(computeEntryModules.length === 0 ? {} : { computeEntryModules }),
         }),
       );
     } catch (cause) {
@@ -410,6 +434,21 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       )
         throw new Error('Native asynchronous pipeline compilation is unavailable');
       const shaders = manifest.shaders.map((d) => this.createShaderModule(d));
+      for (const projection of manifest.computeEntryModules ?? []) {
+        const module = this.shaderIds.get(entry(shaders, projection.module));
+        const specializedModule = this.shaderIds.get(entry(shaders, projection.specializedModule));
+        if (module === undefined || specializedModule === undefined)
+          throw new Error('Compute entry projection exceeds shader capacity');
+        let entries = this.computeEntryModules.get(module);
+        if (entries === undefined) {
+          entries = new Map();
+          this.computeEntryModules.set(module, entries);
+        }
+        const previous = entries.get(projection.entryPoint);
+        if (previous !== undefined && previous !== specializedModule)
+          throw new Error('Conflicting compute entry projection');
+        entries.set(projection.entryPoint, specializedModule);
+      }
       const groups = manifest.bindGroupLayouts.map((d) => this.createBindGroupLayout(d));
       const layouts = manifest.pipelineLayouts.map((ids) =>
         this.createPipelineLayout({ bindGroupLayouts: ids.map((id) => entry(groups, id)) }),
@@ -470,6 +509,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   dispose(): void {
     this.closed = true;
     this.programs.clear();
+    this.computeEntryModules.clear();
     this.shaderInfo = new WeakMap();
     this.shaderByCode.clear();
     this.groupKeys.clear();
@@ -526,6 +566,20 @@ function validateManifest(input: PipelineLibraryManifest): PipelineLibraryManife
     if (p.layout !== 'auto') ref(p.layout, m.pipelineLayouts);
     if ('vertex' in p || 'fragment' in p) throw new Error('Render stage in compute pipeline');
     ref(p.compute?.module, m.shaders);
+  }
+  if (m.computeEntryModules !== undefined) {
+    if (!Array.isArray(m.computeEntryModules) || m.computeEntryModules.length > MAX_ENTRIES)
+      throw new Error('Invalid compute entry projection population');
+    const seen = new Set<string>();
+    for (const p of m.computeEntryModules) {
+      ref(p.module, m.shaders);
+      ref(p.specializedModule, m.shaders);
+      if (typeof p.entryPoint !== 'string' || p.entryPoint.length === 0)
+        throw new Error('Missing projected compute entry');
+      const key = JSON.stringify([p.module, p.entryPoint]);
+      if (seen.has(key)) throw new Error('Duplicate compute entry projection');
+      seen.add(key);
+    }
   }
   return m;
 }

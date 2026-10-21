@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CardCaptureScheduler } from '../../raytracing/card-capture-schedule';
+import { CardCaptureScheduler, type CardCaptureWork } from '../../raytracing/card-capture-schedule';
 
 describe('CardCaptureScheduler', () => {
   it('captures the atlas in budgeted slices: clear first, then load, then done', () => {
@@ -72,4 +72,102 @@ describe('CardCaptureScheduler', () => {
   it('rejects a non-positive budget', () => {
     expect(() => new CardCaptureScheduler(4, 0)).toThrow();
   });
+});
+
+function captureRoot(ranges: readonly [number, number][]) {
+  const members = new Map(ranges.map(([first, end]) => [first, { first, end }]));
+  let visits = 0;
+  const work: CardCaptureWork = {
+    tiles: ranges.reduce((n, [first, end]) => n + end - first, 0),
+    *runs() {
+      for (const run of members.values()) {
+        visits++;
+        yield run;
+      }
+    },
+    has: (run) => members.get(run.first) === run,
+  };
+  return {
+    work,
+    members,
+    get visits() {
+      return visits;
+    },
+  };
+}
+function commitNext(schedule: CardCaptureScheduler) {
+  const slice = schedule.slice();
+  if (slice === undefined) throw new Error('expected physical capture slice');
+  schedule.commit(slice);
+}
+function completeInitialCapture(schedule: CardCaptureScheduler) {
+  for (let slice = schedule.slice(); slice !== undefined; slice = schedule.slice())
+    schedule.commit(slice);
+}
+
+it('adopts one shared root without visits and pulls only the next physical run under budget', () => {
+  const schedule = new CardCaptureScheduler(24, 2);
+  completeInitialCapture(schedule);
+  const root = captureRoot([
+    [0, 6],
+    [18, 24],
+  ]);
+  schedule.queueWork(root.work);
+  expect(root.visits).toBe(0);
+  expect(schedule.pendingTiles).toBe(12);
+  const first = schedule.slice();
+  expect(first).toEqual({ first: 0, count: 2, clear: true });
+  expect(root.visits).toBe(1);
+  expect(schedule.slice()).toEqual(first); // No successful submit: same run, no extra reads.
+  expect(schedule.pendingTiles).toBe(12);
+  expect(root.visits).toBe(1);
+  if (first === undefined) throw new Error('expected physical work');
+  schedule.commit(first);
+  expect(schedule.slice()).toEqual({ first: 2, count: 2, clear: true });
+  expect(root.visits).toBe(1);
+  schedule.commit({ first: 2, count: 2, clear: true });
+  schedule.commit({ first: 4, count: 2, clear: true });
+  expect(schedule.slice()).toEqual({ first: 18, count: 2, clear: true });
+  expect(root.visits).toBe(2);
+  completeInitialCapture(schedule);
+  expect(schedule.pendingTiles).toBe(0);
+  expect(schedule.done).toBe(true);
+});
+
+it('restarts a newer root value without enumeration and skips retired physical work', () => {
+  const schedule = new CardCaptureScheduler(18, 2);
+  completeInitialCapture(schedule);
+  const root = captureRoot([
+    [0, 6],
+    [12, 18],
+  ]);
+  schedule.queueWork(root.work);
+  commitNext(schedule);
+  expect(schedule.slice()).toEqual({ first: 2, count: 2, clear: true });
+  schedule.queueWork(root.work);
+  expect(root.visits).toBe(1);
+  expect(schedule.slice()).toEqual({ first: 0, count: 2, clear: true });
+  expect(root.visits).toBe(2);
+  root.members.delete(0);
+  expect(schedule.slice()).toEqual({ first: 12, count: 2, clear: true });
+  expect(root.visits).toBe(3);
+  root.members.clear();
+  expect(schedule.slice()).toBeUndefined();
+  expect(schedule.pendingTiles).toBe(0);
+  expect(schedule.done).toBe(true);
+});
+
+it('does not inspect another changed root until its physical slice is scheduled', () => {
+  const schedule = new CardCaptureScheduler(12, 6);
+  completeInitialCapture(schedule);
+  const a = captureRoot([[0, 6]]),
+    b = captureRoot([[6, 12]]);
+  schedule.queueWork(a.work);
+  schedule.queueWork(b.work);
+  expect([a.visits, b.visits]).toEqual([0, 0]);
+  commitNext(schedule);
+  expect([a.visits, b.visits]).toEqual([1, 0]);
+  commitNext(schedule);
+  expect([a.visits, b.visits]).toEqual([1, 1]);
+  expect(schedule.done).toBe(true);
 });

@@ -74,3 +74,27 @@ describe('deterministic intelligence provider', () => {
     expect(provider.closed).toBe(true);
   });
 });
+
+it('advances only the Activity roster present when a deterministic step began', () => {
+  const provider = createFakeIntelligenceProvider({ script: () => ({ deltas: [] }) });
+  const first = createIntelligenceRuntime(provider);
+  let spawned = false;
+  const originalStart = provider.start.bind(provider);
+  provider.start = (submission, sink) =>
+    originalStart(submission, {
+      ...sink,
+      complete(output) {
+        sink.complete(output);
+        if (!spawned) {
+          spawned = true;
+          first.submit({ input: 'new activity' });
+        }
+      },
+    });
+  first.submit({ input: 'first' });
+  provider.advance();
+  expect(first.poll().map((event) => event.type)).toEqual(['completed']);
+  expect(provider.activeCount).toBe(1);
+  provider.advance();
+  expect(first.poll().map((event) => event.type)).toEqual(['completed']);
+});

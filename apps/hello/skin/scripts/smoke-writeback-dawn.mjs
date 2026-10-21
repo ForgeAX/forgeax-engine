@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-skin writeback headless smoke (feat-20260701-rootstosceneasset-forest-collect-schema-derived-ha M4 / m4-w1).
 //
 // End-to-end scene writeback round-trip proof:
@@ -161,66 +162,12 @@ const sceneGuid = subGuid('scene', 0);
 const skeletonGuid = subGuid('skeleton', 0);
 const skinGuid = subGuid('skin', 0);
 
-const glbBytes = readFileSync(FOX_GLB_PATH);
-const glbAb = glbBytes.buffer.slice(glbBytes.byteOffset, glbBytes.byteOffset + glbBytes.byteLength);
-const docResult = await parseGlb(glbAb, FOX_GLB_PATH);
-if (!docResult.ok) {
-  console.error('[writeback] FAIL - parseGlb failed:', docResult.error);
-  process.exit(1);
-}
-const doc = docResult.value;
-
-const skeletonRec = doc.skeletons[0];
-if (!skeletonRec) {
-  console.error('[writeback] FAIL - Fox.glb GltfDoc.skeletons[0] missing');
-  process.exit(1);
-}
-
-const world = new World();
-const worldContext = await createWorldContext(world, [
-  renderComponentsPlugin(),
-  scenePlugin(),
-  animationPlugin(),
-  skinningPlugin(),
-]);
-assets.catalog(skeletonGuid, {
-  kind: 'skeleton',
-  inverseBindMatrices: skeletonRec.inverseBindMatrices,
-  jointCount: skeletonRec.jointCount,
-});
-assets.catalog(skinGuid, {
-  kind: 'skin',
-  skeletonGuid: AssetGuid.format(skeletonGuid),
-  jointPaths: skeletonRec.jointPaths,
-});
-
-const meshIrs = doc.meshes.filter((m) => m.meshIndex === 0);
-const meshResult = meshIrToMeshAsset(meshIrs);
-if (!meshResult.ok) throw meshResult.error;
-const meshAsset = meshResult.value;
-assets.catalog(meshGuid, meshAsset);
-const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-
-const matAsset = toMaterialAsset(doc.materials[0], { skinned: true });
-assets.catalog(materialGuid, matAsset);
-const matHandle = world.allocSharedRef('MaterialAsset', matAsset);
-
-const bridgeCtx = {
-  meshHandles: new Map([[0, meshHandle]]),
-  materialHandles: new Map([[0, matHandle]]),
-  skeletonGuidBySkinIndex: new Map([[0, AssetGuid.format(skeletonGuid)]]),
-};
-const scene = gltfDocToSceneAsset(doc, bridgeCtx);
-assets.catalog(sceneGuid, scene);
-
-const sceneRes = await assets.loadByGuid(sceneGuid);
-if (!sceneRes.ok) {
-  console.error('[writeback] FAIL - loadByGuid<SceneAsset> failed:', sceneRes.error);
-  process.exit(1);
-}
-const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
-
-// --- 3b. Instantiate Fox scene into world ----------------------------------
+const world = new World({ assets });
+const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin(), animationPlugin(), skinningPlugin()]);
+useBuiltAssetSource(assets, resolve(here, '..', 'dist'));
+const meshHandle = (await assets.load(meshGuid, 'mesh')).unwrap();
+const matHandle = (await assets.load(materialGuid, 'material')).unwrap();
+const sceneHandle = (await assets.load(sceneGuid, 'scene')).unwrap();
 
 const instRes = assets.instantiate(sceneHandle, world);
 if (!instRes.ok) {
@@ -330,20 +277,7 @@ world.despawn(foxRoot);
 // We don't verify here -- just proceed.
 
 // Catalog the saved SceneAsset under the same GUID used for serialize.
-// catalog accepts string; loadByGuid needs AssetGuid (Uint8Array).
-assets.catalog(writebackGuid, savedScene);
-
-const writebackAssetGuid = AssetGuid.parse(writebackGuid);
-if (!writebackAssetGuid.ok) {
-  console.error('[writeback] FAIL - AssetGuid.parse(writebackGuid):', writebackAssetGuid.error);
-  process.exit(1);
-}
-const loadRes = await assets.loadByGuid(writebackAssetGuid.value);
-if (!loadRes.ok) {
-  console.error('[writeback] FAIL - loadByGuid of saved scene:', loadRes.error);
-  process.exit(1);
-}
-const newSceneHandle = world.allocSharedRef('SceneAsset', loadRes.value);
+const newSceneHandle = assets.create(savedScene).unwrap();
 
 const newInstRes = assets.instantiate(newSceneHandle, world);
 if (!newInstRes.ok) {

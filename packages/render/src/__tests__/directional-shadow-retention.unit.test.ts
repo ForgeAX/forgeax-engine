@@ -121,3 +121,19 @@ describe('directional shadow guard-band retention', () => {
     }
   });
 });
+
+it('keeps an explicit shadow camera independent of display movement and CSM retention', () => {
+  const matrix = mat4.create();
+  mat4.orthographicReverseZ(matrix, -5, 5, 5, -5, 0.5, 500);
+  const fixed = { ...config, shadowViewProjection: new Float32Array(matrix) };
+  const first = computeDirectionalCsm(direction, fixed, camera());
+  const moved = computeDirectionalCsm(direction, fixed, camera(100, 1.2), first?.lightViewProj);
+  assert(first && moved);
+  expect(first.cascadeCount).toBe(1);
+  expect(first.cascadeBlend).toBe(0);
+  expect(first.lightViewProj[0]).toEqual(matrix);
+  expect(moved.lightViewProj).toEqual(first.lightViewProj);
+  expect(first.splitPlanes[0]).toBeGreaterThan(1e30);
+  expect(first.splitPlanes[1]).toBeCloseTo(10 / config.mapSize);
+  expect(first.splitPlanes[2]).toBeCloseTo(499.5);
+});

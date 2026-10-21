@@ -20,10 +20,6 @@ function scopeHash(scopeId: string): string {
   return createHash('sha256').update(scopeId, 'utf8').digest('hex');
 }
 
-export function runtimeScopeHash(scopeId: string): string {
-  return scopeHash(scopeId);
-}
-
 export async function createRuntimeScope(root: string, scopeId: string): Promise<DdcRuntimeScope> {
   if (scopeId.length === 0) {
     throw new DdcStoreError({

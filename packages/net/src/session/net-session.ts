@@ -135,7 +135,6 @@ export class NetSession {
   #visibility: ReplicationVisibility | undefined;
   #deferredEvents: EndpointEvent[] = [];
   #deferReplicaMessages = false;
-  #disposed = false;
 
   constructor(config: NetSessionConfig) {
     this.#endpoint = config.endpoint;
@@ -255,7 +254,7 @@ export class NetSession {
   }
 
   #attemptRecovery(): void {
-    if (this.#disposed || this.#state.kind !== 'recovering' || this.#pendingConnect) return;
+    if (this.#state.kind !== 'recovering' || this.#pendingConnect) return;
     if (this.#reconnectAttempts >= this.#policy.maxReconnectAttempts) {
       this.#exhaustRecovery();
       return;
@@ -293,7 +292,7 @@ export class NetSession {
       return;
     }
     this.#pendingConnect = undefined;
-    if (this.#disposed || this.#state.kind !== 'recovering') {
+    if (this.#state.kind !== 'recovering') {
       if (result.ok) result.value.close();
       return;
     }
@@ -317,7 +316,7 @@ export class NetSession {
   #connectFailed(controller: AbortController, cause: unknown): void {
     if (this.#pendingConnect !== controller) return;
     this.#pendingConnect = undefined;
-    if (this.#disposed || this.#state.kind !== 'recovering') return;
+    if (this.#state.kind !== 'recovering') return;
     const failure: NetSessionFailure =
       cause instanceof NetError
         ? (cause as unknown as NetError)
@@ -457,7 +456,7 @@ export class NetSession {
       this.#setFailure(applied.error);
       return;
     }
-    const packetOutcome = this.#replica.coordinator.lastPacketOutcome;
+    const packetOutcome = applied.value;
     if (packetOutcome === 'accepted') {
       this.#deadlineTimer?.cancel();
       this.#deadlineTimer = undefined;
@@ -479,7 +478,7 @@ export class NetSession {
 
   receiveEvents(): readonly NetError[] {
     const errors: NetError[] = [];
-    if (this.#disposed || isTerminalNetSessionState(this.#state)) return errors;
+    if (isTerminalNetSessionState(this.#state)) return errors;
     const events = [...this.#deferredEvents, ...(this.#endpoint?.poll() ?? [])];
     this.#deferredEvents = [];
     const deferMessages = this.#deferReplicaMessages;
@@ -819,8 +818,8 @@ export class NetSession {
   }
 
   dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
+    if (this.#state.kind === 'retired') return;
+    this.#setState({ kind: 'retired', sessionId: this.#sessionId, reason: 'disposed' });
     this.#clearRecoveryWork();
     this.#endpoint?.close();
     this.#endpoint = undefined;
@@ -836,8 +835,6 @@ export class NetSession {
     this.#rawMessages = [];
     this.#deferredEvents = [];
     this.#deferReplicaMessages = false;
-    if (this.#state.kind !== 'retired')
-      this.#setState({ kind: 'retired', sessionId: this.#sessionId, reason: 'disposed' });
   }
 
   #queueRawMessage(peerId: PeerId, data: Uint8Array): void {

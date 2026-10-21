@@ -5,7 +5,7 @@ import { AUTO_EXPOSURE_TAA_FIXTURE } from '@forgeax/apps-shared/auto-exposure-fi
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { createProfiler } from '@forgeax/engine-profiler';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Transform } from '@forgeax/engine-scene';
 import {
@@ -22,7 +22,7 @@ import {
   TONEMAP_ACES_FILMIC,
   perspective,
 } from '@forgeax/engine-render';
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import lutMeta from '../assets/auto-exposure-positive-lut.cube.meta.json' with { type: 'json' };
 
@@ -153,6 +153,9 @@ const created = await createApp(canvas, {
 });
 if (!created.ok) throw created.error;
 const app = created.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
+const demoPrimitive = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 const assets = app.assets;
 if (assets === undefined) throw new Error('hello-taa: runtime AssetRegistry is unavailable');
 if (runtimeDevBinding === undefined) configureRuntimeAssetCatalog(assets, runtimeBinding);
@@ -160,7 +163,7 @@ const lutSubAsset = lutMeta.subAssets?.find((entry) => entry.kind === 'texture')
 if (lutSubAsset === undefined) throw new Error('hello-taa: LUT sidecar has no texture sub-asset');
 const parsedLutGuid = AssetGuid.parse(lutSubAsset.guid);
 if (!parsedLutGuid.ok) throw parsedLutGuid.error;
-const lutAssetResult = await assets.loadByGuid<TextureAsset>(parsedLutGuid.value);
+const lutAssetResult = await assets.load(parsedLutGuid.value, 'texture');
 if (!lutAssetResult.ok) throw lutAssetResult.error;
 const lutAsset = lutAssetResult.value;
 const lutGuid = assets.guidOf(lutAsset);
@@ -169,7 +172,7 @@ if (lutGuid === undefined || lutCatalogEntry?.sourceKey === undefined) {
   throw new Error('hello-taa: loaded LUT is missing its authoritative Catalog sourceKey');
 }
 const lutHandle = workloadKind === 'positive-lut'
-  ? app.world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', lutAsset)
+  ? lutAsset
   : undefined;
 const lutSourceKey = lutCatalogEntry.sourceKey;
 const workloadExposure = workloadKind === 'auto'
@@ -221,10 +224,7 @@ const spawnBar = (
   z = 0,
   scaleX = 0.5,
 ) => {
-  const material = app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit(color),
-  );
+  const material = assets.create(Materials.unlit(color)).unwrap();
   const entity = app.world
     .spawn(
       {
@@ -238,7 +238,7 @@ const spawnBar = (
           scale: [scaleX, 0.45, 1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: demoPrimitive } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();

@@ -18,13 +18,17 @@
 
 import type { CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, physicsPlugin } from '@forgeax/engine-physics';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-physics: missing <canvas id="app"> in index.html');
@@ -39,6 +43,11 @@ else {
 }
 
 function spawnScene(world: import('@forgeax/engine-ecs').World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // Ground: static cuboid at y=-2, wide enough to catch the falling sphere.
   world
     .spawn(
@@ -46,7 +55,7 @@ function spawnScene(world: import('@forgeax/engine-ecs').World): void {
         component: Transform,
         data: { pos: [0, -2, 0], scale: [10, 0.5, 10]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
       {
         component: RigidBody,
@@ -70,7 +79,7 @@ function spawnScene(world: import('@forgeax/engine-ecs').World): void {
         component: Transform,
         data: { pos: [0, 5, 0]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
       {
         component: RigidBody,

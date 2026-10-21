@@ -1,3 +1,4 @@
+import { testAssets } from './helpers/runtime-assets';
 // @ts-nocheck -- node:fs / node:path / node:url imports outside @types/node
 // bug-20260615-skin-mesh-node-double-transform M0 / m0-1 (AC-01).
 //
@@ -115,7 +116,13 @@ describe('skin parented double transform (AC-01)', () => {
         {
           component: Skin,
           data: {
-            skeleton: 123 as unknown as never, // unused in math-only test
+            skeleton: testAssets(world)
+              .create({
+                kind: 'skeleton',
+                jointCount: 1,
+                inverseBindMatrices: mat4.identity(mat4.create()),
+              })
+              .unwrap(), // unused in math-only test
             joints: new Uint32Array([jointEntity as unknown as number]),
           },
         },
@@ -192,7 +199,13 @@ describe('skin parented double transform (AC-01)', () => {
         {
           component: Skin,
           data: {
-            skeleton: 123 as unknown as never,
+            skeleton: testAssets(world)
+              .create({
+                kind: 'skeleton',
+                jointCount: 1,
+                inverseBindMatrices: mat4.identity(mat4.create()),
+              })
+              .unwrap(),
             joints: new Uint32Array([jointEntity as unknown as number]),
           },
         },

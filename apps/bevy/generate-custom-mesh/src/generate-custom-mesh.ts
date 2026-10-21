@@ -1,12 +1,12 @@
-import { RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
+import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
-import type { Handle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { quat } from '@forgeax/engine-math';
 
-const FLOATS_PER_VERTEX = 12;
 const CUBE_POSITIONS: readonly (readonly [number, number, number])[] = [
   [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5],
   [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, -0.5, 0.5],
@@ -32,12 +32,10 @@ const CUBE_INDICES = new Uint16Array([
 export const CUSTOM_TEXTURE_SIZE = 64;
 
 export interface CustomMeshState {
-  readonly meshContent: EntityHandle;
   readonly meshEntity: EntityHandle;
-  readonly meshHandle: Handle<'MeshAsset', 'shared'>;
-  readonly baseVertices: Float32Array;
-  readonly alternateVertices: Float32Array;
-  readonly indices: Uint16Array;
+  readonly meshHandle: AssetHandle<'mesh'>;
+  readonly baseUvs: Float32Array;
+  readonly alternateUvs: Float32Array;
   uvMode: 'upper' | 'lower';
   toggles: number;
 }
@@ -74,45 +72,24 @@ export function makeCustomMeshTexture(): TextureAsset {
   };
 }
 
-function customCubeVertices(lower: boolean): Float32Array {
-  const vertices = new Float32Array(CUBE_POSITIONS.length * FLOATS_PER_VERTEX);
-  for (let i = 0; i < CUBE_POSITIONS.length; i++) {
-    const position = CUBE_POSITIONS[i]!;
-    const normal = CUBE_NORMALS[i]!;
-    const faceU = i % 4 === 0 || i % 4 === 3 ? 0 : 1;
-    const faceV = i % 4 < 2 ? 0 : 0.2;
-    const u = faceU;
-    const v = lower ? faceV + 0.5 : faceV;
-    const offset = i * FLOATS_PER_VERTEX;
-    vertices[offset] = position[0];
-    vertices[offset + 1] = position[1];
-    vertices[offset + 2] = position[2];
-    vertices[offset + 3] = normal[0];
-    vertices[offset + 4] = normal[1];
-    vertices[offset + 5] = normal[2];
-    vertices[offset + 6] = u;
-    vertices[offset + 7] = v;
-    vertices[offset + 8] = 1;
-    vertices[offset + 11] = 1;
-  }
-  return vertices;
+function customCubeUvs(lower: boolean): Float32Array {
+  return new Float32Array(CUBE_POSITIONS.flatMap((_, i) => [
+    i % 4 === 0 || i % 4 === 3 ? 0 : 1,
+    (i % 4 < 2 ? 0 : 0.2) + (lower ? 0.5 : 0),
+  ]));
 }
 
-function customCubeMesh(vertices: Float32Array): MeshAsset {
-  const positions = new Float32Array(CUBE_POSITIONS.flat());
-  const normals = new Float32Array(CUBE_NORMALS.flat());
-  const uv = new Float32Array(CUBE_POSITIONS.length * 2);
-  const tangent = new Float32Array(CUBE_POSITIONS.length * 4);
-  for (let i = 0; i < CUBE_POSITIONS.length; i++) {
-    uv[i * 2] = vertices[i * FLOATS_PER_VERTEX + 6] ?? 0;
-    uv[i * 2 + 1] = vertices[i * FLOATS_PER_VERTEX + 7] ?? 0;
-    tangent[i * 4] = 1;
-    tangent[i * 4 + 3] = 1;
-  }
+function customCubeMesh(uv: Float32Array): MeshAsset {
+  const attributes = {
+    position: new Float32Array(CUBE_POSITIONS.flat()),
+    normal: new Float32Array(CUBE_NORMALS.flat()),
+    uv,
+    tangent: new Float32Array(CUBE_POSITIONS.flatMap(() => [1, 0, 0, 1])),
+  };
   return {
     kind: 'mesh',
-    vertices,
-    attributes: { position: positions, normal: normals, uv, tangent },
+    vertices: packInterleavedVertexAttributes(attributes, CUBE_POSITIONS.length).unwrap().vertices,
+    attributes,
     indices: CUBE_INDICES,
     submeshes: [{ indexOffset: 0, indexCount: CUBE_INDICES.length, vertexCount: CUBE_POSITIONS.length, topology: 'triangle-list', materialSlot: 0 }],
     aabb: new Float32Array([-0.5, -0.5, -0.5, 0.5, 0.5, 0.5]),
@@ -120,16 +97,15 @@ function customCubeMesh(vertices: Float32Array): MeshAsset {
   };
 }
 
-export function buildCustomMeshWorld(world: World, textureHandle?: number): CustomMeshState {
-  const baseVertices = customCubeVertices(false);
-  const alternateVertices = customCubeVertices(true);
-  const mesh = customCubeMesh(baseVertices);
+export function buildCustomMeshWorld(world: World, assets: AssetRegistry, textureHandle?: AssetHandle<'texture'>): CustomMeshState {
+  const baseUvs = customCubeUvs(false);
+  const alternateUvs = customCubeUvs(true);
+  const mesh = customCubeMesh(baseUvs);
   const material = Materials.unlit([1, 1, 1, 1], {
     ...(textureHandle === undefined ? {} : { baseColorTexture: textureHandle }),
   });
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material);
-  const meshHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
-  const meshContent = world.spawn({ component: RuntimeMeshVertices, data: { asset: meshHandle, vertices: baseVertices } }).unwrap();
+  const materialHandle = assets.create(material).unwrap();
+  const meshHandle = assets.create(mesh).unwrap();
   const meshEntity = world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1.6, 1.6, 1.6] } },
     { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -140,17 +116,20 @@ export function buildCustomMeshWorld(world: World, textureHandle?: number): Cust
     { component: Transform, data: { pos: eye, quat: quat.fromLookAt(quat.create(), eye, [0, 0, 0], [0, 1, 0]), scale: [1, 1, 1] } },
     { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 16 / 9, near: 0.1, far: 100 }) },
   );
-  return { meshEntity, meshContent, meshHandle, baseVertices, alternateVertices, indices: CUBE_INDICES, uvMode: 'upper', toggles: 0 };
+  return { meshEntity, meshHandle, baseUvs, alternateUvs, uvMode: 'upper', toggles: 0 };
 }
 
-export function toggleCustomMesh(world: World, state: CustomMeshState): void {
+export function toggleCustomMesh(assets: AssetRegistry, state: CustomMeshState): void {
   state.uvMode = state.uvMode === 'upper' ? 'lower' : 'upper';
   state.toggles += 1;
-  world.set(state.meshContent, RuntimeMeshVertices, { vertices: state.uvMode === 'upper' ? state.baseVertices : state.alternateVertices }).unwrap();
+  assets.writeRange(state.meshHandle, {
+    attribute: 'uv', first: 0,
+    values: state.uvMode === 'upper' ? state.baseUvs : state.alternateUvs,
+  }).unwrap();
 }
 
-export function stepCustomMesh(world: World, state: CustomMeshState, input: InputSnapshot): void {
-  if (input.keyboard.justPressedCode('Space')) toggleCustomMesh(world, state);
+export function stepCustomMesh(world: World, assets: AssetRegistry, state: CustomMeshState, input: InputSnapshot): void {
+  if (input.keyboard.justPressedCode('Space')) toggleCustomMesh(assets, state);
   const current = world.get(state.meshEntity, Transform);
   if (!current.ok) return;
   let rotation = current.value.quat;

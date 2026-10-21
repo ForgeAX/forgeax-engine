@@ -1,12 +1,11 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { cameraLensProjection } from '../camera-projection';
 import type { RenderResourceScope } from '../publication/resource-scope';
 // @forgeax/engine-runtime - RenderSystem record stage: helpers.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import { type Mat4, mat4 } from '@forgeax/engine-math';
 import type { EquirectAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
 import { EquirectProjectionFailedError } from '../errors/render';
 import { isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { CameraSnapshot } from '../render-contract';
@@ -124,12 +123,12 @@ export function warnMultiSkybox(
  *                                     (the store writes status:'pending'
  *                                     synchronously, so this launches once)
  *   pending                        -> in flight; bind white fallback (no fire)
- *   ready                          -> bound by recordMainPass's IBL cache check
+ *   ready                          -> bound by encodeMainPass's IBL cache check
  *   failed                         -> fire EquirectProjectionFailedError ONCE
  *                                     per handle (R-2/AC-09 no retry)
  * Fire-and-forget: `_uploadCubemapFromEquirect` is invoked WITHOUT await so the
  * record stay synchronous; the store mutates its own status map and (on
- * success) the per-device IblPipelineCache, which recordMainPass reads on a
+ * success) the per-device IblPipelineCache, which encodeMainPass reads on a
  * later frame. The structured error from a fire-and-forget failure is reported
  * via the explicit `status === 'failed'` arm here (read on the next frame), not
  * by awaiting the promise (which would block record).
@@ -141,7 +140,7 @@ export function driveLazyEquirectProjection(
   equirectHandle: number,
 ): void {
   const store = internals.gpuStore;
-  const handle = toShared<'EquirectAsset'>(equirectHandle);
+  const handle = equirectHandle as AssetHandle<'equirect'>;
   const failure = store.getCubemapFailure(handle, world);
   if (failure !== undefined) {
     // Fire the structured error exactly once per failed source (the store
@@ -158,7 +157,7 @@ export function driveLazyEquirectProjection(
   if (store.getCubemapStatus(handle, world) !== undefined) return;
 
   // First sight: resolve the equirect POD and fire-and-forget the projection.
-  const podRes = resolveAssetHandle<EquirectAsset>(world, handle);
+  const podRes = world.resolveAsset<EquirectAsset>(handle);
   if (!podRes.ok || podRes.value.kind !== 'equirect') {
     // The handle does not resolve to a live equirect POD (stale / wrong kind).
     // Launch nothing; the store stays empty and the white fallback holds. The

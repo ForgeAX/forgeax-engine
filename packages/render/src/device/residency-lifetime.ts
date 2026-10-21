@@ -98,7 +98,13 @@ export class ResidencyLifetime {
         this.eviction = undefined;
         evict();
       }
-      if (this.retired && this.leases === 0 && this.destroy !== undefined) {
+      // Eviction may attach queue work before retiring this allocation.
+      if (
+        this.submissions.size === 0 &&
+        this.retired &&
+        this.leases === 0 &&
+        this.destroy !== undefined
+      ) {
         const destroy = this.destroy;
         this.destroy = undefined;
         destroy();

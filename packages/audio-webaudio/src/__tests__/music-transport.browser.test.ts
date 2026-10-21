@@ -1,10 +1,18 @@
-import { createAudioIntentBackend, type MusicPreparation } from '@forgeax/engine-audio';
-import { expect, it } from 'vitest';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import {
+  audioContribution,
+  createAudioIntentBackend,
+  type MusicPreparation,
+} from '@forgeax/engine-audio';
+import { afterAll, assert, expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import { createHostAudioConsumer, createWebAudioBackend } from '../host-audio-consumer';
 import { WebAudioEngine } from '../web-audio-engine';
 import { pcmWav } from './support-tone';
 
+const assets = new AssetRegistry();
+assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+afterAll(() => assets.dispose());
 const RATE = 48000;
 it('keeps generic Host consumption lazy and accepts an ordinary graph without a music bus', async () => {
   const context = new OfflineAudioContext(1, RATE, RATE);
@@ -32,6 +40,7 @@ it('keeps generic Host consumption lazy and accepts an ordinary graph without a 
 
 function score(count = 4): MusicPreparation {
   return {
+    assets,
     bpm: 120,
     beatsPerBar: 4,
     loopBeats: 4,
@@ -39,12 +48,14 @@ function score(count = 4): MusicPreparation {
       const pcm = new Float32Array(RATE * 2);
       for (let beat = 0; beat < 4; beat++) pcm[(beat * RATE) / 2 + stem * 32] = (stem + 1) / 32;
       return {
-        clip: {
-          kind: 'audio',
-          sourceKey: `impulse-${stem}`,
-          mediaType: 'audio/wav',
-          bytes: pcmWav(pcm),
-        },
+        clip: assets
+          .create({
+            kind: 'audio',
+            sourceKey: `impulse-${stem}`,
+            mediaType: 'audio/wav',
+            bytes: pcmWav(pcm),
+          })
+          .unwrap(),
       };
     }),
   };
@@ -67,7 +78,8 @@ it('prepares ordinary clips locally through the public Host backend and renders 
   const backend = createWebAudioBackend(new WebAudioEngine({ context }));
   try {
     const authored = score(1);
-    const encoded = authored.stems[0]?.clip.bytes;
+    assert(authored.stems[0]);
+    const encoded = assets.read(authored.stems[0].clip).unwrap().bytes;
     if (!encoded) throw new Error('fixture must provide ordinary WAV bytes');
     const independentInput = await context.decodeAudioData(encoded.slice().buffer as ArrayBuffer);
     backend.music({ kind: 'prepare', requestId: 1, score: authored });
@@ -92,7 +104,9 @@ for (const atBeat of [1e308, Number.MAX_SAFE_INTEGER])
   it(`rejects an unrepresentable native target ${atBeat} without retiring accepted music`, async () => {
     const { context, consumer, backend, epoch } = await fixture(1, 1);
     try {
-      const bytes = score(1).stems[0]?.clip.bytes;
+      const authored = score(1);
+      assert(authored.stems[0]);
+      const bytes = assets.read(authored.stems[0].clip).unwrap().bytes;
       if (!bytes) throw new Error('native target fixture requires ordinary WAV bytes');
       const input = await context.decodeAudioData(bytes.slice().buffer as ArrayBuffer);
       const expected = input.getChannelData(0)[0] ?? NaN;
@@ -157,12 +171,14 @@ it('reports not-ready and native decode failure without scheduling a partial sco
       stems: [
         ...declared.stems.slice(0, 1),
         {
-          clip: {
-            kind: 'audio',
-            sourceKey: 'invalid-decode',
-            mediaType: 'audio/wav',
-            bytes: new Uint8Array([1, 2, 3, 4]),
-          },
+          clip: assets
+            .create({
+              kind: 'audio',
+              sourceKey: 'invalid-decode',
+              mediaType: 'audio/wav',
+              bytes: new Uint8Array([1, 2, 3, 4]),
+            })
+            .unwrap(),
         },
       ],
     });
@@ -185,7 +201,8 @@ it('applies all 101 beat changes to the independently decoded native impulse sam
   const consumer = createHostAudioConsumer(new WebAudioEngine({ context }));
   try {
     const authored = score(1);
-    const bytes = authored.stems[0]?.clip.bytes;
+    assert(authored.stems[0]);
+    const bytes = assets.read(authored.stems[0].clip).unwrap().bytes;
     if (!bytes) throw new Error('native impulse fixture needs WAV bytes');
     const input = await context.decodeAudioData(bytes.slice().buffer as ArrayBuffer);
     consumer.prepareMusic(1, authored);
@@ -345,7 +362,9 @@ it('fails the same PCM alignment oracle for immediate staggered stem starts', as
   const context = new OfflineAudioContext(1, RATE, RATE);
   const buffers = await Promise.all(
     score().stems.map((stem) =>
-      context.decodeAudioData((stem.clip.bytes ?? new Uint8Array()).slice().buffer),
+      context.decodeAudioData(
+        (assets.read(stem.clip).unwrap().bytes ?? new Uint8Array()).slice().buffer,
+      ),
     ),
   );
   for (const [index, buffer] of buffers.entries()) {
@@ -376,17 +395,20 @@ it('matches an independent sample envelope and preserves beat/gain through pause
   });
   const constant = new Float32Array(RATE * 2).fill(0.2);
   consumer.prepareMusic(1, {
+    assets,
     bpm: 120,
     beatsPerBar: 4,
     loopBeats: 4,
     stems: [
       {
-        clip: {
-          kind: 'audio',
-          sourceKey: 'constant',
-          mediaType: 'audio/wav',
-          bytes: pcmWav(constant),
-        },
+        clip: assets
+          .create({
+            kind: 'audio',
+            sourceKey: 'constant',
+            mediaType: 'audio/wav',
+            bytes: pcmWav(constant),
+          })
+          .unwrap(),
       },
     ],
   });
@@ -529,7 +551,16 @@ it('rejects a one-native-sample-short loop with actionable frame evidence and si
     consumer.prepareMusic(1, {
       ...score(1),
       stems: [
-        { clip: { kind: 'audio', sourceKey: 'short-native-loop', mediaType: 'audio/wav', bytes } },
+        {
+          clip: assets
+            .create({
+              kind: 'audio',
+              sourceKey: 'short-native-loop',
+              mediaType: 'audio/wav',
+              bytes,
+            })
+            .unwrap(),
+        },
       ],
     });
     await expect.poll(() => consumer.state().music?.receipts[0]?.status).toBe('rejected');
@@ -625,6 +656,7 @@ it.each([
     state: () => consumer.state(),
   });
   const declared: MusicPreparation = {
+    assets,
     bpm,
     beatsPerBar: 4,
     loopBeats,
@@ -644,12 +676,14 @@ it.each([
       pcm[marker] = (stem + 1) / 16;
       return {
         offsetSeconds,
-        clip: {
-          kind: 'audio',
-          sourceKey: `resampled-${stem}`,
-          mediaType: 'audio/wav',
-          bytes: pcmWav(pcm),
-        },
+        clip: assets
+          .create({
+            kind: 'audio',
+            sourceKey: `resampled-${stem}`,
+            mediaType: 'audio/wav',
+            bytes: pcmWav(pcm),
+          })
+          .unwrap(),
       };
     }),
   };
@@ -765,7 +799,7 @@ it('retires every native voice after partial source creation failure', async () 
   }
 });
 
-it('adopts only the newest prepared score and shares the ordinary source content fence', async () => {
+it('adopts only the newest prepared score and retains its fixed buffers across ordinary asset edits', async () => {
   const context = new OfflineAudioContext(1, RATE * 2, RATE);
   const consumer = createHostAudioConsumer(new WebAudioEngine({ context }));
   const backend = createAudioIntentBackend({
@@ -796,11 +830,18 @@ it('adopts only the newest prepared score and shares the ordinary source content
       mediaType: 'audio/wav' as const,
       bytes: pcmWav(new Float32Array(RATE * 2)),
     };
-    backend.play(42, replacement, { loop: false, volume: 1, spatialBlend: 0, bus: 'music' });
-    expect(backend.getState().music?.phase).toBe('empty');
-    expect(backend.getState().music?.nodes).toBe(0);
+    assert(newer.stems[0]);
+    assets.update(newer.stems[0].clip, { bytes: replacement.bytes }).unwrap();
+    backend.play(42, assets, newer.stems[0].clip, {
+      loop: false,
+      volume: 1,
+      spatialBlend: 0,
+      bus: 'music',
+    });
+    expect(backend.getState().music?.phase).toBe('playing');
+    expect(backend.getState().music?.nodes).toBe(2);
     await expect.poll(() => backend.getState().cache?.pendingPlays).toBe(0);
-    expect((await context.startRendering()).getChannelData(0).every((value) => value === 0)).toBe(
+    expect((await context.startRendering()).getChannelData(0).some((value) => value > 0.01)).toBe(
       true,
     );
   } finally {

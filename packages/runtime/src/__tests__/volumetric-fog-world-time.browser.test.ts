@@ -11,6 +11,7 @@ import { scenePlugin } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 import {
   attachRenderer,
   captureFrame,
@@ -44,7 +45,10 @@ it('replays volumetric output at equal World time across render schedules', asyn
     const renderer = rendererResult.value;
     const world = new World();
     const scene = await createWorldContext(world, [scenePlugin()]);
-    const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: false });
+    const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+      aspect: 1,
+      includeAtmosphere: false,
+    });
     recipe.destroy(recipe.entities.screen);
     recipe.destroy(recipe.entities.localLight);
     recipe.destroy(recipe.entities.skylight);
@@ -58,7 +62,7 @@ it('replays volumetric output at equal World time across render schedules', asyn
       })
       .unwrap();
     world.set(recipe.entities.sun, DirectionalLight, { direction: DAYLIGHT }).unwrap();
-    const density = world.allocSharedRef('TextureAsset', createDensity());
+    const density = testAssets(world).create(createDensity()).unwrap();
     const fog = world
       .spawn({
         component: VolumetricFog,
@@ -224,7 +228,7 @@ it('replays volumetric output at equal World time across render schedules', asyn
     for (const fixture of [dense, sparse]) {
       await fixture.renderer.dispose();
       fixture.world.despawn(fixture.fog).unwrap();
-      fixture.world.sharedRefs.release(fixture.density).unwrap();
+      testAssets(fixture.world).release(fixture.density).unwrap();
       fixture.recipe.dispose();
       await fixture.scene.fiber.dispose();
     }

@@ -161,7 +161,7 @@ it('keeps skinned meshes out of the field: they receive GI without Cards, SDF or
     expect(rigidTiles).toBeGreaterThan(0);
 
     const body = Materials.standard({ baseColor: [1, 1, 1, 1], roughness: 1, specular: 0 });
-    const { joint } = spawnSkinnedCharacter(h.world, body, [0, -1.4, -1.6]);
+    const { joint } = spawnSkinnedCharacter(h.world, h.assets, body, [0, -1.4, -1.6]);
     await h.settle(24);
     const skinned = residency(h);
     // Not a field source: no rebuild, no in-place add, no Cards.

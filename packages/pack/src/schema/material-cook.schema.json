@@ -371,6 +371,35 @@
                     "generation"
                   ],
                   "properties": {
+                    "entryPoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["name", "stage", "bindings"],
+                        "properties": {
+                          "name": { "type": "string", "minLength": 1 },
+                          "stage": { "enum": ["vertex", "fragment", "compute"] },
+                          "bindings": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": ["group", "binding"],
+                              "properties": {
+                                "group": { "type": "integer", "minimum": 0 },
+                                "binding": { "type": "integer", "minimum": 0 },
+                                "fields": {
+                                  "type": "array",
+                                  "uniqueItems": true,
+                                  "items": { "type": "string", "minLength": 1 }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
                     "directEntry": { "type": "string", "minLength": 1 },
                     "sceneIndexEntry": { "type": "string", "minLength": 1 },
                     "materialRow": {

@@ -1,7 +1,7 @@
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
 import { MeshRenderer } from '@forgeax/engine/render';
 
-type Ref = ReturnType<World['allocSharedRef']>;
+type Ref = import('@forgeax/engine/types').AssetHandle<'material'>;
 
 /** Returns a toggle that assigns `on` or `off` as the entity's only material. */
 export function materialToggle(
@@ -11,6 +11,6 @@ export function materialToggle(
   off: Ref,
 ): (enabled: boolean) => void {
   return (enabled) => {
-    world.set(entity, MeshRenderer, { materials: [enabled ? on : off] } as never);
+    world.set(entity, MeshRenderer, { materials: [enabled ? on : off] }).unwrap();
   };
 }

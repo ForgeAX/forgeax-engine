@@ -57,7 +57,7 @@ describe('Standard Surface pass evaluation', () => {
         expect(body).toContain('surface.emissive');
         if (entry === 'fs_gbuffer') {
           expect(body).toContain('encodeStandardGBuffer(');
-          expect(body).toContain('standardSurfaceF0(in, surface,');
+          expect(body).toContain('standardSurfaceSpecular(in, surface,');
           expect(body).not.toContain('evaluateStandardEnvironment(');
           expect(body).not.toContain('evaluateStandardDirect(');
         }

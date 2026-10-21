@@ -20,7 +20,7 @@
 // `defineAnimationGraph` graph (nodes / static weights / clip refs); there is no
 // DCC-import metadata surface.
 
-import type { AnimationGraph } from '@forgeax/engine-types';
+import type { AnimationGraph, AssetHandle } from '@forgeax/engine-types';
 
 /**
  * Resolves a Clip leaf's durable GUID string to the form stored in Pack
@@ -29,7 +29,7 @@ import type { AnimationGraph } from '@forgeax/engine-types';
  * The caller supplies this so serialize stays free of AssetRegistry / World
  * coupling; the graph already carries durable GUID strings at this boundary.
  */
-export type ClipGuidResolver = (clip: string) => string | undefined;
+export type ClipGuidResolver = (clip: string | AssetHandle<'animation-clip'>) => string | undefined;
 
 /**
  * Output of {@link serializeAnimationGraph}: the pack `payload` object (a flat
@@ -50,7 +50,7 @@ export interface SerializedAnimationGraph {
  */
 export function serializeAnimationGraph(
   graph: AnimationGraph,
-  resolveClipGuid: ClipGuidResolver = (clip) => clip,
+  resolveClipGuid: ClipGuidResolver = (clip) => (typeof clip === 'string' ? clip : undefined),
 ): SerializedAnimationGraph | undefined {
   const refs: string[] = [];
   const guidToIndex = new Map<string, number>();

@@ -1,5 +1,6 @@
+import { resourcePreviewRequestId } from '@forgeax/view-workspace-core/resource-open';
 import type { PreviewOwner, ViewPresentation as PreviewPresentation } from '@forgeax/view-workspace-core/engine-presentation';
-import { Button, EmptyState } from '@forgeax/view-components';
+import { EmptyState } from '@forgeax/view-components';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
@@ -21,6 +22,7 @@ import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax
 import { PAGE_TYPE, RESOURCE_KINDS } from '../identity.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import './mesh.css';
+import { MeshDisplayControls } from './MeshDisplayControls';
 
 type InputController = {
   attach: (element: HTMLElement) => (reason?: string) => void;
@@ -111,6 +113,7 @@ function LivePreview({
     let ready = false;
     let removeInput: ((reason?: string) => void) | undefined;
     const bound = bindWorkspacePreviewSurface({
+      requestId: resourcePreviewRequestId(workspace, target.targetId),
       presentation,
       target,
       container,
@@ -129,6 +132,9 @@ function LivePreview({
       return currentTarget?.targetId === target.targetId && currentTarget?.generation === target.generation;
     });
     const { signal } = observation;
+    void bound.ready?.catch(error => {
+      if (!cancelled && !signal.aborted) setFailure({ hint: error instanceof Error ? error.message : String(error) });
+    });
     setFailure(undefined);
     setInitialPose(null);
     setRestoreError('');
@@ -260,27 +266,16 @@ function LivePreview({
   }
   return (
     <div className="fx-asset-viewer fx-asset-preview fx-mesh-preview fx-ui" data-testid="panel-mesh-preview">
-      <div className="fx-mesh-preview-toolbar">
-        <Button
-          size="compact"
-          variant="secondary"
-          data-testid="mesh-reset-view"
-          disabled={initialPose == null || restoring || Boolean(failure)}
-          onClick={restoreView}
-        >
-          {t('mesh.resetView')}
-        </Button>
+      <MeshDisplayControls key={`${preview.target.targetId}:${preview.target.generation}`} client={client} preview={preview} reader={reader} resetDisabled={initialPose == null || restoring || Boolean(failure)} onReset={restoreView} />
         {restoreError ? (
           <p className="fx-mesh-restore-error" role="alert">{restoreError}</p>
         ) : null}
-      </div>
       <div
         ref={containerRef}
         className="fx-asset-preview-surface"
         data-forgeax-asset-preview={preview.target.targetId}
         hidden={Boolean(failure)}
       />
-      <p className="fx-mesh-navigation-hint">{t('mesh.navigationHint')}</p>
       {failure ? (
         <EmptyState
           title={t('mesh.previewUnavailable')}

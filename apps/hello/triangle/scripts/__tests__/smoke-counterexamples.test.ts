@@ -50,7 +50,7 @@ import { describe, expect, it } from 'vitest';
  * Three-part criteria (smoke-criteria.mjs SSOT after w5):
  * (a) `backend === 'webgpu'`
  * (b) `framesObserved >= SMOKE_MIN_FRAMES`
- * (c) NDC-center RGB distance to clearColor [0.06, 0.06, 0.08]
+ * (c) NDC-center RGB distance to clearColor [0, 0, 0]
  *     > SMOKE_PIXEL_THRESHOLD (0.05)
  */
 interface SmokeCriteriaInput {
@@ -77,7 +77,7 @@ const COUNTEREXAMPLE_I: SmokeCriteriaInput = {
   framesObserved: 350,
   pixelSamples: {
     ndcCenter: [0.42, 0.31, 0.18], // assume triangle drawn (not clearColor)
-    corner: [0.06, 0.06, 0.08],
+    corner: [0, 0, 0],
   },
 };
 
@@ -90,8 +90,8 @@ const COUNTEREXAMPLE_II: SmokeCriteriaInput = {
   backendLine: 'webgpu',
   framesObserved: 350,
   pixelSamples: {
-    ndcCenter: [0.06, 0.06, 0.08], // all clearColor - triangle not drawn
-    corner: [0.06, 0.06, 0.08],
+    ndcCenter: [0, 0, 0], // all clearColor - triangle not drawn
+    corner: [0, 0, 0],
   },
 };
 
@@ -109,8 +109,8 @@ const COUNTEREXAMPLE_III: SmokeCriteriaInput = {
   backendLine: 'webgpu',
   framesObserved: 350,
   pixelSamples: {
-    ndcCenter: [0.06, 0.06, 0.08], // silent skip -> all clearColor
-    corner: [0.06, 0.06, 0.08],
+    ndcCenter: [0, 0, 0], // silent skip -> all clearColor
+    corner: [0, 0, 0],
   },
 };
 
@@ -125,7 +125,7 @@ const COUNTEREXAMPLE_IV: SmokeCriteriaInput = {
   backendLine: 'webgpu',
   framesObserved: 350,
   pixelSamples: {
-    ndcCenter: [0.06, 0.06, 0.08], // NDC center == clearColor exactly
+    ndcCenter: [0, 0, 0], // NDC center == clearColor exactly
     corner: [0.5, 0.5, 0.5],
   },
 };
@@ -140,7 +140,7 @@ const NORMAL_PASS: SmokeCriteriaInput = {
   framesObserved: 350,
   pixelSamples: {
     ndcCenter: [0.95, 0.45, 0.25], // triangle drawn (far from clearColor)
-    corner: [0.06, 0.06, 0.08], // canvas corner is clearColor
+    corner: [0, 0, 0], // canvas corner is clearColor
   },
 };
 

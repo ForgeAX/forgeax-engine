@@ -264,7 +264,11 @@ export interface TransmissionCandidateAdmissionInspection {
 }
 
 function sameDemand(left: TransmissionDemand, right: TransmissionDemand): boolean {
-  return left.activeCount === right.activeCount && left.needsRoughMips === right.needsRoughMips;
+  return (
+    left.activeCount === right.activeCount &&
+    left.needsRoughMips === right.needsRoughMips &&
+    left.needsBackPass === right.needsBackPass
+  );
 }
 
 function cloneResource(
@@ -379,6 +383,7 @@ export class TransmissionCandidateAdmission {
 }
 
 export interface TransmissionBackdropGraphInput {
+  readonly name?: string;
   readonly graph: RenderGraphBuilder<RenderPipelineFrame>;
   /** The resolved single-sample source; MSAA source is never copied directly. */
   readonly source: RenderPipelineTarget;
@@ -451,8 +456,9 @@ export function addTransmissionBackdropPasses(
     return err(roughMipEncoderMissing());
   }
 
+  const label = input.name ?? 'transmission-backdrop';
   const mipLevelCount = topology.mipCount === 0 ? 1 : numMipLevels(input.copySize);
-  const backdrop = createRenderPipelineTarget(input.graph, 'transmission-backdrop', {
+  const backdrop = createRenderPipelineTarget(input.graph, label, {
     format: input.source.format,
     size: input.surfaceSize,
     sampleCount: 1,
@@ -460,7 +466,7 @@ export function addTransmissionBackdropPasses(
   });
   if (!backdrop.ok) return backdrop;
   const mip0 = input.graph.view(backdrop.value.texture, {
-    label: 'transmission-backdrop.mip-0',
+    label: `${label}.mip-0`,
     baseMipLevel: 0,
     mipLevelCount: 1,
   });
@@ -468,7 +474,7 @@ export function addTransmissionBackdropPasses(
   const mipViews: GraphTextureView[] = [mip0.value];
   for (let level = 1; level < mipLevelCount; level += 1) {
     const mip = input.graph.view(backdrop.value.texture, {
-      label: `transmission-backdrop.mip-${level}`,
+      label: `${label}.mip-${level}`,
       baseMipLevel: level,
       mipLevelCount: 1,
     });
@@ -476,7 +482,7 @@ export function addTransmissionBackdropPasses(
     mipViews.push(mip.value);
   }
 
-  const copy = input.graph.addCopyPass('transmission-backdrop-copy', {
+  const copy = input.graph.addCopyPass(`${label}-copy`, {
     accesses: [
       { resource: input.source.view, usage: 'copy-src' },
       { resource: mip0.value, usage: 'copy-dst' },
@@ -505,7 +511,7 @@ export function addTransmissionBackdropPasses(
       width: mipDimension(input.surfaceSize.width, level),
       height: mipDimension(input.surfaceSize.height, level),
     });
-    const scratch = input.graph.createTexture('transmission-backdrop-scratch', {
+    const scratch = input.graph.createTexture(`${label}-scratch`, {
       format: backdrop.value.format,
       size: levelSize(1),
       sampleCount: 1,
@@ -522,7 +528,7 @@ export function addTransmissionBackdropPasses(
             expected: 'every rough transmission mip level to have a graph view',
             hint: 'rebuild the backdrop mip chain before adding its raster passes',
             detail: {
-              resourceLabel: 'transmission-backdrop',
+              resourceLabel: label,
               field: 'mipViews',
               expected: `mip views for level ${level - 1} and ${level}`,
               actual: 'missing',
@@ -531,13 +537,13 @@ export function addTransmissionBackdropPasses(
         );
       }
       const scratchView = input.graph.view(scratch.value, {
-        label: `transmission-backdrop-scratch.mip-${level - 1}`,
+        label: `${label}-scratch.mip-${level - 1}`,
         baseMipLevel: level - 1,
         mipLevelCount: 1,
       });
       if (!scratchView.ok) return scratchView;
       const mip = input.graph.addRasterPass(
-        level === 1 ? 'transmission-backdrop-mip' : `transmission-backdrop-mip-${level}`,
+        level === 1 ? `${label}-mip` : `${label}-mip-${level}`,
         {
           accesses: [
             { resource: source, usage: 'sampled-read' },
@@ -564,7 +570,7 @@ export function addTransmissionBackdropPasses(
         },
       );
       if (!mip.ok) return mip;
-      const copied = input.graph.addCopyPass(`transmission-backdrop-mip-copy-${level}`, {
+      const copied = input.graph.addCopyPass(`${label}-mip-copy-${level}`, {
         accesses: [
           { resource: scratchView.value, usage: 'copy-src' },
           { resource: destination, usage: 'copy-dst' },

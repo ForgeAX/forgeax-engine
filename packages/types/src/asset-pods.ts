@@ -1,5 +1,5 @@
 // Importer-independent sub-asset POD vocabulary.
-import type { AnimationTargetIdValue } from './animation-target.js';
+import type { AnimationTransformChannel } from './animation-contracts.js';
 import type { SkeletonAsset } from './media-contracts.js';
 import type { MorphTarget } from './mesh-contracts.js';
 
@@ -196,26 +196,6 @@ export interface SkinPod {
 
 // === AC-07: AnimationClipPod — keyframe animation ===
 
-/** Animation sampler (keyframe data for one property). */
-export interface AnimationSamplerPod {
-  /** Keyframe timestamps (ascending, seconds). */
-  readonly input: Float32Array;
-  /** Keyframe values (packed per-element stride). */
-  readonly output: Float32Array;
-  /** Interpolation mode. */
-  readonly interpolation: 'LINEAR' | 'STEP' | 'CUBICSPLINE';
-}
-
-/** Animation channel (one target-property pair). */
-export interface AnimationChannelPod {
-  /** Stable animation target identity. */
-  readonly targetId: AnimationTargetIdValue;
-  /** Target property: 'translation' | 'rotation' | 'scale' | 'weights'. */
-  readonly property: 'translation' | 'rotation' | 'scale' | 'weights';
-  /** Sampler driving this channel. */
-  readonly sampler: AnimationSamplerPod;
-}
-
 /** AnimationClipPod: keyframe animation clip IR shared across importers. */
 export interface AnimationClipPod {
   /** Optional clip name. */
@@ -223,5 +203,5 @@ export interface AnimationClipPod {
   /** Clip duration in seconds (max sampler.input[last]). */
   readonly duration: number;
   /** Per-animation-target-property channels. */
-  readonly channels: readonly AnimationChannelPod[];
+  readonly channels: readonly AnimationTransformChannel[];
 }

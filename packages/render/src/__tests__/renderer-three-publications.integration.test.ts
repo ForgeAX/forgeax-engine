@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import type { Buffer } from '@forgeax/engine-rhi';
@@ -55,8 +56,10 @@ it.each([
   const initialized = await host.initialization;
   if (!initialized.ok) throw initialized.error;
   const renderer = exposeRenderer(host);
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const publisher = createRenderPublisher(
     world,
     assets,
@@ -69,7 +72,13 @@ it.each([
   );
   const meshes = Array.from({ length: capacity }, (_, index) => index + 1).map((width) => {
     const mesh = createBoxGeometry(width, 1, 1).unwrap();
-    return { ...identity, mesh, meshHandle: world.allocSharedRef('MeshAsset', mesh) };
+    const meshHandle = assets.create(mesh).unwrap();
+    return {
+      ...identity,
+      mesh,
+      meshHandle,
+      revision: runtimeAssets(assets).version(meshHandle).unwrap(),
+    };
   });
   world
     .spawn(

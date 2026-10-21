@@ -1,7 +1,6 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { Sampler, Texture, TextureView } from '@forgeax/engine-rhi';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
-  type Handle,
   ok,
   type ParamSchemaEntry,
   type SamplerAsset,
@@ -22,7 +21,7 @@ export function prepareSurfaceMaterialTextures(
   world: RenderResourceScope,
   snapshot: MaterialSnapshot,
   prepareTexture?: (
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     asset: TextureAsset,
   ) => ReturnType<GpuResidencyCache['prepareTextureResidencyForGraph']>,
 ) {
@@ -48,7 +47,7 @@ export function prepareSurfaceMaterialTextures(
       const handle = snapshot.textureHandles?.get(name);
       if (handle === undefined || handle === 0)
         return rayReferenceFailure(`ray texture ${name} has no accepted resource handle`);
-      const asset = resolveAssetHandle<TextureAsset>(world, handle);
+      const asset = world.resolveAsset<TextureAsset>(handle);
       if (!asset.ok) return asset;
       const prepared = prepareTexture?.(handle, asset.value);
       if (prepared !== undefined && !prepared.ok) return prepared;
@@ -63,11 +62,13 @@ export function prepareSurfaceMaterialTextures(
       if (resident.value.receipt.view !== '2d')
         return rayReferenceFailure(`surface texture ${name} requires an accepted 2d view`);
       const payload = asset.value;
+      const textureRevision = world.assetRevision(handle);
       witnesses.push(() => {
-        const current = resolveAssetHandle<TextureAsset>(world, handle);
+        const current = world.resolveAsset<TextureAsset>(handle);
         return (
           current.ok &&
           current.value === payload &&
+          world.assetRevision(handle) === textureRevision &&
           (prepared === undefined
             ? store.getTextureGpuView(handle, world) === resident.value.view
             : prepared.value.current())
@@ -77,16 +78,21 @@ export function prepareSurfaceMaterialTextures(
       let samplerSource: SamplerAsset | undefined;
       const samplerHandle = snapshot.samplerHandles?.get(name);
       if (samplerHandle !== undefined && samplerHandle !== 0) {
-        const asset = resolveAssetHandle<SamplerAsset>(world, samplerHandle);
+        const asset = world.resolveAsset<SamplerAsset>(samplerHandle);
         if (!asset.ok) return asset;
         const resident = store.ensureSamplerResident(samplerHandle, asset.value, world);
         if (!resident.ok) return resident;
         sampler = resident.value;
         samplerSource = asset.value;
         const payload = asset.value;
+        const samplerRevision = world.assetRevision(samplerHandle);
         witnesses.push(() => {
-          const current = resolveAssetHandle<SamplerAsset>(world, samplerHandle);
-          return current.ok && current.value === payload;
+          const current = world.resolveAsset<SamplerAsset>(samplerHandle);
+          return (
+            current.ok &&
+            current.value === payload &&
+            world.assetRevision(samplerHandle) === samplerRevision
+          );
         });
       } else if (snapshot.authoredSamplerFields?.has(name)) {
         return rayReferenceFailure(`ray texture ${name} has no accepted sampler handle`);

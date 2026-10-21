@@ -25,6 +25,7 @@
 
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, type World } from '@forgeax/engine-ecs';
+import type { ExecuteContext } from '@forgeax/engine-remote/execute';
 import type { ExecutionRemoteEval } from '../types';
 import { createCanonicalEcsImportModule } from './ecs-import';
 
@@ -34,21 +35,13 @@ export type BrowserBridgeResult =
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly error: Record<string, unknown> };
 
-export interface BrowserRemoteBridgeDeps {
+export interface BrowserRemoteBridgeDeps
+  extends Omit<ExecuteContext, 'world' | 'assets' | 'importModule'> {
   readonly world: World;
-  readonly renderer: unknown;
   /** Remote root `assets` is the App's AssetRegistry, not the render service. */
   readonly assets: AssetRegistry;
   /** The host's already-loaded runtime namespace; preserves component-token identity. */
   readonly runtimeModule: unknown;
-  readonly rhiCapture?: unknown;
-  /** The host's explicit CPU profiler capability, when opted in. */
-  readonly profiler?: unknown;
-  readonly execution?: unknown;
-  /** Mutable plugin projection bridge supplied by the generated DevKit host. */
-  readonly plugins?: unknown;
-  /** App-owned observation root; all live commands execute beside this World. */
-  readonly simulation?: unknown;
   /** Relay port. */
   readonly port: string;
 }

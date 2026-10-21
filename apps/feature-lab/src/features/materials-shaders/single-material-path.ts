@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials } from '@forgeax/engine/render';
 import { isEngineMaterialModule } from '@forgeax/engine/shader';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage } from '../../lab/stage';
+import { material, spawnMesh, spawnStage } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Single MaterialAsset path',
@@ -12,10 +14,16 @@ export default defineFeature({
   expect:
     'All checks pass: Materials.standard emits parameters, values and engine-owned pass programs, the renderer observes the entity binding it and the residency is ready. The canvas shows a green sphere.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
     const asset = Materials.standard({ baseColor: [0.2, 0.9, 0.3, 1], roughness: 0.4 });
     const handle = material(world, asset);
-    spawnMesh(world, MESH.sphere, handle, { pos: [0, 0.8, 0], scale: [1.2, 1.2, 1.2] });
+    spawnMesh(world, stageSphere, handle, { pos: [0, 0.8, 0], scale: [1.2, 1.2, 1.2] });
     return {
       async checks() {
         const checks = new CheckList();

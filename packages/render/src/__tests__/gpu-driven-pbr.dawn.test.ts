@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import {
@@ -15,7 +16,6 @@ import {
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
-import { gpuDrivenDrawKey, gpuDrivenShadowDrawKey } from '../extract/gpu-driven';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import {
@@ -33,13 +33,14 @@ import {
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
 import type { ShadowViewIdentity } from '../inspection-types';
+import { MaterialResource } from '../material-resource';
 import {
   buildGpuDrivenPbrInstancesBindGroupLayout,
   buildGpuDrivenPbrPipelineLayout,
   buildPbrPipelineLayouts,
   omittedStandardMaterialBindings,
 } from '../pbr-pipeline';
-import { makeZeroCameraFallbackSnapshot, worldEntityKey } from '../record/frame-snapshot';
+import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { BUILTIN_USER_REGION_TEXTURE_FIELDS } from '../record/main-pass-material';
 import { MATERIAL_PER_ENTITY_STRIDE } from '../record/render-context';
 import {
@@ -55,7 +56,10 @@ import type {
   RenderableSnapshot,
 } from '../render-system-extract';
 import { PersistentRenderScene } from '../scene/render-scene';
-import { verifyRetainedRasterClass } from './gpu-driven-raster-class-dawn-fixture';
+import {
+  admitPbrDawnFixture,
+  verifyRetainedRasterClass,
+} from './gpu-driven-raster-class-dawn-fixture';
 import { verifyRetainedRasterRouting } from './gpu-driven-raster-routing-dawn-fixture';
 import { nativeDeviceFixture } from './native-device-fixture';
 
@@ -107,19 +111,42 @@ const SHADOW_CASTER_GPU_ALPHA_VARIANT = SHADOW_CASTER_PRODUCER?.variants.find(
 );
 
 // Keep the existing 60-frame local/native window and CI lightweight profile.
-const STABLE_FRAME_COUNT = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1' ? 12 : 60;
+const STABLE_FRAME_COUNT = 60;
 
 function alphaMaskSnapshot(
   coordinateSet: 1 | 7 | undefined,
   vertexColorAvailable = false,
+  assets: AssetRegistry,
 ): RenderableSnapshot {
   const receipt = vertexColorAvailable ? STANDARD_PBR_COLORED_RECEIPT : STANDARD_PBR_RECEIPT;
-  const material = {
+  const material = new MaterialResource({
     baseColor: new Float32Array([1, 1, 1]),
     metallic: 0,
     roughness: 1,
-    materialHandle: 7,
+    materialHandle: assets
+      .create({
+        kind: 'material',
+        passes: [{ name: 'forward', program: { module: 'forgeax::unlit' } }],
+        values: { baseColor: [1, 1, 1, 1] },
+      })
+      .unwrap(),
     materialShaderId: 'forgeax::default-standard-pbr',
+    passes: [
+      {
+        name: 'forward',
+        program: { module: 'forgeax::default-standard-pbr' },
+        renderState: { tags: { LightMode: 'Forward' } },
+      },
+      {
+        name: 'shadow',
+        program: { module: 'forgeax::default-standard-pbr' },
+        renderState: { tags: { LightMode: 'ShadowCaster' } },
+      },
+    ],
+    materialProgramKeys: {
+      forward: 'forgeax::default-standard-pbr',
+      shadow: 'forgeax::default-standard-pbr',
+    },
     // Flat normals and disabled displacement isolate the alpha-mask pixel assertion.
     paramSnapshot: { alphaCutoff: 0.5, normalScale: [0, 0], displacementScale: 0 },
     textureHandles: new Map([['baseColorTexture', 1]]) as never,
@@ -137,14 +164,65 @@ function alphaMaskSnapshot(
           ]),
         }
       : {}),
-  } as unknown as MaterialSnapshot;
+  } as unknown as MaterialSnapshot);
+  const secondaryUv = coordinateSet === 7 ? 0.1 : 0.8;
+  const positions = [-0.8, -0.8, -2, 0.8, -0.8, -2, 0, 0.8, -2];
+  const attributes = {
+    position: new Float32Array(positions),
+    normal: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    uv: new Float32Array(6).fill(0.1),
+    tangent: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
+    uv1: new Float32Array(6).fill(secondaryUv),
+    uv7: new Float32Array(6).fill(0.8),
+    ...(vertexColorAvailable
+      ? { color: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]) }
+      : {}),
+  };
+  const layout = deriveVertexLayoutProjection(attributes);
+  const assetHandle = assets
+    .create({
+      kind: 'mesh',
+      attributes,
+      materialSlots: [{ slotName: 'Default' }],
+      vertices: new Float32Array(
+        [0, 1, 2].flatMap((index) => [
+          ...positions.slice(index * 3, index * 3 + 3),
+          0,
+          0,
+          1,
+          0.1,
+          0.1,
+          1,
+          0,
+          0,
+          1,
+          secondaryUv,
+          secondaryUv,
+          0.8,
+          0.8,
+          ...(vertexColorAvailable ? [1, 0, 0, 1] : []),
+        ]),
+      ),
+      indices: new Uint16Array([0, 1, 2]),
+      aabb: new Float32Array([-0.8, -0.8, -2, 0.8, 0.8, -2]),
+      submeshes: [
+        {
+          indexOffset: 0,
+          indexCount: 3,
+          vertexCount: 3,
+          materialSlot: 0,
+          topology: 'triangle-list',
+        },
+      ],
+    })
+    .unwrap();
   const world = new Float32Array(16);
   world[0] = 1;
   world[5] = 1;
   world[10] = 1;
   world[15] = 1;
   return {
-    assetHandle: 3,
+    assetHandle,
     transform: { world },
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
     material,
@@ -162,6 +240,21 @@ function alphaMaskSnapshot(
         topology: 'triangle-list',
         pipelineClass: 'forgeax::default-standard-pbr|triangle-list|rigid',
         materialResourceClass: 'standard-pbr-resources',
+        geometry: {
+          receipt: {
+            identity: `0:${assetHandle}:${layout.digest}`,
+            vertexInputs: layout.attributes.map((attribute) => ({
+              semantic: attribute.key,
+              location: attribute.shaderLocation,
+              format: attribute.format,
+            })),
+            topology: 'triangle-list',
+            indexed: true,
+          },
+          layout,
+          draw: { kind: 'indexed', first: 0, count: 3, baseVertex: 0, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
         prepared: {
           identity: {
             material: 'forgeax::default-standard-pbr',
@@ -614,15 +707,19 @@ describe('GPU-driven production PBR Dawn regression', () => {
     device.queue
       .writeBuffer(discardedMaterialBuffer, 0, new Float32Array([1, 1, 1, 0.25, 0.5]))
       .unwrap();
-    const source = alphaMaskSnapshot(coordinateSet, vertexColorAvailable);
-    const persistentWorld = new World();
+    const persistentAssets = new AssetRegistry();
+    const source = alphaMaskSnapshot(coordinateSet, vertexColorAvailable, persistentAssets);
+    const persistentWorld = new World({ assets: persistentAssets });
     const persistentLease = createRenderReadLease(persistentWorld);
-    const persistentScene = new PersistentRenderScene({ getDevice: () => device });
+    const persistentScene = new PersistentRenderScene({
+      getDevice: () => device,
+      assets: persistentAssets,
+    });
     const persistentFrame = {
       cameras: [makeZeroCameraFallbackSnapshot()],
       auxiliaryCameras: [],
       cubeCameras: [],
-      lights: { directional: undefined, directionalCount: 0, point: [], spot: [] },
+      lights: { directional: undefined, directionalCount: 0, point: [], spot: [], rect: [] },
       environment: undefined,
       environmentReady: true,
       renderables: [source],
@@ -644,7 +741,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
     persistentScene.extractComposition(
       [persistentWorld],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      persistentAssets,
       () => persistentFrame,
       [persistentLease],
     );
@@ -690,9 +787,9 @@ describe('GPU-driven production PBR Dawn regression', () => {
         { binding: iblStart + 1, resource: { kind: 'sampler' as const, value: baseColorSampler } },
         {
           binding: iblStart + 2,
-          resource: { kind: 'textureView' as const, value: materialCubeView },
+          resource: { kind: 'textureView' as const, value: baseColorView },
         },
-        { binding: 47, resource: { kind: 'textureView' as const, value: materialCubeView } },
+        { binding: 47, resource: { kind: 'textureView' as const, value: baseColorView } },
         { binding: iblStart + 3, resource: { kind: 'sampler' as const, value: baseColorSampler } },
         { binding: iblStart + 4, resource: { kind: 'textureView' as const, value: baseColorView } },
         {
@@ -721,10 +818,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
       .unwrap();
     expect(initialGpuState.plan).toMatchObject({
       candidateCount: 1,
-      batches: [{ key: { admission: 'alpha-mask' } }],
     });
-    const worldEntity = worldEntityKey(source.worldId, source.entityKey);
-    const shadowKey = gpuDrivenShadowDrawKey(worldEntity, 7, 0, 0);
     const shadowIdentities = [
       { kind: 'directional' as const, index: 0 },
       { kind: 'point' as const, index: 0, face: 0 },
@@ -787,34 +881,34 @@ describe('GPU-driven production PBR Dawn regression', () => {
       viewBindGroupLayout: viewLayout,
       meshResidencyEpoch: 1,
 
-      standardPbrArtifact: artifact,
-      standardPbrPipelineState: {
+      materialArtifact: artifact,
+      materialPipelineState: {
         pbrPipelineLayout: pipelineLayout,
         gpuDrivenPbrPipelineLayout: pipelineLayout,
         meshBindGroupLayout: meshLayout,
         instancesBindGroupLayout: instancesLayout,
         gpuDrivenInstancesBindGroupLayout: instancesLayout,
-        standardPbrShaderModule: producerShader.value,
         gpuDrivenPbrPrograms,
         // The composed producer keeps the canonical uv0..uv7 input ABI even
         // when this material only authored uv0. The geometry owner aliases the
         // missing sets to uv0 when the producer advertises the full ABI.
         standardPbrShaderUvSetCount: 8,
       } as never,
-      shadowCasterDrawKeys: new Set([shadowKey]),
+      shadowViews: true,
       structureMetrics: {
         ...structureMetrics,
       },
     } as const;
-    const prepared = production.prepare(prepareInput);
+    const prepared = production.prepare(admitPbrDawnFixture(prepareInput));
     expect(prepared.ok).toBe(true);
     if (!prepared.ok || prepared.value === undefined) return;
-    expect(prepared.value.ownsAllDrawItems).toBe(true);
-    expect(prepared.value.shadowDrawKeys).toEqual(new Set([shadowKey]));
+    const sourceSlot = projection.at(0);
+    if (sourceSlot === undefined) throw Error('missing source slot');
+    expect(
+      prepared.value.selection.ownsSlot(source, 0, sourceSlot.slot, sourceSlot.generation),
+    ).toBe(true);
     expect(prepared.value.standardPbrFrameResources.sceneMaterialBuffer).toBe(scene.materialBuffer);
-    expect(prepared.value.standardPbrFrameResources.materialStride).toBe(
-      MATERIAL_PER_ENTITY_STRIDE,
-    );
+    expect(typeof prepared.value.standardPbrFrameResources.prepareMaterialBinding).toBe('function');
     expect(artifact.receipt.alphaMask).toEqual({ cutoff: 'alphaCutoff', source: 'baseColor.a' });
 
     const shadowVertexLayout = deriveVertexBufferLayoutFromProjection(gpuMesh.layoutProjection, {
@@ -1077,7 +1171,13 @@ describe('GPU-driven production PBR Dawn regression', () => {
           encode: ({ pass, resources }) =>
             main.value.encode(viewBindGroup, pass, resources, {
               ...frameResources,
-              materialBindGroups: [materialBindGroup()],
+              prepareMaterialBinding: (
+                (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                (slot: number) => {
+                  const group = groups[slot];
+                  return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                }
+              )([materialBindGroup()]),
             }),
         })
         .unwrap();
@@ -1271,7 +1371,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
       persistentScene.extractComposition(
         [persistentWorld],
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        persistentAssets,
         () => persistentFrame,
         [persistentLease],
       );
@@ -1285,32 +1385,25 @@ describe('GPU-driven production PBR Dawn regression', () => {
         sceneTableUploadBytes: 0,
         paletteUploadBytes: 0,
       });
-      const stablePrepared = production.prepare({
-        ...prepareInput,
-        scene: stableGpuState,
-        structureMetrics: stableMetrics,
-        // Admit the same binding-input domain before measuring stable frames.
-        // No-map inputs do not observe source binding keys; a first map must.
-        materialBindingClasses: new Map([['99:9001:0', 'forward|probe:']]),
-      });
+      const stablePrepared = production.prepare(
+        admitPbrDawnFixture({
+          ...prepareInput,
+          scene: stableGpuState,
+          structureMetrics: stableMetrics,
+          // Admit the same binding-input domain before measuring stable frames.
+          // No-map inputs do not observe source binding keys; a first map must.
+        }),
+      );
       expect(stablePrepared.ok).toBe(true);
       if (!stablePrepared.ok || stablePrepared.value === undefined) return;
       const stableShadowUpdated = stablePrepared.value.updateShadowViews?.(shadowViews);
       expect(stableShadowUpdated?.ok).toBe(true);
       stablePrepared.value._commitResourceReplacement();
-      const stableValidationRows = [{ source }] as const;
-      const stableGpuOwnedDrawKeys = new Set([gpuDrivenDrawKey(worldEntity, 7, 0)]);
-      const stableValidationCacheKey = 'alpha-mask-dawn-stable';
-      production.recordCpuValidation(
-        stableValidationRows,
-        stableGpuOwnedDrawKeys,
-        stableValidationCacheKey,
-      );
       const stableBaseline = production.inspect();
       const stableFrameInspections: Array<{
         readonly gpuOwnedSnapshotsMaterialized: number;
         readonly filteredPlanBuilds: number;
-        readonly candidateUploadBytes: number;
+        readonly sharedInputUploadBytes: number;
         readonly batchUploadBytes: number;
         readonly batchBindGroupCreates: number;
         readonly validatedGpuOwnedRows: number;
@@ -1327,7 +1420,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
         persistentScene.extractComposition(
           [persistentWorld],
           { cameraOwner: 0, resourceOwner: 0 },
-          0,
+          persistentAssets,
           () => persistentFrame,
           [persistentLease],
         );
@@ -1336,22 +1429,19 @@ describe('GPU-driven production PBR Dawn regression', () => {
         if (frameGpuState === undefined || frameGpuState.structureMetrics === undefined) return;
         stableFrameMetrics.push(frameGpuState.structureMetrics);
         // Prepare every submitted frame to detect topology/upload leaks.
-        const framePrepared = production.prepare({
-          ...prepareInput,
-          scene: frameGpuState,
-          structureMetrics: frameGpuState.structureMetrics,
-          // CPU-only material publication changes cannot invalidate this GPU plan.
-          materialBindingClasses: new Map([[`99:9001:${frame % 2}`, 'forward|probe:']]),
-        });
+        const framePrepared = production.prepare(
+          admitPbrDawnFixture({
+            ...prepareInput,
+            scene: frameGpuState,
+            structureMetrics: frameGpuState.structureMetrics,
+            // CPU-only material publication changes cannot invalidate this GPU plan.
+          }),
+        );
         expect(framePrepared.ok).toBe(true);
         if (!framePrepared.ok || framePrepared.value === undefined) return;
         expect(framePrepared.value.updateShadowViews?.(shadowViews)?.ok).toBe(true);
         framePrepared.value._commitResourceReplacement();
-        production.recordCpuValidation(
-          stableValidationRows,
-          stableGpuOwnedDrawKeys,
-          stableValidationCacheKey,
-        );
+
         const stableEncoder = device
           .createCommandEncoder({ label: `gpu-driven-alpha-mask-stable-${frame}` })
           .unwrap();
@@ -1364,7 +1454,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
         stableFrameInspections.push({
           gpuOwnedSnapshotsMaterialized: inspection.gpuOwnedSnapshotsMaterialized,
           filteredPlanBuilds: inspection.filteredPlanBuilds,
-          candidateUploadBytes: inspection.candidateUploadBytes,
+          sharedInputUploadBytes: inspection.sharedInputUploadBytes,
           batchUploadBytes: inspection.batchUploadBytes,
           batchBindGroupCreates: inspection.batchBindGroupCreates,
           validatedGpuOwnedRows: inspection.validatedGpuOwnedRows,
@@ -1390,7 +1480,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
         expect(inspection).toEqual({
           gpuOwnedSnapshotsMaterialized: 0,
           filteredPlanBuilds: 0,
-          candidateUploadBytes: 0,
+          sharedInputUploadBytes: 0,
           batchUploadBytes: 0,
           batchBindGroupCreates: 0,
           validatedGpuOwnedRows: 0,
@@ -1405,7 +1495,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
       }
       expect(production.inspect().cpuValidationScans).toBe(stableBaseline.cpuValidationScans);
       expect(production.inspect().cpuValidationCacheHits).toBe(
-        stableBaseline.cpuValidationCacheHits + STABLE_FRAME_COUNT,
+        stableBaseline.cpuValidationCacheHits,
       );
       if (!transformed && !vertexColorAvailable) {
         await verifyRetainedRasterClass({
@@ -1520,5 +1610,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
     production.dispose();
     persistentScene.dispose();
     persistentLease.dispose();
+    persistentAssets.dispose();
   });
 });

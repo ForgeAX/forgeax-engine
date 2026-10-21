@@ -4,7 +4,7 @@
 import type { NativeGPUDevice } from './gpu';
 
 /** Object with a native table id. */
-export interface NativeObject {
+interface NativeObject {
   readonly nativeId: number;
 }
 

@@ -2,9 +2,16 @@ import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runti
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
-import { Camera, perspective, SceneInstance } from '@forgeax/engine-render';
+import {
+  Camera,
+  DirectionalLight,
+  Materials,
+  perspective,
+  SceneInstance,
+} from '@forgeax/engine-render';
 import { ChildOf, Children, GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { createToolApi } from '@forgeax/engine-tool-runtime';
+import { type Asset, type AssetHandle, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createAppObservation, rotateObservationCamera } from '../observation';
 import type { App } from '../types';
@@ -19,7 +26,9 @@ import {
   loadEngineWorkspaceMaterialSlots,
   projectEngineWorkspaceAssets,
 } from '../workspace';
+import { workspaceAssetFacts } from '../workspace-asset-facts';
 import { createEngineWorkspaceTools } from '../workspace-tools';
+import { publishWorkspaceAssets } from './workspace-asset-fixture';
 
 const SCENE_GUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
@@ -34,13 +43,13 @@ function deferred<T>() {
 }
 
 function fixtureApp(withCamera = true) {
-  const world = new World();
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
+  const world = new World({ assets });
   for (const component of [Camera, SceneInstance, ChildOf, Children, GlobalTransform, Transform]) {
     world.components.register(component).unwrap();
   }
-  const assets = new AssetRegistry({} as never);
   const scene = { kind: 'scene' as const, entities: { root: { components: {} } } };
-  expect(assets.catalog(SCENE_GUID, scene).ok).toBe(true);
+  publishWorkspaceAssets(assets, [{ guid: SCENE_GUID, asset: scene }]);
   if (withCamera) {
     world
       .spawn(
@@ -57,9 +66,171 @@ function fixtureApp(withCamera = true) {
 }
 
 describe('Engine workspace public runtime', () => {
+  it('reopens a Scene from its newly saved publication instead of the retained runtime asset', async () => {
+    const { app, assets } = fixtureApp();
+    app.world.components.register(DirectionalLight).unwrap();
+    const saved = (intensity: number) =>
+      publishWorkspaceAssets(assets, [
+        {
+          guid: SCENE_GUID,
+          asset: {
+            kind: 'scene',
+            entities: {
+              sun: { components: { DirectionalLight: { direction: [0, -1, 0], intensity } } },
+            },
+          },
+        },
+      ]);
+    const open = () =>
+      createEngineWorkspaceAppPreview({
+        app,
+        assets,
+        asset: { guid: SCENE_GUID, kind: 'scene' },
+        target: {
+          targetId: 'scene',
+          sessionId: 'session',
+          worldId: app.world.identity,
+          width: 320,
+          height: 240,
+          headed: true,
+        },
+      });
+    saved(3.2);
+    const first = await open();
+    const retained = (await assets.load(SCENE_GUID, 'scene')).unwrap();
+    await first.close?.();
+    saved(1);
+    const reopened = await open();
+    try {
+      const rows = [...app.world.query({ read: [DirectionalLight] }).unwrap()];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.get(DirectionalLight).intensity).toBe(1);
+      expect(reopened.assetBinding?.publication?.digest).toBe(
+        assets.catalogEntry(SCENE_GUID)?.publication?.digest,
+      );
+    } finally {
+      await reopened.close?.();
+      assets.release(retained);
+      assets.dispose();
+    }
+  });
+
+  it('forwards 100 draft edits without publishing full workspace state', async () => {
+    const { app, assets } = fixtureApp();
+    const runtime = createEngineWorkspaceRuntime(
+      createEngineWorkspaceProvider({
+        openProjectSession: () => ({
+          project: { id: 'author', root: '/author' },
+          app,
+          assets,
+          target: {
+            targetId: 'author-target',
+            sessionId: 'session',
+            worldId: app.world.identity,
+            headed: false,
+            width: 320,
+            height: 240,
+          },
+          authorPack: async ({ request }) => ({ closed: String(request.value) }),
+        }),
+      }),
+    );
+    await runtime.openProject({ root: '/author' });
+    const changed = vi.fn();
+    const api = createToolApi();
+    api.registerProvider({
+      providerId: 'workspace',
+      sourceId: 'engine',
+      realm: 'host',
+      tools: createEngineWorkspaceTools(runtime, changed),
+    });
+    const enumerate = vi.spyOn(assets, 'enumerateCatalog').mockImplementation(() => {
+      throw new Error('Edit must not enumerate Catalog');
+    });
+    try {
+      for (let i = 0; i < 100; i++) {
+        const terminal = await api.run(
+          'engine.asset.source.draft',
+          {
+            projectId: 'author',
+            request: { action: 'edit', draftId: 'draft', field: 'color', value: i },
+          },
+          { sourceId: 'engine' },
+        ).terminal;
+        expect(terminal.outcome).toBe('succeeded');
+      }
+      expect(changed).not.toHaveBeenCalled();
+      expect(enumerate).not.toHaveBeenCalled();
+    } finally {
+      enumerate.mockRestore();
+      await api.dispose();
+      await runtime.dispose();
+    }
+  });
+
+  it('inspects Material, Texture and Equirect payload facts without opening a preview', async () => {
+    const assets = new AssetRegistry({});
+    const payloads: Asset[] = [
+      Materials.unlit([1, 0, 0, 1]),
+      {
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 2, height: 1 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array(8),
+      },
+      {
+        kind: 'equirect',
+        width: 2,
+        height: 1,
+        format: 'rgba16float',
+        colorSpace: 'linear',
+        data: new Uint8Array(16),
+      },
+    ];
+    for (const [index, payload] of payloads.entries()) {
+      const guid = `11111111-1111-4111-8111-${String(index).padStart(12, '0')}`;
+      publishWorkspaceAssets(assets, [{ guid, asset: payload }]);
+      expect(await inspectEngineWorkspaceAsset(assets, guid)).toMatchObject({
+        asset: { guid, kind: payload.kind },
+        meta: { kind: payload.kind },
+      });
+    }
+  });
+
+  it('retries native resource cleanup after a failure and coalesces successful retirement', async () => {
+    const { app, assets } = fixtureApp();
+    const close = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('resource cleanup incomplete'))
+      .mockResolvedValue(undefined);
+    const preview = await createEngineWorkspaceAppPreview({
+      app,
+      assets,
+      asset: { guid: SCENE_GUID, kind: 'mesh' },
+      target: {
+        targetId: 'retry',
+        sessionId: 'session',
+        worldId: app.world.identity,
+        width: 320,
+        height: 240,
+        headed: true,
+      },
+      openResourcePreview: () => ({ close }),
+    });
+    await expect(preview.close?.()).rejects.toThrow('resource cleanup incomplete');
+    expect(() => preview.getCamera({ targetId: 'retry' })).toThrow('closed');
+    await preview.close?.();
+    await preview.close?.();
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
   it('projects the resource owners actual binding instead of the current project asset', async () => {
     const { app, assets } = fixtureApp();
-    const assetBinding = { meta: { aabb: [-1, -1, -1, 1, 1, 1] } };
+    const meta = workspaceAssetFacts(createBoxGeometry(2, 2, 2).unwrap());
+    if (!meta) throw new Error('Missing mesh fixture metadata');
+    const assetBinding = { meta };
     const preview = await createEngineWorkspaceAppPreview({
       app,
       assets,
@@ -79,7 +250,7 @@ describe('Engine workspace public runtime', () => {
   });
 
   it('preserves non-Mesh catalog inspection without requiring a payload loader', async () => {
-    const assets = new AssetRegistry({} as never);
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
     const entry = {
       guid: SCENE_GUID,
       kind: 'host/blob',
@@ -87,7 +258,7 @@ describe('Engine workspace public runtime', () => {
       sourcePath: 'assets/blob.source',
     };
     assets.setCatalogSource(createCatalogSource({ entries: [entry] }));
-    const load = vi.spyOn(assets, 'loadByGuid');
+    const load = vi.spyOn(assets, 'load');
     expect(await inspectEngineWorkspaceAsset(assets, SCENE_GUID)).toMatchObject({
       guid: SCENE_GUID,
       asset: { kind: 'host/blob' },
@@ -101,7 +272,7 @@ describe('Engine workspace public runtime', () => {
   it('inspects current Mesh payload facts through the existing asset operation', async () => {
     const { app, assets } = fixtureApp();
     const guid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-    assets.catalog(guid, createBoxGeometry(2, 3, 4).unwrap()).unwrap();
+    publishWorkspaceAssets(assets, [{ guid, asset: createBoxGeometry(2, 3, 4).unwrap() }]);
     const project = { id: 'mesh-project', root: '/mesh-project' };
     const provider = createEngineWorkspaceProvider({
       openProjectSession: () => ({
@@ -131,9 +302,24 @@ describe('Engine workspace public runtime', () => {
         materialSlots: [{ slotName: 'Default' }],
       },
     });
-    assets.invalidate(guid);
-    assets.catalog(guid, createBoxGeometry(4, 3, 4).unwrap()).unwrap();
+    const handle = (await assets.load(guid, 'mesh')).unwrap();
+    assets.replace(handle, createBoxGeometry(4, 3, 4).unwrap()).unwrap();
+    assets.release(handle).unwrap();
     expect(await inspect()).toMatchObject({ meta: { aabb: [-2, -1.5, -2, 2, 1.5, 2] } });
+    const runtimeInspection = (await inspect()) as {
+      publication?: unknown;
+      source?: { publication?: unknown };
+    };
+    publishWorkspaceAssets(assets, [{ guid, asset: createBoxGeometry(6, 3, 4).unwrap() }]);
+    const currentSource = (await assets.enumerateCatalog())
+      .unwrap()
+      .find((entry) => String(entry.guid) === guid)?.publication;
+    expect(currentSource).toBeDefined();
+    expect(await inspect()).toMatchObject({
+      meta: { aabb: [-2, -1.5, -2, 2, 1.5, 2] },
+      publication: runtimeInspection.publication,
+      source: { publication: currentSource },
+    });
     const controller = new AbortController();
     controller.abort(new Error('inspection cancelled'));
     await expect(
@@ -406,51 +592,58 @@ describe('Engine workspace public runtime', () => {
     await preview.close?.();
   });
 
-  it('loads every material slot before allocating handles, including delayed failure', async () => {
-    const delayed = deferred<
-      | { readonly ok: true; readonly value: { readonly kind: 'material'; readonly id: string } }
-      | { readonly ok: false; readonly error: Error }
-    >();
+  it('releases late material grants when another slot fails', async () => {
+    const assets = new AssetRegistry();
+    const handle = assets
+      .create({
+        kind: 'material',
+        passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+        values: {},
+      })
+      .unwrap();
+    const delayed = deferred<AssetHandle<'material'>>();
     const failed = new Error('material slot failed');
-    const allocate = vi.fn(
-      (material: { readonly kind: 'material'; readonly id: string }) => material.id,
-    );
-    const pending = loadEngineWorkspaceMaterialSlots(
-      [{ defaultMaterial: 'failed' }, { defaultMaterial: 'delayed' }],
-      async (slot) =>
-        slot.defaultMaterial === 'failed' ? { ok: false as const, error: failed } : delayed.promise,
-      allocate,
-    );
-
-    await expect(pending).rejects.toBe(failed);
-    expect(allocate).not.toHaveBeenCalled();
-    delayed.resolve({ ok: true, value: { kind: 'material', id: 'late' } });
+    let calls = 0;
+    vi.spyOn(assets, 'load').mockImplementation(async () => {
+      if (++calls === 1) throw failed;
+      return ok(await delayed.promise) as never;
+    });
+    const pending = loadEngineWorkspaceMaterialSlots(assets, [
+      { slotName: 'failed', defaultMaterial: assets.parseGuid(SCENE_GUID) },
+      { slotName: 'delayed', defaultMaterial: assets.parseGuid(SCENE_GUID) },
+    ]);
+    const settled = vi.fn();
+    void pending.then(settled, settled);
     await Promise.resolve();
-    expect(allocate).not.toHaveBeenCalled();
+    expect(settled).not.toHaveBeenCalled();
+    delayed.resolve(handle);
+    await expect(pending).rejects.toBe(failed);
+    expect(assets.validate(handle).ok).toBe(false);
+    assets.dispose();
   });
 
-  it('allocates mesh material handles only after the last slot resolves', async () => {
-    const delayed = deferred<
-      | { readonly ok: true; readonly value: { readonly kind: 'material'; readonly id: string } }
-      | { readonly ok: false; readonly error: Error }
-    >();
-    const allocate = vi.fn(
-      (material: { readonly kind: 'material'; readonly id: string }) => material.id,
-    );
-    const pending = loadEngineWorkspaceMaterialSlots(
-      [{ defaultMaterial: 'ready' }, { defaultMaterial: 'delayed' }, {}],
-      async (slot) =>
-        slot.defaultMaterial === 'ready'
-          ? { ok: true as const, value: { kind: 'material' as const, id: 'ready' } }
-          : delayed.promise,
-      allocate,
-    );
-
-    await Promise.resolve();
-    expect(allocate).not.toHaveBeenCalled();
-    delayed.resolve({ ok: true, value: { kind: 'material', id: 'delayed' } });
-    await expect(pending).resolves.toEqual(['ready', 'delayed', 0]);
-    expect(allocate).toHaveBeenCalledTimes(2);
+  it('returns loaded material handles directly and preserves unassigned slots', async () => {
+    const assets = new AssetRegistry();
+    publishWorkspaceAssets(assets, [
+      {
+        guid: SCENE_GUID,
+        asset: {
+          kind: 'material',
+          passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' } }],
+          values: {},
+        },
+      },
+    ]);
+    const handles = await loadEngineWorkspaceMaterialSlots(assets, [
+      { slotName: 'first', defaultMaterial: assets.parseGuid(SCENE_GUID) },
+      { slotName: 'second', defaultMaterial: assets.parseGuid(SCENE_GUID) },
+      { slotName: 'default' },
+    ]);
+    expect(handles[0]).toBe(handles[1]);
+    expect(handles[2]).toBe(0);
+    expect(assets.read(handles[0] as AssetHandle<'material'>).unwrap().kind).toBe('material');
+    for (const handle of handles) if (handle !== 0) assets.release(handle).unwrap();
+    assets.dispose();
   });
 
   it('ignores a stale preview close after replacing the stable target', async () => {
@@ -506,7 +699,7 @@ describe('Engine workspace public runtime', () => {
     expect(previews[1]?.close).toHaveBeenCalledOnce();
   });
 
-  it('publishes preview retirement before asynchronous cleanup completes', async () => {
+  it('retains the preview identity until asynchronous cleanup is acknowledged', async () => {
     const cleanup = deferred<void>();
     const started = deferred<void>();
     const runtime = createEngineWorkspaceRuntime({
@@ -555,12 +748,113 @@ describe('Engine workspace public runtime', () => {
       { sourceId: 'engine' },
     ).terminal;
     await started.promise;
-    expect(snapshots).toEqual([0]);
+    expect(snapshots).toEqual([1]);
+    expect(runtime.previews).toContain(preview);
     cleanup.resolve();
     expect((await closing).outcome).toBe('succeeded');
+    expect(runtime.previews).toEqual([]);
     await owner.revoke();
     await runtime.dispose();
     await api.dispose();
+  });
+
+  it('retains a failed preview close for retry and fences late cleanup from a replacement', async () => {
+    const cleanup = deferred<void>();
+    const close = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('cleanup incomplete'))
+      .mockImplementationOnce(() => cleanup.promise)
+      .mockResolvedValue(undefined);
+    const runtime = createEngineWorkspaceRuntime({
+      openProject: ({ root }) => ({ project: { id: root, root } }),
+      closeProject: () => undefined,
+      listAssets: () => [],
+      openPreview: ({ asset, width, height }) => ({
+        asset,
+        target: {
+          targetId: 'same-target',
+          sessionId: 'session',
+          worldId: 'world',
+          headed: false,
+          width,
+          height,
+        },
+        getCamera: () => ({ camera: {} }),
+        close,
+      }),
+    });
+    const project = await runtime.openProject({ root: '/cleanup' });
+    const input = {
+      project: project.project,
+      asset: { guid: 'mesh', kind: 'mesh' },
+      width: 100,
+      height: 100,
+    };
+    const first = await runtime.openPreview(input);
+    await expect(runtime.closePreview(first)).rejects.toThrow('cleanup incomplete');
+    expect(runtime.previews).toContain(first);
+    const retry = runtime.closePreview(first);
+    const replacement = await runtime.openPreview(input);
+    cleanup.resolve();
+    await retry;
+    expect(runtime.previews).toEqual([replacement]);
+    await runtime.closePreview(first);
+    expect(runtime.previews).toEqual([replacement]);
+    await runtime.dispose();
+  });
+
+  it('returns the exact opened preview when another owner becomes latest before the reply', async () => {
+    let sequence = 0;
+    const asset = { guid: SCENE_GUID, kind: 'mesh' };
+    const runtime = createEngineWorkspaceRuntime({
+      openProject: ({ root }) => ({ project: { id: root, root } }),
+      closeProject: () => undefined,
+      listAssets: () => [asset],
+      openPreview: ({ asset, width, height }) => ({
+        asset,
+        target: {
+          targetId: `preview-${++sequence}`,
+          sessionId: 'session',
+          worldId: 'world',
+          headed: false,
+          width,
+          height,
+        },
+        getCamera: () => ({ camera: {} }),
+        close: () => undefined,
+      }),
+    });
+    await runtime.openProject({ root: '/exact' });
+    const open = runtime.openPreview.bind(runtime);
+    vi.spyOn(runtime, 'openPreview').mockImplementation(async (input) => {
+      const requested = await open(input);
+      await open({ ...input, asset: { guid: 'other', kind: 'material' } });
+      return requested;
+    });
+    const api = createToolApi();
+    const owner = api.registerProvider({
+      providerId: 'exact',
+      sourceId: 'engine',
+      realm: 'host',
+      tools: createEngineWorkspaceTools(runtime),
+    });
+    try {
+      const reply = await api.run<{
+        preview: { target: { targetId: string }; asset: { guid: string } };
+        previews: unknown[];
+      }>('engine.asset.open', { projectId: '/exact', guid: SCENE_GUID }, { sourceId: 'engine' })
+        .terminal;
+      expect(reply.outcome).toBe('succeeded');
+      if (reply.outcome !== 'succeeded') throw new Error('Expected successful asset open');
+      expect(reply.result.preview.target.targetId).toBe('preview-1');
+      expect(reply.result.preview.asset.guid).toBe(SCENE_GUID);
+      expect(reply.result.previews).toHaveLength(2);
+      expect(runtime.preview?.target.targetId).toBe('preview-2');
+    } finally {
+      await owner.revoke();
+      await api.dispose();
+      await runtime.dispose();
+    }
   });
 
   it('rejects an old project handle without clearing the replacement owner', async () => {

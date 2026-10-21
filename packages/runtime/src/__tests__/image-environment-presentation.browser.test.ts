@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_NONE,
   ANTIALIAS_TAA,
@@ -17,7 +17,7 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { type EquirectAsset, toShared } from '@forgeax/engine-types';
+import type { EquirectAsset } from '@forgeax/engine-types';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
@@ -25,6 +25,7 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import type { RenderableSnapshot } from '../../../render/src/render-system-extract';
 import { PersistentRenderScene } from '../../../render/src/scene/render-scene';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 async function presentedPixels(canvas: HTMLCanvasElement): Promise<number[]> {
   const shot = await page.elementLocator(canvas).screenshot({ base64: true });
@@ -235,12 +236,21 @@ it.each([
         ? world
             .spawn(
               { component: Transform, data: { pos: [0, 0, 0] } },
-              { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+              {
+                component: MeshFilter,
+                data: {
+                  assetHandle: testAssets(world)
+                    .create(createPrimitiveMesh('cube').unwrap())
+                    .unwrap(),
+                },
+              },
               {
                 component: MeshRenderer,
                 data: {
                   materials: [
-                    world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.2, 0.1, 1])),
+                    testAssets(world)
+                      .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
+                      .unwrap(),
                   ],
                 },
               },
@@ -259,10 +269,7 @@ it.each([
         return prepareTemporalFrame.call(this, renderables);
       });
     restoreTemporalObserver = () => temporalObserver.mockRestore();
-    const equirect =
-      mode === 'solid'
-        ? toShared<'EquirectAsset'>(0)
-        : world.allocSharedRef('EquirectAsset', source);
+    const equirect = mode === 'solid' ? undefined : testAssets(world).create(source).unwrap();
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
@@ -317,10 +324,18 @@ it.each([
     }
     const installEnvironment = () => {
       if (mode !== 'skybox')
-        world.spawn({ component: Skylight, data: { equirect, intensity: 1 } }).unwrap();
+        world
+          .spawn({
+            component: Skylight,
+            data: { ...(equirect === undefined ? {} : { equirect }), intensity: 1 },
+          })
+          .unwrap();
       if (mode === 'skybox' || mode.startsWith('shared'))
         world
-          .spawn({ component: SkyboxBackground, data: { equirect, mode: SKYBOX_MODE_CUBEMAP } })
+          .spawn({
+            component: SkyboxBackground,
+            data: { ...(equirect === undefined ? {} : { equirect }), mode: SKYBOX_MODE_CUBEMAP },
+          })
           .unwrap();
     };
     let projectionStart = submissions.length;
@@ -384,9 +399,10 @@ it.each([
         'pending work still crosses the native submit barrier',
       ).toBeGreaterThan(beforeHeldDraw);
       const pendingSubmissions = submissions.slice(projectionStart);
+      // One cube projection, six irradiance faces, ten PMREM levels × six faces, one LUT.
       expect(
         pendingSubmissions.filter((labels) => labels.some((label) => label.startsWith('ibl-'))),
-      ).toHaveLength(38);
+      ).toHaveLength(68);
       expect(
         pendingSubmissions
           .filter((labels) => !labels.some((label) => label.startsWith('ibl-')))
@@ -446,7 +462,7 @@ it.each([
         while (renderer.inspect().state !== 'device-lost' && performance.now() < deadline)
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         expect(renderer.inspect().state).toBe('device-lost');
-        expect(lifecycleErrors).toHaveLength(1);
+        expect(lifecycleErrors, JSON.stringify(lifecycleErrors)).toHaveLength(1);
         expect(lifecycleErrors[0]).toMatchObject({
           code: 'device-operation-failed',
           detail: { operation: 'renderer-event', cause: { code: 'device-lost' } },

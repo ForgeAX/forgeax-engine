@@ -17,34 +17,29 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { StateToken, StateTokenVariant } from './define-state';
 
-const SCOPED_COMPONENTS = new Map<string, ReturnType<typeof defineComponent>>();
-
 /** Fixed label-to-value map for the ScopedTo `mode` enum field. */
 export const SCOPED_MODE_VALUE = { exit: 0, enter: 1 } as const;
 
-export function getScopedComponent(token: StateToken): ReturnType<typeof defineComponent> {
-  const existing = SCOPED_COMPONENTS.get(token.name);
-  if (existing) return existing;
-
-  // `value` is the token's variant index — derive its label→index map from
-  // `token.variants` so reflection (describeComponent) can name each variant;
-  // `mode` uses the fixed exit/enter map. Both attach labels to the enum field
-  // (Derive, don't Duplicate: the variant order IS the label source).
-  const valueLabels: Record<string, number> = {};
-  token.variants.forEach((v, i) => {
-    valueLabels[v] = i;
-  });
-
-  const comp = defineComponent(`__scopedTo__${token.name}`, {
-    value: { type: 'enum', default: 0, labels: valueLabels },
+function createScopedComponent(token: StateToken) {
+  return defineComponent(`__scopedTo__${token.name}`, {
+    value: { type: 'enum', default: 0, labels: Object.fromEntries(token.nameToIdx) },
     mode: { type: 'enum', default: SCOPED_MODE_VALUE.exit, labels: SCOPED_MODE_VALUE },
   });
-  SCOPED_COMPONENTS.set(token.name, comp);
-  return comp;
+}
+
+type ScopedComponent = ReturnType<typeof createScopedComponent>;
+const SCOPED_COMPONENTS = new Map<string, ScopedComponent>();
+
+export function getScopedComponent(token: StateToken): ScopedComponent {
+  const existing = SCOPED_COMPONENTS.get(token.name);
+  if (existing) return existing;
+  const component = createScopedComponent(token);
+  SCOPED_COMPONENTS.set(token.name, component);
+  return component;
 }
 
 function resolveVariantIndex(token: StateToken, variant: string): number {
-  const idx = token.nameToIdx.get(variant as never);
+  const idx = token.nameToIdx.get(variant);
   if (idx === undefined) {
     throw new Error(
       `Invalid variant "${variant}" for state "${token.name}". Valid: ${token.variants.join(', ')}`,
@@ -66,17 +61,13 @@ function resolveVariantIndex(token: StateToken, variant: string): number {
 function addScopedComponent(
   world: World,
   entity: EntityHandle,
-  scoped: ReturnType<typeof defineComponent>,
+  scoped: ScopedComponent,
   value: number,
   mode: number,
 ): ReturnType<typeof world.addComponent> {
   return world.addComponent(entity, {
     component: scoped,
-    // generic ComponentSchema loses the concrete {value, mode} enum-field
-    // types; data is u32 at runtime.
-    data: { value, mode } as Record<string, unknown> as Parameters<
-      typeof world.addComponent
-    >[1]['data'],
+    data: { value, mode },
   });
 }
 

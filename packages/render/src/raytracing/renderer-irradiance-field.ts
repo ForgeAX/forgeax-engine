@@ -1,3 +1,4 @@
+import type { AssetChange } from '@forgeax/engine-assets-runtime/internal';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import {
   type BindGroup,
@@ -45,6 +46,7 @@ import {
   packIrradianceFieldUniform,
 } from './irradiance-field';
 import { writeFieldEdit } from './irradiance-field-edit';
+import type { FieldGatherExtent } from './irradiance-field-graph';
 import {
   IRRADIANCE_FIELD_DEPTH_BYTES,
   IRRADIANCE_FIELD_META_BYTES,
@@ -61,6 +63,7 @@ import {
   ProbeClipmapScheduler,
   type ProbeFrameSchedule,
 } from './probe-clipmap';
+import { requirePublishedKernel } from './published-kernel';
 import { createRayReflectionComposite } from './reflections-composite';
 import type { ProbeCardCapture } from './renderer-probe-cards';
 import { type ProbeGlobalRegion, prepareProbeGlobalRegion } from './renderer-probe-global';
@@ -172,17 +175,16 @@ interface IrradianceFieldEditStats {
   readonly pendingPriorityUpdates: number;
   /** Content changes accepted without re-projecting the scene: no field input changed. */
   readonly skippedProjections: number;
+  readonly projectedSources: number;
+  readonly materialRootUpdates: number;
+  readonly materialDrawVisits: number;
+  readonly materialUniformUploads: number;
+  readonly assetRootUpdates: number;
+  readonly materialBindingRefreshes: number;
 }
 
 /** Per-extent view buffers; replaced on resize and retired only after their submissions. */
-export interface IrradianceFieldExtent {
-  readonly width: number;
-  readonly height: number;
-  readonly gatherWidth: number;
-  readonly gatherHeight: number;
-  /** Present only when this field gathers the view. */
-  readonly gathered: Buffer | undefined;
-  readonly upsampled: Buffer | undefined;
+export interface IrradianceFieldExtent extends FieldGatherExtent {
   /** Lite reflection ray records, raw radiance signal and its denoiser, present
    * when the profile admits them. Fresh history is zero, which every pixel rejects. */
   readonly reflection:
@@ -261,6 +263,8 @@ export interface PreparedIrradianceField {
   readonly composeDispatch: () => number;
   /** Scene revision this field reflects; in-place edits advance it. */
   revision: number;
+  /** Accepted scene identity and content, including only its consumed assets. */
+  retained: NonNullable<PersistentGpuDrivenState['retained']>;
   /**
    * Applies a scene delta in place. `deferred` means Card admission (digests and
    * shader compiles) is still running: keep the field and retry the diff later.
@@ -283,7 +287,13 @@ export interface PreparedIrradianceField {
   readonly residency: CardResidency | undefined;
   /** Field source slots as of {@link revision}. */
   sourceSlots: FieldSourceSlots;
-  editStats(): Omit<IrradianceFieldEditStats, 'skippedProjections'>;
+  editStats(): Omit<IrradianceFieldEditStats, 'skippedProjections' | 'projectedSources'>;
+  adoptMaterials(
+    frame: NonNullable<PersistentGpuDrivenState['retained']>['materials'],
+    previous: NonNullable<PersistentGpuDrivenState['retained']>['materials'],
+  ): boolean;
+  adoptAsset(scope: RenderResourceScope, change: AssetChange): void;
+  pendingMaterialCapture(): boolean;
   extent(): IrradianceFieldExtent;
   /** Upload this attempt's schedule/lights. Failed submits do not advance offsets. */
   writeFrame(): void;
@@ -304,23 +314,37 @@ export class RendererIrradianceField {
   #generation = 0;
   #pending = false;
   #ready: PreparedIrradianceField | undefined;
-  #error: RhiError | undefined;
+  #error:
+    | { readonly cause: RhiError; readonly retained: PersistentGpuDrivenState['retained'] }
+    | undefined;
   #disposed = false;
   #submitted = 0;
   #skippedProjections = 0;
+  #projectedSources = 0;
   #lights: Uint8Array = new Uint8Array(IRRADIANCE_FIELD_LIGHTS_BYTES);
   #lightCount = 0;
 
   get ready(): PreparedIrradianceField | undefined {
     const ready = this.#ready;
-    return ready?.fence.currentGeneration() === ready?.generation ? ready : undefined;
+    // A deferred Card edit keeps its resources for retry, but cannot expose the
+    // previous scene as ready while asynchronous material admission is pending.
+    return ready !== undefined &&
+      ready.fence.currentGeneration() === ready.generation &&
+      ready.retained.identity === this.#input?.scene.retained?.identity &&
+      ready.retained.revision === this.#input?.scene.retained?.revision
+      ? ready
+      : undefined;
   }
 
   inspect(): IrradianceFieldInspection {
     const ready = this.ready;
     return {
       gather: 'irradiance-field',
-      state: this.#error ? 'failed' : ready ? 'ready' : 'preparing',
+      state: this.#error
+        ? 'failed'
+        : ready && !ready.pendingMaterialCapture()
+          ? 'ready'
+          : 'preparing',
       generation: this.#generation,
       submittedFrames: this.#submitted,
       pixelCount: this.#input ? this.#input.width * this.#input.height : 0,
@@ -350,7 +374,11 @@ export class RendererIrradianceField {
             ...(ready.acceleration === undefined
               ? {}
               : { acceleration: ready.acceleration.inspect() }),
-            edits: { ...ready.editStats(), skippedProjections: this.#skippedProjections },
+            edits: {
+              ...ready.editStats(),
+              skippedProjections: this.#skippedProjections,
+              projectedSources: this.#projectedSources,
+            },
             ...(ready.residency === undefined ? {} : { residency: ready.residency.inspect() }),
             share: { views: this.#input?.runtime.giBudget?.views ?? 1, ...ready.share() },
           }),
@@ -358,10 +386,10 @@ export class RendererIrradianceField {
         ? {}
         : {
             error: {
-              code: this.#error.code,
-              expected: this.#error.expected,
-              hint: this.#error.hint,
-              detail: this.#error.detail,
+              code: this.#error.cause.code,
+              expected: this.#error.cause.expected,
+              hint: this.#error.cause.hint,
+              detail: this.#error.cause.detail,
             },
           }),
     };
@@ -373,14 +401,26 @@ export class RendererIrradianceField {
     return JSON.stringify([
       input.runtime.deviceScope.generation,
       // Scene content edits are diffed against the field rows (`#sync`), not keyed.
-      input.runtime.assets.catalogEpoch,
-      input.runtime.gpuStore.materialResourceEpoch,
       input.worlds.map((world) => world.identity),
       // Field identity only: the gather lane consuming the field never resets it.
       input.profile.maxDistance,
       input.profile.environment,
       input.profile.field,
     ]);
+  }
+
+  readonly #pendingAssets = new Map<RenderResourceScope, Map<number, AssetChange>>();
+
+  adoptAsset(scope: RenderResourceScope, change: AssetChange): void {
+    if (this.#disposed) return;
+    this.#ready?.adoptAsset(scope, change);
+    if (!this.#pending) return;
+    let changes = this.#pendingAssets.get(scope);
+    if (changes === undefined) {
+      changes = new Map();
+      this.#pendingAssets.set(scope, changes);
+    }
+    changes.set(change.handle, change);
   }
 
   prepare(input: IrradianceFieldFrameInput): void {
@@ -395,11 +435,28 @@ export class RendererIrradianceField {
       this.#lights.set(lights.subarray(0, Math.min(lights.byteLength, this.#lights.byteLength)));
       this.#lightCount = input.lights.length;
     } catch (cause) {
-      this.#fail(input.runtime, cause);
+      this.#fail(input, cause);
       return;
     }
     const ready = this.#ready;
-    if (sceneChanged || key !== this.#key || (ready !== undefined && !this.#sync(ready, input))) {
+    const failed = this.#error;
+    const retained = input.scene.retained;
+    let synchronized = true;
+    try {
+      if (!sceneChanged && key === this.#key && ready !== undefined)
+        synchronized = this.#sync(ready, input);
+    } catch (cause) {
+      this.#fail(input, cause);
+      return;
+    }
+    if (
+      sceneChanged ||
+      key !== this.#key ||
+      (failed !== undefined &&
+        (failed.retained?.identity !== retained?.identity ||
+          failed.retained?.revision !== retained?.revision)) ||
+      !synchronized
+    ) {
       this.#generation++;
       this.#key = key;
       this.#ready?.retire();
@@ -407,15 +464,21 @@ export class RendererIrradianceField {
       this.#error = undefined;
       this.#submitted = 0;
       this.#skippedProjections = 0;
+      this.#projectedSources = 0;
     }
     const current = this.ready;
     if (current !== undefined) {
       const budget = input.runtime.giBudget;
       budget?.claim(this, input.runtime.rendererFrameNumber ?? 0, input.focus);
-      current.allocate(
-        (total) => budget?.share(this, total) ?? total,
-        budget?.focuses() ?? [input.focus],
-      );
+      try {
+        current.allocate(
+          (total) => budget?.share(this, total) ?? total,
+          budget?.focuses() ?? [input.focus],
+        );
+      } catch (cause) {
+        this.#fail(input, cause);
+        return;
+      }
     }
     if (this.#pending || this.#ready || this.#error) return;
     this.#pending = true;
@@ -437,71 +500,119 @@ export class RendererIrradianceField {
     })
       .then(
         (candidate) => {
-          const input = this.#input;
-          if (
-            fence.currentGeneration() === generation &&
-            input !== undefined &&
-            this.#sync(candidate, input)
-          )
-            this.#ready = candidate;
-          else candidate.retire();
+          try {
+            for (const [scope, changes] of this.#pendingAssets)
+              for (const change of changes.values()) candidate.adoptAsset(scope, change);
+            this.#pendingAssets.clear();
+            const current = this.#input;
+            if (
+              fence.currentGeneration() === generation &&
+              current !== undefined &&
+              this.#sync(candidate, current)
+            )
+              this.#ready = candidate;
+            else candidate.retire();
+          } catch (cause) {
+            // Retirement can invalidate cards.current(). Capture the source
+            // generation independently before releasing the failed candidate.
+            const current = this.#input;
+            const report =
+              !this.#disposed && this.#generation === generation && current !== undefined;
+            candidate.retire();
+            if (report) this.#fail(current, cause);
+          }
         },
         (cause) => {
-          if (fence.currentGeneration() === generation) this.#fail(input.runtime, cause);
+          if (fence.currentGeneration() === generation) this.#fail(input, cause);
         },
       )
       .finally(() => {
         this.#pending = false;
+        this.#pendingAssets.clear();
       });
   }
 
   /** Bring a prepared field to the current scene revision by an in-place edit. */
   #sync(field: PreparedIrradianceField, input: IrradianceFieldFrameInput): boolean {
     const revision = input.scene.scene.contentRevision;
-    if (field.revision === revision) return true;
     const retained = input.scene.retained;
     if (retained === undefined || !retained.isCurrent()) return false;
+    // A replacement CPU projection can restart its revision while keeping the
+    // same GPU tables. Revisions are comparable only within that scene identity.
+    const sameScene = field.retained.identity === retained.identity;
+    if (sameScene && field.retained.revision === retained.revision) return true;
+    const materialsChanged = field.retained.materials !== retained.materials;
+    if (materialsChanged && !field.adoptMaterials(retained.materials, field.retained.materials))
+      return false;
     if (
+      sameScene &&
+      field.retained.slots === retained.slots &&
+      field.retained.meshes === retained.meshes
+    ) {
+      field.revision = revision;
+      field.retained = retained;
+      this.#skippedProjections++;
+      return true;
+    }
+    if (
+      sameScene &&
+      field.retained.materials === retained.materials &&
+      field.retained.meshes === retained.meshes &&
+      field.retained.revision - field.revision === retained.revision - revision &&
       fieldInputsUnchanged(
         field.sourceSlots,
         input.scene.scene.changedSlotsSince(field.revision),
         input.scene.slotAt,
         (records) => {
+          this.#projectedSources += records.length;
+          if (!retained.isSourceCurrent()) return true;
           const projected = projectSceneFields(
             records,
             input.worlds,
             input.profile.field.region,
             input.runtime.assets,
+            retained,
           );
-          return !projected.ok || projected.value.sources.length > 0;
+          return !projected.ok || !retained.isSourceCurrent() || projected.value.sources.length > 0;
         },
       )
     ) {
       field.revision = revision;
+      field.retained = retained;
       this.#skippedProjections++;
       return true;
     }
+    if (!retained.isSourceCurrent()) return false;
     const projected = projectSceneFields(
       retained.slots,
       input.worlds,
       input.profile.field.region,
       input.runtime.assets,
+      retained,
     );
-    if (!projected.ok) return false;
+    this.#projectedSources += retained.slots.length;
+    if (!projected.ok || !retained.isSourceCurrent()) return false;
     const edit = diffFieldEdit(field.editState, projected.value.sources, projected.value.instances);
     const applied = field.edit(edit);
     if (applied === 'rebuild') return false;
     if (applied === 'applied') {
       field.revision = revision;
+      field.retained = retained;
       field.sourceSlots = fieldSourceSlots(projected.value.sources);
     }
     return true;
   }
 
-  #fail(runtime: RenderSystemInternals, cause: unknown): void {
+  #fail(input: IrradianceFieldFrameInput, cause: unknown): void {
+    const retained = input.scene.retained;
+    const current = this.#input?.scene.retained;
+    // Async preparation can reject after a newer source was accepted. Such a
+    // failure belongs to the old input and must not block the current one.
+    if (retained?.identity !== current?.identity || retained?.revision !== current?.revision)
+      return;
     this.#ready?.retire();
     this.#ready = undefined;
-    this.#error =
+    const error =
       cause instanceof RhiError
         ? cause
         : new RhiError({
@@ -517,7 +628,8 @@ export class RendererIrradianceField {
               },
             },
           });
-    runtime.errorRegistry.fire(this.#error);
+    this.#error = { cause: error, retained };
+    input.runtime.errorRegistry.fire(error);
   }
 
   async #build(
@@ -527,6 +639,8 @@ export class RendererIrradianceField {
   ): Promise<PreparedIrradianceField> {
     const { runtime, profile } = input;
     const revision = input.scene.scene.contentRevision;
+    const retained = input.scene.retained;
+    if (retained === undefined) throw new Error('irradiance-field GI requires an accepted scene');
     const device = runtime.device;
     const shaders = runtime.shaderRegistry;
     const compile = runtime.createShaderModule;
@@ -534,16 +648,10 @@ export class RendererIrradianceField {
       throw new Error('irradiance-field GI requires the ordinary shader registry and compiler');
     const plan = planIrradianceField(profile.field).unwrap();
     const entries = [...shaders.entries()];
-    const source = (entryPoint: string): string => {
-      const matched = entries.filter((entry) => entry.wgsl.includes(`fn ${entryPoint}(`));
-      const entry = matched[0];
-      if (matched.length !== 1 || entry === undefined)
-        throw new Error(`expected one published ${entryPoint} kernel`);
-      return entry.wgsl;
-    };
-    const viewSource = source('gatherField');
-    const compositeSource = source('fs_ray_diffuse');
-    const reflectionSource = source('fs_ray_reflection_field');
+
+    const viewSource = requirePublishedKernel(entries, 'gatherField');
+    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse');
+    const reflectionSource = requirePublishedKernel(entries, 'fs_ray_reflection_field');
     const field = profile.field;
     const region = await prepareProbeGlobalRegion(
       runtime,
@@ -580,6 +688,7 @@ export class RendererIrradianceField {
       );
       const cards = region.cards;
       if (cards === undefined) throw new Error('irradiance field requires native Card capture');
+      cards.acceptMaterials(retained.materials);
       publishCards(cards);
       const capture = cards.capture;
       if (capture.width % plan.cardResolution !== 0)
@@ -895,6 +1004,7 @@ export class RendererIrradianceField {
         schedule,
         composeDispatch: () => composeDispatch,
         revision,
+        retained,
         editState,
         residency,
         allocate: (share, focuses) => {
@@ -902,6 +1012,8 @@ export class RendererIrradianceField {
           captureSchedule.limit = share(captureSchedule.budget);
           relight = share(plan.cardBudget);
           residency?.stream(focuses, captureSchedule, captureSchedule.limit);
+          const slice = captureSchedule.slice();
+          if (slice !== undefined) capture.prepareTiles(slice);
         },
         share: () => ({
           probes: clipmap.limit,
@@ -909,8 +1021,43 @@ export class RendererIrradianceField {
           relightTiles: Math.min(relight, captureSchedule.tiles),
         }),
         sourceSlots: fieldSourceSlots(region.sources),
+        pendingMaterialCapture: () => captureSchedule.pendingWork,
+        adoptAsset: (scope, change) => {
+          const work = capture.adoptAsset(scope, change.handle, change.revision);
+          if (work === undefined) return;
+          captureSchedule.queueWork(work);
+          litLights = undefined;
+        },
+        adoptMaterials: (frame, previous) => {
+          let valid = true;
+          let changed = false;
+          frame.changesSince(previous, (before, after) => {
+            if (!valid) return;
+            // Losing the last scene binding is handled by the actual topology edit.
+            if (after === undefined) return;
+            if (before?.snapshot === after.snapshot) return;
+            const accepted = capture.adoptMaterial(after.resource, after.snapshot);
+            if (!accepted.ok) {
+              valid = false;
+              return;
+            }
+            if (accepted.value !== undefined) {
+              captureSchedule.queueWork(accepted.value);
+              changed = true;
+            }
+          });
+          if (!valid) return false;
+          cards.acceptMaterials(frame);
+          if (changed) litLights = undefined;
+          return true;
+        },
         editStats: () => ({
           ...edits,
+          materialRootUpdates: capture.materialWork.roots,
+          materialDrawVisits: capture.materialWork.drawVisits,
+          materialUniformUploads: capture.materialWork.uniformUploads,
+          assetRootUpdates: capture.materialWork.assetRoots,
+          materialBindingRefreshes: capture.materialWork.bindingRefreshes,
           pendingTiles: captureSchedule.pendingTiles,
           pendingPriorityUpdates: clipmap.pendingPriorityUpdates(),
         }),
@@ -924,99 +1071,106 @@ export class RendererIrradianceField {
           )
             return 'applied';
           if (admissionFailed) return 'rebuild';
-          // Card installs need async digests and shader modules; apply once admitted.
-          const installs = [...edit.added, ...edit.rematerialized];
-          if (installs.length > 0) {
-            if (admitting) return 'deferred';
-            let missing: ReturnType<ProbeCardCapture['lower']>[];
+          // A failed physical edit invalidates the complete derived region.
+          try {
+            // Card installs need async digests and shader modules; apply once admitted.
+            const installs = [...edit.added, ...edit.rematerialized];
+            if (installs.length > 0) {
+              if (admitting) return 'deferred';
+              let missing: ReturnType<ProbeCardCapture['lower']>[];
+              try {
+                missing = installs
+                  .map((c) => cards.lower(c.source, c.instance, 0))
+                  .filter((lowered) => !cards.capture.admitted(lowered));
+              } catch {
+                return 'rebuild';
+              }
+              if (missing.length > 0) {
+                admitting = true;
+                void Promise.all(missing.map((lowered) => cards.capture.admit(lowered)))
+                  .then(
+                    (results) => {
+                      if (results.some((r) => !r.ok)) admissionFailed = true;
+                    },
+                    () => {
+                      admissionFailed = true;
+                    },
+                  )
+                  .finally(() => {
+                    admitting = false;
+                  });
+                return 'deferred';
+              }
+            }
+            let written: ReturnType<typeof writeFieldEdit>;
             try {
-              missing = installs
-                .map((c) => cards.lower(c.source, c.instance, 0))
-                .filter((lowered) => !cards.capture.admitted(lowered));
+              written = writeFieldEdit(device, region, cards, edit);
             } catch {
               return 'rebuild';
             }
-            if (missing.length > 0) {
-              admitting = true;
-              void Promise.all(missing.map((lowered) => cards.capture.admit(lowered)))
-                .then(
-                  (results) => {
-                    if (results.some((r) => !r.ok)) admissionFailed = true;
+            // Ray Query: moves rebuild only the TLAS, adds build a BLAS per new mesh, materials none.
+            if (acceleration !== undefined) {
+              const added: WorldAccelerationEdit['added'][number][] = [];
+              for (const [i, add] of edit.added.entries()) {
+                const row = written.added[i];
+                const geometryId = region.headroom?.geometryIds.get(add.source.mesh);
+                const positions = add.source.mesh.attributes.position;
+                if (row === undefined || geometryId === undefined) return 'rebuild';
+                if (!(positions instanceof Float32Array)) return 'rebuild';
+                added.push({
+                  instance: {
+                    instanceId: row,
+                    geometryId,
+                    mask: add.instance.mask,
+                    transform: add.instance.transform,
                   },
-                  () => {
-                    admissionFailed = true;
-                  },
-                )
-                .finally(() => {
-                  admitting = false;
+                  geometry: { geometryId, positions, indices: add.source.mesh.indices },
                 });
-              return 'deferred';
+              }
+              if (!acceleration.edit({ moved: edit.moved, removed: edit.removed, added }).ok)
+                return 'rebuild';
             }
-          }
-          let written: ReturnType<typeof writeFieldEdit>;
-          try {
-            written = writeFieldEdit(device, region, cards, edit);
+            adoptFieldEdit(editState, edit, written.added);
+            residency?.applyEdit(edit, written.added);
+            const captured = captureSchedule.captured;
+            const queued = captureSchedule.queue(written.tiles);
+            // Added tiles past the frontier extend it; they are new capture work too.
+            const fresh = written.addedTiles.reduce(
+              (n, run) => n + Math.max(0, run.end - Math.max(run.first, captured)),
+              0,
+            );
+            captureSchedule.grow(capture.allocatedTiles);
+            if (written.bounds.length > 0) {
+              pendingBounds.push(...written.bounds);
+              const box = globalSdfEditBox(region.grid, pendingBounds);
+              composeDispatch =
+                box === undefined
+                  ? region.voxelCount
+                  : box.extent[0] * box.extent[1] * box.extent[2];
+              device.queue
+                .writeBuffer(
+                  region.input.settings.buffer,
+                  40,
+                  new Uint8Array(packGlobalSdfEditBox(box).buffer),
+                )
+                .unwrap();
+              if (composeDispatch > 0) region.composed = false;
+            }
+            clipmap.queueEdit(written.probeBounds);
+            // Shadows/bounces of unedited tiles changed too: relight all once recaptured.
+            litLights = undefined;
+            edits.applied++;
+            edits.movedInstances += edit.moved.length;
+            edits.removedInstances += edit.removed.length;
+            edits.addedInstances += edit.added.length;
+            edits.rematerializedInstances += edit.rematerialized.length;
+            edits.recapturedTiles += queued + fresh;
+            edits.composedVoxels = written.bounds.length > 0 ? composeDispatch : 0;
+            edits.priorityProbes = clipmap.priorityProbes();
+            return 'applied';
           } catch {
             return 'rebuild';
           }
-          // Ray Query: moves rebuild only the TLAS, adds build a BLAS per new mesh, materials none.
-          if (acceleration !== undefined) {
-            const added: WorldAccelerationEdit['added'][number][] = [];
-            for (const [i, add] of edit.added.entries()) {
-              const row = written.added[i];
-              const geometryId = region.headroom?.geometryIds.get(add.source.mesh);
-              const positions = add.source.mesh.attributes.position;
-              if (row === undefined || geometryId === undefined) return 'rebuild';
-              if (!(positions instanceof Float32Array)) return 'rebuild';
-              added.push({
-                instance: {
-                  instanceId: row,
-                  geometryId,
-                  mask: add.instance.mask,
-                  transform: add.instance.transform,
-                },
-                geometry: { geometryId, positions, indices: add.source.mesh.indices },
-              });
-            }
-            if (!acceleration.edit({ moved: edit.moved, removed: edit.removed, added }).ok)
-              return 'rebuild';
-          }
-          adoptFieldEdit(editState, edit, written.added);
-          residency?.applyEdit(edit, written.added);
-          const captured = captureSchedule.captured;
-          const queued = captureSchedule.queue(written.tiles);
-          // Added tiles past the frontier extend it; they are new capture work too.
-          const fresh = written.addedTiles.reduce(
-            (n, run) => n + Math.max(0, run.end - Math.max(run.first, captured)),
-            0,
-          );
-          captureSchedule.grow(capture.allocatedTiles);
-          if (written.bounds.length > 0) {
-            pendingBounds.push(...written.bounds);
-            const box = globalSdfEditBox(region.grid, pendingBounds);
-            composeDispatch =
-              box === undefined ? region.voxelCount : box.extent[0] * box.extent[1] * box.extent[2];
-            device.queue
-              .writeBuffer(
-                region.input.settings.buffer,
-                40,
-                new Uint8Array(packGlobalSdfEditBox(box).buffer),
-              )
-              .unwrap();
-            if (composeDispatch > 0) region.composed = false;
-          }
-          clipmap.queueEdit(written.probeBounds);
-          // Shadows/bounces of unedited tiles changed too: relight all once recaptured.
-          litLights = undefined;
-          edits.applied++;
-          edits.movedInstances += edit.moved.length;
-          edits.removedInstances += edit.removed.length;
-          edits.addedInstances += edit.added.length;
-          edits.rematerializedInstances += edit.rematerialized.length;
-          edits.recapturedTiles += queued + fresh;
-          edits.composedVoxels = written.bounds.length > 0 ? composeDispatch : 0;
-          edits.priorityProbes = clipmap.priorityProbes();
-          return 'applied';
         },
         extent: resize,
         writeFrame: () => {
@@ -1100,7 +1254,7 @@ export class RendererIrradianceField {
           attempt = undefined;
           if (settled === undefined || fence.currentGeneration() !== fence.capturedGeneration)
             return;
-          cards.commit();
+          if (!cards.commit()) return;
           cardWork = settled.work;
           probesSinceDirect = settled.work.relit > 0 ? 0 : probesSinceDirect + settled.probes.count;
           clipmap.commit(settled.probes);
@@ -1128,6 +1282,7 @@ export class RendererIrradianceField {
   }
 
   disable(): void {
+    this.#pendingAssets.clear();
     if (this.#input === undefined) return;
     this.#input.runtime.giBudget?.release(this);
     this.#generation++;

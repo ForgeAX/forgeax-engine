@@ -3,13 +3,16 @@ import type { BindGroupLayoutEntry } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
+import { GpuResidencyCache } from '../device/gpu-residency';
 import { createSkylightFallback, skylightBindGroupResources } from '../ibl/skylight-bind-group';
+import { worldRenderResources } from '../publication/resource-scope';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
-import type { MaterialSnapshot } from '../render-system-extract';
+import { MATERIAL_PER_ENTITY_STRIDE } from '../record/render-context';
+import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 it('keeps the selected native material layout through replacement and return to an earlier publication', async () => {
@@ -17,24 +20,29 @@ it('keeps the selected native material layout through replacement and return to 
   native.pushErrorScope('validation');
   let scopeOpen = true;
   const fallback = createSkylightFallback(device, device.queue);
-  const materialBuffer = device.createBuffer({ size: 256, usage: 64 | 8 }).unwrap();
+  const materialBuffer = device
+    .createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 64 | 8 })
+    .unwrap();
   const sceneBuffer = device.createBuffer({ size: 64, usage: 128 }).unwrap();
   const output = device.createBuffer({ size: 16, usage: 128 | 4 }).unwrap();
   const readback = device.createBuffer({ size: 16, usage: 1 | 8 }).unwrap();
   const bytes = new Uint32Array(64);
   bytes.set([23, 47, 71, 255], 12);
   bytes.set([89, 101, 127, 255], 28);
-  device.queue.writeBuffer(materialBuffer, 0, bytes).unwrap();
+  const schema = Array.from({ length: 32 }, (_, index) => ({
+    name: `word${index}`,
+    type: 'u32' as const,
+  }));
   const materialLayout = (minBindingSize: number) => {
     const entries: BindGroupLayoutEntry[] = [
       { binding: 0, visibility: 4, buffer: { type: 'uniform', minBindingSize } },
       { binding: 1, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
       { binding: 2, visibility: 4, sampler: { type: 'filtering' } },
-      { binding: 3, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
+      { binding: 3, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
       { binding: 4, visibility: 4, sampler: { type: 'filtering' } },
       { binding: 5, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
       { binding: 6, visibility: 4, buffer: { type: 'uniform' } },
-      { binding: 47, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
+      { binding: 47, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
     ];
     if (transmissionBackdropAvailable(device.limits.maxSampledTexturesPerShaderStage))
       entries.push(
@@ -49,7 +57,11 @@ it('keeps the selected native material layout through replacement and return to 
   const replacementLayout = materialLayout(128);
   let selectedLayout = originalLayout;
   const deps = {
-    runtime: { device, getParamSchema: () => [], getMaterialBindGroupLayout: () => selectedLayout },
+    runtime: {
+      device,
+      getParamSchema: () => schema,
+      getMaterialBindGroupLayout: () => selectedLayout,
+    },
     pipelineState: {
       materialBindGroupLayout: originalLayout,
       materialUniformBuffer: { buffer: materialBuffer },
@@ -57,8 +69,8 @@ it('keeps the selected native material layout through replacement and return to 
       defaultSampler: fallback.sampler,
       defaultWhiteTextureView: fallback.brdfLutView,
     },
-    world: new World(),
-    store: { materialResourceEpoch: 0 },
+    world: worldRenderResources(new World()),
+    store: new GpuResidencyCache(),
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: skylightBindGroupResources(fallback),
@@ -67,7 +79,14 @@ it('keeps the selected native material layout through replacement and return to 
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},
   } as unknown as PerSubmeshMaterialBgDeps;
-  const material = { materialHandle: 1, materialShaderId: 'game::replaceable' } as MaterialSnapshot;
+  const material: MaterialSnapshot = {
+    ...defaultMaterialSnapshot(1),
+    materialShaderId: 'game::replaceable',
+    materialParamSchema: schema,
+    paramSnapshot: Object.fromEntries(
+      [...bytes].slice(0, 32).map((value, index) => [`word${index}`, value]),
+    ),
+  };
   const outputLayout = device
     .createBindGroupLayout({
       entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }],
@@ -96,8 +115,8 @@ struct Material { values: array<vec4<u32>, ${size}> }
         compute: { module, entryPoint: 'main' },
       })
       .unwrap();
-    const group = buildPerSubmeshMaterialBg(deps, { ...material }, 1);
-    expect(buildPerSubmeshMaterialBg(deps, { ...material }, 2)).toBe(group);
+    const group = buildPerSubmeshMaterialBg(deps, material, 1);
+    expect(buildPerSubmeshMaterialBg(deps, material, 2)).toBe(group);
     const encoder = device.createCommandEncoder().unwrap();
     const pass = encoder.beginComputePass();
     pass.setPipeline(pipeline);

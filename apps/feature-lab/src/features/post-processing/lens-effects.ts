@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { LensEffects } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, unlit } from '../../lab/stage';
+import { spawnCamera, spawnMesh, unlit } from '../../lab/stage';
 import { passChecks, spawnCheckerWall } from './shared/scenes';
 
 const LENS = {
@@ -23,10 +25,16 @@ export default defineFeature({
   expect:
     'ON: the frame edges fall off into a dark red vignette, white bars show red/blue color fringes toward the corners, and fine grain covers the image. OFF: clean, evenly lit checkerboard with sharp white bars.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnCheckerWall(world, 8);
     const white = unlit(world, [1, 1, 1, 1]);
     for (let i = 0; i < 7; i++)
-      spawnMesh(world, MESH.cube, white, { pos: [-6 + i * 2, 0, 0.1], scale: [0.12, 7, 0.05] });
+      spawnMesh(world, stageCube, white, { pos: [-6 + i * 2, 0, 0.1], scale: [0.12, 7, 0.05] });
     const camera = spawnCamera(world, {
       eye: [0, 0, 5.2],
       target: [0, 0, 0],

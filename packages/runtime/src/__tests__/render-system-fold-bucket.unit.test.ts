@@ -18,7 +18,11 @@
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { foldDispatchBuckets } from '../../../render/src/record/mesh-ssbo';
-import type { DispatchEntry } from '../../../render/src/render-system-extract';
+import {
+  type DispatchEntry,
+  defaultMaterialSnapshot,
+  type MaterialSnapshot,
+} from '../../../render/src/render-system-extract';
 import { TRANSPARENT_SORT_MODE_LAYER_Z } from '../../../render/src/systems/transparent-sort-config';
 
 // Minimal mock DispatchEntry — only the fields the fold helper reads:
@@ -43,7 +47,6 @@ function mockEntry(opts: {
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: opts.materialShaderId ?? 'forgeax::sprite',
-    paramSnapshot: undefined,
   };
 }
 
@@ -62,7 +65,7 @@ function mockRenderable(
   ...rest: [true | undefined] | []
 ): {
   transform: { world: Float32Array };
-  material: { transparent?: true | undefined };
+  material: MaterialSnapshot;
 } {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -71,7 +74,14 @@ function mockRenderable(
   world[15] = 1;
   world[14] = tz; // posZ
   const transparent = rest.length === 0 ? true : rest[0];
-  return { transform: { world }, material: { transparent } };
+  return {
+    transform: { world },
+    material: {
+      ...defaultMaterialSnapshot(),
+      ...(transparent ? { transparent } : {}),
+      passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+    },
+  };
 }
 
 describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
@@ -195,7 +205,16 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
         materialShaderId: 'forgeax::default-standard-pbr',
       }),
     );
-    const standardRenderables = standardEntries.map(() => mockRenderable(1.0, true));
+    const standardRenderables = standardEntries.map(() => {
+      const row = mockRenderable(1.0, true);
+      return {
+        ...row,
+        material: {
+          ...row.material,
+          passes: [{ name: 'Forward', program: { module: 'forgeax::default-standard-pbr' } }],
+        },
+      };
+    });
     const standardBuckets = foldDispatchBuckets(
       standardEntries,
       TRANSPARENT_SORT_MODE_LAYER_Z,
@@ -210,7 +229,13 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       const spriteBuckets = foldDispatchBuckets(
         spriteEntries,
         TRANSPARENT_SORT_MODE_LAYER_Z,
-        standardRenderables,
+        standardRenderables.map((row) => ({
+          ...row,
+          material: {
+            ...row.material,
+            passes: [{ name: 'Forward', program: { module: materialShaderId } }],
+          },
+        })),
       );
       expect(spriteBuckets).toHaveLength(1);
       expect(spriteBuckets[0]?.bucketSize).toBe(2);

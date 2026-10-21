@@ -1,4 +1,3 @@
-import { RuntimeMaterialValue, RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
 import type { Component, World } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { Terrain } from '@forgeax/engine-terrain';
@@ -40,17 +39,11 @@ import { SpriteAnimation } from './components/sprite-animation';
 import { SpriteInstances } from './components/sprite-instances';
 import { SpriteRegionOverride } from './components/sprite-region-override';
 import { StereoCamera } from './components/stereo-camera';
-import { TileLayer } from './components/tile-layer';
 import { Tilemap } from './components/tilemap';
 import { Visibility } from './components/visibility';
 import { ProjectedDecal } from './decals/component';
 
 const RENDER_COMPONENTS: readonly Component[] = [
-  // Render extraction consumes these World-owned runtime payload components.
-  // Register them so separately bundled Worker bootstraps can resolve the
-  // same tokens before publishing material and mesh edits.
-  RuntimeMaterialValue,
-  RuntimeMeshVertices,
   AmbientOcclusion,
   Atmosphere,
   BarrelDistortion,
@@ -91,7 +84,6 @@ const RENDER_COMPONENTS: readonly Component[] = [
   SpriteInstances,
   SpriteRegionOverride,
   StereoCamera,
-  TileLayer,
   Tilemap,
   Visibility,
 ];

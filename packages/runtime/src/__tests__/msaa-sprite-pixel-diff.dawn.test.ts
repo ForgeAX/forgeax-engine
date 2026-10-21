@@ -1,3 +1,7 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // msaa-sprite-pixel-diff.dawn.test.ts -
 // feat-20260604-learn-render-4-10-anti-aliasing-msaa-engine-wiring / M2 / w9 [F-1 fixup].
@@ -35,7 +39,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // covered by the hello-sprite smoke FPS gate (smoke green = no
 // regression beyond the SMOKE_PIXEL_THRESHOLD eps).
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   ANTIALIAS_MSAA,
@@ -120,12 +123,11 @@ function buildSyntheticRgba(): { width: number; height: number; data: Uint8Array
   return { width: w, height: h, data: bytes };
 }
 
-function spawnSpriteScene(world: World, spriteMaterialPayload: unknown, antialias: number): void {
-  // feat-20260614 M8: MeshRenderer.materials holds a per-World column handle
-  // (numeric); mint it from the catalogued material payload on the World the
-  // scene is spawned into. The material's texture/sampler values are GUID
-  // strings the extract stage resolves to per-World handles.
-  const spriteMaterial = world.allocSharedRef('MaterialAsset', spriteMaterialPayload);
+function spawnSpriteScene(
+  world: World,
+  spriteMaterial: AssetHandle<'material'>,
+  antialias: number,
+): void {
   // A rotated quad gives diagonal sprite edges so MSAA has something to
   // smooth (the camera-facing axis-aligned quad would expose almost no
   // edge to antialias).
@@ -138,7 +140,12 @@ function spawnSpriteScene(world: World, spriteMaterialPayload: unknown, antialia
         scale: [1, 1, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [spriteMaterial as never] } },
   );
   world.spawn(
@@ -235,7 +242,7 @@ describe('feat-20260604-msaa M2 w9 [F-1]: LDR sprite + MSAA split sub-pass cover
     }
     expect(host.ok).toBe(true);
     if (!host.ok) throw host.error;
-    const { renderer, assets } = host.value;
+    const { renderer } = host.value;
     expect(renderer.inspect().state).toBe('alive');
     const device = sharedDevice;
     if (device === undefined) throw new Error('GPUDevice not captured');
@@ -268,21 +275,7 @@ describe('feat-20260604-msaa M2 w9 [F-1]: LDR sprite + MSAA split sub-pass cover
     const TEX_GUID = '00000000-0000-7000-8000-0000000005a1';
     const SAMPLER_GUID = '00000000-0000-7000-8000-0000000005a2';
     const MATERIAL_GUID = '00000000-0000-7000-8000-0000000005a3';
-    const texCatalog = assets.catalog(TEX_GUID, synthPod as never);
-    expect(texCatalog.ok, 'sprite texture catalog').toBe(true);
-    if (!texCatalog.ok) return;
-
-    const samplerCatalog = assets.catalog(SAMPLER_GUID, {
-      kind: 'sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'repeat',
-      addressModeV: 'repeat',
-    } as never);
-    expect(samplerCatalog.ok, 'sampler catalog').toBe(true);
-    if (!samplerCatalog.ok) return;
-
-    const spriteMaterialPayload = {
+    const spriteMaterialPayload: MaterialAsset = {
       kind: 'material' as const,
       passes: [
         {
@@ -304,19 +297,34 @@ describe('feat-20260604-msaa M2 w9 [F-1]: LDR sprite + MSAA split sub-pass cover
         // older demos keep rendering during migration; new code declares
         // the UBO-aligned forms directly.
         colorTint: [1.0, 0.4, 0.4, 1.0],
-        baseColorTexture: TEX_GUID,
-        sampler: SAMPLER_GUID,
+        baseColorTexture: { texture: TEX_GUID, sampler: SAMPLER_GUID },
         region: [0, 0, 1, 1],
         pivotAndSize: [0.5, 0.5, 1, 1],
       },
     };
-    const matCatalog = assets.catalog(MATERIAL_GUID, spriteMaterialPayload as never);
-    expect(matCatalog.ok, 'sprite material catalog').toBe(true);
-    if (!matCatalog.ok) return;
+    const spawn = async (world: World, antialias: number) => {
+      const owner = testAssets(world);
+      publishRuntimeAssets(owner, [
+        { guid: TEX_GUID, asset: synthPod },
+        {
+          guid: SAMPLER_GUID,
+          asset: {
+            kind: 'sampler',
+            magFilter: 'linear',
+            minFilter: 'linear',
+            addressModeU: 'repeat',
+            addressModeV: 'repeat',
+          },
+        },
+        { guid: MATERIAL_GUID, asset: spriteMaterialPayload, refs: [TEX_GUID, SAMPLER_GUID] },
+      ]);
+      const material = (await owner.load(MATERIAL_GUID, 'material')).unwrap();
+      spawnSpriteScene(world, material, antialias);
+    };
 
     // Pass 1: antialias=none baseline.
     const worldNone = new World();
-    spawnSpriteScene(worldNone, spriteMaterialPayload, ANTIALIAS_NONE);
+    await spawn(worldNone, ANTIALIAS_NONE);
     const drawnNone = await drawPublished(renderer, worldNone);
     expect(drawnNone.ok, 'LDR sprite none-AA draw').toBe(true);
     await device.queue.onSubmittedWorkDone();
@@ -333,7 +341,7 @@ describe('feat-20260604-msaa M2 w9 [F-1]: LDR sprite + MSAA split sub-pass cover
       msaaErrors.push({ code: event.error.code });
     });
     const worldMsaa = new World();
-    spawnSpriteScene(worldMsaa, spriteMaterialPayload, ANTIALIAS_MSAA);
+    await spawn(worldMsaa, ANTIALIAS_MSAA);
     const drawnMsaa = await drawPublished(renderer, worldMsaa);
     await device.queue.onSubmittedWorkDone();
     if (typeof unsubscribe === 'function') unsubscribe();

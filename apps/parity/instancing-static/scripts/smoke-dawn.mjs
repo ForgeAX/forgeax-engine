@@ -144,13 +144,10 @@ const mockCanvas = {
 // --- 3. Build engine scene --------------------------------------------------
 
 const { World } = await import('@forgeax/engine-ecs');
-const enginePkg = await import('@forgeax/engine-runtime');
-const { createRenderer } = enginePkg;
+const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, DirectionalLight, Instances, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 function buildTranslationGrid() {
   const halfX = ((GRID_X - 1) * SPACING) / 2;
@@ -180,7 +177,24 @@ function buildTranslationGrid() {
   return out;
 }
 
-const world = new World();
+const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const EMPTY_MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(EMPTY_MANIFEST_URL));
+
+let renderer;
+let assets;
+try {
+  const created = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: EMPTY_MANIFEST_URL });
+  if (!created.ok) throw created.error;
+  ({ renderer, assets } = created.value);
+} catch (err) {
+  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+} finally {
+  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
+}
+const world = new World({ assets });
 world.spawn(
   {
     component: Transform,
@@ -193,22 +207,6 @@ world.spawn({
   data: { castShadow: true, direction: [-0.3, -1, -0.5], color: [1, 1, 1], intensity: 1 },
 });
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
-const EMPTY_MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
-process.once('exit', () => URL.revokeObjectURL(EMPTY_MANIFEST_URL));
-
-let renderer;
-try {
-  const created = await createRenderer(mockCanvas, {}, { shaderManifestUrl: EMPTY_MANIFEST_URL });
-  if (!created.ok) throw created.error;
-  renderer = created.value;
-} catch (err) {
-  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-} finally {
-  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
-}
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -218,7 +216,7 @@ world.spawn(
     component: Transform,
     data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() } },
   { component: MeshRenderer, data: {} },
   { component: Instances, data: { transforms: buildTranslationGrid() } },
 );

@@ -1,12 +1,14 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
-import { numMipLevels } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { AssetError, numMipLevels } from '@forgeax/engine-types';
 import {
   drainFramePreparation,
   type FramePreparation,
   type FrameRecording,
   prepareFrameSubmission,
   profileFrameRecording,
+  recordPreparationBarrier,
 } from './assembly/frame-recording';
 import type { CapsuleShadowInspection } from './capsule-shadow/inspection';
 import { projectCaptureScene } from './capture/scene-projection';
@@ -16,7 +18,11 @@ import type { GeometryObservation } from './geometry-observation';
 import { RenderPublicationError, type RenderPublicationIdentity } from './publication/contract';
 import { preparePublicationGeometry } from './publication/prepare-geometry';
 import type { PreparedRenderPublication } from './publication/receiver';
-import { type RenderResourceScope, renderTime } from './publication/resource-scope';
+import {
+  type RenderResourceScope,
+  renderTime,
+  worldRenderResources,
+} from './publication/resource-scope';
 import { computeProjectionMatrix, computeViewMatrix } from './record/helpers';
 import { MaterialBgAssemblyCache } from './record/material-bg-assembly-cache';
 import {
@@ -28,18 +34,15 @@ import {
   computeDirectionalCsm,
   projectAuxiliaryCamerasForView,
 } from './render-system-extract';
+import { type FrameList, FrameProjection } from './scene/frame-list';
 import type { RenderSceneBounds } from './scene/render-scene-types';
+import { TerrainLayers } from './terrain/layers';
 import { captureSubmittedTerrain, type SubmittedTerrainSection } from './terrain/submitted.js';
 // @forgeax/engine-math is referenced through render-system-record.ts which builds
 // view/proj matrices and worldFromLocal via `mat4.compose / .multiply /
 // .invert` (charter proposition 5: no math reinvention; render-system.test.ts
 // asserts `/@forgeax\/engine-math/` shows up in render-system.ts source).
 
-// @forgeax/engine-math is referenced through render-system-record.ts which builds
-// view/proj matrices and worldFromLocal via `mat4.compose / .multiply /
-// .invert` (charter proposition 5: no math reinvention; render-system.test.ts
-// asserts `/@forgeax\/engine-math/` shows up in render-system.ts source).
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { RecorderSession } from '@forgeax/engine-profiler';
@@ -52,7 +55,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import { ShaderError } from '@forgeax/engine-shader';
-import { type RenderPipelineAsset, toShared } from '@forgeax/engine-types';
+import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import {
   type DirectionalShadowInspectionSource,
   directionalShadowProfileFromQuality,
@@ -167,7 +170,6 @@ export type { RenderSceneInspection } from './inspection-types';
 
 import type { BarrelDistortionMapping } from './barrel-distortion';
 import type { EnvironmentInspection } from './environment/inspection';
-import { ShadowCasterOwnershipRebase } from './gpu-driven/shadow-ownership';
 import { selectGpuLodLane } from './gpu-driven/view-gpu';
 import { resetHdrpBuffers } from './hdrp-buffers';
 import type { SkylightBindGroupResources } from './ibl/skylight-bind-group';
@@ -330,7 +332,6 @@ export type {
   PipelineState,
   RenderSystemInternals,
   RenderSystemRuntime,
-  SurfaceBackendKind,
   SurfaceCapabilityFacts,
   SurfaceProfile,
   SwapChainFormatPair,
@@ -338,7 +339,6 @@ export type {
 export {
   configureSurface,
   MATERIAL_PER_ENTITY_STRIDE,
-  resolveSurfaceFormatPair,
   resolveSurfaceProfile,
   STANDARD_PBR_UBO_SIZE,
   selectSwapChainFormat,
@@ -354,7 +354,7 @@ export { createRendererProducerRootMatrix } from './render-system-producer-roots
  * Production-owned recovery facts. These values are projections of the live
  * RenderSystem owners; they are not a test ledger or a second graph model.
  */
-export interface RecoveryProductionEvidence {
+interface RecoveryProductionEvidence {
   readonly producerRoots: readonly RendererProducerRoot[];
   readonly graph: {
     readonly ready: boolean;
@@ -455,6 +455,7 @@ export interface RenderSystem {
     meshHandle: number | undefined,
   ): DynamicGeometryRecordStageLane | undefined;
   /** Prepare a detached graph candidate without entering the frame record path. */
+  prepareRecoveryTextureData(runtime: RecoveryGraphCandidateRuntime): Promise<void>;
   prepareRecoveryGraphCandidate(
     runtime: RecoveryGraphCandidateRuntime,
   ): RecoveryGraphCandidatePreparation;
@@ -543,6 +544,9 @@ export interface RenderSystem {
   readonly directionalShadow: DirectionalShadowInspection;
   /** Per-view shadow cache decisions and raster work of the last submitted frame. */
   readonly shadowRaster: ShadowRasterInspection;
+  captureShadowWorkload(
+    frameId: number,
+  ): readonly import('./inspection-types').ShadowWorkloadPass[] | undefined;
   /** Last prepared Standard transport facts, detached from GPU handles. */
   readonly standardLightingInspection: StandardLightingInspection | undefined;
   /** Last submitted point-shadow atlas budget facts, detached from GPU handles. */
@@ -725,15 +729,54 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       // Missing capability remains an explicit fallback-only admission.
     }
   };
+  // GPU-driven production uses the validated adapter for normal frames. The
+  // assembly-supplied closure resolves its device-bound adapter at call time,
+  // so recovery candidate preparation still follows candidateShaderState
+  // rather than retaining a lost-generation module.
+  const gpuDrivenShaderFactory =
+    internals.shaderModuleFactory ??
+    internals.immediateShaderModuleFactory ??
+    ({
+      createShaderModule: () =>
+        err(
+          new RhiError({
+            code: 'rhi-not-available',
+            expected: 'the renderer backend exposes shader module creation',
+            hint: 'construct the renderer through the backend pack before activating GPU-driven rendering',
+          }),
+        ),
+    } satisfies import('./pipeline-builder').PipelineBuilderShaderModuleFactory);
   const cubeCaptureState: CubeCaptureGraphState = { work: [] };
-  const shadowOwnershipRebase = new ShadowCasterOwnershipRebase();
+  const terrainLayers = new TerrainLayers(
+    () => internals.gpuStore,
+    () => internals.device,
+    internals.immediateShaderModuleFactory ?? gpuDrivenShaderFactory,
+  );
+  Object.assign(internals, { preparedMaterialTexture: terrainLayers.texture.bind(terrainLayers) });
   const persistentRenderScene = new PersistentRenderScene({
+    terrainLayers,
+    assets: internals.assets,
     shaderRegistry: internals.assets.shaderRegistry,
     getTemporalConsumerDemand: () => internals.standardProfile?.visibleSurface === true,
     getDevice: () => internals.device,
     onGpuError: (error) => internals.errorRegistry.fire(error),
-    onRuntimeAssetChange: (worldId, handle) => {
-      internals.gpuStore.invalidateMesh(handle, preparedWorlds[worldId] ?? worldId);
+    onAssetChange: (scope, change) => {
+      frameState.irradianceField?.adoptAsset(scope, change);
+      frameState.firedEquirectProjectionFailedHandles.delete(change.handle);
+      // Published GPU residency is adopted once by the outer view assembly.
+      // Each retained view still adopts its own GI dependencies, even when held.
+      if (scope.world === undefined) return;
+      const content = change.removed
+        ? undefined
+        : scope.resolveAsset<import('@forgeax/engine-types').Asset>(change.handle);
+      const mesh = content?.ok && content.value.kind === 'mesh' ? content.value : undefined;
+      const adopted = internals.gpuStore.adoptMeshChange(change, mesh, scope);
+      if (!adopted.ok) internals.errorRegistry.fire(adopted.error);
+      const texture = content?.ok && content.value.kind === 'texture' ? content.value : undefined;
+      const adoptedTexture = internals.gpuStore.adoptTextureChange(change, texture, scope);
+      if (!adoptedTexture.ok) internals.errorRegistry.fire(adoptedTexture.error);
+      internals.gpuStore.invalidateSampler(change.handle, scope);
+      internals.gpuStore.adoptCubemapChange(change, scope);
     },
     instanceCollections,
   });
@@ -882,23 +925,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         });
     lastTransmissionKey = key;
   };
-  // GPU-driven production uses the validated adapter for normal frames. The
-  // assembly-supplied closure resolves its device-bound adapter at call time,
-  // so recovery candidate preparation still follows candidateShaderState
-  // rather than retaining a lost-generation module.
-  const gpuDrivenShaderFactory =
-    internals.shaderModuleFactory ??
-    internals.immediateShaderModuleFactory ??
-    ({
-      createShaderModule: () =>
-        err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'the renderer backend exposes shader module creation',
-            hint: 'construct the renderer through the backend pack before activating GPU-driven rendering',
-          }),
-        ),
-    } satisfies import('./pipeline-builder').PipelineBuilderShaderModuleFactory);
   let gpuDrivenRecoveryCount = 0;
   const surfaceSubmissionObservation = new SurfaceSubmissionObservationOwner(
     () => internals.deviceScope.generation,
@@ -1246,13 +1272,13 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
   // the current worlds[] position when the asynchronous readback completes.
   let lastLodWorldAttachments: ReadonlyMap<number, string> = new Map();
   let lodCandidateCountCache:
-    | { readonly renderables: readonly RenderableSnapshot[]; readonly count: number }
+    | { readonly renderables: FrameList<RenderableSnapshot>; readonly count: number }
     | undefined;
   let lodInspectionRenderablesCache:
     | {
-        readonly submissionRenderables: readonly RenderableSnapshot[];
+        readonly submissionRenderables: FrameList<RenderableSnapshot>;
         readonly lodCandidateCount: number;
-        readonly values: readonly RenderableSnapshot[];
+        readonly values: FrameList<RenderableSnapshot>;
       }
     | undefined;
   const transparentSort = new TransparentSortCache();
@@ -1366,13 +1392,13 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
   const lastVisibilityStats: { explicitlyHidden: number } = { explicitlyHidden: 0 };
   let lastMaterialTextureSources: MaterialTextureSourceInspection = {
     sourceFieldsVisited: 0,
-    numericSharedRefProbes: 0,
-    sourceCacheHits: 0,
-    sourceCacheMisses: 0,
     producerRoutes: Object.freeze({}),
   };
-  let lastMeshMaterialBindings: readonly MeshMaterialBindingObservation[] = [];
-  let lastMeshMaterialBindingRenderables: readonly RenderableSnapshot[] | undefined;
+  let lastMeshMaterialBindingRenderables: FrameList<RenderableSnapshot> | undefined;
+  let lastMeshMaterialBindingWorlds: readonly RenderResourceScope[] = [];
+  let lastMeshMaterialBindingMaterials:
+    | import('./scene/material-dispatch').MaterialFrame
+    | undefined;
   let lastPresentation: FramePresentation = 'pending';
   let lastPresentationPendingReason: FramePresentationPendingReason | undefined;
   let materialDraws: import('./render-contract').DrawObservation =
@@ -1604,20 +1630,19 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             typeof material === 'object' &&
             material !== null &&
             'world' in material &&
-            'guid' in material &&
+            'handle' in material &&
             typeof material.world === 'number' &&
-            typeof material.guid === 'string'
+            typeof material.handle === 'number'
           ) {
             return preparedMaterialBindings(
               runtime,
               worlds,
               materialShaderId,
               material.world,
-              material.guid,
+              material.handle,
               layout,
               preparedFeatureSkylightResources,
               materialBindings,
-              'assetHandle' in material ? material.assetHandle : undefined,
             );
           }
           return layout === undefined
@@ -1728,8 +1753,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             ...(frameState.materialUboCounters ?? {
               packHits: 0,
               packMisses: 0,
-              comparedSlots: 0,
-              unchangedSlots: 0,
               uploadRanges: 0,
               uploadedLogicalBytes: 0,
               skippedUploads: 0,
@@ -1953,6 +1976,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     get transmission(): TransmissionInspection | undefined {
       return lastTransmissionInspection;
     },
+    captureShadowWorkload: (frameId) =>
+      frameState.shadowRaster.captureWorkload(frameId, gpuDrivenProduction.inspect().shadowViews),
     get shadowRaster(): ShadowRasterInspection {
       return frameState.shadowRaster.inspect();
     },
@@ -1965,8 +1990,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       const cascadeCount = lights?.cascadeCount ?? 0;
       const shadowReady = frameState.frameOutputs.directionalShadowView !== null;
       const shadowMapBytes = shadowReady
-        ? (graph?.resources.find((resource) => resource.label === 'directional-shadow-depth')
-            ?.byteSize ?? 0)
+        ? (frameState.shadowDepthLayers?.byteSize('directional-shadow-depth') ?? 0)
         : 0;
       return projectDirectionalShadowInspectionSource({
         requested,
@@ -2011,7 +2035,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     },
     detachScene(world: World): void {
       frameState.dynamicResolution?.reset();
-      const worldId = preparedWorlds.indexOf(world);
+      const worldId = preparedWorlds.indexOf(worldRenderResources(world));
       const allocator = internals.getPipelineState()?.skinPaletteAllocator;
       if (allocator !== undefined && allocator !== null) {
         for (const slot of persistentRenderScene.compositionSlots()) {
@@ -2020,7 +2044,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         }
       }
       persistentRenderScene.detach(world);
-      internals.featureSceneInputs?.detach(world);
+      internals.featureSceneInputs?.detach(worldRenderResources(world));
     },
     copyBuiltinPostProcessesTo(target) {
       for (const [id, entry] of postProcessOwner.builtinEntries)
@@ -2060,7 +2084,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       const composition = canonicalizeWorldComposition(worlds, opts, renderReadLeases);
       const sourceWorlds = composition.worlds;
       const compositionWorlds: readonly RenderResourceScope[] =
-        publication === undefined ? sourceWorlds : [publication.resources];
+        publication === undefined
+          ? sourceWorlds.map(worldRenderResources)
+          : [publication.resources];
       const compositionLeases = composition.leases;
       preparedWorlds = compositionWorlds;
       gpuDrivenProduction.beginGeometryObservation(
@@ -2073,7 +2099,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                     sourceWorlds[slot.snapshot.worldId]?.identity)
                   : opts.geometryObservationSourceWorldIdentity;
               if (!worldIdentity || scope === undefined) throw Error('geometry-source-unavailable');
-              const handle = toShared<'MeshAsset'>(slot.snapshot.assetHandle);
+              const handle = slot.snapshot.assetHandle as AssetHandle<'mesh'>;
               const source = 'sourceForAsset' in scope ? scope.sourceForAsset(handle) : undefined;
               return {
                 worldIdentity,
@@ -2175,7 +2201,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             return persistentRenderScene.extractComposition(
               sourceWorlds,
               { cameraOwner, resourceOwner },
-              internals.assets.catalogEpoch,
+              internals.assets,
               (renderables) =>
                 extractFrames(
                   sourceWorlds,
@@ -2206,6 +2232,14 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             );
           });
         } catch (cause) {
+          if (cause instanceof AssetError && cause.code === 'asset-not-ready') {
+            submitted = yield* recordPreparationBarrier(internals, encoder);
+            if (submitted) {
+              submittedFrameCount++;
+              lastSubmittedGeneration = internals.deviceScope.generation;
+            }
+            return submitted;
+          }
           if (cause instanceof MotionBlurValidationError) {
             lastMotionBlurInvalidParams = cause;
             latestCamera = undefined;
@@ -2226,9 +2260,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           cloudLayer,
           renderables,
           dispatch,
-          shadowCasterEntityKeys: extractedShadowCasterEntityKeys,
-          shadowCasterDrawKeys: extractedShadowCasterDrawKeys,
-          shadowCasterMembership: extractedShadowCasterMembership,
           skylight,
           skylightCount,
           skybox,
@@ -2352,16 +2383,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           internals.errorRegistry.fire(preparedOutput.error);
           return false;
         }
-        const stableShadowOwnership = shadowOwnershipRebase.rebase(
-          compositionWorlds,
-          persistentRenderScene.visibilityWorldKeysFor(compositionWorlds),
-          extractedShadowCasterEntityKeys,
-          extractedShadowCasterDrawKeys,
-          extractedShadowCasterMembership,
-        );
-        const shadowCasterEntityKeys = stableShadowOwnership.entityKeys;
-        const shadowCasterDrawKeys = stableShadowOwnership.drawKeys;
-        const shadowCasterMembership = stableShadowOwnership.membership;
         const shadowCasterProjection = persistentRenderScene.shadowCasterProjection();
         lastDirectionalShadowLights = lights;
         lastDirectionalShadowCandidate = 'failed';
@@ -2440,7 +2461,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             .observationFrameId ?? frameState.frameNumber;
         let lodCandidateCountForFrame = 0;
         if (inspectionCamera !== undefined) {
-          const firstRenderable = renderables[0];
+          const firstRenderable = renderables.at(0);
           const lodCandidateCount =
             lodCandidateCountCache?.renderables === renderables
               ? lodCandidateCountCache.count
@@ -2481,7 +2502,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               ? cpuLodLevel(
                   renderable,
                   internals.gpuStore.getMeshGpuHandles(
-                    toShared<'MeshAsset'>(renderable.assetHandle),
+                    renderable.assetHandle as AssetHandle<'mesh'>,
                     compositionWorlds[renderable.worldId] ?? renderable.worldId,
                   ),
                   inspectionCamera,
@@ -2527,7 +2548,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             },
             slot: {
               primitiveSlot: 0,
-              slotGeneration: persistentRenderScene.inspect().topology.revision,
+              slotGeneration: persistentRenderScene.topologyRevision(),
             },
             generation: lodSubmitFrameId,
             count: {
@@ -2587,26 +2608,10 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           updateTransmissionInspection(transmissionAntialias, false);
           return false;
         }
-        if (lastMeshMaterialBindingRenderables !== renderables) {
-          const observeResidency = createMaterialResidencyObserver(internals);
-          lastMeshMaterialBindingRenderables = renderables;
-          lastMeshMaterialBindings = renderables.map((renderable) => {
-            const materialWorld = preparedWorlds[renderable.worldId];
-            return projectMeshMaterialBindingObservation({
-              worldId: renderable.worldId,
-              ...(materialWorld === undefined ? {} : { worldIdentity: materialWorld.identity }),
-              entityKey: renderable.entityKey,
-              bindings: renderable.materials.map((material, slotIndex) => ({
-                handle: material.materialHandle ?? 0,
-                source: renderable.materialBindingSources[slotIndex] ?? 'engine-default',
-              })),
-              diagnostics: renderable.materialBindingDiagnostics ?? [],
-              residency: renderable.materials.map((material) =>
-                observeResidency(materialWorld, material),
-              ),
-            });
-          });
-        }
+        // Retain accepted roots only. Full diagnostic rows belong to explicit inspection.
+        lastMeshMaterialBindingRenderables = renderables;
+        lastMeshMaterialBindingWorlds = preparedWorlds;
+        lastMeshMaterialBindingMaterials = shadowCasterProjection?.content.materials;
 
         bindGroupCounts.createBindGroup = 0;
         bindGroupCounts.keys = [];
@@ -2657,9 +2662,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         if (frame.materialTextureSources !== undefined) {
           lastMaterialTextureSources = Object.freeze({
             sourceFieldsVisited: frame.materialTextureSources.sourceFieldsVisited,
-            numericSharedRefProbes: frame.materialTextureSources.numericSharedRefProbes,
-            sourceCacheHits: frame.materialTextureSources.sourceCacheHits,
-            sourceCacheMisses: frame.materialTextureSources.sourceCacheMisses,
             producerRoutes: Object.freeze({ ...frame.materialTextureSources.producerRoutes }),
           });
         }
@@ -2791,11 +2793,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                 ? {}
                 : { motionBlur: motionBlurFeatureInput }),
               worlds: sourceWorlds,
-              resolveAsset: (index, handle) => {
+              resolveAsset: (index, handle, revision) => {
                 const source = compositionWorlds[index];
                 return source === undefined
                   ? err(new Error(`Missing feature asset source ${index}`))
-                  : resolveAssetHandle(source, handle);
+                  : source.resolveAsset(handle, revision);
               },
               ...(publication === undefined
                 ? {}
@@ -2956,10 +2958,21 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         // distance back-to-front for mode=3. The transparent-sort config is a
         // per-world resource; it is read from the resource-owner world (the
         // world that owns skylight / skybox / singleton render state, w5 / D-3).
-        // Only the Transparent segment is reordered; queue ordering between
-        // segments (sortDispatchByQueue, stable) is preserved.
+        // Native Scene Passes own their actual ordering. CPU-only and manual
+        // recording sort queue-selected/blended work without touching opaque slots.
+        const gpuDrivenScene = persistentRenderScene.compositionGpuDrivenState();
         const orderedDispatch = runProfiledRenderPhase(profileSession, 'sort', () =>
-          transparentSort.sort(submissionDispatch, resourceWorld, cameras, submissionRenderables),
+          shadowCasterProjection === undefined || gpuDrivenScene === undefined
+            ? transparentSort.sort(
+                submissionDispatch,
+                resourceWorld,
+                cameras,
+                new FrameProjection(submissionRenderables, (source) => ({
+                  transform: source.transform,
+                  material: source.material.snapshot,
+                })),
+              )
+            : submissionDispatch,
         );
 
         // M3 / w26: single dispatch list replaces old three-bucket model.
@@ -3086,16 +3099,16 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             recordProfilePhase,
             {
               owner: gpuDrivenProduction,
-              scene: persistentRenderScene.compositionGpuDrivenState(),
+              scene: gpuDrivenScene,
               onRasterLane: (owned) => {
                 persistentRenderScene.setGpuDrivenRasterLane(owned);
               },
               activeEntityKeys: visibilityProjection.activeEntityKeys,
               activeEntityRevision: visibilityProjection.activeEntityRevision,
               visibleRasterRows: Math.max(0, frustumStats.total - frustumStats.culled),
-              ...(captureOnly || frame.gpuRasterCulledEntityKeys === undefined
+              ...(captureOnly || frame.cameraVisible === undefined
                 ? {}
-                : { rasterCulledEntityKeys: frame.gpuRasterCulledEntityKeys }),
+                : { cameraVisible: frame.cameraVisible }),
               telemetryCandidateCount: lodCandidateCountForFrame,
               telemetrySubmit: {
                 frameId: lodSubmitFrameId,
@@ -3125,17 +3138,21 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               reflectionProbes: reflectionProbeRecord,
               ...(probeCaptureScene === undefined
                 ? {}
-                : { captureDispatch: probeCaptureScene.captureDispatch }),
+                : {
+                    captureDispatch: probeCaptureScene.captureDispatch,
+                    ...(shadowCasterProjection === undefined
+                      ? {}
+                      : {
+                          subsurfaceDemand: shadowCasterProjection.content.subsurface.authorVisible,
+                        }),
+                  }),
             } satisfies CubeCaptureFrameInput,
             environment?.environmentSignature ?? '',
             environment?.fogSignature ?? '',
             environmentReady && environment !== undefined,
             persistentRenderScene.transmissionTopologyDemand(),
-            shadowCasterEntityKeys,
-            shadowCasterDrawKeys,
             captureOnly ? undefined : volumetricFog,
             timingCapture,
-            shadowCasterMembership,
             shadowCasterProjection,
             worldKeys,
             undefined,
@@ -3185,11 +3202,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                 handle !== undefined &&
                 handle !== 0 &&
                 (internals.gpuStore.getCubemapStatus(
-                  toShared<'EquirectAsset'>(handle),
+                  handle as AssetHandle<'equirect'>,
                   resourceWorld,
                 ) !== 'ready' ||
                   internals.gpuStore.getCubemapGpuView(
-                    toShared<'EquirectAsset'>(handle),
+                    handle as AssetHandle<'equirect'>,
                     resourceWorld,
                   ) === undefined),
             )
@@ -3221,10 +3238,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             const meshHandles =
               renderableWorld === undefined
                 ? undefined
-                : (internals.gpuStore.getMeshGpuHandles(
-                    toShared<'MeshAsset'>(renderable.assetHandle),
-                    renderableWorld,
-                  ) ?? pipelineState?.meshes.get(renderable.assetHandle));
+                : renderable.generatedMesh !== undefined
+                  ? internals.gpuStore.getGeneratedMesh(renderable.generatedMesh)
+                  : internals.gpuStore.getMeshGpuHandles(
+                      renderable.assetHandle as AssetHandle<'mesh'>,
+                      renderableWorld,
+                    );
             if (meshHandles === undefined) {
               framePresentation = 'pending';
               framePendingReason ??= {
@@ -3435,11 +3454,20 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               }
             : err instanceof RhiError
               ? err
-              : {
-                  code: 'unknown' as const,
-                  message: String(err),
-                  name: (err as Error)?.name,
-                };
+              : typeof err === 'object' &&
+                  err !== null &&
+                  'code' in err &&
+                  typeof err.code === 'string'
+                ? {
+                    code: err.code,
+                    message: 'expected' in err ? String(err.expected) : err.code,
+                    detail: err,
+                  }
+                : {
+                    code: 'unknown' as const,
+                    message: String(err),
+                    name: (err as Error)?.name,
+                  };
         internals.errorRegistry.fire(
           new RhiError({
             code: 'webgpu-runtime-error',
@@ -3585,7 +3613,29 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     frustumStats: lastFrustumStats,
     visibilityStats: lastVisibilityStats,
     get meshMaterialBindings(): readonly MeshMaterialBindingObservation[] {
-      return lastMeshMaterialBindings;
+      const observeResidency = createMaterialResidencyObserver(internals);
+      return (lastMeshMaterialBindingRenderables ?? []).map((renderable) => {
+        const materialWorld = lastMeshMaterialBindingWorlds[renderable.worldId];
+        const snapshotOf = (material: import('./material-resource').MaterialResource) => {
+          const snapshot = lastMeshMaterialBindingMaterials?.get(material)?.snapshot;
+          if (snapshot === undefined)
+            throw new Error('Inspected draw has no accepted material version');
+          return snapshot;
+        };
+        return projectMeshMaterialBindingObservation({
+          worldId: renderable.worldId,
+          ...(materialWorld === undefined ? {} : { worldIdentity: materialWorld.identity }),
+          entityKey: renderable.entityKey,
+          bindings: renderable.materials.map((material, slotIndex) => ({
+            handle: snapshotOf(material).materialHandle ?? 0,
+            source: renderable.materialBindingSources[slotIndex] ?? 'engine-default',
+          })),
+          diagnostics: renderable.materialBindingDiagnostics ?? [],
+          residency: renderable.materials.map((material) =>
+            observeResidency(materialWorld, snapshotOf(material)),
+          ),
+        });
+      });
     },
     get iblBinding(): import('./mesh-material-bindings').IblBindingInspection | undefined {
       return frameState.iblBindingInspection;
@@ -3688,11 +3738,15 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     },
     registerBuiltinPostProcess: postProcessOwner.registerBuiltinPostProcess,
     lookupPostProcess,
+    prepareRecoveryTextureData: recoveryOwner.prepareRecoveryTextureData,
     prepareRecoveryGraphCandidate: recoveryOwner.prepareRecoveryGraphCandidate,
     submitCandidateSetup: recoveryOwner.submitCandidateSetup,
     publishRecoveryGraphCandidate: recoveryOwner.publishRecoveryGraphCandidate,
     discardRecoveryGraphCandidate: recoveryOwner.discardRecoveryGraphCandidate,
     disposeFrameState(): void {
+      lastMeshMaterialBindingRenderables = undefined;
+      lastMeshMaterialBindingWorlds = [];
+      lastMeshMaterialBindingMaterials = undefined;
       frameState.candidatePipelinePreparations?.dispose();
       if (ownsSceneInputs) internals.featureSceneInputs?.dispose();
       disposeTargetCaptures(cubeCaptureState);
@@ -3700,6 +3754,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       internals.getPipelineState()?.skinPaletteAllocator?.dispose();
       pointsLinesOwner.dispose();
       persistentRenderScene.dispose();
+      terrainLayers.dispose();
       instanceCollections.dispose();
       gpuDrivenProduction.dispose();
       disposeFeatureGpuWork();
@@ -3738,7 +3793,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       // (D-3 method A: void signature, sub-errors fan out via
       // errorRegistry.fire at the cascade layer, dispose still walks all
       // 6 steps).
+      frameState.directionalShadowCache?.meshReads.release();
       frameState.directionalShadowCache = null;
+      frameState.directionalShadowLod = undefined;
       frameState.directionalShadowCacheRecorded = false;
       resetFrameRecordingOutputs(frameState.frameOutputs);
       frameState.lastSuccessfulCameraAntialias = undefined;
@@ -3797,12 +3854,16 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       // is per-RenderSystem (= per Renderer) and is shared transparently
       // between URP and HDRP pipelines.
       // Idempotent: dispose() on a null / already-disposed atlas is a no-op.
+      frameState.shadowDepthLayers?.dispose();
+      frameState.shadowDepthLayers = undefined;
       if (frameState.pointShadowAtlas !== null) {
         frameState.pointShadowAtlas.dispose();
         frameState.pointShadowAtlas = null;
       }
     },
     resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {
+      frameState.shadowDepthLayers?.dispose();
+      frameState.shadowDepthLayers = undefined;
       disposeTargetCaptures(cubeCaptureState);
       frameState.dynamicResolution?.reset();
       // The active expansion buffers belong to the lost generation. Abandon
@@ -3882,7 +3943,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       submittedTerrain = [];
       frameState.depthOfFieldAccepted = undefined;
       frameState.depthOfFieldLastSubmitFailed = false;
+      frameState.directionalShadowCache?.meshReads.release();
       frameState.directionalShadowCache = null;
+      frameState.directionalShadowLod = undefined;
       frameState.directionalShadowCacheRecorded = false;
       resetFrameRecordingOutputs(frameState.frameOutputs);
       frameState.lastSuccessfulCameraAntialias = undefined;

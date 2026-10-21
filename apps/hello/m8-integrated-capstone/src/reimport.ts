@@ -1,4 +1,6 @@
-import type { ImportContext, ImportedAsset, Importer, ImportResult, LoadContext, Loader, LoaderOutput } from '@forgeax/engine-types';
+import { defineAssetKind } from '@forgeax/engine-assets-runtime';
+import { ok } from '@forgeax/engine-types';
+import type { ImportContext, ImportedAsset, Importer, ImportResult, AssetDecoder } from '@forgeax/engine-types';
 
 export const CAPSTONE_CONTENT_KIND = 'm8-capstone-blob';
 export const CAPSTONE_CONTENT_GUID = '8215d398-8120-4ffa-baf2-4496216cd4f6';
@@ -49,11 +51,9 @@ export function capstoneContentImporter(): Importer {
   };
 }
 
-export function capstoneContentLoader(): Loader<CapstoneContent> {
-  return {
-    kind: CAPSTONE_CONTENT_KIND,
-    load(payload: Record<string, unknown>, _refs: readonly string[] | undefined, _ctx: LoadContext): LoaderOutput<CapstoneContent> {
-      return payload as unknown as CapstoneContent;
-    },
-  };
-}
+export const capstoneContentKind = defineAssetKind<CapstoneContent, typeof CAPSTONE_CONTENT_KIND>(CAPSTONE_CONTENT_KIND);
+export const capstoneContentDecoder: AssetDecoder<CapstoneContent> = {
+  async decode({ envelope }) {
+    return ok(envelope.payload);
+  },
+};

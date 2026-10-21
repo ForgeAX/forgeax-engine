@@ -124,10 +124,7 @@ it('serves Lite reflections from the directional radiance cache under field gath
   });
   const result: Record<string, unknown> = {};
   const metal = (roughness: number) =>
-    h.publish(
-      `radiance-cache-metal-${roughness}`,
-      Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness }),
-    );
+    h.publish(Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness }));
   /** Mean linear HDR red over `frames` ordinary frames. */
   const average = async (frames: number) => {
     const sum = new Float64Array(SIZE * SIZE);
@@ -381,6 +378,19 @@ it('serves Lite reflections from the directional radiance cache under field gath
       expect(lit).toBeGreaterThan(0.5);
       const worst = Math.max(...leak.blocks.map(Math.abs));
       leaks.push({ worst, visible: visible.fieldMean, fieldMax: lit });
+      if (worst >= 0.02 * visible.fieldMean) {
+        const pending = recorder.captureFrame();
+        (await recorder.frameBoundary()).unwrap();
+        await h.image();
+        (await recorder.frameBoundary()).unwrap();
+        const failure = (await pending).unwrap();
+        save('hidden-emitter-failed.rhitape', failure.bytes);
+        save('hidden-emitter-failed.json', {
+          digest: failure.digest,
+          worst,
+          state: h.inspection(),
+        });
+      }
       expect(worst).toBeLessThan(0.02 * visible.fieldMean);
     }
     h.world.despawn(hidden).unwrap();

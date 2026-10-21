@@ -26,7 +26,7 @@ Pack. There is no required `plugin.ts` filename or independent file-based activa
 See the feature Packs in [game-3d](../../templates/game-3d/README.md#behavior-packs) for same-file,
 separate-module, and npm implementations with cross-Pack GUID references.
 
-`assets.loadByGuid<PluginAsset>()` reads a definition without evaluating its code or preloading its references. `mountPluginAsset(ctx, guid)` resolves a compiled implementation, clones configuration, establishes asset origin before installation, and returns the actual native Fiber in a Result. The host injects `assets.readPluginDefinition` and `pluginPrograms`; this package does not import the asset runtime.
+`assets.load(guid, 'plugin')` returns a definition handle without evaluating its code or preloading deferred references; `assets.read(handle)` returns detached definition content. Release the caller handle when finished. Runtime edits affect later activations and do not reconfigure existing Fibers. `mountPluginAsset(ctx, guid)` resolves a compiled implementation, clones configuration, establishes asset origin before installation, and returns the actual native Fiber in a Result. The host injects `assets.readPluginDefinition` and `pluginPrograms`; this package does not import the asset runtime.
 
 ```ts
 import { mountPluginAsset } from '@forgeax/engine/plugin';

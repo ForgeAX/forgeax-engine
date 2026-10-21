@@ -1,3 +1,5 @@
+import type { AssetHandle } from '@forgeax/engine-types';
+import { testAssets } from './helpers/runtime-assets';
 // feat-20260608-scene-nesting-ecs-fication M2 / w19 (red phase) — despawnScene
 // + despawnDescendants. Lives under runtime for the same import-isolation
 // reason as world-scene-instantiate.test.ts.
@@ -19,14 +21,14 @@ import {
   worldDetachSceneMember,
   worldInstantiateScene,
 } from '@forgeax/engine-scene';
-import type { Handle, SceneAsset } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
-function registerSceneAsset(world: World, asset: SceneAsset): Handle<'SceneAsset', 'shared'> {
+function registerSceneAsset(world: World, asset: SceneAsset): AssetHandle<'scene'> {
   for (const component of [SceneInstance, ChildOf, Transform]) {
     world.components.register(component).unwrap();
   }
-  return world.allocSharedRef('SceneAsset', asset);
+  return testAssets(world).create(asset).unwrap();
 }
 
 describe('world.despawnScene (w19)', () => {

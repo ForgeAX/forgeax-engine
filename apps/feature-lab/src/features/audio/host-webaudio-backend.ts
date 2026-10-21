@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { AudioBackend } from '@forgeax/engine/audio';
 import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource, audioPlugin } from '@forgeax/engine/audio';
 import { webAudioPlugin } from '@forgeax/engine/audio-webaudio';
@@ -11,10 +12,14 @@ export default defineFeature({
   kind: 'probe',
   appOptions: { plugins: [webAudioPlugin(), audioPlugin()] },
   summary:
-    'webAudioPlugin provides the Host-owned backend: intents from the ECS audio tick are consumed by WebAudioEngine, which lazily creates one AudioContext with a fixed master <- sfx + music gain topology.',
+    'webAudioPlugin provides the Host-owned backend: intents from the ECS audio tick are consumed by WebAudioEngine, which lazily creates one AudioContext with a default sfx/music buses feeding master through the accepted bus graph.',
   expect:
     'All checks pass: no AudioContext exists before the first play, an AudioSource with playing=true becomes one active Web Audio source routed through a bus gain into master and destination, and playing=false stops it.',
   async setup({ world, frames }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const checks = new CheckList();
     spawnCamera(world);
     // The audio tick runs inside the App frame, so start it before polling the backend.
@@ -26,11 +31,14 @@ export default defineFeature({
       if (backend === undefined) return { checks: () => checks.items };
       checks.equal('no source before the first play', backend.getActiveSourceCount(), 0);
       checks.equal('AudioContext is created lazily', trace.contexts.size, 0);
-      const clip = world.allocSharedRef('AudioClipAsset', {
-        kind: 'audio',
-        sourceKey: 'lab-host-tone',
-        bytes: makeWav(440, 0.5),
-      });
+      const clip = sceneAssets
+        .create({
+          kind: 'audio',
+          mediaType: 'audio/wav',
+          sourceKey: 'lab-host-tone',
+          bytes: makeWav(440, 0.5),
+        })
+        .unwrap();
       const entity = world
         .spawn({
           component: AudioSource,
@@ -72,6 +80,7 @@ export default defineFeature({
         `active=${backend.getActiveSourceCount()}`,
       );
       world.despawn(entity).unwrap();
+      sceneAssets.release(clip).unwrap();
     } finally {
       trace.restore();
     }

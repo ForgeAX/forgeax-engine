@@ -22,11 +22,26 @@
   "forgeax": {
     "smokeInvocation": "pnpm --filter @forgeax/hello-taa smoke",
     "metrics": {
-      "bundle-size": { "enabled": false, "reason": "consumer app bundle" },
-      "fps": { "enabled": false, "reason": "smoke owns the bounded frame gate; performance smoke reports admission separately" },
-      "bench": { "enabled": false, "reason": "temporal-motion-blur benchmark is owned by packages/render/bench" },
-      "gate": { "enabled": true, "command": "pnpm --filter @forgeax/hello-taa smoke" },
-      "spike-report": { "enabled": false, "reason": "not a spike app" }
+      "bundle-size": {
+        "enabled": false,
+        "reason": "consumer app bundle"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "smoke owns the bounded frame gate; performance smoke reports admission separately"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "temporal-motion-blur benchmark is owned by packages/render/bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-taa smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
     }
   },
   "dependencies": {
@@ -41,7 +56,8 @@
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

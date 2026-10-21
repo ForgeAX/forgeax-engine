@@ -57,6 +57,7 @@ export function assembleRuntimePacks(
   const base = assembly.catalogSource;
   if (base.expectedScope && base.expectedScope.scopeId !== options.scopeId)
     throw new TypeError('Runtime Pack scope must match the active asset realm');
+  const expectedScope = base.expectedScope ?? { scopeId: options.scopeId, generation: 0 };
   const baseFetcher = assembly.fetcher;
   const assetSource = options.assetSource;
   const ownedPrograms = new Map<string, string>();
@@ -99,7 +100,7 @@ export function assembleRuntimePacks(
   const notify = (delta: CatalogDelta) => {
     for (const listener of listeners) {
       try {
-        listener(delta);
+        listener({ ...delta, ...expectedScope });
       } catch {
         /* Observers do not own publication. */
       }
@@ -194,7 +195,6 @@ export function assembleRuntimePacks(
           registry: assembly.registry,
           shaderRegistry: assembly.registry.shaderRegistry,
           pack: state.publication?.pack,
-          loaders: assembly.decoderContributions,
           dependencies,
         },
       );
@@ -380,7 +380,7 @@ export function assembleRuntimePacks(
       : undefined;
   }
   const catalog: CatalogSource = {
-    ...(base.expectedScope === undefined ? {} : { expectedScope: base.expectedScope }),
+    expectedScope,
     openPackage: (url) =>
       producer.catalog.openPackage(url) ?? base.openPackage?.(url) ?? baseFetcher,
     async enumerate() {
@@ -390,7 +390,11 @@ export function assembleRuntimePacks(
       if (!original.ok) return original;
       const current = baseReplica.snapshot();
       if (current.stale) return err(collisionError());
-      return ok([...current.entries, ...producer.rows()]);
+      const runtime = await producer.catalog.enumerate();
+      if (!runtime.ok) return runtime;
+      return Object.assign(ok([...current.entries, ...runtime.value]), {
+        revisions: [...current.revisions, ...runtime.revisions],
+      });
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -413,9 +417,7 @@ export function assembleRuntimePacks(
         : delta,
     ),
   );
-  const stopProducer = producer.catalog.subscribe((delta) =>
-    notify({ ...delta, ...base.expectedScope }),
-  );
+  const stopProducer = producer.catalog.subscribe(notify);
   assembly.registry.setCatalogSource(catalog, fetchContent);
   context.effect(
     () => () => {

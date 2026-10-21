@@ -1,4 +1,5 @@
-import { frustum, mat4 } from '@forgeax/engine-math';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import {
   type CompiledRenderGraph,
   type GraphTextureView,
@@ -8,11 +9,11 @@ import type { Buffer, RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { _internal_getRawDevice, rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import {
-  BatchTopology,
   batchLevelStride,
   batchLodLevelCount,
   GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
-} from '../gpu-driven/batch-topology';
+} from '../gpu-driven/batch-layout';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
 import {
   GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL,
@@ -20,25 +21,37 @@ import {
   GpuDrivenView,
 } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
-import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
+import {
+  GPU_BUFFER_USAGE_COPY_DST,
+  GPU_BUFFER_USAGE_MAP_READ,
+  GPU_BUFFER_USAGE_STORAGE,
+} from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import {
   type SurfaceSubmissionCandidate,
   SurfaceSubmissionObservationOwner,
 } from '../surface/submission-observation';
+import { updateGpuView } from './helpers/gpu-input-read-domain';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 const GPU_MAP_MODE_READ = 0x0001;
+
+const material = new MaterialResource({
+  passes: [],
+  baseColor: vec3.create(0.25, 0.5, 0.75),
+  metallic: 0.1,
+  roughness: 0.9,
+});
 
 function snapshot(entityKey: number, x: number): RenderableSnapshot {
   const world = mat4.identity(mat4.create());
   world[12] = x;
-  const material = {
-    baseColor: new Float32Array([0.25, 0.5, 0.75]),
-    metallic: 0.1,
-    roughness: 0.9,
-  } as MaterialSnapshot;
+
   return {
     assetHandle: 3,
     transform: { world: new Float32Array(world) },
@@ -58,6 +71,16 @@ function snapshot(entityKey: number, x: number): RenderableSnapshot {
         topology: 'triangle-list',
         pipelineClass: 'opaque-pbr',
         materialResourceClass: 'plain',
+        geometry: {
+          receipt: {
+            identity: 'view-fixture',
+            vertexInputs: [],
+            topology: 'triangle-list',
+            indexed: true,
+          },
+          draw: { kind: 'indexed', first: 3, count: 36, baseVertex: -2, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
   };
@@ -141,7 +164,12 @@ export async function runGpuDrivenViewLifecycleEvidence(
     const delta = projection.apply(operations);
     sceneAvailability.scene.sync(delta).unwrap();
     topology.apply(delta);
-    view.update(topology.plan(), sceneAvailability.scene, planes).unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      planes,
+    ).unwrap();
 
     const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     view.addPasses(graph).unwrap();
@@ -183,6 +211,77 @@ function lodEvidenceCamera(height: number): LodViewCamera {
     orthoTop: span / 2,
     orthoBottom: -span / 2,
   } as unknown as LodViewCamera;
+}
+
+/** Material routing changes batch execution while both geometry ranges stay resident. */
+export async function runGpuDrivenInactiveBatchEvidence() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('GPU-driven routing raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const projection = new RenderScene();
+  const delta = projection.apply([
+    updateSnapshot(snapshot(1, 0)),
+    updateSnapshot({ ...snapshot(2, 0.2), assetHandle: 4 }),
+  ]);
+  const available = GpuScene.create(device, 2).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  scene.sync(delta).unwrap();
+  const topology = new BatchTopology();
+  topology.apply(delta);
+  const source = topology.query(topology.sourcePlan(), undefined);
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+  const readback = device
+    .createBuffer({ size: 40, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+    .unwrap();
+  const results: { instances: number[]; sharedInputUploadBytes: number }[] = [];
+  try {
+    for (const enabled of [true, false, true]) {
+      const plan = {
+        ...source,
+        batches: source.batches.map((batch, index) =>
+          index === 0 && !enabled ? { ...batch, visibleCapacity: 0 } : batch,
+        ),
+      };
+      updateGpuView(view, plan, scene, planes).unwrap();
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      view.addPasses(graph).unwrap();
+      const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      view._commitResourceReplacement();
+      const encoder = device.createCommandEncoder().unwrap();
+      compiled.execute({ encoder }).unwrap();
+      const indirect = view.indirectBuffer;
+      if (indirect === undefined) throw new Error('Missing indirect commands');
+      for (let index = 0; index < source.batches.length; index++) {
+        const batch = source.batches.at(index);
+        if (batch === undefined) throw new Error('Missing source batch');
+        encoder.copyBufferToBuffer(indirect, batch.indirectOffset, readback, index * 20, 20);
+      }
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      await device.queue.onSubmittedWorkDone();
+      const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+      const words = new Uint32Array(mapped.getMappedRange().unwrap());
+      results.push({
+        instances: [words[1] ?? -1, words[6] ?? -1],
+        sharedInputUploadBytes: view.inspect().sharedInputUploadBytes,
+      });
+      mapped.unmap();
+      await compiled.retire();
+    }
+    const error = await rawDevice.popErrorScope();
+    if (error !== null) throw new Error(`GPU-driven routing validation failed: ${error.message}`);
+    return results;
+  } finally {
+    device.destroyBuffer(readback);
+    view.dispose();
+    scene.dispose();
+  }
 }
 
 export async function runGpuDrivenViewGpuEvidence(): Promise<GpuDrivenViewGpuEvidence> {
@@ -235,18 +334,16 @@ export async function runGpuDrivenViewGpuEvidence(): Promise<GpuDrivenViewGpuEvi
     device,
     shaderModuleFactory: { createShaderModule: () => ok(shader) },
   }).unwrap();
-  view
-    .update(
-      topology.plan(),
-      sceneAvailability.scene,
-      frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
-      // An orthographic height of 0.3 (below the 0.5 root-to-LOD1 boundary)
-      // makes the GPU select the imported range: the unit bounds project to
-      // 2 * 0.25 * sqrt(3) / span.
-      lodEvidenceCamera(0.3),
-    )
-    .unwrap();
-  const lodBatch = topology.plan().batches.find((batch) => batch.lod !== undefined);
+  updateGpuView(
+    view,
+    topology.query(topology.sourcePlan(), undefined),
+    sceneAvailability.scene,
+    frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+    lodEvidenceCamera(0.3),
+  ).unwrap();
+  const lodBatch = topology
+    .query(topology.sourcePlan(), undefined)
+    .batches.find((batch) => batch.lod !== undefined);
   if (lodBatch === undefined) throw new Error('GPU-driven LOD batch unavailable');
   // Level 1 owns the batch's second command and second visible segment.
   const lodCommandOffset = lodBatch.indirectOffset + GPU_DRIVEN_INDIRECT_COMMAND_BYTES;
@@ -381,13 +478,12 @@ export async function runGpuDrivenViewGpuEvidence(): Promise<GpuDrivenViewGpuEvi
   // observation rather than leaving the latch permanently consumed.
   const recoveryProjection = mat4.identity(mat4.create());
   recoveryProjection[12] = 10;
-  view
-    .update(
-      topology.plan(),
-      sceneAvailability.scene,
-      frustum.fromViewProjection(frustum.create(), recoveryProjection),
-    )
-    .unwrap();
+  updateGpuView(
+    view,
+    topology.query(topology.sourcePlan(), undefined),
+    sceneAvailability.scene,
+    frustum.fromViewProjection(frustum.create(), recoveryProjection),
+  ).unwrap();
   view.setTelemetrySubmit({ frameId: 2, deviceGeneration: 0 });
   const recoveryEncoder = device
     .createCommandEncoder({ label: 'gpu-driven-evidence-recovery' })
@@ -538,7 +634,7 @@ async function readLateCommands(
     inspection.indirectCapacity * GPU_DRIVEN_INDIRECT_COMMAND_BYTES * 2,
   );
   const commands: GpuDrivenViewLateCommand[] = [];
-  for (const batch of topology.plan().batches) {
+  for (const batch of topology.query(topology.sourcePlan(), undefined).batches) {
     const stride = batchLevelStride(batch);
     for (let level = 0; level < batchLodLevelCount(batch); level += 1) {
       const args = (batch.indirectOffset + level * GPU_DRIVEN_INDIRECT_COMMAND_BYTES) / 4;
@@ -722,18 +818,17 @@ export async function runGpuDrivenViewOcclusionEvidence(
       topology.apply(grown);
     }
     pyramid.write(wall ? 'left' : 'none');
-    view
-      .update(
-        topology.plan(),
-        sceneAvailability.scene,
-        planes,
-        undefined,
-        0,
-        undefined,
-        undefined,
-        occlusionCamera,
-      )
-      .unwrap();
+    updateGpuView(
+      view,
+      topology.query(topology.sourcePlan(), undefined),
+      sceneAvailability.scene,
+      planes,
+      undefined,
+      0,
+      undefined,
+      undefined,
+      occlusionCamera,
+    ).unwrap();
     const rebuilds = view.inspect().bufferRebuilds;
     if (compiled === undefined || rebuilds !== frames.at(-1)?.bufferRebuilds) {
       if (compiled !== undefined) retirements.push(compiled.retire());
@@ -837,27 +932,26 @@ export async function runGpuDrivenShadowCameraCullEvidence(options: {
   const planes = frustum.fromViewProjection(frustum.create(), lightViewProjection);
   const pyramid = createWallPyramid(device);
   pyramid.write(options.wall);
-  view
-    .update(
-      topology.plan(),
-      sceneAvailability.scene,
-      planes,
-      undefined,
-      0,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      options.ndcDilation === undefined
-        ? undefined
-        : {
-            camera: occlusionCamera,
-            lightViewProjection,
-            ndcDilation: options.ndcDilation,
-            worldDilation: 0,
-          },
-    )
-    .unwrap();
+  updateGpuView(
+    view,
+    topology.query(topology.sourcePlan(), undefined),
+    sceneAvailability.scene,
+    planes,
+    undefined,
+    0,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options.ndcDilation === undefined
+      ? undefined
+      : {
+          camera: occlusionCamera,
+          lightViewProjection,
+          ndcDilation: options.ndcDilation,
+          worldDilation: 0,
+        },
+  ).unwrap();
   const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
   view
     .addPasses(graph, 'gpu-driven', true, undefined, undefined, false, pyramid.import(graph))
@@ -900,4 +994,225 @@ export async function runGpuDrivenShadowCameraCullEvidence(options: {
     throw new Error(`GPU-driven shadow cull validation failed: ${validationError.message}`);
   }
   return { visible: selection.visible, cameraCulled: selection.cameraCulled };
+}
+
+/** Real selector execution: one geometry root changes 1024 candidates without a candidate upload. */
+export async function runSharedGeometryCullEvidence() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('shared geometry raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const available = GpuScene.create(device, 4096).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const topology = new BatchTopology();
+  const resource = new MaterialResource({
+    passes: [],
+    baseColor: vec3.create(1, 1, 1),
+    metallic: 0,
+    roughness: 1,
+    materialParamSchema: [{ name: 'displacementTexture', type: 'texture2d' }],
+    paramSnapshot: { displacementScale: 0, displacementBias: 0 },
+  });
+  const first = new MeshFrame().with(0, 3, {
+    ...BUILTIN_CUBE,
+    aabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
+  });
+  const delta = projection.apply(
+    Array.from({ length: 1024 }, (_, i) =>
+      updateSnapshot({ ...snapshot(i + 1, 5), material: resource, materials: [resource] }),
+    ),
+  );
+  scene.sync({ ...delta, meshes: first }).unwrap();
+  topology.apply(delta);
+  const source = topology.query(topology.sourcePlan(), undefined);
+  const old = scene.captureResources().unwrap();
+  const oldGeometry = old.indexForGeometry(0, 3, first.get(0, 3));
+  const oldMaterial = old.indexForResource(resource);
+  if (oldGeometry === undefined || oldMaterial === undefined)
+    throw new Error('shared descriptor unavailable');
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+  const readback = device
+    .createBuffer({ size: 20, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+    .unwrap();
+  const frames: { visible: number; sharedInputUploadBytes: number }[] = [];
+  const draw = async (geometryAddress: number, materialAddress: number) => {
+    const plan = {
+      ...source,
+      batches: source.batches.map((batch) => ({ ...batch, geometryAddress, materialAddress })),
+    };
+    updateGpuView(view, plan, scene, planes).unwrap();
+    const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    view.addPasses(graph).unwrap();
+    const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    view._commitResourceReplacement();
+    const encoder = device.createCommandEncoder().unwrap();
+    compiled.execute({ encoder }).unwrap();
+    if (view.indirectBuffer === undefined) throw new Error('shared geometry command unavailable');
+    encoder.copyBufferToBuffer(view.indirectBuffer, 0, readback, 0, 20);
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+    const words = new Uint32Array(mapped.getMappedRange().unwrap());
+    frames.push({
+      visible: words[1] ?? -1,
+      sharedInputUploadBytes: view.inspect().sharedInputUploadBytes,
+    });
+    mapped.unmap();
+    await compiled.retire();
+  };
+  try {
+    await draw(oldGeometry, oldMaterial);
+    const wide = first.with(0, 3, {
+      ...BUILTIN_CUBE,
+      aabb: new Float32Array([-6, -0.25, -0.25, 0.25, 0.25, 0.25]),
+    });
+    const inputBytes = scene.inputs.uploadBytes;
+    const tableBytes = scene.sync({ ...projection.apply([]), meshes: wide }).unwrap().bytes;
+    const currentGeometry = scene.geometryIndexForResource(0, 3);
+    if (currentGeometry === undefined) throw new Error('current geometry unavailable');
+    await draw(currentGeometry, oldMaterial);
+    const geometryUpload = tableBytes + scene.inputs.uploadBytes - inputBytes;
+    await draw(oldGeometry, oldMaterial);
+    resource.adopt({
+      ...resource.snapshot,
+      paramSnapshot: { displacementScale: 8, displacementBias: 0 },
+    });
+    scene.sync({ ...projection.apply([]), materialUpdates: [resource] }).unwrap();
+    const currentMaterial = scene.materialIndexForResource(resource);
+    if (currentMaterial === undefined) throw new Error('current material unavailable');
+    await draw(oldGeometry, currentMaterial);
+    await draw(oldGeometry, oldMaterial);
+    const error = await rawDevice.popErrorScope();
+    if (error !== null) throw new Error(`shared geometry validation failed: ${error.message}`);
+    return { frames, geometryUpload };
+  } finally {
+    old.release();
+    device.destroyBuffer(readback);
+    view.dispose();
+    scene.dispose();
+  }
+}
+
+/** The candidate and palette addresses intentionally disagree on a real selector dispatch. */
+export async function runGpuDrivenSkinVisibleAddressEvidence() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('Skin visible raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const palette = device
+    .createBuffer({
+      size: 18 * 64,
+      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    })
+    .unwrap();
+  const readback = device
+    .createBuffer({
+      size: 80,
+      usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+    })
+    .unwrap();
+  const projection = new RenderScene();
+  const available = GpuScene.create(device, 4).unwrap();
+  if (available.status !== 'available') throw new Error('Skin visible GPU Scene unavailable');
+  const scene = available.scene;
+  const topology = new BatchTopology();
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  let compiled: CompiledRenderGraph<{ readonly encoder: RhiCommandEncoder }> | undefined;
+  try {
+    const base = snapshot(1, 0);
+    const source: RenderableSnapshot = {
+      ...base,
+      gpuDrivenDraws:
+        base.gpuDrivenDraws?.map((draw) => ({
+          ...draw,
+          pipelineClass: 'skin-pbr',
+          geometry: { ...draw.geometry, deformation: 'skin' },
+        })) ?? [],
+      skin: {
+        identity: 'visible-instance-palette',
+        generation: 1,
+        fence: 1,
+        jointCount: 1,
+        byteOffset: 17 * 64,
+        customDataStart: 17,
+        buffer: palette,
+        storageOrUniform: 'storage',
+        dirtyRanges: [],
+        uploadBytes: 0,
+        bounds: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
+      },
+    };
+    const background = snapshot(2, 10);
+    const draw = background.gpuDrivenDraws?.[0];
+    if (draw === undefined) throw new Error('Skin visible background draw unavailable');
+    const rigid: RenderableSnapshot = {
+      ...background,
+      gpuDrivenDraws: [0, 1].map((drawItemIndex) => ({
+        ...draw,
+        drawItemIndex,
+        first: 3 + drawItemIndex * 36,
+        geometry: {
+          ...draw.geometry,
+          draw: { ...draw.geometry.draw, first: 3 + drawItemIndex * 36 },
+        },
+      })),
+    };
+    // Two culled submesh executions share physical instance0. The skin is
+    // therefore instance1 but candidate2, with independent palette base17.
+    const delta = projection.apply([updateSnapshot(rigid), updateSnapshot(source)]);
+    scene.sync(delta).unwrap();
+    topology.apply(delta);
+    const plan = topology.query(topology.sourcePlan(), undefined);
+    if (plan.candidateCount !== 3 || plan.batches.length !== 3)
+      throw new Error('Skin visible fixture must admit three actual draw candidates');
+    const skinBatch = plan.batches.find((batch) => batch.binding?.geometry.deformation === 'skin');
+    if (skinBatch === undefined) throw new Error('Skin visible actual batch unavailable');
+    updateGpuView(
+      view,
+      plan,
+      scene,
+      frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+    ).unwrap();
+    const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    view.addPasses(graph).unwrap();
+    compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    const visible = view.visibleBuffer;
+    if (visible === undefined) throw new Error('Skin visible output unavailable');
+    const encoder = device.createCommandEncoder().unwrap();
+    compiled.execute({ encoder }).unwrap();
+    encoder.copyBufferToBuffer(visible, skinBatch.visibleBase * 16, readback, 0, 16);
+    encoder.copyBufferToBuffer(scene.instanceBuffer, 0, readback, 16, 64);
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+    const words = new Uint32Array(mapped.getMappedRange().unwrap().slice(0));
+    mapped.unmap();
+    const visibleInstance = words[0];
+    if (visibleInstance === undefined || visibleInstance >= 4)
+      throw new Error('Skin visible row outside the captured Instance table');
+    const validation = await rawDevice.popErrorScope();
+    if (validation !== null) throw new Error(`Skin visible validation: ${validation.message}`);
+    return {
+      visibleInstance,
+      candidateIndex: words[2],
+      paletteBase: words[4 + visibleInstance * 4 + 2],
+    };
+  } finally {
+    await device.queue.onSubmittedWorkDone();
+    await compiled?.retire();
+    view.dispose();
+    scene.dispose();
+    device.destroyBuffer(palette).unwrap();
+    device.destroyBuffer(readback).unwrap();
+  }
 }

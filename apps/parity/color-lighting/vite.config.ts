@@ -9,7 +9,7 @@ const monorepoRoot = resolve(here, '..', '..', '..');
 const productHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: monorepoRoot, encoding: 'utf8' }).trim();
 
 export default defineConfig({
-  plugins: [forgeaxShader() as never],
+  plugins: [forgeaxShader({ engineEntries: { pointShadows: true } }) as never],
   define: {
     __FORGEAX_PRODUCT_HEAD__: JSON.stringify(productHead),
     'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': JSON.stringify(process.env.FORGEAX_ENGINE_RHI_DEBUG ?? '0'),
@@ -25,6 +25,10 @@ export default defineConfig({
         renderDefaults: resolve(here, 'render-defaults.html'),
         sceneAuthoring: resolve(here, 'scene-authoring.html'),
         environmentResponse: resolve(here, 'environment-response.html'),
+        shadowResponse: resolve(here, 'shadow-response.html'),
+        gtaoResponse: resolve(here, 'gtao-response.html'),
+        transparencyResponse: resolve(here, 'transparency-response.html'),
+        renderingResponse: resolve(here, 'rendering-response.html'),
       },
     },
   },

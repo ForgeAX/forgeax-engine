@@ -141,15 +141,6 @@ describe('Depth pyramid + SSR spatial Browser WebGPU gate', () => {
       height: Math.floor(HEIGHT / 2),
       mipLevelCount: 2,
     });
-    console.info(
-      `[ssr-spatial-browser] ${JSON.stringify({
-        backend: device.caps.backendKind,
-        formatProfile: formatReceipt.value.profile,
-        stages: formatReceipt.value.stages.map((stage) => stage.stage),
-        passNames: info.passes.map((pass) => pass.name),
-        structuralOnly: true,
-      })}`,
-    );
     expect((await compiled.value.retire()).ok).toBe(true);
   });
 });

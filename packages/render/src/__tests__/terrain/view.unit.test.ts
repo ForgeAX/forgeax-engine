@@ -1,12 +1,14 @@
 import { terrainHeightBounds, terrainSurfaceVertex } from '@forgeax/engine-terrain';
 import { cookTerrain } from '@forgeax/engine-terrain/cook';
-import type { TerrainAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { CameraSnapshot } from '../../render-contract.js';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract.js';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import { projectTerrainView } from '../../terrain/view.js';
+import { runtimeTerrainFixture, terrainViewPreparation } from './runtime-fixture';
 
-it('encloses quantized section vertices even when another section owns the global height maximum', () => {
+it('encloses exact section heights independently of a distant height maximum', () => {
   for (const n of [2, 8]) {
     const columns = (n - 1) * 2 + 1;
     const heights = new Float32Array(columns * n).fill(0.1);
@@ -22,32 +24,18 @@ it('encloses quantized section vertices even when another section owns the globa
       layers: [{ material: 'material', blend: 'weight' }],
     }).unwrap();
     const section = defined(cooked.sections[0]);
-    const bounds = new Float32Array(
-      terrainHeightBounds(section.minHeight, section.maxHeight, cooked.heightRange),
-    );
-    const asset = {
-      ...cooked.source,
-      kind: 'terrain',
-      materialEncoding: { kind: 'weights' },
-      heightRange: cooked.heightRange,
-      sections: cooked.sections,
-    } as unknown as TerrainAsset;
+    const bounds = new Float32Array(terrainHeightBounds(section.minHeight, section.maxHeight));
+    const fixture = runtimeTerrainFixture({
+      columns,
+      rows: n,
+      spacing: 1,
+      subsectionVertices: n,
+      heights,
+    });
     const source = {
-      worldId: 0,
-      entityKey: 42,
-      transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
-      materials: cooked.sections.map(() => ({ materialHandle: 1 })),
-      terrain: {
-        asset,
-        grids: Array.from({ length: Math.log2(n) }, (_, i) => i + 10),
-        heightTextures: [4, 5],
-        weightTextures: [6, 7],
-        passes: [[], []],
-        forcedLod: 0,
-        lod0Diameter: 1,
-        layer: 0,
-      },
-    } as unknown as RenderableSnapshot;
+      ...fixture.source,
+      terrain: { ...defined(fixture.source.terrain), forcedLod: 0 },
+    };
     const projected = projectTerrainView(
       {
         renderables: [source],
@@ -55,8 +43,14 @@ it('encloses quantized section vertices even when another section owns the globa
         cameras: [{}],
       } as unknown as ExtractedFrame,
       new Map(),
-    );
-    const aabb = defined(defined(projected.renderables[0]).localAabb);
+      source.materials.reduce(
+        (frame, material) => frame.with(material),
+        new MaterialFrame(undefined),
+      ),
+      [fixture.world].map(worldRenderResources),
+      ...terrainViewPreparation(fixture.assets),
+    ).frame;
+    const aabb = defined(defined(projected.renderables.at(0)).localAabb);
     expect(aabb[1]).toBe(bounds[0]);
     expect(aabb[4]).toBe(bounds[1]);
     const maxLod = Math.log2(n) - 1;
@@ -66,14 +60,15 @@ it('encloses quantized section vertices even when another section owns the globa
         width: n - 1,
         lod,
         neighbors: [maxLod, lod, maxLod, lod],
-        heightRange: cooked.heightRange,
-        heights: section.height.data,
+        textureWidth: cooked.height.shape.extent.width,
+        textureHeight: cooked.height.shape.extent.height,
+        sectionIndex: 0,
+        heights: cooked.height.data,
       };
       for (let z = 0; z < n / 2 ** Math.floor(lod); z++)
         for (let x = 0; x < n / 2 ** Math.floor(lod); x++) {
           const h = terrainSurfaceVertex(surface, x, z)[1];
-          // The old author-only bounds are deliberately falsified by this source.
-          expect(h).toBeGreaterThan(section.maxHeight);
+          expect(h).toBe(section.maxHeight);
           expect(h).toBeGreaterThanOrEqual(defined(bounds[0]));
           expect(h).toBeLessThanOrEqual(defined(bounds[1]));
         }
@@ -82,36 +77,14 @@ it('encloses quantized section vertices even when another section owns the globa
 });
 
 it('derives each view and boundary LOD from one terrain entity without adopting unsubmitted candidates', () => {
-  const asset = {
-    kind: 'terrain',
-    materialEncoding: { kind: 'weights' },
+  const fixture = runtimeTerrainFixture({
     columns: 15,
     rows: 8,
     subsectionVertices: 8,
     spacing: 1,
-    heightRange: [0, 1],
-    sections: [
-      { x: 0, z: 0, minHeight: 0, maxHeight: 1 },
-      { x: 7, z: 0, minHeight: 0, maxHeight: 1 },
-    ],
-  } as unknown as TerrainAsset;
-  const source = {
-    worldId: 0,
-    entityKey: 42,
-    transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
-    materials: [{ materialHandle: 1 }, { materialHandle: 2 }],
-    terrain: {
-      asset,
-      handle: 3,
-      grids: [10, 11, 12],
-      heightTextures: [4, 5],
-      weightTextures: [6, 7],
-      passes: [[], []],
-      lod0Diameter: 1,
-      forcedLod: -1,
-      layer: 0,
-    },
-  } as unknown as RenderableSnapshot;
+    heights: new Float32Array(120),
+  });
+  const source = fixture.source;
   const camera = (z: number) =>
     ({
       position: new Float32Array([3.5, 2, z]),
@@ -122,19 +95,46 @@ it('derives each view and boundary LOD from one terrain entity without adopting 
   const frame = (z: number) =>
     ({ renderables: [source], dispatch: [], cameras: [camera(z)] }) as unknown as ExtractedFrame;
   const accepted = new Map<string, RenderableSnapshot>();
-  const near = projectTerrainView(frame(12), accepted),
-    far = projectTerrainView(frame(100), accepted);
-  expect(near.renderables.map((draw) => draw.entityKey)).toEqual([42, 42]);
-  expect(defined(defined(far.renderables[0]).terrainSection).lod).toBeGreaterThan(
-    defined(defined(near.renderables[0]).terrainSection).lod,
+  const materials = source.materials.reduce(
+    (frame, material) => frame.with(material),
+    new MaterialFrame(undefined),
   );
-  expect(defined(defined(near.renderables[0]).terrainSection).neighbors[1]).toBe(
-    defined(defined(near.renderables[1]).terrainSection).lod,
+  const projected = projectTerrainView(
+    frame(12),
+    accepted,
+    materials,
+    [fixture.world].map(worldRenderResources),
+    ...terrainViewPreparation(fixture.assets),
   );
-  expect(defined(defined(near.renderables[1]).terrainSection).neighbors[0]).toBe(
-    defined(defined(near.renderables[0]).terrainSection).lod,
+  const near = projected.frame,
+    far = projectTerrainView(
+      frame(100),
+      accepted,
+      materials,
+      [fixture.world].map(worldRenderResources),
+      ...terrainViewPreparation(fixture.assets),
+    ).frame;
+  for (const section of near.renderables) {
+    const acceptedMaterial = defined(projected.materials.get(section.material));
+    expect(materials.get(section.material)).toBeUndefined();
+    expect(acceptedMaterial.snapshot.paramSnapshot?.terrainNeighbors).toEqual(
+      section.terrainSection?.neighbors,
+    );
+    const terrainLod = acceptedMaterial.snapshot.paramSnapshot?.terrainLod;
+    expect(Array.isArray(terrainLod) ? terrainLod[1] : undefined).toBe(section.terrainSection?.lod);
+    expect(acceptedMaterial.snapshot.paramSnapshot?.terrainShadowFamily).toBe(1);
+  }
+  expect(near.renderables.map((draw) => draw.entityKey)).toEqual([fixture.entity, fixture.entity]);
+  expect(defined(defined(far.renderables.at(0)).terrainSection).lod).toBeGreaterThan(
+    defined(defined(near.renderables.at(0)).terrainSection).lod,
   );
-  expect(defined(near.renderables[0]).temporal?.reactive).toBe(true);
+  expect(defined(defined(near.renderables.at(0)).terrainSection).neighbors[1]).toBe(
+    defined(defined(near.renderables.at(1)).terrainSection).lod,
+  );
+  expect(defined(defined(near.renderables.at(1)).terrainSection).neighbors[0]).toBe(
+    defined(defined(near.renderables.at(0)).terrainSection).lod,
+  );
+  expect(defined(near.renderables.at(0)).temporal?.reactive).toBe(true);
   expect(accepted.size).toBe(0);
 });
 

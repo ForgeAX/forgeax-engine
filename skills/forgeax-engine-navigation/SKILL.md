@@ -11,11 +11,12 @@ description: >-
 |:--|:--|
 | Authored network or weighted tile grid | `createNavigationGraph` / `createNavigationGrid`; query `findPath` with an expansion budget |
 | Static finite-size ground navigation | Build selected indexed Mesh/world placement through `@forgeax/engine/import/navigation-bake`; return the POD as an ordinary Pack output |
-| World-space surface query | Load `navigation-mesh` through Catalog, call `createNavigationMesh`, then `project` / `ground` / `findPath` with explicit limits |
-| Physical character | Install `physicsPlugin('rapier-3d')` and `navigationCharacterPlugin(mesh)`; author NavigationCharacter + kinematic capsule; assign `setNavigationTarget` |
+| Fixed world-space surface query | Load `navigation-mesh`, pass `assets.read(handle)` to `createNavigationMesh`, then `project` / `ground` / `findPath` with explicit limits; this copied query remains fixed |
+| Physical character | Install `physicsPlugin('rapier-3d')` and `navigationCharacterPlugin(handle)` using the managed asset from `world.assets`; release the caller reference after installation; author NavigationCharacter + kinematic capsule; assign `setNavigationTarget` |
 | Local point following | `NavigationAgent`, `navigationPlugin`, `setNavigationPath`; local Transform coordinates and speed |
 | Bounded nearby-agent intent | `solveNavigationAvoidance`; consume actual velocity and inspect saturation; optional candidate admission must remain bounded |
-| Pause / cancel / replacement | Idle/following toggles; empty setNavigationPath; setNavigationMesh followed by explicit retarget |
+| Runtime navigation edits | `assets.update` / `replace` revises polygon/settings content; actual queries and motor steps adopt once per changed active version; old routes cancel before motion even when sourceDigest stays unchanged |
+| Pause / cancel / replacement | Idle/following toggles; empty setNavigationPath; `setNavigationMesh(world, handle).unwrap()` followed by explicit retarget |
 
 Use the [Navigation contract](../../packages/navigation/README.md) for capsule scale,
 KCC offset, fixed ordering, asset freshness and limits. Observe actual displacement

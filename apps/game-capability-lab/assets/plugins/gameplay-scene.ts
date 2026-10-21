@@ -39,7 +39,7 @@ export async function assembleGameplayScene(world: World, host: GameHost | undef
     try { loaded = host?.assets === undefined ? await loadScene({ world }) : await loadScene({ world, assets: host.assets }); }
     catch (error) { console.warn('[game] scene asset unavailable:', error); }
   }
-  if (!loaded) spawnFallbackScene({ world });
+  if (!loaded && host?.assets !== undefined) spawnFallbackScene({ world, assets: host.assets });
   spawnGroundCollider({ world });
 
   let player: EntityHandle | undefined;
@@ -55,7 +55,7 @@ export async function assembleGameplayScene(world: World, host: GameHost | undef
   const targetQuery = createScoringTargetQuery(world);
   if (loaded) {
     sentinel = resolveAuthoredSentinelIdentity(loaded);
-    const physics = attachScenePhysics({ world }, loaded);
+    const physics = attachScenePhysics({ world, ...(host?.assets === undefined ? {} : { assets: host.assets }) }, loaded);
     for (const [slot, prop] of physics.props.entries()) {
       world.addComponent(prop.e, {
         component: TargetPresentation,
@@ -64,7 +64,7 @@ export async function assembleGameplayScene(world: World, host: GameHost | undef
       world.addComponent(prop.e, { component: HitFlash, data: {} });
       world.set(prop.e, ScoringTarget, { slot });
     }
-    if (physics.animatedMaterial) animatedMaterial = createAnimatedMaterialTarget(world, physics.animatedMaterial);
+    if (physics.animatedMaterial && host?.assets) animatedMaterial = createAnimatedMaterialTarget(world, host.assets, physics.animatedMaterial);
     const playerNode = loaded.nodes.find((node) => (node.components.Name as { value?: string } | undefined)?.value === 'Player');
     if (playerNode) {
       const transform = (playerNode.components.Transform ?? {}) as { pos?: number[] };

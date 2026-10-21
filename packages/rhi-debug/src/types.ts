@@ -1,4 +1,4 @@
-// @forgeax/engine-rhi-debug/src/types — RhiCallEvent closed union, Tape, work inspection types, RhiCapsRecorded.
+// @forgeax/engine-rhi-debug/src/types — RhiCallEvent closed union, Tape, RhiCapsRecorded.
 //
 // Shape:
 // - RhiCallEvent: closed union (~40 kind incl. initialData + frameMark), each kind name 1:1 with RHI method name.
@@ -6,13 +6,13 @@
 //   timestamp writes and render-bundle execution remain deferred.
 //   Includes: core RHI + copyExternalImageToTexture + clearBuffer (per IS-11).
 // - Tape: header with formatVersion, rhiCapsRecorded, events array, blobPool map.
-// - InspectReport: frameIdx, workIndex, bindings, drawCall, rt (path string, not inline base64).
 // - RhiCapsRecorded: subset of RhiCaps relevant to cross-device replay.
 //
 // Related: requirements IS-3 / IS-5 / IS-11; plan-strategy §3.1 types.ts module + §8 naming conv.
 
 /// <reference types="@webgpu/types" />
 
+import type { BlasDescriptor, TlasDescriptor } from '@forgeax/engine-rhi';
 import type { recordReplayCapabilities } from './capabilities';
 
 /**
@@ -25,7 +25,7 @@ import type { recordReplayCapabilities } from './capabilities';
 export type HandleId = string;
 
 /** Closed set of canvas presentation color spaces a tape can record. */
-export type RecordedCanvasColorSpace = 'srgb' | 'display-p3';
+type RecordedCanvasColorSpace = 'srgb' | 'display-p3';
 
 /**
  * Subset of RhiCaps recorded alongside each tape for cross-device replay
@@ -57,7 +57,7 @@ export interface RhiCapsRecorded extends ReturnType<typeof recordReplayCapabilit
  * Bootstrap-period calls (before the first frameMark) are assigned to frameIdx=0,
  * appearing before the `frameMark { frameIdx: 0 }` event (per AC-08 / Q&A q14).
  */
-export interface RhiCallEventFrameMark {
+interface RhiCallEventFrameMark {
   readonly kind: 'frameMark';
   readonly frameIdx: number;
 }
@@ -74,7 +74,7 @@ export interface RhiCallEventCreateBuffer {
   };
 }
 
-export interface RhiCallEventCreateTexture {
+interface RhiCallEventCreateTexture {
   readonly kind: 'createTexture';
   readonly handleId: HandleId;
   /** Present only for a canvas swapchain texture synthesized from getCurrentTexture. */
@@ -92,30 +92,30 @@ export interface RhiCallEventCreateTexture {
 }
 
 /** A successful GPUBuffer.destroy call observed while recording. */
-export interface RhiCallEventDestroyBuffer {
+interface RhiCallEventDestroyBuffer {
   readonly kind: 'destroyBuffer';
   readonly handleId: HandleId;
 }
 
 /** A successful GPUTexture.destroy call observed while recording. */
-export interface RhiCallEventDestroyTexture {
+interface RhiCallEventDestroyTexture {
   readonly kind: 'destroyTexture';
   readonly handleId: HandleId;
 }
 
-export interface RhiCallEventCreateQuerySet {
+interface RhiCallEventCreateQuerySet {
   readonly kind: 'createQuerySet';
   readonly handleId: HandleId;
   readonly desc: Pick<GPUQuerySetDescriptor, 'label' | 'type' | 'count'>;
 }
 
-export interface RhiCallEventDestroyQuerySet {
+interface RhiCallEventDestroyQuerySet {
   readonly kind: 'destroyQuerySet';
   readonly handleId: HandleId;
 }
 
 /** Geometry data of one BLAS build, with buffers named by tape handle. */
-export interface RecordedBlasGeometry {
+interface RecordedBlasGeometry {
   readonly vertexBufferHandleId: HandleId;
   readonly firstVertex?: number | undefined;
   readonly vertexStride: number;
@@ -142,19 +142,10 @@ export interface RecordedTlasBuild {
   readonly instances: readonly RecordedTlasInstance[];
 }
 
-export interface RhiCallEventCreateBlas {
+interface RhiCallEventCreateBlas {
   readonly kind: 'createBlas';
   readonly handleId: HandleId;
-  readonly desc: {
-    readonly label?: string | undefined;
-    readonly geometries: readonly {
-      readonly vertexFormat: 'float32x3';
-      readonly vertexCount: number;
-      readonly index?: { readonly format: GPUIndexFormat; readonly count: number } | undefined;
-    }[];
-    readonly preference?: 'fast-trace' | 'fast-build' | undefined;
-    readonly updateMode?: 'rebuild' | 'refit' | undefined;
-  };
+  readonly desc: BlasDescriptor;
   /**
    * Bootstrap records only: the last build observed before capture. Replay
    * rebuilds it from the geometry buffers' capture-start contents.
@@ -162,30 +153,25 @@ export interface RhiCallEventCreateBlas {
   readonly build?: Pick<RecordedBlasBuild, 'geometries'> | undefined;
 }
 
-export interface RhiCallEventCreateTlas {
+interface RhiCallEventCreateTlas {
   readonly kind: 'createTlas';
   readonly handleId: HandleId;
-  readonly desc: {
-    readonly label?: string | undefined;
-    readonly maxInstances: number;
-    readonly preference?: 'fast-trace' | 'fast-build' | undefined;
-    readonly updateMode?: 'rebuild' | 'refit' | undefined;
-  };
+  readonly desc: TlasDescriptor;
   /** Bootstrap records only: the last instance list built before capture. */
   readonly build?: Pick<RecordedTlasBuild, 'instances'> | undefined;
 }
 
-export interface RhiCallEventDestroyBlas {
+interface RhiCallEventDestroyBlas {
   readonly kind: 'destroyBlas';
   readonly handleId: HandleId;
 }
 
-export interface RhiCallEventDestroyTlas {
+interface RhiCallEventDestroyTlas {
   readonly kind: 'destroyTlas';
   readonly handleId: HandleId;
 }
 
-export interface RhiCallEventCreateTextureView {
+interface RhiCallEventCreateTextureView {
   readonly kind: 'createTextureView';
   readonly sourceHandleId: HandleId;
   readonly resultHandleId: HandleId;
@@ -201,20 +187,20 @@ export interface RhiCallEventCreateTextureView {
   };
 }
 
-export interface RhiCallEventCreateSampler {
+interface RhiCallEventCreateSampler {
   readonly kind: 'createSampler';
   readonly handleId: HandleId;
   readonly desc?: Partial<GPUSamplerDescriptor> | undefined;
 }
 
-export interface RhiCallEventGetBindGroupLayout {
+interface RhiCallEventGetBindGroupLayout {
   readonly kind: 'getBindGroupLayout';
   readonly handleId: HandleId;
   readonly pipelineHandleId: HandleId;
   readonly index: number;
 }
 
-export interface RhiCallEventCreateBindGroupLayout {
+interface RhiCallEventCreateBindGroupLayout {
   readonly kind: 'createBindGroupLayout';
   readonly handleId: HandleId;
   readonly desc: {
@@ -240,7 +226,7 @@ export type RhiBindResourceKind =
   | 'externalTexture'
   | 'accelerationStructure';
 
-export interface RhiCallEventCreateBindGroup {
+interface RhiCallEventCreateBindGroup {
   readonly kind: 'createBindGroup';
   readonly handleId: HandleId;
   readonly layoutHandleId: HandleId;
@@ -258,13 +244,13 @@ export interface RhiCallEventCreateBindGroup {
   readonly resourceHandleIds: readonly HandleId[];
 }
 
-export interface RhiCallEventCreatePipelineLayout {
+interface RhiCallEventCreatePipelineLayout {
   readonly kind: 'createPipelineLayout';
   readonly handleId: HandleId;
   readonly bglHandleIds: readonly HandleId[];
 }
 
-export interface RhiCallEventCreateRenderPipeline {
+interface RhiCallEventCreateRenderPipeline {
   readonly kind: 'createRenderPipeline';
   readonly handleId: HandleId;
   readonly desc: {
@@ -292,7 +278,7 @@ export interface RhiCallEventCreateRenderPipeline {
   readonly fragmentShaderModuleHandleId?: HandleId | undefined;
 }
 
-export interface RhiCallEventCreateComputePipeline {
+interface RhiCallEventCreateComputePipeline {
   readonly kind: 'createComputePipeline';
   readonly handleId: HandleId;
   readonly desc: {
@@ -304,13 +290,13 @@ export interface RhiCallEventCreateComputePipeline {
   readonly computeShaderModuleHandleId?: HandleId | undefined;
 }
 
-export interface RhiCallEventCreateShaderModule {
+interface RhiCallEventCreateShaderModule {
   readonly kind: 'createShaderModule';
   readonly handleId: HandleId;
   readonly wgslCode: string;
 }
 
-export interface RhiCallEventCreateCommandEncoder {
+interface RhiCallEventCreateCommandEncoder {
   readonly kind: 'createCommandEncoder';
   readonly cmdHandleId: HandleId;
   readonly desc?: Partial<GPUCommandEncoderDescriptor> | undefined;
@@ -343,7 +329,7 @@ export interface RhiCallEventWriteTexture {
   readonly size: GPUExtent3DStrict;
 }
 
-export interface RhiCallEventCopyExternalImageToTexture {
+interface RhiCallEventCopyExternalImageToTexture {
   readonly kind: 'copyExternalImageToTexture';
   readonly source: {
     readonly origin?: GPUOrigin2DStrict | undefined;
@@ -360,7 +346,7 @@ export interface RhiCallEventCopyExternalImageToTexture {
   readonly copySize: GPUExtent3DStrict;
 }
 
-export interface RhiCallEventSubmit {
+interface RhiCallEventSubmit {
   readonly kind: 'submit';
   readonly cmdHandleIds: readonly HandleId[];
 }
@@ -405,7 +391,7 @@ export interface RhiCallEventBeginRenderPass {
   readonly timestampQuerySetHandleId?: HandleId | undefined;
 }
 
-export interface RhiCallEventBeginComputePass {
+interface RhiCallEventBeginComputePass {
   readonly kind: 'beginComputePass';
   readonly timestampQuerySetHandleId?: HandleId | undefined;
   readonly cmdHandleId: HandleId;
@@ -427,7 +413,7 @@ export interface RhiCallEventCopyBufferToBuffer {
   readonly size: number;
 }
 
-export interface RhiCallEventCopyBufferToTexture {
+interface RhiCallEventCopyBufferToTexture {
   readonly kind: 'copyBufferToTexture';
   readonly cmdHandleId: HandleId;
   readonly source: Omit<GPUTexelCopyBufferInfo, 'buffer'> & { readonly bufferHandleId: HandleId };
@@ -437,7 +423,7 @@ export interface RhiCallEventCopyBufferToTexture {
   readonly copySize: GPUExtent3DStrict;
 }
 
-export interface RhiCallEventCopyTextureToBuffer {
+interface RhiCallEventCopyTextureToBuffer {
   readonly kind: 'copyTextureToBuffer';
   readonly cmdHandleId: HandleId;
   readonly source: Omit<GPUTexelCopyTextureInfo, 'texture'> & {
@@ -449,7 +435,7 @@ export interface RhiCallEventCopyTextureToBuffer {
   readonly copySize: GPUExtent3DStrict;
 }
 
-export interface RhiCallEventCopyTextureToTexture {
+interface RhiCallEventCopyTextureToTexture {
   readonly kind: 'copyTextureToTexture';
   readonly cmdHandleId: HandleId;
   readonly source: Omit<GPUTexelCopyTextureInfo, 'texture'> & {
@@ -469,7 +455,7 @@ export interface RhiCallEventClearBuffer {
   readonly size?: number | undefined;
 }
 
-export interface RhiCallEventResolveQuerySet {
+interface RhiCallEventResolveQuerySet {
   readonly kind: 'resolveQuerySet';
   readonly cmdHandleId: HandleId;
   readonly querySetHandleId: HandleId;
@@ -479,7 +465,7 @@ export interface RhiCallEventResolveQuerySet {
   readonly destinationOffset: number;
 }
 
-export interface RhiCallEventBuildAccelerationStructures {
+interface RhiCallEventBuildAccelerationStructures {
   readonly kind: 'buildAccelerationStructures';
   readonly cmdHandleId: HandleId;
   readonly blas: readonly RecordedBlasBuild[];
@@ -492,7 +478,7 @@ export interface RhiCallEventPushDebugGroup {
   readonly groupLabel: string;
 }
 
-export interface RhiCallEventPopDebugGroup {
+interface RhiCallEventPopDebugGroup {
   readonly kind: 'popDebugGroup';
   readonly cmdHandleId: HandleId;
 }
@@ -503,7 +489,7 @@ export interface RhiCallEventInsertDebugMarker {
   readonly markerLabel: string;
 }
 
-export interface RhiCallEventFinish {
+interface RhiCallEventFinish {
   readonly kind: 'finish';
   readonly cmdHandleId: HandleId;
 }
@@ -516,7 +502,7 @@ export interface RhiCallEventSetPipeline {
   readonly pipelineHandleId: HandleId;
 }
 
-export interface RhiCallEventSetVertexBuffer {
+interface RhiCallEventSetVertexBuffer {
   readonly kind: 'setVertexBuffer';
   readonly passHandleId: HandleId;
   readonly slot: number;
@@ -525,7 +511,7 @@ export interface RhiCallEventSetVertexBuffer {
   readonly size?: number | undefined;
 }
 
-export interface RhiCallEventSetIndexBuffer {
+interface RhiCallEventSetIndexBuffer {
   readonly kind: 'setIndexBuffer';
   readonly passHandleId: HandleId;
   readonly bufferHandleId: HandleId;
@@ -581,30 +567,30 @@ export interface RhiCallEventSetScissorRect {
   readonly h: number;
 }
 
-export interface RhiCallEventSetStencilReference {
+interface RhiCallEventSetStencilReference {
   readonly kind: 'setStencilReference';
   readonly passHandleId: HandleId;
   readonly reference: number;
 }
 
 /** Native executeBundles state boundary; bundle commands are expanded in-place. */
-export interface RhiCallEventResetRenderState {
+interface RhiCallEventResetRenderState {
   readonly kind: 'resetRenderState';
   readonly passHandleId: HandleId;
 }
 
-export interface RhiCallEventEndRenderPass {
+interface RhiCallEventEndRenderPass {
   readonly kind: 'endRenderPass';
   readonly passHandleId: HandleId;
 }
 
-export interface RhiCallEventBeginOcclusionQuery {
+interface RhiCallEventBeginOcclusionQuery {
   readonly kind: 'beginOcclusionQuery';
   readonly passHandleId: HandleId;
   readonly queryIndex: number;
 }
 
-export interface RhiCallEventEndOcclusionQuery {
+interface RhiCallEventEndOcclusionQuery {
   readonly kind: 'endOcclusionQuery';
   readonly passHandleId: HandleId;
 }
@@ -635,7 +621,7 @@ export interface RhiCallEventPassPushDebugGroup {
   readonly groupLabel: string;
 }
 
-export interface RhiCallEventPassPopDebugGroup {
+interface RhiCallEventPassPopDebugGroup {
   readonly kind: 'passPopDebugGroup';
   readonly passHandleId: HandleId;
 }
@@ -648,13 +634,13 @@ export interface RhiCallEventPassInsertDebugMarker {
 
 // -- RhiComputePassEncoder operations --
 
-export interface RhiCallEventSetComputePipeline {
+interface RhiCallEventSetComputePipeline {
   readonly kind: 'setComputePipeline';
   readonly passHandleId: HandleId;
   readonly pipelineHandleId: HandleId;
 }
 
-export interface RhiCallEventDispatchWorkgroups {
+interface RhiCallEventDispatchWorkgroups {
   readonly kind: 'dispatchWorkgroups';
   readonly passHandleId: HandleId;
   readonly x: number;
@@ -662,14 +648,14 @@ export interface RhiCallEventDispatchWorkgroups {
   readonly z: number;
 }
 
-export interface RhiCallEventDispatchWorkgroupsIndirect {
+interface RhiCallEventDispatchWorkgroupsIndirect {
   readonly kind: 'dispatchWorkgroupsIndirect';
   readonly passHandleId: HandleId;
   readonly indirectBufferHandleId: HandleId;
   readonly indirectOffset: number;
 }
 
-export interface RhiCallEventEndComputePass {
+interface RhiCallEventEndComputePass {
   readonly kind: 'endComputePass';
   readonly passHandleId: HandleId;
 }
@@ -790,239 +776,6 @@ export interface Tape {
   readonly events: readonly RhiCallEvent[];
   readonly blobPool: ReadonlyMap<string, ArrayBuffer>;
 }
-
-// ============================================================================
-// InspectReport
-// ============================================================================
-
-/**
- * Information about a GPU binding group entry as seen at inspect time.
- */
-export interface InspectBindingEntry {
-  readonly groupIndex: number;
-  readonly entryIndex: number;
-  readonly handleId: HandleId;
-  readonly kind: 'buffer' | 'texture' | 'sampler' | 'textureView' | 'accelerationStructure';
-}
-
-/**
- * Information about the work item at the inspected workIndex.
- */
-export interface InspectDrawCall {
-  readonly pipelineKind: 'render' | 'compute';
-  readonly pipelineHandleId: HandleId;
-  readonly vertexCount?: number | undefined;
-  readonly instanceCount?: number | undefined;
-  readonly indexCount?: number | undefined;
-  readonly dispatchX?: number | undefined;
-  readonly dispatchY?: number | undefined;
-  readonly dispatchZ?: number | undefined;
-  /** Present on `draw` — the first vertex offset (raw event field carried through). */
-  readonly firstVertex?: number | undefined;
-  /** Present on `drawIndexed` — index of the first element of the index buffer to read. */
-  readonly firstIndex?: number | undefined;
-  /** Present on `draw` and `drawIndexed` — the first instance for instanced rendering. */
-  readonly firstInstance?: number | undefined;
-  /** Present on `drawIndexed` — vertex offset added before indexing the vertex buffer. */
-  readonly baseVertex?: number | undefined;
-  /** Present on `drawIndirect` / `drawIndexedIndirect` — handle of the buffer holding the parameters. */
-  readonly indirectBufferHandleId?: HandleId | undefined;
-  /** Present on `drawIndirect` / `drawIndexedIndirect` — byte offset into the indirect buffer. */
-  readonly indirectOffset?: number | undefined;
-}
-
-/**
- * Pipeline state for a single draw call, extracted from createRenderPipeline +
- * runtime events (pure event analysis, zero GPU). The seven WebGPU pipeline
- * stages the viewer's PipelineState panel renders; attached to InspectReport so
- * an AI `inspect-offline` call sees identical data. SSOT producer:
- * `makePipelineState` in inspect-core.ts; whole-frame producer: buildFrameModel.
- */
-export interface DrawPipelineState {
-  readonly inputAssembly: {
-    readonly topology: GPUPrimitiveTopology;
-    readonly stripIndexFormat: GPUIndexFormat | undefined;
-  };
-  readonly vertexInput: {
-    readonly buffers: readonly {
-      readonly arrayStride: number;
-      readonly stepMode: GPUVertexStepMode;
-      readonly attributes: readonly {
-        readonly format: GPUVertexFormat;
-        readonly offset: number;
-        readonly shaderLocation: number;
-      }[];
-    }[];
-  };
-  readonly shaders: {
-    readonly vertexShaderModuleHandleId: HandleId | undefined;
-    readonly fragmentShaderModuleHandleId: HandleId | undefined;
-    /** Active vertex entry point (a module may bundle several; this is the one this draw runs). */
-    readonly vertexEntryPoint: string | undefined;
-    /** Active fragment entry point — disambiguates a multi-entrypoint module (e.g. fs_main vs fs_gbuffer). */
-    readonly fragmentEntryPoint: string | undefined;
-  };
-  readonly rasterizer: {
-    readonly cullMode: GPUCullMode;
-    readonly frontFace: GPUFrontFace;
-  };
-  readonly depthStencil: {
-    readonly format: GPUTextureFormat;
-    readonly depthWriteEnabled: boolean;
-    readonly depthCompare: GPUCompareFunction;
-    readonly stencilFront: NonNullable<GPUDepthStencilState['stencilFront']>;
-    readonly stencilBack: NonNullable<GPUDepthStencilState['stencilBack']>;
-    readonly stencilReadMask: number;
-    readonly stencilWriteMask: number;
-    readonly depthBias: number;
-    readonly depthBiasSlopeScale: number;
-    readonly depthBiasClamp: number;
-    readonly stencilReference: number;
-  };
-  readonly blend: {
-    readonly colorTargets: readonly {
-      readonly format: GPUTextureFormat;
-      readonly color: GPUBlendComponent | undefined;
-      readonly alpha: GPUBlendComponent | undefined;
-      readonly writeMask: GPUColorWriteFlags;
-    }[];
-    readonly blendConstant: GPUColor | undefined;
-  };
-  readonly multisample: {
-    readonly count: number;
-    readonly mask: number;
-    readonly alphaToCoverageEnabled: boolean;
-  };
-}
-
-/**
- * A resource descriptor parsed from a create* event, discriminated by kind.
- * Consumed by the viewer's ResourceInspector panel and the cli `summary`
- * subcommand (via the FrameModel.resources map). SSOT producer: `buildResources`
- * in inspect-core.ts.
- */
-export type CreateDescriptor =
-  | {
-      readonly kind: 'createBuffer';
-      readonly handleId: HandleId;
-      readonly size: GPUSize64;
-      readonly usage: GPUBufferUsageFlags;
-    }
-  | {
-      readonly kind: 'createTexture';
-      readonly handleId: HandleId;
-      readonly format: GPUTextureFormat;
-      readonly size: readonly number[];
-      readonly mipLevelCount: number;
-      readonly sampleCount: number;
-      readonly dimension: GPUTextureDimension;
-      readonly usage: GPUTextureUsageFlags;
-    }
-  | {
-      readonly kind: 'createSampler';
-      readonly handleId: HandleId;
-      readonly desc: Partial<GPUSamplerDescriptor> | undefined;
-    }
-  | {
-      readonly kind: 'createBindGroupLayout';
-      readonly handleId: HandleId;
-      readonly entries: readonly GPUBindGroupLayoutEntry[];
-    }
-  | {
-      readonly kind: 'createPipelineLayout';
-      readonly handleId: HandleId;
-      readonly bglHandleIds: readonly HandleId[];
-    }
-  | {
-      readonly kind: 'createRenderPipeline';
-      readonly handleId: HandleId;
-      readonly vertex: GPUVertexState | undefined;
-      readonly primitive: GPUPrimitiveState | undefined;
-      readonly depthStencil: GPUDepthStencilState | undefined;
-      readonly multisample: GPUMultisampleState | undefined;
-      readonly fragment: GPUFragmentState | undefined;
-      readonly layoutHandleId: HandleId;
-      readonly vertexShaderModuleHandleId: HandleId | undefined;
-      readonly fragmentShaderModuleHandleId: HandleId | undefined;
-    }
-  | { readonly kind: 'createShaderModule'; readonly handleId: HandleId; readonly wgslCode: string };
-
-/**
- * Decoded RGBA8 pixels of the RT readback at the inspected draw call — the
- * structured RT payload produced by the node-free browser path (L3b
- * `inspectDrawJson`). `format` describes the native replay texels, so callers
- * can decode wide and floating-point attachments correctly. `pixels` are
- * tight-packed with row-alignment padding stripped.
- */
-export interface InspectRtPixels {
-  readonly width: number;
-  readonly height: number;
-  readonly format: string;
-  readonly pixels: Uint8Array;
-}
-
-/**
- * The RT readback at the inspected draw call, in one of two genuinely
- * distinct forms keyed by execution environment:
- *
- * - `string` — a PNG **file path** on disk, produced by the DevKit Node shell
- *   after `rhi.inspect`, which encodes the readback to a PNG under the
- *   inspect/ output dir. Discriminate with `typeof rt === 'string'`.
- * - {@link InspectRtPixels} — the native `{ width, height, format, pixels }` tuple,
- *   produced by the node-free browser path (`inspectDrawJson`), which cannot
- *   write files and so hands back raw RGBA8 pixels. Discriminate with
- *   `typeof rt === 'object'` (or `'pixels' in rt`).
- *
- * AI users branch on `typeof` — the union is the single source of truth for
- * "what an `rt` field may hold", so no untyped-value cast is needed at either
- * producer.
- */
-export type InspectRtPayload = string | InspectRtPixels;
-
-/**
- * Structured report produced by inspectWork(replay, workIndex, fields?).
- *
- * frameIdx/workIndex/passIdx are **always present** — they identify the inspected
- * draw and are computed regardless of the `fields` selector.
- *
- * bindings/drawCall/rt are **field-cropped**: each is present only when the
- * `fields` selector includes its name, or when `fields` is undefined (full
- * report). When a field is not requested it is genuinely absent (the key is not
- * set), not assigned `undefined` (AC-12). AI users must narrow before reading
- * (`report.drawCall?.pipelineKind`, `if (report.bindings) …`).
- *
- * frameIdx: the frame index containing this draw call.
- * workIndex: the global work ordinal within the tape.
- * passIdx: the render/compute pass index containing this draw.
- * bindings: the bind group bindings active at this draw call (cropped: present
- *     when fields includes 'bindings' or is undefined).
- * drawCall: metadata about the draw/dispatch call itself (cropped: present when
- *     fields includes 'drawCall' or is undefined).
- * rt: the RT readback ({@link InspectRtPayload}) — a PNG file path string on
- *     the Node CLI path, or a decoded {width,height,pixels} object on the
- *     browser path. Cropped: present when fields includes 'rt' or is undefined
- *     (full report).
- * pipelineState: the seven WebGPU pipeline stages active at this draw
- *     ({@link DrawPipelineState}), derived from pure event analysis. Always
- *     present for render draws (never gated by `fields`); the AI sees the same
- *     pipeline state the viewer's PipelineState panel renders.
- */
-export interface InspectReport {
-  readonly frameIdx: number;
-  readonly workIndex: number;
-  readonly passIdx: number;
-  readonly bindings?: readonly InspectBindingEntry[] | undefined;
-  readonly drawCall?: InspectDrawCall | undefined;
-  readonly rt?: InspectRtPayload | undefined;
-  readonly pipelineState?: DrawPipelineState | undefined;
-}
-
-/**
- * Fields selector for inspectWork — controls which data is computed and returned.
- * An empty array means "minimum report" (frameIdx/workIndex/passIdx only).
- * undefined means "full report" (all fields including RT PNG).
- */
-export type InspectFields = 'bindings' | 'drawCall' | 'rt';
 
 /**
  * RHI commands that are known to be out-of-scope for current capture.

@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // fxaa-zero-overhead.dawn.test.ts - feat-20260528-fxaa-post-processing / M3 / w14.
 // Dawn integration test: render hello-cube scene with antialias='none' (default),
@@ -9,7 +11,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Follows the user-handle-mesh-render.dawn.test.ts pattern for canvas mock,
 // device capture, and pixel readback.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { ANTIALIAS_NONE, Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -128,7 +129,12 @@ describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel t
           scale: [1, 1, 1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: {} },
     );
     world.spawn(

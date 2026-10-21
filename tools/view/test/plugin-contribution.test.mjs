@@ -79,6 +79,7 @@ describe('forgeax-view package contribution', () => {
       `${VIEW_PAGE_TYPES.plugins}:plugins`,
       `${VIEW_PAGE_TYPES.material}:material-preview`,
       `${VIEW_PAGE_TYPES.material}:material-properties`,
+      `${VIEW_PAGE_TYPES.material}:material-stats`,
       `${VIEW_PAGE_TYPES.mesh}:mesh-preview`,
       `${VIEW_PAGE_TYPES.mesh}:mesh-properties`,
       `${VIEW_PAGE_TYPES.texture}:texture-preview`,
@@ -95,6 +96,9 @@ describe('forgeax-view package contribution', () => {
     assert.equal(pageTypes.get(VIEW_PAGE_TYPES.asset).priority, 0);
     assert.equal(pageTypes.get(VIEW_PAGE_TYPES.scene).priority, 10);
     const materialPreview = claims.find((claim) => claim.id === 'material-preview');
+    const materialStats = claims.find((claim) => claim.id === 'material-stats');
+    assert.equal(materialStats.closable, true);
+    assert.deepEqual(materialStats.layout, { dock: 'bottom', size: { value: 200, unit: 'px' }, stack: 'tabs', order: 2 });
     assert.deepEqual(materialPreview.props.owner, {
       panelId: 'material-preview',
       pageType: VIEW_PAGE_TYPES.material,

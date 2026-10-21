@@ -1,4 +1,5 @@
 import * as SceneOwner from '@forgeax/engine-scene';
+import { testAssets } from './helpers/runtime-assets';
 
 // feat-20260707-engine-world-clone-transient-for-editor-ssot M1 / m1t4:
 // AC-05 roundtrip regression test (red-first — falsification anchor).
@@ -12,10 +13,8 @@ import * as SceneOwner from '@forgeax/engine-scene';
 //   (b) Each child's ChildOf.parent points back (bijective check).
 //   (c) Degenerate: zero parent-child scene round-trips correctly.
 
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { componentDefinition, World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   ChildOf,
   Children,
@@ -23,10 +22,9 @@ import {
   propagateTransforms,
   Transform,
 } from '@forgeax/engine-scene';
-import type { LocalEntityId, SceneAsset } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { rootsToSceneAsset } from '../collect-scene-asset';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 import { registerSceneComponents } from './helpers/register-scene-components';
 
 // Read the resolved world mat4 (column-major 16 floats) from the Transform
@@ -35,17 +33,9 @@ function worldOf(world: World, entity: EntityHandle): Float32Array {
   return world.get(entity, GlobalTransform).unwrap().world;
 }
 
-function makeRegistry(): AssetRegistry {
-  return new AssetRegistry(makeMockShaderRegistry());
-}
-
-function _localId(n: number): LocalEntityId {
-  return n as LocalEntityId;
-}
-
 // biome-ignore lint/suspicious/noExplicitAny: branded Handle type mismatch
 function registerSceneAsset(world: World, asset: SceneAsset): any {
-  return world.allocSharedRef('SceneAsset', asset);
+  return testAssets(world).create(asset).unwrap();
 }
 
 describe('m1t4 — AC-05 roundtrip regression (red-first)', () => {
@@ -64,9 +54,7 @@ describe('m1t4 — AC-05 roundtrip regression (red-first)', () => {
 
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -80,11 +68,9 @@ describe('m1t4 — AC-05 roundtrip regression (red-first)', () => {
     // Round-trip to a fresh world.
     const world2 = new World();
     registerSceneComponents(world2);
-    const reg2 = makeRegistry();
-    const sg2 = AssetGuid.parse('11111111-1111-1111-1111-111111111111');
-    if (sg2.ok) reg2.catalog(sg2.value, collected.value);
+    testAssets(world2);
     // biome-ignore lint/suspicious/noExplicitAny: branded Handle type mismatch
-    const h2 = world2.allocSharedRef('SceneAsset', collected.value) as any;
+    const h2 = testAssets(world2).create(collected.value).unwrap() as any;
     const inst2 = SceneOwner.worldInstantiateScene(world2, h2);
     expect(inst2.ok).toBe(true);
     if (!inst2.ok) return;
@@ -133,9 +119,7 @@ describe('m1t4 — AC-05 roundtrip regression (red-first)', () => {
 
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -148,17 +132,15 @@ describe('m1t4 — AC-05 roundtrip regression (red-first)', () => {
     // Round-trip through a second world.
     const world2 = new World();
     registerSceneComponents(world2);
-    const reg2 = makeRegistry();
-    const sg2 = AssetGuid.parse('11111111-1111-1111-1111-111111111111');
-    if (sg2.ok) reg2.catalog(sg2.value, collected.value);
+    testAssets(world2);
     // biome-ignore lint/suspicious/noExplicitAny: branded Handle type mismatch
-    const h2 = world2.allocSharedRef('SceneAsset', collected.value) as any;
+    const h2 = testAssets(world2).create(collected.value).unwrap() as any;
     const inst2 = SceneOwner.worldInstantiateScene(world2, h2);
     expect(inst2.ok).toBe(true);
     if (!inst2.ok) return;
 
     // Second collect also works.
-    const collected2 = rootsToSceneAsset(reg2, world2, [inst2.value.root]);
+    const collected2 = rootsToSceneAsset(testAssets(world2), world2, [inst2.value.root]);
     expect(collected2.ok).toBe(true);
   });
 });
@@ -172,10 +154,6 @@ describe('m1t4 — AC-05 roundtrip regression (red-first)', () => {
 // world produced. The transient world column is reconstructed by propagate from
 // the persisted local TRS -- proving skipping it loses nothing.
 describe('w1 — AC-04 transient world roundtrip numeric equivalence', () => {
-  function _localId2(n: number): LocalEntityId {
-    return n as LocalEntityId;
-  }
-
   it('world mat4 after roundtrip+propagate equals source within tolerance', () => {
     // Non-identity local TRS so the world mat4 is a real, distinguishable value.
     const asset: SceneAsset = {
@@ -195,9 +173,7 @@ describe('w1 — AC-04 transient world roundtrip numeric equivalence', () => {
 
     const world = new World();
     registerSceneComponents(world);
-    const reg = makeRegistry();
-    const sg = AssetGuid.parse('00000000-0000-0000-0000-000000000000');
-    if (sg.ok) reg.catalog(sg.value, asset);
+    const reg = testAssets(world);
     const handle = registerSceneAsset(world, asset);
     const res = SceneOwner.worldInstantiateScene(world, handle);
     expect(res.ok).toBe(true);
@@ -221,11 +197,9 @@ describe('w1 — AC-04 transient world roundtrip numeric equivalence', () => {
     // Round-trip into a fresh world.
     const world2 = new World();
     registerSceneComponents(world2);
-    const reg2 = makeRegistry();
-    const sg2 = AssetGuid.parse('11111111-1111-1111-1111-111111111111');
-    if (sg2.ok) reg2.catalog(sg2.value, collected.value);
+    testAssets(world2);
     // biome-ignore lint/suspicious/noExplicitAny: branded Handle type mismatch
-    const h2 = world2.allocSharedRef('SceneAsset', collected.value) as any;
+    const h2 = testAssets(world2).create(collected.value).unwrap() as any;
     const inst2 = SceneOwner.worldInstantiateScene(world2, h2);
     expect(inst2.ok).toBe(true);
     if (!inst2.ok) return;

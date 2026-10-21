@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "composite": false,
+    "rootDir": "../.."
+  },
+  "exclude": [],
+  "references": [
+    { "path": "../assets-runtime" },
+    { "path": "../import" },
+    { "path": "../math" },
+    { "path": "../pack" },
+    { "path": "../types" },
+    { "path": "../skinning" },
+    { "path": "../animation" },
+    { "path": "../picking" }
+  ]
+}

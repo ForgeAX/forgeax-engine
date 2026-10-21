@@ -5,6 +5,13 @@ NavMesh queries, local avoidance and ECS following. `@forgeax/engine/import/navi
 produces navigation assets outside the player. Physical characters consume the
 existing PhysicsWorld; World owns their state and fixed time.
 
+`navigationMeshContribution` owns both source decoding and synchronous runtime
+admission. Engine installs it automatically; a standalone `AssetRegistry` installs
+its decoder before `create`, `update` or `replace`. These operations reject invalid
+settings, indices, non-convex/self-intersecting polygons and non-manifold edges
+before committing. Admission is bounded by vertex/polygon count and builds no BVH;
+`createNavigationMesh` reuses the same validator before constructing its query.
+
 ```mermaid
 flowchart LR
     Geometry["Indexed Mesh / world placement / agent settings"] --> Bake["Build-time Recast producer"]
@@ -40,23 +47,24 @@ if (!result.ok) throw result.error;
 |:--|:--|
 | `bakeNavigationMesh` | Conservative voxel rounding: radius/height round up; climb rounds down. Indexed positions support Float32Array or aligned ArrayBuffer. Negative-determinant placements reverse winding. Hard triangle, cell, vertical-span and raster-work limits precede native allocation. Native intermediates are released. |
 | `NavigationMeshAsset` | Portable JSON polygons, vertices, settings, version and sourceDigest; ordinary output producer and default asset loader. Recast/WASM stays in the explicit build-time subpath. |
-| `createNavigationMesh(asset)` | Copies and validates finite bounded convex polygon topology, constructs a realm-local BVH and reusable graph workspace. Pass the POD asset to another Worker and construct there. |
+| `createNavigationMesh(asset)` | Copies and validates finite bounded convex polygon topology, constructs a fixed realm-local BVH and reusable graph workspace. Later asset edits do not change this explicit query snapshot. Pass the POD asset to another Worker and construct there. |
 | `mesh.project(point, maxDistance, maxPolygons?)` | Euclidean XYZ projection with an explicit distance limit and bounded BVH work; layers remain distinct. |
 | `mesh.ground(point, maxHeight, maxPolygons?)` | Vertical sampling at the exact XZ, including slopes. A missing column is a projection failure. |
 | `mesh.findPath(start, goal, { maxProjection, maxVisited?, maxPolygons? })` | Bounded polygon-graph route and XZ string pulling within its selected corridor. Points and polygon roster are owned outputs. No partial success; no global continuous shortest-path promise. |
-| `navigationCharacterPlugin(mesh, avoidanceOptions?)` | Installs Scene/navigation and physics component vocabulary, contributes one active mesh resource and one physical motor. Install `physicsPlugin('rapier-3d')` independently. |
-| `setNavigationTarget(world, entity, feetTarget, options)` | Synchronous world-space query and assignment; reads propagated pose. Failed assignment retains the old route. Feet targets and speed use world units. |
-| `setNavigationMesh(world, mesh)` | Replaces the active surface; a changed digest cancels old routes on the next ready fixed step. Explicitly retarget afterward. |
+| `navigationCharacterPlugin(handle, avoidanceOptions?)` | Holds one managed `AssetHandle<'navigation-mesh'>` from `world.assets`, installs Scene/navigation and physics vocabulary, and contributes one physical motor. Install `physicsPlugin('rapier-3d')` independently. |
+| `setNavigationTarget(world, entity, feetTarget, options)` | Synchronously adopts the current asset, validates capsule clearance, and queries from propagated pose. Failed assignment retains the old route. Feet targets and speed use world units; queries do not require Physics to be ready. |
+| `setNavigationMesh(world, handle)` | Returns a `Result` after preparing and replacing the installed plugin's active binding. Wrong-owner, stale or invalid references preserve the previous binding. Old routes cancel before their next motor execution; explicitly retarget afterward. |
 
 ```ts
-import { createNavigationMesh, NavigationCharacter, NavigationAgent,
+import { NavigationCharacter, NavigationAgent,
   navigationCharacterPlugin, setNavigationTarget } from '@forgeax/engine/navigation';
 import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue,
   physicsPlugin } from '@forgeax/engine/physics';
 import { Transform } from '@forgeax/engine/scene';
-const mesh = createNavigationMesh(loadedNavigationAsset).unwrap();
+const mesh = (await app.assets.load(navigationGuid, 'navigation-mesh')).unwrap();
 await app.pluginContext.plugin(physicsPlugin('rapier-3d'));
 await app.pluginContext.plugin(navigationCharacterPlugin(mesh));
+app.assets.release(mesh).unwrap(); // The plugin holds its own reference.
 const actor = app.world.spawn(
   { component: NavigationCharacter, data: {} },
   { component: NavigationAgent, data: { speed: 1.5 } },
@@ -72,13 +80,28 @@ Ordinary SceneAssets can author the same components. Install the companion befor
 instantiation. `bench/delivery.mjs` exercises real HTTP Pack/index loading, two
 independent cold Registries/Worlds and a parameter rebuild with the same GUIDs.
 
+Code-created navigation uses the same reference: install `navigationMeshContribution`
+on a standalone `AssetRegistry`, then call `assets.create(navigationAsset)`.
+`assets.update` / `replace` automatically revise the accepted polygon/settings content.
+The next actual target query or fixed motor step checks only the active asset's
+revision and synchronously prepares one complete BVH/graph when it changes. This is bounded
+structural preparation (at most 262,144 vertices and 131,072 polygons), not a range-edit or
+incremental Recast capability. Unconsumed edits coalesce; unchanged steps and edits
+to unrelated assets do not copy navigation content or rebuild its query structure.
+No asset write visits characters. Existing motor work compares each route's transient
+`surfaceVersion` with the accepted asset identity/revision, even when `sourceDigest`
+is unchanged, and cancels stale routes before motion. Reduced clearance cancels old
+routes without faulting idle characters; incompatible new target assignments fail.
+Replacing the binding transfers its hold atomically, and plugin disposal releases
+the final active reference. Import/Cook still owns regeneration from source geometry.
+
 | Physical invariant | Behavior |
 |:--|:--|
 | Shape and scale | Upright nonsensor kinematic capsule only. Radius/height derive from Collider and propagated world scale; yaw and a nonuniform parent are supported. Reject tilt, shear, singular scale and clearance/KCC settings that cannot cover the baked constraints. Bake radius must include KCC offset plus the 1 mm steering boundary tolerance. |
 | Fixed ordering | Scene propagation → physicsSyncBackend → navigation/character → physicsStepSimulation → writeback. Missing PhysicsWorld/body waits. Only moveAndSlide writes the actor position; the point follower excludes CharacterController entities. |
 | Motion | Bounded spatial hash, nearest neighbors, 50 speed candidates, stable entity ties and candidate ground admission. The sampling solver uses cooperative preferred velocity and imminent actual velocity; it is not an ORCA guarantee. Saturated neighborhoods stop. |
 | Feedback | `NavigationCharacter.desired`/`actual` retain displacement from the latest fixed step. Feet pose advances corners and proves final arrival. Gravity and contact tuning use the physics owner. |
-| Lifecycle | `idle` pauses; `following` resumes. Empty setNavigationPath cancels. Nonempty setNavigationPath rejects physical controllers; use setNavigationTarget. Changed source digest invalidates routes; stale entities fail synchronously. |
+| Lifecycle | `idle` pauses; `following` resumes. Empty setNavigationPath cancels. Nonempty setNavigationPath rejects physical controllers; use setNavigationTarget. Changed asset identity/revision invalidates routes at the next ready motor step; missing Physics/body retains that pending cancellation. Stale entities fail synchronously. |
 | Stalled motion | After `stuckSeconds` without improving the current corner distance, at most two bounded corridor repairs run (512 visited/projection polygons each). Continued failure becomes `blocked`; sideways oscillation does not reset progress. Explicit retarget resets the budget. No per-frame search loop. |
 
 A local sampler may stop in congested narrow counterflow; callers must observe

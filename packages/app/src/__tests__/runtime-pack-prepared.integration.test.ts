@@ -1,11 +1,11 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { prepareRuntimePackContent } from '@forgeax/engine-import';
 import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import type { PluginPrograms } from '@forgeax/engine-plugin';
-import type { MeshAsset, PackageFetcher, PackV2 } from '@forgeax/engine-types';
+import type { PackageFetcher, PackV2 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 
 function defined<T>(value: T | undefined): T {
@@ -17,7 +17,7 @@ import { createAssetRuntimeAssembly } from '../assets-runtime-assembly.js';
 import { assembleRuntimePacks } from '../runtime-packs.js';
 
 async function fixture(programs?: PluginPrograms) {
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: [] }),
   }).unwrap();
@@ -39,7 +39,8 @@ async function fixture(programs?: PluginPrograms) {
 
 it('loads native Mesh without transport, exports only on demand, and survives fresh-reader decode', async () => {
   const f = await fixture();
-  const other = new AssetRegistry({} as never);
+  const other = new AssetRegistry();
+  other.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
   try {
     const mesh = createBoxGeometry(2, 3, 4).unwrap();
     const content = (
@@ -64,12 +65,14 @@ it('loads native Mesh without transport, exports only on demand, and survives fr
     expect(receipt.publication).not.toHaveProperty('pack');
     mesh.vertices.fill(99);
     const guid = defined(receipt.rows[0]).guid;
-    const native = (await f.assets.loadByGuid<MeshAsset>(f.assets.parseGuid(guid))).unwrap();
+    const nativeHandle = (await f.assets.load(guid, 'mesh')).unwrap();
+    const native = f.assets.read(nativeHandle).unwrap();
     expect(read).not.toHaveBeenCalled();
     expect(native.vertices).toEqual(createBoxGeometry(2, 3, 4).unwrap().vertices);
-    expect((await f.assets.loadByGuid(f.assets.parseGuid(guid))).unwrap()).toBe(native);
+    expect((await f.assets.load(guid, 'mesh')).unwrap()).toBe(nativeHandle);
+    f.assets.release(nativeHandle).unwrap();
     other.setCatalogSource(source, f.runtime.fetcher);
-    const decoded = (await other.loadByGuid<MeshAsset>(other.parseGuid(guid))).unwrap();
+    const decoded = other.read((await other.load(guid, 'mesh')).unwrap()).unwrap();
     expect(read.mock.calls.length).toBeGreaterThanOrEqual(2);
     for (const key of [
       'vertices',
@@ -88,8 +91,8 @@ it('loads native Mesh without transport, exports only on demand, and survives fr
     ).text();
     expect(first).toBe(again);
     native.vertices.fill(55);
-    f.assets.invalidate(guid);
-    const reloaded = (await f.assets.loadByGuid<MeshAsset>(f.assets.parseGuid(guid))).unwrap();
+    (await f.assets.reload(nativeHandle, { conflict: 'reject' })).unwrap();
+    const reloaded = f.assets.read(nativeHandle).unwrap();
     expect(reloaded.vertices).toEqual(decoded.vertices);
   } finally {
     other.clearCatalogSource();
@@ -144,7 +147,7 @@ it('restores the provider when synchronous notification invalidates a candidate'
     expect(result.ok).toBe(false);
     expect(f.context.pluginPrograms).toBe(original);
     expect(f.runtime.producer.rows()).toEqual([]);
-    expect(f.assets.loadState.get('01900000-0000-7000-8000-000000000902')).toBeUndefined();
+    expect((await f.assets.enumerateCatalog()).unwrap()).toEqual([]);
     patched.mockRestore();
   } finally {
     await f.dispose();
@@ -157,7 +160,8 @@ it.each([
   { coherent: true, body: true },
 ])('validates native Mesh artifacts before visibility (%j)', async ({ coherent, body }) => {
   const f = await fixture();
-  const other = new AssetRegistry({} as never);
+  const other = new AssetRegistry();
+  other.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
   try {
     const mesh = createBoxGeometry(2, 3, 4).unwrap();
     if (!coherent) mesh.vertices[0] = (mesh.vertices[0] ?? 0) + 10;
@@ -207,7 +211,7 @@ it.each([
       ),
     ).toEqual(bytes);
     other.setCatalogSource(f.runtime.catalog, f.runtime.fetcher);
-    const restored = (await other.loadByGuid<MeshAsset>(other.parseGuid(row.guid))).unwrap();
+    const restored = other.read((await other.load(row.guid, 'mesh')).unwrap()).unwrap();
     expect(restored.vertices).toEqual(mesh.vertices);
   } finally {
     other.clearCatalogSource();

@@ -15,6 +15,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readReferencePng } from '../../../shared/png-codec.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 const lightweight = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1';
@@ -141,9 +145,7 @@ const {
   TONEMAP_ACES_FILMIC,
 } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
@@ -172,7 +174,12 @@ if (!constructed.ok) {
 const renderer = constructed.value.renderer;
 console.log(`[hello-standard-lighting] backend=${renderer.inspect().capabilities.backendKind}`);
 
-const world = new World();
+const world = new World({ assets: constructed.value.assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const attached = renderer.attach(world);
 if (!attached.ok) {
   originalConsoleError(`[smoke] FAIL - renderer.attach: ${attached.error.code} - ${attached.error.hint}`);
@@ -180,7 +187,7 @@ if (!attached.ok) {
 }
 const lease = attached.value;
 
-const matHandle = world.allocSharedRef('MaterialAsset', {
+const matHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -194,16 +201,16 @@ const matHandle = world.allocSharedRef('MaterialAsset', {
     metallic: 0.0,
     roughness: 0.6,
   },
-});
+}).unwrap();
 
 world.spawn(
   { component: Transform, data: { pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [6, 0.1, 6]} },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [matHandle] } },
 );
 world.spawn(
   { component: Transform, data: { pos: [0, 0.6, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [matHandle] } },
 );
 

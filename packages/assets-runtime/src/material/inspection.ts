@@ -1,4 +1,7 @@
-import { isStandardMaterialRecord, type MaterialCookProgram } from '@forgeax/engine-pack';
+import {
+  isStandardMaterialRecord,
+  type MaterialCookProgram,
+} from '@forgeax/engine-pack/material-cook';
 import type { MaterialSurfaceDeclaration, StandardLayerPlan } from '@forgeax/engine-types';
 import { deriveStandardLayerPlan } from '@forgeax/engine-types';
 import type { MaterialLoadError, MaterialReady } from './loader.js';

@@ -1,10 +1,12 @@
+import { vec3 } from '@forgeax/engine-math';
 import { type CompiledRenderGraphInfo, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { Buffer, RenderPipeline, RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS, GPU_SCENE_WGSL } from '../gpu-scene-schema';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 
 const BUFFER_USAGE_STORAGE = 0x0080;
@@ -18,6 +20,7 @@ ${GPU_SCENE_WGSL}
 @group(0) @binding(1) var<storage, read> transforms: array<GpuSceneTransform>;
 @group(0) @binding(2) var<storage, read_write> visibleIndices: array<u32>;
 @group(0) @binding(3) var<storage, read_write> drawArgs: array<atomic<u32>>;
+@group(0) @binding(4) var<uniform> sourceRows: vec4<u32>;
 
 @compute @workgroup_size(4)
 fn cull(
@@ -34,11 +37,11 @@ fn cull(
   workgroupBarrier();
 
   let index = globalId.x;
-  let primitive = primitives[index];
+  let primitive = primitives[sourceRows[index]];
   let translationX = transforms[primitive.transformIndex].currentWorld[3].x;
   if ((primitive.flags & 1u) != 0u && abs(translationX) <= 1.0) {
     let compacted = atomicAdd(&drawArgs[1], 1u);
-    visibleIndices[compacted] = index;
+    visibleIndices[compacted] = primitive.sourceIndex;
   }
 }
 `;
@@ -76,12 +79,13 @@ fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-const material = {
-  baseColor: new Float32Array([1, 1, 1]),
+const material = new MaterialResource({
+  baseColor: vec3.create(1, 1, 1),
+  passes: [],
   metallic: 0,
   roughness: 1,
   materialHandle: 1,
-} as MaterialSnapshot;
+});
 
 function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
   const world = new Float32Array(16);
@@ -149,6 +153,7 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
         { binding: 1, visibility: COMPUTE_VISIBILITY, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: COMPUTE_VISIBILITY, buffer: { type: 'storage' } },
         { binding: 3, visibility: COMPUTE_VISIBILITY, buffer: { type: 'storage' } },
+        { binding: 4, visibility: COMPUTE_VISIBILITY, buffer: { type: 'uniform' } },
       ],
     })
     .unwrap();
@@ -192,9 +197,32 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
     })
     .unwrap();
 
+  const sourceRowsBuffer = device
+    .createBuffer({ size: 16, usage: 0x0040 | GPU_BUFFER_USAGE_COPY_DST })
+    .unwrap();
+  device.queue
+    .writeBuffer(
+      sourceRowsBuffer,
+      0,
+      new Uint32Array(
+        projection.slotsSnapshot().map((slot) => {
+          const index = scene.primitiveIndexForSlot(slot.slot);
+          if (index === undefined) throw Error('missing live primitive');
+          return index;
+        }),
+      ),
+    )
+    .unwrap();
   const capacity = scene.inspect().capacity;
   const sceneUsage = BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | 0x0004;
   const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+  const sourceRows = graph
+    .importBuffer(
+      'gpu-scene-source-rows',
+      { size: 16, usage: 0x0040 | GPU_BUFFER_USAGE_COPY_DST },
+      () => sourceRowsBuffer,
+    )
+    .unwrap();
   const primitives = graph
     .importBuffer(
       'gpu-scene-primitives',
@@ -230,6 +258,7 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
     .addComputePass('gpu-scene-cull-compact-args', {
       accesses: [
         { resource: primitives, usage: 'storage-read' },
+        { resource: sourceRows, usage: 'uniform-read' },
         { resource: transforms, usage: 'storage-read' },
         { resource: visibleIndices, usage: 'storage-write' },
         { resource: drawArgs, usage: 'storage-write' },
@@ -243,6 +272,7 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
               { binding: 1, resource: bufferBinding(resources.buffer(transforms).unwrap()) },
               { binding: 2, resource: bufferBinding(resources.buffer(visibleIndices).unwrap()) },
               { binding: 3, resource: bufferBinding(resources.buffer(drawArgs).unwrap()) },
+              { binding: 4, resource: bufferBinding(resources.buffer(sourceRows).unwrap()) },
             ],
           })
           .unwrap();
@@ -317,6 +347,7 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
   const inspected = compiled.inspect();
   (await compiled.retire()).unwrap();
   scene.dispose();
+  device.destroyBuffer(sourceRowsBuffer).unwrap();
   device.destroyBuffer(readbackBuffer).unwrap();
   return { graph: inspected, pixels };
 }

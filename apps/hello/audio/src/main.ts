@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/hello/audio -- spacebar one-shot SFX + movable 3D listener + collision
 // cleanup demo
 // (feat-20260529-hello-audio-demo-with-spacebar-one-shot-sfx-playba / M3 / w15,
@@ -49,7 +50,7 @@ import {
 } from '@forgeax/engine-audio';
 import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { installAudioControls } from './audio-controls';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import {
   Collider,
   ColliderShapeValue,
@@ -62,8 +63,10 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { type AudioClipAsset, type Handle } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
@@ -91,7 +94,7 @@ const app: App = appRes.value;
 console.warn(`[hello-audio] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
 
-// Step 2: point AssetRegistry at the Vite-emitted catalog. `loadByGuid` owns
+// Step 2: point AssetRegistry at the Vite-emitted catalog. `assets.load` owns
 // both dev and build lookup plus Web Audio decoding; demos never inspect the
 // pack-index row or fetch the source URL themselves.
 const assets = app.assets;
@@ -99,6 +102,8 @@ if (assets === undefined) throw new Error('hello-audio: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
 
 const world = app.world;
+const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
 // Step 3: spawn the 3D scene.
 //   - Emitter: a marker cube at origin with AudioSource.
@@ -131,13 +136,13 @@ world
 
 // Sentry value: a Handle strong enough to compile when AudioSource.clip
 // is `handle<AudioClipAsset>` (branded number), yet semantically "none".
-const HANDLE_NONE = 0 as unknown as Handle<'AudioClipAsset', 'shared'>;
+const HANDLE_NONE = 0 as unknown as AssetHandle<'audio'>;
 
 // Emitter: marker cube at origin.
 const emitterEntity = world
   .spawn(
     { component: Transform, data: { pos: [0, 0, 0]} },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: {} },
     {
       component: AudioSource,
@@ -152,7 +157,7 @@ const emitterEntity = world
 world
   .spawn(
     { component: Transform, data: { pos: [0, -1, 0], scale: [8, 0.5, 8] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: {} },
     { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
     {
@@ -163,41 +168,42 @@ world
   .unwrap();
 
 // Step 2b: the same GUID -> payload path used by generic editor bindings.
-let sfxClipHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
-let m20StaleClipHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
-let m20CurrentClipHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
+let sfxClipHandle: AssetHandle<'audio'> = HANDLE_NONE;
+let m20StaleClipHandle: AssetHandle<'audio'> = HANDLE_NONE;
+let m20CurrentClipHandle: AssetHandle<'audio'> = HANDLE_NONE;
 let m20StaleSourceKey = '';
 let m20CurrentSourceKey = '';
 const sfxGuid = AssetGuid.parse(SFX_GUID);
 if (!sfxGuid.ok) {
   console.error('[hello-audio] invalid SFX GUID:', SFX_GUID);
 } else {
-  const loadRes = await assets.loadByGuid<AudioClipAsset>(sfxGuid.value);
+  const loadRes = await assets.load(sfxGuid.value, 'audio');
   if (loadRes.ok) {
-    if (loadRes.value.stream)
+    const clip = assets.read(loadRes.value).unwrap();
+    if (clip.stream)
       throw new Error('[hello-audio] stale-decode fixture requires a buffered short SFX');
-    sfxClipHandle = world.allocSharedRef('AudioClipAsset', loadRes.value);
+    sfxClipHandle = loadRes.value;
     world.set(emitterEntity, AudioSource, {
       clip: sfxClipHandle,
       playing: false,
       spatialBlend: 1.0,
       bus: 'sfx',
     });
-    m20StaleSourceKey = `${loadRes.value.sourceKey}:m20-stale-decode`;
-    m20StaleClipHandle = world.allocSharedRef('AudioClipAsset', {
-      ...loadRes.value,
+    m20StaleSourceKey = `${clip.sourceKey}:m20-stale-decode`;
+    m20StaleClipHandle = assets.create({
+      ...clip,
       sourceKey: m20StaleSourceKey,
-      bytes: loadRes.value.bytes.slice(),
-    });
-    m20CurrentSourceKey = `${loadRes.value.sourceKey}:m20-current-epoch`;
-    m20CurrentClipHandle = world.allocSharedRef('AudioClipAsset', {
-      ...loadRes.value,
+      bytes: clip.bytes.slice(),
+    }).unwrap();
+    m20CurrentSourceKey = `${clip.sourceKey}:m20-current-epoch`;
+    m20CurrentClipHandle = assets.create({
+      ...clip,
       sourceKey: m20CurrentSourceKey,
-      bytes: loadRes.value.bytes.slice(),
-    });
+      bytes: clip.bytes.slice(),
+    }).unwrap();
     console.warn('[hello-audio] SFX loaded and registered');
   } else {
-    console.error('[hello-audio] loadByGuid failed:', loadRes.error.code, loadRes.error.hint);
+    console.error('[hello-audio] load failed:', loadRes.error.code, loadRes.error.hint);
   }
 }
 
@@ -419,7 +425,7 @@ world
         collisionActor = world
           .spawn(
             { component: Transform, data: { pos: [0, 3, 0] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: primitiveCube } },
             { component: MeshRenderer, data: {} },
             {
               component: RigidBody,

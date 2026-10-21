@@ -1,4 +1,5 @@
-import { RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import {
   buildMeshCollision,
@@ -20,13 +21,15 @@ import { expect, test, vi } from 'vitest';
 test('G28: cooked mesh enters the ordinary ECS Collider and native solver', async () => {
   const rapier = await loadRapier3D();
   if ('code' in rapier) throw rapier;
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   world.components.register(Transform).unwrap();
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
   const cooked = buildMeshCollision(mesh).unwrap();
-  const handle = world.sharedRefs.alloc('MeshAsset', { ...mesh, collision: cooked });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create({ ...mesh, collision: cooked })
+    .unwrap();
   const ground = world
     .spawn(
       { component: Transform, data: {} },
@@ -58,7 +61,7 @@ test('G28: cooked mesh enters the ordinary ECS Collider and native solver', asyn
 async function fixture() {
   const rapier = await loadRapier3D();
   if ('code' in rapier) throw rapier;
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   world.components.register(Transform).unwrap();
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
@@ -69,10 +72,12 @@ async function fixture() {
 
 function cookedBox(world: World, x = 1, y = 1, z = 1) {
   const mesh = createBoxGeometry(x, y, z).unwrap();
-  return world.sharedRefs.alloc('MeshAsset', {
-    ...mesh,
-    collision: buildMeshCollision(mesh).unwrap(),
-  });
+  return runtimeAssetRegistry(world.assets)
+    .create({
+      ...mesh,
+      collision: buildMeshCollision(mesh).unwrap(),
+    })
+    .unwrap();
 }
 
 function nativeBody(physics: ReturnType<typeof createRapier3DPhysicsWorld>, entity: number) {
@@ -144,7 +149,7 @@ test('G28: convex hull is dynamic, updates without losing native momentum, and r
     expect(hull).toHaveBeenCalledTimes(2);
     world.set(entity, Transform, { scale: [-2, 1, 1] }).unwrap();
     sync();
-    expect(hull).toHaveBeenCalledTimes(3);
+    expect(hull).toHaveBeenCalledTimes(2);
   } finally {
     hull.mockRestore();
     physics.dispose();
@@ -183,9 +188,14 @@ test('G28: parent rotation does not recook a hull, cumulative scale edits still 
       propagateTransforms(world).unwrap();
       physics._syncFromEcs(world, Transform, GlobalTransform);
     }
-    expect(hull.mock.calls.length).toBeGreaterThan(1);
-    const points = hull.mock.calls.at(-1)?.[0];
-    if (!(points instanceof Float32Array)) throw new Error('missing native hull input');
+    physics.step(1 / 60);
+    expect(hull).toHaveBeenCalledTimes(1);
+    let collider: import('../../pkg/rapier.mjs').Collider | undefined;
+    physics.raw.forEachCollider((value: import('../../pkg/rapier.mjs').Collider) => {
+      collider = value;
+    });
+    const points = collider?.vertices();
+    if (!(points instanceof Float32Array)) throw new Error('missing native hull snapshot');
     expect(Math.max(...points)).toBeGreaterThan(1.000001);
   } finally {
     hull.mockRestore();
@@ -237,10 +247,12 @@ function concaveMesh() {
 test('G28: trimesh preserves a concave cavity, actual contact and fresh-backend recovery', async () => {
   const { world, physics, sync } = await fixture();
   const source = concaveMesh();
-  const mesh = world.sharedRefs.alloc('MeshAsset', {
-    ...source,
-    collision: buildMeshCollision(source).unwrap(),
-  });
+  const mesh = runtimeAssetRegistry(world.assets)
+    .create({
+      ...source,
+      collision: buildMeshCollision(source).unwrap(),
+    })
+    .unwrap();
   const ground = world
     .spawn(
       { component: Transform, data: {} },
@@ -314,9 +326,9 @@ test('G28: refused dynamic trimesh and failed native replacement retain the prio
   }
 });
 
-test('G28: uncooked and runtime-modified geometry fail before replacing a committed collider', async () => {
+test('G28: managed Mesh edits adopt the root without replacing a committed collider', async () => {
   const { world, physics, sync } = await fixture();
-  world.components.register(RuntimeMeshVertices).unwrap();
+  const assets = runtimeAssetRegistry(world.assets);
   const mesh = cookedBox(world);
   const entity = world
     .spawn(
@@ -328,17 +340,16 @@ test('G28: uncooked and runtime-modified geometry fail before replacing a commit
     sync();
     const body = nativeBody(physics, entity),
       before = body.collider(0).handle;
-    const source = createBoxGeometry(2, 2, 2).unwrap();
-    const edit = world
-      .spawn({ component: RuntimeMeshVertices, data: { asset: mesh, vertices: source.vertices } })
-      .unwrap();
-    expect(sync).toThrowError(expect.objectContaining({ code: 'invalid-body-config' }));
-    expect(body.collider(0).handle).toBe(before);
-    world.despawn(edit).unwrap();
+    const create = vi.spyOn(physics.raw, 'createCollider');
+    assets.replace(mesh, createBoxGeometry(2, 2, 2).unwrap()).unwrap();
     sync();
-    world.set(entity, Collider, { mesh: world.sharedRefs.alloc('MeshAsset', source) }).unwrap();
-    expect(sync).toThrowError(expect.objectContaining({ code: 'invalid-body-config' }));
+    physics.step(1 / 60);
+    expect(create).not.toHaveBeenCalled();
     expect(body.collider(0).handle).toBe(before);
+    expect(
+      physics.raycast(vec3.create(0.75, 3, 0), vec3.create(0, -1, 0), 5)?.point[1],
+    ).toBeCloseTo(1);
+    create.mockRestore();
   } finally {
     physics.dispose();
   }
@@ -406,10 +417,12 @@ test('G28: dynamic hull scale edits resize collision while native pose remains a
 test('G28: native hull admits planar source with its actual bounded footprint', async () => {
   const { world, physics, sync } = await fixture();
   const source = createPlaneGeometry(1, 1).unwrap();
-  const mesh = world.sharedRefs.alloc('MeshAsset', {
-    ...source,
-    collision: buildMeshCollision(source).unwrap(),
-  });
+  const mesh = runtimeAssetRegistry(world.assets)
+    .create({
+      ...source,
+      collision: buildMeshCollision(source).unwrap(),
+    })
+    .unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },

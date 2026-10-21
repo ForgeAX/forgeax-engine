@@ -7,7 +7,7 @@ describe('public VFX inspect snapshot', () => {
       layoutFingerprint: 'sha256:layout',
       parameterGeneration: 4,
       patchCount: 2,
-      dataInterfaces: { readiness: 'ready', generation: 4, requirements: ['vfx:camera'] },
+      dataInterfaces: { ok: true, value: { generation: 4, resources: [] } },
       channels: { impact: { capacity: 8, dropped: 1 } },
       stages: { readiness: 'ready', dependencies: ['update'] },
       renderers: { topology: 'ribbon', produced: 4, dropped: 0 },
@@ -18,7 +18,7 @@ describe('public VFX inspect snapshot', () => {
     expect(snapshot).toMatchObject({
       layout: { fingerprint: 'sha256:layout' },
       values: { generation: 4, patchCount: 2 },
-      dataInterfaces: { readiness: 'ready' },
+      dataInterfaces: { ok: true, value: { generation: 4 } },
       channels: { impact: { capacity: 8, dropped: 1 } },
       stages: { readiness: 'ready' },
       renderers: { topology: 'ribbon' },

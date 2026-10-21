@@ -1,10 +1,12 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 /// <reference types="@webgpu/types" />
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiComputePassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import type { VfxGpuEffectAssetAny, VfxGpuTickIntent } from '@forgeax/engine-vfx';
+import { particleEffectContribution } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
 import type { RenderFeatureExecutionFrame } from '../../../render/src/features/frame-execution';
@@ -24,6 +26,7 @@ import { RenderFeatureComputeGraphProjection } from '../../../render/src/feature
 import { projectRenderFeaturePlans } from '../../../render/src/features/render-graph-contribution';
 import { projectRenderFeatureCopies } from '../../../render/src/features/render-graph-copy';
 import { createRenderFeatureGraphBufferState } from '../../../render/src/features/render-graph-resources';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 import { singleViewContext } from './vfx-frame-fixture';
 
@@ -81,7 +84,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       createShaderModule: (descriptor) => createShaderModuleImmediate(device, descriptor),
     }),
   });
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(particleEffectContribution.kind, particleEffectContribution.decoder);
+  const world = new World({ assets });
   const player = world.spawn().unwrap();
   const effect = {
     kind: 'particle-effect',
@@ -91,9 +96,11 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     emitters: cooked.program.emitters.map(({ id, capacity }) => ({ id, capacity })),
     program: { ...cooked.program, fingerprint: cooked.fingerprint },
   } satisfies VfxGpuEffectAssetAny;
-  const effectHandle = world.internSharedRef('ParticleEffectAsset', effect);
+  const effectHandle = assets.create(runtimeEffectFixture(world, effect)).unwrap();
+  const fixed = runtimeAssets(assets).pin<VfxGpuEffectAssetAny>(effectHandle).unwrap();
   const reference = (emitter: VfxGpuTickIntent['emitter']) => ({
     effect: effectHandle,
+    revision: fixed.revision,
     id: emitter.id,
   });
   const camera = {
@@ -127,7 +134,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
           sequence: ++sequence,
           player,
           emitter: reference(emitter),
-          programFingerprint: cooked.fingerprint,
+          programFingerprint: fixed.value.program.fingerprint,
           reset: currentTick === 0,
           fixedDelta: (currentTick + 1) / 100,
           initialFixedDelta: 0.01,
@@ -182,8 +189,6 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
           ),
           materials: new Map(),
           meshes: new Map(),
-          forceFields: new Map(),
-          textureGuids: [],
           camera,
           views: [{ identity: 'main', camera }],
           intents,
@@ -205,9 +210,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       .plan(
         frame,
         singleViewContext({
-          resolveAsset: (sourceIndex, handle) => {
+          resolveAsset: (sourceIndex, handle, revision) => {
             expect(sourceIndex).toBe(0);
-            return resolveAssetHandle(world, handle);
+            return runtimeAssets(world.assets).resolveAsset(handle, revision);
           },
           targets: [],
           caps: device.caps,
@@ -276,13 +281,15 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
           order: 0,
           name: pass.name,
           enabled: pass.enabled,
-          resolvedGpuCopies: pass.copies.map((copy) => ({
-            source: required(buffers.get(copy.source)),
-            destination: required(buffers.get(copy.destination)),
-            size: copy.size,
-            sourceOffset: copy.sourceOffset ?? 0,
-            destinationOffset: copy.destinationOffset ?? 0,
-          })),
+          resolvedGpuCopies: pass.copies
+            .filter((copy) => copy.enabled !== false)
+            .map((copy) => ({
+              source: required(buffers.get(copy.source)),
+              destination: required(buffers.get(copy.destination)),
+              size: copy.size,
+              sourceOffset: copy.sourceOffset ?? 0,
+              destinationOffset: copy.destinationOffset ?? 0,
+            })),
         };
       if (pass.kind !== 'compute') throw new Error(`Unexpected simulation pass: ${pass.kind}`);
       const gpuCompute = {
@@ -291,7 +298,13 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         dispatches: pass.dispatches.map((dispatch) => {
           if (dispatch.kind !== 'direct')
             throw new Error('Unexpected indirect simulation dispatch');
-          return { entryPoint: dispatch.entryPoint, workgroups: dispatch.workgroups };
+          return {
+            entryPoint: dispatch.entryPoint,
+            workgroups: dispatch.workgroups,
+            ...(dispatch.bindings === undefined
+              ? {}
+              : { bindings: required(bindings.get(dispatch.bindings)) }),
+          };
         }),
       };
       return {
@@ -306,6 +319,32 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     return { work, buffers, passes, session };
   };
   type Prepared = ReturnType<typeof prepare>;
+  // Keep the control graph's declared binding slots when later ticks become
+  // empty. An absent slot would otherwise fall back to its captured first frame.
+  type NativeCompute = NonNullable<RenderFeaturePlanExecutionPass['resolvedGpuCompute']>;
+  const controlBindings = new Map<
+    string,
+    readonly NativeCompute['dispatches'][number]['bindGroup'][]
+  >();
+  const separatePasses = (prepared: Prepared): RenderFeaturePlanExecutionPass[] =>
+    prepared.passes.flatMap((pass) => {
+      const compute = pass.resolvedGpuCompute;
+      if (compute === undefined) return [pass];
+      let groups = controlBindings.get(pass.name);
+      if (groups === undefined) {
+        groups = [...new Set(compute.dispatches.map((dispatch) => dispatch.bindGroup))];
+        controlBindings.set(pass.name, groups);
+      }
+      return groups.map((group, index) => {
+        const dispatches = compute.dispatches.filter((dispatch) => dispatch.bindGroup === group);
+        return {
+          ...pass,
+          name: `${pass.name}.binding-${index}`,
+          enabled: pass.enabled !== false && dispatches.length > 0,
+          resolvedGpuCompute: { ...compute, dispatches },
+        };
+      });
+    });
   const compile = (prepared: Prepared, coalesce: boolean) => {
     const builder = new RenderGraphBuilder<RenderFeatureExecutionFrame>();
     if (coalesce)
@@ -315,7 +354,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     else {
       const buffers = createRenderFeatureGraphBufferState();
       const projection = new RenderFeatureComputeGraphProjection(builder, buffers);
-      for (const pass of prepared.passes) {
+      for (const pass of separatePasses(prepared)) {
         if (pass.resolvedGpuCopies !== undefined)
           projectRenderFeatureCopies(builder, buffers, pass).unwrap();
         else projection.addPasses([pass]).unwrap();
@@ -388,7 +427,13 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     });
     const result = graph.execute({
       encoder: observed,
-      featureExecutions: [{ featureIdentity, order: 0, passes: prepared.passes }],
+      featureExecutions: [
+        {
+          featureIdentity,
+          order: 0,
+          passes: graph === baseline ? separatePasses(prepared) : prepared.passes,
+        },
+      ],
     });
     if (!result.ok) return { result, trace, begins };
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
@@ -407,9 +452,12 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         originalBuffers = prepared.buffers;
         baseline = compile(prepared, false);
         chain = compile(prepared, true);
-        expect(baseline.inspect().passes).toHaveLength(18);
-        // Disjoint emitter programs now share their native compute pass.
-        expect(chain.inspect().passes).toHaveLength(3);
+        expect(baseline.inspect().passes).toHaveLength(separatePasses(prepared).length);
+        expect(
+          separatePasses(prepared).filter((pass) => pass.resolvedGpuCompute !== undefined),
+        ).toHaveLength(16);
+        // Shared reset copies precede one native compute pass for both emitters.
+        expect(chain.inspect().passes).toHaveLength(2);
       } else {
         expect(renderFeaturePlanSignatureSnapshotEquals(prepared.work, signature)).toBe(true);
         for (const [name, buffer] of prepared.buffers)
@@ -453,20 +501,30 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         }
         // Falsify a tempting collapse that reuses the final tick's uniform/bindings.
         restore(prepared, initial);
+        const terminalGroups = new Map<
+          NativeCompute['dispatches'][number]['bindGroup'],
+          NativeCompute['dispatches'][number]['bindGroup']
+        >();
+        for (const pass of prepared.passes) {
+          const groups = controlBindings.get(pass.name);
+          if (groups === undefined) continue;
+          for (const [index, group] of groups.entries())
+            terminalGroups.set(group, required(groups.at(index % 2 === 0 ? -2 : -1)));
+        }
         const broken = {
           ...prepared,
-          passes: prepared.passes.map((pass, _index, passes) =>
+          passes: prepared.passes.map((pass) =>
             pass.resolvedGpuCompute === undefined
               ? pass
               : {
                   ...pass,
-                  resolvedGpuCompute: required(
-                    required(
-                      passes.find(
-                        (candidate) => candidate.name === pass.name.replace(/tick-\d+/, 'tick-3'),
-                      ),
-                    ).resolvedGpuCompute,
-                  ),
+                  resolvedGpuCompute: {
+                    ...pass.resolvedGpuCompute,
+                    dispatches: pass.resolvedGpuCompute.dispatches.map((dispatch) => ({
+                      ...dispatch,
+                      bindGroup: required(terminalGroups.get(dispatch.bindGroup)),
+                    })),
+                  },
                 },
           ),
         };
@@ -492,5 +550,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     await baseline?.retire();
     await chain?.retire();
     owner.dispose().unwrap();
+    fixed.dispose();
+    assets.release(effectHandle).unwrap();
   }
 });

@@ -1,5 +1,5 @@
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   CanvasTexture,
@@ -22,6 +22,7 @@ import { scenePlugin, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, onTestFailed } from 'vitest';
 import { commands, page } from 'vitest/browser';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -144,7 +145,11 @@ it.each([
   renderer.subscribe((event) => {
     if (event.kind === 'error' && renderer.state() !== 'device-lost') errors.push(event.error);
   });
-  const world = new World();
+  const assets = host.assets;
+  const world = new World({ assets });
+  const mesh = assets
+    .create(quad ? createPrimitiveMesh('quad').unwrap() : createPrimitiveMesh('cube').unwrap())
+    .unwrap();
   observe('world-context');
   const owner = await createWorldContext(world, [scenePlugin()]);
   observe('world-context-ready');
@@ -166,16 +171,15 @@ it.each([
         },
       )
       .unwrap();
-    const source = world.allocSharedRef('CanvasTextureSource', texture.source);
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([1, 1, 1, 1], { baseColorTexture: source }),
-    );
+    const source = { source: texture.source };
+    const material = assets
+      .create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: source }))
+      .unwrap();
     for (const x of [0, 1.2])
       world
         .spawn(
           { component: Transform, data: { pos: [x, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: quad ? HANDLE_QUAD : HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [material] } },
         )
         .unwrap();
@@ -185,25 +189,28 @@ it.each([
     const draw = async (count = 1) => {
       for (let i = 0; i < count; i++) {
         world.update(1 / 60).unwrap();
-        const candidate = publisher?.prepare(frames / 60).unwrap();
-        const packet = candidate === undefined ? undefined : structuredClone(candidate.packet);
-        candidate?.accept();
-        const input =
-          packet !== undefined
-            ? { publication: packet }
-            : lease === undefined
-              ? undefined
-              : {
-                  leases: [lease],
-                  camera: { lease },
-                  environment: { lease },
-                  geometryLane: 'direct' as const,
-                };
-        if (input === undefined) throw new Error('Missing draw source');
-        const receipt = renderValue(renderer.draw(input));
-        renderValue(await receipt.completed);
-        if (packet !== undefined)
-          publisher?.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        await completeReadyFrame(async () => {
+          const candidate = publisher?.prepare(frames / 60).unwrap();
+          const packet = candidate === undefined ? undefined : structuredClone(candidate.packet);
+          candidate?.accept();
+          const input =
+            packet !== undefined
+              ? { publication: packet }
+              : lease === undefined
+                ? undefined
+                : {
+                    leases: [lease],
+                    camera: { lease },
+                    environment: { lease },
+                    geometryLane: 'direct' as const,
+                  };
+          if (input === undefined) throw new Error('Missing draw source');
+          const receipt = renderValue(renderer.draw(input));
+          renderValue(await receipt.completed);
+          if (packet !== undefined)
+            publisher?.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+          return receipt;
+        });
         frames++;
       }
     };
@@ -470,16 +477,17 @@ it.each([
     expect(uploads[1]).toBe(1);
     const survivingSource = new CanvasTexture(canvas);
     try {
-      const survivingMaterial = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit([1, 1, 1, 1], {
-          baseColorTexture: world.allocSharedRef('CanvasTextureSource', survivingSource.source),
-        }),
-      );
+      const survivingMaterial = assets
+        .create(
+          Materials.unlit([1, 1, 1, 1], {
+            baseColorTexture: { source: survivingSource.source },
+          }),
+        )
+        .unwrap();
       world
         .spawn(
           { component: Transform, data: { pos: [-1.2, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: quad ? HANDLE_QUAD : HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [survivingMaterial] } },
         )
         .unwrap();
@@ -565,9 +573,10 @@ it('minifies a Canvas checker in linear light and falsifies a base-level-only vi
         { shaderManifestUrl: '/shaders/manifest.json' },
       ),
     );
-    const world = new World();
+    const { renderer, assets } = host;
+    const world = new World({ assets });
+    const mesh = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
     const owner = await createWorldContext(world, [scenePlugin()]);
-    const { renderer } = host;
     renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error);
     });
@@ -589,16 +598,17 @@ it('minifies a Canvas checker in linear light and falsifies a base-level-only vi
           },
         )
         .unwrap();
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit([1, 1, 1, 1], {
-          baseColorTexture: world.allocSharedRef('CanvasTextureSource', texture.source),
-        }),
-      );
+      const material = assets
+        .create(
+          Materials.unlit([1, 1, 1, 1], {
+            baseColorTexture: { source: texture.source },
+          }),
+        )
+        .unwrap();
       world
         .spawn(
           { component: Transform, data: { pos: [0.013, 0.007, 0] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+          { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [material] } },
         )
         .unwrap();

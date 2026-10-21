@@ -13,8 +13,7 @@
 
 import type { Result, RhiCaps, RhiError } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-rhi';
-import type { EquirectAsset, Handle, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import { toShared, unwrapHandle } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
 import { cleanPerEntityCache } from '../../../render/src/record/mesh-ssbo';
@@ -33,7 +32,7 @@ function freshProbe(): CowProbe {
   return { bufs: 0, texs: 0, views: 0, destroyedBufs: 0, destroyedTexs: 0 };
 }
 
-const okShim = <T>(v: T) => ({ ok: true as const, value: v });
+const okShim = ok;
 
 // biome-ignore lint/suspicious/noExplicitAny: opaque mock GPU device surface
 function makeMockDevice(probe: CowProbe): any {
@@ -98,6 +97,7 @@ function makeMockDevice(probe: CowProbe): any {
 const mockCaps: RhiCaps = {
   backendKind: 'webgpu',
   compute: true,
+  rayQuery: { supported: false, reason: 'backend-has-no-ray-query' },
   timestampQuery: false,
   timestampPeriodNanoseconds: null,
   indirectDrawing: false,
@@ -119,25 +119,13 @@ const mockCaps: RhiCaps = {
   maxColorAttachments: 8,
 };
 
-function makeRegisterCube(): (
-  pod: EquirectAsset,
-) => Result<Handle<'EquirectAsset', 'shared'>, never> {
-  let next = 1000;
-  return () => ok(toShared<'EquirectAsset'>(next++));
-}
-
 // biome-ignore lint/suspicious/noExplicitAny: shader-module factory shim
 const shaderFactory = async (_d: any, desc: { code: string; label?: string }) =>
   ok({ __mock: 'shader', label: desc.label ?? '' }) as never;
 
 function configuredStore(probe: CowProbe): GpuResidencyCache {
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    makeMockDevice(probe),
-    shaderFactory,
-    makeRegisterCube() as never,
-    mockCaps,
-  );
+  store.configureGpuDevice(makeMockDevice(probe), shaderFactory, mockCaps);
   return store;
 }
 
@@ -208,22 +196,22 @@ describe('cow-survivor long-session steady-state bounded (AC-11) [w18]', () => {
     const WARMUP = 25;
     const totalSizes: number[] = [];
 
-    const survivorTexHandle = toShared<'TextureAsset'>(80000);
-    const survivorMeshHandle = toShared<'MeshAsset'>(90000);
+    const survivorTexHandle = 80000 as AssetHandle<'texture'>;
+    const survivorMeshHandle = 90000 as AssetHandle<'mesh'>;
     let survivorSpawned = false;
 
     for (let round = 0; round < N; round++) {
       // ── Spawn ──
-      const texHandles: Handle<'TextureAsset', 'shared'>[] = [];
+      const texHandles: AssetHandle<'texture'>[] = [];
       for (let i = 0; i < 3; i++) {
-        const h = toShared<'TextureAsset'>(10000 + round * 100 + i);
+        const h = (10000 + round * 100 + i) as AssetHandle<'texture'>;
         const res = store.ensureResident(h, texturePod());
         if (res.ok) texHandles.push(h);
       }
 
-      const meshHandles: Handle<'MeshAsset', 'shared'>[] = [];
+      const meshHandles: AssetHandle<'mesh'>[] = [];
       for (let i = 0; i < 2; i++) {
-        const h = toShared<'MeshAsset'>(20000 + round * 100 + i);
+        const h = (20000 + round * 100 + i) as AssetHandle<'mesh'>;
         const res = store.ensureResident(h, meshPod());
         if (res.ok) meshHandles.push(h);
       }
@@ -284,9 +272,9 @@ describe('cow-survivor long-session steady-state bounded (AC-11) [w18]', () => {
     const sizes: number[] = [];
 
     for (let round = 0; round < N; round++) {
-      const texHandles: Handle<'TextureAsset', 'shared'>[] = [];
+      const texHandles: AssetHandle<'texture'>[] = [];
       for (let i = 0; i < 3; i++) {
-        const h = toShared<'TextureAsset'>(40000 + round * 100 + i);
+        const h = (40000 + round * 100 + i) as AssetHandle<'texture'>;
         store.ensureResident(h, texturePod());
         texHandles.push(h);
       }
@@ -307,7 +295,7 @@ describe('cow-survivor long-session steady-state bounded (AC-11) [w18]', () => {
     const probe = freshProbe();
     const store = configuredStore(probe);
 
-    const survivorHandle = toShared<'TextureAsset'>(99901);
+    const survivorHandle = 99901 as AssetHandle<'texture'>;
     store.ensureResident(survivorHandle, texturePod());
 
     const tex = store._getTextureGpuTexture(survivorHandle);
@@ -315,9 +303,9 @@ describe('cow-survivor long-session steady-state bounded (AC-11) [w18]', () => {
     expect(tex?.isDestroyed).toBe(false);
 
     for (let round = 0; round < 20; round++) {
-      const handles: Handle<'TextureAsset', 'shared'>[] = [];
+      const handles: AssetHandle<'texture'>[] = [];
       for (let i = 0; i < 2; i++) {
-        const h = toShared<'TextureAsset'>(60000 + round * 100 + i);
+        const h = (60000 + round * 100 + i) as AssetHandle<'texture'>;
         store.ensureResident(h, texturePod());
         handles.push(h);
       }
@@ -330,7 +318,7 @@ describe('cow-survivor long-session steady-state bounded (AC-11) [w18]', () => {
     }
 
     // releaseUnreferenced: survivor in liveSet keeps resource
-    const liveSet = new Set<number>([unwrapHandle(survivorHandle)]);
+    const liveSet = new Set<number>([Number(survivorHandle)]);
     store.releaseUnreferenced(liveSet);
 
     const t2 = store._getTextureGpuTexture(survivorHandle);

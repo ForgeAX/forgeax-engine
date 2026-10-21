@@ -1,3 +1,4 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
 // 1. engine usage
@@ -5,7 +6,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import {
@@ -19,13 +20,8 @@ import { Materials } from '@forgeax/engine-render';
 import { PointLight, SpotLight } from '@forgeax/engine-render';
 
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
-import type {
-  MaterialAsset,
-  MaterialValue,
-  MeshAsset,
-  TextureAsset,
-} from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialAsset, MaterialValue } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-container2.pack.json';
 import {
@@ -35,6 +31,8 @@ import {
   createFirstPersonControls,
   createScrollFovAccumulator,
 } from '../../../../shared/src/learn-render-first-person';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example-specific glue
 const CONTAINER2_TEXTURE_GUID = '019e3969-1d46-7945-a75a-ef97d537531e';
@@ -124,7 +122,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const inspection = app.renderer.inspect();
   target.dataset.renderPath = inspection.profile.renderPath;
   target.dataset.backend = inspection.capabilities.backendKind;
@@ -154,41 +156,37 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  const diffuseTextureRes = await assets.loadByGuid<TextureAsset>(diffuseGuid);
-  const specularTextureRes = await assets.loadByGuid<TextureAsset>(specularGuid);
+  const diffuseTextureRes = await assets.load(diffuseGuid, 'texture');
+  const specularTextureRes = await assets.load(specularGuid, 'texture');
   const useTextures = diffuseTextureRes.ok && specularTextureRes.ok;
   if (!diffuseTextureRes.ok) {
     console.warn(
-      '[learn-render 2.5 light-casters] continuing untextured after diffuse loadByGuid failure:',
+      '[learn-render 2.5 light-casters] continuing untextured after diffuse load failure:',
       diffuseTextureRes.error.code,
       diffuseTextureRes.error.hint,
     );
   }
   if (!specularTextureRes.ok) {
     console.warn(
-      '[learn-render 2.5 light-casters] continuing untextured after specular loadByGuid failure:',
+      '[learn-render 2.5 light-casters] continuing untextured after specular load failure:',
       specularTextureRes.error.code,
       specularTextureRes.error.hint,
     );
   }
 
-  const cubeAssetRes = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE);
+  const cubeAssetRes = createBoxGeometry(1, 1, 1);
   if (!cubeAssetRes.ok) {
     console.error('[learn-render 2.5 light-casters] HANDLE_CUBE asset unavailable');
     return;
   }
-  assets.catalog<MeshAsset>(cubeGuid, cubeAssetRes.value);
+
 
   const materialEntry = readMaterialPackEntry(materialPackJson);
   if (materialEntry === null) {
     return;
   }
-  // feat-20260523 M8-T03: the pack stores texture slots as GUID strings, but
-  // the render-system extract stage binds a texture only when the slot is a
-  // resolved numeric Handle. loadByGuid returns the texture PAYLOAD (M8 D-17);
-  // mint a user-tier column handle via allocSharedRef for the diffuse/specular
-  // slots; drop the slot on texture-load failure so the schema-driven path
-  // falls back to placeholders.
+  // Bind loaded texture handles into the inline material. Omit a failed
+  // texture slot so the renderer uses its default texture.
   const passes = materialEntry.payload.passes;
   if (passes === undefined) {
     console.error('[learn-render 2.5 light-casters] material entry has no passes');
@@ -199,15 +197,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   for (const [k, v] of Object.entries(valuesIn)) {
     if (k === 'baseColorTexture') {
       if (!diffuseTextureRes.ok) continue;
-      filteredValues[k] = unwrapHandle(
-        world.allocSharedRef('TextureAsset', diffuseTextureRes.value),
+      filteredValues[k] = Number(
+        diffuseTextureRes.value,
       );
       continue;
     }
     if (k === 'metallicRoughnessTexture') {
       if (!specularTextureRes.ok) continue;
-      filteredValues[k] = unwrapHandle(
-        world.allocSharedRef('TextureAsset', specularTextureRes.value),
+      filteredValues[k] = Number(
+        specularTextureRes.value,
       );
       continue;
     }
@@ -218,21 +216,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     passes,
     values: filteredValues,
   };
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    materialAsset,
-  );
+  const materialHandle = assets.create(materialAsset).unwrap();
   void materialGuid;
-  const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuid);
+  const cubeHandleRes = assets.create(cubeAssetRes.value);
   if (!cubeHandleRes.ok) {
     console.error(
-      '[learn-render 2.5 light-casters] loadByGuid mesh failed:',
+      '[learn-render 2.5 light-casters] create mesh failed:',
       cubeHandleRes.error.code,
     );
     return;
   }
-  // loadByGuid returns the payload (M8 D-17); mint a user-tier column handle.
-  const cubeHandle = world.allocSharedRef('MeshAsset', cubeHandleRes.value);
+  // MeshFilter consumes the created mesh handle directly.
+  const cubeHandle = cubeHandleRes.value;
   void useTextures;
 
   for (let i = 0; i < CUBE_POSITIONS.length; i++) {
@@ -281,11 +276,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     );
     return;
   }
-  const floorMeshHandle = world.allocSharedRef('MeshAsset', floorMeshRes.value);
-  const floorMatHandle = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.55, 0.55, 0.6, 1], metallic: 0, roughness: 0.9 }),
-  );
+  const floorMeshHandle = assets.create(floorMeshRes.value).unwrap();
+  const floorMatHandle = assets.create(Materials.standard({ baseColor: [0.55, 0.55, 0.6, 1], metallic: 0, roughness: 0.9 })).unwrap();
   // Lay the XY plane flat on XZ (rotate -90deg about X) at y=-2.
   const FLOOR_QUAT_X = Math.sin(-Math.PI / 4);
   const FLOOR_QUAT_W = Math.cos(-Math.PI / 4);
@@ -303,10 +295,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // Obstructing cube sitting on the floor; the fixed spot casts its shadow
   // laterally onto the floor beside it.
-  const obstructorMatHandle = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.85, 0.5, 0.25, 1], metallic: 0, roughness: 0.6 }),
-  );
+  const obstructorMatHandle = assets.create(Materials.standard({ baseColor: [0.85, 0.5, 0.25, 1], metallic: 0, roughness: 0.6 })).unwrap();
   world
     .spawn(
       {
@@ -314,7 +303,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [SHADOW_X, -0.6, SHADOW_Z], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [obstructorMatHandle] } },
     )
     .unwrap();

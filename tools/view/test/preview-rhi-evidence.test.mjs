@@ -37,7 +37,9 @@ function failedInlinePreview(input, failure) {
   const scene = { target: { targetId: 'scene', worldId: 'scene-world' } };
   const preview = { asset: { guid: 'mesh', kind: 'mesh' }, target: { ...input.target, generation: 7 } };
   const state = { project: { id: 'project' }, scenePreview: scene,
-    assets: [preview.asset, { guid: 'material', kind: 'material' }], previews: [preview] };
+    assets: [preview.asset, { guid: 'material', kind: 'material' }],
+    previews: [{ ...preview, target: { ...preview.target, targetId: 'replacement', generation: 8 } }],
+    openRequest: { sequence: 1, asset: preview.asset, preview } };
   const query = { waitFor: async () => {}, count: async () => 1, locator: () => query };
   return {
     page: {
@@ -60,6 +62,13 @@ function failedInlinePreview(input, failure) {
     },
   };
 }
+
+test('the inline probe requires the exact open result despite a matching GUID in other previews', async context => {
+  const options = failedInlinePreview(await fixture(context), new Error('capture must not run'));
+  const open = options.workspace.openAsset;
+  options.workspace.openAsset = async () => ({ ...await open(), openRequest: undefined });
+  await assert.rejects(verifyInlinePreviews(options), /Engine must expose a type-preview target/);
+});
 
 test('the inline probe rejects an active mesh camera before requesting capture', async context => {
   const options = failedInlinePreview(await fixture(context), new Error('capture must not run'));

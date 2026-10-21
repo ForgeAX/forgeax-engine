@@ -168,7 +168,7 @@ describe('Instances renderer-derived union bounds', () => {
       derives: 2,
       invalidations: 1,
       rowUpdates: 0,
-      nodeVisits: 2,
+      nodeVisits: 4,
     });
   });
 
@@ -327,4 +327,84 @@ describe('Instances renderer-derived union bounds', () => {
     const source = readFileSync(new URL('../components/instances.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/\bbounds\s*:/);
   });
+});
+
+it('evaluates shared mesh edits at the affine root without reading 32768 instance transforms', () => {
+  const cache = new InstanceBoundsCache();
+  const transforms = new Float32Array(32768 * 16);
+  for (let row = 0; row < 32768; row++) transforms.set(translated(100 + row, row % 7, 0), row * 16);
+  const input = {
+    entityKey: 10,
+    meshGeneration: 1,
+    transformGeneration: 1,
+    matrixGeneration: 1,
+    meshAabb,
+    entityWorld,
+    transforms,
+    collectionId: 1,
+    revision: 1,
+  };
+  cache.get(input);
+  const before = cache.inspect();
+  const guarded = new Proxy(transforms, {
+    get(target, key) {
+      if (typeof key === 'string' && /^\d+$/.test(key))
+        throw new Error('instance traversal during mesh adoption');
+      return Reflect.get(target, key, target);
+    },
+  });
+  const changed = cache.get({
+    ...input,
+    meshGeneration: 2,
+    meshAabb: new Float32Array([-110, -2, -3, 1, 2, 3]),
+    transforms: guarded,
+  });
+  expect(changed).toEqual(new Float32Array([-10, -2, -3, 32868, 8, 3]));
+  expect(cache.inspect().nodeVisits).toBe(before.nodeVisits);
+  expect(cache.inspect().derives).toBe(before.derives);
+  expect(cache.rowChange(10)).toBeUndefined();
+  const moved = cache.get({
+    ...input,
+    meshGeneration: 2,
+    transformGeneration: 2,
+    meshAabb: new Float32Array([-110, -2, -3, 1, 2, 3]),
+    entityWorld: translated(10),
+    transforms: guarded,
+  });
+  expect(moved?.[0]).toBe(0);
+  expect(cache.inspect().nodeVisits).toBe(before.nodeVisits);
+});
+
+it('encloses exact bounds under mixed negative scale and shear before and after mesh edits', () => {
+  const cache = new InstanceBoundsCache();
+  const transforms = new Float32Array(64 * 16);
+  for (let row = 0; row < 64; row++) {
+    const matrix = translated((row % 5) * 3, row % 11, row % 7);
+    matrix[0] = row % 2 ? -2 : 3;
+    matrix[4] = (row % 3) - 1;
+    matrix[9] = (row % 5) * 0.25;
+    matrix[10] = 0.5;
+    transforms.set(matrix, row * 16);
+  }
+  const world = new Float32Array([-2, 0, 0, 0, 0.5, 1, 0, 0, 0, 0, 3, 0, 3, -5, 2, 1]);
+  for (let revision = 1; revision <= 10; revision++) {
+    const mesh = new Float32Array([-revision, -2, -3, 2, revision, 3]);
+    const actual = cache.get({
+      entityKey: 1,
+      meshGeneration: revision,
+      transformGeneration: 1,
+      matrixGeneration: 1,
+      meshAabb: mesh,
+      entityWorld: world,
+      transforms,
+    });
+    const exact = deriveInstancesUnionBounds({ meshAabb: mesh, entityWorld: world, transforms });
+    expect(actual).toBeDefined();
+    expect(exact).toBeDefined();
+    for (let axis = 0; axis < 3; axis++) {
+      expect(actual?.[axis]).toBeLessThanOrEqual(exact?.[axis] ?? -Infinity);
+      expect(actual?.[axis + 3]).toBeGreaterThanOrEqual(exact?.[axis + 3] ?? Infinity);
+    }
+  }
+  expect(cache.inspect().derives).toBe(1);
 });

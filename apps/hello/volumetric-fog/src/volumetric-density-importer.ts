@@ -5,11 +5,10 @@ import {
   type ImportedAsset,
   type Importer,
   type ImportResult,
-  type Loader,
   type TextureAsset,
 } from '@forgeax/engine-types';
 
-export const VOLUMETRIC_DENSITY_KIND = 'volumetric-density';
+export const VOLUMETRIC_DENSITY_KIND = 'texture';
 
 export interface VolumetricDensitySource {
   readonly format: 'forgeax-volumetric-density';
@@ -373,7 +372,7 @@ export function volumetricDensityImporter(): Importer {
         payload,
         refs: [],
         artifacts: {
-          payload: {
+          body: {
             mediaType: 'application/x-forgeax-r8',
             assetCodec: { name: 'r8unorm', version: '1' },
             bytes: data,
@@ -381,19 +380,6 @@ export function volumetricDensityImporter(): Importer {
         },
       };
       return { ok: true, value: { assets: [asset], sourceDependencies: [ctx.source] } };
-    },
-  };
-}
-
-export function volumetricDensityLoader(): Loader<TextureAsset> {
-  return {
-    kind: VOLUMETRIC_DENSITY_KIND,
-    load(payload) {
-      const data =
-        payload.data instanceof Uint8Array
-          ? payload.data
-          : new Uint8Array(payload.data as number[]);
-      return { ...payload, kind: 'texture', data } as unknown as TextureAsset;
     },
   };
 }

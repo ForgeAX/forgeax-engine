@@ -1,12 +1,12 @@
 // Native ufbx baking owns source evaluation; this bridge retains its timeline and normalizes quaternion POD values.
 import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
-import type { AnimationChannelPod, AnimationClipPod } from '@forgeax/engine-types';
+import type { AnimationClipPod, AnimationTransformChannel } from '@forgeax/engine-types';
 import { err, type FbxError, fbxErr, ok, type Result } from './errors.js';
 import { buildFbxNodePaths } from './parse-scene.js';
 
 export interface FbxRawAnimChannel {
   readonly targetNode: string;
-  readonly property: 'translation' | 'rotation' | 'scale' | 'weights';
+  readonly property: AnimationTransformChannel['property'];
   /** Ascending key timestamps in seconds. */
   readonly keyTimes?: number[];
   /** Interleaved key values, stride 3/4 or weightCount for morph weights. */
@@ -26,7 +26,7 @@ export interface FbxRawAnimDoc {
 }
 
 /** Retain the native baked timeline; a second fixed-rate resample loses short actions and clip tails. */
-function buildChannel(ch: FbxRawAnimChannel): AnimationChannelPod {
+function buildChannel(ch: FbxRawAnimChannel): AnimationTransformChannel {
   const stride =
     ch.property === 'rotation' ? 4 : ch.property === 'weights' ? (ch.weightCount ?? 0) : 3;
   const input = Float32Array.from(ch.keyTimes ?? []),

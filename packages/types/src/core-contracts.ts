@@ -19,6 +19,7 @@ export type {
   AssetDecoderResult,
   AssetKind,
   AssetKindPayload,
+  AssetPreparationContext,
   AssetRegistryAction,
   AssetRuntimeApiGroups,
   BuiltinAssetKind,

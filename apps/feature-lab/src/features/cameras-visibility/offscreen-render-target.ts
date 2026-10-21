@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CameraView, Materials, MeshRenderer } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, material, spawnCamera, spawnMesh, spawnStage, unlit } from '../../lab/stage';
+import { material, spawnCamera, spawnMesh, spawnStage, unlit } from '../../lab/stage';
 import { serial } from './support/serial';
 import { meanColor, readTarget, sampledTarget, TARGET_2D } from './support/target';
 
@@ -13,6 +15,14 @@ export default defineFeature({
   expect:
     'ON: the big panel shows the monitor camera image (a red sphere on a green background). OFF: the panel uses a plain grey material.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { eye: [0, 1.5, 5], target: [0, 1.2, 0] });
     world.addComponent(camera, { component: CameraView, data: { order: 0 } }).unwrap();
     const made = sampledTarget(app, TARGET_2D, '2d');
@@ -24,7 +34,7 @@ export default defineFeature({
           return c.items;
         },
       };
-    spawnMesh(world, MESH.sphere, unlit(world, [1, 0.1, 0.1, 1]), { pos: [50, 0, 0] });
+    spawnMesh(world, stageSphere, unlit(world, [1, 0.1, 0.1, 1]), { pos: [50, 0, 0] });
     const monitor = spawnCamera(world, {
       eye: [50, 0, 3],
       target: [50, 0, 0],
@@ -36,7 +46,7 @@ export default defineFeature({
       Materials.unlit([1, 1, 1, 1], { baseColorTexture: made.sourceRef as never }),
     );
     const grey = unlit(world, [0.4, 0.4, 0.4, 1]);
-    const panel = spawnMesh(world, MESH.quad, screen, { pos: [0, 1.4, 0], scale: [2.4, 2.4, 1] });
+    const panel = spawnMesh(world, stageQuad, screen, { pos: [0, 1.4, 0], scale: [2.4, 2.4, 1] });
     return {
       toggle(on) {
         world.set(panel, MeshRenderer, { materials: [on ? screen : grey] } as never);

@@ -78,6 +78,7 @@ function topology(
       storageBuffer: true,
       multisample: true,
       maxColorAttachments: 8,
+      maxColorAttachmentBytesPerSample: 128,
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
@@ -663,6 +664,7 @@ describe('typed built-in pipeline topology', () => {
           storageBuffer: true,
           multisample: false,
           maxColorAttachments: 8,
+          maxColorAttachmentBytesPerSample: 128,
         },
       }),
     );

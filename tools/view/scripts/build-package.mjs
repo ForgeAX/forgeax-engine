@@ -4,7 +4,6 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { build } from 'esbuild';
-import { assetReferenceEsbuildPlugin } from './asset-reference-program.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'dist/modules');
@@ -182,7 +181,7 @@ const result = await build({
   jsxImportSource: 'react',
   outExtension: { '.js': '.mjs' },
   sourcemap: true,
-  plugins: [assetReferenceEsbuildPlugin, internalWorkspacePlugin, cssInjectionPlugin],
+  plugins: [internalWorkspacePlugin, cssInjectionPlugin],
   external: [
     'node:*',
     '@forgeax/engine-*',

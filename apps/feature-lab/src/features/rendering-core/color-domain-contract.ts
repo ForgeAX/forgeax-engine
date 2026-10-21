@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { observeNextFrame } from './support/observe';
 
 const ORDER = ['transparent', 'bloom', 'output-transform', 'fxaa', 'present'];
@@ -13,10 +15,16 @@ export default defineFeature({
   expect:
     'All checks pass: the three domains come from the same frame, HDR is rgba16float, the committed output graph orders transparent -> bloom -> output-transform (tone + LUT) -> fxaa -> present, and exactly one owner display-encodes.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [0.2, 0.5, 1, 1], emissive: [3, 3, 3] }),
       { pos: [0, 0.6, 0] },
     );

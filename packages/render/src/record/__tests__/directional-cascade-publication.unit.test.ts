@@ -1,11 +1,13 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
 import { recordFrameTransaction } from '../../assembly/frame-recording';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../../components';
+import { MeshChanges, type ShadowMeshReads } from '../../device/mesh-changes';
 import { renderPublicationTransfers } from '../../publication/contract';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
@@ -14,13 +16,21 @@ import {
   currentDirectionalShadowPublication,
   prepareDirectionalCascadeCadence,
 } from '../directional-cascade-cadence';
-import { prepareDirectionalShadowCache } from '../directional-shadow-cache';
+import {
+  prepareDirectionalShadowCache,
+  shadowMeshReadsForQuery,
+} from '../directional-shadow-cache';
 import type { RenderFrameState } from '../frame-snapshot';
 import type { RenderSystemInternals } from '../render-context';
 
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 function fixture(staggerCascades = true) {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const meshHandle = assets.create(BUILTIN_CUBE).unwrap();
   const identity = { source: 'directional-shadow-publication', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
   world
@@ -38,7 +48,7 @@ function fixture(staggerCascades = true) {
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
@@ -46,9 +56,10 @@ function fixture(staggerCascades = true) {
   const receiver = new RenderPublicationReceiver(identity);
   const scene = new PersistentRenderScene();
   // Narrow record-stage inputs follow the existing terrain shadow-cache fixture.
-  const epochs = { catalogEpoch: 1, meshResidencyEpoch: 1 };
-  const mesh = { contentEpoch: 1 };
-  const validated = [{ mesh }];
+  const epochs = { catalogEpoch: 1 };
+  const changes = new MeshChanges();
+  let mesh = changes.create();
+  const roots = new Set<ShadowMeshReads>();
   const internals = {
     assets: {
       get catalogEpoch() {
@@ -57,7 +68,7 @@ function fixture(staggerCascades = true) {
     },
     gpuStore: {
       get meshResidencyEpoch() {
-        return epochs.meshResidencyEpoch;
+        return changes.epoch;
       },
     },
   } as unknown as RenderSystemInternals;
@@ -84,31 +95,52 @@ function fixture(staggerCascades = true) {
     publisher.recycle(accepted.packet.revision, returned).unwrap();
     return accepted;
   };
-  const decide = (accepted: ReturnType<typeof publish>) =>
-    prepareDirectionalShadowCache(
+  const decide = (accepted: ReturnType<typeof publish>) => {
+    const casters = scene.shadowCasterProjection();
+    if (casters === undefined) throw new Error('expected caster projection');
+    const input = shadowMeshReadsForQuery(
+      state.directionalShadowCache,
+      [accepted.resources],
+      casters,
+      changes,
+    );
+    const reads = input.reads;
+    // Keep each prepared root alive through retry/rejection assertions. Quiet borrows balance here.
+    if (roots.has(reads)) reads.release();
+    else roots.add(reads);
+    if (reads !== state.directionalShadowCache?.meshReads) reads.add(mesh);
+    return prepareDirectionalShadowCache(
       internals,
       state,
       [accepted.resources],
       [],
       accepted.frame.lights,
       1024,
-      validated as never,
-      scene.shadowCasterProjection(),
+      input,
+      casters,
     );
+  };
   const dispose = () => {
+    for (const root of roots) root.release();
+    changes.reset();
     scene.dispose();
     publisher.dispose();
   };
   return {
     world,
+    meshHandle,
     identity,
     entity,
     receiver,
     scene,
     state,
     epochs,
-    mesh,
-    validated,
+    changes,
+    editMesh: () => changes.publish(mesh),
+    replaceMesh: () => {
+      changes.retire(mesh);
+      mesh = changes.create();
+    },
     receive,
     publish,
     decide,
@@ -124,6 +156,44 @@ function requiredSource(f: ReturnType<typeof fixture>) {
 }
 
 describe('accepted publication CPU shadow authority', () => {
+  it('keeps live physical dependencies through content misses without consuming rejected input', () => {
+    const f = fixture();
+    try {
+      const accepted = f.publish();
+      const first = f.decide(accepted);
+      if (first.next === null) throw new Error('expected retained depth');
+      f.state.directionalShadowCache = first.next;
+      const root = first.next.meshReads;
+      const epoch = first.next.meshEpoch;
+      const cadence = prepareDirectionalCascadeCadence(
+        accepted.frame.lights,
+        undefined,
+        first.miss,
+      );
+      f.editMesh();
+      const rejected = f.decide(accepted);
+      expect(rejected.next?.meshReads).toBe(root);
+      expect(rejected.miss).toBe('source-changed');
+      expect(
+        prepareDirectionalCascadeCadence(
+          accepted.frame.lights,
+          cadence.next ?? undefined,
+          rejected.miss,
+        ).cascadeMiss,
+      ).toEqual(['source-changed', 'source-changed', 'source-changed']);
+      expect(f.state.directionalShadowCache.meshEpoch).toBe(epoch);
+      const retry = f.decide(accepted);
+      expect(retry.miss).toBe('source-changed');
+      expect(retry.next?.meshReads).toBe(root);
+      f.state.directionalShadowCache = retry.next;
+      expect(f.decide(accepted).miss).toBeUndefined();
+      f.replaceMesh();
+      expect(f.decide(accepted).next?.meshReads).not.toBe(root);
+    } finally {
+      f.dispose();
+    }
+  });
+
   it('keeps default publication recording uncached and never accepts a bare lease-less harness', () => {
     const f = fixture(false);
     try {
@@ -239,10 +309,13 @@ describe('accepted publication CPU shadow authority', () => {
       ).toBe(false);
       expect(current.source.isCurrent()).toBe(true);
       expect(source.isCurrent()).toBe(false);
-      // A stale prepared input cannot mint a valid witness against newer receiver resources.
-      f.scene.consumePublication(accepted);
-      expect(requiredSource(f).source.isCurrent()).toBe(false);
-      expect(f.decide(accepted)).toEqual({ miss: 'uncached', next: null });
+      const decision = f.decide(next);
+      // Rejection precedes mutation: the newer accepted authority stays current.
+      expect(() => f.scene.consumePublication(accepted)).toThrow(/stale prepared scene input/);
+      expect(requiredSource(f).source).toBe(current.source);
+      expect(current.source.isCurrent()).toBe(true);
+      expect(source.isCurrent()).toBe(false);
+      expect(f.decide(next)).toEqual(decision);
     } finally {
       f.dispose();
     }
@@ -305,7 +378,7 @@ describe('accepted publication CPU shadow authority', () => {
       f.world
         .spawn(
           { component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: f.meshHandle } },
           { component: MeshRenderer, data: {} },
         )
         .unwrap();
@@ -314,18 +387,19 @@ describe('accepted publication CPU shadow authority', () => {
       expect(f.decide(changed).miss).toBe('source-changed');
       f.state.directionalShadowCache = f.decide(changed).next;
       for (let frame = 0; frame < 60; frame += 1) {
-        f.epochs.meshResidencyEpoch += 1;
+        const unrelated = f.changes.create();
+        f.changes.retire(unrelated);
         expect(f.decide(changed).miss).toBeUndefined();
       }
-      f.mesh.contentEpoch += 1;
+      f.editMesh();
       expect(f.decide(changed).miss).toBe('source-changed');
       f.state.directionalShadowCache = f.decide(changed).next;
-      f.validated[0] = { mesh: { ...f.mesh } };
+      f.replaceMesh();
       expect(f.decide(changed).miss).toBe('source-changed');
       f.state.directionalShadowCache = f.decide(changed).next;
       f.epochs.catalogEpoch += 1;
-      expect(f.decide(changed).miss).toBe('source-changed');
-      f.state.directionalShadowCache = f.decide(changed).next;
+      // Unrelated catalog admission does not invalidate accepted shadow content.
+      expect(f.decide(changed).miss).toBeUndefined();
       const newBaseline = replacement.publish();
       const previous = requiredSource(f).source;
       f.scene.consumePublication(newBaseline);

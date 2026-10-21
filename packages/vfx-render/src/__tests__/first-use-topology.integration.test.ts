@@ -1,15 +1,18 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
+import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
+import { effectFixtureReference } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import {
   gpuParticleRenderFeature,
   planPasses,
   planResources,
-  vfxTestIntent,
+  vfxTestEmitter,
 } from './vfx-frame-fixture';
 
 const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -47,7 +50,7 @@ const mesh: MeshAsset = {
   materialSlots: [{ slotName: 'Default' }],
 };
 
-function createFixture(
+async function createFixture(
   selected: readonly (typeof kinds)[number][],
   capacity = 4,
   extensions = true,
@@ -63,16 +66,14 @@ function createFixture(
   const renderers = selected.map((kind) => ({
     kind,
     material: 'material',
-    mesh: 'mesh',
-    capacity: 4,
-    historyLength: 4,
-    stripKey: 'alive-index',
-    endpointField: 'velocity',
-    sorting: 'view-depth',
     enabled: true,
-    castShadows: kind === 'mesh',
+    ...(kind === 'mesh' ? { mesh: 'mesh', castShadows: true, sorting: 'view-depth' } : {}),
+    ...(kind === 'billboard' ? { capacity: 4, sorting: 'view-depth' } : {}),
+    ...(kind === 'ribbon' ? { capacity: 4, stripKey: 'alive-index' } : {}),
+    ...(kind === 'trail' ? { capacity: 4, historyLength: 4 } : {}),
+    ...(kind === 'beam' ? { capacity: 4, endpointField: 'velocity' } : {}),
   }));
-  const emitter = {
+  const inputEmitter = {
     id: 'first-use',
     capacity,
     space: 'world',
@@ -107,16 +108,33 @@ function createFixture(
     },
     renderers,
   };
-  const definition = vfxTestIntent({ emitter, programFingerprint: 'fixture' } as never).effect;
-  const reference = {
-    id: emitter.id,
-    effect: world.internSharedRef('ParticleEffectAsset', definition),
+  const compiled = (await cookedEffectFixture({ program: { emitters: [inputEmitter] } })).program
+    .emitters[0];
+  if (compiled === undefined) throw new Error('missing cooked topology emitter');
+  const additional = extensions ? ['forgeax_vfx_event_main', 'forgeax_vfx_future_kernel_main'] : [];
+  const emitter = {
+    ...compiled,
+    renderers,
+    wgsl:
+      compiled.wgsl +
+      additional.map((name) => `\n@compute @workgroup_size(1) fn ${name}() {}`).join(''),
+    reflection: {
+      ...compiled.reflection,
+      entryPoints: [...compiled.reflection.entryPoints, ...additional],
+    },
   };
+  const reference = vfxTestEmitter(world, emitter as never, 'fixture');
   const intent = {
     sequence: 1,
     player,
     emitter: reference,
-    programFingerprint: 'fixture',
+
+    programFingerprint: runtimeAssets(world.assets)
+      .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAsset>(
+        reference.effect,
+        reference.revision,
+      )
+      .unwrap().program.fingerprint,
     reset: true,
     fixedDelta: 1 / 60,
     phaseTick: 0,
@@ -140,11 +158,16 @@ function createFixture(
     intents: [intent],
     retained: [] as unknown[],
     materials: new Map(),
-    meshes: new Map([['mesh', mesh]]),
+    meshes: new Map([[effectFixtureReference(world, 'mesh', 'mesh'), mesh]]),
     emitterState: new Map([
       [
         `${Number(player)}:first-use`,
-        { enabled: true, localToWorld: identity(), player, emitter: reference },
+        {
+          enabled: true,
+          localToWorld: identity(),
+          player,
+          emitter: reference,
+        },
       ],
     ]),
   };
@@ -158,7 +181,8 @@ function createFixture(
           targets: [],
           caps: {},
           generation,
-          resolveAsset: (_index: number, handle: never) => resolveAssetHandle(world, handle),
+          resolveAsset: (_index: number, handle: number, revision: number) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
         } as never,
       )
       .unwrap();
@@ -187,6 +211,15 @@ function createFixture(
     intent,
     entry,
     program,
+    commit: () => {
+      vfxTestEmitter(world, emitter as never, 'fixture', reference);
+      intent.programFingerprint = runtimeAssets(world.assets)
+        .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAsset>(
+          reference.effect,
+          reference.revision,
+        )
+        .unwrap().program.fingerprint;
+    },
     dispatchEntries: () =>
       planPasses(plan()).flatMap((pass) =>
         pass.kind === 'compute' ? pass.dispatches.map((dispatch) => dispatch.entryPoint) : [],
@@ -197,9 +230,19 @@ function createFixture(
 
 for (let mask = 0; mask < 32; mask += 1) {
   const selected = kinds.filter((_, index) => (mask & (1 << index)) !== 0);
-  it(`prepares only authored VFX topologies: ${selected.join('+') || 'simulation-only'}`, () => {
-    const { player, camera, renderers, emitter, reference, intent, entry, program, rasterCount } =
-      createFixture(selected);
+  it(`prepares only authored VFX topologies: ${selected.join('+') || 'simulation-only'}`, async () => {
+    const {
+      player,
+      camera,
+      renderers,
+      emitter,
+      reference,
+      intent,
+      entry,
+      program,
+      rasterCount,
+      commit,
+    } = await createFixture(selected);
     const first = program();
     expect(rasterCount()).toBe(selected.length);
     expect(first.wgsl).toBe(emitter.wgsl);
@@ -224,15 +267,25 @@ for (let mask = 0; mask < 32; mask += 1) {
     camera.viewProjection[12] = 0;
     expect(program()).toEqual(first);
     for (const renderer of renderers) renderer.enabled = false;
+    commit();
     expect(program()).toEqual(first);
     for (const renderer of renderers) {
       renderer.enabled = true;
-      renderer.sorting = 'custom-descending';
+      if (renderer.kind === 'billboard' || renderer.kind === 'mesh')
+        renderer.sorting = 'view-distance';
     }
+    commit();
     expect(program()).toEqual(first);
     entry.intents = [];
     entry.retained = [
-      { player, emitter: reference, intent, localToWorld: identity(), visible: true },
+      {
+        player,
+        emitter: reference,
+
+        intent,
+        localToWorld: identity(),
+        visible: true,
+      },
     ];
     expect(program()).toEqual(first);
     entry.retained = [];
@@ -264,8 +317,9 @@ it.each([
   sorting,
   count,
 }) => {
-  const fixture = createFixture([kind], capacity, false);
+  const fixture = await createFixture([kind], capacity, false);
   for (const renderer of fixture.renderers) renderer.sorting = sorting;
+  fixture.commit();
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: fixture.emitter.wgsl })).unwrap();
   const pipelines = vi.spyOn(device, 'createComputePipeline');
@@ -282,7 +336,7 @@ it.each([
     return pipelines.mock.calls.map(([pipeline]) => pipeline.compute.entryPoint);
   };
   try {
-    expect(prepare('first-player')).toHaveLength(count);
+    expect(prepare('first-player')).toHaveLength(count + (capacity <= 256 ? 2 : 0));
     fixture.intent.spawnCount = 0;
     expect(prepare('first-player')).toEqual([]);
     expect(prepare('second-player')).toEqual([]);
@@ -290,15 +344,21 @@ it.each([
     // switching back must reuse the original descriptor's compiled program.
     for (const renderer of fixture.renderers)
       renderer.sorting = sorting === 'none' ? 'view-depth' : 'none';
-    expect(prepare('second-player')).toHaveLength(count + (sorting === 'none' ? 1 : -1));
+    fixture.commit();
+    expect(prepare('second-player')).toHaveLength(
+      count + (capacity <= 256 ? 2 : 0) + (sorting === 'none' ? 1 : -1),
+    );
     for (const renderer of fixture.renderers) renderer.sorting = sorting;
+    fixture.commit();
     expect(prepare('second-player')).toEqual([]);
     fixture.emitter.capacity = capacity > 256 ? 256 : 257;
-    expect(prepare('second-player')).toHaveLength(count + (capacity > 256 ? -2 : 2));
+    fixture.commit();
+    expect(prepare('second-player')).toHaveLength(count + (capacity > 256 ? -2 : 4));
     fixture.emitter.capacity = capacity;
+    fixture.commit();
     expect(prepare('second-player')).toEqual([]);
     // Rebuild the same required set through the existing generation owner.
-    expect(prepare('second-player', 2)).toHaveLength(count);
+    expect(prepare('second-player', 2)).toHaveLength(count + (capacity <= 256 ? 2 : 0));
   } finally {
     owner.dispose().unwrap();
     pipelines.mockRestore();
@@ -310,20 +370,22 @@ it.each([
   { capacity: 256, stages: false, events: true },
   { capacity: 4, stages: true, events: true },
   { capacity: 257, stages: false, events: false },
-])('uses complete single-block chains without skipping stages/events: $capacity/$stages/$events', ({
+])('uses complete single-block chains without skipping stages/events: $capacity/$stages/$events', async ({
   capacity,
   stages,
   events,
 }) => {
-  const fixture = createFixture(['billboard'], capacity, true);
+  const fixture = await createFixture(['billboard'], capacity, true);
   fixture.emitter.reflection.entryPoints = [
     ...fixture.emitter.reflection.entryPoints.filter(
       (entry) => events || entry !== 'forgeax_vfx_event_main',
     ),
-    'forgeax_vfx_scan_compact_main',
-    'forgeax_vfx_update_compact_main',
+    ...(capacity <= 256
+      ? ['forgeax_vfx_scan_compact_main', 'forgeax_vfx_update_compact_main']
+      : []),
   ];
   if (!stages) fixture.emitter.reflection.stages = [];
+  fixture.commit();
   fixture.program();
   const actual = fixture.dispatchEntries();
   if (capacity > 256) {
@@ -348,6 +410,7 @@ it.each([
   fixture.emitter.reflection.entryPoints = fixture.emitter.reflection.entryPoints.filter(
     (entry) => !entry.endsWith('_compact_main') || entry === 'forgeax_vfx_compact_main',
   );
+  fixture.commit();
   const fallback = fixture.dispatchEntries();
   expect(fallback).toContain('forgeax_vfx_update_main');
   expect(fallback).toContain('forgeax_vfx_scan_blocks_main');

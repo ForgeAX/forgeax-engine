@@ -4,9 +4,11 @@ import {
   isExecutionReport,
 } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { Update } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -24,8 +26,14 @@ export default defineFeature({
   expect:
     'All checks pass: the report validates, is a defensive copy, and a deliberate system failure is reported with its system name; local rebuild is refused.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.9, 0.2, 0.6, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.9, 0.2, 0.6, 1] }), {
       pos: [0, 0.5, 0],
     });
     let memo: Promise<readonly FeatureCheck[]> | undefined;

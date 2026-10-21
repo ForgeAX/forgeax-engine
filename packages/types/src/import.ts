@@ -1,5 +1,6 @@
 import type { AssetStageErrorBase } from './asset-errors.js';
 import type { SourceOverrideErrorCode, SourceOverrideMap } from './asset-producer.js';
+import type { AssetEnvelope } from './asset-reference.js';
 import type { PackIndexEntry } from './catalog.js';
 import type { Asset, AssetCodec, AssetRef, ImageError, TextureAsset } from './index.js';
 import { isFiniteBounds3 } from './mesh-contracts.js';
@@ -240,11 +241,7 @@ export const IMPORT_ERROR_HINTS: Readonly<Record<ImportErrorCode, string>> = {
  * meta and stamps it here. `kind` mirrors the `Asset.kind` discriminant so the
  * DDC row and the runtime loader dispatch on the same string.
  */
-export interface ImportedAsset<P = Asset> {
-  readonly guid: string;
-  readonly kind: string;
-  readonly name?: string;
-  readonly payload: P;
+export interface ImportedAsset<P = Asset> extends Omit<AssetEnvelope<P>, 'refs'> {
   readonly refs: readonly AssetRef[];
   readonly artifacts: Readonly<Record<string, ImportedArtifactBody>>;
 }

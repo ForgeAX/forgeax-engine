@@ -1,4 +1,5 @@
 // @forgeax/engine-types - runtime-safe VFX asset vocabulary.
+import type { AssetHandle } from './asset-handle';
 
 /** Runtime-ready definition for one cooked particle emitter. */
 export interface ParticleEmitterDefinition {
@@ -22,7 +23,11 @@ export interface ParticleEffectProgramEmitter {
   readonly space: 'local' | 'world';
   readonly schedule: object;
   readonly bounds: object;
-  readonly renderers: readonly object[];
+  readonly renderers: readonly {
+    readonly kind: 'billboard' | 'mesh' | 'ribbon' | 'trail' | 'beam';
+    readonly material: string | AssetHandle<'material'>;
+    readonly mesh?: string | AssetHandle<'mesh'> | { readonly source: 'player' };
+  }[];
   readonly simulationWhenCulled: 'continue' | 'pause' | 'restart-on-visible';
   readonly wgsl: string;
   readonly reflection: object;
@@ -34,11 +39,19 @@ export interface ParticleEffectProgramEmitter {
 export interface ParticleEffectAsset {
   readonly kind: 'particle-effect';
   readonly schemaVersion: 3;
-  /** Stable producer fingerprint used to detect stale cooked programs. */
+  /** Content identity derived by the VFX owner from the admitted program. */
   readonly programFingerprint: string;
   readonly emitters: readonly ParticleEmitterDefinition[];
   readonly program: ParticleEffectProgram;
 }
+
+/** Runtime author content. Admission derives fingerprints and emitter summaries. */
+export type ParticleEffectInput = Omit<
+  ParticleEffectAsset,
+  'programFingerprint' | 'emitters' | 'program'
+> & {
+  readonly program: Omit<ParticleEffectProgram, 'fingerprint'>;
+};
 
 /** Narrow Program v3 payload used by the new code-first compiler boundary. */
 export interface ParticleEffectProgramV3 extends Omit<ParticleEffectProgram, 'format'> {
@@ -64,6 +77,6 @@ export type VfxForceField =
   | (VfxForceFieldBase & { readonly kind: 'sphere' | 'box' })
   | (VfxForceFieldBase & {
       readonly kind: 'vector';
-      readonly texture: string;
+      readonly texture: string | AssetHandle<'texture'>;
       readonly sampling: 'nearest' | 'trilinear';
     });

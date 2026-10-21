@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import {
@@ -69,6 +70,7 @@ function skinned(material: MaterialAsset, caster: boolean): MaterialAsset {
  */
 export function spawnSkinnedCharacter(
   world: World,
+  assets: AssetRegistry,
   body: MaterialAsset,
   origin: readonly [number, number, number],
 ) {
@@ -81,25 +83,29 @@ export function spawnSkinnedCharacter(
     skinIndex: new Uint16Array(count * 4),
     skinWeight: Float32Array.from({ length: count * 4 }, (_, index) => (index % 4 === 0 ? 1 : 0)),
   };
-  const mesh = world.allocSharedRef('MeshAsset', {
-    ...box,
-    attributes,
-    vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
-  });
-  const casterMaterial = world.allocSharedRef('MaterialAsset', skinned(body, true));
-  const hiddenMaterial = world.allocSharedRef('MaterialAsset', skinned(body, false));
+  const mesh = assets
+    .create({
+      ...box,
+      attributes,
+      vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
+    })
+    .unwrap();
+  const casterMaterial = assets.create(skinned(body, true)).unwrap();
+  const hiddenMaterial = assets.create(skinned(body, false)).unwrap();
   const inverseBindMatrices = new Float32Array(16);
   for (const lane of [0, 5, 10, 15]) inverseBindMatrices[lane] = 1;
-  const skeleton = world.allocSharedRef('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 1,
-    inverseBindMatrices,
-    bounds: new Float32Array([-0.3, -0.9, -0.3, 0.3, 0.9, 0.3]),
-    shadowCapsules: {
-      joints: new Uint16Array([0]),
-      shapes: new Float32Array([0, -0.58, 0, 0, 0.58, 0, 0.22]),
-    },
-  });
+  const skeleton = assets
+    .create({
+      kind: 'skeleton',
+      jointCount: 1,
+      inverseBindMatrices,
+      bounds: new Float32Array([-0.3, -0.9, -0.3, 0.3, 0.9, 0.3]),
+      shadowCapsules: {
+        joints: new Uint16Array([0]),
+        shapes: new Float32Array([0, -0.58, 0, 0, 0.58, 0, 0.22]),
+      },
+    })
+    .unwrap();
   const joint = world
     .spawn({
       component: Transform,
@@ -123,7 +129,7 @@ export function spawnSkinnedCharacter(
  * -x/-z, so its ground shadow falls toward +x/+z (screen right and down).
  * One capsule on its single joint approximates the body.
  */
-function buildCapsuleScene(world: World) {
+function buildCapsuleScene(world: World, assets: AssetRegistry) {
   const ground = Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 });
   world
     .spawn(
@@ -131,12 +137,12 @@ function buildCapsuleScene(world: World) {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(10, 0.2, 10).unwrap()),
+          assetHandle: assets.create(createBoxGeometry(10, 0.2, 10).unwrap()).unwrap(),
         },
       },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', ground)] },
+        data: { materials: [assets.create(ground).unwrap()] },
       },
     )
     .unwrap();
@@ -144,6 +150,7 @@ function buildCapsuleScene(world: World) {
   const body = Materials.standard({ baseColor: [0.2, 0.4, 0.8, 1], metallic: 0, roughness: 0.6 });
   const { character, casterMaterial, hiddenMaterial } = spawnSkinnedCharacter(
     world,
+    assets,
     body,
     [0, 0, 0],
   );
@@ -262,6 +269,7 @@ function shadowMask(off: Float32Array, on: Float32Array, size: number) {
 /** Deferred none/raster/capsule comparison plus the Forward fallback for the same World. */
 export async function verifyCapsuleShadow(
   renderer: Renderer,
+  assets: AssetRegistry,
   options: {
     readonly recorder?: RecorderAttachment;
     readonly capture?: (tape: EncodedTape, variant: CapsuleShadowVariant) => void | Promise<void>;
@@ -269,8 +277,8 @@ export async function verifyCapsuleShadow(
   } = {},
 ): Promise<CapsuleShadowEvidence> {
   const size = CAPSULE_SHADOW_SIZE;
-  const world = new World();
-  const scene = buildCapsuleScene(world);
+  const world = new World({ assets });
+  const scene = buildCapsuleScene(world, assets);
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {

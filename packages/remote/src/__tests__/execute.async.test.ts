@@ -371,3 +371,50 @@ describe('executeScript - un-wrapped top-level return / await', () => {
     if (result.ok) expect(result.value).toBeUndefined();
   });
 });
+
+it('binds every named root independently of host object property order', async () => {
+  const roots = {
+    plugins: { name: 'plugins' },
+    execution: { name: 'execution' },
+    profiler: { name: 'profiler' },
+    simulation: { name: 'simulation' },
+    rhiCapture: { name: 'rhiCapture' },
+    assets: { name: 'assets' },
+    renderer: { name: 'renderer' },
+    world: { name: 'world' },
+    importModule: async (specifier: string) => specifier,
+  };
+  expect(
+    await executeScript(
+      '[world, renderer, assets, rhiCapture, simulation, profiler, execution, plugins, await _import("host-module")]',
+      roots,
+    ),
+  ).toEqual({
+    ok: true,
+    value: [
+      roots.world,
+      roots.renderer,
+      roots.assets,
+      roots.rhiCapture,
+      roots.simulation,
+      roots.profiler,
+      roots.execution,
+      roots.plugins,
+      'host-module',
+    ],
+  });
+  expect(await executeScript('typeof profiler + ":" + typeof plugins', makeCtx())).toEqual({
+    ok: true,
+    value: 'undefined:undefined',
+  });
+});
+
+it('preserves strict directives and live roots in statement scripts', async () => {
+  const ctx = makeCtx();
+  expect(
+    await executeScript(
+      '"use strict"; return { root: world, unboundThis: this === undefined };',
+      ctx,
+    ),
+  ).toEqual({ ok: true, value: { root: ctx.world, unboundThis: true } });
+});

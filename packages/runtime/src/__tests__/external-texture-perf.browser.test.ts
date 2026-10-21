@@ -1,12 +1,13 @@
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
-import { type MaterialAsset, ok } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const MATERIAL_GUID = '4b9e0c51-2f63-4d8a-9a57-6c1e2d7f0a31';
@@ -62,7 +63,7 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
   const { renderer, assets } = host;
   assets.configurePackIndex('/__external-texture-material/pack-index.json');
   const guid = assets.parseGuid(MATERIAL_GUID);
-  (await assets.loadByGuid<MaterialAsset>(guid)).unwrap();
+  (await assets.load(guid, 'material')).unwrap();
   const producer = document.createElement('canvas');
   producer.width = width;
   producer.height = height;
@@ -79,7 +80,7 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
   const stream = producer.captureStream(60);
   video.srcObject = stream;
   document.body.append(video);
-  const world = new World();
+  const world = new World({ assets });
   const owner = await createWorldContext(world, [scenePlugin()]);
   try {
     await video.play();
@@ -102,17 +103,23 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
       )
       .unwrap();
     const handle = renderValue(await renderer.importTexture({ kind: 'video', source: video }));
-    const source = world.allocSharedRef('ExternalTextureSource', handle.source);
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      mode === 'copy'
-        ? Materials.unlit([1, 1, 1, 1], { baseColorTexture: source })
-        : { kind: 'material', parent: guid, values: { videoTexture: source } },
-    );
+    const source = { source: handle.source };
+    const material = testAssets(world)
+      .create(
+        mode === 'copy'
+          ? Materials.unlit([1, 1, 1, 1], { baseColorTexture: source })
+          : { kind: 'material', parent: guid, values: { videoTexture: source } },
+      )
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], scale: [3, 3, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -158,7 +165,7 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
       expect(copies).toBeGreaterThan(0);
     }
     renderValue(handle.release());
-    lease.release?.();
+    lease.dispose();
     return {
       resolution: `${width}x${height}`,
       mode,
@@ -176,7 +183,8 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
     for (const track of stream.getTracks()) track.stop();
     video.remove();
     renderValue(await renderer.dispose());
-    await owner.dispose?.();
+    await owner.fiber.dispose();
+    assets.dispose();
     display.remove();
   }
 }

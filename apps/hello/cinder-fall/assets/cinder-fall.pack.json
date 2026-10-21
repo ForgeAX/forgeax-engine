@@ -24,7 +24,7 @@
               { "id": "travel-impact", "channel": "impact", "subEmitter": "cinder.impact", "fanOut": 1, "recursionDepth": 1 }
             ],
             "renderers": [
-              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "95730fd2-9846-5f84-8658-0b3c971eb263", "lighting": "standard", "castShadows": true, "receiveShadows": true },
+              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "2cce5d80-5960-4e4e-82f7-feaf5608eb60", "lighting": "standard", "castShadows": true, "receiveShadows": true },
               { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-ascending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
               { "kind": "billboard", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
               { "kind": "trail", "material": "c1de0000-0000-7000-8000-000000000002", "historyLength": 6, "capacity": 32, "width": 0.034, "taper": 0.9 }
@@ -45,7 +45,7 @@
               { "id": "impact-burn", "channel": "burn", "subEmitter": "cinder.burn", "fanOut": 1, "recursionDepth": 1 }
             ],
             "renderers": [
-              { "kind": "mesh", "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "95730fd2-9846-5f84-8658-0b3c971eb263", "lighting": "standard", "castShadows": true, "receiveShadows": true },
+              { "kind": "mesh", "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "2cce5d80-5960-4e4e-82f7-feaf5608eb60", "lighting": "standard", "castShadows": true, "receiveShadows": true },
               { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
               { "kind": "ribbon", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "stripKey": "alive-index", "capacity": 32, "facing": "velocity", "width": 0.008 },
               { "kind": "beam", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "endpointField": "velocity", "capacity": 16, "width": 0.01 }
@@ -60,7 +60,7 @@
             "schedule": { "rate": 1.5, "bursts": [{ "time": 0, "count": 8 }] },
             "program": { "module": "cinder-burn.vfx.wgsl" },
             "renderers": [
-              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000003", "mesh": "95730fd2-9846-5f84-8658-0b3c971eb263", "lighting": "standard", "receiveShadows": true },
+              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000003", "mesh": "2cce5d80-5960-4e4e-82f7-feaf5608eb60", "lighting": "standard", "receiveShadows": true },
               { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000003", "sorting": "view-depth" },
               { "kind": "billboard", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] }
             ]

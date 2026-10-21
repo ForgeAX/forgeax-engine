@@ -1,6 +1,6 @@
 import { X } from 'lucide-react';
 import { IconButton } from '@forgeax/view-components';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from '../i18n/useTranslation';
 import { dirOfPath, fileSupportsDualPreview, resolveDualPreviewFile } from './format';
 import { itemIcon } from './icons';
@@ -21,6 +21,7 @@ export function CBPreviewPanel({
   onClose,
   onDrag,
   onDragEnd,
+  authoring,
 }: {
   previewItem: CBViewItem | null;
   thumbnail?: WorkspaceThumbnail;
@@ -32,9 +33,11 @@ export function CBPreviewPanel({
   onClose: () => void;
   onDrag: (delta: number) => void;
   onDragEnd: () => void;
+  authoring?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [filePreviewMode, setFilePreviewMode] = useState<CBFilePreviewMode>('assets');
+  const [authoringOpen, setAuthoringOpen] = useState(false);
   const [previewInfo, setPreviewInfo] = useState<PreviewFileInfo | null>(null);
   const [previewStatus, setPreviewStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
   const dualPreviewFile = previewItem ? resolveDualPreviewFile(previewItem, diskFiles) : undefined;
@@ -48,6 +51,7 @@ export function CBPreviewPanel({
 
   useEffect(() => {
     setFilePreviewMode('assets');
+    setAuthoringOpen(false);
   }, [previewKey]);
 
   useEffect(() => {
@@ -224,17 +228,18 @@ export function CBPreviewPanel({
             onClick={onClose}
           />
         </div>
-        {showDualPreview ? (
+        {showDualPreview || authoring ? (
           <div className="cb-preview-mode-bar" role="tablist" aria-label={t('contentBrowser.preview.modeAssets')}>
-            <button type="button" role="tab" className={`cb-preview-mode-btn${filePreviewMode === 'assets' ? ' is-active' : ''}`} aria-selected={filePreviewMode === 'assets'} onClick={() => setFilePreviewMode('assets')}>
+            <button type="button" role="tab" className={`cb-preview-mode-btn${!authoringOpen && filePreviewMode === 'assets' ? ' is-active' : ''}`} aria-selected={!authoringOpen && filePreviewMode === 'assets'} onClick={() => { setAuthoringOpen(false); setFilePreviewMode('assets'); }}>
               {t('contentBrowser.preview.modeAssets')}
             </button>
-            <button type="button" role="tab" className={`cb-preview-mode-btn${filePreviewMode === 'source' ? ' is-active' : ''}`} aria-selected={filePreviewMode === 'source'} onClick={() => setFilePreviewMode('source')}>
+            <button type="button" role="tab" className={`cb-preview-mode-btn${!authoringOpen && filePreviewMode === 'source' ? ' is-active' : ''}`} aria-selected={!authoringOpen && filePreviewMode === 'source'} onClick={() => { setAuthoringOpen(false); setFilePreviewMode('source'); }}>
               {t('contentBrowser.preview.modeSource')}
             </button>
+            {authoring ? <button type="button" role="tab" className={`cb-preview-mode-btn${authoringOpen ? ' is-active' : ''}`} aria-selected={authoringOpen} onClick={() => setAuthoringOpen(true)}>{t('contentBrowser.preview.modeParameters')}</button> : null}
           </div>
         ) : null}
-        <div className="cb-preview-body">{body}</div>
+        <div className="cb-preview-body">{authoringOpen ? authoring : body}</div>
       </aside>
     </>
   );

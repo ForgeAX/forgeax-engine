@@ -16,7 +16,7 @@ describe('Materials.standard transmission validation', () => {
     }
   });
 
-  it('exposes structured finite, shape, and pass-state failures', () => {
+  it('exposes structured finite, shape, and range failures', () => {
     expect(() =>
       Materials.standard({
         baseColor: [1, 1, 1, 1],
@@ -31,10 +31,37 @@ describe('Materials.standard transmission validation', () => {
     expect(() =>
       Materials.standard({
         baseColor: [1, 1, 1, 1],
-        transmission: 1,
-        renderState: { blend: { color: {}, alpha: {} } as never },
+        thickness: -1,
       }),
     ).toThrow(MaterialTransmissionContractError);
+  });
+
+  it('preserves explicit transmission depth and blending while keeping the native default', () => {
+    const blend = {
+      color: {
+        operation: 'add' as const,
+        srcFactor: 'src-alpha' as const,
+        dstFactor: 'one-minus-src-alpha' as const,
+      },
+      alpha: {
+        operation: 'add' as const,
+        srcFactor: 'one' as const,
+        dstFactor: 'one-minus-src-alpha' as const,
+      },
+    };
+    const authored = Materials.standard({
+      baseColor: [1, 1, 1, 0.4],
+      transmission: 1,
+      renderState: { depthWriteEnabled: true, blend },
+    });
+    expect(authored.passes?.find((pass) => pass.name === 'forward')?.renderState).toMatchObject({
+      depthWriteEnabled: true,
+      blend,
+    });
+    expect(
+      Materials.standard({ baseColor: [1, 1, 1, 1], transmission: 1 }).passes?.[0]?.renderState
+        ?.depthWriteEnabled,
+    ).toBe(false);
   });
 
   it('preserves the typed physical contract error for incomplete custom layers', () => {

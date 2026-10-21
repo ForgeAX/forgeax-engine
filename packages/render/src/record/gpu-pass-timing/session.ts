@@ -493,7 +493,7 @@ function makeCapture(
     }
     return writes;
   };
-  const timestampWrites = (identity: GpuPassTimingPassIdentity) => {
+  const pendingEntryIndex = (identity: GpuPassTimingPassIdentity) => {
     const index = state.entryIndexesByExecutionIndex[identity.executionIndex];
     const entry = index === undefined ? undefined : state.entries[index];
     if (
@@ -505,6 +505,11 @@ function makeCapture(
       state.terminal !== undefined
     )
       return undefined;
+    return index;
+  };
+  const timestampWrites = (identity: GpuPassTimingPassIdentity) => {
+    const index = pendingEntryIndex(identity);
+    if (index === undefined) return undefined;
     const pair = queryPairAt(index);
     const writes = state.slot.storage.timestampWrites[index];
     if (pair === undefined || writes === undefined) return undefined;
@@ -513,17 +518,8 @@ function makeCapture(
     return writes;
   };
   const markOwnerConflict = (identity: GpuPassTimingPassIdentity): void => {
-    if (state.terminal !== undefined) return;
-    const index = state.entryIndexesByExecutionIndex[identity.executionIndex];
-    const entry = index === undefined ? undefined : state.entries[index];
-    if (
-      index === undefined ||
-      entry === undefined ||
-      entry.passName !== identity.passName ||
-      entry.passKind !== identity.passKind ||
-      isTimingEntry(entry)
-    )
-      return;
+    const index = pendingEntryIndex(identity);
+    if (index === undefined) return;
     markEntry(index, makeOwnerConflict(identity));
   };
   const markTimestampWriteFailure = (
@@ -531,21 +527,8 @@ function makeCapture(
     phase: 'begin' | 'end',
     cause: unknown,
   ): void => {
-    if (state.terminal !== undefined) return;
-    const index = state.entryIndexesByExecutionIndex[identity.executionIndex];
-    const entry = index === undefined ? undefined : state.entries[index];
-    if (
-      index === undefined ||
-      entry === undefined ||
-      entry.passName !== identity.passName ||
-      entry.passKind !== identity.passKind
-    )
-      return;
-    if (entry !== undefined && isTimingEntry(entry)) {
-      if (entry.status === 'unmeasured' && entry.reason.code === 'timestamp-owner-conflict') return;
-      return;
-    }
-    if (entry === undefined) return;
+    const index = pendingEntryIndex(identity);
+    if (index === undefined) return;
     markEntry(index, makeWriteUnavailable(identity, phase, cause));
   };
   const encodeCopyMarker = (
@@ -566,20 +549,9 @@ function makeCapture(
     identity: GpuPassTimingPassIdentity,
     encoder: RhiCommandEncoder,
   ): void => {
-    const index = state.entryIndexesByExecutionIndex[identity.executionIndex];
-    const entry = index === undefined ? undefined : entryAt(index);
+    const index = pendingEntryIndex(identity);
     const pair = index === undefined ? undefined : queryPairAt(index);
-    if (
-      index === undefined ||
-      !isGenericEntry(entry) ||
-      entry.passName !== identity.passName ||
-      entry.passKind !== identity.passKind ||
-      pair === undefined ||
-      !pair.needsBeginningMarker ||
-      state.terminal !== undefined
-    ) {
-      return;
-    }
+    if (pair === undefined || !pair.needsBeginningMarker) return;
     try {
       const writes = state.slot.storage.copyBeginningMarkerWrites;
       writes.beginningOfPassWriteIndex = pair.beginningQueryIndex;

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { once } from 'node:events';
+import WebSocket, { WebSocketServer } from 'ws';
 import {
   createWebSocketClientEndpoint,
   type WebSocketConstructor,
@@ -6,6 +8,32 @@ import {
 } from '../src/websocket-client-core';
 
 const invalidMaxQueuedEvents = [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY];
+
+it('retires the real socket and message callbacks after a connected transport error', async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  let socket!: WebSocket;
+  class Client extends WebSocket {
+    constructor(url: string) { super(url); socket = this; }
+  }
+  const address = server.address();
+  if (typeof address === 'string' || address === null) throw new Error('Expected TCP address');
+  const endpoint = (await createWebSocketClientEndpoint(Client as unknown as WebSocketConstructor, {
+    url: `ws://127.0.0.1:${address.port}`, toBytes: () => undefined,
+  })).unwrap();
+  try {
+    endpoint.poll();
+    socket.emit('error', new Error('transport failed'));
+    expect(socket.readyState).not.toBe(WebSocket.OPEN);
+    expect(socket.onmessage).toBeNull();
+    expect(endpoint.poll().filter((event) => event.kind === 'peer-disconnected')).toHaveLength(1);
+    expect(endpoint.poll()).toEqual([]);
+  } finally {
+    socket.terminate();
+    for (const peer of server.clients) peer.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
 
 describe('WebSocket client core option preflight', () => {
   it('fulfills structured failures before constructing a WebSocket', async () => {

@@ -26,7 +26,9 @@ const fetcher = async (url) => {
 };
 const world = new World();
 const context = await createWorldContext(world, [scenePlugin()]);
-const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+const assets = new AssetRegistry({
+  shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+});
 const base = createCatalogSource({ entries: input?.rows ?? [] });
 const assembly = createAssetRuntimeAssembly(assets, { catalogSource: base, fetcher }).unwrap();
 const probe = { expected: Transform };

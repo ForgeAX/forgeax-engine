@@ -587,8 +587,6 @@ async function resolveCanonicalKit(): Promise<CanonicalKitLocation> {
 }
 
 export function devKitHostBridge(
-  _facts: ProjectFacts,
-  _bootstrapRoot: BootstrapRoot,
   binding?: DevKitHostBinding,
   assemblyInput?: HostAssembly | (() => Promise<HostAssembly>),
 ): Plugin & { releaseForRestart(): Promise<void> } {
@@ -762,8 +760,6 @@ function projectSsrIdentity(
 }
 
 function executionBootstrapSource(
-  _facts: ProjectFacts,
-  _generated: string,
   bootstrapRoot: BootstrapRoot,
   sessionGeneration: number,
   ssrIdentity: SsrAdmissionIdentity,
@@ -843,7 +839,6 @@ const bridge = {
 
 function hostSource(
   facts: ProjectFacts,
-  _generated: string,
   bootstrapRoot: BootstrapRoot,
   canonicalEnvironmentGuid?: string,
   binding?: DevKitHostBinding,
@@ -871,7 +866,7 @@ function hostSource(
       : JSON.stringify(facts.startupTimeoutMs);
   return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
 import { inspectUi } from '@forgeax/engine/ui';
 import { Context, startNativePlugin } from '@forgeax/engine/plugin';
@@ -882,7 +877,7 @@ import { createGameVfx } from './game-vfx';
 import { root as engineRoot, createPrograms as enginePrograms } from 'virtual:forgeax/plugin-programs/engine';
 import { root as hostRoot, rootDescriptor as hostDescriptor, createPrograms as hostPrograms } from 'virtual:forgeax/plugin-programs/frontend';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
-import { AssetRegistry, createCatalogSource, createCatalogHotSubscription, createAssetRegistry } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry, createCatalogSource, createCatalogHotSubscription } from '@forgeax/engine/assets-runtime';
 import {
   createRuntimeAssetImportTransport,
   runtimeBinding,
@@ -1329,6 +1324,7 @@ preparedResourceOwner = await prepareResourcePreview(app, resource);
 return preparedResourceOwner.facts;
 }
 const gpuPassTiming = query.get('forgeax-gpu-pass-timing') === '1' ? {} : undefined;
+const shadowWorkload = query.get('forgeax-shadow-workload') === '1' ? true : undefined;
 const geometryLane = query.get('forgeax-geometry-lane') === 'direct' ? 'direct' : undefined;
 const featureReadOnlyDepthBatchDiagnostic = (() => {
   const values = query.getAll('forgeax-feature-read-only-depth-batch');
@@ -1482,6 +1478,7 @@ const appBootstrapPlugin = {
               workers: executionWorkers,
               bootstrapData: ${target === 'tauri' ? '{ isolateVfxViewGraph, vfxInstanceArenas, vfxNativePlanning, vfxRetainedResources }' : '{ programDeliveryChannel, isolateVfxViewGraph, vfxInstanceArenas, vfxNativePlanning, vfxRetainedResources }'},
               ...(gameChannel === undefined ? {} : { bootstrapPort: gameChannel.port2 }),
+              frameTimeoutMs: ${facts.frameTimeoutMs === undefined ? 'undefined' : JSON.stringify(facts.frameTimeoutMs)},
               // Development includes cold Vite compilation before the native Worker handshake.
               startupTimeoutMs: ${startupTimeout},
               bootstrap: new URL(
@@ -1500,6 +1497,7 @@ const appBootstrapPlugin = {
                 profiler: import.meta.env.DEV || cpuProfileRequested,
                 rhiCapture: rhiCaptureRequested,
                 ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
+                ...(shadowWorkload === undefined ? {} : { shadowWorkload }),
                 ...(geometryLane === undefined ? {} : { geometryLane }),
                 ...(gbufferBatchOrderDiagnostic === undefined ? {} : { gbufferBatchOrderDiagnostic }),
                 ...(featureReadOnlyDepthBatchDiagnostic === undefined ? {} : { featureReadOnlyDepthBatchDiagnostic }),
@@ -1521,6 +1519,7 @@ const appBootstrapPlugin = {
             pluginPrograms,
             runtimePacks: { ...runtimePacks, programHost: pluginPrograms.programHost ?? runtimePacks.programHost },
             gpuPassTiming,
+            ...(shadowWorkload === undefined ? {} : { shadowWorkload }),
             profiler,
             ...(workspaceGame ? { input: ctx.engineWorkspaceInput.game } : {}),
             plugins: [${plugins.join(', ')}${plugins.length > 0 ? ', ' : ''}...(workspaceMode ? [physicsComponentsPlugin()] : []), ...(gameVfx === undefined ? [] : [gameVfx.plugin])],
@@ -1548,7 +1547,7 @@ const appBootstrapPlugin = {
     if (workerExecution) {
       // DOM plugins load POD assets through the same catalog without a GPU or
       // a second World. Host UI never downloads the renderer shader manifest.
-      const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }), bundler.importTransport);
+      const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }), importTransport: bundler.importTransport });
       if (!import.meta.env.DEV) assets.configurePackIndex(new URL('pack-index.json', document.baseURI).href);
       const assembly = assembleAssetRuntime(assets, [], {
         ownsRegistry: true,
@@ -1624,7 +1623,7 @@ const appBootstrapPlugin = {
           },
           openResourcePreview: async ({ app: previewApp, asset, canvas: previewCanvas }) => {
             const owner = await prepareResourcePreview(previewApp, { kind: asset.kind, guid: asset.guid }, previewCanvas);
-            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.texture === undefined ? {} : { texture: owner.texture }) };
+            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.texture === undefined ? {} : { texture: owner.texture }), ...(owner.display === undefined ? {} : { display: owner.display }) };
           },
         });
         await fiber.await();
@@ -1759,14 +1758,14 @@ const frontendHost = await createFrontendHost({
     if (hostRoot === null || canonicalHostJson(descriptor) !== canonicalHostJson(hostDescriptor)) throw new Error('host root/program snapshot mismatch');
     const scope = ctx.isolate('assets').isolate('pluginPrograms').isolate('runtimePacks');
     const provider = scope.plugin({ provide: ['assets', 'pluginPrograms', 'runtimePacks'], async apply(ctx) {
-      const assembly = assembleAssetRuntime(new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })), [], { catalogSource: assetCatalog, ownsRegistry: true }).unwrap();
+      const assembly = assembleAssetRuntime(new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }), [], { catalogSource: assetCatalog, ownsRegistry: true }).unwrap();
       ctx.effect(() => () => assembly.dispose());
       const options = await createRuntimePackOptions(runtimeScopeBinding.scopeId${target === 'tauri' ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"});
       const pluginPrograms = hostPrograms(crypto.randomUUID(), 'frontend', initialAssembly.sessionGeneration, options.programHost);
       ctx.provide('pluginPrograms', pluginPrograms);
       const runtimePacks = assembleRuntimePacks(ctx, assembly, { ...options, programHost: pluginPrograms.programHost ?? options.programHost });
       ctx.provide('runtimePacks', runtimePacks);
-      const reader = createAssetRegistry({ catalog: runtimePacks.catalog, fetcher: runtimePacks.fetcher, scopeId: runtimeScopeBinding.scopeId });
+      const reader = new AssetRegistry({ catalog: runtimePacks.catalog, fetcher: runtimePacks.fetcher, scopeId: runtimeScopeBinding.scopeId });
       ctx.provide('assets', reader);
       ctx.effect(() => () => reader.dispose());
     } });
@@ -2074,7 +2073,7 @@ export async function buildProject(
       }),
     );
     if (options.target === 'wechat') await writeWechatProject(facts.value, options, outDir);
-    if (options.target === 'tauri') await writeTauriProject(facts.value, options, outDir);
+    if (options.target === 'tauri') await writeTauriProject(facts.value, outDir);
     const manifest = await writeDistManifest(
       facts.value,
       base,
@@ -2552,7 +2551,6 @@ export async function createViteConfig(
         resolve(generated, 'main.ts'),
         hostSource(
           facts,
-          generated,
           bootstrapRoot,
           canonicalKit?.guid,
           options.host,
@@ -2582,8 +2580,6 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
       writeFile(
         resolve(generated, 'execution-bootstrap.ts'),
         executionBootstrapSource(
-          facts,
-          generated,
           bootstrapRoot,
           assembly.sessionGeneration,
           ssrIdentity,
@@ -2744,7 +2740,7 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
       pack,
       ...(command === 'serve'
         ? [
-            devKitHostBridge(facts, bootstrapRoot, options.host, async () => {
+            devKitHostBridge(options.host, async () => {
               await pack.ready();
               timing('pack-ready');
               const inventory = await publishedPluginInventory(facts.root, sourceInventory, pack);
@@ -2788,7 +2784,13 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
                 ...cookerSession.watchFiles,
                 ...projectInputPaths,
               ]),
-            ].sort(),
+            ]
+              .filter(
+                (path) =>
+                  !isFilesystemPathWithin(generated, path) &&
+                  !isFilesystemPathWithin(realGeneratedRoot, path),
+              )
+              .sort(),
         },
         async closeBundle() {
           sessionClosed = true;
@@ -2799,6 +2801,7 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
           if (environment.name !== 'client') return [];
           // Vite presents slash-normalized paths; inventories use native paths.
           const sourcePath = resolve(context.file);
+          const authoringSource = await options.host?.authoringSourceChanged?.(sourcePath);
           if (sourcePath.startsWith(`${generated}${sep}`)) return [];
           // Sibling Play files cannot invalidate this immutable frontend.
           if (relative(facts.root, sourcePath).split(sep).includes('.forgeax')) return [];
@@ -2820,9 +2823,10 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
             !definitions.has(sourcePath) &&
             (inventory.declarations.has(sourcePath) ||
               !sourceInventory.sourceInputs.has(sourcePath));
-          const capturedRevision = assetSource
-            ? undefined
-            : sourceInventory.sourceInputs.get(sourcePath);
+          const capturedRevision =
+            assetSource || authoringSource
+              ? undefined
+              : sourceInventory.sourceInputs.get(sourcePath);
           if (capturedRevision !== undefined) {
             try {
               const currentRevision = `sha256:${createHash('sha256')
@@ -2835,10 +2839,6 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
               if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
             }
           }
-          if (options.host?.frontendModule && !assetSource)
-            hostBindingError(
-              'external frontend modules are immutable; supply a new revision/binding and replace the page',
-            );
           const visited = new Set<import('vite').ModuleNode>();
           const belongsToPlugin = (module: import('vite').ModuleNode): boolean => {
             if (visited.has(module)) return false;
@@ -2846,16 +2846,24 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
             if (module.file && definitions.has(module.file)) return true;
             return [...module.importers].some(belongsToPlugin);
           };
+          const changedModules = context.server.moduleGraph.getModulesByFile(context.file);
           const projectInput = projectInputPaths.has(sourcePath);
           const sessionSource =
             projectInput ||
             (!assetSource && sourceInventory.sourceInputs.has(sourcePath)) ||
             definitions.has(sourcePath) ||
-            [...(context.server.moduleGraph.getModulesByFile(context.file) ?? [])].some(
-              belongsToPlugin,
+            [...(changedModules ?? [])].some(belongsToPlugin);
+          if (
+            options.host?.frontendModule &&
+            !authoringSource &&
+            !assetSource &&
+            (sessionSource || (changedModules?.size ?? 0) > 0)
+          )
+            hostBindingError(
+              `external frontend modules are immutable; source changed: ${sourcePath}; supply a new revision/binding and replace the page`,
             );
-          if (!sessionSource && !underRoot) return;
-          if (!sessionSource && underRoot) {
+          if (!authoringSource && !sessionSource && !underRoot) return;
+          if (authoringSource || (!sessionSource && underRoot)) {
             void pack
               .rebuildCatalogInPlace([sourcePath])
               .then((published) => {
@@ -3046,7 +3054,8 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
         emptyOutDir: true,
         modulePreload: false,
         rollupOptions: {
-          preserveEntrySignatures: 'strict',
+          // Portable plugin entries declare strict signatures individually.
+          preserveEntrySignatures: wechat ? 'strict' : 'allow-extension',
           input: wechat
             ? { game: wechat.entry }
             : {

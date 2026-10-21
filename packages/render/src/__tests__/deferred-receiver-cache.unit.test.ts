@@ -1,8 +1,10 @@
+import { vec3 } from '@forgeax/engine-math';
 import { type RasterGraphPass, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
+import { MaterialResource } from '../material-resource';
 import { addStandardDeferredLighting } from '../pipeline/standard-deferred-lighting';
 import { buildPerFrameBindGroups } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
@@ -133,7 +135,7 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
   const mutable = frame as unknown as {
     runtime: { deviceScope: DeviceScope };
     validatedOrdered: {
-      source: { materials: { materialParamSchema: { name: string; type: string }[] }[] };
+      source: { materials: MaterialResource[] };
     }[];
   };
   const upload = vi.spyOn(device.queue, 'writeTexture');
@@ -145,8 +147,20 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
     {
       source: {
         materials: [
-          { materialParamSchema: [] },
-          { materialParamSchema: [{ name: 'directMultiscatteringLut', type: 'u32' }] },
+          new MaterialResource({
+            baseColor: vec3.create(1, 1, 1),
+            metallic: 0,
+            roughness: 1,
+            passes: [],
+            materialParamSchema: [],
+          }),
+          new MaterialResource({
+            baseColor: vec3.create(1, 1, 1),
+            metallic: 0,
+            roughness: 1,
+            passes: [],
+            materialParamSchema: [{ name: 'directMultiscatteringLut', type: 'u32' }],
+          }),
         ],
       },
     },
@@ -171,7 +185,15 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
   mutable.validatedOrdered = [
     {
       source: {
-        materials: [{ materialParamSchema: [{ name: 'directMultiscatteringLut', type: 'u32' }] }],
+        materials: [
+          new MaterialResource({
+            baseColor: vec3.create(1, 1, 1),
+            metallic: 0,
+            roughness: 1,
+            passes: [],
+            materialParamSchema: [{ name: 'directMultiscatteringLut', type: 'u32' }],
+          }),
+        ],
       },
     },
   ];

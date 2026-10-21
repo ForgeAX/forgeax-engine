@@ -1,4 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildOfflineAssetEvidence } from '../evidence/offline-evidence.js';
 
@@ -42,15 +45,44 @@ describe('offline evidence adapter', () => {
     expect(buildOfflineAssetEvidence.toString()).not.toContain('AssetRegistry');
   });
 
-  it('keeps the static Pack boundary gate live for runtime package imports', async () => {
-    const gate = await readFile(
-      new URL('../../../../packages/pack/scripts/check-no-assets-load.mjs', import.meta.url),
-      'utf8',
-    );
-
-    expect(gate).toContain('@forgeax/engine-(assets-runtime|runtime)');
-    expect(gate).toContain(String.raw`engine\\.assets\\.load(`);
-    expect(gate).not.toContain("registry.load('");
+  it.each([
+    ['offline reader', 'export const read = (reader, guid) => reader.readByGuid(guid);', 0],
+    ['runtime load', 'engine.assets.load(guid, "mesh");', 1],
+    ['runtime package', 'import { Engine } from "@forgeax/engine-runtime";', 1],
+    ['asset package', 'import { AssetRegistry } from "@forgeax/engine-assets-runtime";', 1],
+    ['SDK runtime root', 'import { Engine } from "@forgeax/engine";', 1],
+    ['SDK asset subpath', 'import { AssetRegistry } from "@forgeax/engine/assets-runtime";', 1],
+    ['dynamic runtime import', 'await import("@forgeax/engine/runtime");', 1],
+    ['template runtime import', 'await import(`@forgeax/engine/runtime`);', 1],
+    ['nested asset import', 'await import("@forgeax/engine-assets-runtime/subpath");', 1],
+  ])('enforces the Pack boundary for %s while allowing game asset loading', async (_, source, status) => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-boundary-'));
+    try {
+      const script = join(root, 'packages/pack/scripts/check-no-assets-load.mjs');
+      const files = [
+        [
+          script,
+          await readFile(
+            new URL('../../scripts/check-no-assets-load.mjs', import.meta.url),
+            'utf8',
+          ),
+        ],
+        [join(root, 'packages/pack/src/reader.ts'), source],
+        [join(root, 'packages/runtime/src/game.ts'), 'engine.assets.load(guid, "mesh");'],
+        [join(root, 'apps/game/src/main.ts'), 'engine.assets.load(guid, "scene");'],
+        [join(root, 'templates/game/src/main.ts'), 'engine.assets.load(guid, "scene");'],
+      ];
+      for (const [path, content] of files) {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, content);
+      }
+      const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(status);
+      if (status === 1) expect(result.stderr).toContain('packages/pack/src/reader.ts');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('projects a verified cook product without requiring DDC storage', async () => {

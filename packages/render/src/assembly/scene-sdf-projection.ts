@@ -1,24 +1,28 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import {
   MESH_GEOMETRIC_DISTANCE_FIELD_CODEC,
   validateMeshDistanceField,
 } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { type MeshAsset, toShared } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { SceneSdfUnavailableError } from '../errors/scene-sdf';
 import type { RenderFeatureSceneSdfDescriptor } from '../features/scene-sdf';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { SdfMeshInstance } from '../raytracing/sdf-query';
+import type { FrameList } from '../scene/frame-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
+import type { MeshFrame } from '../scene/mesh-frame';
+import { effectiveMeshMaterials, meshMaterialGeometry } from '../scene/mesh-materials';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { standardDisplacementRadius } from '../standard-displacement-bounds';
 
 /** Reads the Renderer projection, never queries or retains a second World table.
  * Visibility fields cannot supply a geometric collision error bound. */
 export function projectCollisionScene(
-  slots: readonly RenderSceneSlot[],
+  slots: FrameList<RenderSceneSlot>,
   scopes: readonly RenderResourceScope[],
   world: number,
   descriptor: RenderFeatureSceneSdfDescriptor,
+  frame: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ) {
   const scope = scopes[world];
   function fail(reason: SceneSdfUnavailableError['detail']['reason'], entity?: number): never {
@@ -45,6 +49,8 @@ export function projectCollisionScene(
   for (const slot of slots) {
     if (slot.worldId !== world || slot.snapshot.authorVisible === false) continue;
     const source = slot.snapshot;
+    if (source.glyph !== undefined) continue;
+    if (source.assetHandle === undefined) fail('missing-source', slot.entityKey);
     if (
       source.skin !== undefined ||
       source.skinPose !== undefined ||
@@ -53,9 +59,19 @@ export function projectCollisionScene(
       source.pointsLines !== undefined
     )
       fail('unsupported-geometry', slot.entityKey);
-    const resolved = resolveAssetHandle<MeshAsset>(scope, toShared(source.assetHandle));
+    const resolved = scope.resolveAsset<MeshAsset>(source.assetHandle);
     if (!resolved.ok || resolved.value.kind !== 'mesh') fail('missing-source', slot.entityKey);
     const mesh = resolved.unwrap();
+    const geometry = frame.meshes.get(slot.worldId, source.assetHandle);
+    const bindings =
+      geometry === undefined
+        ? source
+        : effectiveMeshMaterials(source, geometry, meshMaterialGeometry(source));
+    const materials = bindings.materials.map((resource) => {
+      const accepted = frame.materials.get(resource);
+      if (accepted === undefined) fail('missing-source', slot.entityKey);
+      return accepted.snapshot;
+    });
     const field = mesh.distanceField;
     if (field === undefined) fail('missing-field', slot.entityKey);
     if (
@@ -71,10 +87,10 @@ export function projectCollisionScene(
     if (
       mesh.morphTargets !== undefined ||
       mesh.morphWeights !== undefined ||
-      standardDisplacementRadius(source.materials) !== 0 ||
-      source.materials.some(
+      standardDisplacementRadius(materials) !== 0 ||
+      materials.some(
         (m) =>
-          m?.paramSnapshot?.clippingControl !== undefined &&
+          m.paramSnapshot?.clippingControl !== undefined &&
           (m.paramSnapshot.clippingControl as readonly number[])[0] !== 0,
       )
     )

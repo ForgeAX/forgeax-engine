@@ -1,6 +1,8 @@
+import type { ShadowMeshReads } from '../device/mesh-changes';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { FramePresentationPendingReason } from '../render-contract';
+import type { CpuLodSelection } from './cpu-lod';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 // @forgeax/engine-runtime - RenderSystem record stage: frame-snapshot.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
@@ -111,9 +113,20 @@ export function instanceCollectionCacheKey(
  * after all explicit resource handles resolve to resident GPU objects.
  */
 export interface MaterialBgAssemblyCacheEntry {
+  readonly uniformResources: object;
   readonly material: MaterialSnapshot;
-  /** Invalidates when a texture/sampler residency identity changes. */
-  readonly materialResourceEpoch: number;
+  /** Exact asset versions and resident views used by this shared binding. */
+  readonly materialResources: readonly {
+    readonly handle: number;
+    readonly kind: 'texture' | 'sampler';
+    readonly revision: number | undefined;
+    readonly view: TextureView | undefined;
+  }[];
+  readonly preparedTextures: readonly {
+    readonly parameter: string;
+    readonly textureView: TextureView | undefined;
+    readonly sampler: import('@forgeax/engine-rhi').Sampler | undefined;
+  }[];
   readonly materialBgl: BindGroupLayout;
   /** Buffer identity changes when the shared material capacity grows. */
   readonly materialBuffer: Buffer;
@@ -463,6 +476,7 @@ export interface InstalledFrameGraph {
     entries?: readonly ValidatedRenderable[],
     artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
     onPending?: (reason: import('../render-contract').FramePresentationPendingReason) => void,
+    materials?: import('../scene/material-dispatch').MaterialFrame,
   ) => boolean;
   /** Stock pipeline directional views actually projected during this graph build.
    * Absent for custom/legacy graphs: their preparation retains the full capacity. */
@@ -500,27 +514,6 @@ export interface RenderFrameState {
   frameNumber: number;
   materialUboCounters?: {
     -readonly [K in keyof import('../inspection-types').MaterialUniformCacheInspection]: import('../inspection-types').MaterialUniformCacheInspection[K];
-  };
-  materialUboFullChurn?: boolean;
-  materialUboRebuilds?: number;
-  materialUboBasePayloads?: WeakMap<
-    MaterialSnapshot,
-    {
-      readonly payload: Uint8Array;
-      readonly layout: ReturnType<typeof import('@forgeax/engine-types').derive>;
-    }
-  >;
-  /** Last context that populated the reused view-local material upload storage. */
-  materialUboPayloadCache?: {
-    readonly materialSlots: readonly MaterialSnapshot[];
-    readonly materialSlotCount: number;
-    readonly payload: Uint8Array;
-    readonly layouts?: readonly (
-      | ReturnType<typeof import('@forgeax/engine-types').derive>
-      | undefined
-    )[];
-    /** Last successful GPU target for these exact context-owned bytes. */
-    uploadedBuffer?: Buffer | readonly Buffer[];
   };
   /** Renderer-lifetime render-bundle segment reuse tally across scene passes. */
   renderBundleCounters?: import('./render-bundle-cache').RenderBundleCounters;
@@ -577,6 +570,8 @@ export interface RenderFrameState {
   reflectionFallbackReadback?: ReflectionFallbackReadbackRequest | undefined;
   /** Last successfully rendered static directional shadow atlas token. */
   directionalShadowCache: DirectionalShadowCache | null;
+  /** Latest actual Direct-shadow LOD query; independent of accepted depth. */
+  directionalShadowLod?: CpuLodSelection | undefined;
   /** Last submitted projection; guard-band retention shares it with every shadow consumer. */
   directionalShadowProjection?: readonly Float32Array[] | undefined;
   /** Projection/stale evidence promoted only by the last submitted CPU frame. */
@@ -589,6 +584,7 @@ export interface RenderFrameState {
   directionalShadowCacheRecorded: boolean;
   /** Shadow view hit/miss decisions and draw counts of the staged and last submitted frame. */
   readonly shadowRaster: ShadowRasterLedger;
+  shadowDepthLayers?: import('../shadow-depth-layers').ShadowDepthLayers | undefined;
   /** The sole compiled owner for compute, copy, feature, and raster work. */
   compiledFrameGraph: InstalledFrameGraph | null;
   /** Monotonic generation of successfully promoted compiled graphs. */
@@ -963,6 +959,12 @@ export interface BloomFrameReceipts {
  * without a dynamic type escape (was a recordFrame-local interface before F-4).
  */
 export interface ValidatedRenderable {
+  /** Physical source-transform slot, independent of this pass's row index. */
+  readonly meshSlot: number;
+  /** A fold head writes identity here; captures continue to use meshSlot. */
+  readonly foldedMeshSlot?: number;
+  /** Exact source submeshes selected by native batch execution; absent selects the whole mesh. */
+  readonly submeshIndices?: readonly number[];
   readonly source: RenderableSnapshot;
   /** RenderResourceScope that owns the renderable's asset handles and material snapshots. */
   readonly world?: RenderResourceScope;
@@ -991,26 +993,26 @@ export interface ValidatedRenderable {
  * token beside the other RenderFrameState caches lets recordFrame skip a
  * static caster submission without teaching the public render-pipeline
  * contract about caching. Every source that can change caster depth is part
- * of the token: world mutation or persistent caster content, asset
- * catalogue, graph/target identity, CSM matrices, and each validated caster's
- * resident mesh identity and content epoch.
+ * of the token: world mutation or persistent caster content, selected material resources, graph/target identity, CSM matrices, and each validated caster's
+ * resident Mesh publications and actual CPU LOD selection.
  *
  * @internal
  */
 export interface DirectionalShadowCache {
   readonly worlds: readonly RenderResourceScope[];
   readonly worldStateTokens: readonly DirectionalShadowWorldState[];
-  readonly assetCatalogEpoch: number;
+  readonly shadowMaterials?:
+    | readonly import('../scene/material-shadow-content').ShadowMaterialContent[]
+    | undefined;
   readonly pipelineHandle: number;
   readonly graphTopologyKey: string | null;
   readonly shadowMapSize: number;
   readonly cascadeCount: number;
   readonly directionalShadowQuality: DirectionalShadowQuality;
   readonly lightViewProj: readonly Float32Array[];
-  readonly meshContent: readonly {
-    readonly mesh: MeshGpuHandles;
-    readonly contentEpoch: number;
-  }[];
+  readonly meshReads: ShadowMeshReads;
+  readonly meshEpoch: number;
+  readonly lodSelection: object | undefined;
   /** Persistent caster evidence; absent when the frame had no persistent scene. */
   readonly casterContent: PersistentShadowCasterProjection['content'] | undefined;
 }

@@ -22,6 +22,7 @@ import type { TypedShadowTargets } from '../typed-shadow-passes';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import { encodeMainPass } from './main-pass';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
+import { registerScenePass, scenePassContext } from './scene-pass-work';
 import type { ReflectionProbeGraphState } from './typed-frame-graph';
 
 export interface CubeCaptureGraphWork {
@@ -181,6 +182,21 @@ export function addTargetCaptureGraphPasses(
         : undefined;
     if (environment !== undefined && !environment.ok) return environment;
     const atmosphere = environment?.value.atmosphere;
+    const recordModes =
+      initial.sceneInput === true ? (['opaque'] as const) : (['opaque', 'transparent'] as const);
+    const requests = recordModes.map((recordMode) =>
+      registerScenePass(builder, {
+        selector: FORWARD_PASS_SELECTOR,
+        excludeSelector: undefined,
+        recordMode,
+        passKind: 'forward',
+        gpu: false,
+        gpuFilter: undefined,
+        late: false,
+        capture: true,
+        camera: () => current().faceCamera,
+      }),
+    );
     const added = builder.addRasterPass(`${label}-face.${slot}`, {
       accesses: [
         ...(lighting?.accesses ?? []),
@@ -208,6 +224,9 @@ export function addTargetCaptureGraphPasses(
                     { resource: lighting.shadows.directional.view, usage: 'sampled-read' as const },
                   ]),
               { resource: lighting.shadows.spot.view, usage: 'sampled-read' as const },
+              ...(lighting.shadows.moments === undefined
+                ? []
+                : [{ resource: lighting.shadows.moments.view, usage: 'sampled-read' as const }]),
               ...(lighting.shadows.point === undefined
                 ? []
                 : [{ resource: lighting.shadows.point.view, usage: 'sampled-read' as const }]),
@@ -244,124 +263,112 @@ export function addTargetCaptureGraphPasses(
         stencilStoreOp: 'store',
       },
       encode: ({ pass, frame, resources }) => {
-        const internal = frame as _InternalRenderPipelineContext;
-        const captureColor = resources.textureView(color.value);
-        if (!captureColor.ok) return;
-        const captureDepth = resources.textureView(depth.value);
-        if (!captureDepth.ok) return;
-        const captureResolve =
-          resolve === undefined ? undefined : resources.textureView(resolve.value);
-        if (resolve !== undefined && (captureResolve === undefined || !captureResolve.ok)) return;
-        const captureResolveView = captureResolve?.ok ? captureResolve.value : null;
-        const selfSampling = new Map<number, Set<number>>();
-        for (const row of internal.validatedOrdered) {
-          for (const material of row.source.materials) {
-            if (
-              ![...(material.textureSources?.values() ?? [])].some(
-                (source) =>
-                  !isCanvasTextureSource(source) &&
-                  !isExternalTextureSource(source) &&
-                  resolveRenderTargetMaterialSource(source)?.target === current().target,
+        for (const request of requests) {
+          const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
+          const selfSampling = new Map<number, Set<number>>();
+          for (const [index, row] of internal.validatedOrdered.entries()) {
+            for (const slot of internal.materialSlotIndices[index] ?? []) {
+              const material = internal.materialSlots[slot];
+              if (material === undefined) throw new Error('Capture has no submitted material');
+              if (
+                ![...(material.textureSources?.values() ?? [])].some(
+                  (source) =>
+                    !isCanvasTextureSource(source) &&
+                    !isExternalTextureSource(source) &&
+                    resolveRenderTargetMaterialSource(source)?.target === current().target,
+                )
               )
-            )
-              continue;
-            let handles = selfSampling.get(row.renderableIndex);
-            if (handles === undefined) {
-              handles = new Set();
-              selfSampling.set(row.renderableIndex, handles);
+                continue;
+              let handles = selfSampling.get(row.renderableIndex);
+              if (handles === undefined) {
+                handles = new Set();
+                selfSampling.set(row.renderableIndex, handles);
+              }
+              handles.add(material.materialHandle ?? 0);
             }
-            handles.add(material.materialHandle ?? 0);
           }
-        }
-        const resolveShadow = (
-          target: import('../render-pipeline').RenderPipelineTarget | undefined,
-        ) => {
-          if (target === undefined) return undefined;
-          const view = resources.textureView(target.view);
-          if (!view.ok) throw view.error;
-          return view.value;
-        };
-        const groups =
-          lighting === undefined
-            ? undefined
-            : buildPerFrameBindGroups(
-                internal.runtime as RenderSystemInternals,
-                internal.frameState,
-                internal.pipelineState,
-                internal.validated.length > 0,
-                internal.bindGroupCounts,
-                {
-                  ...(atmosphere === undefined
-                    ? {}
-                    : {
-                        atmosphere: {
-                          transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
-                          multipleScattering: resources
-                            .textureView(atmosphere.multipleScattering)
-                            .unwrap(),
-                          aerialPerspective: resources
-                            .textureView(atmosphere.aerialPerspective)
-                            .unwrap(),
-                          aerialTransmittance: resources
-                            .textureView(atmosphere.aerialTransmittance)
-                            .unwrap(),
-                          distantSkyLight: resources
-                            .textureView(atmosphere.distantSkyLight)
-                            .unwrap(),
-                        },
-                      }),
-                  directionalShadow: resolveShadow(lighting.shadows.directional),
-                  spotShadow: resolveShadow(lighting.shadows.spot),
-                },
-                true,
-                internal.standardLighting,
-              );
-        const captureContext = {
-          ...internal,
-          ...(groups === undefined ? {} : groups),
-          ...(environment === undefined
-            ? {}
-            : {
-                environmentIbl: {
-                  irradiance: resources.textureView(environment.value.irradiance).unwrap(),
-                  prefilter: resources.textureView(environment.value.prefilter).unwrap(),
-                },
-              }),
-          camera: current().faceCamera,
-          targetW: current().physical.descriptor.width,
-          targetH: current().physical.descriptor.height,
-          dispatch: (internal.captureDispatch ?? internal.dispatch).filter(
-            (entry) => !selfSampling.get(entry.renderableIndex)?.has(entry.materialHandle),
-          ),
-          foldDispatchPlan: null,
+          const resolveShadow = (
+            target: import('../render-pipeline').RenderPipelineTarget | undefined,
+          ) => {
+            if (target === undefined) return undefined;
+            const view = resources.textureView(target.view);
+            if (!view.ok) throw view.error;
+            return view.value;
+          };
+          const groups =
+            lighting === undefined
+              ? undefined
+              : buildPerFrameBindGroups(
+                  internal.runtime as RenderSystemInternals,
+                  internal.frameState,
+                  internal.pipelineState,
+                  internal.validatedOrdered.length > 0,
+                  internal.bindGroupCounts,
+                  {
+                    ...(atmosphere === undefined
+                      ? {}
+                      : {
+                          atmosphere: {
+                            transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
+                            multipleScattering: resources
+                              .textureView(atmosphere.multipleScattering)
+                              .unwrap(),
+                            aerialPerspective: resources
+                              .textureView(atmosphere.aerialPerspective)
+                              .unwrap(),
+                            aerialTransmittance: resources
+                              .textureView(atmosphere.aerialTransmittance)
+                              .unwrap(),
+                            distantSkyLight: resources
+                              .textureView(atmosphere.distantSkyLight)
+                              .unwrap(),
+                          },
+                        }),
+                    directionalShadow: resolveShadow(lighting.shadows.directional),
+                    spotShadow: resolveShadow(lighting.shadows.spot),
+                    shadowMoments: resolveShadow(lighting.shadows.moments),
+                  },
+                  true,
+                  internal.standardLighting,
+                );
+          const captureContext = {
+            ...internal,
+            ...(groups === undefined ? {} : groups),
+            ...(environment === undefined
+              ? {}
+              : {
+                  environmentIbl: {
+                    irradiance: resources.textureView(environment.value.irradiance).unwrap(),
+                    prefilter: resources.textureView(environment.value.prefilter).unwrap(),
+                  },
+                }),
+            camera: current().faceCamera,
+            targetW: current().physical.descriptor.width,
+            targetH: current().physical.descriptor.height,
+            dispatch: internal.dispatch.filter(
+              (entry) => !selfSampling.get(entry.renderableIndex)?.has(entry.materialHandle),
+            ),
+            foldDispatchPlan: null,
 
-          // Cube faces are raw scene captures, not display-camera HDR output.
-          // Select the PSO against the actual target attachment so an LDR
-          // cube target is rendered by a compatible forward pipeline.
-          tonemapActive: false,
-          skyboxActive: false,
-          transparentColorFormat: initial.physical.descriptor.format as GPUTextureFormat,
-          msaaActive: initial.physical.descriptor.sampleCount === 4,
-          viewBindGroupDynamicOffset: 0,
-          geometryColorView: captureColor.value,
-          geometryDepthView: captureDepth.value,
-          geometryColorResolveView: captureResolveView,
-          splitLdrSprite: false,
-          ldrSpritePassView: null,
-        };
-        delete captureContext.gpuDrivenDrawReceipts;
-        delete captureContext.gpuDrivenStandardPbrFrameResources;
-        encodeMainPass(captureContext, pass, FORWARD_PASS_SELECTOR, {
-          colorViews: [captureColor.value],
-          colorFormats: [initial.physical.descriptor.format as GPUTextureFormat],
-          depthView: captureDepth.value,
-          passKind: 'forward',
-          recordMode: 'opaque',
-          clearColor:
-            current().physical.descriptor.shape === 'cube'
-              ? [0, 0, 0, 1]
-              : current().faceCamera.clearColor,
-        });
+            // Cube faces are raw scene captures, not display-camera HDR output.
+            // Select the PSO against the actual target attachment so an LDR
+            // cube target is rendered by a compatible forward pipeline.
+            tonemapActive: false,
+            skyboxActive: false,
+            transparentColorFormat: initial.physical.descriptor.format as GPUTextureFormat,
+            msaaActive: initial.physical.descriptor.sampleCount === 4,
+            viewBindGroupDynamicOffset: 0,
+            splitLdrSprite: false,
+          };
+          delete captureContext.gpuDrivenSelection;
+          delete captureContext.gpuDrivenStandardPbrFrameResources;
+          // Each prepared lane uses the capture camera's own sorted draw roster.
+          encodeMainPass(captureContext, pass, FORWARD_PASS_SELECTOR, {
+            colorFormats: [initial.physical.descriptor.format as GPUTextureFormat],
+            passKind: 'forward',
+            ...(request.recordMode === undefined ? {} : { recordMode: request.recordMode }),
+          });
+        }
       },
     });
     if (!added.ok) return added;

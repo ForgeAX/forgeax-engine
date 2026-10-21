@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DirectionalLight, DirectionalShadowFilterValue, Skylight } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Directional CSM/PCSS',
@@ -11,6 +13,12 @@ export default defineFeature({
   expect:
     'ON: dark shadows stretch from the colored pillars across the floor, sharp at the base and soft at the tip. OFF: castShadow = false and every shadow disappears. Checks: status accepted, effective pcssHigh, 4 cascades.',
   setup({ world, app }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { sun } = spawnStage(world, { eye: [0, 3, 7], target: [0, 0.5, 0] });
     world.set(sun, DirectionalLight, {
       direction: [0.6, -0.5, -0.4],
@@ -28,7 +36,7 @@ export default defineFeature({
       [0.2, 0.4, 0.95, 1],
     ] as const;
     colors.forEach((baseColor, index) => {
-      spawnMesh(world, MESH.cube, standard(world, { baseColor }), {
+      spawnMesh(world, stageCube, standard(world, { baseColor }), {
         pos: [-2 + index * 2, 1, -0.5 + index * 0.4],
         scale: [0.35, 2, 0.35],
       });

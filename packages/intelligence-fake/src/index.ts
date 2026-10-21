@@ -20,7 +20,6 @@ export interface FakeIntelligenceProviderOptions {
 }
 
 interface PendingFakeActivity {
-  readonly id: ActivityId;
   readonly sink: ActivitySink;
   readonly script: FakeActivityScript;
   index: number;
@@ -49,7 +48,7 @@ export function createFakeIntelligenceProvider(
         deltas: [`${submission.input}:`, 'ok'],
         output: `${submission.input}:ok`,
       };
-      activities.set(submission.id, { id: submission.id, sink, script, index: 0 });
+      activities.set(submission.id, { sink, script, index: 0 });
       return ok(undefined);
     },
     cancel(id): Result<void, IntelligenceError> {
@@ -67,7 +66,8 @@ export function createFakeIntelligenceProvider(
       return ok(undefined);
     },
     advance(): void {
-      for (const [id, activity] of activities) {
+      for (const [id, activity] of [...activities]) {
+        if (activities.get(id) !== activity) continue;
         const delta = activity.script.deltas[activity.index];
         if (delta !== undefined) {
           activity.index += 1;
@@ -85,8 +85,9 @@ export function createFakeIntelligenceProvider(
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
-      for (const activity of activities.values()) activity.sink.cancelled();
+      const current = [...activities.values()];
       activities.clear();
+      for (const activity of current) activity.sink.cancelled();
     },
     get activeCount(): number {
       return activities.size;

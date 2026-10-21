@@ -1,5 +1,10 @@
 import type { ShaderModule } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import {
+  isCanonicalStandardPbrMaterialShader,
+  isStandardPbrSkinMaterialShader,
+  SKIN_MATERIAL_SHADER_ID,
+} from '../pbr-pipeline';
 
 /** One producer-selected WGSL module and its matching vertex/material receipt. */
 export interface GpuDrivenPbrProgram {
@@ -11,14 +16,11 @@ export function standardPbrProgramKey(
   materialShaderId: string,
   vertexColorAvailable = false,
 ): string | undefined {
-  const material =
-    materialShaderId === 'forgeax::default-standard-pbr'
-      ? materialShaderId
-      : materialShaderId === 'forgeax::pbr-skin' ||
-          materialShaderId === 'forgeax::default-standard-pbr-skin'
-        ? 'forgeax::pbr-skin'
-        : undefined;
-  return material === undefined ? undefined : `${material}|color=${vertexColorAvailable}`;
+  if (!isCanonicalStandardPbrMaterialShader(materialShaderId)) return undefined;
+  const material = isStandardPbrSkinMaterialShader(materialShaderId)
+    ? SKIN_MATERIAL_SHADER_ID
+    : materialShaderId;
+  return `${material}|color=${vertexColorAvailable}`;
 }
 
 export function resolveStandardPbrProgram(

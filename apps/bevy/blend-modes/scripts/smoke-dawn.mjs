@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-blend-modes headless dawn smoke (structural-only, no pixel readback).
 // Strategy: spawn 5 spheres with different blend modes + ground plane, verify:
@@ -104,20 +106,22 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, Materials, MeshFilter, MeshRenderer, perspective, PointLight } = await import('@forgeax/engine-render');
 const { SPRITE_PREMULTIPLIED_ALPHA_BLEND } = await import('@forgeax/engine-render/authoring');
 
-const world = new World();
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 } finally {
   globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
 }
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -130,8 +134,8 @@ subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.
 // Ground plane (use createBoxGeometry — HANDLE_CUBE needs asset registration)
 const planeGeom = createBoxGeometry(1, 0.02, 1, 1, 1, 1);
 if (!planeGeom.ok) { console.error('plane geom failed'); process.exit(1); }
-const planeHandle = world.allocSharedRef('MeshAsset', planeGeom.value);
-const planeMat = world.allocSharedRef('MaterialAsset', Materials.unlit([0.3, 0.3, 0.3, 1]));
+const planeHandle = world.assets.create(planeGeom.value).unwrap();
+const planeMat = world.assets.create(Materials.unlit([0.3, 0.3, 0.3, 1])).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, -1.5, 0], quat: [0, 0, 0, 1], scale: [16, 1, 16] } },
   { component: MeshFilter, data: { assetHandle: planeHandle } },
@@ -141,7 +145,7 @@ world.spawn(
 // Create sphere mesh and 5 blend materials
 const sphereGeom = createSphereGeometry(0.4, 32, 16);
 if (!sphereGeom.ok) { console.error('sphere geom failed'); process.exit(1); }
-const sphereHandle = world.allocSharedRef('MeshAsset', sphereGeom.value);
+const sphereHandle = world.assets.create(sphereGeom.value).unwrap();
 
 function blendMat(baseColor, blend) {
   return {
@@ -155,20 +159,20 @@ function blendMat(baseColor, blend) {
   };
 }
 
-const opaqueHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([0.9, 0.2, 0.3, 1]));
-const blendHandle = world.allocSharedRef('MaterialAsset', blendMat([0.9, 0.2, 0.3, 0.5], {
+const opaqueHandle = world.assets.create(Materials.unlit([0.9, 0.2, 0.3, 1])).unwrap();
+const blendHandle = world.assets.create(blendMat([0.9, 0.2, 0.3, 0.5], {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-}));
-const premultHandle = world.allocSharedRef('MaterialAsset', blendMat([0.9, 0.2, 0.3, 0.5], SPRITE_PREMULTIPLIED_ALPHA_BLEND));
-const addHandle = world.allocSharedRef('MaterialAsset', blendMat([0.9, 0.2, 0.3, 0.5], {
+})).unwrap();
+const premultHandle = world.assets.create(blendMat([0.9, 0.2, 0.3, 0.5], SPRITE_PREMULTIPLIED_ALPHA_BLEND)).unwrap();
+const addHandle = world.assets.create(blendMat([0.9, 0.2, 0.3, 0.5], {
   color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-}));
-const mulHandle = world.allocSharedRef('MaterialAsset', blendMat([0.9, 0.2, 0.3, 0.5], {
+})).unwrap();
+const mulHandle = world.assets.create(blendMat([0.9, 0.2, 0.3, 0.5], {
   color: { srcFactor: 'dst', dstFactor: 'zero', operation: 'add' },
   alpha: { srcFactor: 'dst', dstFactor: 'zero', operation: 'add' },
-}));
+})).unwrap();
 
 const positions = [
   { x: -4, mat: opaqueHandle },

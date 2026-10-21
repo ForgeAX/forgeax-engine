@@ -1,12 +1,10 @@
 import { resolve } from 'node:path';
 import { emit_reflection, parse, parseReflectionWire, validate } from '@forgeax/engine-naga';
-import {
-  type MaterialShaderArtifactReceipt,
-  readShaderManifestPublication,
-} from '@forgeax/engine-shader';
+import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import {
   derive,
   MATERIAL_SCENE_ADDRESS_UNIT_BYTES,
+  type MaterialProgramAbi,
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -88,7 +86,7 @@ describe('Standard template alias publication', () => {
           variants: {
             defines: Record<string, boolean>;
             composedWgsl: string;
-            receipt: MaterialShaderArtifactReceipt;
+            receipt: MaterialProgramAbi;
           }[];
         }[];
       };

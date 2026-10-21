@@ -1,18 +1,9 @@
 // apps/hello/triangle - end-to-end Hello Triangle demo (M3 ECS-driven form).
 //
-// shadingModel routing (feat-20260518-pbr-direct-lighting-mvp / w24 / AC-13;
-// feat-20260523 M8-T03 doc refresh: StandardMaterialAsset retired in favour
-// of the schema-driven register API):
-//   The renderable below carries `MeshRenderer { data: {} }` — the empty material
-//   handle drops through render-system-extract.ts case B fallback to
-//   `defaultMaterialSnapshot()` (mid-grey, `shadingModel: 'unlit'`). The demo
-//   intentionally does NOT register a PBR material; the basic-primitive
-//   "hello triangle" example belongs on the unlit pipeline (no DirectionalLight
-//   coupling). For an explicit `MaterialAsset { shadingModel: 'unlit' }`
-//   register-and-bind exemplar see `apps/learn-render/1.getting-started/4.textures/src/index.ts`;
-//   for the flagship schema-driven GGX-PBR + DirectionalLight pairing (built
-//   via `assetRegistry.registerMaterialAsset({ materialShader:
-//   'forgeax::default-standard-pbr', ... })`) see `apps/hello/room/src/main.ts`.
+// An empty MeshRenderer uses the default unlit material. For an explicit
+// managed material created with assets.create, see
+// `apps/learn-render/1.getting-started/4.textures/src/index.ts`; for a standard
+// PBR material and DirectionalLight, see `apps/hello/room/src/main.ts`.
 //
 // Cross-package smoke:
 //   - @forgeax/engine-math       -> vec3 vertices + mat4 projection + quat orientation
@@ -47,7 +38,7 @@
 
 import { World } from '@forgeax/engine-ecs';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
-import { AssetRegistry, HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -59,11 +50,9 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import brdfSrc from './shaders/brdf.wgsl?raw';
 import pbrSrc from './shaders/pbr.wgsl?raw';
 import viewSrc from './shaders/view.wgsl?raw';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_TRIANGLE = createPrimitiveMesh('triangle').unwrap();
 
-// Reference AssetRegistry as a value so the import is not tree-shaken; the
-// builtin handles consumed below (HANDLE_TRIANGLE) live in the same module
-// (F-1 single-import contract part 3/3).
-void AssetRegistry;
 
 // .wgsl?raw side-effect references keep the three-file naga_oil composition
 // (view + brdf + pbr via #import) in the rolldown input graph so the Vite
@@ -81,7 +70,7 @@ void viewSrc;
 // Three vertex positions in clip space; produced via @forgeax/engine-math vec3 to
 // exercise the branded API surface (CPU pre-bake binding exemplar; the actual
 // triangle geometry consumed by the GPU comes from the engine's AssetRegistry
-// HANDLE_TRIANGLE builtin so AI users do not learn two parallel geometry
+// BUILTIN_TRIANGLE builtin so AI users do not learn two parallel geometry
 // paths - charter proposition 5 consistent abstraction).
 const v0 = vec3.create(0.0, 0.7, 0.0);
 const v1 = vec3.create(-0.7, -0.6, 0.0);
@@ -107,47 +96,6 @@ const orientation = quat.identity(quat.create());
 // AI-user binding exemplar: this is the canonical four-step recipe (spawn ->
 // ready -> draw -> onError) AI users discover via README + AGENTS.md "ECS
 // render bridge" section.
-
-const world = new World();
-
-// Mesh entity: builtin triangle geometry + default PBR material (50% grey,
-// dielectric, fully rough). Transform at origin / identity rotation / unit
-// scale (M0 SSOT lock).
-world.spawn(
-  {
-    component: Transform,
-    data: {},
-  },
-  { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
-  {
-    component: MeshRenderer,
-    data: {},
-  },
-).unwrap();
-
-// Camera entity: Transform + Camera at (0, 0, 3) looking down -Z
-// (M0 SSOT lock; identity quaternion = looking down -Z by RH convention).
-world.spawn(
-  {
-    component: Transform,
-    data: { pos: [0, 0, 3]},
-  },
-  {
-    component: Camera,
-    data: perspective({ fov: Math.PI / 4, aspect: 16 / 9 }),
-  },
-).unwrap();
-
-// Directional light entity: -Y dominant + slight +X / +Z mix, white, unit
-// intensity (M0 SSOT lock; matches spike-report-m0.md baseline conditions).
-world.spawn({
-  component: DirectionalLight,
-  data: { castShadow: true,
-    direction: [-0.5, -1, -0.3],
-    color: [1, 1, 1],
-    intensity: 1,
-  },
-}).unwrap();
 
 // --- Renderer + frame driver ------------------------------------------------
 
@@ -181,6 +129,51 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const constructed = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
   if (!constructed.ok) throw constructed.error;
   const renderer = constructed.value.renderer;
+  const assets = constructed.value.assets;
+  const world = new World({ assets });
+  const triangle = assets.create(BUILTIN_TRIANGLE).unwrap();
+
+  // Mesh entity: builtin triangle geometry + default PBR material (50% grey,
+  // dielectric, fully rough). Transform at origin / identity rotation / unit
+  // scale (M0 SSOT lock).
+  world.spawn(
+    {
+      component: Transform,
+      data: {},
+    },
+    { component: MeshFilter, data: { assetHandle: triangle } },
+    {
+      component: MeshRenderer,
+      data: {},
+    },
+  ).unwrap();
+
+  assets.release(triangle).unwrap();
+
+  // Camera entity: Transform + Camera at (0, 0, 3) looking down -Z
+  // (M0 SSOT lock; identity quaternion = looking down -Z by RH convention).
+  world.spawn(
+    {
+      component: Transform,
+      data: { pos: [0, 0, 3]},
+    },
+    {
+      component: Camera,
+      data: perspective({ fov: Math.PI / 4, aspect: 16 / 9 }),
+    },
+  ).unwrap();
+
+  // Directional light entity: -Y dominant + slight +X / +Z mix, white, unit
+  // intensity (M0 SSOT lock; matches spike-report-m0.md baseline conditions).
+  world.spawn({
+    component: DirectionalLight,
+    data: { castShadow: true,
+      direction: [-0.5, -1, -0.3],
+      color: [1, 1, 1],
+      intensity: 1,
+    },
+  }).unwrap();
+
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -190,7 +183,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // x (projWebGL, projReverseZ) = 6 mat4.transformPoint calls, mapping vec3
   // vertices into clip space. clipBuf is a throwaway scratch - this path does
   // NOT feed any GPU vertex buffer (the engine RenderSystem owns its own via
-  // the AssetRegistry HANDLE_TRIANGLE upload during `await host initialization`);
+  // the AssetRegistry BUILTIN_TRIANGLE upload during `await host initialization`);
   // it exists purely to (1) force mat4.transformPoint surface resolution at
   // build time (AC-17 dual-projection smoke); (2) satisfy charter proposition
   // 4 - an AI user can copy-paste from main.ts once and learn the call shape.

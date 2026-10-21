@@ -29,13 +29,13 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { createBoxGeometry, PROCEDURAL_FLOATS_PER_VERTEX } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { PointLight } from '@forgeax/engine-render';
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   addFirstPersonSystem,
@@ -44,6 +44,8 @@ import {
   createFirstPersonControls,
   createScrollFovAccumulator,
 } from '../../../../shared/src/learn-render-first-person';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example-specific glue
 
@@ -2249,8 +2251,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const renderer = app.renderer;
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   app.onError((e) => {
     console.error('[learn-render 2.lighting 2.basic-lighting] app.onError:', e.code, e.hint);
@@ -2267,7 +2273,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+      ? app.assets.create({
           kind: 'texture',
           shape: {
             viewDimension: '2d',
@@ -2300,13 +2306,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
               : new Uint8Array([0, 64, 255, 255, 255]),
           colorSpace: 'linear',
           mips: { kind: 'none' },
-        })
+        }).unwrap()
       : undefined;
   const baseColorTextureSamplerHandle =
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef('SamplerAsset', {
+      ? app.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2314,7 +2320,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        })
+        }).unwrap()
       : undefined;
   const metallicRoughnessTextureHandle =
     FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE === 'blue' ||
@@ -2323,7 +2329,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1' ||
     FALSIFY_MATERIAL_METALLIC_CHANNEL === 'red' ||
     FALSIFY_MATERIAL_ROUGHNESS_CHANNEL === 'blue'
-      ? world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+      ? app.assets.create({
           kind: 'texture',
           shape: {
             viewDimension: '2d',
@@ -2360,13 +2366,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
                 : new Uint8Array([0, 0, 255, 255]),
           colorSpace: 'linear',
           mips: { kind: 'none' },
-        })
+        }).unwrap()
       : undefined;
   const metallicRoughnessTextureSamplerHandle =
     FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef('SamplerAsset', {
+      ? app.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2374,9 +2380,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        })
+        }).unwrap()
       : undefined;
-  const normalTextureHandle = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+  const normalTextureHandle = app.assets.create({
     kind: 'texture',
     shape: {
       viewDimension: '2d',
@@ -2442,26 +2448,26 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
             ]),
     colorSpace: 'linear',
     mips: { kind: 'none' },
-  });
+  }).unwrap();
   const occlusionTextureHandle =
     FALSIFY_MATERIAL_OCCLUSION_STRENGTH === '' &&
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_SAMPLER === '' &&
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_TRANSFORM === '' &&
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === ''
       ? undefined
-      : world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+      : app.assets.create({
           kind: 'texture',
           shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
           format: 'rgba8unorm',
           data: new Uint8Array([0, 0, 0, 255]),
           colorSpace: 'linear',
           mips: { kind: 'none' },
-        });
+        }).unwrap();
   const occlusionTextureSamplerHandle =
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef('SamplerAsset', {
+      ? app.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2469,14 +2475,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        })
+        }).unwrap()
       : undefined;
   const specularColorTextureHandle =
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE === 'blue' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+      ? app.assets.create({
           kind: 'texture',
           shape: {
             viewDimension: '2d',
@@ -2506,14 +2512,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
               : new Uint8Array([0, 64, 255, 255]),
           colorSpace: 'linear',
           mips: { kind: 'none' },
-        })
+        }).unwrap()
       : undefined;
   const specularColorTextureSamplerHandle =
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE === 'blue' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef('SamplerAsset', {
+      ? app.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2521,11 +2527,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        })
+        }).unwrap()
       : undefined;
   const emissiveTextureHandle =
     FALSIFY_MATERIAL_EMISSIVE_TEXTURE === 'blue'
-      ? world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+      ? app.assets.create({
           kind: 'texture',
           shape: {
             viewDimension: '2d',
@@ -2555,13 +2561,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
               : new Uint8Array([0, 64, 255, 255]),
           colorSpace: 'linear',
           mips: { kind: 'none' },
-        })
+        }).unwrap()
       : undefined;
   const emissiveTextureSamplerHandle =
     FALSIFY_MATERIAL_EMISSIVE_TEXTURE_SAMPLER === 'nearest' ||
     FALSIFY_MATERIAL_EMISSIVE_TEXTURE_UV_TRANSFORM === '1' ||
     FALSIFY_MATERIAL_EMISSIVE_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef('SamplerAsset', {
+      ? app.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2569,7 +2575,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        })
+        }).unwrap()
       : undefined;
   const normalTextureSamplerHandle =
     FALSIFY_MATERIAL_NORMAL_TEXTURE === '' &&
@@ -2585,7 +2591,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_LOD_MAX_CLAMP === '' &&
   FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY === ''
       ? undefined
-      : world.allocSharedRef('SamplerAsset', {
+      : app.assets.create({
           kind: 'sampler',
           magFilter:
             FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY !== '' ||
@@ -2632,16 +2638,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
                       ? 1
                       : 0,
               }),
-          ...(FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY === ''
-            ? {}
-            : {
-                maxAnisotropy:
-                  FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY === '1'
-                    ? 16
-                    : undefined,
-              }),
-        });
-  const objectMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', ({
+          ...(FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY === '1' ? { maxAnisotropy: 16 } : {}),
+        }).unwrap();
+  const objectMatHandle = app.assets.create(({
     kind: 'material',
     passes: [
       {
@@ -2790,23 +2789,21 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
             },
           }),
     },
-  } as unknown as MaterialAsset));
+  } as unknown as MaterialAsset)).unwrap();
 
   // Unlit material for the lamp cube.
-  const lampMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const lampMatHandle = app.assets.create({
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
     values: { baseColor: [1.0, 1.0, 1.0, 1.0] },
-  });
+  }).unwrap();
 
   const objectMeshHandle =
     FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1' ||
     FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1' ||
     FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === '1' ||
     FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_SET === '1'
-      ? world.allocSharedRef(
-          'MeshAsset',
-          createUvSetMesh(
+      ? app.assets.create(createUvSetMesh(
             FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1'
               ? BASE_COLOR_TEXTURE_UV1
               : FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1'
@@ -2814,9 +2811,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
                 : FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === '1'
                   ? OCCLUSION_TEXTURE_UV1
                   : SPECULAR_COLOR_TEXTURE_UV1,
-          ),
-        )
-      : HANDLE_CUBE;
+          )).unwrap()
+      : primitiveCube;
 
   // Spawn the object cube at origin.
   world
@@ -2844,7 +2840,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: POINT_LIGHT_POSITION, quat: [0, 0, 0, 1], scale: [LAMP_SCALE, LAMP_SCALE, LAMP_SCALE],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [lampMatHandle] } },
       {
         component: PointLight,

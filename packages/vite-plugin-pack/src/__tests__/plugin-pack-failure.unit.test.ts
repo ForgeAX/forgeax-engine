@@ -2,15 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   appendPluginPackCleanup,
   createPluginPackFailure,
-  type PluginPackFailureCode,
+  PLUGIN_PACK_FAILURE_STAGES,
 } from '../errors.js';
-
-const stages = ['config', 'scan', 'produce', 'finalize', 'commit', 'emit', 'cleanup'] as const;
 
 describe('PluginPackFailure', () => {
   it('provides a closed, deterministic contract for every failure stage', () => {
-    for (const stage of stages) {
-      const code = `${stage}-failed` as PluginPackFailureCode;
+    for (const stage of PLUGIN_PACK_FAILURE_STAGES) {
+      const code = `${stage}-failed` as const;
       const failure = createPluginPackFailure({
         code,
         expected: `the ${stage} stage completes`,

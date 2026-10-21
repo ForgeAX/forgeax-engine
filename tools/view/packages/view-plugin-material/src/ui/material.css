@@ -17,20 +17,11 @@
   position: relative;
 }
 
-.fx-material-preview-toolbar {
-  position: absolute;
-  top: var(--fx-ref-space-8, 8px);
-  right: var(--fx-ref-space-8, 8px);
-  z-index: 2;
-}
-
 .fx-material-restore-error {
-  position: absolute;
-  top: calc(var(--fx-ref-space-8, 8px) + 2.5rem);
-  right: var(--fx-ref-space-8, 8px);
-  z-index: 2;
-  margin: 0;
-  max-width: 16rem;
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0 var(--fx-ref-space-6) var(--fx-ref-space-6);
+  overflow-wrap: anywhere;
 }
 
 .fx-asset-preview-surface {
@@ -259,3 +250,7 @@
   height: 100%;
   min-height: 0;
 }
+.fx-material-stats { overflow: auto; }
+.fx-material-pass-stats { flex: 0 0 auto; border-top: 1px solid var(--fx-color-border-default); padding: 8px 0; }
+.fx-material-pass-stats h3 { margin: 0 12px 8px; font-size: 12px; overflow-wrap: anywhere; }
+.fx-material-compiler-status { margin: 8px 12px; color: var(--fx-color-text-secondary); font-size: 12px; }

@@ -21,13 +21,17 @@
 // cube's position matches the closed-form sin curve — proving the motion is elapsed-keyed.
 
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Vertical oscillation amplitude (world units). */
 export const AMPLITUDE = 2.0;
@@ -52,23 +56,22 @@ export function oscillatorY(elapsed: number): number {
  * light + a camera. The cube's position/scale are set by stepByElapsed each frame.
  */
 export function buildTimeElapsedWorld(world: World): void {
-  const groundMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.3, 0.35, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const groundMat = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.3, 0.35, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -3, 0], quat: [0, 0, 0, 1], scale: [16, 0.02, 16] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [groundMat] } },
   );
 
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.5, 0.2, 1] }),
-  );
+  const cubeMat = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.5, 0.2, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
     { component: Oscillator, data: { marker: 1 } },
   );

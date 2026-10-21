@@ -44,6 +44,47 @@
           }
         }
       }
+    },
+    {
+      "guid": "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+      "kind": "mesh",
+      "payload": {
+        "kind": "mesh",
+        "geometry": "procedural-cube"
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "008e4f75-e7a3-4715-b05b-b93a9ec12074",
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-unlit"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.8,
+            0.4,
+            0.2,
+            1
+          ]
+        }
+      },
+      "refs": [],
+      "artifacts": {}
     }
   ]
 }

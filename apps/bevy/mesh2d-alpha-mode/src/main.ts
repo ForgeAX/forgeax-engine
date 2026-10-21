@@ -1,5 +1,4 @@
 import { createApp } from '@forgeax/engine-app/browser';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildMesh2dAlphaModeWorld, makeAlphaModePixels, TEXTURE_SIZE } from './mesh2d-alpha-mode.js';
@@ -16,6 +15,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const appResult = await createApp(target, {}, forgeaxBundlerAdapter());
   if (!appResult.ok) return console.error('[bevy-mesh2d-alpha-mode] createApp failed:', appResult.error);
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const pixels = makeAlphaModePixels();
   const texture = {
     kind: 'texture' as const,
@@ -25,8 +26,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     colorSpace: 'srgb' as const,
     mips: { kind: 'none' as const },
   };
-  const handle = app.world.allocSharedRef('TextureAsset', texture);
-  buildMesh2dAlphaModeWorld(app.world, unwrapHandle(handle));
+  const handle = assets.create(texture).unwrap();
+  buildMesh2dAlphaModeWorld(app.world, handle);
   const started = app.start();
   if (!started.ok) return console.error('[bevy-mesh2d-alpha-mode] app.start failed:', started.error);
   (globalThis as { __bevyMesh2dAlphaModeReady?: boolean }).__bevyMesh2dAlphaModeReady = true;

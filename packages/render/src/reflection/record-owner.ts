@@ -10,32 +10,28 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { buildCubeCameraFaceViews } from '../capture/cube-views';
-import {
-  createFaceUniformsBuffer,
-  createPrefilterUniformsBuffer,
-  writeAllFaceUniforms,
-  writeAllPrefilterUniforms,
-} from '../device/gpu-residency';
+import { createPrefilterUniformsBuffer, writeAllPrefilterUniforms } from '../device/gpu-residency';
 import type { SelectedEnvironmentFrame } from '../environment/frame';
 import { type AtmosphereLease, retainAtmosphere } from '../environment/storage';
+import { ReflectionProbeBindingProjection } from '../gpu-driven/material-bindings';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT_AND_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
+import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import {
-  GPU_BUFFER_USAGE_COPY_DST,
-  GPU_BUFFER_USAGE_UNIFORM,
-  GPU_BUFFER_USAGE_VERTEX,
-} from '../gpu-usage';
-import {
-  CUBEMAP_FACE_VERTICES,
   createIblPipelines,
   getOrCreateIblCache,
   iblPrefilterGroup0Entries,
-  PREFILTER_MIP_LEVELS,
 } from '../ibl/IblPipelineCache';
+import {
+  createPmremAtlas,
+  PMREM_FACES_PER_STEP,
+  type PmremAtlas,
+  pmremLevelCount,
+} from '../ibl/pmrem';
 import type {
   ReflectionFallbackReadbackReceipt,
   ReflectionFallbackReceipt,
@@ -43,6 +39,7 @@ import type {
   ReflectionProbeSelectionInspection,
 } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { ReflectionProbeRecordState, RenderSystemInternals } from '../record/render-context';
 import type { ReflectionProbeGraphWork } from '../record/typed-frame-graph';
 import { REFLECTION_PROBE_VIEW_SLOT_BASE, VIEW_UNIFORM_SLOT_STRIDE } from '../record/view-ubo';
@@ -74,7 +71,6 @@ type ProbeCubeSet = {
   readonly texture: Texture;
   readonly cubeView: TextureView;
   readonly faceViews: readonly TextureView[];
-  readonly mipViews: readonly (readonly TextureView[])[];
   readonly depthTexture: Texture;
   readonly depthView: TextureView;
   readonly size: number;
@@ -93,9 +89,10 @@ type ProbeGpuResource = {
   filter: ProbeFilterState;
   rawFaceCursor: number;
   readonly raw: ProbeCubeSet;
-  active: ProbeCubeSet | undefined;
-  candidate: ProbeCubeSet;
-  spare: ProbeCubeSet | undefined;
+  active: PmremAtlas | undefined;
+  candidate: PmremAtlas;
+  spare: PmremAtlas | undefined;
+  readonly scratch: PmremAtlas;
   readonly sampler: Sampler;
   readonly uniformBuffer: Buffer;
   readonly filterGroup1: BindGroup;
@@ -107,12 +104,10 @@ type ProbeGpuResource = {
 
 type ProbeSharedResources = {
   readonly background: ProbeBackgroundResources | undefined;
-  readonly faceUniforms: Buffer;
   readonly prefilterUniforms: Buffer;
-  readonly vertexBuffer: Buffer;
   readonly sampler: Sampler;
   readonly filterPipeline: RenderPipeline;
-  readonly cubeGroup1Bgl: BindGroupLayout;
+  readonly prefilterGroup1Bgl: BindGroupLayout;
   readonly prefilterGroup0Bgl: BindGroupLayout;
 };
 
@@ -131,6 +126,7 @@ const PROBE_INTENSITY_SENTINEL_OFFSET = 1;
 
 /** Renderer-owned raw capture and incremental PMREM/LKG promotion owner. */
 export class ReflectionProbeRecordOwner {
+  private readonly materialBindings = new ReflectionProbeBindingProjection();
   private readonly resources = new Map<string, ProbeGpuResource>();
   private shared: ProbeSharedResources | undefined;
   private pipelineWarmup: Promise<void> | undefined;
@@ -180,7 +176,6 @@ export class ReflectionProbeRecordOwner {
       rawFacesCaptured += resource.rawFaceCursor;
       filteredStepsCompleted += resource.filter.cursor;
       const completedMipCount = Math.min(
-        PREFILTER_MIP_LEVELS,
         Math.floor(resource.filter.cursor / resource.filter.faceCount),
       );
       for (let mip = 0; mip < completedMipCount; mip += 1) filteredMipLevels.add(mip);
@@ -451,7 +446,15 @@ export class ReflectionProbeRecordOwner {
     }
     this.lastAcceptedCount = acceptedCount;
     const fallbackTickets = this.fallbackFormatAvailable
-      ? this.stageFallbackProjections(facts, selections, accepted, frameId, skylight)
+      ? this.stageFallbackProjections(
+          facts,
+          selections,
+          accepted,
+          frameId,
+          skylight,
+          environment,
+          resourceWorld,
+        )
       : new Map<string, PendingFallback>();
     for (const [key, resource] of this.resources) {
       if (!accepted.has(key)) {
@@ -474,7 +477,7 @@ export class ReflectionProbeRecordOwner {
           halfExtents: resource.fact.halfExtents,
           intensity: resource.fact.intensity,
           generation: resource.filter.activeGeneration,
-          filteredView: active.cubeView,
+          filteredView: active.view,
           sampler: resource.sampler,
           uniformBuffer: resource.uniformBuffer,
         };
@@ -487,7 +490,7 @@ export class ReflectionProbeRecordOwner {
         handle === undefined ||
         handle === 0 ||
         this.internals.gpuStore.getCubemapGpuView(
-          toShared<'EquirectAsset'>(handle),
+          handle as AssetHandle<'equirect'>,
           resourceWorld,
         ) !== undefined,
     );
@@ -510,24 +513,26 @@ export class ReflectionProbeRecordOwner {
           : undefined;
       if (this.shared === undefined) continue;
       if (!environmentReady || (rawCaptureFace === undefined && step === undefined)) continue;
-      const filterGroup0 =
-        step === undefined
-          ? undefined
-          : this.internals.device.createBindGroup({
-              label: `reflection-probe-${resource.index}-pmrem-${step.mipLevel}-${step.faceIndex}`,
-              layout: this.shared.prefilterGroup0Bgl,
-              entries: iblPrefilterGroup0Entries(
-                this.shared.faceUniforms,
-                this.shared.prefilterUniforms,
-                step.mipLevel,
-                step.faceIndex,
-              ),
-            });
-      if (filterGroup0 !== undefined && !filterGroup0.ok) continue;
+      const filterGroup0: BindGroup[] = [];
+      if (step !== undefined) {
+        for (let face = step.faceIndex; face < step.faceIndex + PMREM_FACES_PER_STEP; face++) {
+          const group = this.internals.device.createBindGroup({
+            label: `reflection-probe-${resource.index}-pmrem-${step.mipLevel}-${face}`,
+            layout: this.shared.prefilterGroup0Bgl,
+            entries: iblPrefilterGroup0Entries(this.shared.prefilterUniforms, step.mipLevel, face),
+          });
+          if (!group.ok) {
+            this.internals.errorRegistry.fire(group.error);
+            break;
+          }
+          filterGroup0.push(group.value);
+        }
+        if (filterGroup0.length !== PMREM_FACES_PER_STEP) continue;
+      }
       resource.pending = { rawCaptureFace, step };
       captureTickets.push({ resource, pending: resource.pending });
       if (rawCaptureFace !== undefined) this.lastScheduledRawFaces += 1;
-      if (step !== undefined) this.lastScheduledFilteredSteps += 1;
+      if (step !== undefined) this.lastScheduledFilteredSteps += PMREM_FACES_PER_STEP;
       const face =
         rawCaptureFace === undefined
           ? undefined
@@ -563,15 +568,15 @@ export class ReflectionProbeRecordOwner {
         rawFaceViews: resource.raw.faceViews,
         rawDepthTexture: resource.raw.depthTexture,
         filteredTexture: resource.candidate.texture,
-        filteredCubeView: resource.candidate.cubeView,
-        filteredFaceViewsByMip: resource.candidate.mipViews,
+        filteredView: resource.candidate.view,
+        filterScratchTexture: resource.scratch.texture,
+        filterScratchView: resource.scratch.view,
         outputFormat: this.outputFormat,
         sampler: resource.sampler,
         filterPipeline: this.shared.filterPipeline,
         ...(this.shared.background === undefined ? {} : { background: this.shared.background }),
-        filterGroup0: filterGroup0?.value,
+        filterGroup0: step === undefined ? undefined : filterGroup0,
         filterGroup1: resource.filterGroup1,
-        cubeVertexBuffer: this.shared.vertexBuffer,
         rawCaptureFace,
         rawDepthView: resource.raw.depthView,
         rawSize: resource.raw.size,
@@ -591,8 +596,8 @@ export class ReflectionProbeRecordOwner {
     return {
       table,
       selections,
+      bindingClasses: this.materialBindings.project(selections, table),
       graph: { work },
-      fallbackProjections: new Map(this.fallbackReceipts),
       // A neutral projection is an exact zero and needs no MRT, pipeline
       // variant, or readback work. Demand is therefore derived from the
       // selected producer source rather than from the presence of a
@@ -700,6 +705,8 @@ export class ReflectionProbeRecordOwner {
     accepted: ReadonlyMap<string, ProbeGpuResource>,
     frameId: number,
     skylight: SkylightSnapshot | undefined,
+    environment: SelectedEnvironmentFrame | undefined,
+    resourceWorld: RenderResourceScope | number = 0,
   ): ReadonlyMap<string, PendingFallback> {
     const tickets = new Map<string, PendingFallback>();
     // With no environment source every renderable resolves to the same exact
@@ -711,10 +718,16 @@ export class ReflectionProbeRecordOwner {
       facts.length === 0 && skylight === undefined
         ? new Map([['__frame__', { kind: 'skylight' as const }]])
         : selections;
+    const skyView =
+      skylight === undefined || skylight.equirectHandle === 0
+        ? undefined
+        : this.internals.gpuStore.getCubemapIbl(skylight.equirectHandle, resourceWorld)
+            ?.prefilterView;
+    const skyContent = skyView === undefined ? 0 : getOpaqueResourceIdentity(skyView);
     const skylightSignature =
       skylight === undefined
         ? ''
-        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0])])}`;
+        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0]), skyContent])}`;
     for (const [renderableKey, selection] of stagedSelections) {
       const probeKey =
         selection.kind === 'probe' ? `${selection.worldId}:${selection.entityKey}` : undefined;
@@ -733,7 +746,7 @@ export class ReflectionProbeRecordOwner {
             ? `@${resource.filter.activeGeneration}:${resource.fact.boxProjection === true}:${resource.fact.intensity}`
             : '') +
           skylightSignature +
-          (source === 'neutral' ? '' : `:catalog:${this.internals.assets.catalogEpoch}`),
+          (source === 'skylight' ? `:environment:${environment?.environmentSignature ?? ''}` : ''),
         source,
         coverage: reflectionFallbackCoverage(source, resource?.fact, selection),
         ...(resource === undefined ? {} : { extent: resource.fact.halfExtents }),
@@ -1158,9 +1171,7 @@ export class ReflectionProbeRecordOwner {
     if (this.shared !== undefined) {
       if (this.shared.background !== undefined)
         this.internals.device.destroyBuffer(this.shared.background.uniform);
-      this.internals.device.destroyBuffer(this.shared.faceUniforms);
       this.internals.device.destroyBuffer(this.shared.prefilterUniforms);
-      this.internals.device.destroyBuffer(this.shared.vertexBuffer);
     }
     this.shared = undefined;
     this.pipelineWarmup = undefined;
@@ -1169,10 +1180,11 @@ export class ReflectionProbeRecordOwner {
   private destroyProbeResource(resource: ProbeGpuResource): void {
     resource.atmosphere?.release();
     resource.atmosphere = undefined;
-    const sets = new Set<ProbeCubeSet>([resource.raw, resource.candidate]);
+    this.destroyCubeSet(resource.raw);
+    const sets = new Set<PmremAtlas>([resource.scratch, resource.candidate]);
     if (resource.active !== undefined) sets.add(resource.active);
     if (resource.spare !== undefined) sets.add(resource.spare);
-    for (const set of sets) this.destroyCubeSet(set);
+    for (const set of sets) this.internals.device.destroyTexture(set.texture);
     this.internals.device.destroyBuffer(resource.uniformBuffer);
   }
 
@@ -1245,7 +1257,7 @@ export class ReflectionProbeRecordOwner {
         existing.captureStartedFrame = this.currentFrame;
         existing.filter = createProbeFilterState({
           probeIndex: index,
-          mipCount: PREFILTER_MIP_LEVELS,
+          mipCount: pmremLevelCount(fact.resolution),
           activeGeneration: existing.filter.activeGeneration,
         });
         existing.rawFaceCursor = 0;
@@ -1276,13 +1288,30 @@ export class ReflectionProbeRecordOwner {
       return existing;
     }
     if (this.shared === undefined) return undefined;
-    const raw = this.createCubeSet(`reflection-probe-${index}-raw`, fact.resolution, 1);
-    const candidate = this.createCubeSet(`reflection-probe-${index}-candidate`, fact.resolution);
-    const spare = this.createCubeSet(`reflection-probe-${index}-spare`, fact.resolution);
-    const releaseSets = () => {
-      for (const set of [raw, candidate, spare]) if (set !== undefined) this.destroyCubeSet(set);
+    const raw = this.createCubeSet(`reflection-probe-${index}-raw`, fact.resolution);
+    const atlas = (label: string) => {
+      const result = createPmremAtlas(
+        this.internals.device,
+        `reflection-probe-${index}-${label}`,
+        fact.resolution,
+        this.outputFormat,
+      );
+      return result.ok ? result.value : undefined;
     };
-    if (raw === undefined || candidate === undefined || spare === undefined) {
+    const candidate = atlas('candidate'),
+      spare = atlas('spare'),
+      scratch = atlas('scratch');
+    const releaseSets = () => {
+      if (raw !== undefined) this.destroyCubeSet(raw);
+      for (const set of [candidate, spare, scratch])
+        if (set !== undefined) this.internals.device.destroyTexture(set.texture);
+    };
+    if (
+      raw === undefined ||
+      candidate === undefined ||
+      spare === undefined ||
+      scratch === undefined
+    ) {
       releaseSets();
       return undefined;
     }
@@ -1315,10 +1344,11 @@ export class ReflectionProbeRecordOwner {
     }
     const filterGroup1 = this.internals.device.createBindGroup({
       label: `reflection-probe-${index}-filter-input`,
-      layout: this.shared.cubeGroup1Bgl,
+      layout: this.shared.prefilterGroup1Bgl,
       entries: [
         { binding: 0, resource: { kind: 'textureView', value: raw.cubeView } },
         { binding: 1, resource: { kind: 'sampler', value: this.shared.sampler } },
+        { binding: 2, resource: { kind: 'textureView', value: scratch.view } },
       ],
     });
     if (!filterGroup1.ok) {
@@ -1338,12 +1368,16 @@ export class ReflectionProbeRecordOwner {
       captureStartedFrame: this.currentFrame,
       lastCompletedFrame: 0,
       index,
-      filter: createProbeFilterState({ probeIndex: index, mipCount: candidate.mipViews.length }),
+      filter: createProbeFilterState({
+        probeIndex: index,
+        mipCount: pmremLevelCount(candidate.size),
+      }),
       rawFaceCursor: 0,
       raw,
       active: undefined,
       candidate,
       spare,
+      scratch,
       sampler: this.shared.sampler,
       uniformBuffer: uniformBuffer.value,
       filterGroup1: filterGroup1.value,
@@ -1356,25 +1390,20 @@ export class ReflectionProbeRecordOwner {
     filterPipeline: RenderPipeline,
     background?: ProbeBackgroundResources,
   ): ProbeSharedResources | undefined {
-    const faceUniforms = createFaceUniformsBuffer(this.internals.device);
-    const prefilterUniforms = createPrefilterUniformsBuffer(this.internals.device);
-    if (!faceUniforms.ok || !prefilterUniforms.ok) return undefined;
-    if (!writeAllFaceUniforms(this.internals.device, faceUniforms.value).ok) return undefined;
-    if (!writeAllPrefilterUniforms(this.internals.device, prefilterUniforms.value, 1, 'camera').ok)
-      return undefined;
-    const vertexBuffer = this.internals.device.createBuffer({
-      label: 'reflection-probe-capture-cube-vertices',
-      size: CUBEMAP_FACE_VERTICES.byteLength,
-      usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    });
-    if (!vertexBuffer.ok) return undefined;
-    const vertexWrite = this.internals.device.queue.writeBuffer(
-      vertexBuffer.value,
-      0,
-      CUBEMAP_FACE_VERTICES,
+    const prefilterUniforms = createPrefilterUniformsBuffer(
+      this.internals.device,
+      DEFAULT_REFLECTION_PROBE_LIMITS.maxResolution,
     );
-    if (!vertexWrite.ok) return undefined;
+    if (!prefilterUniforms.ok) return undefined;
+    if (
+      !writeAllPrefilterUniforms(
+        this.internals.device,
+        prefilterUniforms.value,
+        DEFAULT_REFLECTION_PROBE_LIMITS.maxResolution,
+        'camera',
+      ).ok
+    )
+      return undefined;
     const sampler = this.internals.device.createSampler({
       label: 'reflection-probe-pmrem-sampler',
       magFilter: 'linear',
@@ -1387,32 +1416,26 @@ export class ReflectionProbeRecordOwner {
     const cache = getOrCreateIblCache(this.internals.deviceScope);
     if (
       !sampler.ok ||
-      cache.cubeGroup1Bgl === undefined ||
+      cache.prefilterGroup1Bgl === undefined ||
       cache.prefilterGroup0Bgl === undefined
     ) {
       return undefined;
     }
     return {
       background,
-      faceUniforms: faceUniforms.value,
       prefilterUniforms: prefilterUniforms.value,
-      vertexBuffer: vertexBuffer.value,
       sampler: sampler.value,
       filterPipeline,
-      cubeGroup1Bgl: cache.cubeGroup1Bgl,
+      prefilterGroup1Bgl: cache.prefilterGroup1Bgl,
       prefilterGroup0Bgl: cache.prefilterGroup0Bgl,
     };
   }
 
-  private createCubeSet(
-    label: string,
-    size: number,
-    mipCount = PREFILTER_MIP_LEVELS,
-  ): ProbeCubeSet | undefined {
+  private createCubeSet(label: string, size: number): ProbeCubeSet | undefined {
     const texture = this.internals.device.createTexture({
       label,
       size: { width: size, height: size, depthOrArrayLayers: 6 },
-      mipLevelCount: mipCount,
+      mipLevelCount: 1,
       sampleCount: 1,
       dimension: '2d',
       format: this.outputFormat,
@@ -1425,7 +1448,7 @@ export class ReflectionProbeRecordOwner {
       label: `${label}-cube`,
       dimension: 'cube',
       baseMipLevel: 0,
-      mipLevelCount: mipCount,
+      mipLevelCount: 1,
       arrayLayerCount: 6,
     });
     if (!cubeView.ok) {
@@ -1433,26 +1456,18 @@ export class ReflectionProbeRecordOwner {
       return undefined;
     }
     const faceViews: TextureView[] = [];
-    const mipViews: TextureView[][] = [];
-    for (let mip = 0; mip < mipCount; mip += 1) {
-      const faces: TextureView[] = [];
-      for (let face = 0; face < 6; face += 1) {
-        const view = this.internals.device.createTextureView(texture.value, {
-          label: `${label}-mip${mip}-face${face}`,
-          dimension: '2d',
-          baseMipLevel: mip,
-          mipLevelCount: 1,
-          baseArrayLayer: face,
-          arrayLayerCount: 1,
-        });
-        if (!view.ok) {
-          this.internals.device.destroyTexture(texture.value);
-          return undefined;
-        }
-        if (mip === 0) faceViews.push(view.value);
-        faces.push(view.value);
+    for (let face = 0; face < 6; face++) {
+      const view = this.internals.device.createTextureView(texture.value, {
+        label: `${label}-face${face}`,
+        dimension: '2d',
+        baseArrayLayer: face,
+        arrayLayerCount: 1,
+      });
+      if (!view.ok) {
+        this.internals.device.destroyTexture(texture.value);
+        return undefined;
       }
-      mipViews.push(faces);
+      faceViews.push(view.value);
     }
     const depthTexture = this.internals.device.createTexture({
       label: `${label}-depth`,
@@ -1482,7 +1497,6 @@ export class ReflectionProbeRecordOwner {
       texture: texture.value,
       cubeView: cubeView.value,
       faceViews,
-      mipViews,
       depthTexture: depthTexture.value,
       depthView: depthView.value,
       size,

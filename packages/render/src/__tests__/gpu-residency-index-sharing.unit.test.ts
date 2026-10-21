@@ -1,9 +1,13 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err, type MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { worldRenderResources } from '../publication/resource-scope';
+import { editResidentMesh } from './managed-mesh-edit';
 
 function comparisonBytes(store: GpuResidencyCache, buffer: object | null): number {
   const owner = store as unknown as {
@@ -12,22 +16,36 @@ function comparisonBytes(store: GpuResidencyCache, buffer: object | null): numbe
   return buffer === null ? 0 : (owner.meshBufferOwners.get(buffer)?.bytes.byteLength ?? 0);
 }
 
-function mesh(indices: Uint16Array | Uint32Array, position = 0): MeshAsset {
+function mesh(
+  indices: Uint16Array | Uint32Array,
+  position = 0,
+  vertices: Float32Array = new Float32Array(24 * 12).fill(position),
+): MeshAsset {
+  const vertexCount = vertices.length / 12;
+  const channel = (offset: number, width: number) => {
+    const values = new Float32Array(vertexCount * width);
+    for (let vertex = 0; vertex < vertexCount; vertex++)
+      values.set(
+        vertices.subarray(vertex * 12 + offset, vertex * 12 + offset + width),
+        vertex * width,
+      );
+    return values;
+  };
   return {
     kind: 'mesh',
-    vertices: new Float32Array(24 * 12).fill(position),
+    vertices,
     indices,
     attributes: {
-      position: new Float32Array(24 * 3),
-      normal: new Float32Array(24 * 3),
-      uv: new Float32Array(24 * 2),
-      tangent: new Float32Array(24 * 4),
+      position: channel(0, 3),
+      normal: channel(3, 3),
+      uv: channel(6, 2),
+      tangent: channel(8, 4),
     },
     submeshes: [
       {
         indexOffset: 0,
         indexCount: indices.length,
-        vertexCount: 24,
+        vertexCount,
         topology: 'triangle-list',
         materialSlot: 0,
       },
@@ -39,19 +57,19 @@ function mesh(indices: Uint16Array | Uint32Array, position = 0): MeshAsset {
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused');
-    },
-    device.caps,
-  );
-  const worlds = [new World(), new World()];
+  store.configureGpuDevice(device, undefined, device.caps);
+  const worlds = [
+    new World({ assets: new AssetRegistry() }),
+    new World({ assets: new AssetRegistry() }),
+  ];
   const upload = (source: MeshAsset, world = worlds[0]) => {
     assert(world);
-    const handle = world.allocSharedRef('MeshAsset', source);
-    return { handle, world, entry: store.ensureResident(handle, source, world).unwrap() };
+    const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
+    return {
+      handle,
+      world,
+      entry: store.ensureResident(handle, source, worldRenderResources(world)).unwrap(),
+    };
   };
   return { device, store, worlds, upload };
 }
@@ -103,7 +121,7 @@ it('keeps immutable bytes after author mutation and checks full bytes for a real
   expect(same.entry.indexBuffer).toBe(first.entry.indexBuffer);
   const collision = upload(mesh(right, 2));
   expect(collision.entry.indexBuffer).not.toBe(first.entry.indexBuffer);
-  store.invalidateMesh(collision.handle, collision.world);
+  store.invalidateMesh(collision.handle, worldRenderResources(collision.world));
   expect(first.entry.indexBuffer?.isDestroyed).toBe(false);
   store.destroyAll();
 });
@@ -112,15 +130,15 @@ it('fences a retired shared index allocation until its last lease and submission
   const { store, upload } = await fixture();
   const first = upload(mesh(new Uint16Array([0, 1, 2])));
   const second = upload(mesh(new Uint16Array([0, 1, 2]), 1));
-  const lease = store.retainMeshResidency(first.handle, first.world);
+  const lease = store.retainMeshResidency(first.handle, worldRenderResources(first.world));
   assert(lease);
   let finish!: () => void;
   const completed = new Promise<void>((resolve) => {
     finish = resolve;
   });
   store.trackMeshSubmission(completed);
-  store.invalidateMesh(first.handle, first.world);
-  store.invalidateMesh(second.handle, second.world);
+  store.invalidateMesh(first.handle, worldRenderResources(first.world));
+  store.invalidateMesh(second.handle, worldRenderResources(second.world));
   expect(first.entry.indexBuffer?.isDestroyed).toBe(false);
   expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(8);
   const third = upload(mesh(new Uint16Array([0, 1, 2]), 2));
@@ -129,7 +147,7 @@ it('fences a retired shared index allocation until its last lease and submission
   await completed;
   lease.release(false);
   expect(third.entry.indexBuffer?.isDestroyed).toBe(false);
-  store.invalidateMesh(third.handle, third.world);
+  store.invalidateMesh(third.handle, worldRenderResources(third.world));
   expect(third.entry.indexBuffer?.isDestroyed).toBe(true);
   expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(0);
   expect(comparisonBytes(store, first.entry.vertexBuffer)).toBe(0);
@@ -148,23 +166,15 @@ it('checks complete vertex bytes after a large independent-lane hash collision',
     meshBufferKey(words: Uint32Array, usage: number): string;
   };
   expect(key.meshBufferKey(left, 1)).toBe(key.meshBufferKey(right, 1));
-  const source = (words: Uint32Array): MeshAsset => ({
-    ...mesh(new Uint16Array([0, 1, 2])),
-    vertices: new Float32Array(words.buffer),
-    attributes: {
-      position: new Float32Array(32 * 3),
-      normal: new Float32Array(32 * 3),
-      uv: new Float32Array(32 * 2),
-      tangent: new Float32Array(32 * 4),
-    },
-  });
+  const source = (words: Uint32Array): MeshAsset =>
+    mesh(new Uint16Array([0, 1, 2]), 0, new Float32Array(words.buffer));
   try {
     const first = upload(source(left));
     const same = upload(source(left.slice()));
     expect(same.entry.vertexBuffer).toBe(first.entry.vertexBuffer);
     const collision = upload(source(right));
     expect(collision.entry.vertexBuffer).not.toBe(first.entry.vertexBuffer);
-    store.invalidateMesh(first.handle, first.world);
+    store.invalidateMesh(first.handle, worldRenderResources(first.world));
     expect(collision.entry.vertexBuffer.isDestroyed).toBe(false);
   } finally {
     store.destroyAll();
@@ -198,8 +208,18 @@ it('detaches a mutable index update even when the vertex allocation has only one
     writes.push(buffer);
     return writeBuffer(buffer, ...args);
   };
-  store.updateMesh(first.handle, firstMesh.vertices, new Uint16Array([2, 1, 0]), first.world);
-  const updated = store.getMeshGpuHandles(first.handle, first.world);
+  editResidentMesh(
+    runtimeAssetRegistry(first.world.assets),
+    store,
+    first.handle,
+    () => {
+      runtimeAssetRegistry(first.world.assets)
+        .writeRange(first.handle, { first: 0, indices: Uint16Array.of(2, 1, 0) })
+        .unwrap();
+    },
+    worldRenderResources(first.world),
+  );
+  const updated = store.getMeshGpuHandles(first.handle, worldRenderResources(first.world));
   expect(updated?.indexBuffer).not.toBe(second.entry.indexBuffer);
   expect(writes).not.toContain(second.entry.indexBuffer?.handle);
   expect(second.entry.indexBuffer?.isDestroyed).toBe(false);
@@ -212,12 +232,31 @@ it('removes an exclusively updated index allocation from immutable reuse', async
   const { store, upload } = await fixture();
   const source = mesh(new Uint16Array([0, 1, 2]));
   const first = upload(source);
-  store.updateMesh(first.handle, source.vertices, new Uint16Array([2, 1, 0]), first.world);
+  editResidentMesh(
+    runtimeAssetRegistry(first.world.assets),
+    store,
+    first.handle,
+    () => {
+      runtimeAssetRegistry(first.world.assets)
+        .writeRange(first.handle, {
+          attribute: 'position',
+          first: 0,
+          values: Float32Array.of(1, 0, 0),
+        })
+        .unwrap();
+      runtimeAssetRegistry(first.world.assets)
+        .writeRange(first.handle, { first: 0, indices: Uint16Array.of(2, 1, 0) })
+        .unwrap();
+    },
+    worldRenderResources(first.world),
+  );
   expect(comparisonBytes(store, first.entry.vertexBuffer)).toBe(0);
   expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(0);
   const second = upload(mesh(new Uint16Array([0, 1, 2]), 1));
   expect(second.entry.indexBuffer).not.toBe(first.entry.indexBuffer);
-  expect(store.getMeshGpuHandles(first.handle, first.world)).toBe(first.entry);
+  expect(store.getMeshGpuHandles(first.handle, worldRenderResources(first.world))).toBe(
+    first.entry,
+  );
   store.destroyAll();
 });
 
@@ -233,7 +272,7 @@ it.each([
     kind === 'vertex' ? mesh(new Uint16Array([0, 1, 2]), 1) : mesh(new Uint16Array([2, 1, 0]));
   const borrowed = kind === 'vertex' ? first.entry.indexBuffer : first.entry.vertexBuffer;
   assert(borrowed);
-  const handle = first.world.allocSharedRef('MeshAsset', source);
+  const handle = runtimeAssetRegistry(first.world.assets).create(source).unwrap();
   const createBuffer = device.createBuffer.bind(device);
   const writeBuffer = device.queue.writeBuffer.bind(device.queue);
   const failure = err(
@@ -245,15 +284,15 @@ it.each([
   );
   if (stage === 'create') device.createBuffer = () => failure;
   else device.queue.writeBuffer = () => failure;
-  expect(store.ensureResident(handle, source, first.world).ok).toBe(false);
-  expect(store.getMeshGpuHandles(handle, first.world)).toBeUndefined();
+  expect(store.ensureResident(handle, source, worldRenderResources(first.world)).ok).toBe(false);
+  expect(store.getMeshGpuHandles(handle, worldRenderResources(first.world))).toBeUndefined();
   expect(borrowed.isDestroyed).toBe(false);
   device.createBuffer = createBuffer;
   device.queue.writeBuffer = writeBuffer;
-  const retry = store.ensureResident(handle, source, first.world).unwrap();
+  const retry = store.ensureResident(handle, source, worldRenderResources(first.world)).unwrap();
   expect(kind === 'vertex' ? retry.indexBuffer : retry.vertexBuffer).toBe(borrowed);
-  store.invalidateMesh(first.handle, first.world);
-  store.invalidateMesh(handle, first.world);
+  store.invalidateMesh(first.handle, worldRenderResources(first.world));
+  store.invalidateMesh(handle, worldRenderResources(first.world));
   expect(borrowed.isDestroyed).toBe(true);
   store.destroyAll();
 });
@@ -303,14 +342,44 @@ it('publishes one immutable result per allocation and retains old results throug
   const { store, upload } = await fixture();
   const source = mesh(new Uint16Array([0, 1, 2]));
   const first = upload(source);
-  const published = store.ensureResident(first.handle, source, first.world);
-  expect(store.ensureResident(first.handle, source, first.world)).toBe(published);
+  const published = store.ensureResident(first.handle, source, worldRenderResources(first.world));
+  expect(store.ensureResident(first.handle, source, worldRenderResources(first.world))).toBe(
+    published,
+  );
   expect(Object.isFrozen(published)).toBe(true);
   expect(() => Object.assign(published, { value: undefined })).toThrow(TypeError);
-  store.invalidateMesh(first.handle, first.world);
-  const next = store.ensureResident(first.handle, source, first.world);
+  store.invalidateMesh(first.handle, worldRenderResources(first.world));
+  const next = store.ensureResident(first.handle, source, worldRenderResources(first.world));
   expect(next).not.toBe(published);
   expect(published.unwrap()).toBe(first.entry);
   expect(next.unwrap()).not.toBe(first.entry);
   store.destroyAll();
+});
+
+it.each([
+  262143, 262144, 524290,
+])('checks chunk-boundary word %i after a candidate collision', async (word) => {
+  const { store, upload } = await fixture();
+  const owner = store as unknown as { meshBufferKey(words: Uint32Array, usage: number): string };
+  owner.meshBufferKey = (words, usage) => `${usage}:${words.byteLength}:forced-collision`;
+  const left = new Uint32Array(524296).subarray(2, 524294);
+  left[word] = 0x3f800001;
+  const source = (words: Uint32Array) =>
+    mesh(
+      new Uint16Array([0, 1, 2]),
+      0,
+      new Float32Array(words.buffer, words.byteOffset, words.length),
+    );
+  try {
+    const first = upload(source(left));
+    const same = upload(source(left.slice()));
+    expect(same.entry.vertexBuffer).toBe(first.entry.vertexBuffer);
+    left[word] = 0x3f800002;
+    const changed = upload(source(left));
+    expect(changed.entry.vertexBuffer).not.toBe(first.entry.vertexBuffer);
+    store.invalidateMesh(first.handle, worldRenderResources(first.world));
+    expect(changed.entry.vertexBuffer.isDestroyed).toBe(false);
+  } finally {
+    store.destroyAll();
+  }
 });

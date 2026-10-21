@@ -1,11 +1,15 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import type { DebugDraw } from '@forgeax/engine-debug-draw';
 import type { World } from '@forgeax/engine-ecs';
 import { box2, circle2, ray2, vec3 } from '@forgeax/engine-math';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const BOUNDING_2D_TESTS = [
   'aabb',
@@ -60,14 +64,19 @@ const FUCHSIA = [1, 0.1, 0.75, 1] as const;
 const LIME = [0.25, 1, 0.2, 1] as const;
 
 export function buildBounding2dWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   for (let i = 0; i < VOLUMES.length; i++) {
     const volume = VOLUMES[i] as Volume;
     const color = RENDER_COLORS[i] as readonly [number, number, number, number];
-    const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit(color));
+    const material = sceneAssets.create(Materials.unlit(color)).unwrap();
     const [x, y] = volume.meshPosition;
     world.spawn(
       { component: Transform, data: { pos: [x, y, 0], quat: [0, 0, 0, 1], scale: [45, 42, 0.5] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }

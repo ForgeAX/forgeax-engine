@@ -324,3 +324,10 @@ Software adapter results establish correctness, not hardware performance.
 an interactive Forward/Deferred comparison of uniform and directional HDR environments,
 including rotation, material-region means, spatial errors and optional RHI capture.
 Open `environment-response.html` on this app's dev or preview server.
+
+## Rendering response
+
+Open `rendering-response.html` for the environment, shadow, transparency, GTAO and
+temporal comparison entry points. [Rendering response](RENDERING_RESPONSE.md)
+documents the shared inputs, current policies, intentional differences and
+commands that save the numeric evidence and real engine captures.

@@ -3,7 +3,7 @@
 //
 // What this app proves (the whole feat in one screen):
 //
-//   declare -> import (source transform) -> build -> pack-index -> loadByGuid
+//   declare -> import (source transform) -> build -> pack-index -> load -> read
 //   -> real scene use, ALL for a HOST-defined kind the engine never knew about.
 //
 // The 4-step host-importer recipe (charter F1 progressive disclosure; mirrored
@@ -12,9 +12,9 @@
 //   (1) declare `.meta.json` with `importer: 'reel-game-blob'` +
 //       `subAssets[].kind: 'reel-game-blob'` (assets/level-1.reel.json.meta.json).
 //   (2) inject the host importer via `pluginPack({ importers })` (vite.config.ts).
-//   (3) register the host loader on `engine.assets.loaders.register(...)` (below).
-//   (4) `loadByGuid<ReelGameBlob>(guid)` returns the typed payload; the host
-//       drives the scene from it (below).
+//   (3) install the host decoder with `assets.installDecoder(kind, decoder)`.
+//   (4) `assets.load(guid, kind)` returns a managed handle; `assets.read(handle)`
+//       returns the typed snapshot used to drive the scene.
 //
 // OOS-1: the engine does NOT render the host kind. The host loader returns the
 // blob; THIS file maps each reel in the blob to a visible cube (built-in unlit
@@ -27,14 +27,14 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { World } from '@forgeax/engine-ecs';
 import {
   createCatalogSource,
-  type AssetRegistry,
+  AssetRegistry,
 } from '@forgeax/engine-assets-runtime';
 import type { CatalogDelta, CatalogEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createCatalogClient } from '@forgeax/engine-vite-plugin-pack/catalog-client';
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -44,7 +44,9 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 import { type ReelGameBlob, REEL_GAME_LEVEL_1_GUID } from './reel-game-blob';
-import { reelGameBlobLoader } from './reel-game-blob-loader';
+import { reelGameBlobDecoder, reelGameBlobKind } from './reel-game-blob-loader';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
@@ -86,7 +88,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Step 3: register the host loader for the custom kind. This is the runtime
   // mirror of the build-time importer; the engine carries zero knowledge of
   // 'reel-game-blob' -- the host owns both ends (AC-05 / OOS-1).
-  assets.loaders.register(reelGameBlobLoader());
+  assets.installDecoder(reelGameBlobKind, reelGameBlobDecoder);
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
   let lastKnownGood: ReelGameBlob | undefined;
@@ -146,10 +148,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   console.warn(`[custom-importer] catalog baseline rows=${baseline.value.length} stableGuid=true`);
 
-  // Step 4: loadByGuid<ReelGameBlob> resolves through the production fetch
-  // chain: pack-index.json -> the importer-folded .pack.json -> the host
-  // loader. The payload is the host type without an `as Asset` cast leaking
-  // into the engine's closed union.
+  // Step 4: load through the production fetch chain and read a typed snapshot:
+  // pack-index.json -> the importer-folded .pack.json -> the host decoder.
   const blob = await loadReelGameBlob(assets);
   if (blob === undefined) {
     setAssetStatus('load failed');
@@ -229,20 +229,20 @@ async function handleCatalogDelta(
   );
 }
 
-async function loadReelGameBlob(assets: {
-  loadByGuid<T>(guid: AssetGuid): Promise<{ ok: true; value: T } | { ok: false; error: unknown }>;
-}): Promise<ReelGameBlob | undefined> {
+async function loadReelGameBlob(assets: AssetRegistry): Promise<ReelGameBlob | undefined> {
   const guidRes = AssetGuid.parse(REEL_GAME_LEVEL_1_GUID);
   if (!guidRes.ok) {
     console.error('[custom-importer] REEL_GAME_LEVEL_1_GUID parse failed:', guidRes.error.code);
     return undefined;
   }
-  const res = await assets.loadByGuid<ReelGameBlob>(guidRes.value);
+  const res = await assets.load(guidRes.value, reelGameBlobKind);
   if (!res.ok) {
-    console.error('[custom-importer] loadByGuid failed:', res.error);
+    console.error('[custom-importer] load failed:', res.error);
     return undefined;
   }
-  return res.value;
+  const value = assets.read(res.value).unwrap();
+  assets.release(res.value).unwrap();
+  return value;
 }
 
 // OOS-1 boundary: the engine does not understand reel-game semantics. The host
@@ -250,6 +250,11 @@ async function loadReelGameBlob(assets: {
 // by symbol count so the 3 reels read as distinct entities). The engine only
 // ever sees cubes + camera + light.
 function populateSceneFromBlob(world: World, blob: ReelGameBlob): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   for (const reel of blob.reels) {
     world
       .spawn(
@@ -257,7 +262,7 @@ function populateSceneFromBlob(world: World, blob: ReelGameBlob): void {
           component: Transform,
           data: { pos: [reel.x, (reel.symbols.length - 2) * 0.2, 0]},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();

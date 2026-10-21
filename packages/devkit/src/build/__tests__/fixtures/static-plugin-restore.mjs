@@ -19,7 +19,9 @@ export async function restoreStaticPlugins(snapshot) {
     .spawn({ component: Transform }, { component: Tag, data: { value: 7 } })
     .unwrap();
   const probe = { tag: Tag, transform: Transform };
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: [] }),
   }).unwrap();

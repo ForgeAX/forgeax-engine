@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { UiAsset } from '../../asset.js';
 import {
   createUiPreviewSession,
-  type UiPreviewAssetSource,
   type UiPreviewScenario,
+  type UiPreviewSessionOptions,
 } from '../session.js';
 
 const asset: UiAsset = {
@@ -12,8 +12,8 @@ const asset: UiAsset = {
   css: '',
 };
 
-function source(): UiPreviewAssetSource {
-  return { invalidate: () => {}, loadByGuid: async () => ({ ok: true, value: asset }) };
+function source(): UiPreviewSessionOptions['readAsset'] {
+  return async () => ({ ok: true, value: asset });
 }
 
 function scenario(overrides: Partial<UiPreviewScenario> = {}): UiPreviewScenario {
@@ -47,7 +47,7 @@ describe('preview scenario failures', () => {
     const root = document.createElement('div');
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(),
+      readAsset: source(),
       root,
       rect: { width: 200, height: 100 },
       scenario: scenario(),
@@ -66,7 +66,7 @@ describe('preview scenario failures', () => {
     const missing = scenario({ requiredParts: ['root', 'missing'] });
     const missingSession = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(),
+      readAsset: source(),
       root: document.createElement('div'),
       rect: { width: 200, height: 100 },
       scenario: missing,
@@ -82,7 +82,7 @@ describe('preview scenario failures', () => {
     });
     const thrownSession = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(),
+      readAsset: source(),
       root: document.createElement('div'),
       rect: { width: 200, height: 100 },
       scenario: thrown,
@@ -99,7 +99,7 @@ describe('preview scenario failures', () => {
     };
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(),
+      readAsset: source(),
       root: document.createElement('div'),
       rect: { width: 200, height: 100 },
       scenario: never,

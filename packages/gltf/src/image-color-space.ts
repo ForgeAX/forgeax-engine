@@ -26,32 +26,17 @@
 // matter (images count, textures, materials); output = a Map keyed by
 // the image array index.
 
-type ImageColorSpaceSrgbOrLinear = 'srgb' | 'linear';
+import {
+  GLTF_MATERIAL_TEXTURE_SLOTS,
+  type GltfMaterialIr,
+  type GltfMaterialTextureSlot,
+  materialTextureBinding,
+} from './material/parse-material.js';
 
-type TextureBinding = number | { readonly texture: number };
+type ImageColorSpaceSrgbOrLinear = (typeof GLTF_MATERIAL_TEXTURE_SLOTS)[number]['colorSpace'];
 
-/** Slim view of a parsed material the classifier reads (subset of MaterialIr). */
-interface MaterialColorSpaceInput {
-  readonly baseColorTexture?: TextureBinding;
-  readonly metallicRoughnessTexture?: TextureBinding;
-  readonly normalTexture?: TextureBinding;
-  readonly emissiveTexture?: TextureBinding;
-  readonly occlusionTexture?: TextureBinding;
-  readonly transmissionTexture?: TextureBinding;
-  readonly thicknessTexture?: TextureBinding;
-  readonly clearcoatTexture?: TextureBinding;
-  readonly clearcoatRoughnessTexture?: TextureBinding;
-  readonly clearcoatNormalTexture?: TextureBinding;
-  readonly anisotropyTexture?: TextureBinding;
-  readonly sheenColorTexture?: TextureBinding;
-  readonly sheenRoughnessTexture?: TextureBinding;
-  readonly iridescenceTexture?: TextureBinding;
-  readonly iridescenceThicknessTexture?: TextureBinding;
-  readonly specularTexture?: TextureBinding;
-  readonly specularColorTexture?: TextureBinding;
-  readonly diffuseTransmissionTexture?: TextureBinding;
-  readonly diffuseTransmissionColorTexture?: TextureBinding;
-}
+/** The classifier consumes the same material slots as reference publication. */
+type MaterialColorSpaceInput = Pick<GltfMaterialIr, GltfMaterialTextureSlot>;
 
 /** Slim view of a parsed `textures[]` row. */
 interface TextureColorSpaceInput {
@@ -81,10 +66,10 @@ export function deriveTextureColorSpace(
   const result = new Map<number, ImageColorSpaceSrgbOrLinear>();
   const textures = input.textures ?? [];
 
-  function imageOfTexture(binding: TextureBinding | undefined): number | undefined {
-    if (binding === undefined) return undefined;
-    const textureIndex = typeof binding === 'number' ? binding : binding.texture;
-    const tex = textures[textureIndex];
+  function imageOfTexture(binding: GltfMaterialIr['baseColorTexture']): number | undefined {
+    const info = materialTextureBinding(binding);
+    if (info === undefined) return undefined;
+    const tex = textures[info.texture];
     if (tex === undefined) return undefined;
     return tex.source;
   }
@@ -102,25 +87,9 @@ export function deriveTextureColorSpace(
   }
 
   for (const mat of input.materials) {
-    record(imageOfTexture(mat.baseColorTexture), 'srgb');
-    record(imageOfTexture(mat.emissiveTexture), 'srgb');
-    record(imageOfTexture(mat.sheenColorTexture), 'srgb');
-    record(imageOfTexture(mat.specularColorTexture), 'srgb');
-    record(imageOfTexture(mat.diffuseTransmissionColorTexture), 'srgb');
-    record(imageOfTexture(mat.metallicRoughnessTexture), 'linear');
-    record(imageOfTexture(mat.normalTexture), 'linear');
-    record(imageOfTexture(mat.occlusionTexture), 'linear');
-    record(imageOfTexture(mat.transmissionTexture), 'linear');
-    record(imageOfTexture(mat.thicknessTexture), 'linear');
-    record(imageOfTexture(mat.clearcoatTexture), 'linear');
-    record(imageOfTexture(mat.clearcoatRoughnessTexture), 'linear');
-    record(imageOfTexture(mat.clearcoatNormalTexture), 'linear');
-    record(imageOfTexture(mat.anisotropyTexture), 'linear');
-    record(imageOfTexture(mat.sheenRoughnessTexture), 'linear');
-    record(imageOfTexture(mat.iridescenceTexture), 'linear');
-    record(imageOfTexture(mat.iridescenceThicknessTexture), 'linear');
-    record(imageOfTexture(mat.specularTexture), 'linear');
-    record(imageOfTexture(mat.diffuseTransmissionTexture), 'linear');
+    for (const { slot, colorSpace } of GLTF_MATERIAL_TEXTURE_SLOTS) {
+      record(imageOfTexture(mat[slot]), colorSpace);
+    }
   }
 
   for (let i = 0; i < input.imageCount; i++) {

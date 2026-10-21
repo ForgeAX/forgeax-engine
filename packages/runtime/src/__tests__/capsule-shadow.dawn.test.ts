@@ -56,7 +56,7 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
   mkdirSync(directory, { recursive: true });
   const tapes = new Map<CapsuleShadowVariant, EncodedTape>();
   try {
-    const evidence = await verifyCapsuleShadow(host.value.renderer, {
+    const evidence = await verifyCapsuleShadow(host.value.renderer, host.value.assets, {
       recorder,
       capture(tape, variant) {
         tapes.set(variant, tape);

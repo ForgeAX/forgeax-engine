@@ -1,35 +1,3 @@
-import {
-  captureGeometrySource,
-  GEOMETRY_OBSERVATION_MAX_BYTES,
-  GEOMETRY_OBSERVATION_MAX_COMMANDS,
-  GEOMETRY_OBSERVATION_MAX_MEMBERS,
-  type GeometryCommandCapture,
-  type GeometryObservation,
-  type GeometrySourceIdentity,
-  unavailableGeometry,
-} from '../geometry-observation';
-import { transformRenderState } from '../material-render-state';
-import {
-  type GpuDrivenResidencyValidationInput,
-  ResidencyValidationOwner,
-} from '../record/residency-validation-owner';
-import type { FramePresentationPendingReason } from '../render-contract';
-import {
-  type GBufferOrderDiagnosticConfig,
-  type GBufferOrderDiagnosticInspection,
-  type GBufferOrderEncodeEvidence,
-  gbufferBatchDepth,
-  gbufferDiagnosticView,
-  gbufferOrderInterfaceEvidence,
-  gbufferProgramDigest,
-  isGBufferOrderDiagnosticEncode,
-  orderGBufferDiagnostic,
-} from './gbuffer-order-diagnostic';
-import { prepareHiddenGpuDrivenPipelines } from './pipeline-preparation';
-import { RasterGraphIdentity } from './raster-graph-identity';
-
-export type { GpuDrivenResidencyValidationInput } from '../record/residency-validation-owner';
-
 import type {
   GraphAccess,
   GraphBuffer,
@@ -57,11 +25,19 @@ import { materialArtifactProgramIdentity } from '../assembly/material/artifact-p
 import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
+import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import {
-  gpuDrivenDrawKey,
-  gpuDrivenMaterialArtifactKey,
-  gpuDrivenSourceDrawItemIndex,
-} from '../extract/gpu-driven';
+  boundGeometryObservationMetadata,
+  captureGeometrySource,
+  GEOMETRY_OBSERVATION_MAX_COMMANDS,
+  GEOMETRY_OBSERVATION_MAX_MEMBERS,
+  type GeometryCommandCapture,
+  type GeometryGBufferProgram,
+  type GeometryObservation,
+  type GeometrySourceIdentity,
+  unavailableGeometry,
+} from '../geometry-observation';
+import type { GpuSceneResourceFrame } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
@@ -77,40 +53,35 @@ import type {
   GpuDrivenProductionInspection,
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
+import { reflectedRenderState } from '../material-render-state';
 import {
   isCanonicalStandardPbrMaterialShader,
-  isStandardPbrMaterialShader,
   SKIN_UNCOVERED_GBUFFER_ENTRY,
 } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
-import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
-import type { GpuDrivenDrawReceipts } from '../record/gpu-draw-receipts';
+import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import type { GpuDrawSummary } from '../record/gpu-draw-receipts';
 import {
   geometryRenderStateForPass,
   variantSetForCoveragePass,
 } from '../record/main-pass-geometry';
 import {
-  MATERIAL_PER_ENTITY_STRIDE,
   type PipelineState,
   type RecordProfileRunner,
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from '../record/render-context';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
-import type { CameraSnapshot } from '../render-contract';
+import type { CameraSnapshot, FramePresentationPendingReason } from '../render-contract';
 import type {
   GpuDrivenStandardPbrFrameResources,
   RenderPipelineFrame,
   RenderPipelineGpuDrivenFilter,
   RenderPipelineGpuDrivenProjection,
 } from '../render-pipeline';
-import type {
-  GpuDrivenDrawSnapshot,
-  MaterialSnapshot,
-  RenderableSnapshot,
-  ShadowCasterMembership,
-} from '../render-system-extract';
+import type { MaterialSnapshot } from '../render-system-extract';
+import { type ShadowMaterialContent, sameShadowMaterial } from '../scene/material-shadow-content';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { SurfaceDynamicInputFrame } from '../surface/dynamic-input';
 import {
@@ -118,32 +89,47 @@ import {
   type SurfaceGpuSubmissionAdmission,
 } from '../surface/gpu-driven';
 import type { SurfaceSubmissionCandidate } from '../surface/submission-observation';
+import type { BatchExecution } from './batch-execution';
+import { capturedGpuDrivenBatchKey } from './batch-key';
 import {
   batchLevelStride,
   batchLodLevelCount,
   batchVisibleSpan,
   GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
+} from './batch-layout';
+import { MemberCandidates } from './batch-members';
+import {
   type GpuDrivenBatch,
+  type GpuDrivenBatchBinding,
   inspectResourceClassSplits,
   type SubmissionPlan,
 } from './batch-topology';
+import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './draw-selection';
 import { FilteredPlanContributionOwner } from './filtered-plan-contributions';
+import {
+  type GBufferOrderDiagnosticConfig,
+  type GBufferOrderDiagnosticInspection,
+  type GBufferOrderEncodeEvidence,
+  gbufferBatchDepth,
+  gbufferDiagnosticView,
+  gbufferOrderInterfaceEvidence,
+  gbufferProgramDigest,
+  isGBufferOrderDiagnosticEncode,
+  orderGBufferDiagnostic,
+} from './gbuffer-order-diagnostic';
 import type { LodViewCamera } from './lod-projection.wgsl';
-import { materialBindingSignature } from './material-bindings';
+import { type BatchExecutions, prepareHiddenGpuDrivenPipelines } from './material-artifacts';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
 import {
   type PreparedRasterBindings,
   PreparedRasterBundleCache,
   type PreparedRasterCounters,
+  PreparedRasterPassCache,
+  prepareRasterWindows,
 } from './prepared-raster-bundle';
-import {
-  type GpuDrivenCpuValidationTelemetryCache,
-  sameValidatedSourceSequence,
-} from './production-cpu-validation';
 import { activeFrustum, occlusionCamera, shadowViewClipping } from './production-raster-camera';
 import {
   admittedRasterBatchCount,
-  gpuDrawEntityCount,
   type LodProjectionState,
   lodProjectionState,
   lodSelectionChangeCount,
@@ -156,30 +142,23 @@ import {
   SurfaceFrameProjectionOwner,
 } from './production-raster-material';
 import {
-  artifactForPreparedBatch,
   assemblePreparedPlan,
-  EMPTY_SHADOW_KEYS,
   type FilteredProductionPlan,
-  ownsAllAdmittedDrawItems,
-  type PreparationInputs,
   type PreparedBatch,
   type PreparedBatchRows,
   type PreparedProductionPlan,
   prepareBatchRows,
-  type ShadowOwnershipSource,
-  sameBatchMeshes,
   sameMaterialArtifact,
-  shadowArtifactForPreparedBatch,
+  samePreparedBatchLod,
   shadowArtifactSignature,
-  skinLaneReason,
   suppressedPrimitiveWords,
 } from './production-raster-prepare';
+import { RasterGraphIdentity } from './raster-graph-identity';
 import { type RasterMeshBinding, RasterMeshBindings } from './raster-mesh-bindings';
+import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
 import { combineGpuResourceAllocationInspections } from './resource-allocation';
 import { restrictShadowCasterClasses, ShadowCasterClassifier } from './shadow-caster-classes';
-import { ShadowClaimTable } from './shadow-claims';
 import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-projection-publication';
-import { collectShadowViewClaims } from './shadow-view-claims';
 import {
   type ShadowCameraCullDilation,
   type ShadowViewIdentity,
@@ -202,6 +181,7 @@ export interface GpuDrivenShadowBatchProjection {
   /** Batch-owned command closure; retained projection edits validate its physical inputs. */
   readonly bundles: PreparedRasterBundleCache;
   readonly mesh: MeshGpuHandles;
+  readonly meshContentEpoch: number;
   readonly meshBindGroup: BindGroup;
   /** One visible-segment window per LOD level command, in level order. */
   readonly visibleBindGroups: readonly BindGroup[];
@@ -214,8 +194,8 @@ export interface GpuDrivenShadowBatchProjection {
   readonly shadowRenderState?: MaterialRenderState;
   /** Material snapshot used to assemble the receipt-owned alpha-mask BG. */
   readonly material: MaterialSnapshot;
-  /** Composite entity identity used only for video-resource routing. */
-  readonly materialEntityKey: number;
+  /** Accepted resource namespace. GPU execution has no entity-local video binding. */
+  readonly worldId: number;
   /** Geometry-owned COLOR_0 fact shared by main and shadow ABI variants. */
   readonly vertexColorAvailable: boolean;
 }
@@ -227,47 +207,13 @@ export interface GpuDrivenShadowBatchProjection {
  */
 export type ShadowViewRequest = Omit<
   ShadowViewUpdateInput,
-  'sourcePlan' | 'scene' | 'cameraCull'
+  'sourcePlan' | 'scene' | 'cameraCull' | 'inputReads'
 > & {
   readonly cameraCull?: ShadowCameraCullDilation;
 };
 
 function isSingleLayerMediumArtifact(artifact: MaterialShaderArtifact): boolean {
   return artifact.receipt?.surface?.model === 'single-layer-medium';
-}
-
-function sceneRequiresGpuDrivenArtifact(scene: PersistentGpuDrivenState): boolean {
-  return scene.plan.batches.some(
-    (batch) =>
-      batch.candidates.length > 0 &&
-      batch.prepared?.receiptIdentity !== undefined &&
-      (batch.prepared.identity.deformation === 'rigid' ||
-        batch.prepared.identity.deformation === 'skin'),
-  );
-}
-
-function nonCpuPreparationFailure(
-  scene: PersistentGpuDrivenState,
-): { readonly error: GpuDrivenPreparationError; readonly drawKeys: readonly string[] } | undefined {
-  const drawKeys: string[] = [];
-  let first: GpuDrivenPreparationError | undefined;
-  for (const slot of scene.slots) {
-    const draws = slot.snapshot.gpuDrivenDraws ?? [];
-    for (const [compactIndex, draw] of draws.entries()) {
-      const error = draw.preparationError;
-      if (error === undefined || error.detail.recovery === 'route-cpu-lane') continue;
-      const material = slot.snapshot.materials[draw.materialSlot] ?? slot.snapshot.material;
-      drawKeys.push(
-        gpuDrivenDrawKey(
-          worldEntityKey(slot.snapshot.worldId, slot.snapshot.entityKey),
-          material.materialHandle ?? -1,
-          gpuDrivenSourceDrawItemIndex(draw, compactIndex),
-        ),
-      );
-      first ??= error;
-    }
-  }
-  return first === undefined ? undefined : { error: first, drawKeys };
 }
 
 function preparationFailureInspection(
@@ -279,20 +225,6 @@ function preparationFailureInspection(
     hint: error.hint,
     detail: error.detail,
   });
-}
-
-function shadowOwnershipFailureInspection(
-  viewPass: GpuDrivenLaneSummary['viewPass'],
-): GpuDrivenPreparationFailureInspection {
-  return preparationFailureInspection(
-    new GpuDrivenPreparationError('shadow-ownership', {
-      reason: 'shadow-ownership-missing',
-      owner: 'shadow',
-      expected: 'one GPU-compatible owner for every declared ShadowCaster pass',
-      actual: `${viewPass} contains a residual ShadowCaster draw item`,
-      recovery: 'route-cpu-lane',
-    }),
-  );
 }
 
 export interface GpuDrivenWorldLodSelectionInspection {
@@ -334,23 +266,30 @@ type ShadowArtifactObservations = ReadonlyMap<string, string | undefined>;
 
 /** The GPU-driven bridge to the existing four-group Standard PBR pipeline. */
 
+export interface GpuDrivenMaterialBinding {
+  readonly material: import('../material-resource').MaterialResource;
+  readonly worldId: number;
+  readonly resourceClass: string;
+}
+
 export interface PreparedGpuDrivenFrame {
+  /** Shared resource requirements from the accepted geometry/probe partitions. */
+  readonly materialBindings: readonly GpuDrivenMaterialBinding[];
+  readonly shadowDirectRequired: boolean;
   readonly topologySignature: string;
   /** @internal Private stock-recorder identity; borrowed graph projections keep topologySignature. */
   readonly _recordingTopologySignature?: string;
   /** Composition-local world indices mapped to the stable identities used by draw keys. */
   readonly worldKeys: readonly number[];
-  /** True when every source draw item/instance is claimed by the GPU lane. */
-  readonly ownsAllDrawItems: boolean;
-  /** True only when the extracted ShadowCaster channel is fully represented. */
-  readonly ownsAllShadowCasters?: boolean;
-  /** Concrete main-pass draw identities claimed by the GPU projection. */
-  readonly drawKeys?: ReadonlySet<string>;
-  /** Numeric retention captured with the exact draw-key publication. */
-  readonly cacheEntityKeys?: ReadonlySet<number>;
+  /** Shared execution queried by each actual draw consumer. */
+  readonly selection: GpuDrawSelection;
   readonly standardPbrFrameResources: GpuDrivenStandardPbrFrameResources;
   /** Published Surface admission and its pass lane decision. */
   readonly surfaceSubmission?: SurfaceGpuSubmissionAdmission;
+  /** @internal Pins physical work independently of accepted frame publication. */
+  readonly _trackSubmittedWork: (completed: Promise<void>) => void;
+  /** @internal Close actual main/shadow demands before independent submission. */
+  readonly _sealResourceReads: () => Result<void, RhiError>;
   /** @internal Commits a replacement generation only after graph promotion. */
   readonly _commitResourceReplacement: (submittedGraphGeneration?: number) => void;
   /** @internal Retires superseded view buffers when graph compilation promotes them. */
@@ -359,10 +298,6 @@ export interface PreparedGpuDrivenFrame {
   readonly _abortResourceReplacement?: () => void;
   /** @internal Marks validated dynamic ranges consumed only after queue submit. */
   readonly _consumeSurfaceDynamicInput?: (frameNumber: number) => Result<void, RhiError>;
-  /** Concrete ShadowCaster keys claimed by the GPU subset for this frame. */
-  readonly shadowDrawKeys?: ReadonlySet<string>;
-  /** View-scoped ShadowCaster claims consumed by each shadow record pass. */
-  readonly shadowDrawKeysByView?: ReadonlyMap<string, ReadonlySet<string>>;
   /** `cameraPyramid` is the main camera's late HZB; eligible views cull against it. */
   readonly projectShadow?: (
     graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -388,60 +323,6 @@ export interface PreparedGpuDrivenFrame {
   ): Result<RenderPipelineGpuDrivenProjection, RenderGraphError | RhiError>;
 }
 
-export interface RecoveryCapabilityFacts {
-  readonly generation: number;
-  readonly shaderCompilation: boolean;
-  readonly compute: boolean;
-  readonly storageBuffer: boolean;
-  readonly indirectDrawing: boolean;
-  readonly multisample: boolean;
-}
-
-export type RecoveryCapabilityOutcome =
-  | {
-      readonly status: 'ready' | 'fallback';
-      readonly generation: number;
-      readonly disabled: readonly string[];
-    }
-  | {
-      readonly status: 'disabled';
-      readonly generation: number;
-      readonly disabled: readonly string[];
-      readonly allocations: 0;
-    }
-  | {
-      readonly status: 'refused';
-      readonly generation: number;
-      readonly failedOwner: 'shader-material-pipeline';
-      readonly resourceKind: 'pipeline';
-    };
-
-export function classifyRecoveryCapability(
-  facts: RecoveryCapabilityFacts,
-): RecoveryCapabilityOutcome {
-  if (!facts.shaderCompilation) {
-    return {
-      status: 'refused',
-      generation: facts.generation,
-      failedOwner: 'shader-material-pipeline',
-      resourceKind: 'pipeline',
-    };
-  }
-  if (!facts.compute || !facts.storageBuffer || !facts.indirectDrawing) {
-    return {
-      status: 'disabled',
-      generation: facts.generation,
-      disabled: ['gpu-driven'],
-      allocations: 0,
-    };
-  }
-  return {
-    status: facts.multisample ? 'ready' : 'fallback',
-    generation: facts.generation,
-    disabled: [],
-  };
-}
-
 type RasterPipelineFor = (
   formats: readonly TextureFormat[],
   formatKey?: string,
@@ -455,24 +336,119 @@ interface LiveRasterBatch {
   readonly recordingClassKey: string;
   readonly mesh: MeshGpuHandles;
   readonly meshBinding: RasterMeshBinding;
-  /**
-   * Entity identity of every candidate, in candidate order. The plan holds all
-   * resident candidates, so the frame material table may omit any one of them;
-   * the batch shares one material slot, so any listed entity names it.
-   */
-  readonly materialEntityKeys: readonly number[];
+  readonly materialBindingClass: string;
   /** Complete LOD windows, retained independently for the two visible regions. */
   visibleBindGroups: { early?: readonly BindGroup[]; late?: readonly BindGroup[] } | undefined;
   readonly bundles: PreparedRasterBundleCache;
 }
 
+function batchExecutionKey(
+  sourceBatch: GpuDrivenBatch,
+  execution: Extract<BatchExecution, { readonly route: 'gpu' }>,
+) {
+  return {
+    preparedIdentity: capturedPreparedMaterialArtifactKey(execution.prepared) ?? '',
+    pipelineClass: execution.prepared.identity.material,
+    resourceIdentity: sourceBatch.key.materialResourceClass,
+    admission:
+      Number(execution.material.paramSnapshot?.alphaCutoff ?? 0) > 0 ||
+      Number(execution.material.paramSnapshot?.alphaHash ?? 0) > 0.5
+        ? ('alpha-mask' as const)
+        : ('opaque' as const),
+    materialPass:
+      execution.material.deferredPass === true ? ('deferred' as const) : ('forward-only' as const),
+  };
+}
+
+class BatchPreparation {
+  readonly batches = new Map<
+    number,
+    {
+      readonly source: GpuDrivenBatch;
+      readonly signature: string;
+      readonly artifact: MaterialShaderArtifact | undefined;
+      readonly value: PreparedBatchRows;
+    }
+  >();
+  cached:
+    | {
+        readonly plan: SubmissionPlan;
+        readonly slotAt: PersistentGpuDrivenState['slotAt'];
+        readonly worldKeys: readonly number[] | undefined;
+        readonly scene: PersistentGpuDrivenState['scene'];
+        readonly batchRows: readonly PreparedBatchRows[];
+        readonly value: PreparedProductionPlan;
+      }
+    | undefined;
+}
+
+export interface GpuDrivenPrepareInput {
+  readonly materialArtifactResolver?: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly materialFrame?: import('../scene/material-dispatch').MaterialFrame;
+  readonly shadowMaterials?: ShadowMaterialContent;
+  readonly shadowViews?: boolean;
+  readonly scene: PersistentGpuDrivenState | undefined;
+  readonly batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>;
+  /** The already selected frame lane; Surface still shares its retained resource owner. */
+  readonly geometryLane?: 'automatic' | 'direct';
+  readonly gbufferBatchOrderDiagnostic?: GBufferOrderDiagnosticConfig | undefined;
+  readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
+  readonly camera: CameraSnapshot;
+  /** Shared mesh residency, independent of the number of bound scene members. */
+  readonly meshByBinding: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
+  readonly viewBindGroupLayout: BindGroupLayout;
+  /** Optional for legacy Standard callers; omitted means non-HDRP. */
+  readonly hdrp?: boolean;
+  /** Explicit Standard topology; cluster resources are bound by main-pass. */
+  readonly clustered?: boolean;
+  readonly materialBindingClasses?: ReadonlyMap<string, string>;
+  /** Cooked producer artifact selected from the frame material catalog. */
+  readonly materialArtifact?: MaterialShaderArtifact;
+  /** Cooked producer artifact for the GPU skinning variant. */
+  readonly materialSkinArtifact?: MaterialShaderArtifact;
+  /** Per-draw producer artifacts keyed by prepared identity and receipt. */
+  readonly materialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
+  /** Per-draw shadow-pass artifacts keyed by the same prepared identity. */
+  readonly shadowMaterialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
+  /** Retained ProbeBlend record page; slot N is addressed at aligned lane N+1. */
+  readonly probeBlendRecordBuffer?: Buffer;
+  readonly materialPipelineState?: PipelineState;
+  /** Existing renderer owner that builds the selected artifact PSO/BGL. */
+  readonly materialPipelineFactory?: MaterialPipelineFactory;
+  readonly materialPipelinePreparationFactory?: MaterialPipelineFactory;
+  /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
+  readonly capsuleShadowDirectional?: boolean;
+  /** Entity keys admitted by the persistent visibility facet for this view. */
+  readonly activeEntityKeys?: ReadonlySet<number>;
+  /** Collision-free renderer-owned revision for the active visibility set. */
+  readonly activeEntityRevision?: number;
+  /** Total extracted candidates, including facet-suppressed rows. */
+  readonly telemetryCandidateCount?: number;
+  /** Public receipt identity for the GPU telemetry copy encoded this frame. */
+  readonly telemetrySubmit?: GpuDrivenLodSubmitIdentity;
+  /** Per-frame deltas from the existing RenderScene/GPU Scene/palette owners. */
+  readonly structureMetrics?: GpuDrivenStructureMetrics;
+  /** World/App frame-time snapshot consumed by authored Surface code. */
+  readonly frameTime?: number;
+  /** Current RHI device generation used for Surface admission. */
+  readonly deviceGeneration?: number;
+  /** Renderer-owned generic read-only Surface page and instance ranges. */
+  readonly surfaceDynamicInput?: SurfaceDynamicInputFrame;
+  /** Optional profiler seam for the `record/gpu-driven-prepare/*` phases. */
+  readonly profilePhase?: RecordProfileRunner;
+}
+
 export class GpuDrivenProduction {
+  private readonly resourceFrames = new Set<GpuSceneResourceFrame>();
   private disposed = false;
+  private readonly rasterPasses = new PreparedRasterPassCache();
+  private gbufferOrderMaterials: import('../scene/material-dispatch').MaterialFrame | undefined;
   private gbufferOrderMode: GBufferOrderDiagnosticConfig | undefined;
   private gbufferOrderView: Float32Array | undefined;
   private gbufferOrderSlotAt: PersistentGpuDrivenState['slotAt'] | undefined;
   private gbufferOrderInspection: GpuDrivenProductionInspection['gbufferBatchOrderDiagnostic'];
   private gbufferOrderEncodes: GBufferOrderEncodeEvidence[] | undefined;
+
   private readonly preparedBundleCounters: PreparedRasterCounters = {
     hits: 0,
     builds: 0,
@@ -526,11 +502,7 @@ export class GpuDrivenProduction {
         commandCount: commands.length,
         indexOrVertexWork: commands.reduce((n, c) => n + c.indexOrVertexWork, 0),
       };
-      if (
-        new TextEncoder().encode(JSON.stringify(result)).byteLength > GEOMETRY_OBSERVATION_MAX_BYTES
-      )
-        throw Error('metadata-budget');
-      return result;
+      return boundGeometryObservationMetadata(result);
     } catch (error) {
       return unavailableGeometry(
         error instanceof Error ? error.message : 'readback-failed',
@@ -544,33 +516,16 @@ export class GpuDrivenProduction {
   private skinRaster: MaterialAbiRasterAdapter | undefined;
   private readonly sceneIdentities = new WeakMap<object, number>();
   private nextSceneIdentity = 1;
-  /** Per-source-batch preparation, valid while its global inputs hold. */
-  private readonly preparedBatches = new Map<
-    number,
-    {
-      readonly generation: number;
-      readonly contentEpoch: number;
-      readonly artifact: MaterialShaderArtifact | undefined;
-      readonly value: PreparedBatchRows;
-    }
-  >();
-  private preparedCache:
-    | {
-        readonly plan: SubmissionPlan;
-        readonly slotAt: PersistentGpuDrivenState['slotAt'];
-        readonly worldKeys: readonly number[] | undefined;
-        readonly scene: PersistentGpuDrivenState['scene'];
-        readonly meshResidencyEpoch: number;
-        readonly batchRows: readonly PreparedBatchRows[];
-        readonly value: PreparedProductionPlan;
-      }
-    | undefined;
+  private readonly preparations = {
+    forward: new BatchPreparation(),
+    shadow: new BatchPreparation(),
+  };
   private readonly mainFilterContributions = new FilteredPlanContributionOwner();
   private readonly shadowFilterContributions = new FilteredPlanContributionOwner();
   private filteredCache:
     | {
         readonly prepared: PreparedProductionPlan;
-        readonly bindingSignature: string | null | undefined;
+        readonly bindings: ReadonlyMap<string, string> | undefined;
         readonly value: FilteredProductionPlan;
       }
     | undefined;
@@ -589,20 +544,17 @@ export class GpuDrivenProduction {
   /** Per-frame admission facts; recomputed only when the active entity set changes. */
   private admissionCache:
     | {
-        readonly prepared: PreparedProductionPlan;
+        readonly source: SubmissionPlan;
         readonly sceneCapacity: number;
         readonly activeEntityRevision?: number;
         readonly activeEntityKeys?: ReadonlySet<number>;
         readonly suppressed?: Uint32Array;
-        readonly ownsAllDrawItems: boolean;
       }
     | undefined;
   private readonly surfaceFrames = new SurfaceFrameProjectionOwner();
   private shadowFilteredCache:
     | {
         readonly prepared: PreparedProductionPlan;
-        readonly membership: ShadowClaimTable | undefined;
-        readonly legacyBindingSignature: string;
         readonly value: FilteredProductionPlan;
       }
     | undefined;
@@ -647,19 +599,17 @@ export class GpuDrivenProduction {
   private lastKnownGoodGeneration: number | undefined;
   private overflowRecoveryRequired = false;
   private shadowViews: ShadowViewStatePool | undefined;
-  private shadowSourcePlan: SubmissionPlan | undefined;
+  private shadowSource: FilteredProductionPlan | undefined;
   private shadowScene: PersistentGpuDrivenState['scene'] | undefined;
   private shadowBatchProjections = publishReadonlyMap(
     new Map<string, ReadonlyMap<number, GpuDrivenShadowBatchProjection>>(),
   );
-  private shadowDrawKeysByView = publishReadonlyMap(new Map<string, ReadonlySet<string>>());
   /** Draw bindings follow physical resources and topology, independently of depth invalidation. */
   private readonly shadowProjectionSources = new WeakMap<
     ReadonlyMap<number, GpuDrivenShadowBatchProjection>,
     {
       readonly plan: SubmissionPlan;
       filtered: FilteredProductionPlan;
-      claims: ShadowClaimTable | undefined;
       artifacts: ShadowArtifactObservations;
       readonly visibleBuffer: Buffer;
       readonly meshBinding: BindGroup;
@@ -669,8 +619,6 @@ export class GpuDrivenProduction {
     }
   >();
   private readonly shadowCasterClasses = new ShadowCasterClassifier();
-  private shadowExpectedDrawKeys: ReadonlySet<string> = EMPTY_SHADOW_KEYS;
-  private shadowOwnershipCache: ShadowOwnershipSource | undefined;
   private surfaceSubmission: SurfaceGpuSubmissionAdmission | undefined;
   private surfaceArtifactInspection: GpuDrivenProductionInspection['surfaceArtifact'];
   private skinPaletteBuffer: Buffer | undefined;
@@ -678,8 +626,6 @@ export class GpuDrivenProduction {
   private committedViewClipping = '';
   /** Observed publication fields; raw artifact wrappers and receipts may mutate in place. */
   private observedShadowArtifacts: ShadowArtifactObservations = new Map();
-  private readonly residencyValidation = new ResidencyValidationOwner();
-  private cpuValidationTelemetryCache: GpuDrivenCpuValidationTelemetryCache | undefined;
   private cpuValidationCacheHits = 0;
   private cpuValidationScans = 0;
   private structureMetrics: GpuDrivenStructureMetrics = {
@@ -694,40 +640,6 @@ export class GpuDrivenProduction {
     private readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory,
     private readonly recoveryCount = 0,
   ) {}
-
-  /**
-   * Reuse the last producer-resolved residency rows when all source identity
-   * and generation fences still match. Renderables and dispatch entries are
-   * checked element-by-element as well as by their stable object identities so
-   * an accidental in-place mutation cannot reuse stale renderable indices.
-   */
-  reuseResidencyValidation(
-    input: GpuDrivenResidencyValidationInput,
-  ): readonly ValidatedRenderable[] | undefined {
-    return this.residencyValidation.reuse(input, this.device);
-  }
-
-  /** Publish the producer-owned rows after a completed residency validation. */
-  rememberResidencyValidation(
-    input: GpuDrivenResidencyValidationInput,
-    value: readonly ValidatedRenderable[],
-  ): void {
-    this.residencyValidation.remember(input, value);
-  }
-
-  private applyCpuValidationTelemetry(cache: GpuDrivenCpuValidationTelemetryCache): void {
-    this.gpuOwnedDrawItems = cache.gpuOwnedDrawCount;
-    this.mainTotalDrawItems = cache.totalDrawItems;
-    this.validatedGpuOwnedRows = cache.gpuOwnedRows;
-    this.cpuFallbackDrawItems = cache.cpuFallbackDrawItems;
-    this.cpuSemanticFallbackDrawItems = cache.cpuSemanticFallbackDrawItems;
-    this.cpuDeformationFallbackDrawItems = cache.cpuDeformationFallbackDrawItems;
-    this.cpuDeformationReasons.clear();
-    for (const [reason, count] of cache.cpuDeformationReasons) {
-      this.cpuDeformationReasons.set(reason, count);
-    }
-    this.blockedDrawItems = cache.blockedDrawItems;
-  }
 
   static forDevice(
     device: RhiDevice,
@@ -750,67 +662,56 @@ export class GpuDrivenProduction {
     };
   }
 
-  prepare(input: {
-    readonly scene: PersistentGpuDrivenState | undefined;
-    /** The already selected frame lane; Surface still shares its retained resource owner. */
-    readonly geometryLane?: 'automatic' | 'direct';
-    readonly gbufferBatchOrderDiagnostic?: GBufferOrderDiagnosticConfig | undefined;
-    readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
-    readonly temporalSources?: readonly ValidatedRenderable[];
-    readonly camera: CameraSnapshot;
-    /** GPU meshes projected by retained RenderScene slot, never raw asset handle. */
-    readonly meshBySlot: ReadonlyMap<number, MeshGpuHandles>;
-    readonly viewBindGroupLayout: BindGroupLayout;
-    readonly meshResidencyEpoch: number;
-    /** Optional for legacy Standard callers; omitted means non-HDRP. */
-    readonly hdrp?: boolean;
-    /** Explicit Standard topology; cluster resources are bound by main-pass. */
-    readonly clustered?: boolean;
-    readonly materialBindingClasses?: ReadonlyMap<string, string>;
-    /** Cooked producer artifact selected from the frame material catalog. */
-    readonly materialArtifact?: MaterialShaderArtifact;
-    /** Compatibility input for callers that have not migrated their name. */
-    readonly standardPbrArtifact?: MaterialShaderArtifact;
-    /** Cooked producer artifact for the GPU skinning variant. */
-    readonly materialSkinArtifact?: MaterialShaderArtifact;
-    /** Compatibility input for callers that have not migrated their name. */
-    readonly standardPbrSkinArtifact?: MaterialShaderArtifact;
-    /** Per-draw producer artifacts keyed by prepared identity and receipt. */
-    readonly materialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
-    /** Per-draw shadow-pass artifacts keyed by the same prepared identity. */
-    readonly shadowMaterialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
-    /** Retained ProbeBlend record page; slot N is addressed at aligned lane N+1. */
-    readonly probeBlendRecordBuffer?: Buffer;
-    readonly materialPipelineState?: PipelineState;
-    readonly standardPbrPipelineState?: PipelineState;
-    /** Existing renderer owner that builds the selected artifact PSO/BGL. */
-    readonly materialPipelineFactory?: MaterialPipelineFactory;
-    readonly materialPipelinePreparationFactory?: MaterialPipelineFactory;
-    /** Extracted ShadowCaster ownership keyed by concrete draw item and pass. */
-    readonly shadowCasterDrawKeys?: ReadonlySet<string>;
-    /** Structured ShadowCaster ownership facts for exact pass admission. */
-    readonly shadowCasterMembership?: readonly ShadowCasterMembership[];
-    /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
-    readonly capsuleShadowDirectional?: boolean;
-    /** Entity keys admitted by the persistent visibility facet for this view. */
-    readonly activeEntityKeys?: ReadonlySet<number>;
-    /** Collision-free renderer-owned revision for the active visibility set. */
-    readonly activeEntityRevision?: number;
-    /** Total extracted candidates, including facet-suppressed rows. */
-    readonly telemetryCandidateCount?: number;
-    /** Public receipt identity for the GPU telemetry copy encoded this frame. */
-    readonly telemetrySubmit?: GpuDrivenLodSubmitIdentity;
-    /** Per-frame deltas from the existing RenderScene/GPU Scene/palette owners. */
-    readonly structureMetrics?: GpuDrivenStructureMetrics;
-    /** World/App frame-time snapshot consumed by authored Surface code. */
-    readonly frameTime?: number;
-    /** Current RHI device generation used for Surface admission. */
-    readonly deviceGeneration?: number;
-    /** Renderer-owned generic read-only Surface page and instance ranges. */
-    readonly surfaceDynamicInput?: SurfaceDynamicInputFrame;
-    /** Optional profiler seam for the `record/gpu-driven-prepare/*` phases. */
-    readonly profilePhase?: RecordProfileRunner;
-  }): Result<PreparedGpuDrivenFrame | undefined, RhiError | GpuDrivenPreparationError> {
+  prepare(
+    input: GpuDrivenPrepareInput,
+  ): Result<PreparedGpuDrivenFrame | undefined, RhiError | GpuDrivenPreparationError> {
+    if (this.resourceFrames.size !== 0)
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'finish the unsubmitted GPU preparation before preparing another frame',
+          hint: 'submit or abort the existing recording; game asset edits remain independent',
+        }),
+      );
+    const sources = input.scene?.plan.sourceGroups;
+    try {
+      if (sources !== undefined) input.scene?.scene.inputs.adoptSources(sources);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    }
+    const captured = input.scene?.scene.captureResources();
+    if (captured !== undefined && !captured.ok) return captured;
+    const materials = captured?.value;
+    if (materials !== undefined) this.resourceFrames.add(materials);
+    let retained = false;
+    try {
+      const result = this.prepareFrame(input, materials);
+      if (result.ok && result.value !== undefined) {
+        retained = true;
+      }
+      return result;
+    } catch (cause) {
+      if (cause instanceof GpuDrivenPreparationError) return err(cause);
+      throw cause;
+    } finally {
+      if (!retained && materials !== undefined) {
+        this.shadowViews?._closeInputReads();
+        this.resourceFrames.delete(materials);
+        materials.release();
+      }
+    }
+  }
+
+  private prepareFrame(
+    input: GpuDrivenPrepareInput,
+    materials: GpuSceneResourceFrame | undefined,
+  ): Result<PreparedGpuDrivenFrame | undefined, RhiError | GpuDrivenPreparationError> {
+    const finishMaterials = (): boolean => {
+      if (materials === undefined || !this.resourceFrames.delete(materials)) return false;
+      materials.release();
+      return true;
+    };
     this.surfaceArtifactInspection = undefined;
     this.gpuOwnedSnapshotsMaterialized = 0;
     this.filteredPlanBuilds = 0;
@@ -844,21 +745,11 @@ export class GpuDrivenProduction {
     this.lane = 'cpu-semantic';
     this.laneReason = 'capability';
     this.submissionState = 'idle';
-    this.shadowExpectedDrawKeys = EMPTY_SHADOW_KEYS;
     this.surfaceSubmission = undefined;
-    const capability = classifyRecoveryCapability({
-      generation: 0,
-      shaderCompilation: true,
-      compute: this.device.caps.compute,
-      storageBuffer: this.device.caps.storageBuffer,
-      indirectDrawing: this.device.caps.indirectDrawing,
-      multisample: true,
-    });
     if (
       input.scene === undefined ||
       (input.hdrp === true && input.clustered !== true) ||
-      selectGpuLodLane(this.device.caps) === 'cpu' ||
-      capability.status === 'disabled'
+      selectGpuLodLane(this.device.caps) === 'cpu'
     ) {
       this.gpuOwnedEntityCount = 0;
       return ok(undefined);
@@ -874,57 +765,35 @@ export class GpuDrivenProduction {
       this.overflowRecoveryRequired = false;
     }
     const scene = input.scene;
-    const preparationFailure = nonCpuPreparationFailure(scene);
-    if (preparationFailure !== undefined) {
-      this.gpuOwnedEntityCount = 0;
-      // A capable candidate that cannot be prepared is a stopped promotion,
-      // not a CPU-semantic lane. Keep the concrete rejected draw count in the
-      // detached channel so an inspector can repair the producer and retry the
-      // same view-pass without guessing from an error string.
-      this.blockedDrawItems = preparationFailure.drawKeys.length;
-      this.mainTotalDrawItems = Math.max(
-        this.mainTotalDrawItems,
-        scene.plan.batches.reduce((total, batch) => total + batch.candidates.length, 0),
+    if (materials === undefined)
+      return err(
+        new RhiError({
+          code: 'internal-error',
+          expected: 'the captured GPU Scene resource frame',
+          hint: 'capture the Scene read domain before GPU preparation',
+        }),
       );
+    const materialArtifact = input.materialArtifact;
+    const skinArtifact = input.materialSkinArtifact;
+    const materialPipelineState = input.materialPipelineState;
+    if (materialPipelineState === undefined) {
+      let required = false;
+      for (const execution of input.batchExecutions.values()) {
+        if (execution.forward.route === 'gpu' || execution.shadow.route === 'gpu') {
+          required = true;
+          break;
+        }
+      }
+      if (!required) return ok(undefined);
       this.lane = 'blocked';
       this.laneReason = 'resource-not-ready';
-      this.preparationFailure = preparationFailureInspection(preparationFailure.error);
-      return err(preparationFailure.error);
-    }
-    const materialArtifact = input.materialArtifact ?? input.standardPbrArtifact;
-    const skinArtifact = input.materialSkinArtifact ?? input.standardPbrSkinArtifact;
-    const materialPipelineState = input.materialPipelineState ?? input.standardPbrPipelineState;
-    const bindingSignature = materialBindingSignature(input.materialBindingClasses);
-    const legacyBindings = bindingSignature ?? undefined;
-    if (
-      (materialArtifact === undefined && input.materialArtifacts === undefined) ||
-      materialPipelineState === undefined
-    ) {
-      this.gpuOwnedEntityCount = 0;
-      this.laneReason = 'resource-not-ready';
-      if (sceneRequiresGpuDrivenArtifact(input.scene)) {
-        this.blockedDrawItems = input.scene.plan.batches.reduce(
-          (total, batch) => total + batch.candidates.length,
-          0,
-        );
-        this.mainTotalDrawItems = Math.max(this.mainTotalDrawItems, this.blockedDrawItems);
-        this.lane = 'blocked';
-        const failure =
-          materialArtifact === undefined && input.materialArtifacts === undefined
-            ? new GpuDrivenPreparationError('missing-material-receipt', {
-                reason: 'material-receipt-missing',
-                owner: 'material',
-                expected: 'producer-owned MaterialProgramAbi GPU-driven artifact',
-              })
-            : new GpuDrivenPreparationError('resource-not-ready', {
-                reason: 'material-resource-missing',
-                owner: 'material',
-                expected: 'producer-owned GPU-driven material pipeline state',
-              });
-        this.preparationFailure = preparationFailureInspection(failure);
-        return err(failure);
-      }
-      return ok(undefined);
+      const failure = new GpuDrivenPreparationError('resource-not-ready', {
+        reason: 'material-resource-missing',
+        owner: 'material',
+        expected: 'producer-owned GPU-driven material pipeline state',
+      });
+      this.preparationFailure = preparationFailureInspection(failure);
+      return err(failure);
     }
     const rebuilt = runRecordProfilePhase(
       input.profilePhase,
@@ -932,11 +801,10 @@ export class GpuDrivenProduction {
       () =>
         this.assemblePrepared(
           scene,
-          input.meshBySlot,
-          input.meshResidencyEpoch,
-          materialArtifact,
-          skinArtifact,
-          input.materialArtifacts,
+          materials,
+          'forward',
+          input.batchExecutions,
+          input.meshByBinding,
           input.profilePhase,
         ),
     );
@@ -973,34 +841,44 @@ export class GpuDrivenProduction {
         this.laneReason = 'unsupported';
         // Main grouping has no shadow claim filter: every admitted draw has
         // a candidate group. Preserve its empty/CPU-only resource fallback.
-        if (preparedPlan.drawKeys.size === 0) return ok(undefined);
-        this.shadowSourcePlan = undefined;
+        if (!preparedPlan.batchRows.some((row) => row.fact !== undefined)) return ok(undefined);
+        this.shadowSource = undefined;
         this.shadowScene = undefined;
         this.liveRasterBatches = [];
         this.disableShadowViews();
         const view = this.view;
         const shadowViews = this.shadowViews;
         return ok({
+          materialBindings: [],
           topologySignature: 'direct',
           worldKeys: scene.worldKeys ?? [],
-          ownsAllDrawItems: false,
-          ownsAllShadowCasters: false,
-          drawKeys: EMPTY_SHADOW_KEYS,
-          shadowDrawKeys: EMPTY_SHADOW_KEYS,
+          selection: EMPTY_GPU_DRAW_SELECTION,
+          shadowDirectRequired: true,
           standardPbrFrameResources: {
-            materialBindGroups: [],
-            materialSlotIndicesByEntity: new Map(),
-            materialStride: MATERIAL_PER_ENTITY_STRIDE,
+            prepareMaterialBinding: () => undefined,
+            materialSlotIndicesByBinding: new Map(),
             sceneMaterialBuffer: scene.scene.materialBuffer,
           },
           ...(shadowViews === undefined ? {} : { shadowViewPool: shadowViews }),
+          _trackSubmittedWork: (completed) => materials?.submit(completed),
+          _sealResourceReads: () => {
+            try {
+              return materials?.seal() ?? ok(undefined);
+            } finally {
+              this.shadowViews?._closeInputReads();
+            }
+          },
           _commitResourceReplacement: () => {
+            if (!finishMaterials()) return;
             // A successful direct graph releases the superseded GPU graph's
             // imports and shadows. It does not submit a new GPU geometry generation.
             view?._commitResourceReplacement();
             shadowViews?._commitResourceReplacement();
           },
-          _abortResourceReplacement: () => shadowViews?._abortResourceReplacement(),
+          _abortResourceReplacement: () => {
+            if (!finishMaterials()) return;
+            shadowViews?._abortResourceReplacement();
+          },
           project: () =>
             err(
               new RhiError({
@@ -1040,10 +918,9 @@ export class GpuDrivenProduction {
         // Nonempty maps still check their admitted values; raw inputs retain
         // their complete observation fence and custom-get behavior.
         if (
-          bindingSignature === undefined ||
           filtered === undefined ||
           this.filteredCache?.prepared !== preparedPlan ||
-          this.filteredCache.bindingSignature !== bindingSignature
+          this.filteredCache.bindings !== input.materialBindingClasses
         ) {
           filtered = runRecordProfilePhase(
             input.profilePhase,
@@ -1051,10 +928,6 @@ export class GpuDrivenProduction {
             () =>
               this.mainFilterContributions.update(
                 preparedPlan,
-                // Prepared rows own ordinary Main dependencies. Raw inputs
-                // retain their complete observation and callback scope.
-                legacyBindings === undefined ? 'main' : legacyBindings,
-                undefined,
                 input.materialBindingClasses,
                 input.profilePhase === undefined
                   ? undefined
@@ -1073,44 +946,35 @@ export class GpuDrivenProduction {
           this.filteredPlanBuilds = Number(filtered !== this.filteredCache?.value);
           this.filteredCache = {
             prepared: preparedPlan,
-            bindingSignature,
+            bindings: input.materialBindingClasses,
             value: filtered,
           };
           this.filteredBatchBuilds += this.mainFilterContributions.lastWork.projectedBatches;
         }
         runRecordProfilePhase(input.profilePhase, 'record/gpu-driven-prepare/filter/counts', () => {
-          this.gpuOwnedEntityCount = gpuDrawEntityCount(filtered.drawKeys);
           this.indirectDrawCount = admittedRasterBatchCount(filtered.plan);
         });
-        if (filtered.batches.length === 0) return undefined;
-        let shadowOwnership: ShadowOwnershipSource | undefined;
         let shadowFiltered: FilteredProductionPlan | undefined;
-        // An explicit empty ownership publication has no shadow work. Missing
-        // ownership still means unrestricted legacy admission, not an empty set.
-        if ((input.shadowCasterMembership?.length ?? input.shadowCasterDrawKeys?.size) !== 0) {
-          const ownership = runRecordProfilePhase(
+        if (input.shadowViews === true) {
+          const shadowPrepared = this.assemblePrepared(
+            scene,
+            materials,
+            'shadow',
+            input.batchExecutions,
+            input.meshByBinding,
             input.profilePhase,
-            'record/gpu-driven-prepare/filter/shadow-ownership',
-            () =>
-              this.shadowOwnershipSource(input.shadowCasterDrawKeys, input.shadowCasterMembership),
-          );
-          shadowOwnership = ownership;
-          const shadowMembership = ownership.claims;
+          ).unwrap();
           shadowFiltered = this.shadowFilteredCache?.value;
           if (
             shadowFiltered === undefined ||
-            this.shadowFilteredCache?.prepared !== preparedPlan ||
-            this.shadowFilteredCache.membership !== shadowMembership ||
-            this.shadowFilteredCache.legacyBindingSignature !== (legacyBindings ?? '')
+            this.shadowFilteredCache?.prepared !== shadowPrepared
           ) {
             shadowFiltered = runRecordProfilePhase(
               input.profilePhase,
               'record/gpu-driven-prepare/filter/shadow-plan',
               () =>
                 this.shadowFilterContributions.update(
-                  preparedPlan,
-                  legacyBindings ?? '',
-                  ownership.claims,
+                  shadowPrepared,
                   undefined,
                   input.profilePhase === undefined
                     ? undefined
@@ -1128,18 +992,18 @@ export class GpuDrivenProduction {
             );
             this.filteredBatchBuilds += this.shadowFilterContributions.lastWork.projectedBatches;
             this.shadowFilteredCache = {
-              prepared: preparedPlan,
-              membership: shadowMembership,
-              legacyBindingSignature: legacyBindings ?? '',
+              prepared: shadowPrepared,
               value: shadowFiltered,
             };
           }
         }
+        if (filtered.batches.length === 0 && (shadowFiltered?.batches.length ?? 0) === 0)
+          return undefined;
         const sceneCapacity = scene.scene.rowCapacity;
         const cachedAdmission = this.admissionCache;
         const admissionMatches =
           cachedAdmission !== undefined &&
-          cachedAdmission.prepared === preparedPlan &&
+          cachedAdmission.source === scene.plan &&
           cachedAdmission.sceneCapacity === sceneCapacity &&
           (input.activeEntityRevision !== undefined &&
           cachedAdmission.activeEntityRevision !== undefined
@@ -1152,7 +1016,7 @@ export class GpuDrivenProduction {
             admissionMatches
               ? cachedAdmission
               : {
-                  prepared: preparedPlan,
+                  source: scene.plan,
                   sceneCapacity,
                   ...(input.activeEntityRevision === undefined
                     ? {}
@@ -1164,12 +1028,12 @@ export class GpuDrivenProduction {
                     ? {}
                     : {
                         suppressed: suppressedPrimitiveWords(
-                          preparedPlan,
+                          scene.slots,
+                          scene.worldKeys,
                           input.activeEntityKeys,
                           sceneCapacity,
                         ),
                       }),
-                  ownsAllDrawItems: ownsAllAdmittedDrawItems(preparedPlan, input.activeEntityKeys),
                 },
         );
         this.admissionCache = admission;
@@ -1177,7 +1041,6 @@ export class GpuDrivenProduction {
           lodProjection,
           filtered,
           admission,
-          shadowOwnership,
           shadowFiltered,
         };
       },
@@ -1186,7 +1049,7 @@ export class GpuDrivenProduction {
       this.laneReason = 'unsupported';
       return ok(undefined);
     }
-    const { lodProjection, filtered, admission, shadowOwnership, shadowFiltered } = filterStage;
+    const { lodProjection, filtered, admission, shadowFiltered } = filterStage;
     const surfaceArtifact = filtered.materialBatches.find(
       ({ artifact }) => artifact.receipt?.surface?.model === 'single-layer-medium',
     )?.artifact;
@@ -1240,21 +1103,8 @@ export class GpuDrivenProduction {
     this.lane = 'gpu';
     this.laneReason = 'none';
     this.submissionState = 'pending';
-    this.shadowSourcePlan = shadowFiltered?.plan;
+    this.shadowSource = shadowFiltered;
     this.shadowScene = scene.scene;
-    const shadowCasterKeys = shadowOwnership?.casterKeys;
-    this.shadowExpectedDrawKeys = shadowCasterKeys ?? EMPTY_SHADOW_KEYS;
-    if (
-      shadowOwnership !== undefined &&
-      shadowFiltered !== undefined &&
-      shadowOwnership.ownsAllFor !== shadowFiltered
-    ) {
-      shadowOwnership.ownsAllFor = shadowFiltered;
-      shadowOwnership.ownsAll =
-        shadowCasterKeys === undefined ||
-        [...shadowCasterKeys].every((key) => shadowFiltered.shadowDrawKeys.has(key));
-    }
-    const ownsAllShadowCasters = shadowOwnership?.ownsAll ?? true;
     if (this.shadowViews === undefined) {
       const created = ShadowViewStatePool.create({
         device: this.device,
@@ -1287,13 +1137,16 @@ export class GpuDrivenProduction {
           surfaceRows[row++] =
             base === 0
               ? 0
-              : base + candidate.drawItemIndex * instanceCount + candidate.instanceOrdinal;
+              : base +
+                (batch.binding?.drawItemIndex ?? candidate.drawItemIndex) * instanceCount +
+                candidate.instanceOrdinal;
         }
       }
     }
     const updated = this.view.update(
       filtered.plan,
       scene.scene,
+      materials.inputReads(),
       activeFrustum(input.camera),
       input.camera,
       0,
@@ -1316,7 +1169,8 @@ export class GpuDrivenProduction {
         }),
       );
     }
-    const representativeArtifact = filtered.materialBatches[0]?.artifact;
+    const representativeArtifact =
+      filtered.materialBatches[0]?.artifact ?? shadowFiltered?.materialBatches[0]?.artifact;
     if (representativeArtifact === undefined) {
       return err(
         new RhiError({
@@ -1371,16 +1225,14 @@ export class GpuDrivenProduction {
         }),
       );
     }
-    const skinBatch = filtered.batches.find(
-      ({ batch }) => batch.prepared?.identity.deformation === 'skin',
-    );
+    const skinBatch =
+      filtered.batches.find(({ batch }) => batch.prepared?.identity.deformation === 'skin') ??
+      shadowFiltered?.batches.find(({ batch }) => batch.prepared?.identity.deformation === 'skin');
     if (skinBatch !== undefined) {
-      const skinPrimitive = skinBatch.batch.candidates[0]?.primitiveIndex;
-      const skinSnapshot =
-        skinPrimitive === undefined ? undefined : scene.slotAt(skinPrimitive)?.snapshot.skin;
       const skinAllocator = materialPipelineState.skinPaletteAllocator;
+      const paletteBuffer = skinAllocator?.storageBuffer;
       const selectedSkinArtifact = skinBatch.artifact;
-      if (skinSnapshot === undefined || skinAllocator === null || skinAllocator === undefined) {
+      if (paletteBuffer == null || skinAllocator == null) {
         return err(
           new RhiError({
             code: 'rhi-not-available',
@@ -1396,7 +1248,7 @@ export class GpuDrivenProduction {
           artifact: selectedSkinArtifact,
           visibleBuffer,
           deformation: 'skin',
-          paletteBuffer: skinSnapshot.buffer,
+          paletteBuffer: paletteBuffer,
           paletteBindingWindowBytes: skinAllocator.bindingWindowBytes,
           sharedSurfaceFrame: materialRaster.surfaceDynamicSharedFrameState,
           ...(input.probeBlendRecordBuffer === undefined
@@ -1414,13 +1266,13 @@ export class GpuDrivenProduction {
         const rebound = this.skinRaster.ensureVisibleBuffer(visibleBuffer);
         if (!rebound.ok) return rebound;
         const palette = this.skinRaster.ensurePaletteBuffer(
-          skinSnapshot.buffer,
+          paletteBuffer,
           skinAllocator.bindingWindowBytes,
         );
         if (!palette.ok) return palette;
       }
-      if (this.skinPaletteBuffer !== skinSnapshot.buffer) {
-        this.skinPaletteBuffer = skinSnapshot.buffer;
+      if (this.skinPaletteBuffer !== paletteBuffer) {
+        this.skinPaletteBuffer = paletteBuffer;
         this.shadowBatchProjections = publishReadonlyMap(new Map());
         this.shadowViews?.invalidateSkinned();
       }
@@ -1509,10 +1361,11 @@ export class GpuDrivenProduction {
     // rows from the scene tables, so no per-batch row projection exists.
     const sceneIdentity = this.sceneIdentity(scene.scene);
     const viewInspection = view.inspect();
-    const liveRaster = this.liveRaster(filtered, scene, visibleBuffer, materialRaster, skinRaster);
+    const liveRaster = this.liveRaster(filtered, visibleBuffer, materialRaster, skinRaster);
     if (!liveRaster.ok) return liveRaster;
     this.liveRasterBatches = liveRaster.value;
     this.gbufferOrderMode = input.gbufferBatchOrderDiagnostic;
+    this.gbufferOrderMaterials = input.materialFrame;
     this.gbufferOrderView =
       input.gbufferBatchOrderDiagnostic === undefined
         ? undefined
@@ -1539,6 +1392,7 @@ export class GpuDrivenProduction {
                   },
                 }),
           };
+
     const graphIdentity = this.rasterGraphIdentity.update(
       filtered,
       sceneIdentity,
@@ -1564,12 +1418,30 @@ export class GpuDrivenProduction {
             `${shadowViewIdentityKey(entry.identity)}:${entry.resourceGeneration}`,
         )
         .join('|') ?? '';
+    const shadowDirectRequired =
+      scene.completeGeometry !== true ||
+      scene.plan.batches.some((batch) => {
+        const execution =
+          batch.binding === undefined
+            ? undefined
+            : input.batchExecutions.get(batch.binding)?.shadow;
+        return execution === undefined || execution.route === 'direct';
+      });
     const production = this;
     const consumeSurfaceDynamicInput =
       this.surfaceSubmission === undefined
         ? undefined
         : this.surfaceFrames.consumer(input.surfaceDynamicInput);
     return ok({
+      materialBindings: filtered.batches.map(({ batch, materialBindingClass }) => {
+        const binding = batch.binding;
+        if (binding === undefined) throw new Error('Prepared batch has no shared material binding');
+        return {
+          material: binding.material,
+          worldId: binding.worldId,
+          resourceClass: materialBindingClass,
+        };
+      }),
       get topologySignature() {
         const shadow = shadowTopologySignature();
         return shadow.length === 0 ? signature : `${signature}|shadow=${shadow}`;
@@ -1578,23 +1450,16 @@ export class GpuDrivenProduction {
         const shadow = shadowTopologySignature();
         return shadow.length === 0 ? recordingSignature : `${recordingSignature}|shadow=${shadow}`;
       },
-      ownsAllDrawItems: admission.ownsAllDrawItems,
       worldKeys: scene.worldKeys ?? [],
-      ownsAllShadowCasters,
-      drawKeys: filtered.drawKeys,
-      cacheEntityKeys: preparedPlan.cacheEntityKeys,
-      shadowDrawKeys: shadowFiltered?.shadowDrawKeys ?? EMPTY_SHADOW_KEYS,
+      selection: filtered.selection,
+      shadowDirectRequired,
       ...(this.surfaceSubmission === undefined
         ? {}
         : { surfaceSubmission: this.surfaceSubmission }),
-      get shadowDrawKeysByView() {
-        return production.shadowDrawKeysByView;
-      },
       standardPbrFrameResources: {
         resourceGeneration: viewInspection.resourceGeneration,
-        materialBindGroups: [],
-        materialSlotIndicesByEntity: new Map(),
-        materialStride: MATERIAL_PER_ENTITY_STRIDE,
+        prepareMaterialBinding: () => undefined,
+        materialSlotIndicesByBinding: new Map(),
         sceneMaterialBuffer: scene.scene.materialBuffer,
         ...(this.surfaceSubmission === undefined
           ? {}
@@ -1614,7 +1479,16 @@ export class GpuDrivenProduction {
       _commitGpuResourceReplacement: () => {
         view._commitResourceReplacement();
       },
+      _trackSubmittedWork: (completed) => materials?.submit(completed),
+      _sealResourceReads: () => {
+        try {
+          return materials?.seal() ?? ok(undefined);
+        } finally {
+          this.shadowViews?._closeInputReads();
+        }
+      },
       _commitResourceReplacement: (submittedGraphGeneration) => {
+        if (!finishMaterials()) return;
         view._commitResourceReplacement();
         shadowViewPool._commitResourceReplacement(submittedGraphGeneration);
         this.committedPaletteContentRevision = paletteContentRevision;
@@ -1623,6 +1497,7 @@ export class GpuDrivenProduction {
         this.lastKnownGoodGeneration = view.inspect().resourceGeneration;
       },
       _abortResourceReplacement: () => {
+        if (!finishMaterials()) return;
         materialRaster.abortSurfaceDynamicInput();
         skinRaster?.abortSurfaceDynamicInput();
         shadowViewPool._abortResourceReplacement();
@@ -1638,17 +1513,19 @@ export class GpuDrivenProduction {
         return shadowViewPool.project(graph, identity, forceCompute, cameraPyramid);
       },
       updateShadowViews: (views) =>
-        shadowFiltered !== undefined && shadowFiltered.plan.batches.length > 0 && views.length > 0
+        shadowFiltered !== undefined && views.length > 0
           ? this.updateShadowViews(
               views,
-              input.shadowMaterialArtifacts,
               shadowFiltered,
+              input.batchExecutions,
               scene,
-              shadowOwnership?.claims,
+              materials.inputReads(),
               lodProjection,
               preparedPlan,
               input.camera,
               input.capsuleShadowDirectional === true,
+              input.materialFrame,
+              input.shadowMaterials,
               input.profilePhase,
             )
           : this.disableShadowViews(),
@@ -1692,1010 +1569,1048 @@ export class GpuDrivenProduction {
                 };
                 return ok(late.value.passNames);
               };
-        if (materialRaster !== undefined && filtered.batches.length > 0) {
-          let surfacePage: GraphBuffer | undefined;
-          let surfaceFrame: GraphBuffer | undefined;
-          let surfaceSharedFrame: GraphBuffer | undefined;
-          if (this.surfaceSubmission !== undefined) {
-            const importedPage = graph.importBuffer(
-              'gpu-driven.surface.dynamic-input',
-              {
-                size: materialRaster.surfaceDynamicInputBufferSize,
-                usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-              },
-              () => materialRaster.surfaceDynamicInputBuffer,
-            );
-            if (!importedPage.ok) return importedPage;
-            const importedFrame = graph.importBuffer(
-              'gpu-driven.surface.frame-input',
-              {
-                size: materialRaster.surfaceDynamicFrameBufferSize,
-                usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-              },
-              () => materialRaster.surfaceDynamicFrameBuffer,
-            );
-            if (!importedFrame.ok) return importedFrame;
-            const importedSharedFrame = graph.importBuffer(
-              'gpu-driven.surface.shared-frame-input',
-              {
-                size: materialRaster.surfaceDynamicSharedFrameBufferSize,
-                usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-              },
-              () => materialRaster.surfaceDynamicSharedFrameBuffer,
-            );
-            if (!importedSharedFrame.ok) return importedSharedFrame;
-            surfacePage = importedPage.value;
-            surfaceFrame = importedFrame.value;
-            surfaceSharedFrame = importedSharedFrame.value;
-          }
-          const sceneTransformBuffer = scene.scene.transformBuffer;
-          const sceneTransformBytes = scene.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride;
-          // Raster classes are the compiled graph's resource facts: pipelines,
-          // mesh buffers and bind groups. Batch windows, indirect offsets and
-          // representatives are live per-frame facts read at encode.
-          type ProjectedRasterClass = {
-            readonly orderDiagnosticState: MaterialRenderState | undefined;
-            diagnosticSourceDigest?: string;
-            readonly artifact: MaterialShaderArtifact;
-            readonly mesh: MeshGpuHandles;
-            readonly vertex?: GraphBuffer;
-            readonly index?: GraphBuffer;
-            readonly meshBindGroup: BindGroup;
-            readonly raster: MaterialAbiRasterAdapter;
-            readonly deformation: 'rigid' | 'skin';
-            readonly clustered: boolean;
-            readonly pipelines: ProjectedRasterPipelines;
-          };
-          type ProjectedRasterPipelines = {
-            readonly pipelineFor: RasterPipelineFor;
-            readonly temporalPipelineFor: RasterPipelineFor;
-            readonly coveragePipelineFor: RasterPipelineFor;
-            readonly gbufferPipelineFor: RasterPipelineFor;
-            /** Forward entry for the unfogged base View slot; equals `pipelineFor` for authored entries. */
-            readonly opaquePipelineFor: RasterPipelineFor;
-            readonly nearestPipelineFor?: RasterPipelineFor;
-            readonly colorPipelineFor?: RasterPipelineFor;
-          };
-          const standardAccesses: GraphAccess[] = [
-            { resource: outputs.value.primitive, usage: 'storage-read' },
-            { resource: outputs.value.instance, usage: 'storage-read' },
-            { resource: outputs.value.material, usage: 'storage-read' },
-            { resource: outputs.value.visible, usage: 'storage-read' },
-            ...(outputs.value.visibleSurfaceRows === undefined
-              ? []
-              : [
-                  {
-                    resource: outputs.value.visibleSurfaceRows,
-                    usage: 'storage-read' as const,
-                  },
-                ]),
-            { resource: outputs.value.transform, usage: 'storage-read' },
-            { resource: outputs.value.indirect, usage: 'indirect-read' },
-            ...(surfacePage === undefined
-              ? []
-              : [{ resource: surfacePage, usage: 'storage-read' as const }]),
-            ...(surfaceFrame === undefined
-              ? []
-              : [{ resource: surfaceFrame, usage: 'storage-read' as const }]),
-            ...(surfaceSharedFrame === undefined
-              ? []
-              : [{ resource: surfaceSharedFrame, usage: 'uniform-read' as const }]),
-          ];
-          const meshBuffers = rendererRecording
-            ? undefined
-            : new Map<
-                MeshGpuHandles,
-                { readonly vertex: GraphBuffer; readonly index?: GraphBuffer }
-              >();
-          // Raw projections retain late per-mesh resolvers; recording owns stable handles.
-          const rasterClasses = new Map<string, ProjectedRasterClass>();
-          const pipelineShapes = new Map<string, ProjectedRasterPipelines>();
-          const initialFormats = rendererRecording
-            ? [format, ...(additionalColorFormats ?? [])]
-            : undefined;
-          const initialFormatKey = initialFormats?.join(',');
-          for (const [liveIndex, prepared] of filtered.batches.entries()) {
-            const live = liveRaster.value[liveIndex];
-            const classKey = rendererRecording ? live?.recordingClassKey : live?.classKey;
-            if (classKey === undefined || rasterClasses.has(classKey)) continue;
-            const deformation = prepared.batch.prepared?.identity.deformation ?? 'rigid';
-            const raster = deformation === 'skin' ? skinRaster : materialRaster;
-            const artifact = prepared.artifact;
-            if (raster === undefined) {
-              return err(
-                new RhiError({
-                  code: 'rhi-not-available',
-                  expected: `${deformation === 'skin' ? 'skinned ' : ''}published material ABI raster owner`,
-                  hint: 'publish the selected material artifact before entering the GPU lane',
-                }),
-              );
-            }
-            // Mesh rows are the shared GPU Scene transform table: visible.x
-            // names the scene instance row and the vertex stage resolves the
-            // primitive root and instance-local transforms itself.
-            const meshBindGroup = raster.sceneMeshBindGroup(
-              sceneTransformBuffer,
-              sceneTransformBytes,
-            );
-            if (!meshBindGroup.ok) return meshBindGroup;
-            let buffers = meshBuffers?.get(prepared.mesh);
-            if (!rendererRecording && buffers === undefined) {
-              let vertex: GraphBuffer | undefined;
-              if (vertex === undefined) {
-                const imported = graph.importBuffer(
-                  `gpu-driven.standard.${prepared.worldKey}.${prepared.batch.key.assetHandle}.vertex`,
-                  {
-                    size: prepared.mesh.vboBytes,
-                    usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
-                  },
-                  () => prepared.mesh.vertexBuffer.handle,
-                );
-                if (!imported.ok) return imported;
-                vertex = imported.value;
-                standardAccesses.push({ resource: vertex, usage: 'vertex-read' });
-              }
-              let index: GraphBuffer | undefined;
-              if (prepared.mesh.indexBuffer !== null) {
-                const indexBuffer = prepared.mesh.indexBuffer;
-                if (index === undefined) {
-                  const imported = graph.importBuffer(
-                    `gpu-driven.standard.${prepared.worldKey}.${prepared.batch.key.assetHandle}.index`,
-                    {
-                      size: prepared.mesh.iboBytes,
-                      usage: GPU_BUFFER_USAGE_INDEX | GPU_BUFFER_USAGE_COPY_DST,
-                    },
-                    () => indexBuffer.handle,
-                  );
-                  if (!imported.ok) return imported;
-                  index = imported.value;
-                  standardAccesses.push({ resource: index, usage: 'index-read' });
-                }
-              }
-              buffers = { vertex, ...(index === undefined ? {} : { index }) };
-              meshBuffers?.set(prepared.mesh, buffers);
-            }
-            const shaderUvSetCount = isCanonicalStandardPbrMaterialShader(artifact.material)
-              ? materialPipelineState.standardPbrShaderUvSetCount
-              : (artifact.uvSetCount ?? materialPipelineState.standardPbrShaderUvSetCount);
-            const stripIndexFormat =
-              prepared.batch.key.drawKind === 'indexed' &&
-              isStripTopology(prepared.batch.key.topology)
-                ? prepared.mesh.indexFormat
-                : undefined;
-            // Only the private stock recording closure owns immutable inputs.
-            // Raw projections retain per-mesh lazy reads and retry boundaries.
-            const layoutProjection = rendererRecording ? prepared.mesh.layoutProjection : undefined;
-            const topology = rendererRecording ? prepared.batch.key.topology : undefined;
-            const renderState = rendererRecording ? prepared.renderState : undefined;
-            const standardTextureMask = rendererRecording
-              ? prepared.standardTextureMask
-              : undefined;
-            // Raw projections retain physical mesh identities and graph accesses.
-            // Stock recording binds live residency-owned meshes like direct draws.
-            // Pipeline preparation depends only on immutable shader/layout facts;
-            // Worlds, GUIDs and vertex/index allocations cannot split it.
-            const pipelineShapeKey =
-              layoutProjection === undefined
-                ? undefined
-                : JSON.stringify([
-                    deformation,
-                    layoutProjection.digest,
-                    layoutProjection.arrayStride,
-                    shaderUvSetCount,
-                    topology,
-                    stripIndexFormat ?? '',
-                    renderState ?? null,
-                    standardTextureMask ?? -1,
-                    artifact.material,
-                    artifact.pass,
-                    artifact.layoutIdentity,
-                    artifact.receipt?.sceneIndexEntry ?? '',
-                    artifact.vertexEntry ?? '',
-                    artifact.fragmentEntry ?? '',
-                    artifact.receipt?.receiptIdentity ?? '',
-                    artifact.receipt?.generation ?? 0,
-                    artifact.variantSet ?? '',
-                    artifact.reflectionFallbackOutputAvailable === true,
-                    isSingleLayerMediumArtifact(artifact),
-                    materialArtifactProgramIdentity(artifact),
-                  ]);
-            let pipelines =
-              pipelineShapeKey === undefined ? undefined : pipelineShapes.get(pipelineShapeKey);
-            if (pipelines === undefined) {
-              // Artifact and render state are fixed by this graph projection.
-              // Only attachment formats vary at encode; do not rebuild a key
-              // from immutable program/receipt facts for every batch and frame.
-              const pipelineForFragment = (
-                fragmentEntry: string | undefined,
-                coverageOnly = false,
-                forwardColorPass = false,
-              ): RasterPipelineFor => {
-                let projectedPipelines: Map<string, ResultOk<RenderPipeline>> | undefined;
-                let selectedArtifact: MaterialShaderArtifact | undefined;
-                return (formats, formatKey, preparation = false) => {
-                  const key = formatKey ?? formats.join(',');
-                  const projected = projectedPipelines?.get(key);
-                  if (projected !== undefined)
-                    return rendererRecording ? projected : ok(projected.value);
-                  // Unused G-buffer, temporal and coverage entries need no
-                  // artifact copy. Retain one immutable variant on first use;
-                  // failed pipeline admission still retries on the next call.
-                  selectedArtifact ??=
-                    fragmentEntry === undefined
-                      ? artifact
-                      : {
-                          ...artifact,
-                          fragmentEntry,
-                          ...(fragmentEntry === 'fs_temporal'
-                            ? { vertexEntry: 'vs_temporal' }
-                            : {}),
-                          ...(coverageOnly
-                            ? {
-                                variantSet:
-                                  variantSetForCoveragePass(artifact.variantSet, true) ?? '',
-                              }
-                            : {}),
-                        };
-                  const selected = raster.pipeline(
-                    formats[0] ?? format,
-                    sampleCount,
-                    layoutProjection ?? prepared.mesh.layoutProjection,
-                    // The producer receipt owns the selected shader's UV ABI.
-                    shaderUvSetCount,
-                    topology ?? prepared.batch.key.topology,
-                    stripIndexFormat,
-                    selectedArtifact.fragmentEntry === 'fs_temporal'
-                      ? geometryRenderStateForPass(
-                          rendererRecording ? renderState : prepared.renderState,
-                          'temporal',
-                          coverageOnly,
-                        )
-                      : rendererRecording
-                        ? renderState
-                        : prepared.renderState,
-                    selectedArtifact,
-                    formats.slice(1),
-                    rendererRecording ? standardTextureMask : prepared.standardTextureMask,
-                    forwardColorPass,
-                    preparation ? input.materialPipelinePreparationFactory : undefined,
-                  );
-                  if (selected.ok) {
-                    projectedPipelines ??= new Map();
-                    // Retain an owned result; an RHI result may observe value reads.
-                    projectedPipelines.set(key, ok(selected.value));
-                  }
-                  return selected;
-                };
-              };
-              const pipelineFor = pipelineForFragment(undefined, false, true);
-              // Only the template forward entry has an fs_opaque twin; an
-              // authored fragment entry keeps its own pipeline.
-              const opaquePipelineFor =
-                artifact.fragmentEntry === undefined || artifact.fragmentEntry === 'fs_main'
-                  ? pipelineForFragment(STANDARD_OPAQUE_FRAGMENT_ENTRY, false, true)
-                  : pipelineFor;
-              const gbufferPipelineFor = pipelineForFragment(
-                deformation === 'skin' && input.visibleSurface !== undefined
-                  ? SKIN_UNCOVERED_GBUFFER_ENTRY
-                  : 'fs_gbuffer',
-              );
-              const temporalPipelineFor = pipelineForFragment('fs_temporal');
-              // Output-domain TAAU coverage reuses the culled/LOD-selected
-              // indirect rows; only the binary variant and depth writes differ.
-              const coveragePipelineFor = pipelineForFragment('fs_temporal', true);
-              let nearestPipelineFor: RasterPipelineFor | undefined;
-              let colorPipelineFor: RasterPipelineFor | undefined;
-              if (isSingleLayerMediumArtifact(artifact)) {
-                nearestPipelineFor = pipelineForFragment('fs_nearest_layer');
-                colorPipelineFor = pipelineForFragment('fs_color');
-              }
-              pipelines = {
-                pipelineFor,
-                opaquePipelineFor,
-                gbufferPipelineFor,
-                temporalPipelineFor,
-                coveragePipelineFor,
-                ...(nearestPipelineFor === undefined ? {} : { nearestPipelineFor }),
-                ...(colorPipelineFor === undefined ? {} : { colorPipelineFor }),
-              };
-              if (pipelineShapeKey !== undefined) pipelineShapes.set(pipelineShapeKey, pipelines);
-            }
-            // Admit the batch with the pipeline its ordinary forward encode
-            // binds, so a frame that never needs fs_main does not compile it.
-            if (!rendererRecording || input.materialPipelinePreparationFactory === undefined) {
-              const initialPipeline = pipelines.opaquePipelineFor(
-                initialFormats ?? [format, ...(additionalColorFormats ?? [])],
-                initialFormatKey,
-              );
-              if (!initialPipeline.ok) return initialPipeline;
-            }
-            const projectedClass = {
-              orderDiagnosticState: prepared.renderState,
-              artifact,
-              mesh: prepared.mesh,
-              ...buffers,
-              pipelines,
-              meshBindGroup: meshBindGroup.value,
-              raster,
-              deformation,
-              clustered:
-                artifact.program.group2 === 'cluster' || artifact.program.group2 === 'skin-cluster',
-            };
-            rasterClasses.set(classKey, projectedClass);
-          }
-          if (rasterClasses.size === 0) {
+        let surfacePage: GraphBuffer | undefined;
+        let surfaceFrame: GraphBuffer | undefined;
+        let surfaceSharedFrame: GraphBuffer | undefined;
+        if (this.surfaceSubmission !== undefined) {
+          const importedPage = graph.importBuffer(
+            'gpu-driven.surface.dynamic-input',
+            {
+              size: materialRaster.surfaceDynamicInputBufferSize,
+              usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+            },
+            () => materialRaster.surfaceDynamicInputBuffer,
+          );
+          if (!importedPage.ok) return importedPage;
+          const importedFrame = graph.importBuffer(
+            'gpu-driven.surface.frame-input',
+            {
+              size: materialRaster.surfaceDynamicFrameBufferSize,
+              usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+            },
+            () => materialRaster.surfaceDynamicFrameBuffer,
+          );
+          if (!importedFrame.ok) return importedFrame;
+          const importedSharedFrame = graph.importBuffer(
+            'gpu-driven.surface.shared-frame-input',
+            {
+              size: materialRaster.surfaceDynamicSharedFrameBufferSize,
+              usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+            },
+            () => materialRaster.surfaceDynamicSharedFrameBuffer,
+          );
+          if (!importedSharedFrame.ok) return importedSharedFrame;
+          surfacePage = importedPage.value;
+          surfaceFrame = importedFrame.value;
+          surfaceSharedFrame = importedSharedFrame.value;
+        }
+        const sceneTransformBuffer = scene.scene.transformBuffer;
+        const sceneTransformBytes = scene.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride;
+        // Raster classes are the compiled graph's resource facts: pipelines,
+        // mesh buffers and bind groups. Batch windows, indirect offsets and
+        // representatives are live per-frame facts read at encode.
+        type ProjectedRasterClass = {
+          orderDiagnosticState: MaterialRenderState | undefined;
+          diagnosticSourceDigest?: string;
+          readonly artifact: MaterialShaderArtifact;
+          readonly mesh: MeshGpuHandles;
+          readonly vertex?: GraphBuffer;
+          readonly index?: GraphBuffer;
+          readonly meshBindGroup: BindGroup;
+          readonly raster: MaterialAbiRasterAdapter;
+          readonly deformation: 'rigid' | 'skin';
+          readonly clustered: boolean;
+          readonly pipelines: ProjectedRasterPipelines;
+        };
+        type ProjectedRasterPipelines = {
+          readonly pipelineFor: RasterPipelineFor;
+          readonly temporalPipelineFor: RasterPipelineFor;
+          readonly coveragePipelineFor: RasterPipelineFor;
+          readonly gbufferPipelineFor: RasterPipelineFor;
+          /** Forward entry for the unfogged base View slot; equals `pipelineFor` for authored entries. */
+          readonly opaquePipelineFor: RasterPipelineFor;
+          readonly nearestPipelineFor?: RasterPipelineFor;
+          readonly colorPipelineFor?: RasterPipelineFor;
+        };
+        const standardAccesses: GraphAccess[] = [
+          { resource: outputs.value.primitive, usage: 'storage-read' },
+          { resource: outputs.value.instance, usage: 'storage-read' },
+          { resource: outputs.value.material, usage: 'storage-read' },
+          { resource: outputs.value.visible, usage: 'storage-read' },
+          ...(outputs.value.visibleSurfaceRows === undefined
+            ? []
+            : [
+                {
+                  resource: outputs.value.visibleSurfaceRows,
+                  usage: 'storage-read' as const,
+                },
+              ]),
+          { resource: outputs.value.transform, usage: 'storage-read' },
+          { resource: outputs.value.indirect, usage: 'indirect-read' },
+          ...(surfacePage === undefined
+            ? []
+            : [{ resource: surfacePage, usage: 'storage-read' as const }]),
+          ...(surfaceFrame === undefined
+            ? []
+            : [{ resource: surfaceFrame, usage: 'storage-read' as const }]),
+          ...(surfaceSharedFrame === undefined
+            ? []
+            : [{ resource: surfaceSharedFrame, usage: 'uniform-read' as const }]),
+        ];
+        const meshBuffers = rendererRecording
+          ? undefined
+          : new Map<
+              MeshGpuHandles,
+              { readonly vertex: GraphBuffer; readonly index?: GraphBuffer }
+            >();
+        // Raw projections retain late per-mesh resolvers; recording owns stable handles.
+        const rasterClasses = new Map<string, ProjectedRasterClass>();
+        const pipelineShapes = new Map<string, ProjectedRasterPipelines>();
+        const initialFormats = rendererRecording
+          ? [format, ...(additionalColorFormats ?? [])]
+          : undefined;
+        const initialFormatKey = initialFormats?.join(',');
+        for (const [liveIndex, prepared] of filtered.batches.entries()) {
+          const live = liveRaster.value[liveIndex];
+          const classKey = rendererRecording ? live?.recordingClassKey : live?.classKey;
+          if (classKey === undefined || rasterClasses.has(classKey)) continue;
+          const deformation = prepared.batch.prepared?.identity.deformation ?? 'rigid';
+          const raster = deformation === 'skin' ? skinRaster : materialRaster;
+          const artifact = prepared.artifact;
+          if (raster === undefined) {
             return err(
               new RhiError({
-                code: 'internal-error',
-                expected: 'one material ABI raster class for the eligible batches',
-                hint: 'repair the receipt-backed batch projection before encoding the frame',
+                code: 'rhi-not-available',
+                expected: `${deformation === 'skin' ? 'skinned ' : ''}published material ABI raster owner`,
+                hint: 'publish the selected material artifact before entering the GPU lane',
               }),
             );
           }
-          const rasterClassFor = (
-            live: LiveRasterBatch,
-            filter?: RenderPipelineGpuDrivenFilter,
-            fragmentEntryPoint?: string,
-          ): ProjectedRasterClass | undefined => {
-            if (live.batch.visibleCapacity === 0) return undefined;
-            const batch = rasterClasses.get(
-              rendererRecording ? live.recordingClassKey : live.classKey,
-            );
-            if (batch === undefined) {
-              throw new RhiError({
-                code: 'internal-error',
-                expected: `compiled raster class for live GPU batch ${live.batch.batchId}`,
-                hint: 'derive the graph signature from the same raster class set as the live batches',
-              });
+          // Mesh rows are the shared GPU Scene transform table: visible.x
+          // names the scene instance row and the vertex stage resolves the
+          // primitive root and instance-local transforms itself.
+          const meshBindGroup = raster.sceneMeshBindGroup(
+            sceneTransformBuffer,
+            sceneTransformBytes,
+          );
+          if (!meshBindGroup.ok) return meshBindGroup;
+          let buffers = meshBuffers?.get(prepared.mesh);
+          if (!rendererRecording && buffers === undefined) {
+            let vertex: GraphBuffer | undefined;
+            if (vertex === undefined) {
+              const imported = graph.importBuffer(
+                `gpu-driven.standard.${prepared.worldKey}.${prepared.batch.key.assetHandle}.vertex`,
+                {
+                  size: prepared.mesh.vboBytes,
+                  usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
+                },
+                () => prepared.mesh.vertexBuffer.handle,
+              );
+              if (!imported.ok) return imported;
+              vertex = imported.value;
+              standardAccesses.push({ resource: vertex, usage: 'vertex-read' });
             }
-            if (
-              fragmentEntryPoint === 'fs_temporal' &&
-              (!isStandardPbrMaterialShader(batch.artifact.material) ||
-                batch.deformation !== 'rigid' ||
-                (live.batch.lod?.coverages.length ?? 0) <= 1)
-            )
-              return undefined;
-            const isMedium = isSingleLayerMediumArtifact(batch.artifact);
-            if (
-              (filter === 'single-layer-medium' && !isMedium) ||
-              ((filter === 'opaque' ||
-                filter === 'deferred-opaque' ||
-                filter === 'forward-only-opaque') &&
-                isMedium) ||
-              (filter === 'deferred-opaque' && live.batch.key.materialPass !== 'deferred') ||
-              (filter === 'forward-only-opaque' && live.batch.key.materialPass === 'deferred')
-            ) {
-              return undefined;
+            let index: GraphBuffer | undefined;
+            if (prepared.mesh.indexBuffer !== null) {
+              const indexBuffer = prepared.mesh.indexBuffer;
+              if (index === undefined) {
+                const imported = graph.importBuffer(
+                  `gpu-driven.standard.${prepared.worldKey}.${prepared.batch.key.assetHandle}.index`,
+                  {
+                    size: prepared.mesh.iboBytes,
+                    usage: GPU_BUFFER_USAGE_INDEX | GPU_BUFFER_USAGE_COPY_DST,
+                  },
+                  () => indexBuffer.handle,
+                );
+                if (!imported.ok) return imported;
+                index = imported.value;
+                standardAccesses.push({ resource: index, usage: 'index-read' });
+              }
             }
-            return batch;
-          };
-          const preparationFactory = input.materialPipelinePreparationFactory;
-          const preparationJobs = new Map<
-            string,
-            (
-              entries: readonly ValidatedRenderable[],
-              artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
-              onPending?: (reason: FramePresentationPendingReason) => void,
-            ) => boolean
-          >();
-          const selectPipeline = (
-            batch: ProjectedRasterClass,
-            fragmentEntryPoint: string | undefined,
-            coverageOnly: boolean,
-          ) =>
-            fragmentEntryPoint === 'fs_temporal'
-              ? coverageOnly
-                ? batch.pipelines.coveragePipelineFor
-                : batch.pipelines.temporalPipelineFor
-              : fragmentEntryPoint === 'fs_gbuffer'
-                ? batch.pipelines.gbufferPipelineFor
-                : fragmentEntryPoint === 'fs_nearest_layer'
-                  ? (batch.pipelines.nearestPipelineFor ?? batch.pipelines.pipelineFor)
-                  : fragmentEntryPoint === 'fs_color'
-                    ? (batch.pipelines.colorPipelineFor ?? batch.pipelines.pipelineFor)
-                    : fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY
-                      ? batch.pipelines.opaquePipelineFor
-                      : batch.pipelines.pipelineFor;
-          return ok({
-            accesses: standardAccesses,
-            ...(rendererRecording && preparationFactory !== undefined
-              ? {
-                  registerPipelinePreparation: (
-                    formats,
-                    filter,
-                    fragmentEntryPoint,
-                    coverageOnly = false,
-                  ) => {
-                    const key = JSON.stringify([formats, filter, fragmentEntryPoint, coverageOnly]);
-                    if (preparationJobs.has(key)) return;
-                    const selected = new Map<RasterPipelineFor, string>();
-                    for (const live of production.liveRasterBatches) {
-                      const batch = rasterClassFor(live, filter, fragmentEntryPoint);
-                      if (batch !== undefined)
-                        selected.set(
-                          selectPipeline(batch, fragmentEntryPoint, coverageOnly),
-                          batch.artifact.material,
-                        );
-                    }
-                    const ownedFormats = [...formats],
-                      formatKey = ownedFormats.join(',');
-                    preparationJobs.set(key, (entries, artifacts, onPending) => {
-                      let ready = true;
-                      for (const pipelineFor of selected.keys())
-                        if (!pipelineFor(ownedFormats, formatKey, true).ok) {
-                          ready = false;
-                          onPending?.({
-                            code: 'scene-pipeline-preparation',
-                            pass: (fragmentEntryPoint ?? filter ?? 'forward').slice(0, 256),
-                            shader: (selected.get(pipelineFor) ?? '').slice(0, 256),
-                          });
-                        }
-                      if (
-                        !prepareHiddenGpuDrivenPipelines({
-                          entries,
-                          artifacts,
-                          factory: preparationFactory,
-                          formats: ownedFormats,
-                          sampleCount,
-                          shaderUvSetCount: materialPipelineState.standardPbrShaderUvSetCount,
-                          filter,
-                          fragmentEntry: fragmentEntryPoint,
-                          coverageOnly,
-                          visibleSurface: input.visibleSurface !== undefined,
-                          ...(onPending === undefined ? {} : { onPending }),
-                        })
+            buffers = { vertex, ...(index === undefined ? {} : { index }) };
+            meshBuffers?.set(prepared.mesh, buffers);
+          }
+          const shaderUvSetCount = isCanonicalStandardPbrMaterialShader(artifact.material)
+            ? materialPipelineState.standardPbrShaderUvSetCount
+            : (artifact.uvSetCount ?? materialPipelineState.standardPbrShaderUvSetCount);
+          const stripIndexFormat =
+            prepared.batch.key.drawKind === 'indexed' &&
+            isStripTopology(prepared.batch.key.topology)
+              ? prepared.mesh.indexFormat
+              : undefined;
+          // Only the private stock recording closure owns immutable inputs.
+          // Raw projections retain per-mesh lazy reads and retry boundaries.
+          const layoutProjection = rendererRecording ? prepared.mesh.layoutProjection : undefined;
+          const topology = rendererRecording ? prepared.batch.key.topology : undefined;
+          const renderState = rendererRecording ? prepared.renderState : undefined;
+          const standardTextureMask = rendererRecording ? prepared.standardTextureMask : undefined;
+          // Raw projections retain physical mesh identities and graph accesses.
+          // Stock recording binds live residency-owned meshes like direct draws.
+          // Pipeline preparation depends only on immutable shader/layout facts;
+          // Worlds, GUIDs and vertex/index allocations cannot split it.
+          const pipelineShapeKey =
+            layoutProjection === undefined
+              ? undefined
+              : JSON.stringify([
+                  deformation,
+                  layoutProjection.digest,
+                  layoutProjection.arrayStride,
+                  shaderUvSetCount,
+                  topology,
+                  stripIndexFormat ?? '',
+                  renderState ?? null,
+                  standardTextureMask ?? -1,
+                  artifact.material,
+                  artifact.pass,
+                  artifact.layoutIdentity,
+                  artifact.receipt?.sceneIndexEntry ?? '',
+                  artifact.vertexEntry ?? '',
+                  artifact.fragmentEntry ?? '',
+                  artifact.receipt?.receiptIdentity ?? '',
+                  artifact.receipt?.generation ?? 0,
+                  artifact.variantSet ?? '',
+                  artifact.reflectionFallbackOutputAvailable === true,
+                  isSingleLayerMediumArtifact(artifact),
+                  materialArtifactProgramIdentity(artifact),
+                ]);
+          let pipelines =
+            pipelineShapeKey === undefined ? undefined : pipelineShapes.get(pipelineShapeKey);
+          if (pipelines === undefined) {
+            // Artifact and render state are fixed by this graph projection.
+            // Only attachment formats vary at encode; do not rebuild a key
+            // from immutable program/receipt facts for every batch and frame.
+            const pipelineForFragment = (
+              fragmentEntry: string | undefined,
+              coverageOnly = false,
+              forwardColorPass = false,
+            ): RasterPipelineFor => {
+              let projectedPipelines: Map<string, ResultOk<RenderPipeline>> | undefined;
+              let selectedArtifact: MaterialShaderArtifact | undefined;
+              return (formats, formatKey, preparation = false) => {
+                const key = formatKey ?? formats.join(',');
+                const projected = projectedPipelines?.get(key);
+                if (projected !== undefined)
+                  return rendererRecording ? projected : ok(projected.value);
+                // Unused G-buffer, temporal and coverage entries need no
+                // artifact copy. Retain one immutable variant on first use;
+                // failed pipeline admission still retries on the next call.
+                selectedArtifact ??=
+                  fragmentEntry === undefined
+                    ? artifact
+                    : {
+                        ...artifact,
+                        fragmentEntry,
+                        ...(fragmentEntry === 'fs_temporal' ? { vertexEntry: 'vs_temporal' } : {}),
+                        ...(coverageOnly
+                          ? {
+                              variantSet:
+                                variantSetForCoveragePass(artifact.variantSet, true) ?? '',
+                            }
+                          : {}),
+                      };
+                const selected = raster.pipeline(
+                  formats[0] ?? format,
+                  sampleCount,
+                  layoutProjection ?? prepared.mesh.layoutProjection,
+                  // The producer receipt owns the selected shader's UV ABI.
+                  shaderUvSetCount,
+                  topology ?? prepared.batch.key.topology,
+                  stripIndexFormat,
+                  selectedArtifact.fragmentEntry === 'fs_temporal'
+                    ? geometryRenderStateForPass(
+                        rendererRecording ? renderState : prepared.renderState,
+                        'temporal',
+                        coverageOnly,
                       )
-                        ready = false;
-                      return ready;
-                    });
-                  },
-                  preparePipelines: (entries = [], artifacts, onPending) => {
-                    let ready = true;
-                    for (const prepare of preparationJobs.values())
-                      if (!prepare(entries, artifacts, onPending)) ready = false;
-                    return ready;
-                  },
+                    : rendererRecording
+                      ? renderState
+                      : prepared.renderState,
+                  selectedArtifact,
+                  formats.slice(1),
+                  rendererRecording ? standardTextureMask : prepared.standardTextureMask,
+                  forwardColorPass,
+                  preparation ? input.materialPipelinePreparationFactory : undefined,
+                );
+                if (selected.ok) {
+                  projectedPipelines ??= new Map();
+                  // Retain an owned result; an RHI result may observe value reads.
+                  projectedPipelines.set(key, ok(selected.value));
                 }
-              : {}),
-            hasWork: (filter, fragmentEntryPoint) =>
-              production.liveRasterBatches.some(
-                (live) => rasterClassFor(live, filter, fragmentEntryPoint) !== undefined,
-              ),
-            ...(addLateOcclusion === undefined ? {} : { addLateOcclusion }),
-            encode: (
-              viewBindGroup,
-              pass,
-              resources: GraphResourceResolver,
-              frameResources: GpuDrivenStandardPbrFrameResources,
+                return selected;
+              };
+            };
+            const pipelineFor = pipelineForFragment(undefined, false, true);
+            // Only the template forward entry has an fs_opaque twin; an
+            // authored fragment entry keeps its own pipeline.
+            const opaquePipelineFor =
+              artifact.fragmentEntry === undefined || artifact.fragmentEntry === 'fs_main'
+                ? pipelineForFragment(STANDARD_OPAQUE_FRAGMENT_ENTRY, false, true)
+                : pipelineFor;
+            const gbufferPipelineFor = pipelineForFragment(
+              deformation === 'skin' && input.visibleSurface !== undefined
+                ? SKIN_UNCOVERED_GBUFFER_ENTRY
+                : 'fs_gbuffer',
+            );
+            const temporalPipelineFor = pipelineForFragment('fs_temporal');
+            // Output-domain TAAU coverage reuses the culled/LOD-selected
+            // indirect rows; only the binary variant and depth writes differ.
+            const coveragePipelineFor = pipelineForFragment('fs_temporal', true);
+            let nearestPipelineFor: RasterPipelineFor | undefined;
+            let colorPipelineFor: RasterPipelineFor | undefined;
+            if (isSingleLayerMediumArtifact(artifact)) {
+              nearestPipelineFor = pipelineForFragment('fs_nearest_layer');
+              colorPipelineFor = pipelineForFragment('fs_color');
+            }
+            pipelines = {
+              pipelineFor,
+              opaquePipelineFor,
+              gbufferPipelineFor,
+              temporalPipelineFor,
+              coveragePipelineFor,
+              ...(nearestPipelineFor === undefined ? {} : { nearestPipelineFor }),
+              ...(colorPipelineFor === undefined ? {} : { colorPipelineFor }),
+            };
+            if (pipelineShapeKey !== undefined) pipelineShapes.set(pipelineShapeKey, pipelines);
+          }
+          // Admit the batch with the pipeline its ordinary forward encode
+          // binds, so a frame that never needs fs_main does not compile it.
+          if (!rendererRecording || input.materialPipelinePreparationFactory === undefined) {
+            const initialPipeline = pipelines.opaquePipelineFor(
+              initialFormats ?? [format, ...(additionalColorFormats ?? [])],
+              initialFormatKey,
+            );
+            if (!initialPipeline.ok) return initialPipeline;
+          }
+          const projectedClass = {
+            orderDiagnosticState: prepared.renderState,
+            artifact,
+            mesh: prepared.mesh,
+            ...buffers,
+            pipelines,
+            meshBindGroup: meshBindGroup.value,
+            raster,
+            deformation,
+            clustered:
+              artifact.program.group2 === 'cluster' || artifact.program.group2 === 'skin-cluster',
+          };
+          rasterClasses.set(classKey, projectedClass);
+        }
+        if (rasterClasses.size === 0 && filtered.batches.length > 0) {
+          return err(
+            new RhiError({
+              code: 'internal-error',
+              expected: 'one material ABI raster class for the eligible batches',
+              hint: 'repair the receipt-backed batch projection before encoding the frame',
+            }),
+          );
+        }
+        const rasterClassFor = (
+          live: LiveRasterBatch,
+          filter?: RenderPipelineGpuDrivenFilter,
+          fragmentEntryPoint?: string,
+        ): ProjectedRasterClass | undefined => {
+          if (live.batch.visibleCapacity === 0) return undefined;
+          const batch = rasterClasses.get(
+            rendererRecording ? live.recordingClassKey : live.classKey,
+          );
+          if (batch === undefined) {
+            throw new RhiError({
+              code: 'internal-error',
+              expected: `compiled raster class for live GPU batch ${live.batch.batchId}`,
+              hint: 'derive the graph signature from the same raster class set as the live batches',
+            });
+          }
+          if (
+            fragmentEntryPoint === 'fs_temporal' &&
+            !gpuTemporalEligible(
+              batch.artifact.material,
+              batch.deformation,
+              live.batch.lod?.coverages.length ?? 0,
+            )
+          )
+            return undefined;
+          if (
+            !gpuRasterFilterMatches(
+              filter,
+              live.batch.key.materialPass,
+              isSingleLayerMediumArtifact(batch.artifact),
+            )
+          ) {
+            return undefined;
+          }
+          return batch;
+        };
+        const preparationFactory = input.materialPipelinePreparationFactory;
+        const preparationJobs = new Map<
+          string,
+          (
+            entries: readonly ValidatedRenderable[],
+            artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
+            onPending?: (reason: FramePresentationPendingReason) => void,
+            materials?: import('../scene/material-dispatch').MaterialFrame,
+          ) => boolean
+        >();
+        const selectPipeline = (
+          batch: ProjectedRasterClass,
+          fragmentEntryPoint: string | undefined,
+          coverageOnly: boolean,
+        ) =>
+          fragmentEntryPoint === 'fs_temporal'
+            ? coverageOnly
+              ? batch.pipelines.coveragePipelineFor
+              : batch.pipelines.temporalPipelineFor
+            : fragmentEntryPoint === 'fs_gbuffer'
+              ? batch.pipelines.gbufferPipelineFor
+              : fragmentEntryPoint === 'fs_nearest_layer'
+                ? (batch.pipelines.nearestPipelineFor ?? batch.pipelines.pipelineFor)
+                : fragmentEntryPoint === 'fs_color'
+                  ? (batch.pipelines.colorPipelineFor ?? batch.pipelines.pipelineFor)
+                  : fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY
+                    ? batch.pipelines.opaquePipelineFor
+                    : batch.pipelines.pipelineFor;
+        return ok({
+          accesses: standardAccesses,
+          ...(rendererRecording && preparationFactory !== undefined
+            ? {
+                registerPipelinePreparation: (
+                  formats,
+                  filter,
+                  fragmentEntryPoint,
+                  coverageOnly = false,
+                ) => {
+                  const key = JSON.stringify([formats, filter, fragmentEntryPoint, coverageOnly]);
+                  if (preparationJobs.has(key)) return;
+                  const selected = new Map<RasterPipelineFor, string>();
+                  for (const live of production.liveRasterBatches) {
+                    const batch = rasterClassFor(live, filter, fragmentEntryPoint);
+                    if (batch !== undefined)
+                      selected.set(
+                        selectPipeline(batch, fragmentEntryPoint, coverageOnly),
+                        batch.artifact.material,
+                      );
+                  }
+                  const ownedFormats = [...formats],
+                    formatKey = ownedFormats.join(',');
+                  preparationJobs.set(key, (entries, artifacts, onPending, materials) => {
+                    let ready = true;
+                    for (const pipelineFor of selected.keys())
+                      if (!pipelineFor(ownedFormats, formatKey, true).ok) {
+                        ready = false;
+                        onPending?.({
+                          code: 'scene-pipeline-preparation',
+                          pass: (fragmentEntryPoint ?? filter ?? 'forward').slice(0, 256),
+                          shader: (selected.get(pipelineFor) ?? '').slice(0, 256),
+                        });
+                      }
+                    if (
+                      !prepareHiddenGpuDrivenPipelines({
+                        entries,
+                        artifacts,
+                        materials,
+                        resolve: input.materialArtifactResolver,
+                        factory: preparationFactory,
+                        formats: ownedFormats,
+                        sampleCount,
+                        shaderUvSetCount: materialPipelineState.standardPbrShaderUvSetCount,
+                        filter,
+                        fragmentEntry: fragmentEntryPoint,
+                        coverageOnly,
+                        visibleSurface: input.visibleSurface !== undefined,
+                        ...(onPending === undefined ? {} : { onPending }),
+                      })
+                    )
+                      ready = false;
+                    return ready;
+                  });
+                },
+                preparePipelines: (entries = [], artifacts, onPending, materials) => {
+                  let ready = true;
+                  for (const prepare of preparationJobs.values())
+                    if (!prepare(entries, artifacts, onPending, materials)) ready = false;
+                  return ready;
+                },
+              }
+            : {}),
+          hasWork: (filter, fragmentEntryPoint) =>
+            production.liveRasterBatches.some(
+              (live) => rasterClassFor(live, filter, fragmentEntryPoint) !== undefined,
+            ),
+          ...(addLateOcclusion === undefined ? {} : { addLateOcclusion }),
+          encode: (
+            viewBindGroup,
+            pass,
+            resources: GraphResourceResolver,
+            frameResources: GpuDrivenStandardPbrFrameResources,
+            filter,
+            fragmentEntryPoint,
+            coverageOnly = false,
+            phase = 'all',
+          ) => {
+            let regionOffset = 0;
+            let visibleRegionBase = 0;
+            if (phase === 'late') {
+              if (lateRegion === undefined) {
+                throw new RhiError({
+                  code: 'internal-error',
+                  expected: 'addLateOcclusion(...) before a late-phase GPU-driven encode',
+                  hint: 'add the late HZB cull between the early and late geometry passes',
+                });
+              }
+              regionOffset = lateRegion.indirectByteOffset;
+              visibleRegionBase = lateRegion.visibleBase;
+            }
+            // The shared Standard view BGL carries two dynamic buffers:
+            // the frame view UBO and the per-frame shadow/light table. GPU
+            // indirect draws use the same zero offsets as direct draws;
+            // supplying only one offset makes Dawn reject the command
+            // buffer before the indirect work can reach the rasterizer.
+            // Keep imperative per-draw Surface observation in its original
+            // recording order; only closed pure draw lanes defer native execution.
+            const descriptor =
+              !rendererRecording ||
+              (frameResources.surfaceSubmissionObservation !== undefined &&
+                (fragmentEntryPoint === 'fs_nearest_layer' || fragmentEntryPoint === 'fs_color'))
+                ? undefined
+                : frameResources.bundleDescriptor;
+            const preparedBundles: RenderBundle[] = [];
+            const bundleKey =
+              descriptor === undefined
+                ? undefined
+                : production.rasterPasses.prepare(
+                    `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}`,
+                    descriptor,
+                  );
+            let bundleOwner: LiveRasterBatch | undefined;
+            let bundleBlock = -1;
+            let preparedBindings: ReturnType<PreparedRasterBundleCache['begin']> | undefined;
+            // Filled completely before each observation; only changed commands take a snapshot.
+            const observedBindings = {} as {
+              -readonly [K in keyof PreparedRasterBindings]: PreparedRasterBindings[K];
+            };
+            const flushPrepared = () => {
+              if (
+                descriptor !== undefined &&
+                bundleKey !== undefined &&
+                bundleOwner !== undefined &&
+                preparedBindings !== undefined
+              ) {
+                preparedBundles.push(preparedBindings.finish());
+              }
+              preparedBindings = undefined;
+              bundleOwner = undefined;
+            };
+            if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [0, 0]);
+            const colorFormats = frameResources.colorFormats ?? [
+              format,
+              ...(additionalColorFormats ?? []),
+            ];
+            // Stock recording owns the attachments for this encode. Raw callers
+            // retain per-selected-batch format observations below.
+            const formatKey = rendererRecording ? colorFormats.join(',') : undefined;
+            const slotsByBinding = frameResources.materialSlotIndicesByBinding;
+            let currentPipeline: RenderPipeline | undefined;
+            let currentMaterial: BindGroup | undefined;
+            let currentMaterialOffset = -1;
+            let currentMesh: BindGroup | undefined;
+            let rigidClusterGroup: BindGroup | undefined;
+            let currentVisible: BindGroup | undefined;
+            let currentDeformation: 'rigid' | 'skin' | undefined;
+            let currentVertex: GraphBuffer | Buffer | undefined;
+            let currentIndex: GraphBuffer | Buffer | undefined;
+            let currentIndexFormat: MeshGpuHandles['indexFormat'] | undefined;
+            let physicalVertex: Buffer | undefined;
+            let physicalIndex: Buffer | undefined;
+            let indirectBuffer: Buffer | undefined;
+            const diagnosticAdmitted = isGBufferOrderDiagnosticEncode(
+              rendererRecording,
               filter,
               fragmentEntryPoint,
-              coverageOnly = false,
-              phase = 'all',
-            ) => {
-              let regionOffset = 0;
-              let visibleRegionBase = 0;
-              if (phase === 'late') {
-                if (lateRegion === undefined) {
-                  throw new RhiError({
-                    code: 'internal-error',
-                    expected: 'addLateOcclusion(...) before a late-phase GPU-driven encode',
-                    hint: 'add the late HZB cull between the early and late geometry passes',
-                  });
-                }
-                regionOffset = lateRegion.indirectByteOffset;
-                visibleRegionBase = lateRegion.visibleBase;
-              }
-              // The shared Standard view BGL carries two dynamic buffers:
-              // the frame view UBO and the per-frame shadow/light table. GPU
-              // indirect draws use the same zero offsets as direct draws;
-              // supplying only one offset makes Dawn reject the command
-              // buffer before the indirect work can reach the rasterizer.
-              // Keep imperative per-draw Surface observation in its original
-              // recording order; only closed pure draw lanes defer native execution.
-              const descriptor =
-                !rendererRecording ||
-                (frameResources.surfaceSubmissionObservation !== undefined &&
-                  (fragmentEntryPoint === 'fs_nearest_layer' || fragmentEntryPoint === 'fs_color'))
-                  ? undefined
-                  : frameResources.bundleDescriptor;
-              const preparedBundles: RenderBundle[] = [];
-              const bundleKey =
-                descriptor === undefined
-                  ? undefined
-                  : JSON.stringify([
-                      filter,
-                      fragmentEntryPoint,
-                      coverageOnly,
-                      phase,
-                      descriptor.colorFormats,
-                      descriptor.depthStencilFormat,
-                      descriptor.sampleCount ?? 1,
-                      descriptor.depthReadOnly ?? false,
-                      descriptor.stencilReadOnly ?? false,
-                    ]);
-              let bundleOwner: LiveRasterBatch | undefined;
-              let bundleBlock = -1;
-              let preparedBindings: PreparedRasterBindings[] = [];
-              const flushPrepared = () => {
-                if (
-                  descriptor !== undefined &&
-                  bundleKey !== undefined &&
-                  bundleOwner !== undefined &&
-                  preparedBindings.length > 0
-                ) {
-                  preparedBundles.push(
-                    bundleOwner.bundles.resolve(
-                      bundleKey,
-                      production.device,
-                      descriptor,
-                      preparedBindings,
-                      production.preparedBundleCounters,
-                    ),
-                  );
-                }
-                preparedBindings = [];
-                bundleOwner = undefined;
-              };
-              if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [0, 0]);
-              const colorFormats = frameResources.colorFormats ?? [
-                format,
-                ...(additionalColorFormats ?? []),
-              ];
-              // Stock recording owns the attachments for this encode. Raw callers
-              // retain per-selected-batch format observations below.
-              const formatKey = rendererRecording ? colorFormats.join(',') : undefined;
-              const slotsByEntity = frameResources.materialSlotIndicesByEntity;
-              let currentPipeline: RenderPipeline | undefined;
-              let currentMaterial: BindGroup | undefined;
-              let currentMaterialOffset = -1;
-              let currentMesh: BindGroup | undefined;
-              let rigidClusterGroup: BindGroup | undefined;
-              let currentVisible: BindGroup | undefined;
-              let currentDeformation: 'rigid' | 'skin' | undefined;
-              let currentVertex: GraphBuffer | Buffer | undefined;
-              let currentIndex: GraphBuffer | Buffer | undefined;
-              let currentIndexFormat: MeshGpuHandles['indexFormat'] | undefined;
-              let physicalVertex: Buffer | undefined;
-              let physicalIndex: Buffer | undefined;
-              let indirectBuffer: Buffer | undefined;
-              const diagnosticAdmitted = isGBufferOrderDiagnosticEncode(
+              coverageOnly,
+              phase,
+              colorFormats.length,
+            );
+            if (production.gbufferOrderEncodes !== undefined)
+              production.gbufferOrderEncodes.push({
                 rendererRecording,
                 filter,
-                fragmentEntryPoint,
+                fragmentEntry: fragmentEntryPoint,
                 coverageOnly,
                 phase,
-                colorFormats.length,
-              );
-              if (production.gbufferOrderEncodes !== undefined)
-                production.gbufferOrderEncodes.push({
-                  rendererRecording,
-                  filter,
-                  fragmentEntry: fragmentEntryPoint,
-                  coverageOnly,
-                  phase,
-                  colorTargetCount: colorFormats.length,
-                  admitted: diagnosticAdmitted,
-                });
-              const diagnosticMode = diagnosticAdmitted ? production.gbufferOrderMode : undefined;
-              const evidence:
-                | {
-                    classes: NonNullable<GBufferOrderDiagnosticInspection['classes']>[number][];
-                    batches: NonNullable<GBufferOrderDiagnosticInspection['batches']>[number][];
-                    rejections: Record<string, number>;
-                    indices: Map<ProjectedRasterClass, number>;
-                    selected: number;
-                  }
-                | undefined =
-                diagnosticMode === undefined
-                  ? undefined
-                  : {
-                      classes: [],
-                      batches: [],
-                      rejections: {},
-                      indices: new Map(),
-                      selected: 0,
-                    };
-              const ordered =
-                diagnosticMode === undefined
-                  ? undefined
-                  : orderGBufferDiagnostic(
-                      production.liveRasterBatches,
-                      diagnosticMode.order,
-                      (live) => {
-                        if (evidence === undefined) return undefined;
-                        const selected = rasterClassFor(live, filter, fragmentEntryPoint);
-                        const batch =
-                          selected ??
-                          rasterClasses.get(
-                            rendererRecording ? live.recordingClassKey : live.classKey,
-                          );
-                        const reasons: string[] = [];
-                        if (selected === undefined) reasons.push('pass-filter');
-                        else evidence.selected++;
-                        let classIndex: number | undefined;
-                        if (batch === undefined) reasons.push('missing-raster-class');
-                        else {
-                          batch.diagnosticSourceDigest ??= gbufferProgramDigest(
-                            batch.artifact.program.source,
-                          );
-                          classIndex = evidence.indices.get(batch);
-                          if (classIndex === undefined) {
-                            const gate = gbufferOrderInterfaceEvidence(
-                              batch.artifact,
-                              batch.orderDiagnosticState,
-                              batch.deformation,
-                              batch.raster.diagnosticGBufferVertexEntry(batch.artifact),
-                            );
-                            classIndex = evidence.classes.length;
-                            evidence.indices.set(batch, classIndex);
-                            evidence.classes.push({
-                              sourceDigest: batch.diagnosticSourceDigest,
-                              material: batch.artifact.material,
-                              specializationKey: batch.artifact.specializationKey,
-                              facts: gate.facts,
-                              checks: gate.checks,
-                              rejections: gate.rejections.map((reason) => `interface/${reason}`),
-                              auditedSource: diagnosticMode.programDigests.includes(
-                                batch.diagnosticSourceDigest,
-                              ),
-                            });
-                          }
-                          const proof = evidence.classes[classIndex];
-                          if (proof !== undefined) {
-                            reasons.push(...proof.rejections);
-                            if (!proof.auditedSource) reasons.push('program-digest');
-                          }
-                        }
-                        let rejectedSource: Readonly<Record<string, unknown>> | undefined;
-                        if (production.gbufferOrderView === undefined) reasons.push('camera-view');
-                        if (production.gbufferOrderSlotAt === undefined)
-                          reasons.push('source-slot-owner');
-                        const depth =
-                          production.gbufferOrderView === undefined ||
-                          production.gbufferOrderSlotAt === undefined
-                            ? undefined
-                            : gbufferBatchDepth(
-                                live.batch,
-                                production.gbufferOrderSlotAt,
-                                production.gbufferOrderView,
-                                (reason, source) => {
-                                  reasons.push(`bounds/${reason}`);
-                                  rejectedSource = source;
-                                },
-                              );
-                        if (
-                          depth === undefined &&
-                          !reasons.some((reason) => reason.startsWith('bounds/')) &&
-                          production.gbufferOrderView !== undefined &&
-                          production.gbufferOrderSlotAt !== undefined
-                        )
-                          reasons.push('bounds/unavailable');
-                        for (const reason of reasons)
-                          evidence.rejections[reason] = (evidence.rejections[reason] ?? 0) + 1;
-                        evidence.batches.push({
-                          batchId: live.batch.batchId,
-                          classIndex,
-                          candidateCount: live.batch.candidates.length,
-                          visibleCapacity: live.batch.visibleCapacity,
-                          materialPass: live.batch.key.materialPass,
-                          meshHandle: live.batch.key.assetHandle,
-                          materialSlot: live.batch.key.materialSlot,
-                          depth,
-                          rejections: reasons,
-                          ...(rejectedSource === undefined ? {} : { rejectedSource }),
-                        });
-                        return reasons.length === 0 ? depth : undefined;
-                      },
-                    );
-              if (diagnosticMode !== undefined && ordered !== undefined && evidence !== undefined)
-                production.gbufferOrderInspection = {
-                  mode: diagnosticMode.order,
-                  eligibleBatches: ordered.eligible,
-                  movedBatches: ordered.moved,
-                  status: 'evaluated',
-                  ...(production.gbufferOrderInspection?.preparation === undefined
-                    ? {}
-                    : {
-                        preparation: production.gbufferOrderInspection.preparation,
-                      }),
-                  encodes: production.gbufferOrderEncodes ?? [],
-                  denominator: {
-                    live: production.liveRasterBatches.length,
-                    selected: evidence.selected,
-                  },
-                  rejections: evidence.rejections,
-                  classes: evidence.classes,
-                  batches: evidence.batches,
-                };
-              for (const live of ordered?.batches ?? production.liveRasterBatches) {
-                const batch = rasterClassFor(live, filter, fragmentEntryPoint);
-                if (batch === undefined) continue;
-                const isMedium = isSingleLayerMediumArtifact(batch.artifact);
-                let globalMaterialSlot =
-                  slotsByEntity.size === 0 ? live.batch.key.materialSlot : undefined;
-                for (const entityKey of live.materialEntityKeys) {
-                  if (globalMaterialSlot !== undefined) break;
-                  globalMaterialSlot = slotsByEntity.get(entityKey)?.[live.batch.key.materialSlot];
+                colorTargetCount: colorFormats.length,
+                admitted: diagnosticAdmitted,
+              });
+            const diagnosticMode = diagnosticAdmitted ? production.gbufferOrderMode : undefined;
+            const evidence:
+              | {
+                  classes: NonNullable<GBufferOrderDiagnosticInspection['classes']>[number][];
+                  batches: NonNullable<GBufferOrderDiagnosticInspection['batches']>[number][];
+                  rejections: Record<string, number>;
+                  indices: Map<ProjectedRasterClass, number>;
+                  selected: number;
                 }
-                // No candidate reached this frame's material producer, so the
-                // view admitted none of them and the indirect count is zero.
-                if (globalMaterialSlot === undefined) continue;
+              | undefined =
+              diagnosticMode === undefined
+                ? undefined
+                : {
+                    classes: [],
+                    batches: [],
+                    rejections: {},
+                    indices: new Map(),
+                    selected: 0,
+                  };
+            const ordered =
+              diagnosticMode === undefined
+                ? undefined
+                : orderGBufferDiagnostic(
+                    production.liveRasterBatches,
+                    diagnosticMode.order,
+                    (live) => {
+                      if (evidence === undefined) return undefined;
+                      const selected = rasterClassFor(live, filter, fragmentEntryPoint);
+                      const batch =
+                        selected ??
+                        rasterClasses.get(
+                          rendererRecording ? live.recordingClassKey : live.classKey,
+                        );
+                      const reasons: string[] = [];
+                      if (selected === undefined) reasons.push('pass-filter');
+                      else evidence.selected++;
+                      let classIndex: number | undefined;
+                      if (batch === undefined) reasons.push('missing-raster-class');
+                      else {
+                        batch.diagnosticSourceDigest ??= gbufferProgramDigest(
+                          batch.artifact.program.source,
+                        );
+                        classIndex = evidence.indices.get(batch);
+                        if (classIndex === undefined) {
+                          const gate = gbufferOrderInterfaceEvidence(
+                            batch.artifact,
+                            batch.orderDiagnosticState,
+                            batch.deformation,
+                            batch.raster.diagnosticGBufferVertexEntry(batch.artifact),
+                          );
+                          classIndex = evidence.classes.length;
+                          evidence.indices.set(batch, classIndex);
+                          evidence.classes.push({
+                            sourceDigest: batch.diagnosticSourceDigest,
+                            material: batch.artifact.material,
+                            specializationKey: batch.artifact.specializationKey,
+                            facts: gate.facts,
+                            checks: gate.checks,
+                            rejections: gate.rejections.map((reason) => `interface/${reason}`),
+                            auditedSource: diagnosticMode.programDigests.includes(
+                              batch.diagnosticSourceDigest,
+                            ),
+                          });
+                        }
+                        const proof = evidence.classes[classIndex];
+                        if (proof !== undefined) {
+                          reasons.push(...proof.rejections);
+                          if (!proof.auditedSource) reasons.push('program-digest');
+                        }
+                      }
+                      let rejectedSource: Readonly<Record<string, unknown>> | undefined;
+                      if (production.gbufferOrderView === undefined) reasons.push('camera-view');
+                      if (production.gbufferOrderSlotAt === undefined)
+                        reasons.push('source-slot-owner');
+                      const depth =
+                        production.gbufferOrderView === undefined ||
+                        production.gbufferOrderSlotAt === undefined
+                          ? undefined
+                          : gbufferBatchDepth(
+                              live.batch,
+                              production.gbufferOrderSlotAt,
+                              production.gbufferOrderView,
+                              (reason, source) => {
+                                reasons.push(`bounds/${reason}`);
+                                rejectedSource = source;
+                              },
+                              live.batch.binding === undefined
+                                ? undefined
+                                : production.gbufferOrderMaterials?.get(live.batch.binding.material)
+                                    ?.snapshot,
+                            );
+                      if (
+                        depth === undefined &&
+                        !reasons.some((reason) => reason.startsWith('bounds/')) &&
+                        production.gbufferOrderView !== undefined &&
+                        production.gbufferOrderSlotAt !== undefined
+                      )
+                        reasons.push('bounds/unavailable');
+                      for (const reason of reasons)
+                        evidence.rejections[reason] = (evidence.rejections[reason] ?? 0) + 1;
+                      evidence.batches.push({
+                        batchId: live.batch.batchId,
+                        classIndex,
+                        candidateCount: live.batch.candidates.length,
+                        visibleCapacity: live.batch.visibleCapacity,
+                        materialPass: live.batch.key.materialPass,
+                        meshHandle: live.batch.key.assetHandle,
+                        materialSlot: live.batch.key.materialSlot,
+                        depth,
+                        rejections: reasons,
+                        ...(rejectedSource === undefined ? {} : { rejectedSource }),
+                      });
+                      return reasons.length === 0 ? depth : undefined;
+                    },
+                  );
+            if (diagnosticMode !== undefined && ordered !== undefined && evidence !== undefined)
+              production.gbufferOrderInspection = {
+                mode: diagnosticMode.order,
+                eligibleBatches: ordered.eligible,
+                movedBatches: ordered.moved,
+                status: 'evaluated',
+                ...(production.gbufferOrderInspection?.preparation === undefined
+                  ? {}
+                  : {
+                      preparation: production.gbufferOrderInspection.preparation,
+                    }),
+                encodes: production.gbufferOrderEncodes ?? [],
+                denominator: {
+                  live: production.liveRasterBatches.length,
+                  selected: evidence.selected,
+                },
+                rejections: evidence.rejections,
+                classes: evidence.classes,
+                batches: evidence.batches,
+              };
+            for (const live of ordered?.batches ?? production.liveRasterBatches) {
+              // One candidate is already classified by the Scene camera owner.
+              // Larger batches stay GPU-culled without enumerating members here.
+              if (live.batch.visibleCapacity === 1 && frameResources.cameraVisible !== undefined) {
+                const member = live.batch.members?.at(0);
+                const source =
+                  member === undefined ? undefined : input.scene?.slotAt(member.primitiveIndex);
                 if (
-                  frameResources.selectedMaterialSlots !== undefined &&
-                  !frameResources.selectedMaterialSlots.has(globalMaterialSlot)
+                  source !== undefined &&
+                  source.generation === member?.generation &&
+                  frameResources.cameraVisible(source.snapshot) === false
                 )
                   continue;
-                const pipelineFor = selectPipeline(batch, fragmentEntryPoint, coverageOnly);
-                const selectedPipeline = pipelineFor(colorFormats, formatKey);
-                if (!selectedPipeline.ok) throw selectedPipeline.error;
-                if (currentPipeline !== selectedPipeline.value) {
-                  if (descriptor === undefined) pass.setPipeline(selectedPipeline.value);
-                  currentPipeline = selectedPipeline.value;
-                  // setPipeline preserves logical bindings. Their actual handles
-                  // and dynamic offsets below still select any required replacement.
-                }
-                const materialBindGroup = frameResources.materialBindGroups[globalMaterialSlot];
-                if (materialBindGroup === undefined) {
-                  throw new RhiError({
-                    code: 'rhi-not-available',
-                    expected: `material bind group for global slot ${globalMaterialSlot}`,
-                    hint: 'keep GPU-driven material selection on the main-pass producer contract',
-                  });
-                }
-                // Scene-index templates read numeric values from GPU Scene. Their
-                // retained uniform declaration only satisfies the shared layout;
-                // a frame-local material slot must not invalidate those commands.
-                // Full-custom programs that reference the uniform retain its offset.
-                const materialOffset =
-                  batch.artifact.program.materialUniformRequired === false
-                    ? 0
-                    : globalMaterialSlot * frameResources.materialStride;
-                if (
-                  currentMaterial !== materialBindGroup ||
-                  currentMaterialOffset !== materialOffset
-                ) {
-                  if (descriptor === undefined)
-                    pass.setBindGroup(1, materialBindGroup, [materialOffset]);
-                  currentMaterial = materialBindGroup;
-                  currentMaterialOffset = materialOffset;
-                }
-                // Every rigid cluster draw reads this projection's whole scene
-                // table and this encode's lighting. Stock recording resolves on first use;
-                // keep skin palettes and pipeline-transition rebinding separate.
-                let group2: BindGroup | undefined;
-                if (rendererRecording && batch.clustered && batch.deformation === 'rigid') {
-                  rigidClusterGroup ??= frameResources.clusterBindGroupForMesh?.(
-                    sceneTransformBuffer,
-                    sceneTransformBytes,
-                  );
-                  group2 = rigidClusterGroup;
-                } else {
-                  group2 = resolveGpuDrivenMeshGroup({
-                    clustered: batch.clustered,
-                    deformation: batch.deformation,
-                    meshBindGroup: batch.meshBindGroup,
-                    sceneTransformBuffer,
-                    sceneTransformBytes,
-                    frameResources,
-                    skinPaletteBinding: batch.raster.skinPaletteBinding(),
-                  });
-                }
-                if (group2 === undefined) {
-                  throw new RhiError({
-                    code: 'rhi-not-available',
-                    expected: 'clustered Standard group(2) BindGroup for GPU-driven batch',
-                    hint: 'publish the frame-owned cluster lighting resources before indirect encode',
-                  });
-                }
-                if (currentMesh !== group2 || currentDeformation !== batch.deformation) {
-                  if (descriptor === undefined)
-                    pass.setBindGroup(2, group2, batch.deformation === 'skin' ? [0, 0, 0] : [0]);
-                  currentMesh = group2;
-                  currentDeformation = batch.deformation;
-                }
-                const vertexKey = rendererRecording ? live.meshBinding.vertex : batch.vertex;
-                if (vertexKey !== undefined && currentVertex !== vertexKey) {
-                  const vertex = rendererRecording
-                    ? (live.meshBinding.vertex as Buffer)
-                    : resources.buffer(vertexKey as GraphBuffer).unwrap();
-                  physicalVertex = vertex;
-                  if (descriptor === undefined) pass.setVertexBuffer(0, vertex);
-                  currentVertex = vertexKey;
-                }
-                const indexKey = rendererRecording ? live.meshBinding.index : batch.index;
-                const indexFormat = rendererRecording
-                  ? live.mesh.indexFormat
-                  : batch.mesh.indexFormat;
-                if (
-                  indexKey !== undefined &&
-                  (currentIndex !== indexKey ||
-                    (rendererRecording && currentIndexFormat !== indexFormat))
-                ) {
-                  const index = rendererRecording
-                    ? (indexKey as Buffer)
-                    : resources.buffer(indexKey as GraphBuffer).unwrap();
-                  physicalIndex = index;
-                  if (descriptor === undefined) pass.setIndexBuffer(index, indexFormat);
-                  currentIndex = indexKey;
-                  currentIndexFormat = indexFormat;
-                }
-                if (indirectBuffer === undefined) {
-                  const indirect = resources.buffer(outputs.value.indirect);
-                  if (!indirect.ok) throw indirect.error;
-                  indirectBuffer = indirect.value;
-                }
-                // One indirect command per LOD level slot: the GPU cull
-                // compacts each member into its selected level's segment.
-                const levelStride = batchLevelStride(live.batch);
-                const levelCount = batchLodLevelCount(live.batch);
-                const windowPhase = phase === 'late' ? 'late' : 'early';
-                let windows = live.visibleBindGroups?.[windowPhase];
-                if (windows === undefined) {
-                  const resolvedWindows: BindGroup[] = [];
-                  for (let level = 0; level < levelCount; level += 1) {
-                    const resolved = batch.raster.visibleWindowBindGroup(
-                      visibleRegionBase + live.batch.visibleBase + level * levelStride,
-                      live.batch.visibleAllocationCapacity ?? live.batch.visibleCapacity,
-                    );
-                    if (!resolved.ok) throw resolved.error;
-                    resolvedWindows.push(resolved.value);
-                  }
-                  // Failed construction publishes nothing. Accepted arrays are
-                  // never edited; physical/range changes replace this owner.
-                  live.visibleBindGroups ??= {};
-                  live.visibleBindGroups[windowPhase] = resolvedWindows;
-                  windows = resolvedWindows;
-                }
+              }
+              const batch = rasterClassFor(live, filter, fragmentEntryPoint);
+              if (batch === undefined) continue;
+              const isMedium = isSingleLayerMediumArtifact(batch.artifact);
+              const material = live.batch.binding?.material;
+              const globalMaterialSlot =
+                slotsByBinding.size === 0
+                  ? live.batch.key.materialSlot
+                  : material === undefined
+                    ? undefined
+                    : slotsByBinding.get(material)?.get(live.materialBindingClass);
+              if (globalMaterialSlot === undefined) continue;
+              if (
+                frameResources.selectedMaterialSlots !== undefined &&
+                !frameResources.selectedMaterialSlots.has(globalMaterialSlot)
+              )
+                continue;
+              const pipelineFor = selectPipeline(batch, fragmentEntryPoint, coverageOnly);
+              const selectedPipeline = pipelineFor(colorFormats, formatKey);
+              if (!selectedPipeline.ok) throw selectedPipeline.error;
+              if (currentPipeline !== selectedPipeline.value) {
+                if (descriptor === undefined) pass.setPipeline(selectedPipeline.value);
+                currentPipeline = selectedPipeline.value;
+                // setPipeline preserves logical bindings. Their actual handles
+                // and dynamic offsets below still select any required replacement.
+              }
+              const preparedMaterial = frameResources.prepareMaterialBinding(globalMaterialSlot);
+              if (preparedMaterial === undefined) {
+                throw new RhiError({
+                  code: 'rhi-not-available',
+                  expected: `material bind group for global slot ${globalMaterialSlot}`,
+                  hint: 'keep GPU-driven material selection on the main-pass producer contract',
+                });
+              }
+              // Scene-index templates read numeric values from GPU Scene. Their
+              // retained uniform declaration only satisfies the shared layout;
+              // a frame-local material slot must not invalidate those commands.
+              // Full-custom programs that reference the uniform retain its offset.
+              const materialOffset =
+                batch.artifact.program.materialUniformRequired === false
+                  ? 0
+                  : preparedMaterial.byteOffset;
+              const materialBindGroup = preparedMaterial.group;
+              if (
+                currentMaterial !== materialBindGroup ||
+                currentMaterialOffset !== materialOffset
+              ) {
+                if (descriptor === undefined)
+                  pass.setBindGroup(1, materialBindGroup, [materialOffset]);
+                currentMaterial = materialBindGroup;
+                currentMaterialOffset = materialOffset;
+              }
+              // Every rigid cluster draw reads this projection's whole scene
+              // table and this encode's lighting. Stock recording resolves on first use;
+              // keep skin palettes and pipeline-transition rebinding separate.
+              let group2: BindGroup | undefined;
+              if (rendererRecording && batch.clustered && batch.deformation === 'rigid') {
+                rigidClusterGroup ??= frameResources.clusterBindGroupForMesh?.(
+                  sceneTransformBuffer,
+                  sceneTransformBytes,
+                );
+                group2 = rigidClusterGroup;
+              } else {
+                group2 = resolveGpuDrivenMeshGroup({
+                  clustered: batch.clustered,
+                  deformation: batch.deformation,
+                  meshBindGroup: batch.meshBindGroup,
+                  sceneTransformBuffer,
+                  sceneTransformBytes,
+                  frameResources,
+                  skinPaletteBinding: batch.raster.skinPaletteBinding(),
+                });
+              }
+              if (group2 === undefined) {
+                throw new RhiError({
+                  code: 'rhi-not-available',
+                  expected: 'clustered Standard group(2) BindGroup for GPU-driven batch',
+                  hint: 'publish the frame-owned cluster lighting resources before indirect encode',
+                });
+              }
+              if (currentMesh !== group2 || currentDeformation !== batch.deformation) {
+                if (descriptor === undefined)
+                  pass.setBindGroup(2, group2, batch.deformation === 'skin' ? [0, 0, 0] : [0]);
+                currentMesh = group2;
+                currentDeformation = batch.deformation;
+              }
+              const vertexKey = rendererRecording ? live.meshBinding.vertex : batch.vertex;
+              if (vertexKey !== undefined && currentVertex !== vertexKey) {
+                const vertex = rendererRecording
+                  ? (live.meshBinding.vertex as Buffer)
+                  : resources.buffer(vertexKey as GraphBuffer).unwrap();
+                physicalVertex = vertex;
+                if (descriptor === undefined) pass.setVertexBuffer(0, vertex);
+                currentVertex = vertexKey;
+              }
+              const indexKey = rendererRecording ? live.meshBinding.index : batch.index;
+              const indexFormat = rendererRecording
+                ? live.mesh.indexFormat
+                : batch.mesh.indexFormat;
+              if (
+                indexKey !== undefined &&
+                (currentIndex !== indexKey ||
+                  (rendererRecording && currentIndexFormat !== indexFormat))
+              ) {
+                const index = rendererRecording
+                  ? (indexKey as Buffer)
+                  : resources.buffer(indexKey as GraphBuffer).unwrap();
+                physicalIndex = index;
+                if (descriptor === undefined) pass.setIndexBuffer(index, indexFormat);
+                currentIndex = indexKey;
+                currentIndexFormat = indexFormat;
+              }
+              if (indirectBuffer === undefined) {
+                const indirect = resources.buffer(outputs.value.indirect);
+                if (!indirect.ok) throw indirect.error;
+                indirectBuffer = indirect.value;
+              }
+              // One indirect command per LOD level slot: the GPU cull
+              // compacts each member into its selected level's segment.
+              const levelStride = batchLevelStride(live.batch);
+              const levelCount = batchLodLevelCount(live.batch);
+              const windowPhase = phase === 'late' ? 'late' : 'early';
+              let windows = live.visibleBindGroups?.[windowPhase];
+              if (windows === undefined) {
+                const resolvedWindows: BindGroup[] = [];
                 for (let level = 0; level < levelCount; level += 1) {
-                  const commandOffset =
-                    regionOffset +
-                    live.batch.indirectOffset +
-                    level * GPU_DRIVEN_INDIRECT_COMMAND_BYTES;
-                  const visibleWindow = windows[level];
-                  if (visibleWindow === undefined)
-                    throw new Error('Missing prepared visible binding');
-                  if (descriptor === undefined) {
-                    if (currentVisible !== visibleWindow) {
-                      pass.setBindGroup(3, visibleWindow);
-                      currentVisible = visibleWindow;
-                    }
-                    if (live.batch.key.drawKind === 'indexed')
-                      pass.drawIndexedIndirect(indirectBuffer, commandOffset);
-                    else pass.drawIndirect(indirectBuffer, commandOffset);
+                  const resolved = batch.raster.visibleWindowBindGroup(
+                    visibleRegionBase + live.batch.visibleBase + level * levelStride,
+                    live.batch.visibleAllocationCapacity ?? live.batch.visibleCapacity,
+                  );
+                  if (!resolved.ok) throw resolved.error;
+                  resolvedWindows.push(resolved.value);
+                }
+                // Failed construction publishes nothing. Accepted arrays are
+                // never edited; physical/range changes replace this owner.
+                live.visibleBindGroups ??= {};
+                windows = prepareRasterWindows(resolvedWindows);
+                live.visibleBindGroups[windowPhase] = windows;
+              }
+              for (let level = 0; level < levelCount; level += 1) {
+                const commandOffset =
+                  regionOffset +
+                  live.batch.indirectOffset +
+                  level * GPU_DRIVEN_INDIRECT_COMMAND_BYTES;
+                const visibleWindow = windows[level];
+                if (visibleWindow === undefined)
+                  throw new Error('Missing prepared visible binding');
+                if (descriptor === undefined) {
+                  if (currentVisible !== visibleWindow) {
+                    pass.setBindGroup(3, visibleWindow);
+                    currentVisible = visibleWindow;
                   }
-                  const geometry = production.geometryCapture;
-                  if (geometry !== undefined && geometry.failure === undefined) {
-                    try {
-                      if (geometry.commands.length >= GEOMETRY_OBSERVATION_MAX_COMMANDS)
-                        geometry.failure = 'command-budget';
-                      else {
-                        const sources = new Map<number, GeometrySourceIdentity>();
-                        for (const candidate of live.batch.candidates) {
-                          if (++geometry.members > GEOMETRY_OBSERVATION_MAX_MEMBERS) {
-                            geometry.failure = 'source-budget';
-                            break;
-                          }
-                          const slot = production.preparedCache?.slotAt(candidate.primitiveIndex);
-                          const row = production.preparedCache?.scene.instanceIndexForSlot(
+                  if (live.batch.key.drawKind === 'indexed')
+                    pass.drawIndexedIndirect(indirectBuffer, commandOffset);
+                  else pass.drawIndirect(indirectBuffer, commandOffset);
+                }
+                const geometry = production.geometryCapture;
+                if (geometry !== undefined && geometry.failure === undefined) {
+                  try {
+                    if (geometry.commands.length >= GEOMETRY_OBSERVATION_MAX_COMMANDS)
+                      geometry.failure = 'command-budget';
+                    else {
+                      const sources = new Map<number, GeometrySourceIdentity>();
+                      for (const candidate of live.batch.candidates) {
+                        if (++geometry.members > GEOMETRY_OBSERVATION_MAX_MEMBERS) {
+                          geometry.failure = 'source-budget';
+                          break;
+                        }
+                        const slot = production.preparations.forward.cached?.slotAt(
+                          candidate.primitiveIndex,
+                        );
+                        const row =
+                          production.preparations.forward.cached?.scene.instanceIndexForSlot(
                             candidate.primitiveIndex,
                             candidate.instanceOrdinal,
                           );
-                          if (
-                            slot === undefined ||
-                            slot.generation !== candidate.generation ||
-                            row === undefined
-                          ) {
-                            geometry.failure = 'source-generation-mismatch';
-                            break;
-                          }
-                          captureGeometrySource(sources, row, {
-                            ...geometry.source(slot),
-                            entityKey: slot.entityKey,
-                            primitiveSlot: slot.slot,
-                            slotGeneration: slot.generation,
-                            meshHandle: slot.snapshot.assetHandle,
-                            drawItemIndex: candidate.drawItemIndex,
-                            materialSlot: live.batch.key.materialSlot,
-                            instanceOrdinal: candidate.instanceOrdinal,
-                          });
+                        if (
+                          slot === undefined ||
+                          slot.generation !== candidate.generation ||
+                          row === undefined
+                        ) {
+                          geometry.failure = 'source-generation-mismatch';
+                          break;
                         }
-                        geometry.commands.push({
-                          pass: `${filter ?? 'all'}:${fragmentEntryPoint ?? 'default'}`,
-                          phase,
-                          level,
-                          batchId: live.batch.batchId,
-                          indirectOffset: commandOffset,
-                          visibleBase:
-                            visibleRegionBase + live.batch.visibleBase + level * levelStride,
-                          bufferIdentity: getOpaqueResourceIdentity(indirectBuffer as object),
-                          kind: live.batch.key.drawKind,
-                          topology: live.batch.key.topology,
-                          sources,
+                        const material = (
+                          slot.snapshot.materials[live.batch.key.materialSlot] ??
+                          slot.snapshot.material
+                        ).snapshot;
+                        captureGeometrySource(sources, row, {
+                          ...geometry.source(slot),
+                          entityKey: slot.entityKey,
+                          primitiveSlot: slot.slot,
+                          slotGeneration: slot.generation,
+                          meshHandle: slot.snapshot.assetHandle ?? 0,
+                          drawItemIndex:
+                            live.batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
+                          materialSlot: live.batch.key.materialSlot,
+                          ...(material.materialHandle === undefined
+                            ? {}
+                            : { materialHandle: material.materialHandle }),
+                          ...(material.materialPublication === undefined
+                            ? {}
+                            : { materialPublication: material.materialPublication.identity }),
+                          instanceOrdinal: candidate.instanceOrdinal,
                         });
                       }
-                    } catch (error) {
-                      geometry.failure =
-                        error instanceof Error ? error.message : 'source-capture-failed';
+                      let gbufferProgram: GeometryGBufferProgram | undefined;
+                      if (fragmentEntryPoint === 'fs_gbuffer') {
+                        const sourceDigest =
+                          batch.diagnosticSourceDigest ??
+                          gbufferProgramDigest(batch.artifact.program.source);
+                        batch.diagnosticSourceDigest = sourceDigest;
+                        gbufferProgram = Object.freeze({
+                          scope: 'selected-gpu-driven-gbuffer-artifact' as const,
+                          material: batch.artifact.material,
+                          pass: batch.artifact.pass,
+                          programIdentity: batch.artifact.program.identity,
+                          artifactSourceSha256: sourceDigest,
+                          specializationKey: batch.artifact.specializationKey ?? null,
+                          layoutIdentity: batch.artifact.layoutIdentity,
+                          receiptIdentity: batch.artifact.receipt?.receiptIdentity ?? null,
+                          receiptGeneration: batch.artifact.receipt?.generation ?? null,
+                          vertexEntry:
+                            batch.raster.diagnosticGBufferVertexEntry(batch.artifact) ?? null,
+                          fragmentEntry:
+                            batch.deformation === 'skin' && input.visibleSurface !== undefined
+                              ? SKIN_UNCOVERED_GBUFFER_ENTRY
+                              : 'fs_gbuffer',
+                          pipelineIdentity: getOpaqueResourceIdentity(
+                            selectedPipeline.value as object,
+                          ),
+                          nativeShader: 'unobserved' as const,
+                        });
+                      }
+                      geometry.commands.push({
+                        pass: `${filter ?? 'all'}:${fragmentEntryPoint ?? 'default'}`,
+                        phase,
+                        level,
+                        batchId: live.batch.batchId,
+                        indirectOffset: commandOffset,
+                        visibleBase:
+                          visibleRegionBase + live.batch.visibleBase + level * levelStride,
+                        bufferIdentity: getOpaqueResourceIdentity(indirectBuffer as object),
+                        kind: live.batch.key.drawKind,
+                        topology: live.batch.key.topology,
+                        ...(gbufferProgram === undefined ? {} : { gbufferProgram }),
+                        sources,
+                      });
                     }
+                  } catch (error) {
+                    geometry.failure =
+                      error instanceof Error ? error.message : 'source-capture-failed';
                   }
-                  const surfacePass =
-                    isMedium && fragmentEntryPoint === 'fs_nearest_layer'
-                      ? 'nearest-layer'
-                      : isMedium && fragmentEntryPoint === 'fs_color'
-                        ? 'color'
-                        : undefined;
-                  if (surfacePass !== undefined) {
-                    frameResources.surfaceSubmissionObservation?.record(surfacePass, {
-                      kind:
-                        live.batch.key.drawKind === 'indexed'
-                          ? 'draw-indexed-indirect'
-                          : 'draw-indirect',
-                      indirectBufferIdentity: getOpaqueResourceIdentity(indirectBuffer as object),
-                      indirectOffset: commandOffset,
-                      pipelineIdentity: getOpaqueResourceIdentity(selectedPipeline.value as object),
-                      ...(batch.artifact.receipt === undefined
-                        ? {}
-                        : {
-                            receiptIdentity: batch.artifact.receipt.receiptIdentity,
-                            receiptGeneration: batch.artifact.receipt.generation,
-                          }),
-                    });
-                  }
-                  this.encodedIndirectDraws += 1;
                 }
-                if (descriptor !== undefined && bundleKey !== undefined) {
-                  if (physicalVertex === undefined)
-                    throw new Error('Missing prepared vertex buffer');
-                  // Contiguous stable-ID blocks bound rebuilding to at most 32
-                  // batches while sharing state and reducing native execute overhead.
-                  const block = Math.floor(live.batch.batchId / 32);
-                  if (bundleBlock !== block) flushPrepared();
-                  bundleBlock = block;
-                  bundleOwner ??= live;
-                  if (bundleOwner !== live)
-                    live.bundles.retire(bundleKey, production.preparedBundleCounters);
-                  preparedBindings.push({
-                    pipeline: selectedPipeline.value,
-                    view: viewBindGroup,
-                    material: materialBindGroup,
-                    materialOffset,
-                    mesh: group2,
-                    skin: batch.deformation === 'skin',
-                    vertex: physicalVertex,
-                    ...(indexKey === undefined || physicalIndex === undefined
+                const surfacePass =
+                  isMedium && fragmentEntryPoint === 'fs_nearest_layer'
+                    ? 'nearest-layer'
+                    : isMedium && fragmentEntryPoint === 'fs_color'
+                      ? 'color'
+                      : undefined;
+                if (surfacePass !== undefined) {
+                  frameResources.surfaceSubmissionObservation?.record(surfacePass, {
+                    kind:
+                      live.batch.key.drawKind === 'indexed'
+                        ? 'draw-indexed-indirect'
+                        : 'draw-indirect',
+                    indirectBufferIdentity: getOpaqueResourceIdentity(indirectBuffer as object),
+                    indirectOffset: commandOffset,
+                    pipelineIdentity: getOpaqueResourceIdentity(selectedPipeline.value as object),
+                    ...(batch.artifact.receipt === undefined
                       ? {}
-                      : { index: physicalIndex }),
-                    indexFormat,
-                    indirect: indirectBuffer,
-                    indirectOffset: regionOffset + live.batch.indirectOffset,
-                    indexed: live.batch.key.drawKind === 'indexed',
-                    windows,
+                      : {
+                          receiptIdentity: batch.artifact.receipt.receiptIdentity,
+                          receiptGeneration: batch.artifact.receipt.generation,
+                        }),
                   });
                 }
+                this.encodedIndirectDraws += 1;
               }
-              flushPrepared();
-              if (preparedBundles.length > 0) {
-                const executed = pass.executeBundles(preparedBundles);
-                if (!executed.ok) throw executed.error;
+              if (descriptor !== undefined && bundleKey !== undefined) {
+                if (physicalVertex === undefined) throw new Error('Missing prepared vertex buffer');
+                // Contiguous stable-ID blocks bound rebuilding to at most 32
+                // batches while sharing state and reducing native execute overhead.
+                const block = Math.floor(live.batch.batchId / 32);
+                if (bundleBlock !== block) flushPrepared();
+                bundleBlock = block;
+                bundleOwner ??= live;
+                if (bundleOwner !== live)
+                  live.bundles.retire(bundleKey, production.preparedBundleCounters);
+                preparedBindings ??= bundleOwner.bundles.begin(
+                  bundleKey,
+                  production.device,
+                  production.preparedBundleCounters,
+                );
+                observedBindings.pipeline = selectedPipeline.value;
+                observedBindings.view = viewBindGroup;
+                observedBindings.material = materialBindGroup;
+                observedBindings.materialOffset = materialOffset;
+                observedBindings.mesh = group2;
+                observedBindings.skin = batch.deformation === 'skin';
+                observedBindings.vertex = physicalVertex;
+                observedBindings.index = indexKey === undefined ? undefined : physicalIndex;
+                observedBindings.indexFormat = indexFormat;
+                observedBindings.indirect = indirectBuffer;
+                observedBindings.indirectOffset = regionOffset + live.batch.indirectOffset;
+                observedBindings.indexed = live.batch.key.drawKind === 'indexed';
+                observedBindings.windows = windows;
+                preparedBindings.push(observedBindings);
               }
-            },
-          });
-        }
-        return err(
-          new RhiError({
-            code: 'internal-error',
-            expected: 'material ABI raster projection branch',
-            hint: 'preserve the selected-artifact branch as the only raster owner',
-          }),
-        );
+            }
+            flushPrepared();
+            if (preparedBundles.length > 0) {
+              const executed = pass.executeBundles(preparedBundles);
+              if (!executed.ok) throw executed.error;
+            }
+          },
+        });
       },
     });
   }
 
-  /** Bind each filtered batch to its raster class and material representative. */
+  /** Bind shared geometry and material classes without reading any candidate. */
   private liveRaster(
     filtered: FilteredProductionPlan,
-    scene: PersistentGpuDrivenState,
     visibleBuffer: Buffer,
     rigid: MaterialAbiRasterAdapter,
     skin: MaterialAbiRasterAdapter | undefined,
@@ -2759,34 +2674,13 @@ export class GpuDrivenProduction {
         batchLodLevelCount(previous.batch) === batchLodLevelCount(batch)
           ? previous.visibleBindGroups
           : undefined;
-      const reusedEntityKeys =
-        previous?.batch.candidates === batch.candidates ? previous.materialEntityKeys : undefined;
-      const materialEntityKeys: number[] = [];
-      let previousPrimitive = -1;
-      for (const candidate of previous?.batch.candidates === batch.candidates
-        ? []
-        : prepared.batch.candidates) {
-        if (candidate.primitiveIndex === previousPrimitive) continue;
-        previousPrimitive = candidate.primitiveIndex;
-        const slot = scene.slotAt(candidate.primitiveIndex);
-        if (slot === undefined) {
-          return err(
-            new RhiError({
-              code: 'internal-error',
-              expected: 'batch candidate entity for global material slot projection',
-              hint: 'preserve the retained scene identity when projecting the GPU batch',
-            }),
-          );
-        }
-        materialEntityKeys.push(worldEntityKey(slot.snapshot.worldId, slot.snapshot.entityKey));
-      }
       value.push({
         batch: prepared.batch,
         classKey: prepared.rasterClassKey,
         recordingClassKey: prepared.recordingRasterClassKey,
         mesh: prepared.mesh,
         meshBinding: meshBindings.forMesh(prepared.mesh),
-        materialEntityKeys: reusedEntityKeys ?? materialEntityKeys,
+        materialBindingClass: prepared.materialBindingClass,
         visibleBindGroups,
         bundles: previous?.bundles ?? new PreparedRasterBundleCache(),
       });
@@ -2805,52 +2699,143 @@ export class GpuDrivenProduction {
 
   private assemblePrepared(
     scene: PersistentGpuDrivenState,
-    meshBySlot: ReadonlyMap<number, MeshGpuHandles>,
-    meshResidencyEpoch: number,
-    materialArtifact: MaterialShaderArtifact | undefined,
-    skinArtifact: MaterialShaderArtifact | undefined,
-    materialArtifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
+    materials: GpuSceneResourceFrame | undefined,
+    pass: 'forward' | 'shadow',
+    batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
+    meshByBinding: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
     profilePhase?: RecordProfileRunner,
   ): Result<PreparedProductionPlan, GpuDrivenPreparationError> {
-    const previous = this.preparedCache;
+    const preparation = this.preparations[pass];
+    const previous = preparation.cached;
     const sameInputs =
       previous !== undefined &&
       previous.slotAt === scene.slotAt &&
       previous.worldKeys === scene.worldKeys &&
       previous.scene === scene.scene;
-    const meshChanges =
-      previous?.scene === scene.scene && previous.meshResidencyEpoch !== meshResidencyEpoch
-        ? new Set<number>()
-        : undefined;
-    const inputs: PreparationInputs = {
-      slotAt: scene.slotAt,
-      meshBySlot,
-      worldKeys: scene.worldKeys,
-      materialArtifact,
-      skinArtifact,
-      materialArtifacts,
-    };
     let sameRows = true;
+    let fixedMembership = true;
     let missingArtifact: GpuDrivenPreparationError | undefined;
     let rebuiltBatches = 0;
-    let rebuiltCandidates = 0;
     const batchRows = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/plan/rows',
-      () =>
-        scene.plan.batches.map((batch, index) => {
-          const cached = this.preparedBatches.get(batch.batchId);
-          const artifact = artifactForPreparedBatch(
-            batch,
-            materialArtifacts,
-            materialArtifact,
-            skinArtifact,
+      () => {
+        const rows: PreparedBatchRows[] = [];
+        for (const sourceBatch of scene.plan.batches) {
+          const nativeMembership = MemberCandidates.is(sourceBatch.candidates);
+          fixedMembership &&= nativeMembership;
+          const execution =
+            sourceBatch.binding === undefined
+              ? undefined
+              : batchExecutions.get(sourceBatch.binding)?.[pass];
+          if (sourceBatch.binding === undefined || execution === undefined)
+            throw new GpuDrivenPreparationError('missing-material-receipt', {
+              reason: 'material-receipt-missing',
+              owner: 'material',
+              expected: 'shared material execution for every geometry batch',
+            });
+          // An absent Pass contributes no work to this view. Direct execution
+          // remains in the plan so its real fallback still owns those rows.
+          if (execution.route === 'none') continue;
+          const index = rows.length;
+          const materialAddress = materials?.logicalForResource(
+            sourceBatch.binding.material,
+            execution.material,
           );
-          const prepared = batch.prepared;
+          if (materialAddress === undefined)
+            throw new GpuDrivenPreparationError('resource-not-ready', {
+              reason: 'material-resource-missing',
+              owner: 'material',
+              expected: 'resident shared material row for the accepted batch',
+            });
+          const geometry =
+            execution.route === 'gpu'
+              ? scene.meshes?.get(sourceBatch.binding.worldId, sourceBatch.binding.assetHandle)
+              : undefined;
+          const geometryAddress =
+            execution.route === 'gpu'
+              ? materials?.logicalForGeometry(
+                  sourceBatch.binding.worldId,
+                  sourceBatch.binding.assetHandle,
+                  geometry,
+                )
+              : undefined;
+          if (
+            geometry !== undefined &&
+            sourceBatch.binding.geometry.deformation === 'rigid' &&
+            geometryAddress === undefined
+          )
+            throw new GpuDrivenPreparationError('stale-generation', {
+              reason: 'generation-stale',
+              owner: 'geometry',
+              expected: 'resident shared geometry for the accepted frame',
+            });
+          const capturedKey = capturedGpuDrivenBatchKey(sourceBatch);
+          const executionKey =
+            capturedKey !== undefined && execution.route === 'gpu'
+              ? batchExecutionKey(sourceBatch, execution)
+              : undefined;
+          const materializeBatch = (): GpuDrivenBatch =>
+            execution.route !== 'gpu'
+              ? Object.freeze({ ...sourceBatch })
+              : Object.freeze({
+                  ...sourceBatch,
+                  materialAddress,
+                  logicalResources: true as const,
+                  ...(geometryAddress === undefined ? {} : { geometryAddress }),
+                  prepared: execution.prepared,
+                  key: Object.freeze({
+                    ...sourceBatch.key,
+                    ...(executionKey ?? batchExecutionKey(sourceBatch, execution)),
+                  }),
+                });
+          let batch: GpuDrivenBatch | undefined;
+          let signature: string;
+          if (
+            capturedKey !== undefined &&
+            execution.route === 'gpu' &&
+            executionKey !== undefined
+          ) {
+            // resourceIdentity is the captured materialResourceClass. Other
+            // execution and residency facts are observed on every preparation.
+            signature = `${capturedKey}\n${JSON.stringify([
+              execution.route,
+              materialAddress,
+              geometryAddress,
+              executionKey.preparedIdentity,
+              executionKey.pipelineClass,
+              executionKey.admission,
+              executionKey.materialPass,
+              execution.pass.renderState,
+              execution.material.materialHandle,
+              execution.material.standardTextureMask,
+            ])}`;
+          } else {
+            batch = materializeBatch();
+            signature = JSON.stringify([
+              execution.route,
+              materialAddress,
+              geometryAddress,
+              batch.key,
+              execution.route === 'gpu' ? execution.pass.renderState : null,
+              execution.route === 'gpu' ? execution.material.materialHandle : null,
+              execution.route === 'gpu' ? execution.material.standardTextureMask : null,
+            ]);
+          }
+          const currentBatch = batch ?? sourceBatch;
+          const cached = preparation.batches.get(currentBatch.batchId);
+          const artifact = execution.route === 'gpu' ? execution.artifact : undefined;
+          const prepared =
+            batch !== undefined
+              ? batch.prepared
+              : execution.route === 'gpu'
+                ? execution.prepared
+                : sourceBatch.prepared;
           if (
             missingArtifact === undefined &&
+            execution.route === 'gpu' &&
             artifact === undefined &&
-            batch.candidates.length > 0 &&
+            currentBatch.candidates.length > 0 &&
             prepared?.receiptIdentity !== undefined
           ) {
             missingArtifact = new GpuDrivenPreparationError('missing-material-receipt', {
@@ -2859,37 +2844,52 @@ export class GpuDrivenProduction {
               expected: `published artifact for ${prepared.identity.material} (${prepared.receiptIdentity}@${prepared.receiptGeneration})`,
             });
           }
+          const mesh =
+            sourceBatch.binding === undefined ? undefined : meshByBinding.get(sourceBatch.binding);
           const sameMeshes =
-            cached === undefined || sameBatchMeshes(cached.value, meshBySlot, meshChanges);
+            cached?.value.mesh === mesh && cached?.value.meshContentEpoch === mesh?.contentEpoch;
           if (
             sameInputs &&
+            nativeMembership &&
             cached !== undefined &&
-            cached.generation === batch.generation &&
-            cached.contentEpoch === batch.contentEpoch &&
+            cached.value.source.candidates === sourceBatch.candidates &&
+            cached.value.source.generation === sourceBatch.generation &&
+            cached.value.source.contentEpoch === sourceBatch.contentEpoch &&
+            cached.signature === signature &&
             sameMaterialArtifact(cached.artifact, artifact) &&
-            sameMeshes
+            sameMeshes &&
+            samePreparedBatchLod(cached.value.lod, currentBatch, mesh)
           ) {
-            if (cached.value.source === batch) {
+            if (cached.source === sourceBatch) {
               sameRows &&= cached.value === previous.batchRows[index];
-              return cached.value;
+              rows.push(cached.value);
+              continue;
             }
             sameRows = false;
             // Only the aligned visible window moved; rows keep their facts.
+            batch ??= materializeBatch();
             const rebased = Object.freeze({
               ...cached.value,
               source: batch,
             });
-            this.preparedBatches.set(batch.batchId, {
+            preparation.batches.set(currentBatch.batchId, {
               ...cached,
+              source: sourceBatch,
               value: rebased,
             });
-            return rebased;
+            rows.push(rebased);
+            continue;
           }
           sameRows = false;
-          const value = prepareBatchRows(batch, inputs);
-          this.preparedBatches.set(batch.batchId, {
-            generation: batch.generation,
-            contentEpoch: batch.contentEpoch,
+          batch ??= materializeBatch();
+          const value = prepareBatchRows(batch, {
+            mesh,
+            worldKeys: scene.worldKeys,
+            execution,
+          });
+          preparation.batches.set(currentBatch.batchId, {
+            source: sourceBatch,
+            signature,
             // Retain the observed fields, not the mutable publication wrapper.
             artifact:
               artifact === undefined
@@ -2901,84 +2901,65 @@ export class GpuDrivenProduction {
             value,
           });
           rebuiltBatches += 1;
-          rebuiltCandidates += batch.candidates.length;
-          return value;
-        }),
+          rows.push(value);
+        }
+        return rows;
+      },
     );
     // Native plans contain unique batch IDs, and the row loop retains every
-    // current ID even for a rejected artifact. Equal cardinality therefore
+    // admitted ID even for a rejected artifact. Equal cardinality therefore
     // proves there are no retired rows; only removals need a membership scan.
-    if (this.preparedBatches.size > batchRows.length) {
+    if (preparation.batches.size > batchRows.length) {
       const live = new Set(batchRows.map((rows) => rows.source.batchId));
-      for (const batchId of this.preparedBatches.keys()) {
-        if (!live.has(batchId)) this.preparedBatches.delete(batchId);
+      for (const batchId of preparation.batches.keys()) {
+        if (!live.has(batchId)) preparation.batches.delete(batchId);
       }
     }
     this.preparedBatchBuilds += rebuiltBatches;
-    this.planRebuildBatches = rebuiltBatches;
-    this.planRebuildCandidates = rebuiltCandidates;
-    if (meshChanges !== undefined) scene.scene.noteMeshContentChanged(meshChanges);
-    // Row memoization is independent of submission. Preserve all observed mesh
-    // invalidation before refusing the candidate, so retry cannot hide changes
-    // behind the rows already refreshed above. No filtered/GPU work is admitted.
+    this.planRebuildBatches += rebuiltBatches;
+    this.planRebuildCandidates = 0;
+    // A failed artifact publication cannot admit filtered or GPU work.
     if (missingArtifact !== undefined) return err(missingArtifact);
-    if (sameInputs && previous.plan === scene.plan && sameRows) {
-      if (previous.meshResidencyEpoch !== meshResidencyEpoch)
-        this.preparedCache = { ...previous, meshResidencyEpoch };
+    if (
+      sameInputs &&
+      previous.plan === scene.plan &&
+      sameRows &&
+      previous.batchRows.length === batchRows.length
+    ) {
       return ok(previous.value);
     }
-    this.gpuOwnedSnapshotsMaterialized = scene.slots.length;
+    this.gpuOwnedSnapshotsMaterialized = 0;
     const value = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/plan/admission',
-      () => assemblePreparedPlan(scene.plan, batchRows, scene.slots, scene.worldKeys),
+      () =>
+        assemblePreparedPlan(
+          scene.plan,
+          batchRows,
+          scene.worldKeys,
+          fixedMembership && sameRows && previous?.plan === scene.plan
+            ? previous.value.lodPlan
+            : undefined,
+        ),
     );
-    this.preparedCache = {
+    preparation.cached = {
       plan: scene.plan,
       slotAt: scene.slotAt,
       worldKeys: scene.worldKeys,
       scene: scene.scene,
-      meshResidencyEpoch,
       batchRows,
       value,
     };
     return ok(value);
   }
 
-  private shadowOwnershipSource(
-    drawKeys: ReadonlySet<string> | undefined,
-    membership: readonly ShadowCasterMembership[] | undefined,
-  ): ShadowOwnershipSource {
-    const cached = this.shadowOwnershipCache;
-    const unrestricted = drawKeys === undefined && membership === undefined;
-    if (
-      cached !== undefined &&
-      (unrestricted ? cached.claims === undefined : cached.claims?.matches(drawKeys, membership))
-    )
-      return cached;
-    const claims = unrestricted ? undefined : new ShadowClaimTable(drawKeys, membership);
-    const source: ShadowOwnershipSource = {
-      casterKeys: claims?.casterKeys,
-      ownsAllFor: undefined,
-      ownsAll: false,
-      claims,
-    };
-    this.shadowOwnershipCache = source;
-    return source;
-  }
-
-  private observeShadowArtifacts(
-    batches: readonly PreparedBatch[],
-    artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
-  ): ShadowArtifactObservations {
+  private observeShadowArtifacts(batches: readonly PreparedBatch[]): ShadowArtifactObservations {
     const previous = this.observedShadowArtifacts;
     const next = new Map<string, string | undefined>();
     let changed = false;
-    for (const { batch, artifact: fallback } of batches) {
+    for (const { batch, artifact } of batches) {
       const key = shadowMaterialKey(batch);
-      const signature = shadowArtifactSignature(
-        shadowArtifactForPreparedBatch(batch, artifacts, fallback),
-      );
+      const signature = shadowArtifactSignature(artifact);
       next.set(key, signature);
       if (!previous.has(key) || previous.get(key) !== signature) changed = true;
     }
@@ -2988,21 +2969,20 @@ export class GpuDrivenProduction {
 
   updateShadowViews(
     views: readonly ShadowViewRequest[],
-    shadowMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
     filtered: FilteredProductionPlan,
+    batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
     scene: PersistentGpuDrivenState,
-    shadowClaims: ShadowClaimTable | undefined,
+    inputReads: import('../gpu-scene-inputs').GpuInputReadFrame,
     lod: LodProjectionState,
     lodPrepared: Parameters<typeof shadowLodProjectionState>[0],
     camera: CameraSnapshot,
     capsuleShadowDirectional: boolean,
+    directMaterials: import('../scene/material-dispatch').MaterialFrame | undefined,
+    shadowMaterials: ShadowMaterialContent | undefined,
     profilePhase?: RecordProfileRunner,
   ): Result<void, RhiError> {
     if (views.length === 0) return this.disableShadowViews();
-    const artifacts = this.observeShadowArtifacts(
-      filtered.materialBatches,
-      shadowMaterialArtifacts,
-    );
+    const artifacts = this.observeShadowArtifacts(filtered.materialBatches);
     const lodCamera: LodViewCamera = camera;
     let cullCamera: GpuDrivenOcclusionCamera | undefined;
     // A light view ranks casters by their footprint in its own projection,
@@ -3044,13 +3024,12 @@ export class GpuDrivenProduction {
     };
     if (
       this.shadowViews === undefined ||
-      this.shadowSourcePlan === undefined ||
+      this.shadowSource === undefined ||
       this.shadowScene === undefined
     ) {
       return ok(undefined);
     }
     const nextProjections = new Map<string, ReadonlyMap<number, GpuDrivenShadowBatchProjection>>();
-    const nextShadowDrawKeysByView = new Map<string, ReadonlySet<string>>();
     const materialRaster = this.materialRaster;
     if (materialRaster === undefined) {
       return err(
@@ -3077,31 +3056,23 @@ export class GpuDrivenProduction {
     const visibleBindingIdentity = materialRaster.visibleBindingIdentity;
     const skinVisibleBindingIdentity = this.skinRaster?.visibleBindingIdentity;
     const shadowViews = this.shadowViews;
-    const shadowSourcePlan = this.shadowSourcePlan;
+    const { plan: shadowSourcePlan, projectionSource } = this.shadowSource;
     const shadowScene = this.shadowScene;
-    // assembleFilteredGroups owns these frozen batch records. Without LOD,
-    // projection reads only their captured scalar fields and candidate lists;
-    // no borrowed range getters can be skipped between views.
-    const projectionSource = shadowSourcePlan.batches.every((batch) => batch.lod === undefined)
-      ? shadowSourcePlan
-      : undefined;
     const classes = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/shadow-views/caster-classes',
-      () => this.shadowCasterClasses.update(scene.slots, shadowScene, capsuleShadowDirectional),
+      () => this.shadowCasterClasses.update(scene, shadowScene, capsuleShadowDirectional),
     );
-    const projectView = (
-      { cameraCull, ...input }: ShadowViewRequest,
-      inheritedClaims: ReadonlySet<string> | undefined,
-      inheritedSource: ReadonlySet<string> | undefined,
-    ): Result<ShadowViewUpdate['cache'], RhiError> =>
+    const projectView = ({
+      cameraCull,
+      ...input
+    }: ShadowViewRequest): Result<ShadowViewUpdate['cache'], RhiError> =>
       runRecordProfilePhase(
         profilePhase,
         'record/gpu-driven-prepare/shadow-views/project-view',
         () => {
           const identityKey = shadowViewIdentityKey(input.identity);
           const previousProjections = this.shadowBatchProjections.get(identityKey);
-          const previousClaims = this.shadowDrawKeysByView.get(identityKey);
           const previousSource =
             previousProjections === undefined
               ? undefined
@@ -3116,7 +3087,34 @@ export class GpuDrivenProduction {
               const key = shadowMaterialKey(batch);
               return artifacts.has(key) && previousSource.artifacts.get(key) !== artifacts.get(key);
             });
+          const meshesChanged =
+            previousSource !== undefined &&
+            filtered.batches.some((prepared) => {
+              const previous = previousProjections?.get(prepared.batch.batchId);
+              return (
+                previous !== undefined &&
+                (previous.mesh !== prepared.mesh ||
+                  previous.meshContentEpoch !== prepared.meshContentEpoch)
+              );
+            });
           if (artifactsChanged) shadowViews.invalidate('artifact-changed', input.identity);
+          else if (meshesChanged) shadowViews.invalidate('content-changed', input.identity);
+          else if (
+            previousSource?.plan.batches.some((batch) => {
+              const execution =
+                batch.binding === undefined
+                  ? undefined
+                  : batchExecutions.get(batch.binding)?.shadow;
+              return (
+                execution?.route === 'gpu' &&
+                !sameShadowMaterial(
+                  previousProjections?.get(batch.batchId)?.material,
+                  execution.material,
+                )
+              );
+            })
+          )
+            shadowViews.invalidate('content-changed', input.identity);
           const viewLod = shadowViewLod(input.matrix);
           if (cameraCull !== undefined) cullCamera ??= occlusionCamera(camera);
           const updated = runRecordProfilePhase(
@@ -3128,6 +3126,11 @@ export class GpuDrivenProduction {
                   ...input,
                   sourcePlan: shadowSourcePlan,
                   scene: shadowScene,
+                  inputReads,
+                  ...(directMaterials === undefined || input.identity.layer === 'static'
+                    ? {}
+                    : { directMaterials }),
+                  ...(shadowMaterials === undefined ? {} : { shadowMaterials }),
                   ...viewLod,
                   ...(cameraCull === undefined || cullCamera === undefined
                     ? {}
@@ -3161,13 +3164,11 @@ export class GpuDrivenProduction {
           // Depth hits already validated drawn content; misses also check live material values.
           if (
             !artifactsChanged &&
+            !meshesChanged &&
             previousProjections !== undefined &&
-            previousClaims !== undefined &&
             previousSource !== undefined &&
             sameShadowProjectionLayout(previousSource.plan, submission.plan) &&
-            (previousSource.claims === shadowClaims || previousSource.filtered === filtered) &&
             sameBindings &&
-            inheritedClaims === inheritedSource &&
             (previousSource.filtered === filtered ||
               submission.plan.batches.every((batch) => {
                 preparedByBatch ??= new Map(
@@ -3178,52 +3179,34 @@ export class GpuDrivenProduction {
                   previousProjections.get(batch.batchId)?.mesh
                 );
               })) &&
-            ((updated.value.cache === 'hit' && previousSource.claims === shadowClaims) ||
-              submission.plan.batches.every((batch) => {
-                const first = batch.candidates[0];
-                const slot = first === undefined ? undefined : scene.slotAt(first.primitiveIndex);
-                const material =
-                  slot?.snapshot.materials[batch.key.materialSlot] ?? slot?.snapshot.material;
-                const projection = previousProjections.get(batch.batchId);
-                if (
-                  first === undefined ||
-                  slot === undefined ||
-                  material === undefined ||
-                  projection?.material !== material
-                )
-                  return false;
-                if (previousSource.claims === shadowClaims) return true;
-                // The accepted filtered plan proves the same claim keys and
-                // admission, but entry names are consumed only here. Observe
-                // each batch representative before retaining its map and the
-                // view's claims; instance ordinals cannot change those values.
-                const entry = shadowClaims?.claim(slot, first).entry;
-                return (
-                  projection.shadowVertexEntry === entry?.vertexEntry &&
-                  projection.shadowFragmentEntry === entry?.fragmentEntry &&
-                  (projection.shadowRenderState === entry?.renderState ||
-                    JSON.stringify(projection.shadowRenderState) ===
-                      JSON.stringify(entry?.renderState))
-                );
-              }))
+            submission.plan.batches.every((batch) => {
+              if (batch.visibleCapacity === 0) return !previousProjections.has(batch.batchId);
+              const execution =
+                batch.binding === undefined
+                  ? undefined
+                  : batchExecutions.get(batch.binding)?.shadow;
+              const projection = previousProjections.get(batch.batchId);
+              if (execution?.route !== 'gpu' || projection?.material !== execution.material)
+                return false;
+              const entry = execution.pass;
+              const shadowRenderState = reflectedRenderState(
+                entry.renderState,
+                batch.key.reflected === true,
+              );
+              return (
+                projection.shadowVertexEntry === entry.vertexEntry &&
+                projection.shadowFragmentEntry === entry.fragmentEntry &&
+                (projection.shadowRenderState === shadowRenderState ||
+                  JSON.stringify(projection.shadowRenderState) ===
+                    JSON.stringify(shadowRenderState))
+              );
+            })
           ) {
             previousSource.filtered = filtered;
-            previousSource.claims = shadowClaims;
             previousSource.artifacts = artifacts;
-            nextShadowDrawKeysByView.set(identityKey, previousClaims);
             nextProjections.set(identityKey, previousProjections);
             return ok(updated.value.cache);
           }
-          nextShadowDrawKeysByView.set(
-            identityKey,
-            collectShadowViewClaims(
-              updated.value.plan,
-              scene,
-              shadowClaims,
-              filtered,
-              inheritedClaims,
-            ),
-          );
           preparedByBatch ??= new Map(
             filtered.batches.map((entry) => [entry.batch.batchId, entry]),
           );
@@ -3231,16 +3214,21 @@ export class GpuDrivenProduction {
           // A topology/depth revision can leave every physical draw projection unchanged.
           // Keep that publication without allocating and filling another complete map.
           let projections: Map<number, GpuDrivenShadowBatchProjection> | undefined =
-            previousProjections !== undefined &&
-            previousProjections.size === submission.plan.batches.length &&
+            previousProjections?.size === submission.plan.batches.length &&
             previousBatches?.every(
-              (batch, index) => batch.batchId === submission.plan.batches[index]?.batchId,
+              (batch, index) => batch.batchId === submission.plan.batches.at(index)?.batchId,
             )
               ? undefined
               : new Map();
           let previousById: ReadonlyMap<number, GpuDrivenBatch> | undefined;
           let batchIndex = 0;
           for (const batch of submission.plan.batches) {
+            if (batch.visibleCapacity === 0) {
+              projections ??= new Map(previousProjections);
+              projections.delete(batch.batchId);
+              batchIndex++;
+              continue;
+            }
             const prepared = preparedByBatch.get(batch.batchId);
             if (prepared === undefined) {
               return err(
@@ -3251,27 +3239,23 @@ export class GpuDrivenProduction {
                 }),
               );
             }
-            const firstCandidate = batch.candidates[0];
-            const firstSlot =
-              firstCandidate === undefined
-                ? undefined
-                : scene.slotAt(firstCandidate.primitiveIndex);
-            const material =
-              firstSlot?.snapshot.materials[batch.key.materialSlot] ?? firstSlot?.snapshot.material;
-            if (firstSlot === undefined || material === undefined) {
+            const execution =
+              batch.binding === undefined ? undefined : batchExecutions.get(batch.binding)?.shadow;
+            if (batch.binding === undefined || execution?.route !== 'gpu') {
               return err(
                 new RhiError({
                   code: 'internal-error',
-                  expected: `material snapshot for shadow batch ${batch.batchId}`,
-                  hint: 'keep the GPU-driven shadow material projection aligned with the retained slot',
+                  expected: `accepted shared material execution for shadow batch ${batch.batchId}`,
+                  hint: 'retain the same geometry binding and material frame through shadow projection',
                 }),
               );
             }
-            // Claim values stay authoritative across ownership publications.
-            const shadowEntry =
-              firstCandidate === undefined
-                ? undefined
-                : shadowClaims?.claim(firstSlot, firstCandidate).entry;
+            const material = execution.material;
+            const shadowEntry = execution.pass;
+            const shadowRenderState = reflectedRenderState(
+              shadowEntry.renderState,
+              batch.key.reflected === true,
+            );
             const deformation = batch.prepared?.identity.deformation ?? 'rigid';
             const raster = deformation === 'skin' ? this.skinRaster : materialRaster;
             const projectedMeshBinding =
@@ -3279,11 +3263,7 @@ export class GpuDrivenProduction {
             const batchArtifact = prepared.artifact;
             const artifactKey =
               previousSource?.artifacts === artifacts ? undefined : shadowMaterialKey(batch);
-            const shadowArtifact = shadowArtifactForPreparedBatch(
-              batch,
-              shadowMaterialArtifacts,
-              batchArtifact,
-            );
+            const shadowArtifact = execution.artifact;
             if (
               raster === undefined ||
               projectedMeshBinding === undefined ||
@@ -3298,36 +3278,30 @@ export class GpuDrivenProduction {
                 }),
               );
             }
-            // Batch reorder alone needs an ID lookup; unchanged ordinals allocate nothing.
-            let previousBatch = previousBatches?.[batchIndex];
+            // Stable command addresses need not follow source order after a
+            // split/rejoin. Keep unchanged ordinals allocation-free; only a
+            // reordered batch needs a transient linear-time lookup.
+            let previousBatch = previousBatches?.at(batchIndex);
             batchIndex++;
             if (previousBatches !== undefined && previousBatch?.batchId !== batch.batchId) {
               previousById ??= new Map(previousBatches.map((entry) => [entry.batchId, entry]));
               previousBatch = previousById.get(batch.batchId);
             }
-            const shadowRenderState = transformRenderState(
-              shadowEntry?.renderState,
-              firstSlot.snapshot.transform.world,
-            );
             const previousProjection = previousProjections?.get(batch.batchId);
-            const previousFirst = previousBatch?.candidates[0];
             if (
               previousBatch?.batchId === batch.batchId &&
               previousBatch.visibleBase === batch.visibleBase &&
               (previousBatch.visibleAllocationCapacity ?? previousBatch.visibleCapacity) ===
                 (batch.visibleAllocationCapacity ?? batch.visibleCapacity) &&
               previousBatch.indirectOffset === batch.indirectOffset &&
-              previousFirst?.primitiveIndex === firstCandidate?.primitiveIndex &&
-              previousFirst?.generation === firstCandidate?.generation &&
-              previousFirst?.drawItemIndex === firstCandidate?.drawItemIndex &&
               previousProjection?.mesh === prepared.mesh &&
+              previousProjection.meshContentEpoch === prepared.meshContentEpoch &&
               previousProjection.meshBindGroup === projectedMeshBinding &&
               previousProjection.deformation === deformation &&
               previousProjection.visibleBindGroups.length === batchLodLevelCount(batch) &&
               batchLevelStride(previousBatch) === batchLevelStride(batch) &&
               previousProjection.material === material &&
-              previousProjection.materialEntityKey ===
-                worldEntityKey(firstSlot.snapshot.worldId, firstSlot.snapshot.entityKey) &&
+              previousProjection.worldId === batch.binding.worldId &&
               previousProjection.shadowVertexEntry === shadowEntry?.vertexEntry &&
               previousProjection.shadowFragmentEntry === shadowEntry?.fragmentEntry &&
               (previousProjection.shadowRenderState === shadowRenderState ||
@@ -3355,6 +3329,7 @@ export class GpuDrivenProduction {
             projections.set(batch.batchId, {
               bundles: previousProjection?.bundles ?? new PreparedRasterBundleCache(),
               mesh: prepared.mesh,
+              meshContentEpoch: prepared.meshContentEpoch,
               meshBindGroup: projectedMeshBinding,
               visibleBindGroups,
               deformation,
@@ -3367,10 +3342,7 @@ export class GpuDrivenProduction {
                 ? {}
                 : { shadowFragmentEntry: shadowEntry.fragmentEntry }),
               material,
-              materialEntityKey: worldEntityKey(
-                firstSlot.snapshot.worldId,
-                firstSlot.snapshot.entityKey,
-              ),
+              worldId: batch.binding.worldId,
               vertexColorAvailable: prepared.mesh.layoutProjection.attributes.some(
                 (attribute) => attribute.key === 'color',
               ),
@@ -3384,7 +3356,6 @@ export class GpuDrivenProduction {
           this.shadowProjectionSources.set(publishedProjections, {
             plan: submission.plan,
             filtered,
-            claims: shadowClaims,
             artifacts,
             visibleBuffer,
             meshBinding: meshBinding.value,
@@ -3396,10 +3367,35 @@ export class GpuDrivenProduction {
         },
       );
     const retained: ShadowViewIdentity[] = [];
-    for (const input of views) {
+    for (const requested of views) {
+      const channels = requested.casterChannels ?? 0xffffffff;
+      let input = requested;
+      if (channels !== 0xffffffff) {
+        const restriction = requested.candidatePrimitiveIndices;
+        const requestedCandidates =
+          restriction === undefined
+            ? undefined
+            : 'has' in restriction
+              ? restriction
+              : new Set(restriction);
+        const candidatePrimitiveIndices = new Set<number>();
+        for (const batch of shadowSourcePlan.batches) {
+          for (const candidate of batch.candidates) {
+            if (
+              (requestedCandidates === undefined ||
+                requestedCandidates.has(candidate.primitiveIndex)) &&
+              ((scene.slotAt(candidate.primitiveIndex)?.snapshot.shadowChannels ?? 0xffffffff) &
+                channels) !==
+                0
+            )
+              candidatePrimitiveIndices.add(candidate.primitiveIndex);
+          }
+        }
+        input = { ...requested, candidatePrimitiveIndices };
+      }
       retained.push(input.identity);
       if (!shadowViewHasStaticLayer(input.identity)) {
-        const projected = projectView(input, undefined, undefined);
+        const projected = projectView(input);
         if (!projected.ok) return projected;
         continue;
       }
@@ -3408,47 +3404,39 @@ export class GpuDrivenProduction {
       const staticIdentity: ShadowViewIdentity = { ...input.identity, layer: 'static' };
       const viewClasses = restrictShadowCasterClasses(classes, input.candidatePrimitiveIndices);
       retained.push(staticIdentity);
-      const staticProjected = projectView(
-        {
-          ...input,
-          identity: staticIdentity,
-          candidatePrimitiveIndices: viewClasses.staticSlots,
-          ignoredChangeSlots: viewClasses.dynamicSet,
-        },
-        undefined,
-        undefined,
-      );
+      const staticProjected = projectView({
+        ...input,
+        identity: staticIdentity,
+        candidatePrimitiveIndices: viewClasses.staticSlots,
+        ignoredChangeSlots: classes.dynamicSlots,
+      });
       if (!staticProjected.ok) return staticProjected;
       if (staticProjected.value === 'invalidated') {
         shadowViews.invalidate('static-layer-changed', input.identity);
       }
-      const finalProjected = projectView(
-        {
-          ...input,
-          candidatePrimitiveIndices:
-            input.identity.kind === 'directional'
-              ? viewClasses.directionalDynamicSlots
-              : viewClasses.dynamicSlots,
-        },
-        nextShadowDrawKeysByView.get(shadowViewIdentityKey(staticIdentity)),
-        this.shadowDrawKeysByView.get(shadowViewIdentityKey(staticIdentity)),
-      );
+      const finalProjected = projectView({
+        ...input,
+        candidatePrimitiveIndices:
+          input.identity.kind === 'directional'
+            ? viewClasses.directionalDynamicSlots
+            : viewClasses.dynamicSlots,
+      });
       if (!finalProjected.ok) return finalProjected;
     }
     shadowViews.retain(retained);
     this.shadowBatchProjections = publishReadonlyMap(nextProjections);
-    this.shadowDrawKeysByView = publishReadonlyMap(nextShadowDrawKeysByView);
     return ok(undefined);
   }
 
   private disableShadowViews(): Result<void, RhiError> {
     this.shadowViews?.retain([]);
     this.shadowBatchProjections = publishReadonlyMap(new Map());
-    this.shadowDrawKeysByView = publishReadonlyMap(new Map());
     return ok(undefined);
   }
 
   dispose(): void {
+    for (const frame of this.resourceFrames) frame.release();
+    this.resourceFrames.clear();
     if (this.disposed) return;
     this.disposed = true;
     this.view?.dispose();
@@ -3458,25 +3446,23 @@ export class GpuDrivenProduction {
     this.observedShadowArtifacts = new Map();
     this.skinRaster?.dispose();
     this.skinRaster = undefined;
-    this.preparedCache = undefined;
+    for (const preparation of Object.values(this.preparations)) {
+      preparation.cached = undefined;
+      preparation.batches.clear();
+    }
     this.filteredCache = undefined;
     this.liveRasterCache = undefined;
     this.liveRasterBatches = [];
     this.shadowFilteredCache = undefined;
     this.mainFilterContributions.clear();
     this.shadowFilterContributions.clear();
-    this.shadowOwnershipCache = undefined;
     this.surfaceFrames.clear();
     this.rasterGraphIdentity.clear();
-    this.residencyValidation.clear();
-    this.cpuValidationTelemetryCache = undefined;
     this.shadowViews?.dispose();
     this.shadowViews = undefined;
-    this.shadowSourcePlan = undefined;
+    this.shadowSource = undefined;
     this.shadowScene = undefined;
     this.shadowBatchProjections = publishReadonlyMap(new Map());
-    this.shadowDrawKeysByView = publishReadonlyMap(new Map());
-    this.shadowExpectedDrawKeys = EMPTY_SHADOW_KEYS;
     this.skinPaletteBuffer = undefined;
     this.committedPaletteContentRevision = undefined;
     this.committedViewClipping = '';
@@ -3565,14 +3551,17 @@ export class GpuDrivenProduction {
       if (this.submissionState === 'idle' || channels.length >= 32) break;
       if (entry.identity.layer !== undefined) continue;
       const key = shadowViewIdentityKey(entry.identity);
-      const claimed = this.shadowDrawKeysByView.get(key)?.size ?? 0;
-      const total = Math.max(this.shadowExpectedDrawKeys.size, claimed);
-      const effectiveClaimed = this.telemetryOverflow ? 0 : Math.min(claimed, total);
-      const residual = Math.max(0, total - effectiveClaimed);
+      const layers = [entry.identity, { ...entry.identity, layer: 'static' as const }];
+      let total = 0,
+        claimed = 0;
+      for (const identity of layers)
+        for (const batch of this.shadowViews?.submission(identity)?.plan.batches ?? []) {
+          total += batch.candidates.length;
+          if (batch.visibleCapacity > 0) claimed += batch.candidates.length;
+        }
+      const effectiveClaimed = this.telemetryOverflow ? 0 : claimed;
+      const residual = total - effectiveClaimed;
       if (total === 0) continue;
-      // The final view can have no dynamic batches while its current
-      // projection inherits valid claims from the retained static depth.
-      // Admission counts that work regardless of whether it re-rasterizes.
       const projected = this.shadowBatchProjections.has(key);
       const viewPass =
         entry.identity.kind === 'directional'
@@ -3594,18 +3583,16 @@ export class GpuDrivenProduction {
         });
       }
       if (residual > 0) {
-        const failure = shadowOwnershipFailureInspection(viewPass);
         channels.push({
           viewPass,
           viewIndex: entry.identity.index,
           ...(entry.identity.face === undefined ? {} : { face: entry.identity.face }),
-          lane: 'blocked',
-          reason: this.telemetryOverflow ? 'overflow' : 'shadow-ownership',
+          lane: this.telemetryOverflow ? 'blocked' : 'cpu-semantic',
+          reason: this.telemetryOverflow ? 'overflow' : 'unsupported',
           drawCount: residual,
           totalDrawCount: total,
           claimedDrawCount: effectiveClaimed,
           residualDrawCount: residual,
-          failure,
         });
       }
     }
@@ -3613,8 +3600,6 @@ export class GpuDrivenProduction {
       ...(this.surfaceArtifactInspection === undefined
         ? {}
         : { surfaceArtifact: this.surfaceArtifactInspection }),
-      residencyValidationScans: this.residencyValidation.scans,
-      residencyValidationCacheHits: this.residencyValidation.hits,
       cpuValidationScans: this.cpuValidationScans,
       cpuValidationCacheHits: this.cpuValidationCacheHits,
       ...this.structureMetrics,
@@ -3642,7 +3627,7 @@ export class GpuDrivenProduction {
       shadowViews: this.shadowViews?.inspect() ?? [],
       shadowCasterPendingPromotions: this.shadowCasterClasses.inspect().pendingPromotions,
       gpuOwnedEntityCount: this.gpuOwnedEntityCount,
-      candidateUploadBytes: this.telemetryPrepared ? (view?.candidateUploadBytes ?? 0) : 0,
+      sharedInputUploadBytes: this.telemetryPrepared ? (view?.sharedInputUploadBytes ?? 0) : 0,
       suppressionUploadBytes: this.telemetryPrepared ? (view?.suppressionUploadBytes ?? 0) : 0,
       batchUploadBytes: this.telemetryPrepared ? (view?.batchUploadBytes ?? 0) : 0,
       viewConstantsUploadBytes: this.telemetryPrepared ? (view?.viewConstantsUploadBytes ?? 0) : 0,
@@ -3775,8 +3760,8 @@ export class GpuDrivenProduction {
           {
             batch: prepared.batch,
             worldKey: prepared.worldKey,
-            primitiveSlot: prepared.primitiveSlot,
-            slotGeneration: prepared.slotGeneration,
+            primitiveSlot: prepared.batch.members?.at(0)?.primitiveIndex ?? -1,
+            slotGeneration: prepared.batch.members?.at(0)?.generation ?? -1,
             artifact: prepared.artifact,
           },
         ]),
@@ -3789,12 +3774,12 @@ export class GpuDrivenProduction {
       // still need the same World join for receipt attribution. Recover that
       // metadata from the stable primitive slot instead of dropping the whole
       // readback when the first such batch is encountered.
-      const slotAt = this.preparedCache?.slotAt;
+      const slotAt = this.preparations.forward.cached?.slotAt;
       const filteredWorldKeys = this.filteredCache?.prepared.worldKeys;
       if (slotAt !== undefined) {
         for (const batch of filtered.plan.batches) {
           if (preparedByBatchId.has(batch.batchId)) continue;
-          const candidate = batch.candidates[0];
+          const candidate = batch.candidates.at(0);
           const slot = candidate === undefined ? undefined : slotAt(candidate.primitiveIndex);
           if (slot === undefined) continue;
           preparedByBatchId.set(batch.batchId, {
@@ -3850,8 +3835,8 @@ export class GpuDrivenProduction {
         if (aggregate === undefined) {
           aggregate = {
             worldKey: prepared.worldKey,
-            primitiveSlot: prepared.primitiveSlot,
-            slotGeneration: prepared.slotGeneration,
+            primitiveSlot: prepared.batch.members?.at(0)?.primitiveIndex ?? -1,
+            slotGeneration: prepared.batch.members?.at(0)?.generation ?? -1,
             candidateCount: 0,
             visible: 0,
             occluded: 0,
@@ -3893,7 +3878,7 @@ export class GpuDrivenProduction {
             ) {
               return [];
             }
-            const slot = this.preparedCache?.slotAt(member.primitiveIndex);
+            const slot = this.preparations.forward.cached?.slotAt(member.primitiveIndex);
             if (slot === undefined) return [];
             const memberId = this.surfaceFrames.memberId(
               slot.worldId,
@@ -3925,164 +3910,19 @@ export class GpuDrivenProduction {
     });
   }
 
-  /**
-   * Classify GPU ownership before submit. With a reuse token, changed material,
-   * draw, claims or World routing facts must replace their identity or token.
-   * Raw callers mutating those aliases omit the token.
-   */
-  recordCpuValidation(
-    validated: readonly { readonly source: RenderableSnapshot }[],
-    gpuOwnedDrawKeys: ReadonlySet<string>,
-    cacheKey?: string,
-    worldKeys?: readonly number[],
-  ): GpuDrivenDrawReceipts {
-    const cached = this.cpuValidationTelemetryCache;
-    if (
-      cacheKey !== undefined &&
-      cached !== undefined &&
-      cached.cacheKey === cacheKey &&
-      sameValidatedSourceSequence(cached.validatedSources, validated) &&
-      cached.gpuOwnedDrawKeys === gpuOwnedDrawKeys &&
-      cached.worldKeys === worldKeys
-    ) {
-      this.applyCpuValidationTelemetry(cached);
-      this.cpuValidationCacheHits += 1;
-      return cached.drawReceipts;
-    }
-    this.cpuFallbackDrawItems = 0;
-    this.cpuSemanticFallbackDrawItems = 0;
-    this.cpuDeformationFallbackDrawItems = 0;
+  /** Bounded counters from a caller-requested submitted-draw observation. */
+  recordDrawSummary(summary: GpuDrawSummary): void {
+    this.gpuOwnedDrawItems = summary.gpuDraws;
+    this.gpuOwnedEntityCount = summary.gpuEntities;
+    this.mainTotalDrawItems = summary.totalDraws;
+    this.validatedGpuOwnedRows = summary.mixedEntities;
+    this.cpuFallbackDrawItems = summary.cpuDraws;
+    this.cpuSemanticFallbackDrawItems = summary.semanticDraws;
+    this.cpuDeformationFallbackDrawItems = summary.deformationDraws;
+    this.blockedDrawItems = summary.blockedDraws;
     this.cpuDeformationReasons.clear();
-    this.blockedDrawItems = 0;
-    let gpuOwnedRows = 0;
-    let totalDrawItems = 0;
-    const renderableIndices: number[] = [];
-    const submeshIndices: number[] = [];
-    const ownedDraws = new Map<RenderableSnapshot, readonly boolean[]>();
-    const addDeformationReason = (
-      reason: 'skin-bounds-missing' | 'skin-address-missing' | 'resource-not-ready',
-    ): void => {
-      this.cpuDeformationReasons.set(reason, (this.cpuDeformationReasons.get(reason) ?? 0) + 1);
-    };
-    let renderableIndex = -1;
-    let row: (typeof validated)[number];
-    let cpuResidual = false;
-    let ownedCompactIndices: boolean[] | undefined;
-    let capturedEntity: number | undefined;
-    // One callback per validation invocation, shared across rows. Raw iteration
-    // keeps native IteratorClose/next-method semantics; trusted rows stay dense.
-    const classifyDraw = (draw: GpuDrivenDrawSnapshot, compactIndex: number): void => {
-      const material = row.source.materials[draw.materialSlot] ?? row.source.material;
-      let entity: number;
-      if (cacheKey === undefined) {
-        entity = worldEntityKey(
-          worldKeys?.[row.source.worldId] ?? row.source.worldId,
-          row.source.entityKey,
-        );
-      } else {
-        capturedEntity ??= worldEntityKey(
-          worldKeys?.[row.source.worldId] ?? row.source.worldId,
-          row.source.entityKey,
-        );
-        entity = capturedEntity;
-      }
-      const materialHandle = material.materialHandle ?? -1;
-      const submeshIndex = gpuDrivenSourceDrawItemIndex(draw, compactIndex);
-      const key = gpuDrivenDrawKey(entity, materialHandle, submeshIndex);
-      if (gpuOwnedDrawKeys.has(key)) {
-        renderableIndices.push(renderableIndex);
-        submeshIndices.push(submeshIndex);
-        ownedCompactIndices ??= [];
-        ownedCompactIndices[compactIndex] = true;
-        return;
-      }
-      this.cpuFallbackDrawItems += 1;
-      cpuResidual = true;
-      const skinReason = skinLaneReason(row.source);
-      if (skinReason !== undefined) {
-        this.cpuDeformationFallbackDrawItems += 1;
-        addDeformationReason(skinReason);
-      } else if (draw.preparationError?.detail.recovery === 'route-cpu-lane') {
-        // Geometry/UV incompatibility is an explicit semantic CPU lane,
-        // not a failed capable submission.
-        this.cpuSemanticFallbackDrawItems += 1;
-      } else if (draw.preparationError?.detail.owner === 'skin') {
-        this.cpuDeformationFallbackDrawItems += 1;
-        addDeformationReason(
-          draw.preparationError.detail.reason === 'skin-address-missing'
-            ? 'skin-address-missing'
-            : 'resource-not-ready',
-        );
-      } else if (draw.preparationError !== undefined) {
-        this.blockedDrawItems += 1;
-      } else {
-        this.cpuSemanticFallbackDrawItems += 1;
-      }
-    };
-    for (const currentRow of validated) {
-      row = currentRow;
-      renderableIndex++;
-      const draws = row.source.gpuDrivenDraws ?? [];
-      if (draws.length === 0) {
-        totalDrawItems += 1;
-        this.cpuFallbackDrawItems += 1;
-        const skinReason = skinLaneReason(row.source);
-        if (skinReason !== undefined) {
-          this.cpuDeformationFallbackDrawItems += 1;
-          addDeformationReason(skinReason);
-        } else {
-          this.cpuSemanticFallbackDrawItems += 1;
-        }
-        continue;
-      }
-      totalDrawItems += draws.length;
-      cpuResidual = false;
-      ownedCompactIndices = undefined;
-      capturedEntity = undefined;
-      if (cacheKey === undefined) {
-        for (const [compactIndex, draw] of draws.entries()) classifyDraw(draw, compactIndex);
-      } else {
-        for (let compactIndex = 0; compactIndex < draws.length; compactIndex++) {
-          classifyDraw(draws[compactIndex] as GpuDrivenDrawSnapshot, compactIndex);
-        }
-      }
-      // A row is only CPU-validated when it still has a CPU residual. GPU-only
-      // rows are already admitted by the concrete draw-key set and must not
-      // inflate the per-frame CPU validation budget.
-      if (ownedCompactIndices !== undefined) {
-        if (cpuResidual) gpuOwnedRows += 1;
-        ownedDraws.set(row.source, Object.freeze(ownedCompactIndices));
-      }
-    }
-    this.gpuOwnedDrawItems = gpuOwnedDrawKeys.size;
-    this.mainTotalDrawItems = totalDrawItems;
-    this.validatedGpuOwnedRows = gpuOwnedRows;
-    this.cpuValidationScans += 1;
-    // Consume accepted indices after submit while retaining current row
-    // wrappers on cache hits.
-    const drawReceipts = Object.freeze({
-      renderableIndices: Object.freeze(renderableIndices),
-      submeshIndices: Object.freeze(submeshIndices),
-      ownedDraws,
-    });
-    if (cacheKey !== undefined) {
-      this.cpuValidationTelemetryCache = {
-        cacheKey,
-        validatedSources: validated.map((row) => row.source),
-        gpuOwnedDrawKeys,
-        worldKeys,
-        gpuOwnedDrawCount: this.gpuOwnedDrawItems,
-        totalDrawItems: this.mainTotalDrawItems,
-        gpuOwnedRows: this.validatedGpuOwnedRows,
-        cpuFallbackDrawItems: this.cpuFallbackDrawItems,
-        cpuSemanticFallbackDrawItems: this.cpuSemanticFallbackDrawItems,
-        cpuDeformationFallbackDrawItems: this.cpuDeformationFallbackDrawItems,
-        cpuDeformationReasons: new Map(this.cpuDeformationReasons),
-        blockedDrawItems: this.blockedDrawItems,
-        drawReceipts,
-      };
-    }
-    return drawReceipts;
+    for (const [reason, count] of summary.deformationReasons)
+      this.cpuDeformationReasons.set(reason, count);
   }
 
   private sceneIdentity(scene: object): number {

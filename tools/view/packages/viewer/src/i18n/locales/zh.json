@@ -1,5 +1,7 @@
 {
   "view": {
+    "resourceOpening": "正在打开资产…",
+    "resourceFailed": "资产预览不可用",
     "appTitle": "ForgeaX View",
     "language": "语言",
     "theme": "主题",
@@ -102,6 +104,7 @@
       "material": "材质",
       "materialPreview": "材质预览",
       "materialProperties": "材质属性",
+      "materialStats": "材质统计",
       "meshPreview": "网格预览",
       "meshProperties": "网格属性",
       "texturePreview": "纹理预览",

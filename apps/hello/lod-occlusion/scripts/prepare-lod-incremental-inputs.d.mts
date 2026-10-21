@@ -19,7 +19,7 @@ export interface LodIncrementalRoles {
 }
 
 export interface LodIncrementalManifest {
-  readonly schemaVersion: 'e03-incremental-inputs/1';
+  readonly schemaVersion: 'e03-incremental-inputs/2';
   readonly provenance: {
     readonly baseline: string;
     readonly producerHead: string;
@@ -34,9 +34,10 @@ export interface LodIncrementalManifest {
     readonly initial: readonly string[];
     readonly later: readonly string[];
     readonly excluded: readonly string[];
-    readonly route: 'public loaders -> AssetRegistry.catalog(original guid, payload, refs)';
+    readonly route: 'complete Catalog publication -> load / reload original root';
   };
   readonly assets: readonly LodIncrementalAssetRow[];
+  readonly initialRoot: LodIncrementalAssetRow;
   readonly shaderClosure:
     | {
         readonly status: 'not-prepared';

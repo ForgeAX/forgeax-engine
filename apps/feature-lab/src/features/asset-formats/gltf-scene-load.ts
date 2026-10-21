@@ -1,16 +1,15 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import {
   gltfDocToSceneAsset,
   meshIrToMeshAsset,
   parseGltf,
   toMaterialAsset,
 } from '@forgeax/engine/gltf';
-import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { Transform } from '@forgeax/engine/scene';
-import type { MaterialAsset, MeshAsset, SceneAsset } from '@forgeax/engine/types';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
 import { cubeGltf, rejectLoader } from './fixtures/gltf-source';
-import { errorCode, guid } from './fixtures/memory-pack';
+import { errorCode } from './fixtures/memory-pack';
 
 const HIDDEN: [number, number, number] = [0, -50, 0];
 
@@ -24,10 +23,14 @@ export default defineFeature({
   catalog: 'glTF scene load',
   kind: 'visual',
   summary:
-    'An in-code glTF (one red Box node) is parsed, bridged to MeshAsset / MaterialAsset / SceneAsset POD, catalogued by GUID, loaded back with loadByGuid<SceneAsset>, and instantiated under a parent entity through AssetRegistry.instantiate.',
+    'An in-code glTF (one red Box node) is parsed, bridged to MeshAsset / MaterialAsset / SceneAsset POD, created in the runtime asset owner, and instantiated under a parent entity through AssetRegistry.instantiate.',
   expect:
-    'ON: a red cube sits on the ground in front of the camera. OFF: the parent moves out of view, leaving only the ground. Checks: parse, bridge, catalog, loadByGuid and instantiate all succeed.',
+    'ON: a red cube sits on the ground in front of the camera. OFF: the parent moves out of view, leaving only the ground. Checks: parse, bridge, create and instantiate all succeed.',
   async setup({ app, world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world);
     const checks: FeatureCheck[] = [];
     const parent = world
@@ -49,42 +52,19 @@ export default defineFeature({
       if (!mesh.ok) return fail(checks, 'meshIrToMeshAsset ok', errorCode(mesh.error));
       if (materialIr === undefined) return fail(checks, 'material parsed', 'none');
       const material = toMaterialAsset(materialIr);
-      const ids = [guid(0x731), guid(0x732), guid(0x733)].map((id) => AssetGuid.parse(id));
-      const [meshGuid, materialGuid, sceneGuid] = ids.map((id) => (id.ok ? id.value : undefined));
-      if (meshGuid === undefined || materialGuid === undefined || sceneGuid === undefined)
-        return fail(checks, 'GUIDs parse', '');
-      const meshHandle = world.allocSharedRef('MeshAsset', mesh.value);
-      const materialHandle = world.allocSharedRef('MaterialAsset', material);
+      const meshHandle = sceneAssets.create(mesh.value).unwrap();
+      const materialHandle = sceneAssets.create(material).unwrap();
       const scene = gltfDocToSceneAsset(doc.value, {
         meshHandles: new Map([[0, meshHandle]]),
         materialHandles: new Map([[0, materialHandle]]),
       });
-      const cataloged = [
-        assets.catalog<MeshAsset>(meshGuid, mesh.value),
-        assets.catalog<MaterialAsset>(materialGuid, material),
-        assets.catalog<SceneAsset>(sceneGuid, scene),
-      ];
-      checks.push({
-        name: 'catalog mesh/material/scene',
-        ok: cataloged.every((result) => result.ok),
-      });
-      const loaded = await assets.loadByGuid<SceneAsset>(sceneGuid);
-      checks.push({
-        name: 'loadByGuid<SceneAsset> ok',
-        ok: loaded.ok,
-        ...(loaded.ok ? {} : { detail: errorCode(loaded.error) }),
-      });
-      if (!loaded.ok) return undefined;
+      const sceneHandle = assets.create(scene).unwrap();
       checks.push({
         name: 'scene has the Box entity',
-        ok: Object.keys(loaded.value.entities).length >= 1,
-        detail: Object.keys(loaded.value.entities).join(','),
+        ok: Object.keys(scene.entities).length >= 1,
+        detail: Object.keys(scene.entities).join(','),
       });
-      const instance = assets.instantiate<SceneAsset>(
-        world.allocSharedRef('SceneAsset', loaded.value),
-        world,
-        parent,
-      );
+      const instance = assets.instantiate(sceneHandle, world, parent);
       checks.push({
         name: 'instantiate ok',
         ok: instance.ok,

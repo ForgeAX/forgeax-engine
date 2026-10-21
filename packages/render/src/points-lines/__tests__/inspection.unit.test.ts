@@ -8,7 +8,7 @@ import {
   PointsLinesTopologyMismatchError,
 } from '../../errors/render';
 import { inspectPointsLines, type PointsLinesInspection } from '../inspection';
-import { createPointsLinesSnapshot } from '../snapshot';
+import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 
 function baseInput(): Parameters<typeof inspectPointsLines>[0] {
   return {

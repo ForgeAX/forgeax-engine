@@ -8,8 +8,8 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 //
 // Walks the LO 2.6 multi-light scene the demo runs in production:
 //   1. decodeImageFromFile(container2.png + container2_specular.png).
-//   2. registerWithGuid<TextureAsset> for both.
-//   3. registerWithGuid<MeshAsset>(cubeGuid, HANDLE_CUBE asset).
+//   2. assets.create(texture) for both decoded textures.
+//   3. assets.create(mesh) for the cube geometry.
 //   4. unlit material with diffuse baseColorTexture for the lit cubes.
 //   5. spawn the LO 1.6/2.5 10-cube grid + DirectionalLight + 4
 //      PointLights AND a colored small lamp cube per PointLight (LO
@@ -36,6 +36,10 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -187,10 +191,6 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight, SpotLight } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  resolveAssetHandle,
-} = await import('@forgeax/engine-assets-runtime');
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -257,28 +257,29 @@ const mkTex = (decoded) => ({
   colorSpace: decoded.colorSpace,
   mips: decoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 });
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-// feat-20260614 M8 (D-15/D-17): textures mint user-tier column handles via
-// allocSharedRef; GUIDs are catalogued for loadByGuid parity.
-const diffuseHandle = world.allocSharedRef('TextureAsset', mkTex(diffuseDecoded));
-const specularHandle = world.allocSharedRef('TextureAsset', mkTex(specularDecoded));
-assets.catalog(diffuseGuidRes.value, mkTex(diffuseDecoded));
-assets.catalog(specularGuidRes.value, mkTex(specularDecoded));
-const cubeAssetRes = resolveAssetHandle(world, HANDLE_CUBE);
+// Create managed texture handles from the decoded fixture values.
+const diffuseHandle = world.assets.create(mkTex(diffuseDecoded)).unwrap();
+const specularHandle = world.assets.create(mkTex(specularDecoded)).unwrap();
+const cubeAssetRes = assets.read(primitiveCube);
 if (!cubeAssetRes.ok) {
   console.error('[smoke] FAIL - HANDLE_CUBE asset unavailable');
   process.exit(1);
 }
-assets.catalog(cubeGuidRes.value, cubeAssetRes.value);
 
-const litMaterial = world.allocSharedRef('MaterialAsset', {
+const litMaterial = world.assets.create({
   kind: 'material',
   passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 }],
   values: { baseColor: [1.0, 1.0, 1.0, 1.0], baseColorTexture: unwrapHandle(diffuseHandle) },
-});
+}).unwrap();
 void specularHandle;
 // LO 2.6 10 lit cubes (same array as LO 1.6 / 2.5).
 for (let i = 0; i < CUBE_POSITIONS.length; i++) {
@@ -289,7 +290,7 @@ for (let i = 0; i < CUBE_POSITIONS.length; i++) {
       data: {
         pos: [pos[0], pos[1], pos[2]], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [litMaterial] } },
   );
 }
@@ -309,18 +310,18 @@ world.spawn({
 for (let i = 0; i < POINT_LIGHT_POSITIONS.length; i++) {
   const plPos = POINT_LIGHT_POSITIONS[i];
   const plColor = POINT_LIGHT_COLORS[i];
-  const lampMat = world.allocSharedRef('MaterialAsset', {
+  const lampMat = world.assets.create({
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 }],
     values: { baseColor: [plColor[0], plColor[1], plColor[2], 1.0] },
-  });
+  }).unwrap();
   world.spawn(
     {
       component: Transform,
       data: {
         pos: [plPos[0], plPos[1], plPos[2]], quat: [0, 0, 0, 1], scale: [LAMP_SCALE, LAMP_SCALE, LAMP_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [lampMat] } },
     {
       component: PointLight,

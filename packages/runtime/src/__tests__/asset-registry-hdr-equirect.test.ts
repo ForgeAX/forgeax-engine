@@ -1,36 +1,15 @@
-// asset-registry-hdr-equirect.test.ts
-// feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M1 / w1.
-//
-// TDD red->green: locks the runtime equirectLoader loading an EquirectAsset
-// POD from a Pack v2 asset-local rgba16float artifact.
+import { equirectContribution } from '@forgeax/engine-image';
+import type { AssetDecoderInput, EquirectAsset } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
+import { expect, it, vi } from 'vitest';
 
-import { equirectLoader, PACK_ARTIFACT_LOADERS } from '@forgeax/engine-assets-runtime';
-import type { LoadContext, LoaderAsyncResult } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
-
-function mockCtx(binaries: Record<string, Uint8Array>): LoadContext {
-  return {
-    fetchBinary: async (url: string) => {
-      const b = binaries[url];
-      return b !== undefined
-        ? { ok: true as const, value: b }
-        : { ok: false as const, error: new Error(`no binary for ${url}`) };
-    },
-    resolveRef: async () => ({ ok: false as const, error: new Error('no ref') }),
-    transcodeCaps: { bc: false, etc2: false, astc: false },
-    device: undefined,
-  };
-}
-
-describe('equirectLoader (w1)', () => {
-  it('(a) PACK_ARTIFACT_LOADERS includes equirect after texture + font', () => {
-    expect(PACK_ARTIFACT_LOADERS.map((l) => l.kind)).toContain('equirect');
-  });
-
-  it('(b) loads an EquirectAsset POD (kind:"equirect" + rgba16float) from .bin bytes', async () => {
-    // rgba16float = 8 bytes per pixel; 2x2 = 32 bytes.
-    const data = new Uint8Array(2 * 2 * 4 * 2).fill(0x3c);
-    const input = {
+it.each([
+  undefined,
+  new Uint8Array(31),
+])('rejects missing or truncated equirect pixels before runtime admission', async (bytes) => {
+  const read = vi.fn(async () => ok(bytes ?? new Uint8Array()));
+  const input: AssetDecoderInput<EquirectAsset> = {
+    envelope: {
       guid: '11111111-1111-4111-8111-111111111111',
       kind: 'equirect',
       payload: {
@@ -39,40 +18,30 @@ describe('equirectLoader (w1)', () => {
         height: 2,
         format: 'rgba16float',
         colorSpace: 'linear',
-      },
+      } as EquirectAsset,
       refs: [],
-      artifacts: {
-        body: {
-          descriptor: { path: 'env.bin', mediaType: 'application/x-forgeax-rgba16f' },
-          bytes: data,
-        },
-      },
-    };
-    if (equirectLoader.loadPack === undefined) throw new Error('equirect Pack loader is missing');
-    const out = (await equirectLoader.loadPack(input, mockCtx({}))) as LoaderAsyncResult;
-    expect(out.ok).toBe(true);
-    if (out.ok) {
-      expect(out.value).toMatchObject({
-        kind: 'equirect',
-        width: 2,
-        height: 2,
-        format: 'rgba16float',
-      });
-    }
-  });
-
-  it('(c) fails when the source is not an imported .bin', async () => {
-    if (equirectLoader.loadPack === undefined) throw new Error('equirect Pack loader is missing');
-    const out = (await equirectLoader.loadPack(
-      {
-        guid: '11111111-1111-4111-8111-111111111111',
-        kind: 'equirect',
-        payload: { kind: 'equirect' },
-        refs: [],
-        artifacts: {},
-      },
-      mockCtx({}),
-    )) as LoaderAsyncResult;
-    expect(out.ok).toBe(false);
-  });
+      artifacts:
+        bytes === undefined
+          ? {}
+          : {
+              body: {
+                path: 'environment.bin',
+                mediaType: 'application/x-forgeax-rgba16f',
+                contentEncoding: 'identity',
+                byteLength: bytes.byteLength,
+                integrity: {
+                  algorithm: 'sha256',
+                  digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+                },
+              },
+            },
+    },
+    artifacts: { read },
+    signal: new AbortController().signal,
+  };
+  const result = await equirectContribution.decoder.decode(input);
+  expect(result).toMatchObject({ ok: false, error: { code: 'asset-package-invalid' } });
+  expect(read).toHaveBeenCalledTimes(bytes === undefined ? 0 : 1);
 });
+
+import { createHash } from 'node:crypto';

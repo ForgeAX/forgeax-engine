@@ -75,16 +75,9 @@ export default defineFeature({
     const root = canvas.parentElement;
     if (root === null) throw new Error('canvas has no parent');
     let current: UiAsset = CARD;
-    const assets = {
-      invalidate: () => undefined,
-      loadByGuid: async (guid: string) =>
-        guid === GUID
-          ? ({ ok: true, value: current } as const)
-          : ({ ok: false, error: { code: 'preview-load-failed' } } as never),
-    };
     const session = createUiPreviewSession({
       guid: GUID,
-      assets,
+      readAsset: async () => ({ ok: true, value: current }),
       root,
       rect: RECT,
       layer: 5,

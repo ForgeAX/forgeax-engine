@@ -1,61 +1,67 @@
-import { terrainDerivedClosureValid } from '@forgeax/engine-terrain';
-import type { Asset, TerrainAsset } from '@forgeax/engine-types';
-import type { AssetRegistry } from './asset-registry.js';
+import { terrainDerivedClosureValid, terrainDerivedLayoutValid } from '@forgeax/engine-terrain';
+import {
+  type Asset,
+  AssetError,
+  type AssetHandle,
+  err,
+  ok,
+  type Result,
+  type TerrainAsset,
+} from '@forgeax/engine-types';
+import type { AssetRecords } from './internal/asset-records';
 
-const closures = new WeakMap<AssetRegistry, WeakMap<TerrainAsset, ReadonlyMap<string, Asset>>>();
-
-/** Terrain derived outputs are adopted with the root, never repinned after a partial rewrite. */
-export function captureTerrainClosure(registry: AssetRegistry, root: TerrainAsset): boolean {
-  let roots = closures.get(registry);
-  if (roots === undefined) {
-    roots = new WeakMap();
-    closures.set(registry, roots);
+/** Validate the actual runtime closure once during admission, after material linking. */
+export function prepareRuntimeTerrain(
+  root: TerrainAsset,
+  records: AssetRecords,
+  resolve: (guid: string) => AssetHandle | undefined,
+): Result<{ value: TerrainAsset; dependencies: readonly number[] }, AssetError> {
+  const invalid = () =>
+    new AssetError({
+      code: 'asset-invalid-value',
+      expected: 'a complete terrain closure derived from the same author samples and layer values',
+      hint: 'prepare and adopt matching terrain dependencies together; partial height or surface rewrites cannot be committed',
+    });
+  if (!terrainDerivedLayoutValid(root)) return err(invalid());
+  const direct = new Set<number>();
+  const reference = <K extends 'mesh' | 'texture' | 'material'>(
+    value: string | AssetHandle<K>,
+    kind: K,
+  ): AssetHandle<K> => {
+    const handle = typeof value === 'number' ? value : resolve(value.toLowerCase());
+    if (handle === undefined || !records.validate(handle, kind).ok || handle === 0) throw invalid();
+    direct.add(handle);
+    return handle as AssetHandle<K>;
+  };
+  try {
+    // Source references are linked once. Runtime roots never query the Catalog.
+    const checked: TerrainAsset = {
+      ...root,
+      grids: root.grids.map((value) => reference(value, 'mesh')),
+      layers: root.layers.map((layer) =>
+        layer.blend === 'height'
+          ? {
+              ...layer,
+              material: reference(layer.material, 'material'),
+              height: reference(layer.height, 'texture'),
+            }
+          : { ...layer, material: reference(layer.material, 'material') },
+      ),
+      sections: root.sections.map((section) => ({
+        ...section,
+        heightTexture: reference(section.heightTexture, 'texture'),
+        weightTexture: reference(section.weightTexture, 'texture'),
+        material: reference(section.material, 'material'),
+      })),
+    };
+    const borrowed = records.borrowClosure<Asset>([...direct]);
+    if (!borrowed.ok) return borrowed;
+    const closure = new Map([...borrowed.value].map(([handle, asset]) => [String(handle), asset]));
+    return terrainDerivedClosureValid(checked, closure)
+      ? ok({ value: checked, dependencies: [...direct] })
+      : err(invalid());
+  } catch (cause) {
+    if (cause instanceof AssetError) return err(cause);
+    throw cause;
   }
-  const held = roots.get(root);
-  if (held !== undefined)
-    return [...held].every(([guid, asset]) => registry.lookup(guid) === asset);
-  const direct = [
-    ...root.grids,
-    ...root.layers.flatMap((layer) =>
-      layer.blend === 'height' ? [layer.material, layer.height] : [layer.material],
-    ),
-    ...root.sections.flatMap((section) => [
-      section.heightTexture,
-      section.weightTexture,
-      section.material,
-    ]),
-  ];
-  const pending = [...direct],
-    assets = new Map<string, Asset>();
-  while (pending.length) {
-    const next = pending.pop();
-    if (next === undefined) break;
-    const guid = next.toLowerCase();
-    if (assets.has(guid)) continue;
-    const asset = registry.lookup<Asset>(guid);
-    if (asset === undefined) return false;
-    assets.set(guid, asset);
-    for (const ref of registry.assetCatalog.get(guid)?.refs ?? []) pending.push(ref.guid);
-    // Inline Standard materials have the same GUID values but need not carry refs metadata.
-    if (asset.kind === 'material')
-      for (const value of Object.values(asset.values ?? {})) {
-        if (typeof value === 'string') pending.push(value);
-        else if (
-          value !== null &&
-          typeof value === 'object' &&
-          !Array.isArray(value) &&
-          'texture' in value
-        ) {
-          if (typeof value.texture === 'string') pending.push(value.texture);
-          if ('sampler' in value && typeof value.sampler === 'string') pending.push(value.sampler);
-        }
-      }
-  }
-  if (!terrainDerivedClosureValid(root, assets)) return false;
-  roots.set(root, assets);
-  return true;
-}
-export function terrainClosureCurrent(registry: AssetRegistry, root: TerrainAsset): boolean {
-  const held = closures.get(registry)?.get(root);
-  return held !== undefined && [...held].every(([guid, asset]) => registry.lookup(guid) === asset);
 }

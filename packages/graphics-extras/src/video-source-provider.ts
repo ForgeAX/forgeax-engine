@@ -1,5 +1,5 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 
 export const VIDEO_SOURCE_PROVIDER_KEY = 'VideoSourceProvider' as const;
 
@@ -8,7 +8,7 @@ export interface VideoSourceProvider {
   /** DOM hosts return their element; Workers return a received or decoded VideoFrame. */
   getSource(
     entity: EntityHandle,
-    clipHandle: Handle<'VideoAsset', 'shared'>,
+    clipHandle: AssetHandle<'video'>,
   ): HTMLVideoElement | VideoFrame | undefined;
 }
 

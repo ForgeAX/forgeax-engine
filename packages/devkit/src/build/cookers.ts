@@ -292,7 +292,15 @@ export async function loadProjectCookers(
       }),
     );
     return {
-      appOptions: started.appOptions,
+      appOptions:
+        started.appOptions.pipelineLibrary === undefined
+          ? started.appOptions
+          : {
+              ...started.appOptions,
+              pipelineLibrary: await (
+                await import('./pipeline-library.js')
+              ).precomputePipelineLibrary(started.appOptions.pipelineLibrary),
+            },
       cookers: [...builtins, ...remote],
       importers,
       watchFiles,

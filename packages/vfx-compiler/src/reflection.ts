@@ -383,7 +383,8 @@ function reflectDataInterfaces(
   return ok(Object.freeze(definitions.filter((definition) => imported.has(definition.token))));
 }
 
-function reflectVfxLayoutInternal(
+/** Reflect the canonical Program v3 scope. All Custom fields are persistent. */
+export function reflectVfxLayout(
   input: VfxReflectionInput,
 ): Result<VfxEffectReflection, VfxReflectionError> {
   const modules = [
@@ -472,19 +473,6 @@ function reflectVfxLayoutInternal(
   };
   const fingerprint = `sha256:${createHash('sha256').update(canonical(fingerprintInput)).digest('hex')}`;
   return ok({ ...fingerprintInput, dataInterfaces: dataInterfaces.value, fingerprint });
-}
-
-export function reflectVfxLayout(
-  input: VfxReflectionInput,
-): Result<VfxEffectReflection, VfxReflectionError> {
-  return reflectVfxLayoutInternal(input);
-}
-
-/** Reflect the canonical Program v3 scope. All Custom fields are persistent. */
-export function reflectVfxLayoutV3(
-  input: VfxReflectionInput,
-): Result<VfxEffectReflection, VfxReflectionError> {
-  return reflectVfxLayoutInternal(input);
 }
 
 /** Derive executable renderer resources and shader inputs from the authored renderer union. */

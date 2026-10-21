@@ -97,7 +97,7 @@ it.each([
                 targets: [
                   { format: 'rgba16float' },
                   { format: 'r32uint' },
-                  { format: 'r32uint' },
+                  { format: 'rg32uint' },
                   { format: 'r32uint' },
                   { format: 'r32uint' },
                   { format: 'rg32uint' },
@@ -144,7 +144,7 @@ it.each([
                     targets: [
                       { format: 'rgba16float' },
                       { format: 'r32uint' },
-                      { format: 'r32uint' },
+                      { format: 'rg32uint' },
                       { format: 'r32uint' },
                       { format: 'r32uint' },
                       { format: 'rg32uint' },

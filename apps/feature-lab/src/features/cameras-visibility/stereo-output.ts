@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { StereoCamera, StereoLayoutValue } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Non-XR stereo output',
@@ -9,8 +11,14 @@ export default defineFeature({
   summary: 'One perspective Camera expands into two off-axis eye views through StereoCamera.',
   expect: 'ON: two side-by-side views of the scene. OFF: one full-width ordinary perspective view.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { camera } = spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [1, 0.45, 0.1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [1, 0.45, 0.1, 1] }), {
       pos: [0, 0.6, 0],
     });
     const add = () =>

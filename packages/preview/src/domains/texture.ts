@@ -3,10 +3,10 @@ import { evaluateTextureOracle, type TextureOracleInput } from '../evidence/orac
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
 import { isRecord } from '../request-schema.js';
 import {
-  loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
   type ResourceSubject,
+  readResourceSubject,
   subjectFailure,
 } from './subject.js';
 
@@ -219,7 +219,7 @@ export async function executeTexturePreview(
   args: ResourcePreviewArgs,
   input: ResourcePreviewInput,
 ) {
-  const loaded = await loadResourceSubject(args.guid, input, 'texture');
+  const loaded = readResourceSubject(args.guid, input, 'texture');
   if (!loaded.ok) return loaded;
   const inspected = inspectTextureSubject(loaded.value);
   if (!inspected.ok) return inspected;

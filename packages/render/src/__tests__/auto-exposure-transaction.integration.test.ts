@@ -9,7 +9,7 @@ import {
   commitAutoExposureSubmission,
   createAutoExposureState,
 } from '../pipeline/standard-output/auto-exposure/state';
-import { renderTime } from '../publication/resource-scope';
+import { renderTime, worldRenderResources } from '../publication/resource-scope';
 import { canonicalizeWorldComposition } from '../render-system-projections';
 
 function candidate(): AutoExposureCandidate {
@@ -89,6 +89,6 @@ describe('auto exposure frame transaction', () => {
 
     expect(resolvedCameraWorld).toBe(cameraWorld);
     if (resolvedCameraWorld === undefined) throw new Error('Camera owner is missing');
-    expect(renderTime(resolvedCameraWorld).delta).toBeCloseTo(1 / 30);
+    expect(renderTime(worldRenderResources(resolvedCameraWorld)).delta).toBeCloseTo(1 / 30);
   });
 });

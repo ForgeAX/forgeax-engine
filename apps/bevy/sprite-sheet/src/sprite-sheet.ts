@@ -1,6 +1,6 @@
 // Shared scene and subset animation for Bevy `sprite_sheet`.
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { type World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import {
@@ -12,6 +12,10 @@ import {
 import { spriteAnimationTickSystem } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const SHEET_FRAME_COUNT = 7;
 export const FIRST_ANIMATION_FRAME = 1;
@@ -82,11 +86,16 @@ function spriteMaterial(texture: number): MaterialAsset {
 }
 
 export function buildSpriteSheetWorld(world: World, texture: number): void {
-  const material = world.allocSharedRef('MaterialAsset', spriteMaterial(texture));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const material = sceneAssets.create(spriteMaterial(texture)).unwrap();
   const regions = animationRegions();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [5, 5, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [material] } },
     { component: SpriteAnimation, data: { frameCount: ANIMATION_FRAME_COUNT, frameDuration: FRAME_DURATION, currentFrame: 0, accumDt: 0, regions, playbackMode: SpritePlayback.loop } },
     { component: SpriteRegionOverride, data: { region: new Float32Array(regions.slice(0, 4)) } },

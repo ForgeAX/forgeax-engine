@@ -1,13 +1,15 @@
-import { HANDLE_QUAD } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Camera, Layer, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine/render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine/render/authoring';
 import { Transform } from '@forgeax/engine/scene';
-import type { Handle, MaterialAsset, TextureAsset } from '@forgeax/engine/types';
+import type { AssetHandle, MaterialAsset, TextureAsset } from '@forgeax/engine/types';
 
 export type Rgba = readonly [number, number, number, number];
-export type TextureHandle = Handle<'TextureAsset', 'shared'>;
-export type MaterialHandle = Handle<'MaterialAsset', 'shared'>;
+export type TextureHandle = AssetHandle<'texture'>;
+export type MaterialHandle = AssetHandle<'material'>;
 
 /** Scenes are laid out for this half-width; the half-height follows the canvas aspect so shapes stay undistorted. */
 export const VIEW_HALF_WIDTH = (2 * 1400) / 720;
@@ -45,7 +47,11 @@ export function textureAsset(
 }
 
 export function texture(world: World, asset: TextureAsset): TextureHandle {
-  return world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', asset) as TextureHandle;
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(asset).unwrap() as TextureHandle;
 }
 
 /** A white disc with an opaque square core: shows both tint and alpha blending. */
@@ -119,10 +125,11 @@ export function spriteMaterialAsset(
 }
 
 export function spriteMaterial(world: World, asset: MaterialAsset): MaterialHandle {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    asset,
-  ) as MaterialHandle;
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(asset).unwrap() as MaterialHandle;
 }
 
 export function spawnOrthoCamera(
@@ -161,10 +168,16 @@ export function spawnSprite(
   layer = 0,
   ...extra: readonly { readonly component: unknown; readonly data?: unknown }[]
 ): EntityHandle {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   return world
     .spawn(
       { component: Transform, data: { pos, scale: [size, size, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } as never },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } as never },
       { component: MeshRenderer, data: { materials: [mat] } as never },
       { component: Layer, data: { value: layer } },
       ...(extra as never[]),

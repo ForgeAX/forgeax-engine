@@ -21,9 +21,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { RhiDevice } from '@forgeax/engine-rhi';
+import type { ShaderCatalog } from '@forgeax/engine-shader';
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { derive } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { prepareMaterialShaders } from '../../../render/src/assembly/material-shader-policy';
 import { appendInjection } from '../../../render/src/pbr-pipeline';
 
 const repoRoot = (() => {
@@ -64,19 +67,43 @@ describe('shadow_caster shared Surface schema', () => {
     expect(injected[0]?.binding).toBe(0);
   });
 
-  it('(d) shadow_caster fallback register call carries the Standard schema', () => {
-    const createRendererPath = join(
-      repoRoot,
-      'packages',
-      'render',
-      'src',
-      'assembly',
-      'material-shader-policy.ts',
+  it('(d) installs the Standard schema for the reserved shadow-caster fallback', async () => {
+    const installMaterialArtifact = vi.fn();
+    const entry = {
+      identifier: 'forgeax::default-shadow-caster',
+      sourcePath: 'shadow_caster.wgsl',
+      composedWgsl: '',
+      paramSchema: '[]',
+      variants: [],
+    };
+    const registry = {
+      loadManifest: async () => ({ ok: true, value: undefined }),
+      materialShaderManifestEntries: () => [entry][Symbol.iterator](),
+      findMaterialArtifact: () => ({ ok: false }),
+      installMaterialArtifact,
+    } as unknown as ShaderCatalog;
+    const device = {
+      caps: {
+        backendKind: 'webgpu',
+        storageBuffer: true,
+        rgba16floatRenderable: true,
+        samplerAliasing: true,
+      },
+      limits: {
+        maxStorageBuffersPerShaderStage: 8,
+        maxSampledTexturesPerShaderStage: 32,
+        maxTextureArrayLayers: 64,
+        maxUniformBuffersPerShaderStage: 4,
+      },
+    } as unknown as RhiDevice;
+    await prepareMaterialShaders(device, () => registry, new Map());
+    expect(installMaterialArtifact).toHaveBeenCalledExactlyOnceWith(
+      'forgeax::default-shadow-caster',
+      {
+        source: '',
+        paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
+      },
     );
-    const src = readFileSync(createRendererPath, 'utf8');
-    const re =
-      /registry\.installMaterialArtifact\(\s*shadowCasterIdentifier\s*,\s*\{[^}]*paramSchema\s*:\s*STANDARD_PIPELINE_PARAM_SCHEMA\b/s;
-    expect(src).toMatch(re);
     expect(STANDARD_PIPELINE_PARAM_SCHEMA.length).toBeGreaterThan(0);
   });
 });

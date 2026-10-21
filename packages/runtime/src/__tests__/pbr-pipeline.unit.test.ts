@@ -162,7 +162,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
           {
             binding: 47,
             visibility: 0x2,
-            texture: { sampleType: 'float', viewDimension: 'cube' },
+            texture: { sampleType: 'float', viewDimension: '2d' },
           },
         ],
       };

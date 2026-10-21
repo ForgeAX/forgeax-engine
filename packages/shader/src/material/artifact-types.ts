@@ -7,7 +7,6 @@ import type {
 import {
   type BindGroupLayoutDescriptor,
   derive,
-  isMaterialProgramAbi,
   MATERIAL_SCENE_ADDRESS_UNIT_BYTES,
   type MaterialParticleInput,
   type ParamSchemaEntry,
@@ -16,12 +15,6 @@ import {
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
 } from '@forgeax/engine-types';
 import type { MaterialShaderProgram } from './program.js';
-
-/** Runtime shader aliases keep the shader package vocabulary stable while the
- * ABI POD itself remains owned by the dependency-free types package. */
-export type MaterialShaderResourceSlot = MaterialProgramResourceSlot;
-export type MaterialShaderVertexInput = MaterialProgramVertexInput;
-export type MaterialShaderArtifactReceipt = MaterialProgramAbi;
 
 export interface MaterialShaderArtifact {
   readonly material: string;
@@ -44,7 +37,7 @@ export interface MaterialShaderArtifact {
   readonly particleInputs?: readonly MaterialParticleInput[];
   readonly specializationKey?: string;
   /** Producer-owned ABI facts shared by direct and scene-index consumers. */
-  readonly receipt?: MaterialShaderArtifactReceipt;
+  readonly receipt?: MaterialProgramAbi;
 }
 
 /**
@@ -110,14 +103,14 @@ function standardPbrMaterialRowFields(): readonly string[] {
   return materialRowFields(STANDARD_PIPELINE_PARAM_SCHEMA, STANDARD_PIPELINE_DERIVED);
 }
 
-const STANDARD_PBR_VERTEX_INPUTS: readonly MaterialShaderVertexInput[] = [
+const STANDARD_PBR_VERTEX_INPUTS: readonly MaterialProgramVertexInput[] = [
   { semantic: 'position', location: 0, format: 'float32x3' },
   { semantic: 'normal', location: 1, format: 'float32x3' },
   { semantic: 'uv', location: 2, format: 'float32x2' },
   { semantic: 'tangent', location: 3, format: 'float32x4' },
 ];
 
-function standardPbrResourceSlots(): MaterialShaderResourceSlot[] {
+function standardPbrResourceSlots(): MaterialProgramResourceSlot[] {
   return STANDARD_PIPELINE_DERIVED.resourceBindings.flatMap((resource) => {
     if (resource.kind !== 'sampler' && resource.kind !== 'texture') return [];
     return [
@@ -140,7 +133,7 @@ function standardPbrResourceSlots(): MaterialShaderResourceSlot[] {
 export function createStandardPbrArtifactReceipt(
   skinned = false,
   vertexColorAvailable = false,
-): MaterialShaderArtifactReceipt & { readonly sceneIndexEntry: string } {
+): MaterialProgramAbi & { readonly sceneIndexEntry: string } {
   const resourceSlots = standardPbrResourceSlots();
   const uvSets = STANDARD_PIPELINE_DERIVED.coordinateRecords.map((record) => ({
     parameter: record.parameter,
@@ -184,7 +177,7 @@ export interface MaterialProgramArtifactReceiptInput {
   readonly schema: readonly ParamSchemaEntry[];
   readonly directEntry: string;
   readonly sceneIndexEntry?: string;
-  readonly vertexInputs: readonly MaterialShaderVertexInput[];
+  readonly vertexInputs: readonly MaterialProgramVertexInput[];
   readonly layoutIdentity?: string;
   readonly alphaMask?: { readonly cutoff: string; readonly source: string };
   readonly skinPaletteAddress?: {
@@ -208,7 +201,7 @@ export interface MaterialProgramArtifactReceiptInput {
  */
 export function createMaterialProgramArtifactReceipt(
   input: MaterialProgramArtifactReceiptInput,
-): MaterialShaderArtifactReceipt {
+): MaterialProgramAbi {
   const derived = derive(input.schema);
   const rowStride =
     input.rowStride ??
@@ -277,40 +270,3 @@ export function createMaterialProgramArtifactReceipt(
     ...(input.surface === undefined ? {} : { surface: input.surface }),
   };
 }
-
-export function isMaterialShaderArtifact(value: unknown): value is MaterialShaderArtifact {
-  if (value === null || typeof value !== 'object') return false;
-  const artifact = value as Partial<MaterialShaderArtifact>;
-  const particleInputs = artifact.particleInputs;
-  const particleInputsValid =
-    particleInputs === undefined ||
-    (Array.isArray(particleInputs) &&
-      particleInputs.every(
-        (input) =>
-          input !== null &&
-          typeof input === 'object' &&
-          typeof input.name === 'string' &&
-          typeof input.type === 'string' &&
-          typeof input.visibility === 'string' &&
-          Number.isInteger(input.lane) &&
-          input.lane >= 0,
-      ));
-  return (
-    typeof artifact.material === 'string' &&
-    typeof artifact.pass === 'string' &&
-    artifact.program !== undefined &&
-    artifact.program !== null &&
-    typeof artifact.program.source === 'string' &&
-    typeof artifact.program.identity === 'string' &&
-    ['mesh', 'skin', 'cluster', 'skin-cluster'].includes(artifact.program.group2) &&
-    typeof artifact.program.probeBlendRecordRequired === 'boolean' &&
-    typeof artifact.layoutIdentity === 'string' &&
-    Array.isArray(artifact.bindings) &&
-    Array.isArray(artifact.deps) &&
-    Array.isArray(artifact.vertexInputs) &&
-    particleInputsValid
-  );
-}
-
-/** Validate producer-published ABI facts before they enter the runtime catalog. */
-export const isMaterialShaderArtifactReceipt = isMaterialProgramAbi;

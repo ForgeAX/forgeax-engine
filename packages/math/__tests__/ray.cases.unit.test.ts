@@ -334,7 +334,7 @@ describe('rayAabbIntersects — ⑥ thin box (1D / 2D degenerate)', () => {
 // screenToRay (feat-20260529-picking-raycasting-screen-to-entity M2 w6)
 // ============================================================
 //
-// screenToRay(out, sx, sy, vpW, vpH, view, proj, kind) → Ray
+// screenToRay(out, sx, sy, vpW, vpH, view, proj) → Ray
 //
 // WebGPU [0,1] NDC z convention: near=0, far=1 (D-NDC / research Finding 6).
 // y-flip: ndc_y = 1 - 2 * screenY / viewportH.
@@ -369,7 +369,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, 300, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 400, 300, 800, 600, view, proj);
     // Camera forward in world space = (0, 0, -1)
     const dirDot = (r[3] as number) * 0 + (r[4] as number) * 0 + (r[5] as number) * -1;
     expect(dirDot).toBeGreaterThan(0.99999);
@@ -380,8 +380,8 @@ describe('screenToRay', () => {
     const proj = perspProj();
     const rCenter = ray.create();
     const rRight = ray.create();
-    ray.screenToRay(rCenter, 400, 300, 800, 600, view, proj, 'perspective');
-    ray.screenToRay(rRight, 700, 300, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(rCenter, 400, 300, 800, 600, view, proj);
+    ray.screenToRay(rRight, 700, 300, 800, 600, view, proj);
     expect(rRight[3]).not.toBeCloseTo(rCenter[3] as number, 3);
   });
 
@@ -391,7 +391,7 @@ describe('screenToRay', () => {
     const view = orthoView();
     const proj = orthoProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, 300, 800, 600, view, proj, 'orthographic');
+    ray.screenToRay(r, 400, 300, 800, 600, view, proj);
     const dirDot = (r[3] as number) * 0 + (r[4] as number) * 0 + (r[5] as number) * -1;
     expect(dirDot).toBeGreaterThan(0.99999);
   });
@@ -401,8 +401,8 @@ describe('screenToRay', () => {
     const proj = orthoProj();
     const rLeft = ray.create();
     const rRight = ray.create();
-    ray.screenToRay(rLeft, 200, 300, 800, 600, view, proj, 'orthographic');
-    ray.screenToRay(rRight, 600, 300, 800, 600, view, proj, 'orthographic');
+    ray.screenToRay(rLeft, 200, 300, 800, 600, view, proj);
+    ray.screenToRay(rRight, 600, 300, 800, 600, view, proj);
     expect(rRight[0]).toBeGreaterThan(rLeft[0] as number);
   });
 
@@ -411,8 +411,8 @@ describe('screenToRay', () => {
     const proj = orthoProj();
     const rTop = ray.create();
     const rBottom = ray.create();
-    ray.screenToRay(rTop, 400, 100, 800, 600, view, proj, 'orthographic');
-    ray.screenToRay(rBottom, 400, 500, 800, 600, view, proj, 'orthographic');
+    ray.screenToRay(rTop, 400, 100, 800, 600, view, proj);
+    ray.screenToRay(rBottom, 400, 500, 800, 600, view, proj);
     expect(rTop[1]).toBeGreaterThan(rBottom[1] as number);
   });
 
@@ -421,8 +421,8 @@ describe('screenToRay', () => {
     const proj = orthoProj();
     const r1 = ray.create();
     const r2 = ray.create();
-    ray.screenToRay(r1, 200, 100, 800, 600, view, proj, 'orthographic');
-    ray.screenToRay(r2, 600, 500, 800, 600, view, proj, 'orthographic');
+    ray.screenToRay(r1, 200, 100, 800, 600, view, proj);
+    ray.screenToRay(r2, 600, 500, 800, 600, view, proj);
     expect(r1[3]).toBeCloseTo(r2[3] as number, 10);
     expect(r1[4]).toBeCloseTo(r2[4] as number, 10);
     expect(r1[5]).toBeCloseTo(r2[5] as number, 10);
@@ -435,8 +435,8 @@ describe('screenToRay', () => {
     const proj = perspProj();
     const rTop = ray.create();
     const rBottom = ray.create();
-    ray.screenToRay(rTop, 400, 100, 800, 600, view, proj, 'perspective');
-    ray.screenToRay(rBottom, 400, 500, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(rTop, 400, 100, 800, 600, view, proj);
+    ray.screenToRay(rBottom, 400, 500, 800, 600, view, proj);
     expect(rTop[1]).toBeGreaterThan(rBottom[1] as number);
   });
 
@@ -446,7 +446,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, -100, 300, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, -100, 300, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -456,7 +456,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 900, 300, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 900, 300, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -466,7 +466,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, -50, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 400, -50, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -476,7 +476,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, 700, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 400, 700, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -488,7 +488,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, Number.NaN, 300, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, Number.NaN, 300, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -498,7 +498,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, Number.POSITIVE_INFINITY, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 400, Number.POSITIVE_INFINITY, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -508,7 +508,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, 300, Number.NaN, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 400, 300, Number.NaN, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -518,7 +518,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 0, 0, 0, 0, view, proj, 'perspective');
+    ray.screenToRay(r, 0, 0, 0, 0, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
     }
@@ -528,7 +528,7 @@ describe('screenToRay', () => {
     const view = perspView();
     const proj = perspProj();
     const r = ray.create();
-    ray.screenToRay(r, 400, 300, 800, 600, view, proj, 'perspective');
+    ray.screenToRay(r, 400, 300, 800, 600, view, proj);
     const dirLen = Math.sqrt(
       (r[3] as number) * (r[3] as number) +
         (r[4] as number) * (r[4] as number) +

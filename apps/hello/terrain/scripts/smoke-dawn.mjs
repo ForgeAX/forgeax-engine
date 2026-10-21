@@ -33,8 +33,8 @@ try {
   let receipt;
   for (let i = 0; i < smokeFrameBudget(); i++) ({ receipt } = await compact.frame());
   const report = await compact.verify(receipt);
-  const root = compact.app.world.sharedRefs
-    .resolve(compact.app.world.get(compact.subjects.terrain, Terrain).unwrap().asset)
+  const root = compact.app.assets
+    .read(compact.app.world.get(compact.subjects.terrain, Terrain).unwrap().asset)
     .unwrap();
   assert.equal(
     root.materialEncoding.kind,
@@ -42,7 +42,7 @@ try {
     'CI must execute the selected production Cook specialization',
   );
   assert(
-    root.sections.every((s) => compact.app.assets.lookup(s.weightTexture).mips.kind === 'none'),
+    root.sections.every((s) => compact.app.assets.read(s.weightTexture).unwrap().mips.kind === 'none'),
   );
   console.log(
     JSON.stringify({

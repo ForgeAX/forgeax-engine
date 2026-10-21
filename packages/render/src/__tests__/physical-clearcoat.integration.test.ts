@@ -91,14 +91,14 @@ describe('Standard clearcoat root contract', () => {
       ),
     );
     expect(descriptor.entries[userEntries]?.texture).toMatchObject({ viewDimension: 'cube' });
-    expect(descriptor.entries[userEntries + 2]?.texture).toMatchObject({ viewDimension: 'cube' });
+    expect(descriptor.entries[userEntries + 2]?.texture).toMatchObject({ viewDimension: '2d' });
     expect(descriptor.entries[userEntries + 6]?.texture).toMatchObject({ viewDimension: '2d' });
     expect(
       descriptor.entries.slice(userEntries + 7, userEntries + 11).map((entry) => entry.binding),
     ).toEqual([48, 49, 52, 53]);
     expect(descriptor.entries.find((entry) => entry.binding === 47)).toMatchObject({
       binding: 47,
-      texture: { sampleType: 'float', viewDimension: 'cube' },
+      texture: { sampleType: 'float', viewDimension: '2d' },
     });
     expect(descriptor.entries.find((entry) => entry.binding === 46)).toMatchObject({
       binding: 46,

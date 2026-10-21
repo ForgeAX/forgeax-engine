@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { rendererBackend, runSmokeAppFrames, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
 // Dawn smoke for Bevy's shader/fullscreen_material reproduction.
@@ -100,7 +101,7 @@ process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { World } = await import('@forgeax/engine-ecs');
 const { quat } = await import('@forgeax/engine-math');
-const { HANDLE_CUBE, HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
+
 const { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, PointLight, perspective } =
   await import('@forgeax/engine-render');
 const { PostProcessParams } = await import('@forgeax/engine-render');
@@ -134,18 +135,20 @@ subscribeSmokeErrors(app.renderer, (error) => errors.push(error));
 app.onError((error) => errors.push(error));
 
 const world = app.world;
-const blue = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.08, 0.18, 0.8, 1], roughness: 0.3 }));
-const orange = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.9, 0.24, 0.03, 1], roughness: 0.35 }));
+const primitiveCube = world.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+const primitiveSphere = world.assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+const blue = world.assets.create(Materials.standard({ baseColor: [0.08, 0.18, 0.8, 1], roughness: 0.3 })).unwrap();
+const orange = world.assets.create(Materials.standard({ baseColor: [0.9, 0.24, 0.03, 1], roughness: 0.35 })).unwrap();
 for (const [x, z, material] of [[-1.5, -1.5, blue], [1.5, -1.5, orange], [1.5, 1.5, blue], [-1.5, 1.5, orange]]) {
   world.spawn(
     { component: Transform, data: { pos: [x, 0.8, z], scale: [1.25, 1.25, 1.25] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [material] } },
   ).unwrap();
 }
 world.spawn(
   { component: Transform, data: { pos: [0, 2.7, 0], scale: [1.25, 1.25, 1.25] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [orange] } },
 ).unwrap();
 world.spawn(

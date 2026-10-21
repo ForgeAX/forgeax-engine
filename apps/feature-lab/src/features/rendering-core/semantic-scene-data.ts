@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ANTIALIAS_NONE, ANTIALIAS_TAA, Camera } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Semantic scene-data target',
@@ -11,8 +13,14 @@ export default defineFeature({
   expect:
     "All checks pass: with TAA the inspection reports the 'standard-scene-temporal' target from 'forgeax::standard::scene-data', schema temporal-v1, one rgba16float target sized to the frame; with antialias off no temporal consumer is active.",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { data: { antialias: ANTIALIAS_TAA } });
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [1, 0.6, 0.1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [1, 0.6, 0.1, 1] }), {
       pos: [0, 0.5, 0],
     });
     await frames(4);

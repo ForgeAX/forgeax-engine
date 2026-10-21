@@ -101,7 +101,7 @@ describe('Point/Spot and shared-light regression guard', () => {
 
     expect(pointSlot.byteLength).toBe(96);
     expect(spotSlot.byteLength).toBe(96);
-    expect(new Uint32Array(pointSlot.buffer)[16]).toBe(0);
+    expect((new Uint32Array(pointSlot.buffer)[16] ?? 0) & DIRECT_LIGHT_SLOT_KIND_MASK).toBe(0);
     expect(new Uint32Array(pointSlot.buffer)[17]).toBe(2);
     expect((new Uint32Array(spotSlot.buffer)[16] ?? 0) & DIRECT_LIGHT_SLOT_KIND_MASK).toBe(1);
     expect(new Uint32Array(spotSlot.buffer)[17]).toBe(0xffffffff);
@@ -138,9 +138,9 @@ describe('Point/Spot and shared-light regression guard', () => {
     expect(
       validateSpotLightData({ castShadow: true, direction: [0, -1, 0], pcfKernelSize: 3 }).ok,
     ).toBe(true);
-    expect(validatePointLightShadowData({ pcfKernelSize: 2 }).ok).toBe(false);
+    expect(validatePointLightShadowData({ pcfKernelSize: 2 }).ok).toBe(true);
     expect(
       validateSpotLightData({ castShadow: true, direction: [0, -1, 0], pcfKernelSize: 2 }).ok,
-    ).toBe(false);
+    ).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ export type GpuResourceNamespace = number | symbol;
 
 /** Scope tokens never retain Worlds; empty scopes retire with their last resource. */
 export class ScopedGpuResources<T> {
-  private readonly scopes = new Map<GpuResourceNamespace, Map<number, T>>();
+  private readonly scopes = new Map<GpuResourceNamespace, Map<number | string, T>>();
 
   get size(): number {
     let size = 0;
@@ -10,15 +10,15 @@ export class ScopedGpuResources<T> {
     return size;
   }
 
-  get(handle: number, namespace: GpuResourceNamespace): T | undefined {
+  get(handle: number | string, namespace: GpuResourceNamespace): T | undefined {
     return this.scopes.get(namespace)?.get(handle);
   }
 
-  has(handle: number, namespace: GpuResourceNamespace): boolean {
+  has(handle: number | string, namespace: GpuResourceNamespace): boolean {
     return this.scopes.get(namespace)?.has(handle) ?? false;
   }
 
-  set(handle: number, value: T, namespace: GpuResourceNamespace): void {
+  set(handle: number | string, value: T, namespace: GpuResourceNamespace): void {
     let resources = this.scopes.get(namespace);
     if (resources === undefined) {
       resources = new Map();
@@ -27,7 +27,7 @@ export class ScopedGpuResources<T> {
     resources.set(handle, value);
   }
 
-  delete(handle: number, namespace: GpuResourceNamespace): void {
+  delete(handle: number | string, namespace: GpuResourceNamespace): void {
     const resources = this.scopes.get(namespace);
     if (resources === undefined) return;
     resources.delete(handle);
@@ -42,7 +42,7 @@ export class ScopedGpuResources<T> {
     for (const resources of this.scopes.values()) yield* resources.values();
   }
 
-  entries(): IterableIterator<[GpuResourceNamespace, Map<number, T>]> {
+  entries(): IterableIterator<[GpuResourceNamespace, Map<number | string, T>]> {
     return this.scopes.entries();
   }
 }

@@ -1,5 +1,6 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { defineComponent, type EntityHandle, Update } from '@forgeax/engine-ecs';
 import {
   createCapsuleGeometry,
@@ -30,7 +31,7 @@ import {
 import { TransparentSort } from '@forgeax/engine-render/authoring';
 import { Mobility, MobilityKindValue, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { Handle, MaterialAsset, MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
+import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   cameraPose,
@@ -55,6 +56,8 @@ import {
   workloadFingerprint,
   writeMoverTransforms,
 } from './workload';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const TAG = '[perf-shadow-stress]';
 const ALPHA_BLEND = {
@@ -96,7 +99,7 @@ export interface GpuDrivenSample {
   readonly preparedBatchBuilds: number;
   readonly filteredBatchBuilds: number;
   readonly sceneTableUploadBytes: number;
-  readonly candidateUploadBytes: number;
+  readonly sharedInputUploadBytes: number;
   readonly batchUploadBytes: number;
   readonly paletteUploadBytes: number;
   readonly shadowCasterFlips: number;
@@ -210,7 +213,7 @@ function sampleGpuDriven(
     preparedBatchBuilds: inspection.preparedBatchBuilds,
     filteredBatchBuilds: inspection.filteredBatchBuilds,
     sceneTableUploadBytes: inspection.sceneTableUploadBytes,
-    candidateUploadBytes: inspection.candidateUploadBytes,
+    sharedInputUploadBytes: inspection.sharedInputUploadBytes,
     batchUploadBytes: inspection.batchUploadBytes,
     paletteUploadBytes: inspection.paletteUploadBytes,
     shadowCasterFlips: inspection.shadowCasterFlips,
@@ -218,8 +221,8 @@ function sampleGpuDriven(
     frameCaches: {
       ...scene.frameCaches,
       residencyValidation: {
-        hits: inspection.residencyValidationCacheHits,
-        misses: inspection.residencyValidationScans,
+        hits: inspection.cpuValidationCacheHits,
+        misses: inspection.cpuValidationScans,
       },
     },
   };
@@ -325,6 +328,8 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const gpuPassNanos: Record<string, number[]> = {};
   if (options.gpuPassTiming) {
     app.renderer.subscribe((event) => {
@@ -344,6 +349,8 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     });
   }
   const world = app.world;
+const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const errors: ShadowStressEvidence['appRendererErrors'] = [];
   app.onError((error) => {
     const record = { code: error.code, hint: errorText(error) };
@@ -351,18 +358,9 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     console.error(`${TAG} engine error ${record.code}: ${record.hint}`);
   });
 
-  const groundMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.62, 0.64, 0.6, 1], roughness: 0.9 }),
-  );
-  const staticMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.34, 0.48, 0.72, 1], roughness: 0.55 }),
-  );
-  const moverMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.75, 0.25, 1], roughness: 0.4 }),
-  );
+  const groundMaterial = assets.create(Materials.standard({ baseColor: [0.62, 0.64, 0.6, 1], roughness: 0.9 })).unwrap();
+  const staticMaterial = assets.create(Materials.standard({ baseColor: [0.34, 0.48, 0.72, 1], roughness: 0.55 })).unwrap();
+  const moverMaterial = assets.create(Materials.standard({ baseColor: [0.9, 0.75, 0.25, 1], roughness: 0.4 })).unwrap();
 
   const groundExtent = groundHalfExtent(options.camera);
   const declaredStatic = options.mobilityStatic
@@ -374,7 +372,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         component: Transform,
         data: { pos: [0, -0.05, 0], quat: [0, 0, 0, 1], scale: [groundExtent * 2, 0.1, groundExtent * 2] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [groundMaterial] } },
       ...declaredStatic,
     )
@@ -385,7 +383,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [staticMaterial] } },
         { component: Instances, data: { transforms } },
         ...declaredStatic,
@@ -397,7 +395,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [staticMaterial] } },
         { component: Instances, data: { transforms } },
         ...declaredStatic,
@@ -413,7 +411,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
       : world
           .spawn(
             { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: primitiveCube } },
             { component: MeshRenderer, data: { materials: [moverMaterial] } },
             { component: Instances, data: { transforms: moverTransforms } },
           )
@@ -431,7 +429,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
       world
         .spawn(
           { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [0.8, 0.8, 0.8] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: primitiveCube } },
           { component: MeshRenderer, data: { materials: [moverMaterial] } },
         )
         .unwrap(),
@@ -439,15 +437,12 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   }
 
   if (options.transparentCount > 0) {
-    const transparentMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.standard({
+    const transparentMaterial = assets.create(Materials.standard({
         baseColor: [0.3, 0.8, 0.9, 0.45],
         roughness: 0.3,
         renderState: { blend: ALPHA_BLEND, depthWriteEnabled: false },
         queue: 3000,
-      }),
-    );
+      })).unwrap();
     const configured = TransparentSort.configure(world, { mode: TransparentSort.distance, yzAlpha: 1 });
     if (!configured.ok) throw configured.error;
     const transparent = transparentPositions(options.transparentCount);
@@ -462,7 +457,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
               scale: [0.7, 0.7, 0.7],
             },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: primitiveCube } },
           { component: MeshRenderer, data: { materials: [transparentMaterial] } },
         )
         .unwrap();
@@ -470,24 +465,18 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   }
 
   if (options.lodGridSide > 0) {
-    const assets = app.assets;
     if (assets === undefined) {
       console.error(`${TAG} the LOD grid needs an App AssetRegistry to catalog the lower LOD meshes`);
       return;
     }
-    const lodGuids = [
-      assets.parseGuid('019a0000-0000-7000-8000-00000000a501'),
-      assets.parseGuid('019a0000-0000-7000-8000-00000000a502'),
-    ] as const;
-    assets.catalog(lodGuids[0], sphere(12, 8)).unwrap();
-    assets.catalog(lodGuids[1], sphere(6, 4)).unwrap();
-    const lodMesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
+    const lodMeshes = [assets.create(sphere(12, 8)).unwrap(), assets.create(sphere(6, 4)).unwrap()] as const;
+    const lodMesh = assets.create({
       ...sphere(32, 24),
       lods: [
-        { mesh: lodGuids[0], screenCoverage: LOD_SCREEN_COVERAGE[0] },
-        { mesh: lodGuids[1], screenCoverage: LOD_SCREEN_COVERAGE[1] },
+        { mesh: lodMeshes[0], screenCoverage: LOD_SCREEN_COVERAGE[0] },
+        { mesh: lodMeshes[1], screenCoverage: LOD_SCREEN_COVERAGE[1] },
       ],
-    });
+    }).unwrap();
     const grid = lodGridPositions(options.lodGridSide);
     for (let index = 0; index < grid.length / 3; index++) {
       world
@@ -504,11 +493,8 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   }
 
   if (options.characterCount > 0) {
-    const mesh: Handle<'MeshAsset', 'shared'> = world.allocSharedRef<'MeshAsset', MeshAsset>(
-      'MeshAsset',
-      skinnedCapsule(),
-    );
-    const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', skinnedMaterial());
+    const mesh: AssetHandle<'mesh'> = assets.create(skinnedCapsule()).unwrap();
+    const material = assets.create(skinnedMaterial()).unwrap();
     const inverseBindMatrices = new Float32Array(32);
     for (const base of [0, 16]) {
       inverseBindMatrices[base] = 1;
@@ -516,7 +502,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
       inverseBindMatrices[base + 10] = 1;
       inverseBindMatrices[base + 15] = 1;
     }
-    const skeleton = world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
+    const skeleton = assets.create({
       kind: 'skeleton',
       inverseBindMatrices,
       jointCount: 2,
@@ -527,7 +513,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         joints: new Uint16Array([0, 1]),
         shapes: new Float32Array([0, -0.6, 0, 0, 0, 0, 0.28, 0, 0, 0, 0, 0.6, 0, 0.28]),
       },
-    });
+    }).unwrap();
     const positions = characterPositions(options.characterCount);
     for (let index = 0; index < options.characterCount; index++) {
       const pos: [number, number, number] = [
@@ -826,7 +812,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
             next.push(
               commands.spawn(
                 { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5] } },
-                { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+                { component: MeshFilter, data: { assetHandle: primitiveCube } },
                 { component: MeshRenderer, data: { materials: [moverMaterial] } },
               ),
             );

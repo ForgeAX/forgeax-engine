@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import { World } from '@forgeax/engine/ecs';
 import { createBoxGeometry } from '@forgeax/engine/geometry';
@@ -10,29 +11,29 @@ import {
   MeshRenderer,
 } from '@forgeax/engine/render';
 import { propagateTransforms, Transform } from '@forgeax/engine/scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine/types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine/types';
 
 export const VIEWPORT = 600;
 
 export interface PickScene {
+  readonly assets: AssetRegistry;
   readonly world: World;
   readonly camera: EntityHandle;
   readonly near: EntityHandle;
   readonly far: EntityHandle;
   readonly side: EntityHandle;
   readonly mesh: MeshAsset;
+  readonly meshHandle: AssetHandle<'mesh'>;
 }
 
 export function makePickScene(
   projection: 'perspective' | 'orthographic' = 'perspective',
 ): PickScene {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const mesh = createBoxGeometry(1, 1, 1, 1, 1, 1).unwrap();
-  const meshHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([1, 1, 1, 1]),
-  );
+  const meshHandle = assets.create(mesh).unwrap();
+  const material = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
   const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
@@ -67,7 +68,7 @@ export function makePickScene(
   const far = box([0, 0, -2]);
   const side = box([1.2, 0, 0]);
   propagateTransforms(world);
-  return { world, camera, near, far, side, mesh };
+  return { world, assets, camera, near, far, side, mesh, meshHandle };
 }
 
 export function worldFingerprint(world: World): string {

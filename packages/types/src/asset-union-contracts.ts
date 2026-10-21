@@ -2,7 +2,9 @@
 
 import type { AnimationClip, AnimationGraph } from './animation-contracts.js';
 import type { AudioClipAsset } from './asset.js';
+import type { AssetHandle } from './asset-handle.js';
 import type { FontAsset } from './font-contracts.js';
+import type { AssetGuid } from './image-pack-contracts.js';
 import type { IesProfileAsset } from './lighting.js';
 import type { MaterialAsset } from './material/asset.js';
 import type { SkeletonAsset, SkinAsset, VideoAsset } from './media-contracts.js';
@@ -179,75 +181,14 @@ export type Asset =
   | TerrainAsset
   | NavigationMeshAsset;
 
-// === Tileset asset POD shape (feat-20260608 M0 baseline rebuild) =================
-//
-// Decision anchors:
-//   - requirements §AC-01/03/04/05 (TilesetAsset 9 fields; atlases plural composite;
-//     M0 TilesetTileEntry single-field shape with M1 adding 5 optional + collider).
-//   - plan-strategy §D-5 (M0 baseline rebuild after main reverted feat-20260604).
-//   - plan-strategy §D-7 (`atlases: readonly Handle<TextureAsset,managed>[]` one-cut
-//     rename; no `atlas` single-form alias or dual-path).
-//   - plan-strategy §D-6 (AssetErrorCode count restoration -- M0 reintroduces
-//     `tileset-region-index-out-of-range`; M1 adds `tileset-tile-entry-malformed`).
-//   - charter F1 (AI users discover the schema via IDE autocomplete on the closed
-//     `Asset` union + `Handle<TilesetAsset>` returns from `AssetRegistry.register`).
-//   - charter P4 (atlases plural composite mirrors `MaterialAsset.passes[]` shape).
-
-/**
- * Closed `TilesetTileCollider` union -- per-tile collider schema (M1
- * extension; feat-20260608-tilemap-object-layer-rendering M1 / m1-t2).
- *
- * Three discriminant variants (closed enum, charter P3):
- *
- *   - `{ type: 'none' }` -- no collider for this tile.
- *   - `{ type: 'rect', rect: readonly [x, y, w, h] }` -- axis-aligned
- *     rectangle in normalized cell coordinates `[0, 1]^2`. `w > 0`, `h > 0`,
- *     `x + w <= 1`, `y + h <= 1` are enforced by `validateTilesetPayload`
- *     (R-6 first-error path).
- *   - `{ type: 'polygon', points: readonly [x, y][] }` -- convex/concave
- *     polygon in normalized cell coordinates. `points.length >= 3` and
- *     each point lies in `[0, 1]^2`.
- *
- * The engine validates this schema at register-time but does NOT consume
- * it (plan-strategy §D-4 -- schema landed, consumer deferred to a future
- * `feat-tilemap-physics-bridge` closed loop). AI users with a physics
- * sidecar consume the schema directly via `tileset.tiles[i].collider`
- * after `assets.register<TilesetAsset>(...)` resolves the handle.
- *
- * Exhaustive switch:
- * ```ts
- * switch (collider.type) {
- *   case 'none': return null;
- *   case 'rect': return collider.rect;
- *   case 'polygon': return collider.points;
- *   // No default branch -- TS guards completeness (charter P3).
- * }
- * ```
- */
+/** Optional per-tile collision source in normalized cell coordinates. Runtime physics
+ * consumption is not installed by the Tileset render owner. */
 export type TilesetTileCollider =
   | { readonly type: 'none' }
   | { readonly type: 'rect'; readonly rect: readonly [number, number, number, number] }
   | { readonly type: 'polygon'; readonly points: readonly (readonly [number, number])[] };
 
-/**
- * Rectangular sub-region within a tileset atlas (M1 schema extension on
- * top of M0 baseline rebuild).
- *
- * Four required fields define the atlas-space rectangle in pixels:
- * `x` / `y` top-left corner; `width` / `height` extent. `width + x` and
- * `height + y` MUST stay within the parent atlas extent or
- * `validateTilesetPayload` returns
- * `AssetError { code: 'tileset-region-index-out-of-range' }`
- * (charter P3 explicit failure at register-time).
- *
- * Optional `atlasIndex?: number` (M1; default 0) routes the region into
- * `TilesetAsset.atlases[atlasIndex]` for multi-atlas tilesets. Out-of-range
- * `atlasIndex` (`>= atlases.length` or negative) surfaces
- * `AssetError { code: 'tileset-tile-entry-malformed', detail: { field: 'atlasIndex', scope: 'tileset-asset' } }`
- * at register-time (plan-strategy §D-7 three-hop routing; R-6 first-error
- * order places atlasIndex check between region rect bounds and per-tile
- * entry field checks).
- */
+/** Pixel rectangle in one atlas; atlasIndex defaults to zero. */
 export interface TilesetRegion {
   readonly x: number;
   readonly y: number;
@@ -256,41 +197,9 @@ export interface TilesetRegion {
   readonly atlasIndex?: number;
 }
 
-/**
- * Per-tile entry in `TilesetAsset.tiles[]` (M1 schema extension on top of
- * M0 baseline rebuild).
- *
- * Required `regionIndex` points into the parent `TilesetAsset.regions[]`
- * array. M1 adds five optional fields for the variable-size + custom-pivot
- * object-layer story (plan-strategy §M1):
- *
- *   - `widthCells?: number` -- multi-cell width in `Tilemap.cols/rows`
- *     coordinate units (default 1; range `(0, 64]`). Anchored at the
- *     cell that hosts the non-zero tileId entry; cells inside the
- *     `widthCells x heightCells` footprint must stay 0 in `TileLayer.tiles[]`
- *     (anchor convention, not enforced at register time).
- *   - `heightCells?: number` -- multi-cell height (default 1; range `(0, 64]`).
- *   - `pivotX?: number` -- normalized horizontal pivot in `[0, 1]` (default 0.5).
- *     The pivot is the world-space anchor: `pivot_world_X = (cellX + pivotX) * tileSizeX`.
- *     Quad center is offset by `(0.5 - pivotX) * widthCells * tileSizeX`
- *     (plan-strategy §D-2 first-line geometry; M2 implementation).
- *   - `pivotY?: number` -- normalized vertical pivot in `[0, 1]` (default 0.5).
- *     For asi_world `.tsj` extension: `pivotY = 1.0` means quad bottom
- *     anchors the cell, `pivotY = 0.0` means quad top (per-asset convention,
- *     not Tiled native). The engine uses `effectivePivotY` for Y-sort.
- *   - `collider?: TilesetTileCollider` -- 3-variant closed union schema
- *     (charter P3). Engine validates the schema at register-time but does
- *     NOT consume it (plan-strategy §D-4).
- *
- * All five fields are optional so unit-cell call sites `{ regionIndex: N }`
- * remain backward compatible (charter F1).
- *
- * Out-of-range `regionIndex` (>= regions.length, or negative) surfaces
- * `AssetError { code: 'tileset-region-index-out-of-range' }`. Out-of-range
- * `widthCells / heightCells / pivotX / pivotY / collider` surface
- * `AssetError { code: 'tileset-tile-entry-malformed', detail: { field, scope: 'tile-entry', tileEntryIndex } }`
- * (plan-strategy §D-6 closed 7-variant `.detail.field` enum).
- */
+/** A tile id is its index + 1; zero is an empty Tilemap cell. Width/height default
+ * to one cell and lie in (0, 64]. Pivots default to 0.5 and lie in [0, 1]. The
+ * pivot stays in atlas-local coordinates through Tiled flips and diagonal rotation. */
 export interface TilesetTileEntry {
   readonly regionIndex: number;
   readonly widthCells?: number;
@@ -300,64 +209,23 @@ export interface TilesetTileEntry {
   readonly collider?: TilesetTileCollider;
 }
 
-/**
- * Tileset asset (M0 baseline rebuild on origin/main).
- *
- * Nine fields:
- *   - `kind`         -- discriminator literal `'tileset'`.
- *   - `atlases`      -- one or more durable GUIDs for atlas textures.
- *                       `atlases.length >= 1` enforced at register time.
- *                       M0 reads `atlases[0]` exclusively (single-atlas form);
- *                       M1 adds `regions[].atlasIndex` for multi-atlas routing.
- *   - `tileWidth`/`tileHeight` -- per-cell pixel size (atlas grid stride).
- *   - `columns`/`rows`        -- atlas grid layout (informational metadata; used
- *                               as fallback when `atlasSizes` is absent to infer
- *                               atlas pixel extent as `columns * tileWidth`).
- *   - `atlasSizes`  -- optional per-atlas pixel dimensions. When present,
- *                      `atlasSizes[i]` gives the exact pixel size of
- *                      `atlases[i]` and overrides `columns`/`rows` for UV
- *                      normalisation in the chunk-extract system. Required when
- *                      the tileset contains multiple atlases with different
- *                      pixel sizes (e.g. a terrain + object composite tileset).
- *                      Each entry carries `{ pixelWidth, pixelHeight }`.
- *   - `regions`     -- array of atlas sub-rectangles (TilesetRegion).
- *   - `tiles`       -- per-tile entries (TilesetTileEntry), 1-indexed via tile id
- *                      sentinel where 0 means "empty" in `TileLayer.tiles`.
- *
- * Plural composite `atlases` (not single `atlas`) is the one-cut breaking
- * rename versus the old feat-20260604 form (plan-strategy §D-7 + AGENTS.md
- * §Change stance "optimal > compatible"); no deprecation alias survives.
- *
- * @example Register a tileset and spawn a Tilemap + TileLayer pair:
- * ```ts
- * const atlasGuid = 'world/object_atlas';
- * const tileset = registry.register<TilesetAsset>({
- *   kind: 'tileset',
- *   atlases: [atlasGuid],
- *   tileWidth: 16,
- *   tileHeight: 16,
- *   columns: 8,
- *   rows: 8,
- *   regions: [{ x: 0, y: 0, width: 16, height: 16 }],
- *   tiles: [{ regionIndex: 0 }],
- * }).unwrap();
- * ```
- */
 export interface TilesetAtlasSize {
   readonly pixelWidth: number;
   readonly pixelHeight: number;
 }
 
+/** Shared runtime tile definitions. Admission validates geometry and links atlas
+ * references. Updating this asset changes runtime drawing without rebinding any
+ * Tilemap entity or touching its author cells. */
 export interface TilesetAsset {
   readonly kind: 'tileset';
-  readonly atlases: readonly string[];
+  /** Source GUIDs become texture handles belonging to this asset owner. */
+  readonly atlases: readonly (AssetGuid | string | AssetHandle<'texture'>)[];
   readonly tileWidth: number;
   readonly tileHeight: number;
   readonly columns: number;
   readonly rows: number;
-  /** Per-atlas pixel dimensions. `atlasSizes[i]` overrides `columns`/`rows`
-   *  for UV normalisation of regions whose `atlasIndex === i`. Required when
-   *  atlases have different pixel sizes. */
+  /** Exact dimensions per atlas; otherwise columns*tileWidth by rows*tileHeight. */
   readonly atlasSizes?: readonly TilesetAtlasSize[];
   readonly regions: readonly TilesetRegion[];
   readonly tiles: readonly TilesetTileEntry[];

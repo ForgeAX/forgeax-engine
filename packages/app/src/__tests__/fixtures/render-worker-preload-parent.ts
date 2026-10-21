@@ -110,7 +110,7 @@ async function run(mode: string): Promise<void> {
   context = await createWorldContext(world);
   owner = new SourceRenderWorker(
     world,
-    new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+    new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
     { startupTimeoutMs: 30_000, bootstrapUrl: 'fixture://native-root' } as ExecutionInitMessage,
     (_message: EngineToHostMessage) => undefined,
   );

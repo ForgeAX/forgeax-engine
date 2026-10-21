@@ -1,12 +1,16 @@
 // Shared scene for Bevy `sprite_flipping` reproduction.
 // The asymmetric arrow makes the two UV orientations visually falsifiable.
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const SPRITE_SIZE = 32;
 
@@ -58,14 +62,19 @@ function spriteMaterial(texture: number, flipX = 0, flipY = 0): MaterialAsset {
 
 /** Build the scene after the caller uploads the TextureAsset to the GPU. */
 export function buildSpriteFlippingWorld(world: World, texId: number): void {
-  const normalMat = world.allocSharedRef('MaterialAsset', spriteMaterial(texId));
-  const flipXMat = world.allocSharedRef('MaterialAsset', spriteMaterial(texId, 1));
-  const flipYMat = world.allocSharedRef('MaterialAsset', spriteMaterial(texId, 0, 1));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const normalMat = sceneAssets.create(spriteMaterial(texId)).unwrap();
+  const flipXMat = sceneAssets.create(spriteMaterial(texId, 1)).unwrap();
+  const flipYMat = sceneAssets.create(spriteMaterial(texId, 0, 1)).unwrap();
 
   for (const [x, material] of [[-2.6, normalMat], [0, flipXMat], [2.6, flipYMat]] as const) {
     world.spawn(
       { component: Transform, data: { pos: [x, 0, 0], quat: [0, 0, 0, 1], scale: [2, 2, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }

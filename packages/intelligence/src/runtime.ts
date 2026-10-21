@@ -92,7 +92,6 @@ export class IntelligenceRuntime implements IntelligenceService {
   private readonly records = new Map<ActivityId, ActivityRecord>();
   private readonly createActivityId: () => ActivityId;
   private readonly createSessionId: () => string;
-  private closed = false;
   private closeTask: Promise<void> | undefined;
 
   constructor(
@@ -193,12 +192,15 @@ export class IntelligenceRuntime implements IntelligenceService {
   }
 
   close(): Promise<void> {
-    this.closeTask ??= this.performClose();
+    this.closeTask ??= Promise.resolve().then(() => this.performClose());
     return this.closeTask;
   }
 
+  private get closed(): boolean {
+    return this.closeTask !== undefined;
+  }
+
   private async performClose(): Promise<void> {
-    this.closed = true;
     try {
       await this.provider.close();
     } catch {

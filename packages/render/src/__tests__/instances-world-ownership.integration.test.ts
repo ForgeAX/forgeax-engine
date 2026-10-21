@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { Camera } from '../components/camera';
@@ -18,7 +19,8 @@ function matrices(count: number, x: number): Float32Array {
 }
 
 function scene(count: number, x: number) {
-  const world = new World();
+  const worldAssets = new AssetRegistry();
+  const world = new World({ assets: worldAssets });
   registerPropagateTransforms(world);
   world
     .spawn(
@@ -29,19 +31,22 @@ function scene(count: number, x: number) {
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: { assetHandle: worldAssets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap() },
+      },
       { component: MeshRenderer, data: {} },
       { component: Instances, data: { transforms: matrices(count, x) } },
     )
     .unwrap();
   world.update(0).unwrap();
-  return { world, entity };
+  return { world, entity, assets: worldAssets };
 }
 
 describe('World-owned instance authoring', () => {
   it.each([1500, 10000, 20000])('extracts %s matrices without creating a Renderer', (count) => {
-    const { world } = scene(count, 0);
-    const snapshot = extractFrames([world], 0).renderables[0]?.instances;
+    const { world, assets } = scene(count, 0);
+    const snapshot = extractFrames([world], 0, assets).renderables.at(0)?.instances;
     expect(snapshot?.instanceCount).toBe(count);
     expect(snapshot?.transforms).toEqual(matrices(count, 0));
   });
@@ -49,14 +54,18 @@ describe('World-owned instance authoring', () => {
   it('keeps worlds isolated and lets independent consumers observe skipped updates', () => {
     const a = scene(2, 0);
     const b = scene(2, 1);
-    const before = extractFrames([a.world], 0).renderables[0]?.instances;
-    expect(extractFrames([b.world], 0).renderables[0]?.instances?.transforms[12]).toBe(1);
+    const before = extractFrames([a.world], 0, a.assets).renderables.at(0)?.instances;
+    expect(extractFrames([b.world], 0, b.assets).renderables.at(0)?.instances?.transforms[12]).toBe(
+      1,
+    );
     a.world.set(a.entity, Instances, { transforms: matrices(2, 0.5) }).unwrap();
-    extractFrames([a.world], 0);
+    extractFrames([a.world], 0, a.assets);
     a.world.set(a.entity, Instances, { transforms: matrices(2, -0.5) }).unwrap();
-    const late = extractFrames([a.world], 0).renderables[0]?.instances;
+    const late = extractFrames([a.world], 0, a.assets).renderables.at(0)?.instances;
     expect(late?.transforms[12]).toBe(-0.5);
     expect(before?.transforms[12]).toBe(0);
-    expect(extractFrames([b.world], 0).renderables[0]?.instances?.transforms[12]).toBe(1);
+    expect(extractFrames([b.world], 0, b.assets).renderables.at(0)?.instances?.transforms[12]).toBe(
+      1,
+    );
   });
 });

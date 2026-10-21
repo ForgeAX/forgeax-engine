@@ -121,7 +121,8 @@ describe('DirectLightSlot ABI', () => {
     const pointWords = new Uint32Array(packDirectLightSlot(point as never).buffer);
     const rectWords = new Uint32Array(packDirectLightSlot(rect as never).buffer);
 
-    expect(pointWords[16]).toBe(DirectLightSlotKind.POINT);
+    expect((pointWords[16] ?? 0) & DIRECT_LIGHT_SLOT_KIND_MASK).toBe(DirectLightSlotKind.POINT);
+    expect((pointWords[16] ?? 0) >>> DIRECT_LIGHT_SLOT_PCF_SHIFT).toBe(3);
     expect(pointWords[17]).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
     expect(pointWords[18]).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
     expect(pointWords[19]).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
@@ -166,5 +167,13 @@ describe('DirectLightSlot ABI', () => {
     expect(kindWord >>> DIRECT_LIGHT_SLOT_PCF_SHIFT).toBe(5);
     const defaults = new Uint32Array(packDirectLightSlot(snapshot).buffer)[16] ?? 0;
     expect(defaults >>> DIRECT_LIGHT_SLOT_PCF_SHIFT).toBe(3);
+  });
+
+  it.each([
+    1, 3, 5,
+  ] as const)('carries Point PCF width %s in the same punctual metadata', (pcfKernelSize) => {
+    const words = new Uint32Array(packDirectLightSlot({ ...point, pcfKernelSize } as never).buffer);
+    expect((words[16] ?? 0) & DIRECT_LIGHT_SLOT_KIND_MASK).toBe(DirectLightSlotKind.POINT);
+    expect((words[16] ?? 0) >>> DIRECT_LIGHT_SLOT_PCF_SHIFT).toBe(pcfKernelSize);
   });
 });

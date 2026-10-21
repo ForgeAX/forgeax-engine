@@ -1,10 +1,5 @@
-import {
-  AssetRegistry,
-  resolveAssetHandle,
-  validateAssetPublication,
-} from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { AssetRegistry, validateAssetPublication } from '@forgeax/engine-assets-runtime';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import {
   prepareRuntimePackContent,
   type RuntimePackContent,
@@ -12,7 +7,8 @@ import {
 } from '@forgeax/engine-import';
 import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId, type PackInstanceJson } from '@forgeax/engine-pack/source';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import { sceneAssetContribution } from '@forgeax/engine-scene';
+import type { AssetDecoderContributionRef, AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { prepareRuntimePackProgram } from '../build/pack-program.js';
 import { defined } from './assert-defined.js';
@@ -32,13 +28,21 @@ function producer() {
         state.rows,
         fetcher,
         { catalog: value.catalog, fetcher: value.fetch },
-        { dependencies },
+        {
+          dependencies,
+          decoders: [
+            meshAssetContribution,
+            sceneAssetContribution,
+          ] as unknown as readonly AssetDecoderContributionRef[],
+        },
       ),
   });
   return value;
 }
 function reader(source: RuntimePackProducer) {
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  assets.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
   assets.setCatalogSource(source.catalog, source.fetch);
   return assets;
 }
@@ -68,16 +72,13 @@ it.each([
 ] as const)('consumes %s parameter-only dependencies and complete dynamic output topology', async (language) => {
   const source = producer();
   const assets = reader(source);
-  const world = new World();
-  let handle: Handle<'MeshAsset', 'shared'> | undefined;
+  let handle: AssetHandle<'mesh'> | undefined;
+  let extra: AssetHandle<'mesh'> | undefined;
   const replace = async () => {
-    const payload = (await assets.loadByGuid(assets.parseGuid(outputGuid(id)))).unwrap();
-    if (payload.kind !== 'mesh') throw new Error('mesh consumer requires a mesh output');
-    const next = world.allocSharedRef('MeshAsset', payload);
-    if (handle !== undefined) world.sharedRefs.release(handle).unwrap();
-    handle = next;
+    if (handle === undefined) handle = (await assets.load(outputGuid(id), 'mesh')).unwrap();
+    else (await assets.reload(handle, { conflict: 'overwrite' })).unwrap();
   };
-  const bound = () => resolveAssetHandle<MeshAsset>(world, defined(handle)).unwrap();
+  const bound = () => assets.read(defined(handle)).unwrap();
   try {
     const direct = (
       await prepareRuntimePackContent(other, { dependency: createBoxGeometry(1, 2, 7).unwrap() })
@@ -89,7 +90,7 @@ it.each([
       export: 'build',
       imports: { geometry: 'test-engine', pack: 'test-engine' },
       modules: {
-        [`generator.${language}`]: `import { createBoxGeometry } from 'geometry';
+        [`generator.${language}`]: `import { createBoxGeometry, meshAssetContribution } from 'geometry';
           import { AssetGuid } from 'pack';
           export async function build({ values, readByGuid }${language === 'ts' ? ': any' : ''}) {
             if (values.width === 5) return { ok: true, value: {} };
@@ -134,25 +135,27 @@ it.each([
     expect(Array.from(bound().aabb ?? [])).toEqual([-1, -1, -3.5, 1, 1, 3.5]);
     await generate(3);
     const extraGuid = AssetGuid.format(AssetGuid.derive(definePackageId(id), 'extra'));
-    expect((await assets.loadByGuid(assets.parseGuid(extraGuid))).unwrap().kind).toBe('mesh');
+    extra = (await assets.load(extraGuid, 'mesh')).unwrap();
+    expect(assets.read(extra).unwrap().kind).toBe('mesh');
     await replace();
     await generate(2);
-    expect((await assets.loadByGuid(assets.parseGuid(extraGuid))).ok).toBe(false);
+    expect((await assets.reload(extra, { conflict: 'overwrite' })).ok).toBe(false);
+    expect(assets.read(extra).unwrap().kind).toBe('mesh');
     await replace();
     const previous = handle;
     await generate(4);
-    expect((await assets.loadByGuid(assets.parseGuid(outputGuid(id)))).unwrap().kind).toBe('scene');
-    await expect(replace()).rejects.toThrow('requires a mesh output');
+    expect(source.rows().find((row) => row.guid === outputGuid(id))?.kind).toBe('scene');
+    await expect(replace()).rejects.toBeDefined();
     expect(handle).toBe(previous);
     expect(bound().kind).toBe('mesh');
     await generate(5);
     expect(source.rows().filter((row) => row.packageId === id)).toEqual([]);
     await expect(replace()).rejects.toBeDefined();
     expect(handle).toBe(previous);
-    expect(world.sharedRefs._liveCount()).toBe(1);
+    expect(handle).toBe(previous);
     await generate(1);
     await replace();
-    expect(world.sharedRefs._liveCount()).toBe(1);
+    expect(handle).toBe(previous);
     // The unselected branch needs no dependency, but selecting it must not
     // read the live catalog unless the source pinned that dependency first.
     source.withdraw(id);
@@ -169,11 +172,11 @@ it.each([
     expect(rejected.ok).toBe(false);
     expect(source.rows()).toEqual(acceptedRows);
     expect(bound().kind).toBe('mesh');
-    expect(world.sharedRefs._liveCount()).toBe(1);
+    expect(handle).toBe(previous);
   } finally {
-    if (handle !== undefined) world.sharedRefs.release(handle).unwrap();
-    expect(world.sharedRefs._liveCount()).toBe(0);
-    assets.clearCatalogSource();
+    if (handle !== undefined) assets.release(handle).unwrap();
+    if (extra !== undefined) assets.release(extra).unwrap();
+    assets.dispose();
     source.dispose();
   }
 });

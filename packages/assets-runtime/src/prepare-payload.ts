@@ -1,3 +1,4 @@
+import { isBrowserResolvableVideoUrl } from '@forgeax/engine-graphics-extras';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { copyPackData, packArrayStorage } from '@forgeax/engine-pack/runtime';
 import { validateTerrain } from '@forgeax/engine-terrain';
@@ -8,10 +9,12 @@ import {
   err,
   type MaterialAsset,
   materialChildForbiddenFields,
+  materialGuidText,
   ok,
   type Result,
 } from '@forgeax/engine-types';
 import { withMeshAabb } from './aabb.js';
+import { prepareRuntimeIesProfile } from './loaders/ies-profile';
 import {
   inferAtlasExtent,
   validateMeshPayload,
@@ -57,6 +60,15 @@ export function copyPreparedAsset(asset: Asset): Asset {
 /** Domain preparation has no Catalog, World or GPU side effects. */
 export function prepareAssetPayload(asset: Asset): Result<Asset, AssetError> {
   let prepared = asset;
+  if (asset.kind === 'ies-profile') return prepareRuntimeIesProfile(asset);
+  if (asset.kind === 'video' && !isBrowserResolvableVideoUrl(asset.url))
+    return err(
+      new AssetError({
+        code: 'asset-invalid-value',
+        expected: 'a browser-resolvable video URL descriptor',
+        hint: 'provide an http(s) or relative video URL accepted by the video loader',
+      }),
+    );
   if (asset.kind === 'terrain') {
     const valid = validateTerrain(asset);
     if (!valid.ok)
@@ -118,7 +130,7 @@ export function validateAssetReferences(
 ): AssetError | undefined {
   const direct = new Set(refs.map((ref) => ref.guid.toLowerCase()));
   if (asset.kind === 'material' && asset.parent !== undefined) {
-    const parent = AssetGuid.format(asset.parent).toLowerCase();
+    const parent = materialGuidText(asset.parent).toLowerCase();
     if (!direct.has(parent) || kind(parent) !== 'material')
       return new AssetError({
         code: 'asset-parse-failed',
@@ -129,6 +141,12 @@ export function validateAssetReferences(
   if (asset.kind !== 'mesh') return undefined;
   for (const [slotIndex, slot] of asset.materialSlots.entries()) {
     if (slot.defaultMaterial === undefined) continue;
+    if (typeof slot.defaultMaterial === 'number')
+      return new AssetError({
+        code: 'asset-parse-failed',
+        expected: 'source GUIDs in Pack Mesh material references',
+        hint: `repair materialSlots[${slotIndex}] of mesh ${guid}`,
+      });
     const defaultMaterialGuid = AssetGuid.format(slot.defaultMaterial).toLowerCase();
     const actualKind = direct.has(defaultMaterialGuid)
       ? (kind(defaultMaterialGuid) ?? 'missing')
@@ -148,6 +166,12 @@ export function validateAssetReferences(
     });
   }
   for (const lod of asset.lods ?? []) {
+    if (typeof lod.mesh === 'number')
+      return new AssetError({
+        code: 'asset-parse-failed',
+        expected: 'source GUIDs in Pack Mesh LOD references',
+        hint: `repair LOD references of mesh ${guid}`,
+      });
     const target = AssetGuid.format(lod.mesh).toLowerCase();
     if (!direct.has(target) || kind(target) !== 'mesh')
       return new AssetError({

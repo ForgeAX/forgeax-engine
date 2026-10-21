@@ -18,7 +18,11 @@
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { foldDispatchBuckets } from '../../../render/src/record/mesh-ssbo';
-import type { DispatchEntry } from '../../../render/src/render-system-extract';
+import {
+  type DispatchEntry,
+  defaultMaterialSnapshot,
+  type MaterialSnapshot,
+} from '../../../render/src/render-system-extract';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
   TRANSPARENT_SORT_MODE_LAYER_Y,
@@ -45,7 +49,6 @@ function mockEntry(opts: {
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: opts.materialShaderId,
-    paramSnapshot: undefined,
   };
 }
 
@@ -54,7 +57,7 @@ function mockRenderable(
   ty = 0,
 ): {
   transform: { world: Float32Array };
-  material: { transparent?: true | undefined };
+  material: MaterialSnapshot;
 } {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -67,7 +70,14 @@ function mockRenderable(
   // fold-eligible behavior these mode-gate tests exercise; see
   // record/mesh-ssbo.ts transparent-pass-only gate (the sprite
   // discriminator was removed in M3 / w15 and replaced with `transparent`).
-  return { transform: { world }, material: { transparent: true } };
+  return {
+    transform: { world },
+    material: {
+      ...defaultMaterialSnapshot(),
+      transparent: true,
+      passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+    },
+  };
 }
 
 describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {

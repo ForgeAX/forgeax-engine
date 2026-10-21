@@ -28,7 +28,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import type { SkinError } from '@forgeax/engine-skinning';
-import type { Handle, ImageError } from '@forgeax/engine-types';
+import type { AssetHandle, ImageError } from '@forgeax/engine-types';
 import type { RhiBackendInstrumentation } from './assembly/backend-contract.js';
 import type { CloudLayerInspection } from './cloud/inspection.js';
 import type { AmbientOcclusionData } from './components/ambient-occlusion.js';
@@ -68,6 +68,7 @@ import type {
   RenderFeatureHostInspection,
   RenderSceneInspection,
   ShadowRasterInspection,
+  ShadowWorkloadObservation,
   SsrDependenciesInspection,
   SsrSpatialInspection,
   TemporalTargetInspection,
@@ -409,8 +410,6 @@ export interface RenderPipelineContext {
   /** Per-frame post-process parameter bytes keyed by shader id. */
   readonly postProcessParams: ReadonlyMap<string, Uint8Array>;
   readonly msaaActive: boolean;
-  readonly geometryColorResolveView: TextureView | null;
-  readonly ldrSpriteColorView: TextureView | null;
   /** Renderer-owned volume resources prepared from the authored ECS snapshot. */
   readonly volumetricFog?: VolumetricFogFrameContext;
   /** Renderer-owned SpotLight projector resources, independent of fog. */
@@ -451,6 +450,7 @@ export interface AtmosphereShaderSources {
   readonly luts: string;
   readonly compose: string;
   readonly ibl: string;
+  readonly prefilter: string;
   readonly cube: string;
   readonly background: string;
 }
@@ -544,7 +544,7 @@ export interface Renderer {
   /** Prepare a live MeshAsset's GPU buffers before its first rendered frame. */
   prepareMeshResidency(
     world: World,
-    meshHandle: Handle<'MeshAsset', 'shared'>,
+    meshHandle: AssetHandle<'mesh'>,
     observePhase?: MeshResidencyPhaseObserver,
   ): Result<PreparedMeshResidency, MeshResidencyError>;
   /** Admit a prepared candidate; publication is tied to the next FrameReceipt. */
@@ -566,6 +566,18 @@ export interface Renderer {
   dynamicGeometryReceipt(candidate: DynamicGeometryCandidate): DynamicGeometryReceipt | undefined;
   cancelDynamicGeometry(candidate: DynamicGeometryCandidate): Result<void, DynamicGeometryError>;
   retireDynamicGeometry(candidate: DynamicGeometryCandidate): Result<void, DynamicGeometryError>;
+  /**
+   * Explicit capability for retiring an older published lease while an exact
+   * successor keeps the same live binding. An accepted successor registers
+   * deferred cleanup; only its consumed publication can release the old lease.
+   * Successful same-entity admissions can carry that request through an
+   * unpublished replacement; cancellation retains the old lease.
+   * Preparation, material validation and publication remain mandatory.
+   */
+  retireSupersededDynamicGeometry(
+    candidate: DynamicGeometryCandidate,
+    successor: DynamicGeometryCandidate,
+  ): Result<void, DynamicGeometryError>;
   draw(
     input: RenderFrameInput | PublishedRenderFrameInput,
   ): RenderResult<FrameReceipt, RenderError>;
@@ -745,12 +757,16 @@ export interface FrameObservationRequest {
  * this exact receipt; a recovery retry must obtain a new one.
  */
 export interface FrameReceipt {
+  /** Default-off CPU shadow census captured by this successful submission. */
+  readonly shadowWorkload?: ShadowWorkloadObservation;
   readonly frameId: number;
   readonly deviceGeneration: number;
   /** Whether this frame can present the active scene without a readiness fallback. */
   readonly presentation: FramePresentation;
   /** First readiness blocker captured with this submission, never a later inspect(). */
   readonly presentationPendingReason?: FramePresentationPendingReason;
+  /** Actual captured domains for an explicitly armed submission, including an empty barrier. */
+  readonly observationDomains?: readonly FrameObservationDomain[];
   /** Backend identity captured at submit and checked before observation. */
   readonly backendId?: RhiCaps['backendKind'];
   /** Monotonic compiled graph identity used by renderer-issued observations. */
@@ -1212,9 +1228,9 @@ export type DrawOwnerOptions = {
 /** Information attached to a device-loss notification. */
 export interface RendererLostInfo {
   /** Concise machine-readable cause, mapped to a single vocabulary. */
-  reason: string;
+  readonly reason: string;
   /** Free-form description (UA / extension / driver text). */
-  message: string;
+  readonly message: string;
 }
 
 /** Listener registered through `Renderer.onLost`. */
@@ -1417,6 +1433,8 @@ export type RenderPhaseSkipReason =
 
 /** First-version options bag (intentionally empty; reserved for v0.1). */
 export interface RendererOptions {
+  /** Default-off receipt-owned CPU shadow workload; no additional GPU operations. */
+  readonly shadowWorkload?: boolean;
   /**
    * Borrowed UI document, transferring either owned RGBA8 or sparse-strip work
    * once per admitted App frame. Renderer owns raster resources, composition,
@@ -1522,7 +1540,7 @@ export interface RendererOptions {
  * AI users exhaustively switch on `HealthReason` without default; TS guards
  * completeness.
  */
-export type HealthReason = 'alive' | 'device-lost' | 'internal-fault';
+export type HealthReason = HealthSnapshot['reason'];
 
 /** Detail for `HealthReason 'device-lost'`. */
 export interface HealthDetailDeviceLost {

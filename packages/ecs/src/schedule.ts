@@ -318,7 +318,7 @@ export function defineSystemSet(opts: {
  * Does not write any Schedule state — callers consume the `Result` and proceed
  * only on `ok`.
  */
-export function validateSystemSetTokens(
+function validateSystemSetTokens(
   tokens: readonly SystemSet[],
 ): Result<void, SystemSetNotRegisteredError> {
   for (const token of tokens) {

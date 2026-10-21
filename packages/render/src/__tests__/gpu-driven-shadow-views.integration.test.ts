@@ -67,11 +67,9 @@ describe('GPU-driven shadow view graph integration', () => {
         ...base,
         shadow: { ...base.shadow, directional: 'disabled' as const, pointCount: 0, spotCount },
       };
-      addTypedShadowPasses(
-        graph,
-        input,
-        withFeatures ? { accesses: [], encode: vi.fn() } : undefined,
-      ).unwrap();
+      addTypedShadowPasses(graph, input, {
+        shadowFeatures: withFeatures ? { accesses: [], encode: vi.fn() } : undefined,
+      }).unwrap();
       const compiled = graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap();
       const spot = textures.mock.calls
         .map(([descriptor]) => descriptor)

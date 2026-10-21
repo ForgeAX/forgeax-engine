@@ -1,6 +1,7 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { MeshAsset, MeshPod } from '@forgeax/engine-types';
+import type { MeshPod } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { buildMeshAsset } from '../to-asset-pack';
 
 describe('FBX mesh material slots', () => {
@@ -36,7 +37,7 @@ describe('FBX mesh material slots', () => {
       ]),
     });
     if (asset.kind !== 'mesh') throw new Error('expected mesh');
-    const mesh = asset.payload as MeshAsset;
+    const mesh = importedMesh(asset);
 
     expect(mesh.submeshes.map((submesh) => submesh.materialSlot)).toEqual([0, 1, 0]);
     expect(mesh.materialSlots.map((slot) => slot.slotName)).toEqual(expected);
@@ -83,7 +84,7 @@ describe('FBX mesh material slots', () => {
       },
     });
     if (asset.kind !== 'mesh') throw new Error('expected mesh');
-    const mesh = asset.payload as MeshAsset;
+    const mesh = importedMesh(asset);
 
     expect(mesh.submeshes.map((submesh) => submesh.materialSlot)).toEqual([2, 0]);
     expect(mesh.materialSlots.map((slot) => slot.slotName)).toEqual(['Body', 'Trim', 'Accent']);
@@ -124,7 +125,7 @@ describe('FBX mesh material slots', () => {
       materialSlotDefaultOverrides: { 'fbx:material:Body': authoredGuid },
     });
     if (asset.kind !== 'mesh') throw new Error('expected mesh');
-    const mesh = asset.payload as MeshAsset;
+    const mesh = importedMesh(asset);
 
     expect(AssetGuid.format(mesh.materialSlots[0]?.defaultMaterial as never)).toBe(authoredGuid);
   });

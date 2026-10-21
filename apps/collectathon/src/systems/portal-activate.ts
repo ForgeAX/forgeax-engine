@@ -22,14 +22,13 @@
 // (portal-activate.test.ts); the system fn wires them to the live resource +
 // CollidingEntities + state token.
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
 import { MeshRenderer } from '@forgeax/engine-render';
 import type { StateToken } from '@forgeax/engine-state';
 import { setNextState } from '@forgeax/engine-state';
-import type { MaterialAsset } from '@forgeax/engine-types';
-
 import { Portal, PortalState } from '../components';
 import { allCollected, GAME_PROGRESS_KEY, type GameProgress } from '../resources';
 import { activePortalMaterial } from '../spawn/spawn-portal';
@@ -89,13 +88,14 @@ export function createPortalSystem(
 
 // Flip PortalState.active and swap to the bright active material.
 function activatePortal(world: World, portal: EntityHandle): void {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   world.set(portal, PortalState, { active: true });
   const renderer = world.get(portal, MeshRenderer);
   if (!renderer.ok) return;
-  const activeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    activePortalMaterial(),
-  );
+  const activeMat = sceneAssets.create(activePortalMaterial()).unwrap();
   world.set(portal, MeshRenderer, { materials: [activeMat] });
 }
 

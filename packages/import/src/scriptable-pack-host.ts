@@ -733,6 +733,9 @@ export async function prepareDirectPackTransport(
   const definition = {
     schemaVersion: '2.0.0' as const,
     packageId: packageId.value,
+    ...(input.projected.assets.some((asset) => asset.kind === 'plugin')
+      ? { plugins: true as const }
+      : {}),
     build: () =>
       ok(
         Object.fromEntries(

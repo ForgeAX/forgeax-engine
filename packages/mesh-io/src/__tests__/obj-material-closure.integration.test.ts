@@ -50,6 +50,29 @@ describe('OBJ source material and dependency closure', () => {
         (await parseObjPackage(OBJ, async () => encode(`newmtl Paint\n${key} unsupported.png`))).ok,
       ).toBe(false);
   });
+  it('rejects ambiguous admitted materials across libraries, but ignores unused names', async () => {
+    const source = OBJ.replace('mtllib paint.mtl', 'mtllib paint.mtl\nmtllib second.mtl');
+    expect((await parseObjPackage(source, async () => encode('newmtl Paint\nKd 1 1 1'))).ok).toBe(
+      false,
+    );
+    const result = await parseObjPackage(source, async (path) =>
+      encode(path === 'paint.mtl' ? 'newmtl Paint\nKd 1 1 1\nnewmtl Unused' : 'newmtl Unused'),
+    );
+    expect(result.unwrap().materials.map((material) => material.name)).toEqual(['Paint']);
+  });
+  it('keeps whitespace inside material names aligned with face UV checks', async () => {
+    const source = OBJ.replace('usemtl Paint', 'usemtl Painted  Metal');
+    const read = async (path: string) =>
+      path === 'paint.mtl'
+        ? encode(MTL.replace('newmtl Paint', 'newmtl Painted  Metal'))
+        : new Uint8Array([1]);
+    expect((await parseObjPackage(source, read)).unwrap().materials[0]?.name).toBe(
+      'Painted  Metal',
+    );
+    expect((await parseObjPackage(source.replace('f 1/1 2/2 3/3', 'f 1 2 3'), read)).ok).toBe(
+      false,
+    );
+  });
   it('rejects textured faces without source UVs', async () => {
     const result = await parseObjPackage(OBJ.replace('f 1/1 2/2 3/3', 'f 1 2 3'), async (path) =>
       path === 'paint.mtl' ? encode(MTL) : new Uint8Array([1, 2, 3]),

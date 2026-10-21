@@ -63,7 +63,7 @@ function spawnValidatedLight(
 
 {
   describe('M1 directional closed shadow quality contract', () => {
-    it('publishes the six closed labels and PCSS defaults', () => {
+    it('publishes the closed filter labels and PCSS defaults', () => {
       const schema = componentSchema(DirectionalLight);
       expect(schema.shadowFilter).toBe('enum');
       expect(componentDefinition(DirectionalLight).defaults).toMatchObject({
@@ -78,6 +78,8 @@ function spawnValidatedLight(
         pcssMedium: 4,
         pcssHigh: 5,
         pcfVogel: 6,
+        pcfSoft: 7,
+        variance: 8,
       });
       expect('pcfKernelSize' in schema).toBe(false);
     });
@@ -350,7 +352,7 @@ function spawnValidatedLight(
         expect(defaults.mapSize).toBe(2048);
         expect(defaults.depthBias).toBeCloseTo(0.00001, 7);
         expect(defaults.normalBias).toBeCloseTo(0.05, 5);
-        expect(defaults.shadowDistance).toBeCloseTo(100000, 5);
+        expect(defaults.shadowDistance).toBeCloseTo(200, 5);
         expect(defaults.shadowFilter).toBe(6);
         expect(defaults.staggerCascades).toBe(false);
 
@@ -358,7 +360,7 @@ function spawnValidatedLight(
         // 1 castShadow + 10 closed shadow-quality fields + staggerCascades + contactShadowLength + lightingChannels = 17 fields (feat-20260709 M2 collapsed
         // direction/color from 6 per-axis scalars to 2 array<f32,3> columns;
         // nearPlane removed — derived from camera near; farPlane -> shadowDistance)
-        expect(Object.keys(componentSchema(dl)).length).toBe(17);
+        expect(Object.keys(componentSchema(dl)).length).toBe(27);
         expect('lightingChannels' in componentSchema(dl)).toBe(true);
         expect(componentSchema(dl).staggerCascades).toBe('bool');
         expect('contactShadowLength' in componentSchema(dl)).toBe(true);
@@ -397,7 +399,7 @@ function spawnValidatedLight(
         expect(lightData.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(lightData.depthBias).toBeCloseTo(0.00001, 7);
         expect(lightData.normalBias).toBeCloseTo(0.05, 5);
-        expect(lightData.shadowDistance).toBeCloseTo(100000, 5);
+        expect(lightData.shadowDistance).toBeCloseTo(200, 5);
       });
 
       it('AC-02: spawn with empty data gets all defaults (single-component)', () => {
@@ -417,7 +419,7 @@ function spawnValidatedLight(
         expect(light.mapSize).toBeCloseTo(2048, 5);
         expect(light.depthBias).toBeCloseTo(0.00001, 7);
         expect(light.normalBias).toBeCloseTo(0.05, 5);
-        expect(light.shadowDistance).toBeCloseTo(100000, 5);
+        expect(light.shadowDistance).toBeCloseTo(200, 5);
       });
 
       it('AC-02: spawn with full explicit data overrides all defaults (single-component)', () => {
@@ -1419,7 +1421,7 @@ function spawnValidatedLight(
         // Slot 11: cosOuter (packed into direction.w lane).
         expect(out[11]).toBeCloseTo(0.866, 6);
         // Slot 12..14: default Spot receiver controls carried by row 3.
-        expect(out[12]).toBeCloseTo(0.005, 6);
+        expect(out[12]).toBeCloseTo(0.00001, 6);
         expect(out[13]).toBeCloseTo(0.05, 6);
         expect(out[14]).toBeCloseTo(1, 6);
         // Slot 15: roll angle defaults to zero.
@@ -1820,7 +1822,7 @@ function spawnValidatedLight(
           .unwrap();
         const view = world.get(e, SpotLight).unwrap();
         expect(view.mapSize).toBe(1024);
-        expect(view.depthBias).toBeCloseTo(0.005, 5);
+        expect(view.depthBias).toBeCloseTo(0.00001, 6);
         expect(view.normalBias).toBeCloseTo(0.05, 5);
         expect(view.nearPlane).toBeCloseTo(0.5, 5);
         expect(view.farPlane).toBeCloseTo(500, 5);
@@ -1838,7 +1840,7 @@ function spawnValidatedLight(
         const view = world.get(e, SpotLight).unwrap();
         expect(view.castShadow).toBe(false);
         expect(view.mapSize).toBe(1024);
-        expect(view.depthBias).toBeCloseTo(0.005, 5);
+        expect(view.depthBias).toBeCloseTo(0.00001, 6);
         expect(view.normalBias).toBeCloseTo(0.05, 5);
         expect(view.nearPlane).toBeCloseTo(0.5, 5);
         expect(view.farPlane).toBeCloseTo(500, 5);
@@ -1879,7 +1881,7 @@ function spawnValidatedLight(
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
         expect(view.normalBias).toBeCloseTo(0.05, 5);
-        expect(view.shadowDistance).toBeCloseTo(100000, 5);
+        expect(view.shadowDistance).toBeCloseTo(200, 5);
         expect(view.shadowFilter).toBe(6);
       });
 
@@ -1895,7 +1897,7 @@ function spawnValidatedLight(
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
         expect(view.normalBias).toBeCloseTo(0.05, 5);
-        expect(view.shadowDistance).toBeCloseTo(100000, 5);
+        expect(view.shadowDistance).toBeCloseTo(200, 5);
         expect(view.shadowFilter).toBe(6);
       });
 
@@ -1929,7 +1931,7 @@ function spawnValidatedLight(
       });
 
       it('schema includes lightingChannels alongside the existing light and shadow fields', () => {
-        expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(17);
+        expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(27);
         expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
         expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
         expect('direction' in componentSchema(DirectionalLight)).toBe(true);
@@ -2323,21 +2325,15 @@ function spawnValidatedLight(
   // DirectionalLight.validate() block above (P4 cross-light parity).
   describe('feat-20260625-spot-light-shadow-mapping SpotLight.validate()', () => {
     describe('SpotLight.validate() shadow field enforcement', () => {
-      it('rejects even pcfKernelSize (2) with ShadowInvalidConfigError', () => {
+      it('accepts fractional radius widths independently of Vogel tap count', () => {
         const world = new World();
-        const r = spawnValidatedLight(world, SpotLight, {
-          castShadow: true,
-          direction: [0, -1, 0],
-          pcfKernelSize: 2,
-        });
-        expect(r.ok).toBe(false);
-        if (r.ok) throw new Error('expected spawn to fail validation');
-        const err = r.error as unknown as ShadowInvalidConfigError;
-        expect(err.code).toBe('shadow-invalid-config');
-        expect(err.detail.field).toBe('pcfKernelSize');
-        expect(err.detail.actual).toBe(2);
-        expect(err.detail.bound).toEqual({ kind: 'lower-bound', operator: '>=', value: 1 });
-        expect(err.hint).toBe('set pcfKernelSize to an odd integer >= 1; got 2');
+        expect(
+          spawnValidatedLight(world, SpotLight, {
+            castShadow: true,
+            direction: [0, -1, 0],
+            pcfKernelSize: 2,
+          }).ok,
+        ).toBe(true);
       });
 
       it('rejects pcfKernelSize < 1 (0) with ShadowInvalidConfigError', () => {

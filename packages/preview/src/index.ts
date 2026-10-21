@@ -42,9 +42,6 @@ export { createResourcePreviewReport, type ResourcePreviewReport } from './evide
 export {
   bindPreviewHost,
   createPreviewHost,
-  type PreviewAssetLoadFailure,
-  type PreviewAssetLoadResult,
-  type PreviewAssetRegistry,
   type PreviewHost,
   type PreviewHostMechanisms,
   type PreviewRenderRuntime,
@@ -97,20 +94,6 @@ export {
   type MeshSubmeshBinding,
   meshPreviewDescriptor,
 } from './mesh.js';
-export {
-  createMaterialPreviewPrimitive,
-  createMeshPreviewPrimitive,
-  createTexturePreviewPrimitive,
-  createVfxPreviewPrimitive,
-  type MaterialPreviewPrimitive,
-  type MeshPreviewPrimitive,
-  materialBindingFromPayload,
-  meshBindingFromPayload,
-  type PreviewSnapshot,
-  previewSnapshot,
-  type TexturePreviewPrimitive,
-  type VfxPreviewPrimitive,
-} from './primitive.js';
 export {
   createTexturePreviewContribution,
   type TextureBinding,

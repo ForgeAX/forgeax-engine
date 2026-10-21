@@ -91,14 +91,26 @@ export function listenWebSocketEndpoint(
     // This bounds both data and unconsumed terminal notifications by maxPeers.
     const peers = new Map<PeerId, { socket: WebSocket; queue: BoundedEventQueue }>();
     let nextPeerId = 1;
-    let settled = false;
-    let closed = false;
-    const server = new WebSocketServer({
-      host,
-      port: options.port,
-      perMessageDeflate: false,
-      maxPayload: maxQueuedBytes,
-    });
+    let state: 'starting' | 'open' | 'closed' = 'starting';
+    let server: WebSocketServer;
+    try {
+      server = new WebSocketServer({
+        host,
+        port: options.port,
+        perMessageDeflate: false,
+        maxPayload: maxQueuedBytes,
+      });
+    } catch (cause) {
+      resolve(connectionFailed(address, cause));
+      return;
+    }
+    const closePeer = (
+      peer: { socket: WebSocket; queue: BoundedEventQueue },
+      reason: string,
+    ): void => {
+      peer.queue.close(reason);
+      if (peer.socket.readyState === peer.socket.OPEN) peer.socket.close();
+    };
 
     const endpoint: NetEndpoint = {
       poll: () => {
@@ -113,7 +125,7 @@ export function listenWebSocketEndpoint(
         return events;
       },
       send: (peerId, data) => {
-        if (closed) return alreadyClosed('The WebSocket listener endpoint is closed.');
+        if (state === 'closed') return alreadyClosed('The WebSocket listener endpoint is closed.');
         const peer = peers.get(peerId);
         const socket = peer?.socket;
         if (
@@ -144,7 +156,7 @@ export function listenWebSocketEndpoint(
         }
       },
       disconnect: (peerId) => {
-        if (closed) return alreadyClosed('The WebSocket listener endpoint is closed.');
+        if (state === 'closed') return alreadyClosed('The WebSocket listener endpoint is closed.');
         const peer = peers.get(peerId);
         if (!peer)
           return err(
@@ -154,16 +166,15 @@ export function listenWebSocketEndpoint(
             }),
           );
         if (peer.queue.closed) return connectionClosed(peerId);
-        peer.queue.close('Peer disconnect requested.');
-        peer.socket.close();
+        closePeer(peer, 'Peer disconnect requested.');
         return ok(undefined);
       },
       close: () => {
-        if (closed) return alreadyClosed('The WebSocket listener endpoint is already closed.');
-        closed = true;
+        if (state === 'closed')
+          return alreadyClosed('The WebSocket listener endpoint is already closed.');
+        state = 'closed';
         for (const peer of peers.values()) {
-          peer.queue.close('Listener closed.');
-          peer.socket.close();
+          closePeer(peer, 'Listener closed.');
         }
         server.close();
         return ok(undefined);
@@ -171,38 +182,41 @@ export function listenWebSocketEndpoint(
     };
 
     server.on('connection', (socket) => {
-      if (closed || peers.size >= maxPeers) {
+      if (state === 'closed' || peers.size >= maxPeers) {
         socket.close();
         return;
       }
       const peerId = nextPeerId++ as PeerId;
       const queue = new BoundedEventQueue(maxQueuedEvents, maxQueuedBytes);
-      peers.set(peerId, { socket, queue });
+      const peer = { socket, queue };
+      peers.set(peerId, peer);
       queue.enqueue({ kind: 'peer-connected', peerId });
       socket.on('message', (data, isBinary) => {
         if (queue.closed) return;
         if (!isBinary) {
-          socket.close();
+          closePeer(peer, 'Invalid binary message.');
           return;
         }
         const bytes = toBytes(data);
         if (!bytes) {
-          socket.close();
+          closePeer(peer, 'Invalid binary message.');
           return;
         }
-        if (!queue.enqueue({ kind: 'message', peerId, data: bytes })) socket.close();
+        if (!queue.enqueue({ kind: 'message', peerId, data: bytes }))
+          closePeer(peer, 'Message queue overflow.');
       });
       socket.on('close', () => queue.close('Socket closed.'));
-      socket.on('error', () => socket.close());
+      socket.on('error', () => closePeer(peer, 'Socket error.'));
     });
     server.on('error', (cause) => {
-      if (settled) return;
-      settled = true;
+      if (state !== 'starting') return;
+      state = 'closed';
+      server.close();
       resolve(connectionFailed(address, cause));
     });
     server.on('listening', () => {
-      if (settled) return;
-      settled = true;
+      if (state !== 'starting') return;
+      state = 'open';
       resolve(ok(endpoint));
     });
   });

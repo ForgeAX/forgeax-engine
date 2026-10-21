@@ -1,42 +1,4 @@
-// sprite-variants.unit.test.ts -- feat-20260625-sprite-instances-and-tilemap-terrain-static-batch
-// M2 / w6 (red before w7).
-//
-// Structural test for the new PER_INSTANCE_REGION variant axis on sprite.wgsl.
-// Pre-w7 expectations (RED):
-//   sprite.wgsl declares ONE axis (STORAGE_BUFFER_AVAILABLE) -- the variant
-//   matrix is 2x1 = 2; assertion (a) below expects 2x2 = 4 and fails.
-// Post-w7 expectations (GREEN):
-//   sprite.wgsl declares TWO axes (STORAGE_BUFFER_AVAILABLE +
-//   PER_INSTANCE_REGION) for a 2x2 = 4 matrix; common.wgsl InstanceData
-//   gains an #if PER_INSTANCE_REGION == true conditional region field; the
-//   non-9-slice path in sprite.wgsl chooses its UV-region source via the
-//   same conditional, while the 9-slice path keeps reading material.region
-//   regardless (D-5; OOS-3 + 9-slice not in PER_INSTANCE_REGION scope).
-//
-// Reverse-falsifier assertions (b) lock the axis to sprite.wgsl alone -- if
-// somebody copies the #pragma into common.wgsl the cartesian product would
-// double pbr / unlit variant counts (D-4 explicitly rejected).
-//
-// Why structural / file-read rather than naga.parse: this package
-// physically isolates naga (4 grep gates) -- cross-module compile
-// validation lives in packages/runtime/src/__tests__/dawn/. Source-text
-// grep is the established idiom (ibl-modules-parse.test.ts;
-// register-material-shader.test.ts M1-w1 block).
-//
-// node:* are accessed via `await import(varId)` (vite-ignore) so the
-// shader tsconfig keeps `types: ["@webgpu/types"]` without pulling in
-// `@types/node` (the established cross-package pattern).
-//
-// Anchors:
-//   - requirements §AC-04 (4-variant cartesian matrix for sprite shading
-//     model under PER_INSTANCE_REGION x STORAGE_BUFFER_AVAILABLE)
-//   - plan-strategy §2 D-4 (axis declared only in sprite.wgsl, never in
-//     common.wgsl, so pbr/unlit do not pick up the new define)
-//   - plan-strategy §2 D-5 (9-slice path always reads material.region
-//     even when PER_INSTANCE_REGION=true; the instance-region field only
-//     drives the legacy single-quad path)
-//   - plan-strategy §4 R-2 / R-3 / R-6 (variant matrix isolation +
-//     useSlices compatibility + uniform-fallback safety)
+// Sprite region selection is shared by sliced and ordinary geometry.
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -143,17 +105,7 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
   });
 });
 
-describe('w6 (c) -- 9-slice path keeps reading material.region under PER_INSTANCE_REGION=true (D-5)', () => {
-  // OOS-3 + plan-strategy §2 D-5 lock 9-slice off the per-instance region
-  // path. The structural assertions encode that:
-  //   1. common.wgsl InstanceData carries the conditional region field so
-  //      the WGSL compiles for PER_INSTANCE_REGION=true x useSlices=true.
-  //   2. sprite.wgsl useSlices branch still references material.region
-  //      (not instances[idx].region) regardless of axis state.
-  //   3. The conditional that switches region sources lives ONLY inside
-  //      the non-9-slice branch -- the useSlices branch keeps a literal
-  //      `material.region` lookup (folded through region.zw / region.xy).
-
+describe('sprite region selection', () => {
   it('common.wgsl wraps the InstanceData region field in #if PER_INSTANCE_REGION == true', () => {
     const src = readWgsl('common.wgsl');
     // bug-20260610 SSOT (recorded in shader.unit.test.ts M1-w1): naga_oil's
@@ -173,22 +125,23 @@ describe('w6 (c) -- 9-slice path keeps reading material.region under PER_INSTANC
     );
   });
 
-  it('sprite.wgsl useSlices branch keeps reading material.region (D-5; not instances[idx].region)', () => {
+  it('sprite.wgsl slices use the same resolved material, mesh or instance region', () => {
     const src = stripComments(readWgsl('sprite.wgsl'));
     // Slice the useSlices block (`if (useSlices) { ... } else { ... }`) and
-    // assert it contains material.region but not instances[...].region.
+    // Both geometry branches consume the region chosen before the branch.
     const ifMatch = src.match(/if\s*\(\s*useSlices\s*\)\s*\{([\s\S]*?)\}\s*else\s*\{/);
     expect(ifMatch, '9-slice branch (if (useSlices) { ... }) must be present').not.toBeNull();
     const sliceBlock = ifMatch?.[1] ?? '';
-    expect(sliceBlock).toMatch(/material\.region/);
+    expect(sliceBlock).toMatch(/selectedRegion/);
+    const selection = src.slice(src.indexOf('var selectedRegion'), src.indexOf('if (useSlices)'));
+    expect(selection).toContain('material.region');
+    expect(selection).toContain('meshes[0].spriteRegion');
+    expect(selection).toContain('instances[idx].region');
     expect(sliceBlock).not.toMatch(/instances\s*\[[^\]]*\]\s*\.\s*region/);
   });
 
-  it('sprite.wgsl non-9-slice branch switches region source via #if PER_INSTANCE_REGION == true', () => {
+  it('sprite.wgsl selects the per-instance region through its geometry variant', () => {
     const src = readWgsl('sprite.wgsl');
-    // The else-branch (no slices) is the only place the conditional region
-    // source applies. Grep the file for the conditional + both legs --
-    // material.region (false leg) and instances[...].region (true leg).
     expect(src).toMatch(/#if\s+PER_INSTANCE_REGION\s*==\s*true/);
     // True leg must reference instances[idx].region (per-instance region).
     expect(src).toMatch(/instances\s*\[[^\]]*\]\s*\.\s*region/);

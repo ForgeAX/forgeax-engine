@@ -715,12 +715,12 @@ fn sampleSsrHitSample(uv : vec2<f32>, rayDirection : vec3<f32>) -> SsrHitSample 
 @compute @workgroup_size(8, 8, 1)
 fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
   let fullSize = textureDimensions(sceneColor, 0);
-  let traceSize = max(fullSize / vec2<u32>(2u), vec2<u32>(1u));
+  let traceSize = fullSize;
   if (globalId.x >= traceSize.x || globalId.y >= traceSize.y) {
     return;
   }
   textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(0.0));
-  let fullPixel = min(globalId.xy * vec2<u32>(2u), fullSize - vec2<u32>(1u));
+  let fullPixel = globalId.xy;
   let coarsestLevel = textureNumLevels(depthPyramid) - 1u;
   let maxTraceLevel = min(maxSsrTraceLevel(fullSize), coarsestLevel + 1u);
   let coarsestSize = depthPyramidLevelSize(depthPyramid, coarsestLevel);

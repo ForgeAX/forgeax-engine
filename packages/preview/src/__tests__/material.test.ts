@@ -5,7 +5,6 @@ import {
   type MaterialPreviewRequest,
   materialPreviewDescriptor,
 } from '../material.js';
-import { materialBindingFromPayload } from '../primitive.js';
 
 const request: MaterialPreviewRequest = {
   subject: { kind: 'MaterialAsset', guid: 'mat-001' },
@@ -18,26 +17,6 @@ const request: MaterialPreviewRequest = {
 };
 
 describe('material.preview canonical contract', () => {
-  it('projects parameter bindings without treating module slots as draw defines', () => {
-    expect(
-      materialBindingFromPayload('mat-001', {
-        kind: 'material',
-        passes: [
-          {
-            name: 'forward',
-            program: { module: 'game::material', moduleSlots: { FLAG: 'true' } },
-          },
-        ],
-        parameters: [{ name: 'baseColor', type: 'color' }],
-        values: { baseColor: [1, 1, 1, 1] },
-      }),
-    ).toEqual({
-      guid: 'mat-001',
-      programDigest: 'material-program:game::material',
-      bindings: ['baseColor'],
-    });
-  });
-
   it('publishes a dedicated descriptor with subject evidence', () => {
     expect(materialPreviewDescriptor.id).toBe('asset.material.preview');
     expect(materialPreviewDescriptor.realm).toBe('engine');
@@ -123,16 +102,14 @@ describe('material.preview sampled-texture budget', () => {
   ])('checks Renderer and World readiness before the material oracle (%s, %s)', async (rendererReady, worldReady) => {
     const guid = 'mat-001';
     const result = await executeMaterialPreview({ guid } as never, {
-      assets: {
-        loadByGuid: async () => ({
-          ok: true,
-          value: {
-            kind: 'material',
-            passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
-          },
-          ownerFacts,
-        }),
-      } as never,
+      subject: {
+        guid,
+        asset: {
+          kind: 'material',
+          passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
+        },
+        ownerFacts,
+      },
       renderer: {
         rendererReady,
         worldReady,

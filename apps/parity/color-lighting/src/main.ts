@@ -1,3 +1,4 @@
+import { createPublicationAssets } from '@forgeax/engine-runtime/internal/renderer-host';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { ok } from '@forgeax/engine-types';
 import { createForgeaxAdapter, projectForgeaxSurfaceEvidence } from './adapters/forgeax-adapter';
@@ -37,7 +38,7 @@ import {
 } from './adapters/transparency-post-adapter';
 import { World } from '@forgeax/engine-ecs';
 import type { RhiDevice } from '@forgeax/engine-rhi';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import type { RendererLegacyHostAdapter } from '@forgeax/engine-render/internal/construct-renderer';
 import { Transform } from '@forgeax/engine-scene';
@@ -96,6 +97,10 @@ import {
   type SpotShadowReceiverVariant,
   type SpotShadowScene,
 } from './spot-shadow-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 const EVIDENCE_SOURCE_SHA =
   (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
     ?.VITE_FORGEAX_EVIDENCE_SOURCE_SHA ?? 'unavailable';
@@ -532,7 +537,7 @@ async function captureWebkitLifecycleStage(
   stageCase: SceneCase,
   stage: WebkitLifecycleStageEvidence['stage'],
 ): Promise<WebkitLifecycleStageEvidence> {
-  const world = makeTransparencyWorld(stageCase);
+  const world = makeTransparencyWorld(stageCase, await createPublicationAssets(forgeaxBundlerAdapter() as never));
   const attached = context.renderer.attach(world);
   if (!attached.ok) throw new Error(`WebKit lifecycle attach failed: ${attached.error.code}`);
   const lease = attached.value;
@@ -711,7 +716,7 @@ async function captureForgeaxInContext(
   let attachedWorld: World | undefined;
   let attachedLease: RenderWorldLease | undefined;
   try {
-    const world = new World();
+    const world = new World({ assets: await createPublicationAssets(forgeaxBundlerAdapter() as never) });
     attachedWorld = world;
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
@@ -964,6 +969,9 @@ async function spawnDirectLightPrimitive(
   spotShadowFalsifier?: SpotShadowFalsifierId,
   spotShadowReceiver: SpotShadowReceiverVariant = 'base',
 ): Promise<void> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
     const spotShadowScene = sceneCase.caseId === SPOT_SHADOW_SCENES.urp.caseId
     ? SPOT_SHADOW_SCENES.urp
     : sceneCase.caseId === SPOT_SHADOW_SCENES.hdrp.caseId
@@ -977,14 +985,14 @@ async function spawnDirectLightPrimitive(
   if (light === undefined) throw new Error(`direct-light case ${sceneCase.caseId} is missing light metadata`);
   const plane = createPlaneGeometry(2.8, 2.8);
   if (!plane.ok) throw new Error(`direct-light plane creation failed: ${plane.error.code}`);
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
+  const meshHandle = sceneAssets.create(plane.value).unwrap();
   const material = Materials.standard({
     baseColor: [0.7, 0.7, 0.7, 1],
     metallic: 0,
     roughness: 1,
     renderState: { cullMode: 'none' },
   });
-  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  const materialHandle = sceneAssets.create(material).unwrap();
   world.spawn(
     { component: Transform, data: {} },
     { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -1029,15 +1037,20 @@ async function spawnBrowserSpotShadowPrimitive(
   falsifier?: SpotShadowFalsifierId,
   receiver: SpotShadowReceiverVariant = 'base',
 ): Promise<void> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const floor = createPlaneGeometry(scene.floor.size[0], scene.floor.size[1]);
   if (!floor.ok) throw new Error(`Spot-shadow floor creation failed: ${floor.error.code}`);
-  const floorMesh = world.allocSharedRef('MeshAsset', floor.value);
-  const floorMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const floorMesh = sceneAssets.create(floor.value).unwrap();
+  const floorMaterial = sceneAssets.create(Materials.standard({
     baseColor: [0.55, 0.55, 0.6, 1],
     metallic: 0,
     roughness: 0.9,
     ...(receiver === 'clearcoat' ? { clearcoat: 1, clearcoatRoughness: 0.2 } : {}),
-  }));
+  })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: scene.floor.position, quat: scene.floor.rotation } },
     { component: MeshFilter, data: { assetHandle: floorMesh } },
@@ -1045,11 +1058,11 @@ async function spawnBrowserSpotShadowPrimitive(
   ).unwrap();
 
   if (falsifier !== 'no-caster') {
-    const occluderMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+    const occluderMaterial = sceneAssets.create(Materials.standard({
       baseColor: [0.85, 0.5, 0.25, 1],
       metallic: 0,
       roughness: 0.6,
-    }));
+    })).unwrap();
     const occluderPosition = falsifier === 'reverse-occlusion'
       ? [
         scene.occluder.position[0],
@@ -1059,7 +1072,7 @@ async function spawnBrowserSpotShadowPrimitive(
       : scene.occluder.position;
     world.spawn(
       { component: Transform, data: { pos: occluderPosition } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [occluderMaterial] } },
     ).unwrap();
   }
@@ -1111,15 +1124,18 @@ async function spawnBrowserSpotShadowPrimitive(
 }
 
 function spawnIblPrimitive(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const plane = createPlaneGeometry(2.8, 2.8);
   if (!plane.ok) throw new Error(`IBL plane creation failed: ${plane.error.code}`);
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
-  const materialHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const meshHandle = sceneAssets.create(plane.value).unwrap();
+  const materialHandle = sceneAssets.create(Materials.standard({
     baseColor: [0.72, 0.72, 0.72, 1],
     metallic: 0,
     roughness: 1,
     renderState: { cullMode: 'none' },
-  }));
+  })).unwrap();
   world.spawn(
     { component: Transform, data: {} },
     { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -1144,9 +1160,12 @@ function materialColor(input: M1ColorInput): readonly [number, number, number, n
 }
 
 async function spawnM1Primitive(world: World, input: M1ColorInput): Promise<void> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const plane = createPlaneGeometry(2.8, 2.8);
   if (!plane.ok) throw new Error(`M1 plane creation failed: ${plane.error.code}`);
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
+  const meshHandle = sceneAssets.create(plane.value).unwrap();
   const texture = input.kind === 'srgb-texture' || input.kind === 'factor-texture'
       ? {
         kind: 'texture' as const,
@@ -1160,12 +1179,12 @@ async function spawnM1Primitive(world: World, input: M1ColorInput): Promise<void
         mips: { kind: 'none' as const },
       }
     : undefined;
-  const textureHandle = texture === undefined ? undefined : world.allocSharedRef('TextureAsset', texture);
+  const textureHandle = texture === undefined ? undefined : sceneAssets.create(texture).unwrap();
   const material = Materials.unlit(materialColor(input), {
     renderState: { cullMode: 'none' },
     ...(textureHandle === undefined ? {} : { baseColorTexture: textureHandle as unknown as number }),
   });
-  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  const materialHandle = sceneAssets.create(material).unwrap();
   world.spawn(
     { component: Transform, data: {} },
     { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -1177,9 +1196,12 @@ async function spawnM2AlphaPrimitive(
   world: World,
   fixture: M2AlphaFixture,
 ): Promise<void> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const plane = createPlaneGeometry(2.8, 2.8);
   if (!plane.ok) throw new Error(`M2 plane creation failed: ${plane.error.code}`);
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
+  const meshHandle = sceneAssets.create(plane.value).unwrap();
   const texture = fixture.textureColor === undefined
     ? undefined
     : {
@@ -1193,7 +1215,7 @@ async function spawnM2AlphaPrimitive(
         colorSpace: 'srgb' as const,
         mips: { kind: 'none' as const },
       };
-  const textureHandle = texture === undefined ? undefined : world.allocSharedRef('TextureAsset', texture);
+  const textureHandle = texture === undefined ? undefined : sceneAssets.create(texture).unwrap();
   const renderState = fixture.alpha.mode === 'BLEND'
     ? {
         cullMode: 'none' as const,
@@ -1222,7 +1244,7 @@ async function spawnM2AlphaPrimitive(
       ? { alphaCutoff: fixture.alpha.cutoff }
       : {}),
   });
-  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  const materialHandle = sceneAssets.create(material).unwrap();
   world.spawn(
     { component: Transform, data: {} },
     { component: MeshFilter, data: { assetHandle: meshHandle } },

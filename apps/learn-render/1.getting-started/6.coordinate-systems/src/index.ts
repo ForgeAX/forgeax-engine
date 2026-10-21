@@ -1,3 +1,4 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 // apps/learn-render/1.getting-started/6.coordinate-systems/src/index.ts
 // LearnOpenGL section 1.6 - Coordinate Systems (forgeax mapping with 10
 // textured cubes + perspective Camera; the LO 1.6 model / view /
@@ -89,14 +90,14 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { CanvasAppError } from '@forgeax/engine-app';
 import { quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-wood.pack.json';
 
@@ -240,7 +241,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Map fast-path seeded by registerWithGuid below (alias to engine-
   // builtin HANDLE_CUBE); the material handle resolves through the
   // same Map fast-path after we register the reconstructed POD.
-  const woodHandleRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+  const woodHandleRes = await assets.load(woodGuidRes.value, 'texture');
   if (!woodHandleRes.ok) {
     console.error(
       '[learn-render 1.6 coordinate-systems] wood texture loadByGuid failed:',
@@ -249,12 +250,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  const cubeAssetRes = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE);
+  const cubeAssetRes = createBoxGeometry(1, 1, 1);
   if (!cubeAssetRes.ok) {
     console.error('[learn-render 1.6 coordinate-systems] HANDLE_CUBE asset unavailable');
     return;
   }
-  assets.catalog<MeshAsset>(cubeGuidRes.value, cubeAssetRes.value);
+
 
   const matPack = materialPackJson as unknown as MaterialPackFile;
   const matEntry = matPack.assets.find((a) => a.kind === 'material');
@@ -266,7 +267,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   // loadByGuid returns the texture PAYLOAD (M8 D-17); mint a user-tier column
   // handle so the baseColorTexture slot carries a resolved numeric Handle.
-  const woodTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', woodHandleRes.value));
+  const woodTexHandle = Number(woodHandleRes.value);
   const cubeMaterial: MaterialAsset = {
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
@@ -275,10 +276,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       baseColorTexture: woodTexHandle,
     },
   };
-  assets.catalog<MaterialAsset>(matGuidRes.value, cubeMaterial);
 
-  const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuidRes.value);
-  const matHandleRes = await assets.loadByGuid<MaterialAsset>(matGuidRes.value);
+
+  const cubeHandleRes = assets.create(cubeAssetRes.value);
+  const matHandleRes = assets.create(cubeMaterial);
   if (!cubeHandleRes.ok || !matHandleRes.ok) {
     console.error(
       '[learn-render 1.6 coordinate-systems] loadByGuid failed:',
@@ -288,8 +289,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   // loadByGuid returns payloads (M8 D-17); mint user-tier column handles.
-  const cubeHandle = world.allocSharedRef('MeshAsset', cubeHandleRes.value);
-  const matHandle = world.allocSharedRef('MaterialAsset', matHandleRes.value);
+  const cubeHandle = cubeHandleRes.value;
+  const matHandle = matHandleRes.value;
 
   // Spawn the 10 cubes. Each cube uses the LO 1.6 cubePositions[i]
   // translation + a per-index axis-angle rotation around (1, 0.3,

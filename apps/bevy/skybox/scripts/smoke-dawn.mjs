@@ -162,14 +162,14 @@ if (!guidResult.ok) {
 }
 const assets = app.assets;
 assets.configurePackIndex('/pack-index.json');
-const hdrResult = await assets.loadByGuid(guidResult.value);
+const hdrResult = await assets.load(guidResult.value, 'equirect');
 if (!hdrResult.ok) {
   console.error(`[smoke] FAIL - loadByGuid HDR: ${hdrResult.error.code} - ${hdrResult.error.hint}`);
   process.exit(1);
 }
 
 const world = app.world;
-const equirect = world.allocSharedRef('EquirectAsset', hdrResult.value);
+const equirect = hdrResult.value;
 buildSkyboxWorld(world, equirect, width / height, { includeSkybox: falsify !== 'remove-skybox' });
 
 const frameStartTimestamp = performance.now();

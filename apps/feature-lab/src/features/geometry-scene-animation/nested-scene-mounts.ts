@@ -1,9 +1,11 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
 import { SceneInstance } from '@forgeax/engine/render';
 import { Name, Transform } from '@forgeax/engine/scene';
 import type { SceneAsset } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
+import { installMemoryPack } from '../asset-formats/fixtures/memory-pack';
 
 const CHAIR_GUID = '4f0a6b3e-2c1d-4e8f-9a7b-5d6c3e2f1a09';
 
@@ -49,6 +51,10 @@ export default defineFeature({
   expect:
     'PASS when one room mounting the chair twice yields three SceneInstance roots with the chair GUID retained, the left seat keeps y=0.5 and the overridden right seat is renamed and raised to y=3.',
   setup({ app, world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world);
     return {
       async checks() {
@@ -56,13 +62,11 @@ export default defineFeature({
         const assets = app.assets;
         checks.ok('asset registry available', assets !== undefined);
         if (assets === undefined) return checks.items;
-        const catalogued = assets.catalog(CHAIR_GUID, CHAIR);
-        checks.ok(
-          'chair catalogued',
-          catalogued.ok,
-          catalogued.ok ? undefined : catalogued.error.code,
-        );
-        const result = assets.instantiate(world.allocSharedRef('SceneAsset', ROOM), world);
+        await installMemoryPack(assets, [{ guid: CHAIR_GUID, kind: 'scene', payload: CHAIR }]);
+        const chair = await assets.load(CHAIR_GUID, 'scene');
+        checks.ok('chair source loads', chair.ok, chair.ok ? undefined : chair.error.code);
+        if (!chair.ok) return checks.items;
+        const result = assets.instantiate(sceneAssets.create(ROOM).unwrap(), world);
         checks.ok('room instantiates', result.ok, result.ok ? undefined : result.error.code);
         if (!result.ok) return checks.items;
         const mounts = [result.value, ...world.iterDescendants(result.value)].filter(

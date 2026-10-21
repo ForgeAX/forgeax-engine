@@ -154,7 +154,8 @@ export interface MaterialCoordinateRecordLayout {
   readonly rotationMember: string;
 }
 
-export type MaterialResourceKind = 'sampler' | 'texture' | 'storage-buffer';
+export const MATERIAL_RESOURCE_KINDS = ['sampler', 'texture', 'storage-buffer'] as const;
+export type MaterialResourceKind = (typeof MATERIAL_RESOURCE_KINDS)[number];
 
 export interface MaterialResourceBindingLayout {
   readonly name: string;

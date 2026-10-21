@@ -1,21 +1,16 @@
 import { createHash } from 'node:crypto';
-import {
-  AssetRegistry,
-  createCatalogSource,
-  HANDLE_CUBE,
-  HANDLE_QUAD,
-  RuntimeMaterialValue,
-  RuntimeMeshVertices,
-  resolveAssetHandle,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { FixedTime, FixedUpdate, Time, Update, World } from '@forgeax/engine-ecs';
 import {
   buildMeshCardLayout,
   buildVisibilityDistanceField,
   createBoxGeometry,
+  createPrimitiveMesh,
   encodeMeshDistanceField,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
+  packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   ChildOf,
   GlobalTransform,
@@ -27,6 +22,9 @@ import { DEFAULT_SPRITE_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-sha
 import { Skin } from '@forgeax/engine-skinning';
 import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { subsurfaceSelection } from '../../__tests__/subsurface-selection.fixture';
+import { materialContribution } from '../../assets/asset-decoders';
 import {
   Camera,
   CameraView,
@@ -51,9 +49,22 @@ import { publicationDispatchGroups } from '../dispatch-groups';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
-function fixture(maxInFlight?: 2 | 3, features: readonly RenderFeature<unknown>[] = []) {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
+
+function fixture(
+  options: ConstructorParameters<typeof AssetRegistry>[0] = {},
+  maxInFlight?: 2 | 3,
+  features: readonly RenderFeature<unknown>[] = [],
+) {
+  const assets = new AssetRegistry({
+    ...options,
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const cube = assets.create(BUILTIN_CUBE).unwrap();
+  const quad = assets.create(BUILTIN_QUAD).unwrap();
+  const defaultMaterial = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   const identity = { source: 'publication-test', epoch: 1 };
   const publisher = createRenderPublisher(
     world,
@@ -75,15 +86,15 @@ function fixture(maxInFlight?: 2 | 3, features: readonly RenderFeature<unknown>[
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-        { component: MeshRenderer, data: {} },
+        { component: MeshFilter, data: { assetHandle: cube } },
+        { component: MeshRenderer, data: { materials: [defaultMaterial] } },
       )
       .unwrap();
   const first = spawn(),
     second = spawn();
   world.update(0).unwrap();
   const receiver = new RenderPublicationReceiver(identity),
-    scene = new PersistentRenderScene();
+    scene = new PersistentRenderScene({ assets });
   const publish = () => {
     const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
     const packet = structuredClone(candidate.packet, {
@@ -98,9 +109,27 @@ function fixture(maxInFlight?: 2 | 3, features: readonly RenderFeature<unknown>[
     });
     publisher.recycle(packet.revision, returned).unwrap();
     // Preserve logical rows independently from the returned transport storage.
-    return { packet: saved, frame, resources: accepted.resources };
+    return {
+      packet: saved,
+      frame,
+      materials: scene.shadowCasterProjection()?.content.materials,
+      resources: accepted.resources,
+    };
   };
-  return { world, assets, publisher, receiver, scene, first, second, spawn, publish };
+  return {
+    world,
+    assets,
+    cube,
+    quad,
+    defaultMaterial,
+    publisher,
+    receiver,
+    scene,
+    first,
+    second,
+    spawn,
+    publish,
+  };
 }
 
 describe('native render publication', () => {
@@ -174,11 +203,13 @@ describe('native render publication', () => {
         expect(row.entityKey).toBeGreaterThan(0);
       }
       if (source !== undefined) Object.assign(source, { renderableIndex: 1000 });
-      const first = accepted.frame.dispatch[0];
+      const first = [...accepted.frame.dispatch][0];
       expect(first?.renderableIndex).toBe(0);
       if (first !== undefined) {
         first.tags.observed = 'live-nested-value';
-        expect(groups?.[0]?.[0]?.tags.observed).toBe('live-nested-value');
+        expect(groups?.[0] === undefined ? undefined : [...groups[0]][0]?.tags.observed).toBe(
+          'live-nested-value',
+        );
       }
       const late = f.receiver.snapshot(accepted);
       expect(publicationDispatchGroups(late.frame)).toBeDefined();
@@ -191,7 +222,7 @@ describe('native render publication', () => {
     }
   });
 
-  it('observes replacement borrowed dispatch and accessors instead of retaining accepted membership', () => {
+  it('derives dispatch from accepted material bindings when borrowed packet dispatch is replaced', () => {
     const f = fixture();
     const candidate = f.publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
@@ -209,7 +240,7 @@ describe('native render publication', () => {
       const borrowed = { ...accepted, frame: { ...accepted.frame, dispatch } };
       expect(publicationDispatchGroups(borrowed.frame)).toBeUndefined();
       const frame = f.scene.consumePublication(borrowed);
-      expect(reads).toBeGreaterThan(0);
+      expect(reads).toBe(0);
       expect(Object.isFrozen(dispatch)).toBe(false);
       expect(dispatch.every((entry) => !Object.isFrozen(entry))).toBe(true);
       expect(frame.dispatch.map((entry) => entry.materialHandle)).toEqual(
@@ -232,12 +263,12 @@ describe('native render publication', () => {
     candidate.accept();
     const guid = 'c8888888-8888-4888-8888-888888888888';
     const material = Materials.unlit([0, 1, 0, 1]);
-    const handle = f.world.allocSharedRef('MaterialAsset', material);
+    const handle = f.assets.create(material).unwrap();
     let reads = 0;
     const changing = {
       ...packet,
       get assets() {
-        return ++reads <= stableReads ? [] : [{ handle, guid, value: material }];
+        return ++reads <= stableReads ? [] : [{ handle, revision: 1, guid, value: material }];
       },
     };
     const failing = new Proxy(f.assets, {
@@ -256,7 +287,7 @@ describe('native render publication', () => {
       f.scene.dispose();
     }
   });
-  it('walks the GUID namespace once when a packet retires several assets', () => {
+  it('retires assets without walking or copying the GUID namespace', () => {
     const f = fixture();
     f.publish();
     const candidate = f.publisher.prepare(0).unwrap();
@@ -266,7 +297,8 @@ describe('native render publication', () => {
       const value = Materials.unlit([1, 0, 0, 1]);
       return {
         guid: `c9999999-9999-4999-8999-${String(index).padStart(12, '0')}`,
-        handle: f.world.allocSharedRef('MaterialAsset', value),
+        handle: f.assets.create(value).unwrap(),
+        revision: 1,
         value,
       };
     });
@@ -294,7 +326,7 @@ describe('native render publication', () => {
           retiredAssets: retire,
         })
         .unwrap();
-      expect(visits).toBe(16); // Eight membership visits and eight entries copied on the first write.
+      expect(visits).toBe(0);
       for (const row of rows) {
         expect(accepted.resources.handleForGuid?.(row.guid)).toBe(
           retire.includes(row.handle) ? undefined : row.handle,
@@ -315,8 +347,8 @@ describe('native render publication', () => {
     candidate.accept();
     const guid = 'c7777777-7777-4777-8777-777777777777';
     const material = Materials.unlit([0, 1, 0, 1]);
-    const handle = f.world.allocSharedRef('MaterialAsset', material);
-    const changed = { ...packet, assets: [{ handle, guid, value: material }] };
+    const handle = f.assets.create(material).unwrap();
+    const changed = { ...packet, assets: [{ handle, revision: 1, guid, value: material }] };
     const failing = new Proxy(f.assets, {
       get(target, key) {
         if (key === 'shaderRegistry') throw new Error('admission interrupted');
@@ -345,7 +377,7 @@ describe('native render publication', () => {
       f.scene.dispose();
     }
   });
-  it('preserves the captured GUID namespace across reentrant shader admission', () => {
+  it('rejects reentrant shader admission without mixing namespaces or advancing the baseline twice', () => {
     const f = fixture();
     f.publish();
     const candidate = f.publisher.prepare(0).unwrap();
@@ -353,26 +385,22 @@ describe('native render publication', () => {
     candidate.accept();
     const guid = 'c6666666-6666-4666-8666-666666666666';
     const material = Materials.unlit([0, 1, 0, 1]);
-    const handle = f.world.allocSharedRef('MaterialAsset', material);
+    const handle = f.assets.create(material).unwrap();
     let entered = false;
     const assets = new Proxy(f.assets, {
       get(target, key) {
         if (key === 'shaderRegistry' && !entered) {
           entered = true;
-          f.receiver.accept({ ...packet, assets: [{ handle, guid, value: material }] }).unwrap();
           expect(
-            f.receiver
-              .snapshot(
-                f.receiver
-                  .accept({
-                    ...packet,
-                    base: packet.revision,
-                    revision: packet.revision + 1,
-                  })
-                  .unwrap(),
-              )
-              .resources.handleForGuid?.(guid),
-          ).toBe(handle);
+            f.receiver.accept({
+              ...packet,
+              assets: [{ handle, revision: 1, guid, value: material }],
+            }),
+          ).toMatchObject({
+            ok: false,
+            error: { detail: { reason: 'in-flight' } },
+          });
+          expect(f.receiver.acceptedRevision).toBe(packet.base);
         }
         return Reflect.get(target, key, target);
       },
@@ -380,6 +408,7 @@ describe('native render publication', () => {
     try {
       const accepted = f.receiver.accept(packet, assets).unwrap();
       expect(entered).toBe(true);
+      expect(f.receiver.acceptedRevision).toBe(packet.revision);
       expect(accepted.resources.handleForGuid?.(guid)).toBeUndefined();
     } finally {
       f.publisher.dispose();
@@ -387,11 +416,11 @@ describe('native render publication', () => {
       f.scene.dispose();
     }
   });
-  it('does not recopy the accepted GUID namespace for transform-only packets', () => {
+  it('does not recopy the accepted GUID namespace for transform-only packets', async () => {
     const f = fixture();
     const guid = 'c5555555-5555-4555-8555-555555555555';
-    const material = f.assets.catalog(guid, Materials.unlit([1, 0, 0, 1])).unwrap();
-    const handle = f.world.allocSharedRef('MaterialAsset', material);
+    publishRuntimeAssets(f.assets, [{ guid, asset: Materials.unlit([1, 0, 0, 1]) }]);
+    const handle = (await f.assets.load(guid, 'material')).unwrap();
     f.world.set(f.first, MeshRenderer, { materials: [handle] }).unwrap();
     f.publish();
     const candidate = f.publisher.prepare(0).unwrap();
@@ -442,9 +471,7 @@ describe('native render publication', () => {
     const draws = reordered.dispatch.filter((row) => row.renderableIndex === index);
     expect(draws.length).toBe(originalDraws.length);
     for (let step = 0; step < 8; step++) {
-      f.world
-        .set(f.second, MeshFilter, { assetHandle: step % 2 ? HANDLE_CUBE : HANDLE_QUAD })
-        .unwrap();
+      f.world.set(f.second, MeshFilter, { assetHandle: step % 2 ? f.cube : f.quad }).unwrap();
       f.world.update(0).unwrap();
       const next = f.publish();
       expect(Array.from(next.packet.upserts).filter((_, i) => i % 2 === 0)).toEqual([f.second]);
@@ -508,69 +535,71 @@ describe('native render publication', () => {
   });
 
   it('publishes zero-demand Standard material edits through the retained receiver scene', async () => {
-    const f = fixture();
     const guid = 'c4444444-4444-4444-8444-444444444444';
-    f.assets.setCatalogSource(
-      createCatalogSource({
+    const material = Materials.standard({
+      baseColor: [1, 0.4, 0.2, 1],
+      subsurfaceRadius: [9, 6, 3],
+      subsurfaceWeight: 1,
+    });
+    const publication = createRuntimePackPublication({
+      sourceKeys: new Map([[guid, 'surface']]),
+      scopeId: 'surface',
+      generation: 1,
+      sourcePath: 'surface.pack.ts',
+      sourceRevision: '1',
+      packageUrl: 'https://publication.invalid/surface.fpack',
+      pack: { assets: [{ guid, kind: 'material', payload: material, refs: [], artifacts: {} }] },
+    });
+    const f = fixture({
+      catalog: createCatalogSource({
+        expectedScope: { scopeId: 'surface', generation: 1 },
         entries: [
           {
             guid,
             kind: 'material',
-            packageUrl: '/surface.fpack',
+            packageUrl: 'https://publication.invalid/surface.fpack',
             sourcePath: 'surface.pack.ts',
             sourceKey: 'surface',
+            publication: publication.publication,
           },
         ],
       }),
-    );
-    (await f.assets.enumerateCatalog()).unwrap();
-    const material = f.assets
-      .catalog(
-        guid,
-        Materials.standard({
-          baseColor: [1, 0.4, 0.2, 1],
-          subsurfaceRadius: [9, 6, 3],
-          subsurfaceWeight: 1,
-        }),
-      )
-      .unwrap();
-    const handle = f.world.allocSharedRef('MaterialAsset', material);
+      fetcher: async () => Response.json(publication.pack),
+    });
+    f.assets.installDecoder(materialContribution.kind, materialContribution.decoder);
+    const handle = (await f.assets.load(guid, 'material')).unwrap();
     f.world.set(f.first, MeshRenderer, { materials: [handle] }).unwrap();
-    const radius = f.world
-      .spawn({
-        component: RuntimeMaterialValue,
-        data: { asset: handle, parameter: 'subsurfaceRadius', kind: 2, value: [9, 6, 3] },
-      })
-      .unwrap();
-    f.world
-      .spawn({
-        component: RuntimeMaterialValue,
-        data: { asset: handle, parameter: 'subsurfaceWeight', kind: 0, value: [1] },
-      })
-      .unwrap();
     f.world.update(0).unwrap();
     const snapshots = vi.spyOn(f.assets, 'listCatalog');
     const active = f.publish();
     expect(active.resources.sourceForAsset(handle)).toEqual({ guid, sourceKey: 'surface' });
     expect(snapshots).not.toHaveBeenCalled();
     const activeMaterial = active.frame.renderables.find((row) => row.entityKey === f.first)
-      ?.materials[0];
+      ?.materials[0]?.snapshot;
     expect(activeMaterial?.paramSnapshot?.subsurfaceRadius).toEqual([9, 6, 3]);
-    expect(subsurfaceDemand(activeMaterial === undefined ? [] : [activeMaterial])).toBe(true);
+    expect(
+      subsurfaceDemand(
+        subsurfaceSelection(activeMaterial === undefined ? [] : [activeMaterial]).demand,
+      ),
+    ).toBe(true);
 
-    f.world.set(radius, RuntimeMaterialValue, { value: [0, 0, 0] }).unwrap();
+    f.assets.update(handle, { values: { subsurfaceRadius: [0, 0, 0] } }).unwrap();
     f.world.update(0).unwrap();
     const disabled = f.publish();
     expect(disabled.resources.sourceForAsset(handle)).toEqual({ guid, sourceKey: 'surface' });
     expect(snapshots).not.toHaveBeenCalled();
     const disabledMaterial = disabled.frame.renderables.find((row) => row.entityKey === f.first)
-      ?.materials[0];
-    expect(disabled.packet.invalidatedAssets).toContain(handle);
+      ?.materials[0]?.snapshot;
+    expect(disabled.packet.assetPatches.map((row) => row.handle)).toContain(handle);
     expect(disabledMaterial?.paramSnapshot?.subsurfaceRadius).toEqual([0, 0, 0]);
-    expect(subsurfaceDemand(disabledMaterial === undefined ? [] : [disabledMaterial])).toBe(false);
+    expect(
+      subsurfaceDemand(
+        subsurfaceSelection(disabledMaterial === undefined ? [] : [disabledMaterial]).demand,
+      ),
+    ).toBe(false);
     expect(
       f.scene.shadowCasterProjection()?.renderables.find((row) => row.entityKey === f.first)
-        ?.materials[0]?.paramSnapshot?.subsurfaceRadius,
+        ?.materials[0]?.snapshot.paramSnapshot?.subsurfaceRadius,
     ).toEqual([0, 0, 0]);
     f.publisher.dispose();
     f.scene.dispose();
@@ -583,13 +612,17 @@ describe('native render publication', () => {
       passes: [{ name: 'Forward', program: { module: 'forgeax::default-standard-pbr' } }],
       values: { baseColor: color },
     });
-    const red = f.world.allocSharedRef('MaterialAsset', material([1, 0, 0, 1]));
-    const blue = f.world.allocSharedRef('MaterialAsset', material([0, 0, 1, 1]));
+    const red = f.assets.create(material([1, 0, 0, 1])).unwrap();
+    const blue = f.assets.create(material([0, 0, 1, 1])).unwrap();
     f.world.set(f.first, MeshRenderer, { materials: [red] }).unwrap();
     f.world.set(f.second, MeshRenderer, { materials: [blue] }).unwrap();
     const initial = f.publish();
     const order = (packet: typeof initial.packet) =>
-      packet.templates.map((template) => template.snapshot.material.materialHandle);
+      packet.templates.map(
+        (template) =>
+          initial.packet.materials.find((row) => row.id === template.snapshot.material)?.value
+            .materialHandle,
+      );
     expect(order(initial.packet)).toEqual([red, blue]);
 
     f.world.set(f.first, MeshRenderer, { materials: [blue] }).unwrap();
@@ -598,10 +631,12 @@ describe('native render publication', () => {
     const reordered = f.publish();
     expect(order(reordered.packet)).toEqual([blue, red]);
     expect(
-      reordered.frame.renderables.find((row) => row.entityKey === f.first)?.material.baseColor[2],
+      reordered.frame.renderables.find((row) => row.entityKey === f.first)?.material.snapshot
+        .baseColor[2],
     ).toBe(1);
     expect(
-      reordered.frame.renderables.find((row) => row.entityKey === f.second)?.material.baseColor[0],
+      reordered.frame.renderables.find((row) => row.entityKey === f.second)?.material.snapshot
+        .baseColor[0],
     ).toBe(1);
 
     f.world.despawn(f.second).unwrap();
@@ -611,11 +646,12 @@ describe('native render publication', () => {
     f.world.update(0).unwrap();
     const restored = f.publish();
     expect(
-      restored.frame.renderables.find((row) => row.entityKey === replacement)?.material
+      restored.frame.renderables.find((row) => row.entityKey === replacement)?.material.snapshot
         .baseColor[0],
     ).toBe(1);
     expect(
-      restored.frame.renderables.find((row) => row.entityKey === f.first)?.material.baseColor[2],
+      restored.frame.renderables.find((row) => row.entityKey === f.first)?.material.snapshot
+        .baseColor[2],
     ).toBe(1);
     expect(order(initial.packet)).toEqual([red, blue]);
     f.publisher.dispose();
@@ -625,7 +661,7 @@ describe('native render publication', () => {
     'fallback',
     'shared',
     'independent',
-  ] as const)('serializes each material once while preserving value deduplication (%s)', (kind) => {
+  ] as const)('publishes one shared material row and compares templates by identity (%s)', (kind) => {
     const f = fixture();
     if (kind !== 'fallback') {
       const sprite = kind === 'independent';
@@ -644,11 +680,11 @@ describe('native render publication', () => {
         ],
         values: { baseColor: [1, 0, 0, 1] },
       };
-      const handle = f.world.allocSharedRef('MaterialAsset', material);
+      const handle = f.assets.create(material).unwrap();
       for (const entity of [f.first, f.second]) {
         f.world.set(entity, MeshRenderer, { materials: [handle] }).unwrap();
         if (sprite) {
-          f.world.set(entity, MeshFilter, { assetHandle: HANDLE_QUAD }).unwrap();
+          f.world.set(entity, MeshFilter, { assetHandle: f.quad }).unwrap();
           f.world
             .addComponent(entity, {
               component: SpriteRegionOverride,
@@ -686,8 +722,11 @@ describe('native render publication', () => {
       // Equal per-sprite projections share a template despite distinct objects.
       expect(candidate.packet.templates).toHaveLength(1);
       expect([...candidate.packet.upserts]).toEqual([f.first, 0, f.second, 0]);
-      expect(visits.size).toBe(kind === 'independent' ? 2 : 1);
-      expect([...visits.values()]).toEqual(Array.from({ length: visits.size }, () => 1));
+      expect(visits.size).toBe(0);
+      expect(candidate.packet.materials).toHaveLength(1);
+      expect(candidate.packet.templates[0]?.snapshot.material).toBe(
+        candidate.packet.materials[0]?.id,
+      );
       candidate.discard();
     } finally {
       observer.mockRestore();
@@ -755,10 +794,9 @@ describe('native render publication', () => {
 
   it('serializes shared material parameters once across repeated entities and passes', () => {
     const f = fixture();
-    const material = f.world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.2, 0.4, 0.6, 1] }),
-    );
+    const material = f.assets
+      .create(Materials.standard({ baseColor: [0.2, 0.4, 0.6, 1] }))
+      .unwrap();
     for (const entity of [f.first, f.second])
       f.world.set(entity, MeshRenderer, { materials: [material] }).unwrap();
     const arrays = new Map<object, number>();
@@ -779,19 +817,19 @@ describe('native render publication', () => {
       });
     try {
       const candidate = f.publisher.prepare(0).unwrap();
-      const color = candidate.packet.templates[0]?.snapshot.material.paramSnapshot?.baseColor;
+      const color = candidate.packet.materials[0]?.value.paramSnapshot?.baseColor;
       expect(Array.isArray(color)).toBe(true);
-      expect(arrays.get(color as object)).toBe(1);
+      expect(arrays.has(color as object)).toBe(false);
+      expect(candidate.packet.materials).toHaveLength(1);
       expect(candidate.packet.templates).toHaveLength(1);
       const packet = structuredClone(candidate.packet, {
         transfer: renderPublicationTransfers(candidate.packet),
       });
       candidate.accept();
       const frame = f.scene.consumePublication(f.receiver.accept(packet).unwrap());
-      expect(frame.renderables.map((row) => row.material.paramSnapshot?.baseColor)).toEqual([
-        color,
-        color,
-      ]);
+      expect(
+        frame.renderables.map((row) => row.material.snapshot.paramSnapshot?.baseColor),
+      ).toEqual([color, color]);
       f.publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     } finally {
       observer.mockRestore();
@@ -842,7 +880,7 @@ describe('native render publication', () => {
 
   it('skips template comparison when changed meshes have no other candidate', () => {
     const f = fixture();
-    f.world.set(f.second, MeshFilter, { assetHandle: HANDLE_QUAD }).unwrap();
+    f.world.set(f.second, MeshFilter, { assetHandle: f.quad }).unwrap();
     const stringify = JSON.stringify;
     let serializedTemplates = 0;
     const observer = vi
@@ -861,10 +899,7 @@ describe('native render publication', () => {
       const published = f.publish();
       expect(serializedTemplates).toBe(0);
       expect(published.packet.templates).toHaveLength(2);
-      expect(published.frame.renderables.map((row) => row.assetHandle)).toEqual([
-        HANDLE_CUBE,
-        HANDLE_QUAD,
-      ]);
+      expect(published.frame.renderables.map((row) => row.assetHandle)).toEqual([f.cube, f.quad]);
     } finally {
       observer.mockRestore();
       f.publisher.dispose();
@@ -890,6 +925,28 @@ describe('native render publication', () => {
         ok: false,
         error: { detail: { reason: 'shape' } },
       });
+      expect(f.receiver.acceptedRevision).toBe(0);
+      const shadowReceiver = structuredClone(candidate.packet);
+      const shadowTemplate = shadowReceiver.templates[0];
+      if (shadowTemplate === undefined) throw new Error('missing shadow receiver');
+      Reflect.set(shadowTemplate.snapshot, 'shadowChannels', value);
+      expect(f.receiver.accept(shadowReceiver)).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'shape' } },
+      });
+      for (const field of ['directionalCsmConfig', 'pointShadow', 'spot']) {
+        const shadowPacket = structuredClone(candidate.packet);
+        const shadow = { shadowCasterChannels: value };
+        Reflect.set(
+          shadowPacket.metadata.lights,
+          field,
+          field === 'directionalCsmConfig' ? shadow : [shadow],
+        );
+        expect(f.receiver.accept(shadowPacket)).toMatchObject({
+          ok: false,
+          error: { detail: { reason: 'shape' } },
+        });
+      }
       expect(f.receiver.acceptedRevision).toBe(0);
     }
     const nullLight = structuredClone(candidate.packet);
@@ -1018,7 +1075,7 @@ describe('native render publication', () => {
   });
 });
 
-it('publishes shared material changes and their removal, and retires detached dependencies', () => {
+it('publishes shared material edits and restoration without entity updates, and retires detached dependencies', () => {
   const f = fixture();
   const asset: MaterialAsset = {
     kind: 'material',
@@ -1037,29 +1094,32 @@ it('publishes shared material changes and their removal, and retires detached de
     Object.freeze(value);
   };
   freeze(asset);
-  const handle = f.world.allocSharedRef('MaterialAsset', asset);
+  const handle = f.assets.create(asset).unwrap();
   f.world.set(f.first, MeshRenderer, { materials: [handle] }).unwrap();
   f.world.set(f.second, MeshRenderer, { materials: [handle] }).unwrap();
-  f.publish();
-  const content = f.world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: { asset: handle, parameter: 'baseColor', kind: 2, value: [0, 1, 0, 1] },
-    })
-    .unwrap();
+  const initial = f.publish();
+  f.assets.update(handle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
   const changed = f.publish();
-  expect(changed.packet.upserts.length).toBe(4);
-  expect(changed.packet.invalidatedAssets).toContain(handle);
-  expect(changed.frame.renderables.every((row) => row.material.baseColor[1] === 1)).toBe(true);
-  f.world.despawn(content).unwrap();
-  expect(f.publish().frame.renderables.every((row) => row.material.baseColor[0] === 1)).toBe(true);
+  expect(changed.packet.upserts.length).toBe(0);
+  expect(changed.frame.renderables).toBe(initial.frame.renderables);
+  expect(changed.frame.dispatch).toBe(initial.frame.dispatch);
+  const resource = initial.frame.renderables.at(0)?.material;
+  expect(resource && initial.materials?.get(resource)?.snapshot.baseColor[0]).toBe(1);
+  expect(changed.packet.assetPatches.map((row) => row.handle)).toContain(handle);
+  expect(changed.frame.renderables.every((row) => row.material.snapshot.baseColor[1] === 1)).toBe(
+    true,
+  );
+  f.assets.replace(handle, asset).unwrap();
+  expect(
+    f.publish().frame.renderables.every((row) => row.material.snapshot.baseColor[0] === 1),
+  ).toBe(true);
   f.world.despawn(f.first).unwrap();
   f.world.despawn(f.second).unwrap();
   expect(f.publish().packet.retiredAssets).toContain(handle);
   f.publisher.dispose();
 });
 
-it('publishes static mesh attachments across realms and restores them after vertex content removal', async () => {
+it('publishes static mesh attachments across realms and restores them after explicit replacement', async () => {
   const f = fixture();
   const geometry = createBoxGeometry(1, 1, 1).unwrap();
   const positions = geometry.attributes.position;
@@ -1090,33 +1150,32 @@ it('publishes static mesh attachments across realms and restores them after vert
       artifact,
     },
   };
-  const handle = f.world.allocSharedRef('MeshAsset', original);
+  const handle = f.assets.create(original).unwrap();
   f.world.set(f.first, MeshFilter, { assetHandle: handle }).unwrap();
   f.world.set(f.second, MeshFilter, { assetHandle: handle }).unwrap();
   const initial = f.publish();
-  const copied = resolveAssetHandle<MeshAsset>(initial.resources, handle).unwrap();
+  const copied = initial.resources.resolveAsset<MeshAsset>(handle).unwrap();
   expect(copied.distanceField).toEqual(original.distanceField);
   expect(copied.distanceField?.values.buffer).not.toBe(original.distanceField.values.buffer);
   expect(copied.distanceField?.bricks.buffer).not.toBe(original.distanceField.bricks.buffer);
   expect(copied.cardLayout).toEqual(original.cardLayout);
   expect(original.distanceField.values.byteLength).toBeGreaterThan(0);
-  const vertices = new Float32Array(original.vertices);
-  vertices[0] = Number(vertices[0]) + 0.25;
-  const content = f.world
-    .spawn({ component: RuntimeMeshVertices, data: { asset: handle, vertices } })
-    .unwrap();
+  const position = positions.slice(0, 3);
+  position[0] = Number(position[0]) + 0.25;
+  f.assets.writeRange(handle, { attribute: 'position', first: 0, values: position }).unwrap();
   const changed = f.publish();
-  expect(changed.packet.invalidatedAssets).toContain(handle);
-  const projected = resolveAssetHandle<MeshAsset>(changed.resources, handle).unwrap();
-  expect(projected.vertices[0]).toBe(vertices[0]);
+  expect(changed.packet.assetPatches.map((row) => row.handle)).toContain(handle);
+  const projected = changed.resources.resolveAsset<MeshAsset>(handle).unwrap();
+  expect((projected.attributes.position as Float32Array)[0]).toBe(position[0]);
+  expect(changed.packet.upserts).toHaveLength(0);
   expect(projected).not.toHaveProperty('distanceField');
   expect(projected).not.toHaveProperty('cardLayout');
-  f.world.despawn(content).unwrap();
-  const restored = resolveAssetHandle<MeshAsset>(f.publish().resources, handle).unwrap();
+  f.assets.replace(handle, original).unwrap();
+  const restored = f.publish().resources.resolveAsset<MeshAsset>(handle).unwrap();
   expect(restored.vertices[0]).toBe(original.vertices[0]);
   expect(restored.distanceField).toEqual(original.distanceField);
   expect(restored.cardLayout).toEqual(original.cardLayout);
-  expect(resolveAssetHandle<MeshAsset>(f.world, handle).unwrap()).toBe(original);
+  expect(f.assets.read(handle).unwrap()).toEqual(original);
   f.publisher.dispose();
 });
 
@@ -1222,11 +1281,38 @@ it('publishes detached skin poses and follows joint changes across skipped sourc
   const f = fixture();
   const identity = new Float32Array(32);
   for (const base of [0, 16]) for (const lane of [0, 5, 10, 15]) identity[base + lane] = 1;
-  const skeleton = f.world.allocSharedRef('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 2,
-    inverseBindMatrices: identity,
-  });
+  const skinMaterial = f.assets
+    .create({
+      kind: 'material',
+      passes: [{ name: 'Forward', program: { module: 'forgeax::pbr-skin' } }],
+      values: {},
+    })
+    .unwrap();
+  f.world.set(f.first, MeshRenderer, { materials: [skinMaterial] }).unwrap();
+  const geometry = createBoxGeometry(1, 1, 1).unwrap();
+  const vertices = (geometry.attributes.position as Float32Array).length / 3;
+  const weights = new Float32Array(vertices * 4);
+  for (let i = 0; i < vertices; i++) weights[i * 4] = 1;
+  const attributes = {
+    ...geometry.attributes,
+    skinIndex: new Uint16Array(vertices * 4),
+    skinWeight: weights,
+  };
+  const mesh = f.assets
+    .create({
+      ...geometry,
+      attributes,
+      vertices: packInterleavedVertexAttributes(attributes, vertices).unwrap().vertices,
+    })
+    .unwrap();
+  f.world.set(f.first, MeshFilter, { assetHandle: mesh }).unwrap();
+  const skeleton = f.assets
+    .create({
+      kind: 'skeleton',
+      jointCount: 2,
+      inverseBindMatrices: identity,
+    })
+    .unwrap();
   const joint = f.world.spawn({ component: Transform, data: {} }).unwrap();
   const other = f.world.spawn({ component: Transform, data: { pos: [2, 0, 0] } }).unwrap();
   f.world
@@ -1258,6 +1344,7 @@ it('publishes detached skin poses and follows joint changes across skipped sourc
   expect(pose?.jointWorlds[0]?.[12]).toBe(0);
   expect(f.publish().packet.upserts).toHaveLength(0);
   f.world.removeComponent(f.first, Skin).unwrap();
+  f.world.set(f.first, MeshRenderer, { materials: [f.defaultMaterial] }).unwrap();
   expect(
     f.publish().frame.renderables.find((row) => row.entityKey === f.first)?.skinPose,
   ).toBeUndefined();
@@ -1314,7 +1401,7 @@ it('renders a one-frame identity before its sealed removal and reuses two buffer
 });
 
 it('keeps three transferred publications detached, ordered and bounded while reusing their storage', () => {
-  const f = fixture(3);
+  const f = fixture({}, 3);
   const seal = () => {
     const candidate = f.publisher.prepare(0).unwrap();
     const buffers = renderPublicationTransfers(candidate.packet);
@@ -1395,7 +1482,7 @@ it('keeps three-flight source ACKs tied to admitted revisions through discard an
     plan: () => ok({ work: [] }),
     onSourceFrameSubmitted: (data, feedback) => submitted.push({ data, feedback }),
   };
-  const f = fixture(3, [feature]);
+  const f = fixture({}, 3, [feature]);
   const seal = () => {
     const candidate = f.publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
@@ -1479,21 +1566,51 @@ it('publishes detached view configuration and seeds a late view from the current
   });
   candidate.accept();
   const accepted = f.receiver.accept(packet).unwrap();
-  const late = new PersistentRenderScene();
-  const frame = late.consumePublication(f.receiver.snapshot(accepted));
+  const late = new PersistentRenderScene({ assets: f.assets });
+  const baseline = f.receiver.snapshot(accepted);
+  expect(accepted.materialUpdates).toHaveLength(0);
+  expect(baseline.materialUpdates).toContain(baseline.frame.renderables.at(0)?.material);
+  const frame = late.consumePublication(baseline);
   expect(frame.renderables.map((row) => row.entityKey)).toEqual([Number(f.first)]);
-  expect(frame.renderables[0]?.transform.world[12]).toBe(3);
+  expect(frame.renderables.at(0)?.transform.world[12]).toBe(3);
   f.publisher.dispose();
 });
 
 it('publishes the same interpolated root, camera and animated skin across half-fixed frames', () => {
   const f = fixture();
   const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-  const skeleton = f.world.allocSharedRef('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 1,
-    inverseBindMatrices: identity,
-  });
+  const skinMaterial = f.assets
+    .create({
+      kind: 'material',
+      passes: [{ name: 'Forward', program: { module: 'forgeax::pbr-skin' } }],
+      values: {},
+    })
+    .unwrap();
+  f.world.set(f.first, MeshRenderer, { materials: [skinMaterial] }).unwrap();
+  const geometry = createBoxGeometry(1, 1, 1).unwrap();
+  const vertices = (geometry.attributes.position as Float32Array).length / 3;
+  const weights = new Float32Array(vertices * 4);
+  for (let i = 0; i < vertices; i++) weights[i * 4] = 1;
+  const attributes = {
+    ...geometry.attributes,
+    skinIndex: new Uint16Array(vertices * 4),
+    skinWeight: weights,
+  };
+  const mesh = f.assets
+    .create({
+      ...geometry,
+      attributes,
+      vertices: packInterleavedVertexAttributes(attributes, vertices).unwrap().vertices,
+    })
+    .unwrap();
+  f.world.set(f.first, MeshFilter, { assetHandle: mesh }).unwrap();
+  const skeleton = f.assets
+    .create({
+      kind: 'skeleton',
+      jointCount: 1,
+      inverseBindMatrices: identity,
+    })
+    .unwrap();
   f.world.addComponent(f.first, { component: TransformInterpolation, data: {} }).unwrap();
   const joint = f.world
     .spawn({ component: Transform, data: {} }, { component: ChildOf, data: { parent: f.first } })

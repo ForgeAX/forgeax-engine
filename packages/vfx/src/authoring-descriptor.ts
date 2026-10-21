@@ -314,20 +314,20 @@ function dependencies(effect: VfxGpuEffectAssetAny): readonly VfxAuthoringDepend
       if (force.kind === 'vector')
         add({
           kind: 'asset',
-          identity: force.texture,
+          identity: String(force.texture),
           sourcePath: `${path}.forceFields[${fieldIndex}].texture`,
         });
     }
     for (const [rendererIndex, renderer] of emitter.renderers.entries()) {
       add({
         kind: 'asset',
-        identity: renderer.material,
+        identity: String(renderer.material),
         sourcePath: `${path}.renderers[${rendererIndex}].material`,
       });
-      if (renderer.kind === 'mesh' && typeof renderer.mesh === 'string') {
+      if (renderer.kind === 'mesh' && typeof renderer.mesh !== 'object') {
         add({
           kind: 'asset',
-          identity: renderer.mesh,
+          identity: String(renderer.mesh),
           sourcePath: `${path}.renderers[${rendererIndex}].mesh`,
         });
       }

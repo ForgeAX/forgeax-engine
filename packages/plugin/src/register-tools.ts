@@ -3,17 +3,14 @@ import {
   commandContribution,
   isToolCommandContract,
   type ToolApi,
+  type ToolApiProviderInput,
   type ToolContribution,
-  type ToolRealm,
 } from '@forgeax/engine-tool-runtime';
 import { pluginAssetOrigin } from './asset.js';
 
-export interface ToolRegistrationOptions {
-  readonly sourceId?: string;
-  readonly providerId?: string;
-  readonly module?: string;
-  readonly realm?: ToolRealm;
-}
+export type ToolRegistrationOptions = Partial<
+  Pick<ToolApiProviderInput, 'sourceId' | 'providerId' | 'module' | 'realm'>
+>;
 
 /** Yield the disposer last in the same generator effect as resources used by these tools. */
 export function registerTools(

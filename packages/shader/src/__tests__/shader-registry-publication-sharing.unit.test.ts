@@ -11,8 +11,9 @@ function publication(wgsl: string) {
     .update(shaderSourceDigestInput([createHash('sha256').update(wgsl).digest()]))
     .digest('hex');
   return {
-    schemaVersion: '4.0.0',
+    schemaVersion: '5.0.0',
     receipts: [],
+    entryPoints: [],
     fragments: [wgsl],
     sources: { [digest]: [0] },
     entries: [{ hash: 'entry', bindings: '[]', sourceDigest: digest }],
@@ -43,9 +44,66 @@ async function loaded(manifestUrl: string) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('ShaderRegistry publication sharing', () => {
+  it('preserves block order and tail bytes, with identical native and fallback identities', async () => {
+    const a = 'a'.repeat(131_072);
+    const b = 'b'.repeat(131_072);
+    const load = async (wgsl: string) => {
+      const registry = new ShaderRegistry({
+        manifestUrl: '/chunked-text',
+        readText: async () =>
+          JSON.stringify({ entries: [{ hash: 'entry', wgsl, bindings: '[]' }] }),
+      });
+      expect((await registry.loadManifest()).ok).toBe(true);
+      return registry;
+    };
+    const first = await load(`${a}${b}tail`);
+    const reordered = await load(`${b}${a}tail`);
+    const changedTail = await load(`${b}${a}edit`);
+    const shortened = await load(`${b}${a}`);
+    expect([...first.entries()][0]?.wgsl).toBe(`${a}${b}tail`);
+    expect([...reordered.entries()][0]?.wgsl).toBe(`${b}${a}tail`);
+    expect([...changedTail.entries()][0]?.wgsl).toBe(`${b}${a}edit`);
+    expect([...shortened.entries()][0]?.wgsl).toBe(`${b}${a}`);
+    vi.stubGlobal('crypto', undefined);
+    const fallback = await load(`${b}${a}`);
+    expect([...fallback.entries()][0]).toBe([...shortened.entries()][0]);
+  });
+
+  it('reports a native digest failure without adopting manifest entries', async () => {
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockRejectedValueOnce(
+      new Error('crypto unavailable'),
+    );
+    const registry = new ShaderRegistry({
+      manifestUrl: '/digest-failure',
+      readText: async () => '{"entries":[]}',
+    });
+    const result = await registry.loadManifest();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('manifest-malformed');
+    expect([...registry.entries()]).toEqual([]);
+  });
+
+  it('compares complete native text without collapsing distinct unpaired UTF-16 code units', async () => {
+    const nativeText = (hash: string) =>
+      `{"entries":[{"hash":"${hash}","wgsl":"fn main() {}","bindings":"[]"}]}`;
+    const first = new ShaderRegistry({
+      manifestUrl: '/native-text',
+      readText: async () => nativeText('\uD800'),
+    });
+    const second = new ShaderRegistry({
+      manifestUrl: '/native-text',
+      readText: async () => nativeText('\uD801'),
+    });
+    expect((await first.loadManifest()).ok).toBe(true);
+    expect((await second.loadManifest()).ok).toBe(true);
+    expect([...first.entries()][0]?.hash).toBe('\uD800');
+    expect([...second.entries()][0]?.hash).toBe('\uD801');
+  });
+
   it('shares one verified expansion across registries loading identical manifest text', async () => {
     serve(() => publication('fn shared() {}\n'));
     const first = await loaded('/shared/manifest.json');

@@ -9,7 +9,7 @@ import {
   MATERIAL_CONTEXT,
   materialRecordFixture,
 } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
-import { createAssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
+import { AssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
 import { materialContribution } from '../assets/asset-decoders.js';
 
 function cookedRecord(value: unknown): unknown {
@@ -25,13 +25,14 @@ async function load(fixture: Awaited<ReturnType<typeof materialProductionFixture
     const file = fixture.files.get(path.slice(1));
     return file ? new Response(file.source as BodyInit) : new Response('missing', { status: 404 });
   });
-  const registry = createAssetRegistry({
+  const registry = new AssetRegistry({
     catalog: createCatalogSource({ entries: fixture.entries }),
     fetcher,
   });
   const lease = registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
-    return { result: await registry.load(fixture.record.guid, 'material'), fetcher };
+    const loaded = await registry.load(fixture.record.guid, 'material');
+    return { result: loaded.ok ? registry.read(loaded.value) : loaded, fetcher };
   } finally {
     lease.dispose();
     registry.dispose();
@@ -50,8 +51,10 @@ it('loads production compact transport through the actual Render decoder with th
 });
 
 it('retains the existing typed inline transport contract', async () => {
-  const fixture = await materialProductionFixture();
-  fixture.pack.assets[0].payload.cooked = JSON.parse(serializeCookedMaterialRecord(fixture.record));
+  const fixture = await materialProductionFixture(false);
+  expect(fixture.pack.assets[0].payload.cooked).toEqual(
+    JSON.parse(serializeCookedMaterialRecord(fixture.record)),
+  );
   const { result, fetcher } = await load(fixture);
   expect(result).toMatchObject({ ok: true });
   if (!result.ok) throw result.error;
@@ -86,7 +89,15 @@ it.each([
   expect(result).toMatchObject({
     ok: false,
     error: {
-      code: failure === 'corrupt-external' ? 'asset-integrity-failed' : 'asset-package-invalid',
+      code:
+        failure === 'corrupt-external'
+          ? 'asset-integrity-failed'
+          : failure === 'program-digest-mismatch'
+            ? 'asset-decode-failed'
+            : 'asset-package-invalid',
+      ...(failure === 'program-digest-mismatch'
+        ? { detail: { cause: { code: 'material-cook-record-invalid' } } }
+        : {}),
     },
   });
 });

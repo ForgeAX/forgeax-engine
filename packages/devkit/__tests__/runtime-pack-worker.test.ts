@@ -276,12 +276,12 @@ it.each([
       result: { value: 42, active: 1 },
     });
     const first = await inspect(page);
-    await expect
-      .poll(async () => (await inspect(page)).pluginTicks)
-      .toBeGreaterThan(first.pluginTicks);
+    // Cold GPU preparation can hold World frame credits. Check gameplay
+    // progress after the existing completed-frame gate releases them.
     await expect
       .poll(async () => (await inspect(page)).frames.ready, { timeout: 90000 })
       .toBeGreaterThan(first.frames.ready + 10);
+    expect((await inspect(page)).pluginTicks).toBeGreaterThan(first.pluginTicks);
     const narrowImage = await page.screenshot({
       path: resolve(evidence, `${mode}-${language}-width-2.png`),
     });
@@ -406,13 +406,13 @@ it.each([
         outcome: 'succeeded',
         result: { value: 42, active: 1 },
       });
-      await expect.poll(async () => (await inspect(restored)).pluginTicks).toBeGreaterThan(2);
       expect(await call(restored, 'generate', 2)).toEqual({ ok: true });
       const regenerated = (await call(restored, 'replace')) as Inspection;
       expect(regenerated).toMatchObject({ width: 2, typed: true, world: empty.world });
       await expect
         .poll(async () => (await inspect(restored)).frames.ready, { timeout: 120000 })
         .toBeGreaterThanOrEqual(regenerated.frames.ready + 60);
+      expect((await inspect(restored)).pluginTicks).toBeGreaterThan(2);
       const offlineImage = await restored.screenshot({
         path: resolve(evidence, `${mode}-${language}-offline.png`),
       });

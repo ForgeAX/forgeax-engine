@@ -29,10 +29,10 @@ export function spawnCasterReceiverScene(world, aspect) {
   const plane = createPlaneGeometry(20, 20);
   if (!sphere.ok) throw sphere.error;
   if (!plane.ok) throw plane.error;
-  const sphereMesh = world.allocSharedRef('MeshAsset', sphere.value);
-  const planeMesh = world.allocSharedRef('MeshAsset', plane.value);
+  const sphereMesh = world.assets.create(sphere.value).unwrap();
+  const planeMesh = world.assets.create(plane.value).unwrap();
   const material = (baseColor, roughness = 0.5) =>
-    world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor, metallic: 0, roughness }));
+    world.assets.create(Materials.standard({ baseColor, metallic: 0, roughness })).unwrap();
   const mesh = (assetHandle, pos, rotation, baseColor, participation, roughness) =>
     world.spawn(
       { component: Transform, data: { pos, quat: rotation, scale: [1, 1, 1] } },

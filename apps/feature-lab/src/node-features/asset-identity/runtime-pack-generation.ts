@@ -8,7 +8,6 @@ import {
 } from '@forgeax/engine/import';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import { AssetGuid, definePackageId, type PackInstanceJson } from '@forgeax/engine/pack/source';
-import type { MeshAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 
 const PARENT = '01900000-0000-7000-8000-00000000f101';
@@ -37,7 +36,7 @@ function producer(cache?: Map<string, RuntimePackCacheEntry>): RuntimePackProduc
 }
 
 function reader(source: RuntimePackProducer): AssetRegistry {
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   assets.setCatalogSource(source.catalog, source.fetch);
   return assets;
 }
@@ -45,8 +44,9 @@ function reader(source: RuntimePackProducer): AssetRegistry {
 async function positions(source: RuntimePackProducer, packageId: string): Promise<string> {
   const assets = reader(source);
   const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
-  const loaded = await assets.loadByGuid<MeshAsset>(assets.parseGuid(guid));
-  assets.clearCatalogSource();
+  const handle = await assets.load(guid, 'mesh');
+  const loaded = handle.ok ? assets.read(handle.value) : handle;
+  assets.dispose();
   return loaded.ok
     ? JSON.stringify(Array.from(loaded.value.attributes.position as ArrayLike<number>))
     : `error:${loaded.error.code}`;

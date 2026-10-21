@@ -1,3 +1,5 @@
+import { worldRenderResources } from '../../../render/src/publication/resource-scope';
+import { testAssets } from './helpers/runtime-assets';
 // feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w20 —
 // lazy equirect-to-cubemap projection state machine + multi-Skylight/Skybox
 // once-warn unit tests (plan-strategy §5.3 key test points (2)/(3)/(5) +
@@ -22,9 +24,8 @@
 
 import type { World as WorldType } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
-import { type RhiCaps, RhiError } from '@forgeax/engine-rhi';
-import type { EquirectAsset, Handle } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import { ok, type RhiCaps, RhiError } from '@forgeax/engine-rhi';
+import type { AssetHandle, EquirectAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../../render/src/device/device-scope';
 import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
@@ -66,11 +67,12 @@ interface DeviceProbe {
   textures: number;
 }
 
-const okShim = <T>(v: T) => ({ ok: true as const, value: v });
+const okShim = ok;
 
 // biome-ignore lint/suspicious/noExplicitAny: opaque mock GPU device surface
 function makeReadyDevice(probe: DeviceProbe): any {
   return {
+    limits: { maxTextureDimension2D: 16384, maxTextureArrayLayers: 2048 },
     createShaderModule: () => okShim({ __mock: 'shader' }),
     createSampler: () => okShim({ __mock: 'sampler' }),
     createBindGroupLayout: () => okShim({ __mock: 'bgl' }),
@@ -80,10 +82,13 @@ function makeReadyDevice(probe: DeviceProbe): any {
     createCommandEncoder: () =>
       okShim({
         __mock: 'encoder',
+        copyTextureToTexture: () => undefined,
         beginRenderPass: () => ({
           setPipeline: () => undefined,
           setBindGroup: () => undefined,
           setVertexBuffer: () => undefined,
+          setViewport: () => undefined,
+          setScissorRect: () => undefined,
           draw: () => undefined,
           end: () => undefined,
         }),
@@ -99,10 +104,10 @@ function makeReadyDevice(probe: DeviceProbe): any {
     },
     createTextureView: () => okShim({ __mock: 'view' }),
     queue: {
+      onSubmittedWorkDone: async () => undefined,
       writeTexture: () => okShim(undefined),
       writeBuffer: () => okShim(undefined),
       submit: () => okShim(undefined),
-      onSubmittedWorkDone: async () => undefined,
     },
   };
 }
@@ -117,10 +122,13 @@ const deviceFailure = new RhiError({
 // biome-ignore lint/suspicious/noExplicitAny: opaque mock GPU device surface
 function makeFailingDevice(): any {
   return {
+    createSampler: () => ok({}),
+    limits: { maxTextureDimension2D: 16384, maxTextureArrayLayers: 2048 },
     createShaderModule: () => okShim({ __mock: 'shader' }),
     createTexture: () => ({ ok: false as const, error: deviceFailure }),
     createTextureView: () => ({ ok: false as const, error: deviceFailure }),
     queue: {
+      onSubmittedWorkDone: async () => undefined,
       writeTexture: () => okShim(undefined),
       writeBuffer: () => okShim(undefined),
       submit: () => okShim(undefined),
@@ -142,18 +150,16 @@ function equirectPod(width = 4, height = 2): EquirectAsset {
 // Build a store wired to a device (no shader factory -> the optional async IBL
 // precompute render-pass block is skipped). The cube-projection entry remains
 // pending until the IBL queue completion fence resolves; the white-vs-real-IBL
-// binding decision is made by recordMainPass off the global cache views (out of
+// binding decision is made by encodeMainPass off the global cache views (out of
 // scope for this unit test, covered by the dawn IBL readback test). This unit
 // test asserts the lazy trigger's launch / dedup / caps-gate /
 // fail-once-and-no-retry bookkeeping.
 function configuredStore(device: unknown, caps: RhiCaps): GpuResidencyCache {
   const store = new GpuResidencyCache();
-  let next = 9000;
   store.configureGpuDevice(
     // biome-ignore lint/suspicious/noExplicitAny: mock device supplies the observed RHI operations
     device as any,
     undefined,
-    (() => okShim(toShared<'EquirectAsset'>(next++))) as never,
     caps,
   );
   store.configureIblDevice(
@@ -185,20 +191,22 @@ function makeFrameState() {
 
 async function flushProjection(
   store: GpuResidencyCache,
-  handle: Handle<'EquirectAsset', 'shared'>,
+  handle: AssetHandle<'equirect'>,
   world: WorldType,
 ): Promise<void> {
   // Precompute yields through the event loop between bounded submission
   // batches, then publishes after the final queue-completion fence.
-  await vi.waitFor(() => expect(store.getCubemapStatus(handle, world)).toBe('ready'), {
-    timeout: 5_000,
-  });
+  await vi.waitFor(
+    () => expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('ready'),
+    {
+      timeout: 5_000,
+    },
+  );
 }
 
-// Catalogue an equirect POD into the world's user-tier shared-ref store so
-// resolveAssetHandle<EquirectAsset>(world, handle) returns it (record path).
-function catalogEquirect(world: WorldType, pod: EquirectAsset): Handle<'EquirectAsset', 'shared'> {
-  return world.allocSharedRef('EquirectAsset', pod);
+// The runtime asset owner supplies the record path's equirect source.
+function catalogEquirect(world: WorldType, pod: EquirectAsset): AssetHandle<'equirect'> {
+  return testAssets(world).create(pod).unwrap();
 }
 
 describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w20)', () => {
@@ -218,15 +226,15 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
 
     driveLazyEquirectProjection(
       makeInternals(store, reg, capsNotRenderable),
-      world,
+      worldRenderResources(world),
       frameState,
       handle as unknown as number,
     );
 
-    expect(store.getCubemapStatus(handle, world)).toBe('pending');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('pending');
     await flushProjection(store, handle, world);
     expect(probe.textures).toBeGreaterThan(0);
-    expect(store.getCubemapStatus(handle, world)).toBe('ready');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('ready');
     expect(seen).toEqual([]);
   });
 
@@ -239,20 +247,20 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     const frameState = makeFrameState();
 
     // No entry before the first drive.
-    expect(store.getCubemapStatus(handle, world)).toBeUndefined();
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBeUndefined();
 
     driveLazyEquirectProjection(
       makeInternals(store, reg, capsRenderable),
-      world,
+      worldRenderResources(world),
       frameState,
       handle as unknown as number,
     );
 
     // The cube projection entry is pending until the IBL command submission
     // completion fence resolves; only then is it published as ready.
-    expect(store.getCubemapStatus(handle, world)).toBe('pending');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('pending');
     await flushProjection(store, handle, world);
-    expect(store.getCubemapStatus(handle, world)).toBe('ready');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('ready');
     expect(probe.textures).toBeGreaterThan(0);
   });
 
@@ -265,21 +273,41 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     const frameState = makeFrameState();
     const internals = makeInternals(store, reg, capsRenderable);
 
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
     const texturesWhilePending = probe.textures;
-    expect(store.getCubemapStatus(handle, world)).toBe('pending');
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    expect(store.getCubemapStatus(handle, world)).toBe('pending');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('pending');
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('pending');
     expect(probe.textures).toBe(texturesWhilePending);
     await flushProjection(store, handle, world);
-    expect(store.getCubemapStatus(handle, world)).toBe('ready');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('ready');
     const texturesAfterFirst = probe.textures;
     expect(texturesAfterFirst).toBeGreaterThan(0);
 
     // Subsequent frames: the existing entry (status !== undefined) short-circuits
     // the lazy trigger, so no second projection / texture is minted.
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
     expect(probe.textures).toBe(texturesAfterFirst);
   });
 
@@ -303,12 +331,22 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     // failing device drives status:'failed' SYNCHRONOUSLY (the cube createTexture
     // fails before any await), but the lazy arm checked 'undefined' this frame,
     // so it only launched -- no error fired yet.
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    expect(store.getCubemapStatus(handle, world)).toBe('failed');
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('failed');
     expect(fired).toEqual([]);
 
     // Frame 2: status:'failed' observed -> fire the structured error ONCE.
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({
       code: 'equirect-projection-failed',
@@ -318,10 +356,20 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
 
     // Frame 3+: the latch keeps the channel quiet -- no re-fire, no retry
     // (the store's status:'failed' short-circuit + the frameState latch).
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
     expect(fired.length).toBe(1);
-    expect(store.getCubemapStatus(handle, world)).toBe('failed');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('failed');
   });
 
   it('an 8-bit equirect reports its invalid-source-format cause through the projection error', () => {
@@ -341,10 +389,20 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     const frameState = makeFrameState();
     const internals = makeInternals(store, reg, capsRenderable);
 
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
+    driveLazyEquirectProjection(
+      internals,
+      worldRenderResources(world),
+      frameState,
+      handle as unknown as number,
+    );
 
-    expect(store.getCubemapStatus(handle, world)).toBe('failed');
+    expect(store.getCubemapStatus(handle, worldRenderResources(world))).toBe('failed');
     expect(causes).toEqual(['invalid-source-format']);
     expect(probe.textures).toBe(0);
   });
@@ -362,13 +420,15 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     const staleHandle = 999999;
     driveLazyEquirectProjection(
       makeInternals(store, reg, capsRenderable),
-      world,
+      worldRenderResources(world),
       frameState,
       staleHandle,
     );
 
     expect(probe.textures).toBe(0);
-    expect(store.getCubemapStatus(toShared<'EquirectAsset'>(staleHandle), world)).toBeUndefined();
+    expect(
+      store.getCubemapStatus(staleHandle as AssetHandle<'equirect'>, worldRenderResources(world)),
+    ).toBeUndefined();
     expect(seen).toEqual([]);
   });
 });

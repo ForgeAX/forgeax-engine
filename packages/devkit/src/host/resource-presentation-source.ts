@@ -47,13 +47,13 @@ await prepareAssetRegistry(app.assets);
 const assets = app.assets;
 const ownedEntities = [];
 const ownedHandles = [];
-const allocOwned = (target, payload) => {
-  const handle = app.world.allocSharedRef(target, payload);
+const createOwned = (payload) => {
+  const handle = assets.create(payload).unwrap();
   ownedHandles.push(handle);
   return handle;
 };
-const internOwned = (target, payload) => {
-  const handle = app.world.internSharedRef(target, payload);
+const loadOwned = async (guid, kind) => {
+  const handle = (await assets.load(guid, kind)).unwrap();
   ownedHandles.push(handle);
   return handle;
 };
@@ -64,6 +64,7 @@ const spawnOwned = (...components) => {
   return spawned.value;
 };
 let resourceVfxAttached = false;
+let meshDisplay;
 let canonicalEnvironment;
 let closed = false;
 let cleanupPromise;
@@ -72,40 +73,39 @@ const cleanup = async () => {
   closed = true;
   cleanupPromise = (async () => {
     let failure;
+    try { await meshDisplay?.close(); meshDisplay = undefined; } catch (cause) { failure = cause; }
     previewCameraEntities.delete(app.world);
     previewCameraTargets.delete(app.world);
     for (let index = ownedEntities.length - 1; index >= 0; index -= 1) {
       const dropped = app.world.despawn(ownedEntities[index]);
-      if (!dropped.ok && dropped.error?.code !== 'stale-entity' && failure === undefined) {
-        failure = dropped.error;
-      }
+      if (dropped.ok || dropped.error?.code === 'stale-entity') ownedEntities.splice(index, 1);
+      else failure ??= dropped.error;
     }
     if (resourceVfxAttached) {
       const detached = await resourceVfx.detachWorld({ world: app.world });
-      if (!detached.ok && failure === undefined) failure = detached.error;
+      if (detached.ok) resourceVfxAttached = false;
+      else failure ??= detached.error;
     }
-    for (const handle of ownedHandles.splice(0).reverse()) {
-      const released = app.world.sharedRefs.release(handle);
-      if (!released.ok && released.error?.code !== 'shared-ref-released' && failure === undefined) {
-        failure = released.error;
-      }
+    for (let index = ownedHandles.length - 1; index >= 0; index -= 1) {
+      const released = assets.release(ownedHandles[index]);
+      if (released.ok || released.error?.code === 'asset-owner-closed') ownedHandles.splice(index, 1);
+      else failure ??= released.error;
     }
     preparedResourceBinding = undefined;
     if (failure !== undefined) throw failure;
-  })();
+  })().catch((cause) => { cleanupPromise = undefined; throw cause; });
   return cleanupPromise;
 };
 try {
 if (resource !== undefined) {
   if (resource.kind === 'texture' || resource.kind === 'equirect') {
-    const loaded = await assets.loadByGuid(assets.parseGuid(resource.guid));
-    if (!loaded.ok) throw loaded.error;
-    const payload = loaded.value;
+    const resourceHandle = await loadOwned(resource.guid, resource.kind);
+    const payload = assets.read(resourceHandle).unwrap();
     if (payload.kind !== 'texture' && payload.kind !== 'equirect') throw new Error('Texture preview requires TextureAsset or EquirectAsset');
     const source = textureViewSource(payload);
     const ownerFacts = presentation.evidence === false ? undefined : await previewOwnerFacts(assets, { ...resource, kind: 'texture' }, source);
-    const assetBinding = captureEngineWorkspaceAssetBinding(assets, resource.guid, payload);
-    const owner = createTextureWorkspacePreview(app.world, payload,
+    const assetBinding = captureEngineWorkspaceAssetBinding(assets, resourceHandle);
+    const owner = createTextureWorkspacePreview(app.world, assets, resourceHandle,
       presentation.background === 'transparent' ? { background: presentation.background, projection: 'flat' } : {});
     previewCameraEntities.set(app.world, owner.camera);
     previewCameraTargets.set(app.world, [0, 0, 0]);
@@ -119,15 +119,11 @@ if (resource !== undefined) {
   }
   if (presentation.lighting !== 'neutral') {
     if (canonicalEnvironmentGuid === null) throw new Error('canonical preview environment is unavailable');
-    const environment = await assets.loadByGuid(assets.parseGuid(canonicalEnvironmentGuid));
-    if (!environment.ok) throw environment.error;
-    if (environment.value.kind !== 'equirect') {
-      throw new Error(\`canonical preview environment expected equirect, received \${environment.value.kind}\`);
-    }
-    if (environment.value.width <= 0 || environment.value.height <= 0 || environment.value.data.byteLength === 0) {
+    canonicalEnvironment = await loadOwned(canonicalEnvironmentGuid, 'equirect');
+    const environment = assets.read(canonicalEnvironment).unwrap();
+    if (environment.width <= 0 || environment.height <= 0 || environment.data.byteLength === 0) {
       throw new Error('canonical preview environment must provide decoded equirect pixels');
     }
-    canonicalEnvironment = allocOwned('EquirectAsset', environment.value);
   }
   if (resource.kind === 'vfx') {
     const runtime = resourceVfx;
@@ -135,10 +131,9 @@ if (resource !== undefined) {
     if (!attached.ok) throw attached.error;
     resourceVfxAttached = attached.value.state === 'attached';
   }
-  const loaded = await assets.loadByGuid(assets.parseGuid(resource.guid));
-  if (!loaded.ok) throw loaded.error;
-  const payload = loaded.value;
-  const assetBinding = captureEngineWorkspaceAssetBinding(assets, resource.guid, payload);
+  const resourceHandle = await loadOwned(resource.guid, resource.kind === 'vfx' ? 'particle-effect' : resource.kind);
+  const payload = assets.read(resourceHandle).unwrap();
+  const assetBinding = captureEngineWorkspaceAssetBinding(assets, resourceHandle);
   if (resource.kind === 'vfx' && payload.kind !== 'particle-effect') {
     throw new Error(\`VFX preview expected ParticleEffectAsset, received \${payload.kind}\`);
   }
@@ -147,36 +142,21 @@ if (resource !== undefined) {
     throw new Error('VFX preview owner did not publish finite emitter bounds');
   }
   const meshMaterialHandles = resource.kind === 'mesh' && payload.kind === 'mesh'
-    ? await loadEngineWorkspaceMaterialSlots(
-        payload.materialSlots,
-        async (slot) => {
-          const material = await assets.loadByGuid(
-            assets.parseGuid(AssetGuid.format(slot.defaultMaterial)),
-          );
-          if (!material.ok) return material;
-          if (material.value.kind !== 'material') {
-            throw new Error('mesh material slot resolved to a non-material asset');
-          }
-          return material;
-        },
-        (material) => allocOwned('MaterialAsset', material),
-      )
+    ? await loadEngineWorkspaceMaterialSlots(assets, payload.materialSlots)
     : undefined;
+  if (meshMaterialHandles) for (const handle of meshMaterialHandles) if (handle !== 0) ownedHandles.push(handle);
   const meshHandle = resource.kind === 'mesh' && payload.kind === 'mesh'
-    ? allocOwned('MeshAsset', payload)
-    : internOwned(
-        'MeshAsset',
-        createPrimitiveMesh('sphere').unwrap(),
-      );
-  const materialPayload = resource.kind === 'material' && payload.kind === 'material' ? payload : undefined;
-  const materialHandle = materialPayload === undefined
-    ? undefined
-    : allocOwned('MaterialAsset', materialPayload);
+    ? resourceHandle
+    : createOwned(createPrimitiveMesh('sphere').unwrap());
+  const materialHandle = resource.kind === 'material' && payload.kind === 'material'
+    ? resourceHandle
+    : undefined;
   const materialBindings = resource.kind === 'mesh'
     ? meshMaterialHandles
     : materialHandle === undefined
       ? undefined
       : [materialHandle];
+  const neutralMeshBackdrop = meshMaterialHandles !== undefined && meshMaterialHandles.every((handle) => handle === 0);
   const rawAabb = payload.kind === 'mesh' ? payload.aabb : undefined;
   const aabb = rawAabb !== undefined && (Array.isArray(rawAabb) || ArrayBuffer.isView(rawAabb)) && rawAabb.length === 6
     ? Array.from(rawAabb)
@@ -189,7 +169,7 @@ if (resource !== undefined) {
   const center = meshFrame?.center ?? vfxBounds?.center ?? [(aabb[0] + aabb[3]) / 2, (aabb[1] + aabb[4]) / 2, (aabb[2] + aabb[5]) / 2];
   const radius = meshFrame?.radius ?? vfxBounds?.radius ?? Math.max(1, Math.hypot(aabb[3] - aabb[0], aabb[4] - aabb[1], aabb[5] - aabb[2]));
   if (resource.kind === 'vfx') {
-    const effect = allocOwned('ParticleEffectAsset', payload);
+    const effect = resourceHandle;
     spawnOwned(
       { component: Transform, data: { pos: center } },
       { component: ParticleEffectPlayer, data: { effect, playing: true, seed: 0, timeScale: 1 } },
@@ -205,6 +185,7 @@ if (resource !== undefined) {
       worldIdentity: app.world.identity,
       materialHandle,
     };
+    if (resource.kind === 'mesh' && payload.kind === 'mesh') meshDisplay = await createWorkspaceMeshDisplay(app, payload, previewMeshEntity);
   }
   const cameraData = {
         fov: Math.PI / 4,
@@ -212,7 +193,9 @@ if (resource !== undefined) {
         near: meshFrame?.near ?? 0.01,
         far: meshFrame?.far ?? radius * 8,
         tonemap: TONEMAP_REINHARD_EXTENDED,
-        ...(presentation.background === 'transparent' ? { clearColor: [0, 0, 0, 0] } : {}),
+        ...(presentation.background === 'transparent'
+          ? { clearColor: [0, 0, 0, 0] }
+          : neutralMeshBackdrop ? { clearColor: [0.02, 0.02, 0.02, 1] } : {}),
         ...(presentation.antialias === undefined ? {} : { antialias: presentation.antialias }),
         ...(presentation.bloom === undefined ? {} : { bloom: presentation.bloom }),
       };
@@ -227,7 +210,7 @@ if (resource !== undefined) {
     } else {
       if (canonicalEnvironment === undefined) throw new Error('canonical preview environment was not loaded');
       spawnOwned({ component: Skylight, data: { equirect: canonicalEnvironment } });
-      if (presentation.background !== 'transparent')
+      if (presentation.background !== 'transparent' && !neutralMeshBackdrop)
         spawnOwned({ component: SkyboxBackground, data: { equirect: canonicalEnvironment } });
     }
   }
@@ -248,6 +231,7 @@ if (resource !== undefined) {
     app,
     binding: preparedResourceBinding,
     assetBinding,
+    display: meshDisplay?.display,
     close: cleanup,
   };
 }

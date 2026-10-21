@@ -34,16 +34,62 @@ fn terrainEdgeLod(position: vec3<f32>, vertices: u32, drawMip: u32, lod: f32, ne
   return result;
 }
 
-// Recover the integer RG16 code before doing floating point height arithmetic.
-// Anchor at the nearest endpoint to avoid cancelling a large minimum at q=65535.
-fn terrainDecodeHeight(encoded: vec2<f32>, range: vec2<f32>) -> f32 {
-  let bytes = vec2<u32>(round(encoded * 255.0));
-  let q = (bytes.x << 8u) | bytes.y;
-  if (q == 0u) { return range.x; }
-  if (q == 65535u) { return range.y; }
-  let step = (range.y - range.x) / 65535.0;
-  if (q <= 32767u) { return range.x + f32(q) * step; }
-  return range.y - f32(65535u - q) * step;
+// RGBA8 stores little-endian IEEE f32 bytes. Filtering encoded channels would
+// change their bits, so both raster and shadow paths exclusively textureLoad.
+fn terrainDecodeHeight(encoded: vec4<f32>) -> f32 {
+  let bytes = vec4<u32>(round(encoded * 255.0));
+  return bitcast<f32>(bytes.x | (bytes.y << 8u) | (bytes.z << 16u) | (bytes.w << 24u));
+}
+
+fn terrainSectionIndex(section: vec4<f32>, sectionCounts: vec2<f32>) -> vec2<u32> {
+  // The author sample budget bounds each coordinate below 2^21, keeping the
+  // f32 position/width round trip within half an integer even on long strips.
+  return min(vec2<u32>(round(section.xy / section.z)), vec2<u32>(sectionCounts) - vec2<u32>(1u));
+}
+
+fn terrainHeightAt(heightMap: texture_2d<f32>, sectionIndex: vec2<u32>, coordinate: vec2<u32>,
+    vertices: u32, mip: u32, sectionCounts: vec2<f32>) -> f32 {
+  let size = vertices >> mip;
+  let tileColumns = textureDimensions(heightMap, i32(mip)).x / size;
+  let index = sectionIndex.y * u32(sectionCounts.x) + sectionIndex.x;
+  let tile = vec2<u32>(index % tileColumns, index / tileColumns);
+  return terrainDecodeHeight(textureLoad(heightMap, vec2<i32>(tile * size + coordinate), i32(mip)));
+}
+
+// Convert a global mip-grid coordinate into one canonical section endpoint.
+// Crossing a tile skips its duplicated edge, including the coarsest 2x2 grid.
+fn terrainNeighborHeight(heightMap: texture_2d<f32>, global: vec2<i32>, vertices: u32,
+    mip: u32, sectionCounts: vec2<f32>) -> f32 {
+  let quads = (vertices >> mip) - 1u;
+  let last = vec2<u32>(sectionCounts) * quads;
+  let point = vec2<u32>(clamp(global, vec2<i32>(0), vec2<i32>(last)));
+  let sectionIndex = min(point / quads, vec2<u32>(sectionCounts) - vec2<u32>(1u));
+  return terrainHeightAt(heightMap, sectionIndex, point - sectionIndex * quads, vertices, mip, sectionCounts);
+}
+
+fn terrainNormalAt(heightMap: texture_2d<f32>, section: vec4<f32>, coordinate: vec2<u32>,
+    mip: u32, sectionCounts: vec2<f32>) -> vec3<f32> {
+  let vertices = u32(section.w);
+  let quads = (vertices >> mip) - 1u;
+  let point = vec2<i32>(terrainSectionIndex(section, sectionCounts) * quads + coordinate);
+  let last = vec2<i32>(vec2<u32>(sectionCounts) * quads);
+  let left = max(point.x - 1, 0);
+  let right = min(point.x + 1, last.x);
+  let top = max(point.y - 1, 0);
+  let bottom = min(point.y + 1, last.y);
+  let hL = terrainNeighborHeight(heightMap, vec2<i32>(left, point.y), vertices, mip, sectionCounts);
+  let hR = terrainNeighborHeight(heightMap, vec2<i32>(right, point.y), vertices, mip, sectionCounts);
+  let hT = terrainNeighborHeight(heightMap, vec2<i32>(point.x, top), vertices, mip, sectionCounts);
+  let hB = terrainNeighborHeight(heightMap, vec2<i32>(point.x, bottom), vertices, mip, sectionCounts);
+  let step = section.z / f32(quads);
+  // Scale before subtraction: opposite finite f32 heights may have a span
+  // greater than f32::MAX. The normalization is invariant under this scale.
+  let scale = max(max(max(abs(hL), abs(hR)), max(abs(hT), abs(hB))), step);
+  let dx = (hR / scale - hL / scale) / f32(right - left);
+  let dz = (hB / scale - hT / scale) / f32(bottom - top);
+  if (dx == 0.0 && dz == 0.0) { return vec3<f32>(0.0, 1.0, 0.0); }
+  let normal = vec3<f32>(-dx, step / scale, -dz);
+  return normalize(normal / max(max(abs(normal.x), abs(normal.y)), abs(normal.z)));
 }
 
 // GLSL ES 3.0 (WebGL2) has no findLSB, the GLSL form of firstTrailingBit. The
@@ -66,10 +112,9 @@ fn terrainVertex(position: vec3<f32>, heightMap: texture_2d<f32>, section: vec4<
   let nextGrid = select(currentGrid >> vec2<u32>(1u), currentGrid, n <= 2u);
   let currentUv = vec2<f32>(currentGrid) / f32(n - 1u);
   let nextUv = vec2<f32>(nextGrid) / f32(nextN - 1u);
-  let h0 = textureLoad(heightMap, vec2<i32>(currentGrid), i32(mip)).rg;
-  let h1 = textureLoad(heightMap, vec2<i32>(nextGrid), i32(min(mip + 1u, maxMip))).rg;
-  let a = terrainDecodeHeight(h0, lod.zw);
-  let b = terrainDecodeHeight(h1, lod.zw);
+  let sectionIndex = terrainSectionIndex(section, lod.zw);
+  let a = terrainHeightAt(heightMap, sectionIndex, currentGrid, vertices, mip, lod.zw);
+  let b = terrainHeightAt(heightMap, sectionIndex, nextGrid, vertices, min(mip + 1u, maxMip), lod.zw);
   let xy = mix(currentUv, nextUv, alpha) * section.z + section.xy;
   return vec3<f32>(xy.x, mix(a, b, alpha), xy.y);
 }
@@ -82,6 +127,7 @@ fn terrainNormal(position: vec3<f32>, heightMap: texture_2d<f32>, section: vec4<
   let coord = vec2<u32>(position.xz) >> vec2<u32>(mip);
   let nextMip = min(mip + 1u, maxMip);
   let nextCoord = select(coord >> vec2<u32>(1u), coord, mip == nextMip);
-  let xy = mix(textureLoad(heightMap, vec2<i32>(coord), i32(mip)).ba, textureLoad(heightMap, vec2<i32>(nextCoord), i32(nextMip)).ba, clamp(vertexLod - f32(mip), 0.0, 1.0)) * 2.0 - 1.0;
-  return normalize(vec3<f32>(xy.x, sqrt(max(1e-6, 1.0-dot(xy,xy))), xy.y));
+  let a = terrainNormalAt(heightMap, section, coord, mip, lod.zw);
+  let b = terrainNormalAt(heightMap, section, nextCoord, nextMip, lod.zw);
+  return normalize(mix(a, b, clamp(vertexLod - f32(mip), 0.0, 1.0)));
 }

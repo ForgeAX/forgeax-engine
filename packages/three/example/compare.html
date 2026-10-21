@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,">
+<title>Three WebGPU / Forgeax comparison</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e6edf5;background:#121922;color-scheme:dark}body{margin:32px auto;max-width:1100px;padding:0 20px}h1{font-size:30px;margin-bottom:10px}p{color:#b3c1d3;line-height:1.6}select,button,a{padding:10px;background:#253549;color:#e6edf5;border:1px solid #52708f;border-radius:6px;font:inherit}main{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:24px 0}section{min-width:0}h2{font-size:17px}canvas{width:100%;aspect-ratio:1;display:block;border-radius:12px;background:#19232f}.controls{display:flex;gap:10px;flex-wrap:wrap}#error{color:#ff9c8b;white-space:pre-wrap}code{color:#8de0bb}@media(max-width:650px){main{grid-template-columns:1fr}}
+</style>
+<h1>Same scene, two WebGPU renderers</h1>
+<p>The same scene-building function supplies both views. Change a feature or its pose to compare the current rendering paths.</p>
+<div class="controls"><select id="feature" aria-label="Feature"><option value="shadow">Directional PCF shadows</option><option value="shadow-vsm">Variance shadows</option><option value="loading">Async texture loading (Apply edit)</option><option value="environment">Environment material response</option><option value="alpha">Opaque alpha after hashing</option><option value="transmission">Double-sided transmission</option><option value="instances">Instance colors</option><option value="morph">Morph deformation</option><option value="skin">Skinned Basic mesh</option><option value="sprite">Sprite centre and rotation</option><option value="clipping">Clipping group</option><option value="physical">Physical texture combination</option><option value="matcap">Default Matcap</option><option value="rect">Rectangular light</option></select><button id="edit">Apply edit</button><a href="./index.html">Interactive scene</a><a href="./textures.html">Texture controls</a></div>
+<main><section><h2>Three.js r184 · WebGPU</h2><canvas id="reference" width="448" height="448"></canvas></section><section><h2>Forgeax · Three compatibility</h2><canvas id="native" width="448" height="448"></canvas></section></main>
+<p id="status">Initializing…</p><p id="error" role="alert"></p>
+<p>These examples cover the adapter paths shown here. The comparison fixtures also cover asynchronous image loading, output alpha, blend state, shadow updates and capture replay. This preview does not imply complete Three compatibility. WebGL and addon expansion are outside scope.</p>
+<script type="module" src="./compare.ts"></script>
+</html>

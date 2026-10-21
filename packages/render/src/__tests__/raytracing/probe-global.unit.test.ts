@@ -1,29 +1,36 @@
-import {
-  AssetRegistry,
-  createMaterialLoader,
-  RuntimeMeshVertices,
-} from '@forgeax/engine-assets-runtime';
+import { readFileSync } from 'node:fs';
+import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { mat4 } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { createShaderModule, RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
-import { Transform } from '@forgeax/engine-scene';
+import { GlobalTransform, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { toShared } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
+import { prepareRuntimeAssetPublication } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { createMaterialPackCooker } from '../../../../shader-compiler/src/material/pack-cooker';
 import { freezeRenderProfile, validateRenderProfile } from '../../assembly/renderer-facade';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { buildGpuDrivenDraws } from '../../extract/gpu-driven';
 import { renderMaterialContext } from '../../extract/material-context';
+import { MaterialResource } from '../../material-resource';
 import { Materials } from '../../materials';
+import type { StandardIrradianceFieldGi } from '../../pipeline/standard-profile';
 import { DEFAULT_STANDARD_PROFILE } from '../../pipeline/standard-profile';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { worldRenderResources } from '../../publication/resource-scope';
+import * as fieldEdits from '../../raytracing/field-edit';
 import { createProbeOriginSupportRecorder } from '../../raytracing/probe-origin-support';
-import { probeGlobalAttemptCurrent } from '../../raytracing/renderer-probe-global';
+import { RendererIrradianceField } from '../../raytracing/renderer-irradiance-field';
+import {
+  probeGlobalAttemptCurrent,
+  probeGlobalSourceReferences,
+} from '../../raytracing/renderer-probe-global';
 import {
   type PreparedProbePlacement,
   RendererProbePlacement,
@@ -39,6 +46,9 @@ import {
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { createProbeGlobalMesh, probeGlobalProfile } from './probe-global.fixture';
 
+// Reuse immutable producer output; each fixture owns its bytes and runtime resources.
+let probeMesh: ReturnType<typeof createProbeGlobalMesh> | undefined;
+let nativeCardPublication: Promise<ReturnType<typeof prepareRuntimeAssetPublication>> | undefined;
 const seeds = [{ id: 7, generation: 1, position: [0, 0, -3] as const, cellSize: 2, traced: true }];
 
 it('admits and freezes bounded opt-in native Card capture configuration', () => {
@@ -116,12 +126,16 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     },
   });
   Object.assign(device.caps, { rgba16floatRenderable: true, maxColorAttachments: 4 });
-  const world = new World(),
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const assets = new AssetRegistry({ shaderRegistry: shaders });
+  const world = new World({ assets }),
     lease = createRenderReadLease(world);
-  const mesh = await createProbeGlobalMesh();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+  probeMesh ??= createProbeGlobalMesh();
+  const mesh = structuredClone(await probeMesh);
+  const meshHandle = assets.create(mesh).unwrap();
   const materialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] });
-  const materialHandle = world.allocSharedRef('MaterialAsset', materialAsset);
+  const materialHandle = assets.create(materialAsset).unwrap();
+  let loadedMaterialHandle = materialHandle;
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -136,26 +150,33 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     renderState: { cullMode: 'back' as const },
     paramSnapshot: { alphaCutoff: 0 },
   };
-  const shaders = new ShaderRegistry({ manifestUrl: undefined });
-  const assets = new AssetRegistry(shaders);
   if (nativeCards) {
-    const guid = 'native-card-fixture-material';
-    const cooked = await createMaterialPackCooker().cook({ guid, source: materialAsset });
-    const record = validateCookedMaterialRecord(
-      (cooked.payload as { cooked: unknown }).cooked,
-    ).unwrap();
-    const ready = await createMaterialLoader({
-      loadPublication: async () => ({ guid, record, artifacts: cooked.artifacts }),
-      loadReference: async () => true,
-    }).load({ guid, specializationKey: record.specializationKey ?? '' });
-    assert(ready.status === 'Ready');
-    assets.catalog(guid, materialAsset).unwrap();
-    assets.recordMaterialReadiness(guid, ready);
+    const guid = '01900000-0000-7000-8000-000000000abc';
+    nativeCardPublication ??= (async () => {
+      const cooked = await createMaterialPackCooker().cook({ guid, source: materialAsset });
+      const record = validateCookedMaterialRecord(
+        (cooked.payload as { cooked: unknown }).cooked,
+      ).unwrap();
+      const ready = await createMaterialLoader({
+        loadPublication: async () => ({ guid, record, artifacts: cooked.artifacts }),
+        loadReference: async () => true,
+      }).load({ guid, specializationKey: record.specializationKey ?? '' });
+      assert(ready.status === 'Ready');
+      return prepareRuntimeAssetPublication([
+        { guid, asset: { ...materialAsset, cooked: ready.record } as MaterialAsset },
+      ]);
+    })();
+    (await nativeCardPublication)(assets);
+    const loaded = (await assets.load(guid, 'material')).unwrap();
+    loadedMaterialHandle = loaded;
+    assets
+      .replace(materialHandle, runtimeAssets(assets).resolveAsset<MaterialAsset>(loaded).unwrap())
+      .unwrap();
     Object.assign(
       material,
       resolveMaterialSnapshot(
         Number(materialHandle),
-        world,
+        worldRenderResources(world),
         assets,
         undefined,
         undefined,
@@ -171,17 +192,17 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     entityKey: Number(entity),
     assetHandle: Number(meshHandle),
     transform: { world: mat4.identity(mat4.create()) },
-    material,
-    materials: [material],
+    material: MaterialResource.from(material),
+    materials: [MaterialResource.from(material)],
     materialBindingSources: ['renderer-override'],
     gpuDrivenDraws: buildGpuDrivenDraws({
-      submeshes: mesh.submeshes,
-      indexed: true,
+      mesh,
+      deformation: 'rigid',
       materials: [material],
       fallbackMaterial: material,
     }),
   };
-  const persistent = new PersistentRenderScene({ getDevice: () => device });
+  const persistent = new PersistentRenderScene({ assets, getDevice: () => device });
   const frame: ExtractedFrame = {
     cameras: [],
     auxiliaryCameras: [],
@@ -209,8 +230,6 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     environmentReady: true,
     renderables: [snapshot],
     dispatch: [],
-    shadowCasterEntityKeys: new Set(),
-    shadowCasterDrawKeys: new Set(),
     skylight: undefined,
     skylightCount: 0,
     skybox: undefined,
@@ -224,12 +243,26 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     hiddenEntityReports: [],
   };
   const extract = () => {
-    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, () => frame, [
-      lease,
-    ]);
+    persistent.extractComposition(
+      [world],
+      { cameraOwner: 0, resourceOwner: 0 },
+      assets,
+      (request) =>
+        typeof request === 'object'
+          ? {
+              ...frame,
+              renderables: frame.renderables.filter((snapshot) =>
+                request.entitiesByWorld[snapshot.worldId]?.has(snapshot.entityKey),
+              ),
+            }
+          : request === 'none'
+            ? { ...frame, renderables: [] }
+            : frame,
+      [lease],
+    );
     const scene = persistent.compositionGpuDrivenState();
     assert(scene);
-    return { scene, worlds: [world], leases: [lease] };
+    return { scene, worlds: [worldRenderResources(world)], leases: [lease] };
   };
   const errors: unknown[] = [];
   const runtime = {
@@ -239,14 +272,7 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     assets,
     gpuStore: (() => {
       const store = new GpuResidencyCache();
-      store.configureGpuDevice(
-        device,
-        undefined,
-        () => {
-          throw new Error('no cube');
-        },
-        device.caps,
-      );
+      store.configureGpuDevice(device, undefined, device.caps);
       return store;
     })(),
     getPipelineState: () => ({ defaultSampler: device.createSampler({}).unwrap() }),
@@ -402,12 +428,18 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     }
   };
   return {
+    source: () => source,
+    snapshot,
+    frame,
+    entity,
+    assets,
     world,
     lease,
     mesh,
     meshHandle,
     materialAsset,
     materialHandle,
+    loadedMaterialHandle,
     materialSnapshot: material,
     persistent,
     runtime,
@@ -526,22 +558,14 @@ it('keeps async region preparation across unrelated source ticks and rejects pre
   }
 });
 
-it('rejects vertex overrides and recovers after the owning override is removed', async () => {
+it('rejects edited geometry without a field and recovers after its producer is replaced', async () => {
   const f = await fixture();
   try {
     const initial = await f.ready();
     f.encode(initial);
     initial.track(Promise.resolve());
     initial.commit();
-    const content = f.world
-      .spawn({
-        component: RuntimeMeshVertices,
-        data: {
-          asset: toShared<'MeshAsset'>(Number(f.meshHandle)),
-          vertices: new Float32Array(f.mesh.vertices),
-        },
-      })
-      .unwrap();
+    f.assets.update(f.meshHandle, { vertices: new Float32Array(f.mesh.vertices) }).unwrap();
     f.refresh();
     expect(f.prepare()).toBeUndefined();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -564,7 +588,7 @@ it('rejects vertex overrides and recovers after the owning override is removed',
       },
     });
     expect(f.errors).toMatchObject([f.owner.inspect().error]);
-    f.world.despawn(content).unwrap();
+    f.assets.replace(f.meshHandle, f.mesh).unwrap();
     f.refresh();
     const repaired = await f.ready();
     f.encode(repaired);
@@ -653,7 +677,7 @@ it('uses the receiver accepted revision as an attempt fence without rebuilding u
     epoch: 1,
   });
   const receiver = new RenderPublicationReceiver({ source: 'global-source', epoch: 1 });
-  const scene = new PersistentRenderScene({ getDevice: () => f.runtime.device });
+  const scene = new PersistentRenderScene({ assets: f.assets, getDevice: () => f.runtime.device });
   const accept = () => {
     f.world.update(1 / 60).unwrap();
     const candidate = publisher.prepare(0).unwrap();
@@ -700,59 +724,32 @@ it('uses the receiver accepted revision as an attempt fence without rebuilding u
   }
 });
 
-it('retries missing cooked projection admission after readiness repair without changing source or catalog versions', async () => {
-  const f = await fixture();
+it('recovers program admission after replacing the bound runtime material', async () => {
+  const f = await fixture(true);
+  const preserved = f.assets.copy(f.materialHandle).unwrap();
   try {
-    const guid = 'probe-global-material';
-    const cooked = await createMaterialPackCooker().cook({ guid, source: f.materialAsset });
-    const record = validateCookedMaterialRecord(
-      (cooked.payload as { cooked: unknown }).cooked,
-    ).unwrap();
-    const ready = await createMaterialLoader({
-      loadPublication: async () => ({ guid, record, artifacts: cooked.artifacts }),
-      loadReference: async () => true,
-    }).load({ guid, specializationKey: record.specializationKey ?? '' });
-    assert(ready.status === 'Ready');
-    const published = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-    published.catalog(guid, f.materialAsset).unwrap();
-    published.recordMaterialReadiness(guid, ready);
-    f.runtime.assets.catalog(guid, f.materialAsset).unwrap();
-    Object.assign(
-      f.materialSnapshot,
-      resolveMaterialSnapshot(
-        Number(f.materialHandle),
-        f.world,
-        published,
-        undefined,
-        undefined,
-        renderMaterialContext(
-          { backendKind: 'webgpu', storageBuffer: true },
-          { maxSampledTexturesPerShaderStage: 16 },
-        ).materialContext,
-      ),
-    );
+    const original = runtimeAssets(f.assets).resolveAsset<MaterialAsset>(preserved).unwrap();
+    assert(original);
+    f.assets
+      .replace(f.materialHandle, {
+        ...f.materialAsset,
+        passes: [{ name: 'Forward', program: { module: 'unqualified::surface' } }],
+      })
+      .unwrap();
     f.refresh();
-    const source = f.persistent.compositionGpuDrivenState()?.retained;
-    assert(source);
-    const version = f.lease.captureVersion(),
-      epoch = f.runtime.assets.catalogEpoch;
+    const worldVersion = f.lease.captureVersion();
     expect(f.prepare()).toBeUndefined();
     await expect.poll(() => f.owner.inspect().state).toBe('failed');
-    expect(f.runtime.assets.getMaterialProjectionForPayload(f.materialAsset)).toBeUndefined();
-    f.runtime.assets.recordMaterialReadiness(guid, ready);
-    expect(f.runtime.assets.catalogEpoch).toBe(epoch);
-    expect(f.lease.captureVersion()).toEqual(version);
-    expect(source.isCurrent()).toBe(true);
-    expect(source.isSourceCurrent()).toBe(true);
-    // No extraction or World mutation is needed: the repaired projection is
-    // part of the region admission key, even when prior admission had none.
+    f.assets.replace(f.materialHandle, original).unwrap();
+    expect(f.lease.captureVersion()).toEqual(worldVersion);
+    f.refresh();
     const repaired = await f.ready();
     f.encode(repaired);
     repaired.track(Promise.resolve());
     repaired.commit();
     expect(f.owner.inspect().state).toBe('ready');
-    expect(f.owner.inspect().global?.compositionBuilds).toBe(2);
   } finally {
+    f.assets.release(preserved).unwrap();
     f.dispose();
   }
 }, 60000);
@@ -821,3 +818,264 @@ it('requires all native Card writers before publication and reuses only a physic
     f.dispose();
   }
 }, 60000);
+
+it('fences asset writes through the held closure without reading the source roster', async () => {
+  const f = await fixture();
+  try {
+    const scene = f.persistent.compositionGpuDrivenState();
+    assert(scene?.retained);
+    const retained = scene.retained;
+    const source = {
+      scene: {
+        ...scene,
+        retained: {
+          ...retained,
+          get slots(): never {
+            throw new Error('asset freshness must not inspect source slots');
+          },
+        },
+      },
+      worlds: [worldRenderResources(f.world)],
+      leases: [],
+    };
+    expect(probeGlobalSourceReferences(source)).toEqual([retained.identity, retained.revision]);
+    expect(retained.isCurrent()).toBe(true);
+    const unrelated = f.assets
+      .create(Materials.standard({ baseColor: [1, 1, 1, 1], roughness: 0.2 }))
+      .unwrap();
+    f.assets.update(unrelated, { values: { roughness: 0.3 } }).unwrap();
+    expect(retained.isCurrent()).toBe(true);
+    // Managed payload identity stays stable; the closure's change evidence must still reject it.
+    f.assets.update(f.materialHandle, { values: { roughness: 0.8 } }).unwrap();
+    expect(retained.isCurrent()).toBe(false);
+    f.refresh();
+    const current = f.persistent.compositionGpuDrivenState()?.retained;
+    assert(current);
+    expect(current.isCurrent()).toBe(true);
+    expect(current.revision).toBeGreaterThan(retained.revision);
+  } finally {
+    f.dispose();
+  }
+});
+
+// Null RHI qualifies the real preparation/adoption/retirement owner, not shader
+// compilation, pixels, GPU completion, natural GC or performance.
+async function editableIrradianceFixture() {
+  const f = await fixture(true);
+  propagateTransforms(f.world).unwrap();
+  f.refresh();
+  const move = (x: number) => {
+    f.world.set(f.entity, Transform, { pos: [x, 0, 0] }).unwrap();
+    propagateTransforms(f.world).unwrap();
+    f.snapshot.transform.world.set(f.world.get(f.entity, GlobalTransform).unwrap().world);
+    f.refresh();
+  };
+  const entries = ['ray-irradiance-field', 'ray-diffuse-composite', 'ray-reflection-composite'].map(
+    (name) => ({
+      wgsl: readFileSync(new URL(`../../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8'),
+    }),
+  );
+  Object.assign(f.runtime.shaderRegistry ?? {}, { entries: () => entries });
+  const profile: StandardIrradianceFieldGi = {
+    gather: 'irradiance-field',
+    maxDistance: 4,
+    environment: [0, 0, 0],
+    field: {
+      region: {
+        grid: probeGlobalProfile.grid,
+        maxInstances: probeGlobalProfile.maxInstances,
+        maxFieldBytes: probeGlobalProfile.maxFieldBytes,
+      },
+      probeSpacing: 1,
+      raysPerProbe: 16,
+      probeBudget: 2,
+      hysteresis: 0.9,
+      cards: { resolution: 16, maxCaptureBytes: 1024 * 1024, budget: 16 },
+      resolution: 'half',
+      radiosity: false,
+    },
+  };
+  const owner = new RendererIrradianceField();
+  const prepare = () =>
+    owner.prepare({
+      runtime: f.runtime,
+      ...f.source(),
+      lights: [],
+      profile,
+      width: 32,
+      height: 32,
+      gatherView: true,
+      focus: [0, 0, 0],
+    });
+  const ready = async () => {
+    for (let i = 0; i < 50; i++) {
+      prepare();
+      if (owner.ready !== undefined) return owner.ready;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error(JSON.stringify(owner.inspect()));
+  };
+  const spawn = (meshHandle: typeof f.meshHandle) => {
+    const entity = f.world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
+        { component: MeshRenderer, data: { materials: [f.materialHandle] } },
+      )
+      .unwrap();
+    const snapshot: RenderableSnapshot = {
+      ...f.snapshot,
+      entityKey: Number(entity),
+      assetHandle: Number(meshHandle),
+      transform: { world: mat4.identity(mat4.create()) },
+    };
+    Object.assign(f.frame, { renderables: [...f.frame.renderables, snapshot] });
+    propagateTransforms(f.world).unwrap();
+    f.refresh();
+    return { entity, snapshot };
+  };
+  return {
+    ...f,
+    owner,
+    prepare,
+    ready,
+    move,
+    spawn,
+    dispose: () => {
+      owner.dispose();
+      f.dispose();
+    },
+  };
+}
+
+for (const failure of [
+  'second-physical-write',
+  'row-adoption',
+  'residency-adoption',
+  'edit-box-write',
+] as const)
+  it(`retires a partially applied irradiance region after ${failure} and rebuilds coherently`, async () => {
+    const f = await editableIrradianceFixture();
+    const cleanup: (() => void)[] = [];
+    try {
+      const before = await f.ready();
+      const retire = vi.spyOn(before, 'retire');
+      const quiet = [...before.editState.values()].find((row) => row.index === 0)?.transform[12];
+      f.move((quiet ?? 0) + 1);
+      const current = f.source().scene;
+      assert(current.retained);
+      expect(current.retained.revision).toBeGreaterThan(before.retained.revision);
+      expect(current.retained.meshes).toBe(before.retained.meshes);
+      expect(current.scene.changedSlotsSince(before.revision)).toContain(0);
+      const planning = vi.spyOn(fieldEdits, 'diffFieldEdit');
+      cleanup.push(() => planning.mockRestore());
+      let injected = false;
+      if (failure === 'row-adoption') {
+        const spy = vi.spyOn(fieldEdits, 'adoptFieldEdit').mockImplementation(() => {
+          injected = true;
+          throw new Error(failure);
+        });
+        cleanup.push(() => spy.mockRestore());
+      } else if (failure === 'residency-adoption') {
+        assert(before.residency !== undefined);
+        const spy = vi.spyOn(before.residency, 'applyEdit').mockImplementation(() => {
+          injected = true;
+          throw new Error(failure);
+        });
+        cleanup.push(() => spy.mockRestore());
+      } else {
+        const queue = f.runtime.device.queue,
+          write = queue.writeBuffer.bind(queue);
+        let writes = 0;
+        const spy = vi.spyOn(queue, 'writeBuffer').mockImplementation((...args) => {
+          writes++;
+          if (
+            (failure === 'second-physical-write' && writes === 2) ||
+            (failure === 'edit-box-write' &&
+              args[0] === before.region.input.settings.buffer &&
+              args[1] === 40)
+          ) {
+            injected = true;
+            throw new Error(failure);
+          }
+          return write(...args);
+        });
+        cleanup.push(() => spy.mockRestore());
+      }
+      f.prepare();
+      expect(planning).toHaveBeenCalledOnce();
+      expect(injected).toBe(true);
+      expect(retire).toHaveBeenCalledOnce();
+      expect(f.owner.ready).toBeUndefined();
+      for (const restore of cleanup.splice(0)) restore();
+      const replacement = await f.ready();
+      expect(replacement).not.toBe(before);
+      expect(
+        [...replacement.editState.values()].find((row) => row.index === 0)?.transform[12],
+      ).toBe((quiet ?? 0) + 1);
+      expect(replacement.editState.size).toBe(1);
+      expect(replacement.retained).toBe(f.source().scene.retained);
+    } finally {
+      for (const restore of cleanup) restore();
+      f.dispose();
+    }
+  });
+
+it('reports current async field synchronization failure after retiring its candidate, then recovers on a fresh source', async () => {
+  const f = await editableIrradianceFixture();
+  const planning = vi.spyOn(fieldEdits, 'diffFieldEdit').mockImplementation(() => {
+    throw new Error('async-field-sync-fault');
+  });
+  const destroy = vi.spyOn(f.runtime.device, 'destroyBuffer');
+  const compile = f.runtime.createShaderModule;
+  assert(compile !== undefined);
+  let entered!: () => void, release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held = false;
+  const compiler = vi
+    .spyOn(f.runtime, 'createShaderModule')
+    .mockImplementation(async (device, desc) => {
+      // The actual Global SDF/Card region has passed its current-source fence
+      // before this first Irradiance-only compile, but its candidate is unpublished.
+      if (!held && desc.label === 'irradiance-field.visibility') {
+        held = true;
+        entered();
+        await gate;
+      }
+      return compile(device, desc);
+    });
+  try {
+    const previous = f.source().scene.retained;
+    f.prepare();
+    await waiting;
+    f.move(1);
+    expect(f.source().scene.retained?.revision).toBeGreaterThan(previous?.revision ?? -1);
+    expect(f.source().scene.retained?.meshes).toBe(previous?.meshes);
+    f.prepare();
+    release();
+    for (let i = 0; i < 50 && f.owner.inspect().state !== 'failed'; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(held).toBe(true);
+    expect(planning).toHaveBeenCalledOnce();
+    expect(f.owner.inspect().state).toBe('failed');
+    expect(f.owner.ready).toBeUndefined();
+    expect(f.errors).toHaveLength(1);
+    expect(destroy).toHaveBeenCalled();
+    planning.mockRestore();
+    compiler.mockRestore();
+    f.move(2);
+    const healthy = await f.ready();
+    expect([...healthy.editState.values()].find((row) => row.index === 0)?.transform[12]).toBe(2);
+  } finally {
+    release();
+    planning.mockRestore();
+    compiler.mockRestore();
+    destroy.mockRestore();
+    f.dispose();
+  }
+});

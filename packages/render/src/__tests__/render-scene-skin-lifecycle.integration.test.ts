@@ -1,11 +1,12 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease, type RenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
-import type { Handle, SkeletonAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createSkinPaletteOwner } from '../assembly/skin-palette-owner';
 import { MeshFilter, MeshRenderer } from '../components';
@@ -20,6 +21,7 @@ import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
 } from '../scene/render-scene';
+import { testAssets } from './helpers/runtime-assets';
 
 type SkinWorld = {
   readonly world: World;
@@ -27,17 +29,19 @@ type SkinWorld = {
   readonly renderable: EntityHandle;
 };
 
-function makeSkeleton(world: World): Handle<'SkeletonAsset', 'shared'> {
+function makeSkeleton(world: World): AssetHandle<'skeleton'> {
   const inverseBindMatrices = new Float32Array(16);
   inverseBindMatrices[0] = 1;
   inverseBindMatrices[5] = 1;
   inverseBindMatrices[10] = 1;
   inverseBindMatrices[15] = 1;
-  return world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
-    kind: 'skeleton',
-    inverseBindMatrices,
-    jointCount: 1,
-  });
+  return testAssets(world)
+    .create({
+      kind: 'skeleton',
+      inverseBindMatrices,
+      jointCount: 1,
+    })
+    .unwrap();
 }
 
 function makeSkinWorld(skinComponent: typeof Skin = Skin, registerSkin = false): SkinWorld {
@@ -49,7 +53,12 @@ function makeSkinWorld(skinComponent: typeof Skin = Skin, registerSkin = false):
   const renderable = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: {} },
       { component: skinComponent, data: { skeleton, joints: new Uint32Array([joint as number]) } },
     )
@@ -67,7 +76,7 @@ function skinFor(frame: ExtractedFrame, worldId: number, entity: EntityHandle) {
 describe('PersistentRenderScene skin palette lifecycle', () => {
   it('reads the World-owned Skin token supplied by a separately bundled Worker plugin', async () => {
     const workerSkin = defineComponent('Skin', {
-      skeleton: { type: 'shared<SkeletonAsset>' },
+      skeleton: { type: 'asset<skeleton>' },
       joints: { type: 'array<entity>' },
     }) as typeof Skin;
     const subject = makeSkinWorld(workerSkin, true);
@@ -75,7 +84,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const allocator = createSkinPaletteOwner(device, true);
-    const assets = new AssetRegistry({} as unknown as ShaderRegistry);
+    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
     const worlds = [subject.world] as const;
     const leases = worlds.map((world) => createRenderReadLease(world));
     const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
@@ -84,7 +93,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
       const frame = scene.extractComposition(
         worlds,
         owner,
-        0,
+        assets,
         (request) =>
           extractFrames(
             worlds,
@@ -113,7 +122,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
     const fixture = makeSkinWorld();
     fixture.world.set(fixture.joint, Transform, { pos: [2, 0, 0] }).unwrap();
     fixture.world.update(0).unwrap();
-    const assets = new AssetRegistry({} as unknown as ShaderRegistry);
+    const assets = testAssets(fixture.world);
     const identity = { source: 'skin-recovery-publication', epoch: 1 };
     const publisher = createRenderPublisher(fixture.world, assets, identity);
     const receiver = new RenderPublicationReceiver(identity);
@@ -135,7 +144,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
       const frame = scene.consumePublication(prepared);
       const prior = skinFor(frame, 0, fixture.renderable);
       expect(prior).toBeDefined();
-      expect(frame.renderables[0]?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
+      expect(frame.renderables.at(0)?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
       const candidate = scene
         .prepareRecoveryGpuDrivenCandidate(replacement, replacementAllocator)
         .unwrap();
@@ -145,7 +154,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
             candidate.state?.slotForEntity?.(slot.snapshot.worldId, slot.snapshot.entityKey),
           ).toBe(slot);
         }
-        const restored = candidate.state?.slots[0]?.snapshot;
+        const restored = candidate.state?.slots.at(0)?.snapshot;
         expect(restored?.skin?.buffer).toBeDefined();
         expect(restored?.skin?.buffer).not.toBe(prior?.buffer);
         expect(restored?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
@@ -189,7 +198,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
     fixture.world.update(0).unwrap();
     const worlds = [fixture.world];
     const lease = createRenderReadLease(fixture.world);
-    const assets = new AssetRegistry({} as unknown as ShaderRegistry);
+    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
     const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
     const scene = new PersistentRenderScene({ getTemporalConsumerDemand: () => true });
     const requests: PersistentRenderCandidateRequest[] = [];
@@ -205,7 +214,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
       );
     };
     try {
-      const before = scene.extractComposition(worlds, owner, 0, build, [lease]);
+      const before = scene.extractComposition(worlds, owner, assets, build, [lease]);
       scene.prepareTemporalFrame(before.renderables);
       scene.commitTemporalFrame().unwrap();
       const prior = skinFor(before, 0, fixture.renderable);
@@ -263,10 +272,10 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
       ]);
       allocator = replacementAllocator;
       requests.length = 0;
-      const unchanged = scene.extractComposition(worlds, owner, 0, build, [lease]);
+      const unchanged = scene.extractComposition(worlds, owner, assets, build, [lease]);
       expect(requests.every((request) => request === 'none')).toBe(true);
       expect(skinFor(unchanged, 0, fixture.renderable)?.buffer).toBe(receipt?.buffer);
-      expect(unchanged.renderables[0]?.temporal?.previousSkin?.buffer).not.toBe(prior?.buffer);
+      expect(unchanged.renderables.at(0)?.temporal?.previousSkin?.buffer).not.toBe(prior?.buffer);
       expect(fixture.world.get(fixture.joint, Transform).unwrap().pos[0]).toBe(3);
     } finally {
       writes.mockRestore();
@@ -282,7 +291,7 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const allocator = createSkinPaletteOwner(device, true);
-    const assets = new AssetRegistry({} as unknown as ShaderRegistry);
+    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
     const first = makeSkinWorld();
     const second = makeSkinWorld();
     let worlds: readonly World[] = [first.world, second.world];
@@ -301,7 +310,8 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
         { cull: 'none', retainHidden: true, renderables: request },
       );
     };
-    const draw = (): ExtractedFrame => scene.extractComposition(worlds, owner, 0, build, leases);
+    const draw = (): ExtractedFrame =>
+      scene.extractComposition(worlds, owner, assets, build, leases);
 
     try {
       const initial = draw();

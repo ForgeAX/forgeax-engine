@@ -20,14 +20,18 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { vec3 } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Bevy PLAYER_SPEED = 100. */
 const PLAYER_SPEED = 100;
@@ -58,25 +62,24 @@ function firstPlayer(world: World): EntityHandle | null {
 
 /** Build the 2D top-down scene: floor + player quad + orthographic camera. */
 export function buildTopDownWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // ── Floor background (dark blue, Bevy srgb(0.2, 0.2, 0.3)) ─────────
-  const floorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.2, 0.2, 0.3, 1]),
-  );
+  const floorMat = sceneAssets.create(Materials.unlit([0.2, 0.2, 0.3, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [WORLD_W, WORLD_H, 0.01] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [floorMat] } },
   );
 
   // ── Player icon (bright cyan, Bevy srgb(6.25, 9.4, 9.1) → clamped) ──
-  const playerMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.25, 0.94, 0.91, 1]),
-  );
+  const playerMat = sceneAssets.create(Materials.unlit([0.25, 0.94, 0.91, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 2], quat: [0, 0, 0, 1], scale: [25, 25, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [playerMat] } },
     { component: Player, data: {} },
   );

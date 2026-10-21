@@ -1,6 +1,7 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { Buffer, Result, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -11,6 +12,8 @@ import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
 } from '../scene/render-scene';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 class CountingQueue extends RhiNullQueue {
   bytes = 0;
@@ -65,24 +68,28 @@ export interface InstanceRowHarness {
  * PersistentRenderScene and GpuScene path on the null RHI.
  */
 export function createInstanceRowHarness(count: number): InstanceRowHarness {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const cube = assets.create(BUILTIN_CUBE).unwrap();
   registerPropagateTransforms(world);
-  const materialHandle = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [1, 1, 1, 1] },
-  });
+  const materialHandle = assets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [1, 1, 1, 1] },
+    })
+    .unwrap();
   const transforms = grid(count);
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
       { component: Instances, data: { transforms } },
     )
@@ -98,7 +105,7 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
   const lease = createRenderReadLease(world);
   const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames([world], owner, undefined, undefined, undefined, {
+    extractFrames([world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -106,10 +113,10 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
     });
   const extract = () => {
     world.update(0).unwrap();
-    scene.extractComposition([world], owner, 0, build, [lease]);
+    scene.extractComposition([world], owner, assets, build, [lease]);
   };
   const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 3, 0, 1]);
-  scene.extractComposition([world], owner, 0, build, [lease]);
+  scene.extractComposition([world], owner, assets, build, [lease]);
   return {
     move(row, x) {
       matrix[12] = x;
@@ -135,6 +142,7 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
       };
     },
     dispose() {
+      assets.dispose();
       lease.dispose();
       scene.dispose();
       instanceCollections.dispose();

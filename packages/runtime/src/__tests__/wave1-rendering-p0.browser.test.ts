@@ -13,12 +13,13 @@ import {
   type RenderWorldLease,
 } from '@forgeax/engine-render';
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 interface ScreenshotPixels {
   readonly width: number;
@@ -232,15 +233,13 @@ function prepareDynamic(
   renderer: Renderer,
   world: World,
   entity: EntityHandle,
-  mesh: MeshAsset,
-  meshHandle: Handle<'MeshAsset', 'shared'>,
+  meshHandle: AssetHandle<'mesh'>,
   revision: number,
 ): DynamicGeometryCandidate {
   return renderer
     .prepareDynamicGeometry({
       world,
       entity,
-      mesh,
       meshHandle,
       revision,
     })
@@ -276,7 +275,10 @@ it('proves the public Atmosphere toggle in the presented sky pixels', async () =
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: true });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: true,
+  });
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   try {
@@ -330,7 +332,10 @@ it('proves a visible sun disc and wall occlusion through a sky-only view', async
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: true });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: true,
+  });
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
@@ -443,7 +448,7 @@ it('publishes the Wave1 P0 room through real receipts, pixels, and resource evid
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1 });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), { aspect: 1 });
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
@@ -467,7 +472,6 @@ it('publishes the Wave1 P0 room through real receipts, pixels, and resource evid
       renderer,
       world,
       recipe.entities.wall,
-      recipe.assets.wallAperture,
       recipe.assets.wallApertureHandle,
       1,
     );
@@ -584,7 +588,6 @@ it('publishes the Wave1 P0 room through real receipts, pixels, and resource evid
       renderer,
       world,
       replacementEntity,
-      recipe.assets.wallAperture,
       recipe.assets.wallApertureHandle,
       2,
     );

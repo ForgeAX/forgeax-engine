@@ -2,7 +2,7 @@
 // component definition + vocab validation.
 //
 // Confirms:
-//   - `defineComponent('SceneInstance', { source: 'shared<SceneAsset>',
+//   - `defineComponent('SceneInstance', { source: 'asset<scene>',
 //      mapping: 'array<entity>', state: 'unique<SceneInstanceState>' })` registers
 //      via the global `resolveComponent` index (single ECS schema vocab path)
 //   - schema reads back exactly the 3 D-2 fields (source / mapping / state)
@@ -24,9 +24,9 @@ describe('SceneInstance component (w15)', () => {
     expect(fieldNames).toEqual(['mapping', 'source', 'state']);
   });
 
-  it('source field is shared<SceneAsset>', () => {
+  it('source field is asset<scene>', () => {
     const schema = componentSchema(SceneInstance) as Record<string, string>;
-    expect(schema.source).toBe('shared<SceneAsset>');
+    expect(schema.source).toBe('asset<scene>');
   });
 
   it('mapping field is array<entity>', () => {

@@ -2,6 +2,7 @@ import { err } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { componentSchema, defineComponent } from '../component';
 import { componentDefinition } from '../component-schema';
+import { entityIndex } from '../entity-handle';
 import { ManagedBufferOutOfBoundsError } from '../errors';
 import { getDerivedWriter } from '../internal';
 import { defineRelationship, RelationshipIndex, relationshipRole } from '../relationship-index';
@@ -9,6 +10,26 @@ import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
 describe('relationship index', () => {
+  it('resolves the source row again when first mirror admission moves its table neighbor', () => {
+    const Required = defineComponent('ReparentSwapRequired', {});
+    const pair = defineRelationship({
+      sourceName: 'ReparentSwapSource',
+      sourceField: 'target',
+      targetName: 'ReparentSwapTargets',
+      targetField: 'sources',
+      sourceRequires: [Required],
+    });
+    const world = new World();
+    const root = world.spawn({ component: Required, data: {} }).unwrap();
+    const old = world.spawn({ component: pair.source, data: { target: root } }).unwrap();
+    world.spawn({ component: pair.source, data: { target: old } }).unwrap();
+    const next = world.spawn({ component: pair.source, data: { target: root } }).unwrap();
+    const source = world.spawn({ component: pair.source, data: { target: old } }).unwrap();
+    world.set(source, pair.source, { target: next }).unwrap();
+    expect(world.get(source, pair.source).unwrap().target).toBe(next);
+    expect(Array.from(world.get(next, pair.target).unwrap().sources)).toEqual([source]);
+    expect(Array.from(world.get(old, pair.target).unwrap().sources)).not.toContain(source);
+  });
   it('keeps source writable and target materialized/read-only by role', () => {
     const pair = defineRelationship({
       sourceName: 'IndexSource',
@@ -194,6 +215,15 @@ describe('relationship index', () => {
     const beforeMutation = world[worldInternal].getMutationEpoch();
     const beforeStructure = world[worldInternal].getStructureEpoch();
     const beforeRelationship = world[worldInternal].getRelationshipEpoch(pair.source);
+    const structural = world[worldInternal].getStructuralChangeIndex();
+    const pending = (): number[] => {
+      const identities: number[] = [];
+      structural.visitSince(beforeMutation, Number.MAX_SAFE_INTEGER, (index) =>
+        identities.push(index),
+      );
+      return identities;
+    };
+    const beforeEvidence = pending();
     Object.defineProperty(pool, 'alloc', {
       configurable: true,
       value: () => err(new ManagedBufferOutOfBoundsError(4, 0)),
@@ -209,8 +239,11 @@ describe('relationship index', () => {
       expect(world[worldInternal].getStructureEpoch()).toBe(beforeStructure);
       expect(world[worldInternal].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
       expect(pool._liveCount()).toBe(0);
+      expect(pending()).toEqual(beforeEvidence);
     } finally {
       Object.defineProperty(pool, 'alloc', { configurable: true, value: originalAlloc });
     }
+    const unrelated = world.spawn().unwrap();
+    expect(pending()).toEqual([entityIndex(unrelated)]);
   });
 });

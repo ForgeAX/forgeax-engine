@@ -46,7 +46,7 @@ export async function verifyProbeAtmosphere(
           }
           if (pass.status !== 'measured') throw new Error(`Missing GPU work timing: ${JSON.stringify(pass)}`);
           if (!pass.passName.startsWith('reflection-probe.') && !pass.passName.startsWith('ssao-') && !pass.passName.startsWith('atmosphere-')) continue;
-          if (/^atmosphere-(cube|irradiance|prefilter)-/.test(pass.passName)) atmosphereWork++;
+          if (/^atmosphere-(cube|irradiance|prefilter)-\d+$/.test(pass.passName)) atmosphereWork++;
           const name = pass.passName.startsWith('reflection-probe.')
             ? (pass.passName.includes('.capture.') ? 'probe-capture' : 'probe-filter') : pass.passName.replace(/-(?:\d+-)?\d+$/, '');
           const values = timings.get(name) ?? [];
@@ -64,7 +64,10 @@ export async function verifyProbeAtmosphere(
         throw new Error(`Atmosphere/AO lost GPU-driven lighting outside reflection MRT: ${JSON.stringify(gpu)}`);
       if (reflectionMrt && inspection.standardLighting?.producer !== 'gpu')
         throw new Error('Reflection MRT lost GPU cluster lighting');
-      const work = inspection.perFramePassNames.filter(name => name.startsWith('reflection-probe.')).length;
+      const work = inspection.perFramePassNames.filter(name => /^reflection-probe\.\d+\.(capture|pmrem)\./.test(name)).length;
+      // The atlas copy is part of this filter step, never a second scheduled probe.
+      const copies = renderer.inspect().perFramePassNames.filter(name => /^reflection-probe\.\d+\.pmrem-copy\./.test(name)).length;
+      if (copies > 1 || (copies === 1 && work !== 1)) throw new Error('PMREM copy escaped its one-step budget');
       maximumProbeWork = Math.max(maximumProbeWork, work);
       if (work > 1) throw new Error(`Probe frame budget exceeded: ${work}`);
     }
@@ -149,7 +152,9 @@ export async function verifyProbeAtmosphere(
       world.addComponent(object, { component: MeshRenderer, data: objectRenderer }).unwrap();
     }
     await settle(generation());
-    if (atmosphereWork !== 3 * 42) throw new Error(`Unchanged sky rebuilt across probe steps: ${atmosphereWork} passes instead of 126`);
+    // Each bake records six source faces, six diffuse faces and nine CubeUV levels.
+    // Count raster work independently of the backend's copy timestamp support.
+    if (atmosphereWork !== 3 * 21) throw new Error(`Unchanged sky rebuilt across probe steps: ${atmosphereWork} passes instead of 63`);
     // Keep the tested combination for the same-tape Browser/Dawn capture.
     const summarize = (samples: Map<string, number[]>) => Object.fromEntries([...samples].map(([name, values]) => {
       const ordered = values.slice().sort((a, b) => a - b);

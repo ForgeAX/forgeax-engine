@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { Update, World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Draw source routing (multi-World)',
@@ -11,12 +13,26 @@ export default defineFeature({
   expect:
     'ON: a green sphere from the overlay World appears beside the red cube. OFF: setDrawSource(undefined) restores the single-World path and only the red cube remains.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.9, 0.15, 0.15, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.9, 0.15, 0.15, 1] }), {
       pos: [-1, 0.5, 0],
     });
     const overlay = new World();
-    spawnMesh(overlay, MESH.sphere, standard(overlay, { baseColor: [0.1, 0.9, 0.2, 1] }), {
+    const primitiveAssetsOverlay = overlay.assets;
+    if (!(primitiveAssetsOverlay instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssetsOverlay
+      .create(createPrimitiveMesh('sphere').unwrap())
+      .unwrap();
+
+    spawnMesh(overlay, stageSphere, standard(overlay, { baseColor: [0.1, 0.9, 0.2, 1] }), {
       pos: [1.2, 0.8, 0],
       scale: [1.4, 1.4, 1.4],
     });

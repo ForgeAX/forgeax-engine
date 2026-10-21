@@ -22,7 +22,7 @@
 //     of these literal tokens (each on at least 1 line):
 //       - from '@forgeax/engine-ecs'  (or with double quotes)
 //       - from '@forgeax/engine-runtime'
-//       - HANDLE_TRIANGLE
+//       - BUILTIN_TRIANGLE
 //       - await host initialization
 //       - renderer.draw({ leases: [attachment.value], ... })
 //     AND must contain ZERO occurrences of inline parallel implementation
@@ -101,7 +101,7 @@ const REQUIRED_TOKENS = [
       'import("@forgeax/engine-runtime")',
     ],
   },
-  { name: 'HANDLE_TRIANGLE', patterns: ['HANDLE_TRIANGLE'] },
+  { name: 'BUILTIN_TRIANGLE', patterns: ['BUILTIN_TRIANGLE'] },
   { name: 'lease-bound renderer.draw request', patterns: ['renderer.draw({', 'leases: [attachment.value]'] },
 ];
 

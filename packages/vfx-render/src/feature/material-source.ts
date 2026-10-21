@@ -2,10 +2,11 @@ import { type MaterialRenderProjection, sameMaterialContext } from '@forgeax/eng
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderFeaturePlanContext } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import type { ParticleRendererSourceV3 } from '@forgeax/engine-vfx';
 
 type Context = RenderFeaturePlanContext['materialContext'];
 export interface ParticleMaterialSource {
-  read(world: World, guid: string): MaterialAsset | undefined;
+  read(world: World, reference: ParticleRendererSourceV3['material']): MaterialAsset | undefined;
   projection?(world: World, material: MaterialAsset): MaterialRenderProjection | undefined;
   captureFrame?(world: World): boolean;
 }

@@ -2,8 +2,9 @@ import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { CameraSnapshot } from '../../render-contract';
-import type { DispatchEntry, RenderableSnapshot } from '../../render-system-extract';
-import { TransparentSortCache } from '../transparent-dispatch';
+import type { DispatchEntry } from '../../render-system-extract';
+import { FrameProjection } from '../../scene/frame-list';
+import { TransparentSortCache, type TransparentSortSource } from '../transparent-dispatch';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
   TRANSPARENT_SORT_MODE_LAYER_Y,
@@ -13,22 +14,21 @@ import {
 
 function scope(mode: number, yzAlpha = 1): RenderResourceScope {
   return {
-    hasResource: () => true,
-    getResource: () => ({ mode, yzAlpha }),
+    transparentSort: { mode, yzAlpha },
   } as unknown as RenderResourceScope;
 }
 
-function renderable(x: number, y: number, z: number): RenderableSnapshot {
+function renderable(x: number, y: number, z: number): TransparentSortSource {
   const world = new Float32Array(16);
   world[0] = world[5] = world[10] = world[15] = 1;
   world[12] = x;
   world[13] = y;
   world[14] = z;
-  return { transform: { world } } as unknown as RenderableSnapshot;
+  return { transform: { world } } as unknown as TransparentSortSource;
 }
 
 /** Sprite-shaped slot: pivot from `pivotAndSize[1]`, height from the world Y column. */
-function sprite(y: number, z: number, pivotY: number, scaleY: number): RenderableSnapshot {
+function sprite(y: number, z: number, pivotY: number, scaleY: number): TransparentSortSource {
   const world = new Float32Array(16);
   world[0] = world[10] = world[15] = 1;
   world[5] = scaleY;
@@ -37,7 +37,7 @@ function sprite(y: number, z: number, pivotY: number, scaleY: number): Renderabl
   return {
     transform: { world },
     material: { paramSnapshot: { pivotAndSize: [0.5, pivotY, 1, 1] } },
-  } as unknown as RenderableSnapshot;
+  } as unknown as TransparentSortSource;
 }
 
 function entry(renderableIndex: number, queue: number, layer = 0, material = 0): DispatchEntry {
@@ -59,7 +59,7 @@ function camera(x: number, y: number, z: number): CameraSnapshot {
 /** Independent reference: stable sort of the transparent subset in place. */
 function reference(
   dispatch: readonly DispatchEntry[],
-  renderables: readonly RenderableSnapshot[],
+  renderables: readonly TransparentSortSource[],
   mode: number,
   eye: CameraSnapshot,
 ): DispatchEntry[] {
@@ -125,6 +125,60 @@ describe('TransparentSortCache', () => {
     }
   });
 
+  it('sorts blended Geometry-queue work while retaining opaque slots and lazy reads', () => {
+    const read: number[] = [];
+    const renderables = new FrameProjection(
+      [renderable(0, 0, 1), renderable(0, 0, 100), renderable(0, 0, 3)],
+      (source, index) => {
+        read.push(index);
+        return source;
+      },
+    );
+    const blend = {
+      color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    } as const;
+    const opaque = entry(1, RenderQueue.Geometry);
+    const dispatch = [
+      { ...entry(0, RenderQueue.Geometry), renderState: { blend } },
+      opaque,
+      { ...entry(2, RenderQueue.Geometry), renderState: { blend } },
+    ];
+    const sorted = new TransparentSortCache().sort(
+      dispatch,
+      scope(TRANSPARENT_SORT_MODE_DISTANCE),
+      [camera(0, 0, 0)],
+      renderables,
+    );
+    expect(sorted.map((draw) => draw.renderableIndex)).toEqual([2, 1, 0]);
+    expect(sorted.at(1)).toBe(opaque);
+    expect(read).toEqual([0, 2]);
+  });
+
+  it('reads only selected transparent rows from a retained frame projection', () => {
+    const read: number[] = [];
+    const renderables = new FrameProjection(
+      [renderable(0, 0, 3), renderable(0, 0, 100), renderable(0, 0, 1)],
+      (source, index) => {
+        read.push(index);
+        return source;
+      },
+    );
+    const dispatch = [
+      entry(0, RenderQueue.Transparent),
+      entry(1, RenderQueue.Geometry),
+      entry(2, RenderQueue.Transparent),
+    ];
+    const sorted = new TransparentSortCache().sort(
+      dispatch,
+      scope(TRANSPARENT_SORT_MODE_LAYER_Z),
+      [],
+      renderables,
+    );
+    expect(sorted.map((item) => item.renderableIndex)).toEqual([2, 1, 0]);
+    expect(read).toEqual([0, 2]);
+  });
+
   it('returns the previous array when the source and verified order are unchanged', () => {
     const cache = new TransparentSortCache();
     const renderables = [renderable(0, 0, 3), renderable(0, 0, 1), renderable(0, 0, 2)];
@@ -152,7 +206,7 @@ describe('TransparentSortCache', () => {
 describe('TransparentSortCache mode formulas', () => {
   const order = (
     mode: number,
-    renderables: readonly RenderableSnapshot[],
+    renderables: readonly TransparentSortSource[],
     layers: readonly number[] = [],
     yzAlpha = 1,
     world: RenderResourceScope = scope(mode, yzAlpha),
@@ -179,7 +233,9 @@ describe('TransparentSortCache mode formulas', () => {
   });
 
   it('a world without TransparentSortConfig sorts as LAYER_Z', () => {
-    const missing = { hasResource: () => false } as unknown as RenderResourceScope;
+    const missing = {
+      transparentSort: { mode: TRANSPARENT_SORT_MODE_LAYER_Z, yzAlpha: 1 },
+    } as unknown as RenderResourceScope;
     const renderables = [renderable(0, 0, 3), renderable(0, 0, 1), renderable(0, 0, 2)];
     expect(order(TRANSPARENT_SORT_MODE_LAYER_Y, renderables, [], 1, missing)).toEqual([1, 2, 0]);
   });

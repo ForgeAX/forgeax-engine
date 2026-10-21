@@ -1,5 +1,6 @@
-import { ok } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { IntelligenceError } from '../errors';
 import { createIntelligenceRuntime } from '../runtime';
 import {
   bindIntelligencePort,
@@ -1562,4 +1563,48 @@ describe('intelligence MessagePort boundary', () => {
       clientPort.close();
     }
   });
+});
+
+it('polls Host rejection and activity output in transport arrival order', async () => {
+  const runtime = createIntelligenceRuntime({
+    id: 'ordered',
+    start(submission, sink) {
+      if (submission.input === 'reject')
+        return err(new IntelligenceError({ code: 'intelligence-closed', detail: {} }));
+      sink.text('accepted');
+      sink.complete('done');
+      return ok(undefined);
+    },
+    cancel: () => ok(undefined),
+    close: async () => {},
+  });
+  const channel = new MessageChannel();
+  const host = bindIntelligencePort(channel.port1, runtime);
+  let id = 0;
+  const client = createIntelligencePortClient('ordered', channel.port2, {
+    createActivityId: () => activityId(`ordered-${++id}`),
+  });
+  try {
+    const rejected = client.submit({ input: 'reject' }).unwrap();
+    const accepted = client.submit({ input: 'accept' }).unwrap();
+    const received = new Promise<void>((resolve) => {
+      const listener = (event: MessageEvent<IntelligenceRealmMessage>) => {
+        if (event.data.kind !== 'intelligence-events') return;
+        channel.port2.removeEventListener('message', listener);
+        resolve();
+      };
+      channel.port2.addEventListener('message', listener);
+    });
+    expect(client.poll(1)).toEqual([]);
+    await received;
+    expect(client.poll(1)).toMatchObject([
+      { type: 'failed', activityId: rejected.id, sequence: 1 },
+    ]);
+    expect(client.poll(1)).toMatchObject([
+      { type: 'text-delta', activityId: accepted.id, sequence: 1 },
+    ]);
+  } finally {
+    await client.close();
+    await host.close();
+  }
 });

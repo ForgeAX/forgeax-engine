@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
@@ -40,6 +41,7 @@ function rgba(read: ReplayReadbackResult): number[] {
 /** Shared real renderer path: browser and Dawn execute the same assertions. */
 export async function verifyLensEffects(
   renderer: Renderer,
+  assets: AssetRegistry,
   recorder: RecorderAttachment,
   save: Save,
   options: {
@@ -50,7 +52,7 @@ export async function verifyLensEffects(
   // Six frames per sampled state plus the composition window retain the
   // fixture's 60-frame lifetime, including callers without a resize probe.
   const sampleFrames = Math.max(6, testQuality.staticFrames);
-  const world = new World();
+  const world = new World({ assets });
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -80,18 +82,13 @@ export async function verifyLensEffects(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef(
-              'MeshAsset',
-              createBoxGeometry(width, height, 0.1).unwrap(),
-            ),
+            assetHandle: assets.create(createBoxGeometry(width, height, 0.1).unwrap()).unwrap(),
           },
         },
         {
           component: MeshRenderer,
           data: {
-            materials: [
-              world.allocSharedRef('MaterialAsset', Materials.unlit([color, color, color, 1])),
-            ],
+            materials: [assets.create(Materials.unlit([color, color, color, 1])).unwrap()],
           },
         },
       )

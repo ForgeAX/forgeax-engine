@@ -1,6 +1,6 @@
 import type { TextureAsset } from '@forgeax/engine-types';
 import { fnv1a32 } from '@forgeax/engine-types';
-import { compareSkinGeometryBytes } from './skin-geometry-bytes';
+import { compareBufferBytes } from './buffer-bytes';
 
 const MAX_BYTES = 1_048_576;
 const MAX_ENTRIES = 4;
@@ -36,7 +36,7 @@ function ordinaryBytes(data: Uint8Array): Uint8Array<ArrayBuffer> | undefined {
 
 function equal(first: Uint8Array<ArrayBuffer>, second: Uint8Array): boolean {
   if (first.byteLength !== second.byteLength) return false;
-  const compared = compareSkinGeometryBytes(
+  const compared = compareBufferBytes(
     first.buffer,
     first.byteOffset,
     second.buffer as ArrayBuffer,

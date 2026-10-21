@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import {
@@ -8,7 +10,7 @@ import {
   scenePlugin,
   Transform,
 } from '@forgeax/engine-scene';
-import type { AnimationClip, AnimationTargetIdValue, Handle } from '@forgeax/engine-types';
+import type { AnimationClip, AnimationTargetIdValue, AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationTargetId, bindAnimationTargets } from '../animation-target';
@@ -57,19 +59,19 @@ async function setupPlayer(
   clip: AnimationClip,
   graph: boolean,
 ): Promise<{ world: World; player: EntityHandle; target: EntityHandle }> {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   await createWorldContext(world, [scenePlugin()]);
-  await createWorldContext(world, [animationPlugin(graph ? () => clip : undefined)]);
-  const clipHandle = world.allocSharedRef('AnimationClip', clip);
+  await createWorldContext(world, [animationPlugin()]);
+  const clipHandle = runtimeAssetRegistry(world.assets).create(clip).unwrap();
   const player = world
     .spawn({ component: Transform, data: { pos: [10, 0, 0] } })
     .unwrap() as EntityHandle;
   world.addComponent(player, { component: Name, data: { value: 'Root' } }).unwrap();
   if (graph) {
-    const built = defineAnimationGraph((builder) => builder.clip('test/animation-clip-target'));
+    const built = defineAnimationGraph((builder) => builder.clip(clipHandle));
     expect(built.ok).toBe(true);
     if (!built.ok) throw built.error;
-    const graphHandle = world.allocSharedRef('AnimationGraph', built.value);
+    const graphHandle = runtimeAssetRegistry(world.assets).create(built.value).unwrap();
     world
       .addComponent(player, {
         component: AnimationPlayer,
@@ -246,10 +248,8 @@ describe('generic Transform target playback', () => {
 
   it('preserves pause, loop, replay, speed, blend, and non-positive weight semantics', async () => {
     const { world, player, target } = await setupPlayer(transformClip(), false);
-    const clipHandle = world.get(player, AnimationPlayer).unwrap().clips[0] as unknown as Handle<
-      'AnimationClip',
-      'shared'
-    >;
+    const clipHandle = world.get(player, AnimationPlayer).unwrap()
+      .clips[0] as unknown as AssetHandle<'animation-clip'>;
     world.set(player, AnimationPlayer, { paused: false, speeds: [2], times: [0] }).unwrap();
     world.update(0.125);
     expect(world.get(player, AnimationPlayer).unwrap().times[0]).toBeCloseTo(0.2);

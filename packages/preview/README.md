@@ -80,7 +80,7 @@ source builds use the packaged source or the producer's neutral HDR fallback;
 each carries a receipt for its actual bytes. DevKit rejects source or Meta bytes
 that disagree with that receipt before project build or development startup.
 
-Resource domain execution consumes the mechanisms from one PreviewHost session. Material and Mesh read readiness from that session's Renderer, as Texture and VFX do; callers do not supply a second readiness projection. All four subject kinds share GUID loading, the Host asset metadata contract, and owner-failure projection before their own inspection and render oracle. Resource requests, asset records and canonical kit receipts use the same object admission; arrays cannot stand in for records, even when they carry named fields.
+Resource domain execution consumes the mechanisms from one PreviewHost session. Material and Mesh read readiness from that session's Renderer, as Texture and VFX do; callers do not supply a second readiness projection. The Host supplies one fixed `{ guid, asset, digest?, ownerFacts? }` subject after Catalog admission. All four domains verify that identity before their inspection and render oracle; Preview has no loader or runtime asset catalogue. Resource requests, asset records and canonical kit receipts use the same object admission; arrays cannot stand in for records, even when they carry named fields.
 
 ### Bound request admission
 
@@ -157,7 +157,9 @@ observable through RHI Debug.
 ### Ownership
 
 Preview owns the options/facts contract and validates selections against the
-bound source. App assembles an ordinary preview Mesh/Material/Camera; DevKit
+bound source. App retains the managed source handle and assembles an ordinary
+preview Mesh/Material/Camera. Option changes use `assets.update` on that same
+material handle; ECS bindings stay stable. DevKit
 compiles their shared material contracts through the existing shader pipeline. Renderer remains the sole upload, mip, submission and resource owner.
 The existing workspace target/generation guards wrap `preview.texture.get/set`.
 View owns labels, input mapping and optimistic form state; it sends bounded

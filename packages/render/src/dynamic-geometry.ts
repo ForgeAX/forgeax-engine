@@ -1,4 +1,4 @@
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 
 /** A standard MeshAsset candidate prepared for one attached World generation. */
@@ -8,9 +8,8 @@ export interface DynamicGeometryPrepareInput {
   readonly entity?: number;
   /** Optional derived-physics entity whose fixed-step publication gates draw. */
   readonly physicsEntity?: number;
-  readonly mesh: MeshAsset;
-  /** Existing World.sharedRefs handle whose standard GPU residency is prepared. */
-  readonly meshHandle?: Handle<'MeshAsset', 'shared'>;
+  /** The asset owner captures current content and its dependency versions. */
+  readonly meshHandle: AssetHandle<'mesh'>;
   readonly revision: number;
   /** Material identity is a consumer fact; MaterialAsset stays in the World. */
   readonly materialIdentity?: string;
@@ -19,6 +18,12 @@ export interface DynamicGeometryPrepareInput {
   /** Captured by the Renderer host from the World FixedTime resource. */
   readonly fixedStep?: number;
 }
+
+/** Internal lifecycle input after the host resolves the asset reference. */
+export type DynamicGeometryContentInput = Omit<DynamicGeometryPrepareInput, 'meshHandle'> & {
+  readonly mesh: MeshAsset;
+  readonly meshHandle?: AssetHandle<'mesh'>;
+};
 
 /** Explicit ECS/fixed-step ordering proof used by Renderer admission. */
 export interface DynamicGeometryOrdering {
@@ -47,7 +52,7 @@ export interface DynamicGeometryCandidate {
   readonly revision: number;
   readonly topologyRevision: number;
   readonly materialIdentity?: string;
-  readonly meshHandle?: Handle<'MeshAsset', 'shared'>;
+  readonly meshHandle?: AssetHandle<'mesh'>;
   readonly fixedStep?: number;
   readonly state: DynamicGeometryCandidateState;
 }
@@ -94,8 +99,8 @@ function sharedFrameSnapshot(
 export interface PreparedMeshResidency {
   /** True while this handle still maps to the prepared device-generation allocation. */
   isCurrent(): boolean;
-  /** Transfer ownership after a live World MeshFilter retains this handle. */
-  commit(): boolean;
+  /** Transfer ownership after the named entity binds this asset through MeshFilter. */
+  commit(entity: number): boolean;
   /** Drop an uncommitted preparation and evict an allocation created for it. */
   cancel(): void;
 }
@@ -296,11 +301,11 @@ function meshByteSize(mesh: MeshAsset): number {
 export interface DynamicGeometryLifecycle {
   /** Prepare one complete, byte-bounded roster for atomic admission. */
   prepareCandidates(
-    inputs: readonly DynamicGeometryPrepareInput[],
+    inputs: readonly DynamicGeometryContentInput[],
     generation: number,
   ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError>;
   prepare(
-    input: DynamicGeometryPrepareInput,
+    input: DynamicGeometryContentInput,
     generation: number,
   ): Result<DynamicGeometryCandidate, DynamicGeometryError>;
   accept(
@@ -810,7 +815,7 @@ export function createDynamicGeometryLifecycle(
   };
 
   const prepare = (
-    input: DynamicGeometryPrepareInput,
+    input: DynamicGeometryContentInput,
     generation: number,
     batch?: string[],
   ): Result<DynamicGeometryCandidate, DynamicGeometryError> => {

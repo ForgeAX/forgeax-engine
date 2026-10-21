@@ -1,7 +1,6 @@
 import { MessageChannel } from 'node:worker_threads';
-import { resolveAssetHandle } from '@forgeax/engine/assets-runtime';
 import { loadPackProgram } from '@forgeax/engine/pack/runtime';
-import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
+import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { err, ok, type AssetPublicationEnvelope, type MeshAsset } from '@forgeax/engine/types';
 import { describe, expect, it, vi } from 'vitest';
 import { assetGuid, guidText, PACKAGE_IDS } from '../../shared/asset-refs.ts';
@@ -37,7 +36,7 @@ describe('runtime vase', () => {
 
   it('keeps the entity and GUID on replacement, preserves the bound mesh after failure, and joins pending work on disposal', async () => {
     const fixture = await pluginFixture();
-    const { ctx, world, registerRead } = fixture;
+    const { ctx, world, assets, load, registerRead } = fixture;
     world.components.register(MeshFilter).unwrap();
     world.components.register(MeshRenderer).unwrap();
     const build = await program();
@@ -60,10 +59,16 @@ describe('runtime vase', () => {
     const channel = new MessageChannel();
     ctx.set('gameHost', { ...ctx.gameHost!, port: channel.port1 as unknown as MessagePort });
     const post = (values: VaseValues) => channel.port2.postMessage({ channel: VASE_CHANNEL, kind: 'generate', values });
-    ctx.provide('assets', {
-      parseGuid: (value: string) => value,
-      loadByGuid: async (guid: unknown) => ok(guid === material ? { kind: 'material' } : current),
-    } as never);
+    const materialHandle = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
+    const runtimeMesh = () => ({ ...current, materialSlots: current.materialSlots.map(slot => ({ ...slot, defaultMaterial: materialHandle })) });
+    const meshHandle = assets.create(runtimeMesh()).unwrap();
+    load.mockImplementation(async (_guid, kind) => {
+      const handle = (typeof kind === 'string' ? kind : kind.kind) === 'material' ? materialHandle : meshHandle;
+      assets.retain(handle).unwrap();
+      return ok(handle);
+    });
+    const reload = vi.spyOn(assets, 'reload').mockImplementation(async () => assets.replace(meshHandle, runtimeMesh()));
+    ctx.provide('assets', assets);
     ctx.provide('runtimePacks', { producer, catalog: { enumerate: async () => ok([
       { guid: material, publication: { outputs: [{ guid: material, digest: 'material-version' }] } },
     ]) } } as never);
@@ -72,18 +77,19 @@ describe('runtime vase', () => {
     try {
       const fiber = await ctx.plugin(vase, { material });
       const initial = read();
-      const mesh = () => resolveAssetHandle<MeshAsset>(world,
-        world.get(initial.entity!, MeshFilter).unwrap().assetHandle).unwrap();
+      const mesh = () => assets.read(world.get(initial.entity!, MeshFilter).unwrap().assetHandle).unwrap();
       const original = mesh();
       post({ height: 3.5, radius: 1.1, sides: 16 });
       await vi.waitFor(() => expect(read().generation).toBe(2));
       expect(read()).toMatchObject({ entity: initial.entity, guid: initial.guid, values: { height: 3.5 } });
-      expect(mesh()).not.toBe(original);
+      expect(mesh()).not.toEqual(original);
+      expect(world.get(initial.entity!, MeshFilter).unwrap().assetHandle).toBe(meshHandle);
+      expect(reload).toHaveBeenCalledTimes(1);
       expect(mesh().aabb![4]).toBeCloseTo(3.5);
       const replacement = mesh();
       post({ ...VASE_DEFAULTS, height: 0 });
       await vi.waitFor(() => expect(read().error).toContain('minimum'));
-      expect(mesh()).toBe(replacement);
+      expect(mesh()).toEqual(replacement);
       expect(read().generation).toBe(2);
       post({ ...VASE_DEFAULTS, height: 4 });
       await vi.waitFor(() => expect(finishPending).toBeTypeOf('function'));
@@ -107,6 +113,7 @@ describe('runtime vase', () => {
     } finally {
       finishPending?.();
       await ctx.fiber.dispose();
+      assets.dispose();
       channel.port1.close(); channel.port2.close();
     }
   });

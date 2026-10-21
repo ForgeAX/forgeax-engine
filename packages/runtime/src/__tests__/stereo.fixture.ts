@@ -98,11 +98,12 @@ function stereoData(overrides: Partial<StereoCameraData> = {}): StereoCameraData
 
 function buildScene(
   world: World,
+  assets: AssetRegistry,
   stereo: StereoCameraData | undefined,
   antialias: number,
 ): EntityHandle {
   const mesh = (size: number) =>
-    world.allocSharedRef('MeshAsset', createBoxGeometry(size, size, HALF_DEPTH * 2).unwrap());
+    assets.create(createBoxGeometry(size, size, HALF_DEPTH * 2).unwrap()).unwrap();
   for (const object of OBJECTS)
     world
       .spawn(
@@ -111,7 +112,7 @@ function buildScene(
         {
           component: MeshRenderer,
           data: {
-            materials: [world.allocSharedRef('MaterialAsset', Materials.unlit([...object.color]))],
+            materials: [assets.create(Materials.unlit([...object.color])).unwrap()],
           },
         },
       )
@@ -378,15 +379,16 @@ export interface StereoSummary {
 
 export async function verifyStereo(
   renderer: Renderer,
+  assets: AssetRegistry,
   recorder: RecorderAttachment,
   save: StereoSave,
   size: StereoSize,
   publication?: StereoPublication,
   settleFrames = 60,
 ): Promise<StereoSummary> {
-  const world = new World();
+  const world = new World({ assets });
   const requestObservation = required(renderer.requestObservation).bind(renderer);
-  const camera = buildScene(world, stereoData(), ANTIALIAS_NONE);
+  const camera = buildScene(world, assets, stereoData(), ANTIALIAS_NONE);
   const driver = createDriver(renderer, world, publication);
   const observe = async () => {
     renderValue(requestObservation(['final-display']));

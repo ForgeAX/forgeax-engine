@@ -81,5 +81,5 @@ export const PointLight = defineComponent('PointLight', {
   /** Distance exponent; zero leaves only the finite-range window. */
   decay: { type: 'f64', default: 2 },
   // Transform rotates the full-sphere profile: polar +Z, azimuth +X toward +Y.
-  iesProfile: { type: 'shared<IesProfileAsset>' },
+  iesProfile: { type: 'asset<ies-profile>' },
 });

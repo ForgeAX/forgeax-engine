@@ -26,6 +26,7 @@ import type {
   RenderPipelineTarget,
   RenderPipelineTopology,
 } from '../render-pipeline';
+import type { VolumetricFogLightKind } from './capability';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from './component';
 import { volumeCompositeScissor } from './composite-scissor';
 import {
@@ -41,7 +42,8 @@ import {
   VOLUME_PACKING_Z,
   VOLUMETRIC_FOG_PARAMS_BYTES,
 } from './resources';
-export interface VolumetricFogPassInputs {
+
+interface VolumetricFogPassInputs {
   readonly compositeNeighbors?: 2 | 4 | 8;
   readonly resources: VolumetricFogResources;
   readonly linearHdr: RenderPipelineTarget;
@@ -57,7 +59,7 @@ export interface VolumetricFogPassInputs {
   /** The Cluster uniform carries the admitted light count for slot guards. */
   readonly clusterUniform: GraphBuffer;
   readonly atmosphereTransmittance?: GraphTextureView | undefined;
-  readonly selectedLightKind: 'directional' | 'point' | 'spot';
+  readonly selectedLightKind: VolumetricFogLightKind;
   readonly projector?: GraphTextureView;
   /** Stable world-space cloud shadow map sampled at each volume point. */
   readonly cloudShadow?: GraphTextureView;
@@ -119,7 +121,7 @@ function importVolumeInputs(
   sceneDepth: GraphTextureView,
   directionalShadow: GraphTextureView | undefined,
   spotShadow: GraphTextureView,
-  selectedLightKind: 'directional' | 'point' | 'spot' | undefined,
+  selectedLightKind: VolumetricFogLightKind | undefined,
   clusterBuffers: StandardClusterGraphBuffers | null,
   cloudShadow: GraphTextureView | undefined,
 ): Result<ImportedVolumeInputs | undefined, RenderGraphError> {
@@ -313,7 +315,7 @@ export function addAuthoredVolumetricFogPasses(
     resources: resources.value,
   });
 }
-export function addVolumetricFogPasses(
+function addVolumetricFogPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   inputs: VolumetricFogPassInputs,
 ): Result<void, RenderGraphError> {

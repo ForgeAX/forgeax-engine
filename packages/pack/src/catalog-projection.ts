@@ -1,6 +1,4 @@
 import type {
-  AssetAuthoringCapability,
-  AssetPublicationEnvelope,
   AssetPublicationTuple,
   AssetRelation,
   CatalogDiagnostic,
@@ -17,7 +15,6 @@ import type {
 } from '@forgeax/engine-types';
 import { authoringCapabilityForAssetKind, catalogOperationsFor } from '@forgeax/engine-types';
 import { isRuntimePublicationTuple } from './runtime-projection.js';
-import { isScriptablePackAssetKind } from './scriptable-pack.js';
 
 export function catalogProjectionFor(
   subject: CatalogSubject,
@@ -42,7 +39,7 @@ function catalogRowProjectionFor(
   lifecycle: CatalogLifecycle,
 ) {
   const projection = catalogProjectionFor(subject, execution, lifecycle);
-  return { ...projection, projection } as const;
+  return { subject, execution, lifecycle, projection } as const;
 }
 
 export interface CatalogProducerMeta {
@@ -57,16 +54,11 @@ export interface CatalogProducerMeta {
   readonly sourceOverrideDescriptors?: readonly SourceOverrideDescriptor[];
 }
 
-export interface CatalogOutputDeclaration {
-  readonly guid: string;
-  readonly kind: string;
-  readonly sourceKey?: string;
-  readonly sourceIndex?: number;
-  readonly relations?: PackIndexEntry['relations'];
-  readonly authoring?: AssetAuthoringCapability;
-  readonly refs?: readonly string[];
-  readonly name?: string;
-}
+export interface CatalogOutputDeclaration
+  extends Pick<
+    PackIndexEntry,
+    'guid' | 'kind' | 'sourceKey' | 'sourceIndex' | 'relations' | 'authoring' | 'refs' | 'name'
+  > {}
 
 function referenceRelations(
   guid: string,
@@ -157,13 +149,6 @@ export function projectExternalCatalogEntries(
   });
 }
 
-/** Return the first declaration that would shadow an engine-owned Pack kind. */
-export function findReservedAssetKindConflict(
-  outputs: readonly Pick<CatalogOutputDeclaration, 'kind'>[],
-): Pick<CatalogOutputDeclaration, 'kind'> | undefined {
-  return outputs.find((output) => isScriptablePackAssetKind(output.kind));
-}
-
 /** A self-contained Pack row before package placement and runtime projection axes. */
 export type PackageCatalogInput = Omit<
   PackIndexEntry,
@@ -209,13 +194,9 @@ export function projectPackageCatalog(
   });
 }
 
-export interface CookedPackageProjection {
-  readonly packageUrl: string;
-  readonly revision: ResourceRevision;
-  readonly refs: readonly string[];
-  readonly cookReceiptUrl?: string;
-  readonly publication?: AssetPublicationEnvelope;
-}
+export interface CookedPackageProjection
+  extends Pick<PackIndexEntry, 'packageUrl' | 'cookReceiptUrl' | 'publication'>,
+    Required<Pick<PackIndexEntry, 'revision' | 'refs'>> {}
 
 /** Project one complete cooked package; navigation facts stay in the Pack owner. */
 export function projectCookedPackageEntry(
@@ -238,14 +219,10 @@ export function projectCookedPackageEntry(
   };
 }
 
-export interface RuntimeCatalogRowInput extends AssetPublicationTuple {
-  readonly guid: string;
-  readonly kind: string;
-  readonly packageUrl: string;
-  readonly sourcePath?: string;
-  readonly subject?: CatalogSubject;
-  readonly execution?: CookExecution;
-  readonly lifecycle?: CatalogLifecycle;
+export interface RuntimeCatalogRowInput
+  extends AssetPublicationTuple,
+    Pick<PackIndexEntry, 'guid' | 'kind' | 'packageUrl'>,
+    Partial<Pick<PackIndexEntry, 'sourcePath' | 'subject' | 'execution' | 'lifecycle'>> {
   readonly publication?: unknown;
 }
 

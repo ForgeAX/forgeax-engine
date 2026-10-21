@@ -22,7 +22,7 @@ import {
   importRenderPipelineSurface,
   type RenderPipelineTarget,
 } from '../render-pipeline';
-import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
+import { FORWARD_PASS_SELECTOR, TRANSMISSION_BACK_PASS_SELECTOR } from '../systems/pass-selector';
 import {
   addStandardSceneDataPass,
   aggregateTemporalDemand,
@@ -232,15 +232,13 @@ function buildUrp(
 
   const featureShadows = context.contributeShadowFeatures?.();
   if (featureShadows !== undefined && !featureShadows.ok) return featureShadows;
-  const shadows = addTypedShadowPasses(
-    graph,
-    topology,
-    context.projectGpuDrivenShadow,
-    featureShadows?.value,
-    undefined,
-    context.gpuDrivenStaticShadowLayers,
-    reuseAdjacentShadow,
-  );
+  const shadows = addTypedShadowPasses(graph, topology, {
+    projectGpuDrivenShadow: context.projectGpuDrivenShadow,
+    shadowFeatures: featureShadows?.value,
+    staticLayers: context.gpuDrivenShadowDepthLayers,
+    depthLayers: context.shadowDepthLayers,
+    reuseAdjacentShadow: reuseAdjacentShadow,
+  });
   if (!shadows.ok) return shadows;
 
   const clusterBuffers = clearOnly ? ok(null) : importStandardClusterBuffers(graph, lighting);
@@ -420,6 +418,55 @@ function buildUrp(
   });
   if (!fogged.ok) return fogged;
 
+  const sortedTransmission =
+    transmissionActive &&
+    topology.transparency?.weightedBlended !== true &&
+    topology.singleLayerMedium !== true;
+  if (sortedTransmission && transmissionDemand.needsBackPass === true) {
+    const backdrop = addTransmissionBackdropPasses({
+      graph,
+      name: 'transmission-backdrop-backs',
+      source: sceneResolvedForLater,
+      demand: transmissionDemand,
+      copySize: internalCopySize,
+      surfaceSize: topology.surface,
+      encodeRoughMip: context.encodeTransmissionMip,
+      includeConsumerPasses: false,
+    });
+    if (!backdrop.ok) return backdrop;
+    const backs = addTypedScenePass(graph, {
+      environment: atmosphere.value,
+      name: 'transmission-backs',
+      color: sceneForLater,
+      depth: depth.value,
+      ...(msaa ? { resolve: sceneResolvedForLater } : {}),
+      ...receiver,
+      selector: TRANSMISSION_BACK_PASS_SELECTOR,
+      colorLoadOp: 'load',
+      depthLoadOp: 'load',
+      recordMode: 'transmission',
+      transparentDepthWrite: true,
+      transmissionBackdrop: backdrop.value.backdrop?.view,
+    });
+    if (!backs.ok) return backs;
+  }
+  if (sortedTransmission) {
+    // Copy at the first transmitting draw, after the farther sorted surfaces.
+    const prefix = addTypedScenePass(graph, {
+      environment: atmosphere.value,
+      name: 'transparent-before-transmission',
+      color: sceneForLater,
+      depth: depth.value,
+      ...(msaa ? { resolve: sceneResolvedForLater } : {}),
+      ...receiver,
+      selector: FORWARD_PASS_SELECTOR,
+      colorLoadOp: 'load',
+      depthLoadOp: 'load',
+      recordMode: 'translucent-before-transmission',
+      transparentDepthWrite: true,
+    });
+    if (!prefix.ok) return prefix;
+  }
   const transmission = addTransmissionBackdropPasses({
     graph,
     source: sceneResolvedForLater,
@@ -485,7 +532,8 @@ function buildUrp(
         selector: FORWARD_PASS_SELECTOR,
         colorLoadOp: 'load',
         depthLoadOp: 'load',
-        recordMode: 'transmission',
+        recordMode: sortedTransmission ? 'translucent' : 'transmission',
+        transparentDepthWrite: true,
         // Inject the complete backdrop view so the Standard shader can select
         // the producer's optional roughness mip level. mipViews[0] is only the
         // copy destination view and intentionally exposes one level.
@@ -494,17 +542,19 @@ function buildUrp(
       if (!transmissionPass.ok) return transmissionPass;
     }
   }
-  const transparentPass = addStandardTransparentPasses(graph, {
-    color: sceneForLater,
-    ...(msaa ? { resolve: sceneResolvedForLater } : {}),
-    depth: depth.value,
-    size: internalSize,
-    transparency: topology.transparency,
-    template: {
-      environment: atmosphere.value,
-      ...receiver,
-    },
-  });
+  const transparentPass = sortedTransmission
+    ? ok(undefined)
+    : addStandardTransparentPasses(graph, {
+        color: sceneForLater,
+        ...(msaa ? { resolve: sceneResolvedForLater } : {}),
+        depth: depth.value,
+        size: internalSize,
+        transparency: topology.transparency,
+        template: {
+          environment: atmosphere.value,
+          ...receiver,
+        },
+      });
   if (!transparentPass.ok) return transparentPass;
   if (backdropActive) {
     const temporal = addTransmissionBackdropTemporalPass(graph, sceneResolvedForLater);

@@ -1,8 +1,9 @@
-import { decodeImageBytes } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry, decodeImageBytes } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { MeshRenderer } from '@forgeax/engine/render';
 import type { TextureAsset } from '@forgeax/engine/types';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 async function encode(type: 'image/png' | 'image/jpeg'): Promise<Uint8Array> {
   const canvas = new OffscreenCanvas(64, 64);
@@ -31,6 +32,16 @@ export default defineFeature({
   expect:
     'ON: the left quad shows a red/blue checkerboard from PNG bytes, the right one from JPEG bytes. OFF: both quads turn plain white. Checks: decoded extents are 64x64, garbage bytes are image-decode-failed, image/webp is image-format-unsupported.',
   async setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world);
     const checks: FeatureCheck[] = [];
     const white = standard(world, {
@@ -55,7 +66,7 @@ export default defineFeature({
         ok: extent.width === 64 && extent.height === 64,
         detail: `${extent.width}x${extent.height}`,
       });
-      const texture = world.allocSharedRef('TextureAsset', decoded.value as TextureAsset);
+      const texture = sceneAssets.create(decoded.value as TextureAsset).unwrap();
       const textured = standard(world, {
         baseColor: [1, 1, 1, 1],
         baseColorTexture: texture as never,
@@ -63,7 +74,7 @@ export default defineFeature({
         metallic: 0,
         renderState: { cullMode: 'none' },
       });
-      const entity = spawnMesh(world, MESH.quad, textured, {
+      const entity = spawnMesh(world, stageQuad, textured, {
         pos: [index === 0 ? -1.1 : 1.1, 1, 0],
         scale: [2, 2, 2],
       });

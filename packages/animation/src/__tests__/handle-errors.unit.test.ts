@@ -5,12 +5,7 @@ import { resolveAnimationAsset } from '../resolve-animation-asset';
 
 describe('animation handle failures', () => {
   it('rejects an empty durable GUID at the consumer boundary', () => {
-    const result = resolveAnimationAsset<AnimationClip>(
-      new World(),
-      '',
-      'animation-clip',
-      () => undefined,
-    );
+    const result = resolveAnimationAsset<AnimationClip>(new World(), '', 'animation-clip');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('animation-asset-not-found');
   });

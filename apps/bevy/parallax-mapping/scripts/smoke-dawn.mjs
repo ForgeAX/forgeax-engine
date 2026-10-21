@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // apps/bevy/parallax-mapping/scripts/smoke-dawn.mjs
 //
@@ -139,8 +140,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_QUAD } = await import('@forgeax/engine-assets-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
+
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
 const decodeOrExit = async (path, label) => {
@@ -224,7 +224,8 @@ if (!guids.diffuse.ok || !guids.normal.ok || !guids.height.ok) {
   process.exit(1);
 }
 
-const world = new World();
+const world = new World({ assets: hostAssets });
+const primitiveQuad = world.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -237,16 +238,13 @@ const assets = hostAssets;
 const diffuseTex = mkTex(diffuseDecoded);
 const normalTex = mkTex(normalDecoded);
 const heightTex = mkTex(heightDecoded);
-assets.catalog(guids.diffuse.value, diffuseTex);
-assets.catalog(guids.normal.value, normalTex);
-assets.catalog(guids.height.value, heightTex);
-const diffuseHandle = world.allocSharedRef('TextureAsset', diffuseTex);
-const normalHandle = world.allocSharedRef('TextureAsset', normalTex);
-const heightHandle = world.allocSharedRef('TextureAsset', heightTex);
+const diffuseHandle = world.assets.create(diffuseTex).unwrap();
+const normalHandle = world.assets.create(normalTex).unwrap();
+const heightHandle = world.assets.create(heightTex).unwrap();
 console.log(`[bevy-parallax-mapping] registered bricks2 handle id=${diffuseHandle}`);
 
 for (const [index, algoMode] of [0, 1, 2].entries()) {
-  const material = world.allocSharedRef('MaterialAsset', {
+  const material = world.assets.create({
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'bevy::parallax_mapping' }, renderState: { tags: { LightMode: 'Forward' } } }],
     parameters: [
@@ -261,14 +259,14 @@ for (const [index, algoMode] of [0, 1, 2].entries()) {
       baseColor: [1.0, 1.0, 1.0, 1.0],
       heightScale: 0.1,
       algoMode,
-      baseColorTexture: unwrapHandle(diffuseHandle),
-      normalTexture: unwrapHandle(normalHandle),
-      heightTexture: unwrapHandle(heightHandle),
+      baseColorTexture: diffuseHandle,
+      normalTexture: normalHandle,
+      heightTexture: heightHandle,
     },
-  });
+  }).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [(index - 1) * 2.25, 0, 0], quat: [0, 0, 0, 1], scale: [1.85, 1.85, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [material] } },
   ).unwrap();
 }

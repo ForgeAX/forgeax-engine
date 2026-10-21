@@ -12,8 +12,8 @@ import type {
   SceneEntityAddress,
 } from '@forgeax/engine-types';
 import {
+  type AssetHandle,
   err,
-  type Handle,
   ok,
   PACK_ERROR_HINTS,
   type Result,
@@ -49,10 +49,10 @@ export interface CompiledSceneResult {
 
 export interface KeyedSceneCompileContext {
   readonly resolveSource: (
-    source: string,
-    parent: Handle<'SceneAsset', 'shared'>,
-  ) => Result<Handle<'SceneAsset', 'shared'>, unknown>;
-  readonly resolveAsset: (handle: Handle<'SceneAsset', 'shared'>) => Result<SceneAsset, unknown>;
+    source: string | AssetHandle<'scene'>,
+    parent: AssetHandle<'scene'>,
+  ) => Result<AssetHandle<'scene'>, unknown>;
+  readonly resolveAsset: (handle: AssetHandle<'scene'>) => Result<SceneAsset, unknown>;
   readonly stack: ReadonlySet<number>;
 }
 
@@ -93,7 +93,7 @@ function validPrimitive(type: string, value: unknown): boolean {
   return Number.isInteger(value) && value >= (signed ? -bound : 0) && value < bound;
 }
 
-function fieldRemap(
+export function fieldRemap(
   world: World,
   componentName: string,
   fields: Record<string, unknown>,
@@ -240,7 +240,7 @@ function fieldRemap(
  */
 export function compileKeyedSceneAsset(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   asset: SceneAsset,
   context: KeyedSceneCompileContext,
 ): Result<CompiledSceneResult, unknown> {
@@ -284,10 +284,11 @@ export function compileKeyedSceneAsset(
     const declaration = node.instance;
     if (
       declaration === undefined ||
-      typeof declaration.source !== 'string' ||
-      declaration.source.length === 0
+      (typeof declaration.source === 'string'
+        ? declaration.source.length === 0
+        : !Number.isSafeInteger(declaration.source) || declaration.source <= 0)
     ) {
-      return fail('instance source must be a non-empty GUID', { entity: key });
+      return fail('instance source must be a Scene reference or non-empty GUID', { entity: key });
     }
     const childHandle = context.resolveSource(declaration.source, handle);
     if (!childHandle.ok) return childHandle;

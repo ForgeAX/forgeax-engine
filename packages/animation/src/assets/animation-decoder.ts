@@ -1,4 +1,5 @@
 import {
+  type AnimationChannel,
   type AnimationClip,
   type AnimationGraph,
   type AnimationGraphNode,
@@ -8,6 +9,7 @@ import {
   ok,
 } from '@forgeax/engine-types';
 import { AnimationPlaybackError } from '../playback-errors';
+import { isAnimationTargetId } from '../target-id';
 import { validateAnimationTimeline } from '../timeline';
 
 const invalid = (guid: string, expected: string) =>
@@ -57,25 +59,153 @@ function graphNode(value: unknown, refs: readonly string[]): AnimationGraphNode 
   return undefined;
 }
 
+function clipPayload(payload: Record<string, unknown>): AnimationClip | undefined {
+  const duration = typeof payload.duration === 'number' ? payload.duration : 0;
+  if (!Number.isFinite(duration) || duration < 0) return undefined;
+  const channelsRaw = payload.channels;
+  if (!Array.isArray(channelsRaw)) return undefined;
+  const channels: AnimationChannel[] = [];
+  for (const ch of channelsRaw) {
+    if (typeof ch !== 'object' || ch === null) return undefined;
+    const chObj = ch as Record<string, unknown>;
+    const targetId = chObj.targetId;
+    const property = chObj.property;
+    const samplerObj = chObj.sampler as Record<string, unknown> | undefined;
+    if (
+      !isAnimationTargetId(targetId) ||
+      Object.keys(chObj).some(
+        (key) =>
+          key !== 'targetId' &&
+          key !== 'property' &&
+          key !== 'sampler' &&
+          !(chObj.property === 'property' && key === 'binding'),
+      )
+    ) {
+      return undefined;
+    }
+    if (
+      property !== 'translation' &&
+      property !== 'rotation' &&
+      property !== 'scale' &&
+      property !== 'weights' &&
+      property !== 'property'
+    )
+      return undefined;
+    if (samplerObj === null || typeof samplerObj !== 'object' || Array.isArray(samplerObj))
+      return undefined;
+    const inputRaw = samplerObj.input;
+    const outputRaw = samplerObj.output;
+    const interpolation = samplerObj.interpolation;
+    let input: Float32Array;
+    if (inputRaw instanceof Float32Array) {
+      input = inputRaw;
+    } else if (Array.isArray(inputRaw) && inputRaw.every((value) => typeof value === 'number')) {
+      input = new Float32Array(inputRaw as number[]);
+    } else {
+      return undefined;
+    }
+    if (
+      input.length === 0 ||
+      input.some(
+        (time, index) =>
+          !Number.isFinite(time) || time < 0 || (index > 0 && time <= (input[index - 1] ?? NaN)),
+      )
+    )
+      return undefined;
+    if (
+      property === 'property' &&
+      Array.isArray(outputRaw) &&
+      (outputRaw.every((value) => typeof value === 'string') ||
+        outputRaw.every((value) => typeof value === 'boolean'))
+    ) {
+      if (
+        interpolation !== 'STEP' ||
+        outputRaw.length !== input.length ||
+        typeof chObj.binding !== 'string' ||
+        chObj.binding.length === 0
+      )
+        return undefined;
+      channels.push({
+        targetId: targetId as AnimationChannel['targetId'],
+        property,
+        binding: chObj.binding,
+        sampler: { input, output: outputRaw as string[] | boolean[], interpolation },
+      });
+      continue;
+    }
+    let output: Float32Array;
+    if (outputRaw instanceof Float32Array) {
+      output = outputRaw;
+    } else if (Array.isArray(outputRaw) && outputRaw.every((value) => typeof value === 'number')) {
+      output = new Float32Array(outputRaw as number[]);
+    } else {
+      return undefined;
+    }
+    if (interpolation !== 'LINEAR' && interpolation !== 'STEP' && interpolation !== 'CUBICSPLINE')
+      return undefined;
+    const factor = interpolation === 'CUBICSPLINE' ? 3 : 1;
+    const width = output.length / input.length / factor;
+    if (
+      input.length < (factor === 3 ? 2 : 1) ||
+      !Number.isInteger(width) ||
+      width < 1 ||
+      output.some((value) => !Number.isFinite(value)) ||
+      ((property === 'translation' || property === 'scale') && width !== 3) ||
+      (property === 'rotation' && width !== 4) ||
+      (property === 'weights' && width > 8)
+    )
+      return undefined;
+    if (property === 'property') {
+      if (typeof chObj.binding !== 'string' || chObj.binding.length === 0) return undefined;
+      channels.push({
+        targetId: targetId as AnimationChannel['targetId'],
+        property,
+        binding: chObj.binding,
+        sampler: { input, output, interpolation },
+      });
+    } else
+      channels.push({
+        targetId: targetId as AnimationChannel['targetId'],
+        property,
+        sampler: { input, output, interpolation },
+      });
+  }
+  if (payload.events !== undefined && !Array.isArray(payload.events)) return undefined;
+  return {
+    kind: 'animation-clip',
+    duration,
+    channels,
+    ...(payload.events === undefined ? {} : { events: payload.events }),
+  };
+}
+
 export const animationClipContribution: AssetDecoderContribution<AnimationClip, 'animation-clip'> =
   {
     kind: { kind: 'animation-clip' } as AssetKind<AnimationClip, 'animation-clip'>,
     consumer: 'AnimationPlayer',
     decoder: {
       async decode({ envelope }) {
+        const value: unknown = envelope.payload;
+        const clip =
+          value !== null &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          (value as { kind?: unknown }).kind === 'animation-clip'
+            ? clipPayload(value as Record<string, unknown>)
+            : undefined;
+        if (clip === undefined)
+          return invalid(
+            envelope.guid,
+            'an animation clip with valid channels, sampler arrays and non-negative duration',
+          );
         try {
-          validateAnimationTimeline(envelope.payload);
+          validateAnimationTimeline(clip);
         } catch (failure) {
           if (failure instanceof AnimationPlaybackError)
             return invalid(envelope.guid, failure.expected);
           throw failure;
         }
-        return envelope.payload.kind === 'animation-clip' &&
-          Array.isArray(envelope.payload.channels) &&
-          Number.isFinite(envelope.payload.duration) &&
-          envelope.payload.duration >= 0
-          ? ok(envelope.payload)
-          : invalid(envelope.guid, 'an animation clip with channels and non-negative duration');
+        return ok(clip);
       },
     },
   };
@@ -110,6 +240,17 @@ export const animationGraphContribution: AssetDecoderContribution<
         }
         nodes.push(node);
       }
+      const isIndex = (index: number) => index >= 0 && index < nodes.length;
+      if (
+        !isIndex(source.root as number) ||
+        nodes.some((node) =>
+          node.type === 'blend'
+            ? node.children.some((index) => !isIndex(index))
+            : node.type === 'add' &&
+              (!isIndex(node.base) || node.additive.some((index) => !isIndex(index))),
+        )
+      )
+        return invalid(envelope.guid, 'animation graph references within the node table');
       return ok({ kind: 'animation-graph', nodes, root: source.root as number });
     },
   },

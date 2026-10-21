@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { Renderer } from '@forgeax/engine-render';
 import {
   ANTIALIAS_NONE,
@@ -15,6 +15,7 @@ import { rhi as webgpuRhi } from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { afterEach, describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 const PHYSICAL = { width: 128, height: 96 } as const;
 const CYCLES = 3;
@@ -258,11 +259,18 @@ function createInstrumentedRhi(
 
 function createScene(): { readonly world: World; readonly release: () => void } {
   const world = new World();
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.95, 0.05, 0.05, 1]));
+  const material = testAssets(world)
+    .create(Materials.unlit([0.95, 0.05, 0.05, 1]))
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0.72, 0.28, 0], scale: [0.9, 0.9, 0.9] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -289,7 +297,7 @@ function createScene(): { readonly world: World; readonly release: () => void } 
     world,
     release: () => {
       releaseTransforms();
-      world.sharedRefs.release(material).unwrap();
+      testAssets(world).release(material).unwrap();
     },
   };
 }

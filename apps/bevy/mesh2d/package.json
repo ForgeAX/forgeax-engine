@@ -54,7 +54,8 @@
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

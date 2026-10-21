@@ -1,24 +1,22 @@
 import { World } from '@forgeax/engine-ecs';
-import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import {
+  deriveVertexLayoutProjection,
+  unpackInterleavedVertexAttributes,
+} from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { MeshAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RecordProfileRunner } from '../record/render-context';
+import { testAssets } from './helpers/runtime-assets';
 
 describe('GpuResidencyCache mesh stride', () => {
   it('keeps the canonical 18F plus UV1 stride from the complete projection', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const mesh: MeshAsset = {
       kind: 'mesh',
       // The producer owns a canonical 20-float interleaved buffer:
@@ -46,12 +44,14 @@ describe('GpuResidencyCache mesh stride', () => {
       materialSlots: [{ slotName: 'default' }],
     };
     const world = new World();
-    const handle = world.allocSharedRef('MeshAsset', mesh);
+    const assets = testAssets(world);
+    const scope = worldRenderResources(world);
+    const handle = assets.create(mesh).unwrap();
 
-    const resident = store.ensureResident(handle, mesh);
+    const resident = store.ensureResident(handle, mesh, scope);
 
     expect(resident.ok).toBe(true);
-    const entry = store.getMeshGpuHandles(handle);
+    const entry = store.getMeshGpuHandles(handle, scope);
     expect(entry?.layoutProjection).toEqual(deriveVertexLayoutProjection(mesh.attributes));
     expect(entry?.layoutProjection.arrayStride).toBe(80);
     expect(entry?.vertexCount).toBe(4);
@@ -61,14 +61,7 @@ describe('GpuResidencyCache mesh stride', () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const indexWrites: Uint8Array[] = [];
     const queue = device.queue;
     const writeBuffer = queue.writeBuffer.bind(queue);
@@ -107,10 +100,12 @@ describe('GpuResidencyCache mesh stride', () => {
       indices: new Uint16Array([0, 2, 1]),
     };
     const world = new World();
-    const handle = world.allocSharedRef('MeshAsset', root);
+    const assets = testAssets(world);
+    const scope = worldRenderResources(world);
+    const handle = assets.create(root).unwrap();
     // The root can be pulled before the lower pack finishes loading. A later
     // call with the complete chain must upgrade the same cache key.
-    const rootOnly = store.ensureResident(handle, root);
+    const rootOnly = store.ensureResident(handle, root, scope);
     expect(rootOnly.ok).toBe(true);
     if (!rootOnly.ok) return;
     expect(rootOnly.value.lodRanges).toBeUndefined();
@@ -120,7 +115,7 @@ describe('GpuResidencyCache mesh stride', () => {
       phases.push(phase);
       return action();
     };
-    const resident = store.ensureResident(handle, root, 0, [lower], profile);
+    const resident = store.ensureResident(handle, root, scope, [lower], profile);
     expect(phases).toEqual([
       'record/validation/residency/project',
       'record/validation/residency/pack',
@@ -152,7 +147,7 @@ describe('GpuResidencyCache mesh stride', () => {
 
     // A stable chain remains an O(1) hit and does not replace the entry again.
     phases.length = 0;
-    const stable = store.ensureResident(handle, root, 0, [lower], profile);
+    const stable = store.ensureResident(handle, root, scope, [lower], profile);
     expect(phases).toEqual([]);
     expect(stable.ok).toBe(true);
     if (stable.ok) expect(stable.value).toBe(resident.value);
@@ -162,14 +157,7 @@ describe('GpuResidencyCache mesh stride', () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const mesh: MeshAsset = {
       kind: 'mesh',
       vertices: new Float32Array(49),
@@ -191,40 +179,40 @@ describe('GpuResidencyCache mesh stride', () => {
       materialSlots: [{ slotName: 'default' }],
     };
     const world = new World();
-    const handle = world.allocSharedRef('MeshAsset', mesh);
+    const assets = testAssets(world);
+    const scope = worldRenderResources(world);
+    const handle = assets.create({ ...mesh, vertices: new Float32Array(36) }).unwrap();
 
-    const resident = store.ensureResident(handle, mesh);
+    const resident = store.ensureResident(handle, mesh, scope);
 
     expect(resident.ok).toBe(false);
     if (!resident.ok) expect(resident.error.code).toBe('asset-not-registered');
-    expect(store.getMeshGpuHandles(handle)).toBeUndefined();
+    expect(store.getMeshGpuHandles(handle, scope)).toBeUndefined();
   });
 
   it('shares byte-identical vertices and rejects a colliding hash candidate', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const makeMesh = (words: Uint32Array, indices: Uint16Array): MeshAsset => {
       const vertices = new Float32Array(words.length);
       new Uint32Array(vertices.buffer).set(words);
-      return {
-        kind: 'mesh',
+      const attributes = unpackInterleavedVertexAttributes(
         vertices,
-        indices,
-        attributes: {
+        deriveVertexLayoutProjection({
           position: new Float32Array(9),
           normal: new Float32Array(9),
           uv: new Float32Array(6),
           tangent: new Float32Array(12),
-        },
+        }),
+      );
+      assert(attributes);
+      return {
+        kind: 'mesh',
+        vertices,
+        indices,
+        attributes,
         submeshes: [
           {
             indexOffset: 0,
@@ -251,16 +239,18 @@ describe('GpuResidencyCache mesh stride', () => {
     const sameMesh = makeMesh(new Uint32Array(firstWords), new Uint16Array([2, 1, 0]));
     const collidingMesh = makeMesh(collidingWords, new Uint16Array([0, 1, 2]));
     const world = new World();
-    const firstHandle = world.allocSharedRef('MeshAsset', firstMesh);
-    const sameHandle = world.allocSharedRef('MeshAsset', sameMesh);
-    const collidingHandle = world.allocSharedRef('MeshAsset', collidingMesh);
+    const assets = testAssets(world);
+    const scope = worldRenderResources(world);
+    const firstHandle = assets.create(firstMesh).unwrap();
+    const sameHandle = assets.create(sameMesh).unwrap();
+    const collidingHandle = assets.create(collidingMesh).unwrap();
 
-    expect(store.ensureResident(firstHandle, firstMesh).ok).toBe(true);
-    expect(store.ensureResident(sameHandle, sameMesh).ok).toBe(true);
-    expect(store.ensureResident(collidingHandle, collidingMesh).ok).toBe(true);
+    expect(store.ensureResident(firstHandle, firstMesh, scope).ok).toBe(true);
+    expect(store.ensureResident(sameHandle, sameMesh, scope).ok).toBe(true);
+    expect(store.ensureResident(collidingHandle, collidingMesh, scope).ok).toBe(true);
 
-    const firstBuffer = store.getMeshGpuHandles(firstHandle)?.vertexBuffer;
-    expect(store.getMeshGpuHandles(sameHandle)?.vertexBuffer).toBe(firstBuffer);
-    expect(store.getMeshGpuHandles(collidingHandle)?.vertexBuffer).not.toBe(firstBuffer);
+    const firstBuffer = store.getMeshGpuHandles(firstHandle, scope)?.vertexBuffer;
+    expect(store.getMeshGpuHandles(sameHandle, scope)?.vertexBuffer).toBe(firstBuffer);
+    expect(store.getMeshGpuHandles(collidingHandle, scope)?.vertexBuffer).not.toBe(firstBuffer);
   });
 });

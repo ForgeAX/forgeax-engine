@@ -37,7 +37,6 @@ describe('Reverse-Z camera consumers', () => {
         100,
         mat4.identity(mat4.create()),
         projection,
-        kind,
       );
       expect(result[2]).toBeCloseTo(-0.1, 5);
       expect(result[5]).toBeCloseTo(-1, 5);

@@ -21,7 +21,6 @@ import WebSocket from 'ws';
 import { createViteConfig, devKitHostBridge } from '../host.js';
 import { composeBoundHostAssembly, validateHostBinding } from '../host-binding.js';
 import { readProjectFacts } from '../project.js';
-import type { ProjectFacts } from '../types.js';
 
 async function fixture(workspace = false) {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-host-binding-'));
@@ -44,14 +43,6 @@ async function fixture(workspace = false) {
       ? { workspace: { sessionId: 'session', targetId: 'target', admissionToken: 'token' } }
       : {}),
   };
-  const facts: ProjectFacts = {
-    root,
-    id: 'game',
-    name: 'Game',
-    assetRoots: [],
-    packageJson: {},
-    roots: {},
-  };
   const assembly = composeBoundHostAssembly(
     binding,
     createHostAssembly({ root: { program: 'fixture#root', codeRevision: 'one' } }),
@@ -62,7 +53,7 @@ async function fixture(workspace = false) {
     logLevel: 'silent',
     optimizeDeps: { noDiscovery: true, include: [] },
     server: { host: '127.0.0.1', port: 0 },
-    plugins: [devKitHostBridge(facts, 'project-bootstrap', binding, assembly)],
+    plugins: [devKitHostBridge(binding, assembly)],
   });
   await server.listen();
   const address = server.httpServer?.address();
@@ -293,12 +284,21 @@ it.each([
         { file: resolve(`${config.root}-sibling`, 'assets.d.ts').replaceAll('\\', '/') } as never,
       ),
     ).resolves.toEqual([]);
-    await expect(
+    const changedModules = new Set<import('vite').ModuleNode>();
+    const updateFile = (file: string) =>
       update.call(
         { environment: { name: 'client' } } as never,
-        { file: resolve(root, '..', 'external-dependency.mjs') } as never,
-      ),
-    ).rejects.toThrow(expect.objectContaining({ code: 'host-assembly-invalid' }));
+        { file, server: { moduleGraph: { getModulesByFile: () => changedModules } } } as never,
+      );
+    await expect(
+      updateFile(resolve(root, '..', 'tsconfig.tmp.tsbuildinfo')),
+    ).resolves.toBeUndefined();
+    const dependency = resolve(root, '..', 'external-dependency.mjs');
+    await expect(updateFile(dependency)).resolves.toBeUndefined();
+    changedModules.add({ file: dependency, importers: new Set() } as import('vite').ModuleNode);
+    await expect(updateFile(dependency)).rejects.toThrow(
+      expect.objectContaining({ code: 'host-assembly-invalid' }),
+    );
     const source = await readFile(resolve(config.root, 'main.ts'), 'utf8');
     const start = source.indexOf('activateRoot: ') + 'activateRoot: '.length;
     const end = source.indexOf(',\n  ...(hostTransport', start);

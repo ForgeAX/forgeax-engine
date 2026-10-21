@@ -19,10 +19,7 @@ export type CapsuleShadowFallbackReason =
 export type CapsuleShadowSnapshot =
   | { readonly status: 'ready'; readonly capsules: Float32Array }
   | {
-      readonly status: Extract<
-        CapsuleShadowFallbackReason,
-        'not-skinned' | 'no-shadow-capsules' | 'no-shadow-caster-pass'
-      >;
+      readonly status: Extract<CapsuleShadowFallbackReason, 'not-skinned' | 'no-shadow-capsules'>;
     };
 
 /**

@@ -8,6 +8,8 @@ import {
 
 /** A project server borrows transport and authority; it never disposes the owner. */
 export interface DevKitHostBinding {
+  /** An author session consumes preview edits; saved sources still republish the Catalog. */
+  readonly authoringSourceChanged?: (sourcePath: string) => boolean | Promise<boolean>;
   readonly backend: BackendHost;
   /** Optional connection projection; does not mutate the borrowed Host's assembly. */
   readonly frontendAssembly?: HostAssembly | undefined;

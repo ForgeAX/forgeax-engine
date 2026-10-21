@@ -198,6 +198,9 @@ async function completeFrame(
           worldIdentity: message.worldIdentity,
           frameId: message.frameId,
           deviceGeneration: receipt.deviceGeneration,
+          ...(receipt.shadowWorkload === undefined
+            ? {}
+            : { shadowWorkload: receipt.shadowWorkload }),
           ...(receipt.graphGeneration === undefined
             ? {}
             : { graphGeneration: receipt.graphGeneration }),
@@ -454,6 +457,7 @@ async function receive(message: RenderWorkerInput): Promise<void> {
                 },
               }),
           publicationSource: message.identity,
+          ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
           ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
           ...(message.pipelineLibrary === undefined
             ? {}
@@ -688,6 +692,7 @@ async function receive(message: RenderWorkerInput): Promise<void> {
         worldIdentity: message.worldIdentity,
         frameId: message.frameId,
         deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
         ...(receipt.graphGeneration === undefined
           ? {}
           : { graphGeneration: receipt.graphGeneration }),

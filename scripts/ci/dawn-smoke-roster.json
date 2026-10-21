@@ -359,6 +359,9 @@
           "gateId": "hello-gltf-instancing/smoke",
           "commandId": "smoke",
           "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": ["019e39e4-dd6a-7934-9b8a-2c0bd82be52c"]
+          },
           "oracle": "frameReceipt"
         }
       ]
@@ -372,6 +375,9 @@
           "gateId": "hello-gltf/smoke",
           "commandId": "smoke",
           "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": ["019e2b88-aecf-7e78-9888-6560222ee28a"]
+          },
           "oracle": "frameReceipt"
         }
       ]
@@ -672,6 +678,9 @@
           "gateId": "hello-room/smoke",
           "commandId": "smoke",
           "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": ["019e2808-d3ba-735f-811f-ae7bbb465392"]
+          },
           "oracle": "frameReceipt"
         }
       ]
@@ -711,12 +720,23 @@
           "gateId": "hello-skin/direct-dawn",
           "commandId": "direct-dawn",
           "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": [
+              "019eb2ce-6232-74a0-8da7-00be6d2f8774",
+              "019eb2ce-6232-74a0-8da7-00c2414d45c4",
+              "019eb2ce-6233-74f3-a877-ebea0a513ea9",
+              "019eb2ce-6233-74f3-a877-ebeb96c4f15d"
+            ]
+          },
           "oracle": "frameReceipt"
         },
         {
           "gateId": "hello-skin/writeback",
           "commandId": "writeback",
           "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": ["019eb2ce-6232-74a0-8da7-00be6d2f8774"]
+          },
           "oracle": "assertion",
           "script": "smoke:writeback"
         }
@@ -968,6 +988,9 @@
           "gateId": "hello-volumetric-fog/smoke",
           "commandId": "smoke",
           "executionClass": "sharded",
+          "artifactRequirements": {
+            "packGuids": ["019eb2ce-6232-74a0-8da7-00be6d2f8774"]
+          },
           "oracle": "frameReceipt"
         }
       ]

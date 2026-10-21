@@ -334,7 +334,8 @@ Immediate unresolved-reference rejection remains the one policy: a reference
 must already exist or be created in the same data packet. No cross-packet
 reference queue is retained.
 
-`ReplicaCoordinator.lastPacketOutcome` is the explicit packet-order result:
+`ReplicaCoordinator.apply`, `applyReplicationPacket` and
+`decodeAndApplyReplicationPacket` return the packet-order result in their `Result`:
 `accepted`, `duplicate`, or `ignored-old-epoch`. A duplicate returns success
 without World mutation; an old epoch returns success without reviving work; a
 gap or invalid new baseline returns a structured error before mutation. The
@@ -369,3 +370,7 @@ kind, including session controls, acknowledgments and rejections. Application
 payload and replication-entity budgets share one packet admission path; decoding
 still rejects oversized bytes before parsing. Nested component arrays are walked
 once, preserving their existing string, buffer and element limits.
+
+`NetSession.dispose()` publishes its terminal `retired` state before cancelling
+connectors or closing endpoints. Recovery admission and repeated disposal read
+that same lifecycle, including synchronous cleanup callbacks.

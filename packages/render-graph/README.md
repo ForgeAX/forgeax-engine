@@ -319,3 +319,5 @@ pages and idle frames. The compiler snapshots the callback and its receiver;
 execution resolves it once before beginning the raster pass. A descriptor getter
 is a declaration-time value, not a frame callback. Graph topology and attachment
 resources remain reusable while the query set changes.
+
+The name-based `RenderGraph` declaration API also snapshots pass reads/writes, color-domain connections, resource descriptors, target sizes and view formats on admission. Color aliases share the accepted allocation metadata. Compute callback identities are captured once with their original receiver; callbacks may still consume current frame and receiver state. Change topology by declaring a new graph, and resize relative targets through `setSwapChainSize`. Snapshot admission reads the declared properties directly, including inherited accessors and prototype pass methods; it does not require enumerable own fields.

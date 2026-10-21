@@ -74,8 +74,24 @@ const devkitNativeUnitFiles = devkitNativeUnitFileSets.flatMap(({ files }) => fi
 // Each set runs in its own child and every other child of the same project
 // excludes it, so the file is instrumented exactly once while the rest of the
 // project no longer queues behind it. Weights are median complete child seconds
-// from CI runs 38313136540 and 38316658619, rounded to five seconds.
+// from CI runs 38313136540 and 38316658619, rounded to five seconds, except
+// the explicitly estimated cold-scene additions documented below.
 const isolatedCoverageFileSets = [
+  {
+    // Run 39497388005 shared cold 100k World initialization with Render's
+    // instrumented child: 5.702 s at the original 5 s deadline. Keep all rows
+    // and the same deadline, without competing with another coverage child.
+    project: '@forgeax/engine-scene',
+    files: ['packages/scene/src/__tests__/flat-propagation.contract.test.ts'],
+    weight: 10,
+  },
+  {
+    // The same run's real 50k cold admission/prepare took 8.679 s while the
+    // eight-project Scene/compiler child ran beside it (previous run 4.458 s).
+    project: '@forgeax/engine-render',
+    files: ['packages/render/src/__tests__/managed-production-batches.unit.test.ts'],
+    weight: 25,
+  },
   {
     // Literal5daf instrumented cold Standard/ray program suite crossed30s
     // in a shared child. Preserve the full file and its original deadlines.

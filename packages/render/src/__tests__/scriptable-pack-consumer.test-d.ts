@@ -1,4 +1,4 @@
-import type { TilesetAsset } from '@forgeax/engine-types';
+import type { AssetGuid, AssetHandle, TilesetAsset } from '@forgeax/engine-types';
 import { expectTypeOf } from 'vitest';
 
 const tileset: TilesetAsset = {
@@ -11,4 +11,6 @@ const tileset: TilesetAsset = {
   regions: [{ x: 0, y: 0, width: 1, height: 1 }],
   tiles: [{ regionIndex: 0 }],
 };
-expectTypeOf(tileset.atlases).toEqualTypeOf<readonly string[]>();
+expectTypeOf(tileset.atlases).toEqualTypeOf<
+  readonly (AssetGuid | string | AssetHandle<'texture'>)[]
+>();

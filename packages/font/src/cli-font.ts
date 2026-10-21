@@ -1,26 +1,13 @@
 // Node-only font producer used by DevKit’s unified asset command and build integrations.
 
-import { Buffer } from 'node:buffer';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { encodePng } from '@forgeax/engine-image/png';
 import { type FontAsset, FontError } from '@forgeax/engine-types';
 import { atlasFontData, type BakeAtlas, type MsdfGenerator } from './atlas-font-data.js';
-import { NodeWorkerAdapter } from './node-worker-adapter.js';
+import { generateFontAtlas } from './atlas-generator.js';
 
 export type { BakeAtlas, BakeGlyph, MsdfGenerator } from './atlas-font-data.js';
-
-/** Default charset baked into the atlas (printable ASCII). */
-const DEFAULT_CHARSET = (() => {
-  let s = '';
-  for (let c = 0x20; c <= 0x7e; c++) s += String.fromCharCode(c);
-  return s;
-})();
-
-const DEFAULT_TEXTURE_SIZE = 1024;
-const DEFAULT_FIELD_RANGE = 4;
-const DEFAULT_FONT_SIZE = 48;
 
 /**
  * Bake-time sidecar JSON shape (importer: 'font'). Carries the glyph metrics
@@ -84,7 +71,7 @@ export interface BakeResult {
 export async function bakeFont(
   ttfPath: string,
   outDir: string,
-  generatorFactory: () => Promise<MsdfGenerator>,
+  generatorFactory?: () => Promise<MsdfGenerator>,
 ): Promise<BakeResult> {
   const ttf = await readFile(ttfPath);
   const ttfBytes = new Uint8Array(ttf.buffer, ttf.byteOffset, ttf.byteLength);
@@ -97,23 +84,7 @@ export async function bakeFont(
     });
   }
 
-  let atlas: BakeAtlas;
-  let generator: MsdfGenerator | undefined;
-  try {
-    generator = await generatorFactory();
-    atlas = await generator.generateAtlas(ttfBytes);
-  } catch (e) {
-    throw new FontError({
-      code: 'bake-failed',
-      expected: '@zappar/msdf-generator to produce an MSDF atlas',
-      hint: 'the MSDF generator threw -- a Web Worker + wasm host is required (a plain Node process reports "Worker is not defined"); run the bake in a Worker-capable environment',
-      detail: { cause: e instanceof Error ? e.message : String(e) },
-    });
-  } finally {
-    if (generator !== undefined) {
-      await generator.dispose().catch(() => undefined);
-    }
-  }
+  const atlas = await generateFontAtlas(ttfBytes, generatorFactory);
 
   await mkdir(outDir, { recursive: true });
   const base = basename(ttfPath, extname(ttfPath));
@@ -125,69 +96,4 @@ export async function bakeFont(
   const sidecar = atlasToSidecar(atlas, atlasName);
   await writeFile(sidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`);
   return { atlasPath, sidecarPath };
-}
-
-/**
- * Real @zappar/msdf-generator factory. Dynamically imported so callers using
- * an injected generator never pay the wasm load cost,
- * and so the package builds without the browser globals the generator needs.
- */
-export async function realGeneratorFactory(): Promise<MsdfGenerator> {
-  const mod = await import('@zappar/msdf-generator');
-
-  const wasmModuleUrl = import.meta.resolve('@zappar/msdf-generator/msdfgen_wasm.wasm');
-  const wasmBytes = await readFile(new URL(wasmModuleUrl));
-  const wasmUrl = `data:application/octet-stream;base64,${Buffer.from(wasmBytes).toString('base64')}`;
-  const nodeGlobal = globalThis as unknown as { Worker?: typeof NodeWorkerAdapter };
-  const previousWorker = nodeGlobal.Worker;
-  nodeGlobal.Worker = NodeWorkerAdapter;
-  let msdf: InstanceType<typeof mod.MSDF> | undefined;
-  try {
-    msdf = new mod.MSDF({
-      workerUrl: fileURLToPath(new URL('./node-msdf-worker.mjs', import.meta.url)),
-      wasmUrl,
-    });
-    await msdf.initialize();
-  } finally {
-    if (previousWorker === undefined) {
-      delete nodeGlobal.Worker;
-    } else {
-      nodeGlobal.Worker = previousWorker;
-    }
-  }
-  if (msdf === undefined) {
-    throw new Error('the MSDF generator did not initialize');
-  }
-  return {
-    async generateAtlas(ttf: Uint8Array): Promise<BakeAtlas> {
-      const a = await msdf.generateAtlas({
-        font: ttf,
-        charset: DEFAULT_CHARSET,
-        textureSize: [DEFAULT_TEXTURE_SIZE, DEFAULT_TEXTURE_SIZE],
-        fieldRange: DEFAULT_FIELD_RANGE,
-        fontSize: DEFAULT_FONT_SIZE,
-      });
-      return {
-        texture: {
-          width: a.texture.width,
-          height: a.texture.height,
-          data: new Uint8Array(a.texture.data),
-        },
-        glyphs: a.glyphs.map((g) => ({
-          unicode: g.unicode,
-          advance: g.advance,
-          xoffset: g.xoffset,
-          yoffset: g.yoffset,
-          atlasPosition: [g.atlasPosition[0], g.atlasPosition[1]],
-          atlasSize: [g.atlasSize[0], g.atlasSize[1]],
-        })),
-        metrics: { lineHeight: a.metrics.lineHeight, ascender: a.metrics.ascender },
-        textureSize: [a.textureSize[0], a.textureSize[1]],
-        fieldRange: a.fieldRange,
-      };
-    },
-    async dispose(): Promise<void> {
-      await msdf.dispose();
-    },
-  };
 }

@@ -2,11 +2,14 @@ import { World } from '@forgeax/engine-ecs';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import type { SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { projectMeshMaterialBindingObservation } from '../mesh-material-bindings';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
 import { observeMaterialResidency } from '../render-system-residency';
+import { testAssets } from './helpers/runtime-assets';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 it('keeps actual native texture/sampler residency and mip output through validation, mutation and reset', async () => {
@@ -14,15 +17,9 @@ it('keeps actual native texture/sampler residency and mip output through validat
   native.pushErrorScope('validation');
   const store = new GpuResidencyCache();
   const world = new World();
-  const configure = () =>
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('No cubemap');
-      },
-      device.caps,
-    );
+  const assets = testAssets(world);
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const configure = () => store.configureGpuDevice(device, undefined, device.caps);
   configure();
   const mips = { kind: 'packed' as const, levelCount: 3 };
   const data = new Uint8Array(84);
@@ -35,9 +32,9 @@ it('keeps actual native texture/sampler residency and mip output through validat
     mips,
     data,
   };
-  const textureHandle = world.allocSharedRef('TextureAsset', source);
+  const textureHandle = assets.create(source).unwrap();
   const sampler: SamplerAsset = { kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' };
-  const samplerHandle = world.allocSharedRef('SamplerAsset', sampler);
+  const samplerHandle = assets.create(sampler).unwrap();
   const material: MaterialSnapshot = {
     ...defaultMaterialSnapshot(),
     textureHandles: new Map([['source', textureHandle]]),
@@ -69,8 +66,13 @@ it('keeps actual native texture/sampler residency and mip output through validat
   const output = device.createBuffer({ size: 16, usage: 132 }).unwrap();
   const readback = device.createBuffer({ size: 16, usage: 9 }).unwrap();
   const compare = () => {
-    const full = observeMaterialResidency(world, material, internals);
-    const status = observeMaterialResidency(world, material, internals, false);
+    const full = observeMaterialResidency(worldRenderResources(world), material, internals);
+    const status = observeMaterialResidency(
+      worldRenderResources(world),
+      material,
+      internals,
+      false,
+    );
     expect(status.readiness).toBe(full.readiness);
     expect(status.preparationFailure).toEqual(full.preparationFailure);
     expect(status.textures).toEqual([]);
@@ -91,7 +93,7 @@ it('keeps actual native texture/sampler residency and mip output through validat
     return full;
   };
   const read = async () => {
-    const view = store.getTextureGpuView(textureHandle, world);
+    const view = store.getTextureGpuView(textureHandle, worldRenderResources(world));
     if (view === undefined) throw new Error('Missing actual resident texture');
     const bindings = device
       .createBindGroup({
@@ -123,7 +125,10 @@ it('keeps actual native texture/sampler residency and mip output through validat
     expect(originalPublication.readiness).toBe('ready');
     const originalView = await read();
     mips.levelCount = 0;
-    expect(compare().preparationFailure?.code).toBe('texture-mip-policy-invalid');
+    expect(compare().readiness).toBe('ready');
+    const rejected = assets.update(textureHandle, { mips: { kind: 'packed', levelCount: 0 } });
+    expect(rejected.ok).toBe(false);
+    expect(compare().readiness).toBe('ready');
     expect(originalPublication).toEqual(originalSnapshot);
     mips.levelCount = 3;
     expect(compare().textures[0]?.mipLevelCount).toBe(3);

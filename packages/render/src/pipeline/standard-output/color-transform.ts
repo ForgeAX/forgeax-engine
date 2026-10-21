@@ -133,6 +133,7 @@ interface StandardColorStageResources {
   bind(
     device: RhiDevice,
     resources: GraphResourceResolver,
+    frame: RenderPipelineFrame,
   ): { readonly layout: BindGroupLayout; readonly bindGroup: BindGroup };
 }
 
@@ -207,7 +208,7 @@ export function addStandardColorStagePass(
       const scope = runtime.deviceScope;
       const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
       if (factory === undefined) throw new Error(`${name} shader factory unavailable`);
-      const stageBinding = stage?.bind(device, resources);
+      const stageBinding = stage?.bind(device, resources, frame);
       if (scope === undefined) unscopedPrograms ??= [];
       const programs =
         scope === undefined ? unscopedPrograms : scope.isAlive() ? programsFor(scope) : undefined;

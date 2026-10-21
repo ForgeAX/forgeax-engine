@@ -5,6 +5,7 @@ export function useLocalSize(
   initial: number,
   min: number,
   max: number,
+  previousDefault?: number,
 ): readonly [number, (next: number | ((prev: number) => number)) => void] {
   const clamp = (value: number) => Math.min(max, Math.max(min, value));
   const [value, setValueRaw] = useState<number>(() => {
@@ -13,6 +14,7 @@ export function useLocalSize(
       const raw = window.localStorage.getItem(key);
       if (!raw) return initial;
       const parsed = Number(raw);
+      if (parsed === previousDefault) return initial;
       return Number.isFinite(parsed) ? clamp(parsed) : initial;
     } catch {
       return initial;

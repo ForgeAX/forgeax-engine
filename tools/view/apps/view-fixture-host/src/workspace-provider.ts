@@ -6,6 +6,7 @@ import type {
 } from '@forgeax/engine/app';
 import { EngineWorkspaceError } from '@forgeax/engine/app';
 import type { EntityHandle } from '@forgeax/engine/ecs';
+import { PackAuthoringDraft, type PackDraftDocument } from '@forgeax/engine-pack/source';
 import { ASSETS, SCENE_TARGET_ID, INSPECTIONS, PROJECT, PROJECT_ROOT, SCENE_NODES } from './scenarios/default.ts';
 
 const MESH_FACTS: Record<string, { vertexCount: number; triangleCount: number }> = {
@@ -32,6 +33,8 @@ function unavailable(operation: string): never {
 
 /** Dev-only Engine provider; the actual workspace lifecycle and Host protocol stay production-owned. */
 export function createFixtureWorkspaceProvider(): EngineWorkspaceProvider {
+  const drafts = new Map<string, { document: PackDraftDocument; draft: PackAuthoringDraft<number> }>();
+  let nextDraftId = 0;
   const target: EngineWorkspaceTarget = {
     targetId: SCENE_TARGET_ID, sessionId: 'fixture-session', worldId: 'fixture-world',
     generation: 1, headed: true, width: 1280, height: 720,
@@ -46,7 +49,63 @@ export function createFixtureWorkspaceProvider(): EngineWorkspaceProvider {
       );
       return { project: PROJECT, target, handle };
     },
-    closeProject() {},
+    closeProject() {
+      for (const entry of drafts.values()) entry.draft.close();
+      drafts.clear();
+    },
+    async authorPack({ request, signal }) {
+      abort(signal);
+      if (request.action === 'open') {
+        const sourcePath = request.sourcePath ?? '';
+        const source = ASSETS.find(asset => asset.sourcePath === sourcePath || asset.sourcePath === `${PROJECT_ROOT}/${sourcePath}`);
+        if (!source || !sourcePath.endsWith('.pack.ts')) unavailable('Pack authoring');
+        const existing = drafts.get(sourcePath);
+        if (existing) return existing.draft.snapshot();
+        const document: PackDraftDocument = {
+          sourcePath, revision: 'fixture-1', packageId: `fixture:${source.sourceKey}`,
+          format: 'pack.ts', generationIdentity: sourcePath,
+          fields: [
+            { name: 'quality', type: 'enum', default: 'High', values: ['Low', 'Medium', 'High'], path: ['parameters', 'quality'] },
+            { name: 'density', type: 'f32', default: 0.75, minimum: 0, maximum: 1, path: ['parameters', 'density'] },
+            { name: 'tint', type: 'color', default: [0.24, 0.68, 0.57, 1], path: ['parameters', 'tint'], apply: { asset: source.sourceKey ?? '', path: ['tint'] } },
+            { name: 'enabled', type: 'bool', default: true, path: ['parameters', 'enabled'], apply: { asset: source.sourceKey ?? '', path: ['enabled'] } },
+            { name: 'intensity', type: 'f32', default: 1.25, minimum: 0, maximum: 4, path: ['parameters', 'intensity'], apply: { asset: source.sourceKey ?? '', path: ['intensity'] } },
+          ],
+        };
+        const draft = new PackAuthoringDraft(`fixture-draft-${++nextDraftId}`, document, {
+          generate: async () => nextDraftId,
+          adopt: async () => true,
+          preview: async () => {},
+          save: async (current, changes) => {
+            const updated = { ...current, revision: `fixture-${++nextDraftId}`, fields: current.fields.map(field => changes.has(field.name) ? { ...field, default: changes.get(field.name)! } : field) };
+            const entry = drafts.get(sourcePath);
+            if (entry) entry.document = updated;
+            return updated;
+          },
+        });
+        drafts.set(sourcePath, { document, draft });
+        return draft.snapshot();
+      }
+      const entry = [...drafts.values()].find(({ draft }) => draft.id === request.draftId);
+      if (!entry) unavailable('Pack draft');
+      switch (request.action) {
+        case 'get': return entry.draft.snapshot();
+        case 'edit': return (await entry.draft.edit(request.field ?? '', request.value)).unwrap();
+        case 'generate': return entry.draft.generate();
+        case 'save': return entry.draft.save();
+        case 'undo': return entry.draft.undo();
+        case 'redo': return entry.draft.redo();
+        case 'discard': return entry.draft.discard();
+        case 'refresh': return entry.draft.refresh(entry.document);
+        case 'close': {
+          if (entry.draft.snapshot().unsaved && !request.discard) throw new Error('Save or discard changes before closing the fixture draft');
+          if (request.discard) await entry.draft.discard();
+          entry.draft.close();
+          drafts.delete(entry.document.sourcePath);
+          return { closed: entry.draft.id };
+        }
+      }
+    },
     listAssets({ signal }: { signal?: AbortSignal }) {
       abort(signal);
       return ASSETS;

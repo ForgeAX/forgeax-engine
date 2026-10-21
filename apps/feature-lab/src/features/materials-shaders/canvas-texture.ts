@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CanvasTexture, Materials } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnCamera, spawnMesh } from '../../lab/stage';
+import { material, spawnCamera, spawnMesh } from '../../lab/stage';
 
 function paint(ctx: CanvasRenderingContext2D, on: boolean): void {
   const { width, height } = ctx.canvas;
@@ -21,18 +23,24 @@ export default defineFeature({
   expect:
     'ON: the quad shows a magenta canvas with a yellow box and the text ON (upright). OFF: the canvas is repainted cyan with OFF and update() publishes the new pixels.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     spawnCamera(world, { eye: [0, 1, 4], target: [0, 1, 0] });
     const canvas = document.createElement('canvas');
     canvas.width = 256;
     canvas.height = 256;
     const ctx = canvas.getContext('2d');
     const display = new CanvasTexture(canvas, { flipY: false });
-    const source = world.allocSharedRef('CanvasTextureSource', display.source);
+    const source = { source: display.source };
     const mat = material(
       world,
       Materials.unlit([1, 1, 1, 1], { baseColorTexture: source as never }),
     );
-    spawnMesh(world, MESH.quad, mat, { pos: [0, 1, 0], scale: [2.6, 2.6, 1] });
+    spawnMesh(world, stageQuad, mat, { pos: [0, 1, 0], scale: [2.6, 2.6, 1] });
     const draw = (on: boolean) => {
       if (ctx === null) return;
       paint(ctx, on);
@@ -43,8 +51,10 @@ export default defineFeature({
       toggle: draw,
       checks: () => [
         { name: '2d context available', ok: ctx !== null },
-        { name: 'source has a positive canvasTextureId', ok: display.source.canvasTextureId > 0 },
-        { name: 'source orientation is flipY false', ok: display.source.flipY === false },
+        {
+          name: 'source has a producer identity',
+          ok: display.source.id > 0 && display.source.owner.length > 0,
+        },
       ],
     };
   },

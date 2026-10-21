@@ -1,0 +1,6 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><link rel="icon" href="data:,"><title>透明、雾与输出顺序</title>
+<style>body{margin:32px;background:#111820;color:#e4eaf2;font:16px system-ui}p{max-width:1000px;line-height:1.6}main{display:flex;gap:24px}figure{margin:0}canvas{width:384px;height:384px;background:repeating-conic-gradient(#777 0% 25%,#bbb 0% 50%) 50%/24px 24px}select{padding:8px;margin:4px}pre{white-space:pre-wrap}</style>
+<h1>透明、雾、离屏目标与输出顺序</h1>
+<p>两层 HDR 透明片。Three.js 显式使用线性浮点 RenderTarget，再统一执行输出变换，与 Forgeax 原生流程对应。雾使用同一指数模型、按每层自己的相机距离求值。预乘模式的 Forgeax 材质输入显式乘透明度，Three 则设置 premultipliedAlpha。</p>
+<p><select id="path"><option>forward</option><option>deferred</option></select><select id="blend"><option>straight</option><option>premultiplied</option></select><select id="tone"><option>linear</option><option>reinhard</option></select><label><input id="fog" type="checkbox">Fog</label> <label><input id="alpha" type="checkbox">透明画布</label></p>
+<main><figure><canvas id="three" width="128" height="128"></canvas><figcaption>Three.js · 显式 HDR 合成</figcaption></figure><figure><canvas id="forgeax" width="128" height="128"></canvas><figcaption>Forgeax · 原生 HDR 合成</figcaption></figure></main><pre id="status">Rendering…</pre><script type="module" src="/src/transparency-response.mjs"></script></html>

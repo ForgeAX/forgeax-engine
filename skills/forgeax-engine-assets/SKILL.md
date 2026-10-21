@@ -7,6 +7,68 @@ description: >-
 
 # forgeax-engine-assets
 
+## View Pack parameters
+
+For a View parameter request, edit the selected Pack's `parameters` array. Start
+from **Inspector → Expose**, which supplies the project, exact target, source,
+reflected field type, current value and resolved `apply` path. The Pack panel's
+**Add parameter with Agent** supplies source context when no field is selected.
+Resolve the selected Engine with `forgeax project engine status --root <project> --json`
+and use that installation; another CLI can have a different schema. Current implementation and command results establish
+support; a proposed design or visible control alone does not.
+
+| Desired effect | Declaration | Apply |
+|:--|:--|:--|
+| Change generated geometry, image or topology | `name`, `type`, `default`; read `context.values` in `build` | **Generate** |
+| Adjust an existing field permitted by its domain owner | Same descriptor plus `apply: { asset, path }` | Immediately; **Save** persists |
+
+For a Sun intensity field, add this descriptor to the existing array:
+
+```ts
+{ name: 'sunIntensity', type: 'f32', default: 3.2,
+  apply: { asset: 'scene/showcase', path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'] } }
+```
+
+Move the existing authored intensity into `default` and remove its original leaf
+assignment. Keep the containing `DirectionalLight` object and all unrelated
+code. Optional numeric `minimum`/`maximum` set bounds. Descriptors stay literal;
+`packageId` may be a literal UUID, `definePackageId('…')`, or a file-local `const`
+alias. Imported/computed identities remain buildable but need a statically
+readable identity before View can save parameter defaults.
+
+Run `forgeax asset inspect assets/scene.pack.ts --parameters-only --json` before
+and after editing, using `--root <project>` when outside that project. It returns
+generation/runtime modes, types, defaults, bounds, bindings and 1-based source
+locations. It reads only that file and never imports code, scans sibling Packs,
+generates or cooks. This checks declarations; it cannot prove generated target
+existence, domain writability or preview application. Ordinary `asset inspect`
+retains its existing inventory/JSON behavior.
+
+View discovers external declaration changes automatically. Verify a live edit
+on the same preview; check source bytes stay unchanged until **Save**, then
+reopen. Generate when generation inputs changed. New generation-dependent
+behavior uses the existing producer; ordinary parameters need no field-specific
+View control, component or runtime handler. Preserve unsaved source/draft edits.
+
+## Runtime identity and content
+
+Use the App/Engine `assets` owner. `assets.create(content)` and
+`await assets.load(guid, kind)` return caller-owned `AssetHandle` references;
+bind those directly to ECS `asset(kind)` fields. A standalone World uses
+`new World({ assets })`. `assets.read(handle)` returns detached content.
+Commit changes through `update`, `replace`, or `writeRange`; do not mutate a read
+or keep a caller-managed revision. Release the caller reference after a successful
+binding; ECS retains its own reference.
+
+Built-in kinds use literals such as `'mesh'`, `'material'`, and `'scene'`.
+Custom kinds share one `defineAssetKind<P>('kind')` token between decoder
+installation and `load`; runtime writes also require synchronous `prepare`.
+Repeated `load` retains the same live identity and preserves gameplay edits.
+Use `source(handle)` / `sourceOf(handle)` for adopted provenance and explicit
+`reload(handle, { conflict: 'reject' | 'overwrite' })` to adopt a newer source
+closure. Catalog changes alone do not overwrite runtime content. See the
+[runtime contract](../../packages/assets-runtime/README.md#runtime-content).
+
 ## Lighting asset route
 
 Use these entry points:
@@ -18,7 +80,7 @@ Use these entry points:
 IES has no runtime source parser; cookies use the existing texture registry. Catalog is a projection, DDC is cache evidence, and Pack/Meta retain authored authority. Do not claim readiness without `accepted` or `verified` evidence.
 
 > [!IMPORTANT]
-> Material assets follow one route inside the catalog: authored `MaterialAsset` with `passes` and `values` -> cook record and artifact -> `loadByGuid` -> World handle. Keep `parent` references, texture references, module identifiers, and per-slot `coordinates` transforms in the same package graph. The recovery route repairs the producer or cook output and retries the same GUID.
+> Material assets follow one route inside the catalog: authored `MaterialAsset` with `passes` and `values` -> cook record and artifact -> `load(guid, 'material')` -> runtime asset handle. Keep `parent` references, texture references, module identifiers, and per-slot `coordinates` transforms in the same package graph. For recovery, repair the producer or cook output, then retry loading or explicitly reload the existing handle.
 
 ## M5 asset authority index
 
@@ -40,8 +102,9 @@ row is evidence and DDC is cache evidence; neither replaces author authority.
 
 ### Display-name projection
 
-`deriveAssetName` is the single display-name projection used by Catalog build
-and runtime `resolveName`. A producer-supplied `storedName` is authoritative for
+`deriveAssetName` is the display-name projection used by Catalog build.
+Read the resulting `CatalogEntry.name` through `catalogEntry(guid)` or Catalog
+enumeration. A producer-supplied `storedName` is authoritative for
 an authored entry regardless of whether its package currently has one member or
 many. When no stored name is available, a packaged asset falls back to the
 package path basename; an asset without a package resolves to the empty string.
@@ -61,7 +124,7 @@ subscription with the host.
 ```ts
 const stop = assets.subscribeCatalog((delta) => mergeRowsByGuid(delta));
 const snapshot = await assets.enumerateCatalog();
-mergeRowsByGuid(snapshot);
+if (snapshot.ok) mergeRowsByGuid(snapshot.value);
 ```
 
 Vite's dev transport uses `reloadAssetHost()` to refresh the source after an
@@ -120,7 +183,7 @@ while an instance stores its own `packageId`, `parent`, and sparse `values`.
 Neither source declares per-output GUIDs or `externalAssets`; the build boundary
 derives GUIDs from `(packageId, sourceKey)`. Build-time instances resolve their
 parent chain through the source producer. Runtime readers consume validated Pack
-v2 through `loadByGuid`; opt-in runtime generation belongs to the existing Import
+v2 through `assets.load(guid, kind)`; opt-in runtime generation belongs to the existing Import
 producer, outside asset loading and the ECS frame.
 
 | Action | Command or owner |
@@ -129,7 +192,7 @@ producer, outside asset loading and the ECS frame.
 | Read external content | `context.readByGuid(guid)` inside `build` |
 | Serialize or cook an output kind | Registered `AssetOutputProducerRegistry` producer |
 | Rebuild | Vite or CLI producer lifecycle |
-| Load at runtime | Existing Catalog plus `loadByGuid<T>(guid)` |
+| Load at runtime | Existing Catalog plus `assets.load(guid, kind)`; inspect content with `assets.read(handle)` |
 | Admit data or generate after launch | App `runtimePacks` and Import `RuntimePackProducer`; [runtime production contract](../../packages/import/README.md#runtime-pack-production-and-durable-content) |
 | Prepare JS / TS programs | `preparePackProgram` parses and seals JS without evaluation or conversion; `prepareRuntimePackProgram` from `@forgeax/engine/devkit/plugin-build` converts TS and preserves its source |
 | Preserve resolved inheritance | `resolvePackParameterInheritance` then `prepareRuntimePackAnchor`; effective values become defaults, instances keep one anchor and sparse values |
@@ -163,7 +226,7 @@ For generated `material` and `mesh` outputs, register
 `materialAssetOutputProducer` and `meshAssetOutputProducer` from
 `@forgeax/engine/import` at the Vite host. Omit `assetSource` when the build is
 self-contained; provide the host snapshot source before using
-`reader.loadByGuid`.
+`reader.readByGuid`.
 
 For ordinary prebuilt `.pack.json` dependencies, create the source in the
 build-time owner with `createScriptablePackFileAssetSnapshotSource({
@@ -174,9 +237,11 @@ structured `Result` errors.
 
 ## MaterialAsset catalog recovery
 
-Use `configurePackIndex('/pack-index.json')` and `loadByGuid<MaterialAsset>` for
-both root and derived materials. A ready result must have an effective pass,
-resolved `passes`, `values`, `parent`, and `coordinates`, complete references, a cooked artifact, and a receipt. On a
+Use `configurePackIndex('/pack-index.json')` and `load(guid, 'material')` for
+both root and derived materials. A successful load returns a handle whose
+admitted content has resolved `passes`, `values`, and per-slot `coordinates`,
+complete references, a cooked artifact, and a receipt. Parent inheritance is
+flattened at admission. On a
 failure, switch on `.code`, read `.detail` and `.hint`, repair the producer or
 cook output, and retry. Do not substitute a custom mesh or app-local shader
 artifact when an engine resource is missing.
@@ -212,7 +277,7 @@ as metadata; mounting it without membership in the current target's tools map fa
 Run `pnpm --filter @forgeax/engine-devkit test:runtime-browser` under an owned
 Xvfb display for the real Worker JS/TS x dev/build paths. The same gate belongs
 to `pnpm test:browser` and Actions browser shard 1. Keep the full hello/learn
-300-frame smoke and Dawn rosters; Node producer tests alone do not prove browser
+60-frame smoke and Dawn rosters; Node producer tests alone do not prove browser
 module delivery or native plugin execution.
 
 ## Cached asset thumbnails

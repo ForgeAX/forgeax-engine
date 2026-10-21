@@ -24,7 +24,7 @@ function createRoute(
   exit: PreviewCarrierRoute['exit'],
   started: PreviewCarrierRoute['started'] = () => ({
     ok: true as const,
-    value: { state: 'started' as const },
+    value: { state: 'started' as const, leaseId: 'lease-1' },
     state: 'started' as const,
   }),
 ): PreviewCarrierRoute {
@@ -43,7 +43,7 @@ function createRoute(
 
 const successfulExit = () => ({
   ok: true as const,
-  value: { state: 'exited' as const },
+  value: { state: 'exited' as const, leaseId: 'lease-1' },
   state: 'exited' as const,
 });
 

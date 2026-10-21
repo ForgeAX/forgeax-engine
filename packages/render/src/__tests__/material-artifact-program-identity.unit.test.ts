@@ -16,7 +16,9 @@ describe('material artifact program identity', () => {
     const published = artifact('fn fs_main() -> vec4f { return vec4f(1.0); }');
     const projected = { ...published, fragmentEntry: 'fs_gbuffer' };
     expect(projected.program).toBe(published.program);
-    expect(materialArtifactProgramIdentity(projected)).toBe(published.program.identity);
+    expect(materialArtifactProgramIdentity(projected)).toBe(
+      materialArtifactProgramIdentity(published),
+    );
   });
 
   it('publishes changed source and layout as one replacement', () => {
@@ -35,7 +37,9 @@ describe('material artifact program identity', () => {
   it('distinguishes specialization identities without rescanning source', () => {
     const original = artifact('source');
     const specialized = { ...original, specializationKey: 'scene-index-program' };
-    expect(materialArtifactProgramIdentity(specialized)).toBe('specialization:scene-index-program');
+    expect(materialArtifactProgramIdentity(specialized)).not.toBe(
+      materialArtifactProgramIdentity(original),
+    );
     expect(specialized.program).toBe(original.program);
   });
 });
@@ -56,7 +60,7 @@ it('compares specialization program facts without repeatedly serializing their i
   }
 });
 
-it('preserves raw identity equality and accessor observation order', () => {
+it('keeps specialization identity distinct from arbitrary program strings', () => {
   const reads: string[] = [];
   const raw = (label: string, key: string | undefined): MaterialShaderArtifact =>
     ({
@@ -67,13 +71,22 @@ it('preserves raw identity equality and accessor observation order', () => {
       },
     }) as MaterialShaderArtifact;
   expect(sameMaterialArtifactProgram(raw('left', 'selected'), raw('right', 'selected'))).toBe(true);
-  expect(reads).toEqual(['left', 'left', 'right', 'right']);
+  expect(reads).toEqual(['left', 'right']);
   const special = { ...artifact('source'), specializationKey: 'selected' };
   const aliased = {
     ...artifact('source'),
     program: { ...artifact('source').program, identity: 'specialization:selected' },
   };
-  expect(sameMaterialArtifactProgram(special, aliased)).toBe(true);
-  expect(sameMaterialArtifactProgram(aliased, special)).toBe(true);
+  expect(sameMaterialArtifactProgram(special, aliased)).toBe(false);
+  expect(sameMaterialArtifactProgram(aliased, special)).toBe(false);
   expect(sameMaterialArtifactProgram(special, artifact('source'))).toBe(false);
+});
+
+it('invalidates a specialized program when its source changes under the same registry key', () => {
+  const original = { ...artifact('before'), specializationKey: 'selected-program' };
+  const replacement = { ...artifact('after'), specializationKey: 'selected-program' };
+  expect(sameMaterialArtifact(original, replacement)).toBe(false);
+  expect(materialArtifactProgramIdentity(original)).not.toBe(
+    materialArtifactProgramIdentity(replacement),
+  );
 });

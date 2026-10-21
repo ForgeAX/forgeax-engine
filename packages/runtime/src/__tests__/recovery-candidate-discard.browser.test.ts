@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   DirectionalLight,
@@ -72,8 +72,9 @@ it('discards a prepared recovery graph after its probe fails and recovers on ret
     { shaderManifestUrl: '/shaders/manifest.json' },
   );
   if (!created.ok) throw created.error;
-  const { renderer } = created.value;
-  const world = new World();
+  const { renderer, assets } = created.value;
+  const world = new World({ assets });
+  const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const context = await createWorldContext(world, [scenePlugin()]);
   try {
     world
@@ -96,18 +97,24 @@ it('discards a prepared recovery graph after its probe fails and recovers on ret
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();
     const lease = renderer.attach(world).unwrap();
     const draw = async () => {
-      world.update(1 / 60).unwrap();
-      const receipt = renderer
-        .draw({ leases: [lease], camera: { lease }, environment: { lease } })
-        .unwrap();
-      (await receipt.completed).unwrap();
-      return receipt;
+      // Queue completion for a pending frame does not include asynchronous PSO compilation.
+      const deadline = performance.now() + 15_000;
+      while (performance.now() < deadline) {
+        world.update(1 / 60).unwrap();
+        const receipt = renderer
+          .draw({ leases: [lease], camera: { lease }, environment: { lease } })
+          .unwrap();
+        (await receipt.completed).unwrap();
+        if (receipt.presentation === 'ready') return receipt;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      throw new Error('Shader preparation never produced a ready frame before recovery');
     };
     expect((await draw()).deviceGeneration).toBe(0);
     expect(signalLoss).toBeTypeOf('function');

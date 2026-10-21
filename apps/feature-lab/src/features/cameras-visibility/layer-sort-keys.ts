@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Layer, Materials } from '@forgeax/engine/render';
 import { RenderQueue } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage } from '../../lab/stage';
+import { material, spawnMesh, spawnStage } from '../../lab/stage';
 
 const BLEND = {
   depthWriteEnabled: false,
@@ -20,6 +22,12 @@ export default defineFeature({
   expect:
     'ON: the far blue panel has Layer 1, draws last and covers the near red panel in the overlap. OFF: both at Layer 0, depth order wins and red stays in front.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.2, 6], target: [0, 1.2, 0] });
     const panel = (rgba: readonly [number, number, number, number]) =>
       material(
@@ -31,7 +39,7 @@ export default defineFeature({
       );
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       panel([1, 0.1, 0.1, 0.85]),
       { pos: [-0.5, 1.2, 1], scale: [2, 2, 0.05] },
       {
@@ -41,7 +49,7 @@ export default defineFeature({
     );
     const far = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       panel([0.1, 0.3, 1, 0.85]),
       { pos: [0.5, 1.2, -1], scale: [2, 2, 0.05] },
       {

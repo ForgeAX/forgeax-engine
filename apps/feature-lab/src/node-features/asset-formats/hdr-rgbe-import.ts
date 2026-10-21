@@ -1,6 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { halfFloat } from '@forgeax/engine/math';
-import type { EquirectAsset } from '@forgeax/engine/types';
 import {
   errorCode,
   guid,
@@ -36,9 +35,9 @@ export default defineFeature({
       checks.near('first pixel blue', rgba[2] ?? 0, 0.25, 0.01);
       checks.near('first pixel alpha', rgba[3] ?? 0, 1, 0.01);
 
-      const registry = new AssetRegistry({} as never);
+      const registry = new AssetRegistry({ shaderRegistry: {} as never });
       const id = asset?.guid ?? guid(0x102);
-      installMemoryPack(registry, [
+      await installMemoryPack(registry, [
         {
           guid: id,
           kind: 'equirect',
@@ -53,12 +52,9 @@ export default defineFeature({
           },
         },
       ]);
-      const loaded = await registry.loadByGuid<EquirectAsset>(registry.parseGuid(id));
-      checks.ok(
-        'runtime loadByGuid<EquirectAsset> ok',
-        loaded.ok,
-        loaded.ok ? undefined : errorCode(loaded.error),
-      );
+      const handle = await registry.load(id, 'equirect');
+      const loaded = handle.ok ? registry.read(handle.value) : handle;
+      checks.ok('runtime load ok', loaded.ok, loaded.ok ? undefined : errorCode(loaded.error));
       if (loaded.ok) {
         checks.equal(
           'loaded equirect shape',

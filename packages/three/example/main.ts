@@ -11,7 +11,7 @@ const canvas = element<HTMLCanvasElement>('#scene');
 const status = element('#status');
 const error = element('#error');
 const capture = element<HTMLButtonElement>('#capture');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#19232f');
 const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100);
@@ -20,13 +20,14 @@ const controls = new OrbitControls(camera, canvas);
 controls.target.set(0, 0.3, 0);
 controls.enableDamping = true;
 const material = new THREE.MeshPhysicalMaterial({ color: '#66c6b2', roughness: 0.3, clearcoat: 0.8, clearcoatRoughness: 0.15 });
-const normalMaterial = new THREE.MeshNormalMaterial();
+const matcapMaterial = new THREE.MeshMatcapMaterial();
 const cube = new THREE.Mesh<THREE.BufferGeometry, THREE.Material>(new THREE.BoxGeometry(1.5, 1.5, 1.5), material);
 cube.position.set(-1.05, 0.3, 0);
 cube.name = 'shared-material-cube';
-const sphere = new THREE.Mesh<THREE.BufferGeometry, THREE.Material>(new THREE.SphereGeometry(0.85, 32, 24), material);
+const sphere = new THREE.Mesh<THREE.BufferGeometry, THREE.Material>(new THREE.SphereGeometry(0.85, 12, 8), material);
 sphere.position.set(1.15, 0.3, 0);
 sphere.name = 'shared-material-sphere';
+const sphereNormals = sphere.geometry.getAttribute('normal');
 const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshBasicMaterial({ color: '#202d3a' }));
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -0.55;
@@ -61,11 +62,28 @@ if (canvas.parentElement !== null) new ResizeObserver(resize).observe(canvas.par
 resize();
 let paused = false, alternate = false, removed = false, frames = 0;
 element('#material').onclick = (event) => {
-  const showNormal = cube.material !== normalMaterial;
-  cube.material = sphere.material = showNormal ? normalMaterial : material;
-  (event.currentTarget as HTMLElement).textContent = showNormal ? 'Use physical material' : 'Use normal material';
-  element<HTMLButtonElement>('#color').disabled = showNormal;
-  element<HTMLButtonElement>('#clearcoat').disabled = showNormal;
+  const showMatcap = cube.material !== matcapMaterial;
+  cube.material = sphere.material = showMatcap ? matcapMaterial : material;
+  (event.currentTarget as HTMLElement).textContent = showMatcap ? 'Use physical material' : 'Use matcap material';
+  element<HTMLButtonElement>('#color').disabled = showMatcap;
+  element<HTMLButtonElement>('#clearcoat').disabled = showMatcap;
+  element<HTMLButtonElement>('#flat').disabled = showMatcap;
+  element<HTMLButtonElement>('#normals').disabled = showMatcap;
+  if (showMatcap) {
+    sphere.geometry.setAttribute('normal', sphereNormals);
+    element('#normals').textContent = 'Remove sphere normals';
+  }
+};
+element('#flat').onclick = (event) => {
+  material.flatShading = !material.flatShading;
+  material.needsUpdate = true;
+  (event.currentTarget as HTMLElement).textContent = material.flatShading ? 'Use smooth shading' : 'Use flat shading';
+};
+element('#normals').onclick = (event) => {
+  const missing = sphere.geometry.hasAttribute('normal');
+  if (missing) sphere.geometry.deleteAttribute('normal');
+  else sphere.geometry.setAttribute('normal', sphereNormals);
+  (event.currentTarget as HTMLElement).textContent = missing ? 'Restore sphere normals' : 'Remove sphere normals';
 };
 element('#exposure').onclick = (event) => {
   renderer.toneMappingExposure = renderer.toneMappingExposure === 1 ? 2 : 1;

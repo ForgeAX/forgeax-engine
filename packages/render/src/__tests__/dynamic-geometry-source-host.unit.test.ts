@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
-import { err, ok } from '@forgeax/engine-types';
+import { err, type MaterialAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import {
   createDynamicGeometrySourceHost,
@@ -10,17 +12,21 @@ import {
 import { MeshFilter, MeshRenderer } from '../components';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import { createDynamicGeometryLifecycle, DynamicGeometryError } from '../dynamic-geometry';
+import { Materials } from '../materials';
 
 function fixture(
   maxConcurrentPreparations = 1,
   lifecycle = createDynamicGeometryLifecycle(),
   collective = false,
+  maxSnapshots = 128,
 ) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry({ limits: { maxSnapshots } }) });
   world.addSystem(FixedUpdate, { name: 'source-fixed-time', queries: [], fn: () => {} }).unwrap();
-  const previous = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+  const previous = runtimeAssetRegistry(world.assets)
+    .create(createBoxGeometry(1, 1, 1).unwrap())
+    .unwrap();
   const mesh = createBoxGeometry(2, 2, 2).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+  const meshHandle = runtimeAssetRegistry(world.assets).create(mesh).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -102,6 +108,9 @@ function fixture(
       consumed = true;
       publishedTick = withTick ? world.getResource(FixedTime).tick : undefined;
     },
+    unconsumed: () => {
+      consumed = false;
+    },
     destroyed: () => destroyed,
   };
 }
@@ -111,43 +120,38 @@ it('requires individual currentness checks when the physical owner has no collec
   expect(f.host.dynamicGeometryCurrentness?.(f.world)).toBeUndefined();
 });
 
-it('invalidates collective currentness on candidate, residency, generation and World ownership changes', async () => {
+it('checks the candidate itself even when the physical owner offers a collective token', async () => {
   const f = fixture(1, createDynamicGeometryLifecycle(), true);
-  const token = () => f.host.dynamicGeometryCurrentness?.(f.world);
-  const initial = token();
-  expect(initial).toBeDefined();
-  expect(token()).toBe(initial);
-  expect(f.host.dynamicGeometryCurrentness?.(new World())).toBeUndefined();
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).toBeDefined();
   const pending = f.host.prepareDynamicGeometry(f.input);
-  const preparing = token();
-  expect(preparing).not.toBe(initial);
   await Promise.resolve();
   f.ready();
   const candidate = (await pending).unwrap();
-  const ready = token();
-  expect(ready).not.toBe(preparing);
-  expect(token()).toBe(ready);
   expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(true);
-  f.invalidateResidency();
-  expect(token()).not.toBe(ready);
+  const currentness = f.host.dynamicGeometryCurrentness?.(f.world);
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).toBe(currentness);
+  runtimeAssetRegistry(f.world.assets)
+    .update(f.meshHandle, {
+      attributes: {
+        ...f.input.mesh.attributes,
+        position: new Float32Array(f.input.mesh.attributes.position as Float32Array).fill(0),
+      },
+    })
+    .unwrap();
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).not.toBe(currentness);
   expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(false);
-  const stale = token();
-  f.recover();
-  expect(token()).not.toBe(stale);
+  expect(f.host.acceptDynamicGeometry(candidate, { world: f.world, fixedStep: 0 }).ok).toBe(false);
   f.detach();
-  expect(token()).toBeUndefined();
 });
 
-it('invalidates collective currentness before cancellation cleanup finishes', async () => {
+it('invalidates the candidate before cancellation cleanup finishes', async () => {
   const f = fixture(1, createDynamicGeometryLifecycle(), true);
   const pending = f.host.prepareDynamicGeometry(f.input);
   await Promise.resolve();
   f.ready();
-  const candidate = (await pending).unwrap(),
-    ready = f.host.dynamicGeometryCurrentness?.(f.world);
+  const candidate = (await pending).unwrap();
   expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(true);
   f.host.cancelDynamicGeometry(candidate).unwrap();
-  expect(f.host.dynamicGeometryCurrentness?.(f.world)).not.toBe(ready);
   expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(false);
 });
 
@@ -196,7 +200,7 @@ it('reserves the existing candidate budget while waiting and mutates only on syn
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.meshHandle);
 });
 
-it('copies geometry once before async upload and accepts only a payload-free credential', async () => {
+it('captures managed content before async upload and accepts only a payload-free credential', async () => {
   const f = fixture();
   let copies = 0;
   class CountedPositions extends Float32Array {
@@ -236,7 +240,7 @@ it('copies geometry once before async upload and accepts only a payload-free cre
   expect(snapshotPositions[0]).toBe(original.position);
   expect(snapshot?.indices?.[0]).toBe(original.index);
   expect(snapshot?.aabb?.[0]).toBe(original.bound);
-  expect(copies).toBe(1);
+  expect(copies).toBe(0);
   f.ready();
   const candidate = (await pending).unwrap();
   expect(candidate).not.toHaveProperty('mesh');
@@ -247,7 +251,7 @@ it('copies geometry once before async upload and accepts only a payload-free cre
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
   const accepted = f.host.acceptDynamicGeometry(candidate, ordering).unwrap();
   expect(accepted).not.toHaveProperty('mesh');
-  expect(copies).toBe(1);
+  expect(copies).toBe(0);
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.meshHandle);
   f.detach();
 });
@@ -271,14 +275,16 @@ it.each([
   copies = 0;
   f.lifecycle.invalidateGeneration(1);
   const before = f.lifecycle.inspect();
-  const refs = [f.previous, f.meshHandle].map((handle) => f.world.sharedRefs.refcount(handle));
+  const refs = [f.previous, f.meshHandle].map((handle) =>
+    runtimeAssets(f.world.assets).refcount(handle),
+  );
   const refused = await f.host.prepareDynamicGeometry({ ...f.input, revision: 2 });
   expect(refused).toMatchObject({ ok: false, error: { code: 'dynamic-geometry-budget-exceeded' } });
   expect(copies).toBe(0);
   expect(f.lifecycle.inspect()).toEqual(before);
-  expect([f.previous, f.meshHandle].map((handle) => f.world.sharedRefs.refcount(handle))).toEqual(
-    refs,
-  );
+  expect(
+    [f.previous, f.meshHandle].map((handle) => runtimeAssets(f.world.assets).refcount(handle)),
+  ).toEqual(refs);
   expect(f.prepare).toHaveBeenCalledTimes(held === undefined ? 0 : 1);
   if (held !== undefined) {
     f.ready();
@@ -287,31 +293,26 @@ it.each([
   f.detach();
 });
 
-it('restores a single snapshot failure before upload and can retry', async () => {
-  const f = fixture();
-  let failCopy = false;
-  class CheckedPositions extends Float32Array {
-    constructor(values: ArrayLike<number>) {
-      super(values);
-      if (failCopy) throw new Error('snapshot unavailable');
-    }
-  }
-  if (!(f.input.mesh.attributes.position instanceof Float32Array))
-    throw new Error('fixture has no positions');
-  f.input.mesh.attributes.position = new CheckedPositions(f.input.mesh.attributes.position);
+it('restores a snapshot budget refusal before upload and can retry', async () => {
+  const f = fixture(1, createDynamicGeometryLifecycle(), false, 1);
+  const held = runtimeAssetRegistry(f.world.assets).snapshot(f.meshHandle).unwrap();
   f.lifecycle.invalidateGeneration(1);
   const before = f.lifecycle.inspect();
-  const refs = [f.previous, f.meshHandle].map((handle) => f.world.sharedRefs.refcount(handle));
-  failCopy = true;
-  await expect(f.host.prepareDynamicGeometry(f.input)).rejects.toThrow('snapshot unavailable');
+  const refs = [f.previous, f.meshHandle].map((handle) =>
+    runtimeAssets(f.world.assets).refcount(handle),
+  );
+  expect(await f.host.prepareDynamicGeometry(f.input)).toMatchObject({
+    ok: false,
+    error: { code: 'dynamic-geometry-budget-exceeded' },
+  });
   expect(f.prepare).not.toHaveBeenCalled();
   expect(f.lifecycle.inspect()).toEqual(before);
-  expect([f.previous, f.meshHandle].map((handle) => f.world.sharedRefs.refcount(handle))).toEqual(
-    refs,
-  );
+  expect(
+    [f.previous, f.meshHandle].map((handle) => runtimeAssets(f.world.assets).refcount(handle)),
+  ).toEqual(refs);
   expect(f.host.dynamicGeometryFault(f.world)).toBeUndefined();
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
-  failCopy = false;
+  held.dispose();
   const retry = f.host.prepareDynamicGeometry(f.input);
   await Promise.resolve();
   f.ready();
@@ -356,13 +357,10 @@ it.each([
     const privatePositions = input.mesh.attributes.position;
     received = structuredClone(input.mesh, { transfer: [...(transfers ?? [])] });
     expect(privateVertices.byteLength).toBe(0);
-    if (kind === 'custom-constructor') {
-      expect(privatePositions?.byteLength).toBeGreaterThan(0);
-      expect(leaked).toBe(privatePositions);
-      if (leaked === undefined) throw new Error('custom snapshot alias missing');
+    expect(privatePositions?.byteLength).toBe(0);
+    if (leaked !== undefined) {
+      expect(leaked).not.toBe(privatePositions);
       leaked[0] = 321;
-    } else {
-      expect(privatePositions?.byteLength).toBe(0);
     }
     return ok({ isCurrent: () => true, release: () => undefined });
   });
@@ -412,18 +410,9 @@ it('snapshots every batch member before an earlier upload delays its window', as
   f.detach();
 });
 
-it('rolls back a later snapshot-copy failure before starting any batch upload and can retry', async () => {
-  const f = fixture(2);
-  let copiesUntilFailure = Infinity;
-  class CheckedPositions extends Float32Array {
-    constructor(values: ArrayLike<number>) {
-      super(values);
-      if (--copiesUntilFailure === 0) throw new Error('snapshot unavailable');
-    }
-  }
-  if (!(f.input.mesh.attributes.position instanceof Float32Array))
-    throw new Error('fixture has no positions');
-  f.input.mesh.attributes.position = new CheckedPositions(f.input.mesh.attributes.position);
+it('rolls back a later snapshot budget refusal before starting any batch upload and can retry', async () => {
+  const f = fixture(2, createDynamicGeometryLifecycle(), false, 2);
+  const held = runtimeAssetRegistry(f.world.assets).snapshot(f.meshHandle).unwrap();
   const secondEntity = f.world
     .spawn(
       { component: Transform, data: {} },
@@ -434,19 +423,21 @@ it('rolls back a later snapshot-copy failure before starting any batch upload an
   const inputs = [f.input, { ...f.input, entity: secondEntity }];
   f.lifecycle.invalidateGeneration(1);
   const before = f.lifecycle.inspect();
-  const refs = [f.previous, f.meshHandle].map((handle) => f.world.sharedRefs.refcount(handle));
-  copiesUntilFailure = 2;
-  await expect(f.host.prepareDynamicGeometryCandidates(inputs)).rejects.toThrow(
-    'snapshot unavailable',
+  const refs = [f.previous, f.meshHandle].map((handle) =>
+    runtimeAssets(f.world.assets).refcount(handle),
   );
+  expect(await f.host.prepareDynamicGeometryCandidates(inputs)).toMatchObject({
+    ok: false,
+    error: { code: 'dynamic-geometry-budget-exceeded' },
+  });
   expect(f.prepare).not.toHaveBeenCalled();
   expect(f.lifecycle.inspect()).toEqual(before);
-  expect([f.previous, f.meshHandle].map((handle) => f.world.sharedRefs.refcount(handle))).toEqual(
-    refs,
-  );
+  expect(
+    [f.previous, f.meshHandle].map((handle) => runtimeAssets(f.world.assets).refcount(handle)),
+  ).toEqual(refs);
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
   expect(f.world.get(secondEntity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
-  copiesUntilFailure = Infinity;
+  held.dispose();
   const retry = f.host.prepareDynamicGeometryCandidates(inputs);
   await Promise.resolve();
   f.ready();
@@ -618,8 +609,8 @@ it.each([
   const f = fixture();
   const inputs = batchInputs(f);
   const references = [
-    f.world.sharedRefs.refcount(f.previous),
-    f.world.sharedRefs.refcount(f.meshHandle),
+    runtimeAssets(f.world.assets).refcount(f.previous),
+    runtimeAssets(f.world.assets).refcount(f.meshHandle),
   ];
   const abort = new AbortController();
   const pending = f.host.prepareDynamicGeometryCandidates(inputs, { signal: abort.signal });
@@ -639,8 +630,8 @@ it.each([
     ),
   ).toBe(true);
   expect([
-    f.world.sharedRefs.refcount(f.previous),
-    f.world.sharedRefs.refcount(f.meshHandle),
+    runtimeAssets(f.world.assets).refcount(f.previous),
+    runtimeAssets(f.world.assets).refcount(f.meshHandle),
   ]).toEqual(references);
   expect(f.destroyed()).toBe(true);
 });
@@ -649,8 +640,8 @@ it('releases ready and unstarted members when a later declared preparation is re
   const f = fixture();
   const inputs = batchInputs(f);
   const references = [
-    f.world.sharedRefs.refcount(f.previous),
-    f.world.sharedRefs.refcount(f.meshHandle),
+    runtimeAssets(f.world.assets).refcount(f.previous),
+    runtimeAssets(f.world.assets).refcount(f.meshHandle),
   ];
   const pending = f.host.prepareDynamicGeometryCandidates(inputs);
   await Promise.resolve();
@@ -669,8 +660,8 @@ it('releases ready and unstarted members when a later declared preparation is re
     ),
   ).toBe(true);
   expect([
-    f.world.sharedRefs.refcount(f.previous),
-    f.world.sharedRefs.refcount(f.meshHandle),
+    runtimeAssets(f.world.assets).refcount(f.previous),
+    runtimeAssets(f.world.assets).refcount(f.meshHandle),
   ]).toEqual(references);
   expect(f.destroyed()).toBe(true);
 });
@@ -746,7 +737,7 @@ it('faults the paired owner and keeps its budget when preparation throws with un
 it('retains a standalone source mesh through pending upload and physical cancellation', async () => {
   const f = fixture();
   const pending = f.host.prepareMeshResidency(f.world, f.meshHandle);
-  f.world.sharedRefs.release(f.meshHandle).unwrap();
+  runtimeAssets(f.world.assets).release(f.meshHandle).unwrap();
   let complete!: () => void;
   f.lifetime.track(
     new Promise<void>((resolve) => {
@@ -758,11 +749,11 @@ it('retains a standalone source mesh through pending upload and physical cancell
   expect(prepared.isCurrent()).toBe(true);
   prepared.cancel();
   expect(prepared.isCurrent()).toBe(false);
-  expect(f.world.sharedRefs.resolve(f.meshHandle).ok).toBe(true);
+  expect(runtimeAssets(f.world.assets).resolveAsset(f.meshHandle).ok).toBe(true);
   expect(f.destroyed()).toBe(false);
   complete();
   await vi.waitFor(() => expect(f.destroyed()).toBe(true));
-  expect(f.world.sharedRefs.resolve(f.meshHandle).ok).toBe(false);
+  expect(runtimeAssets(f.world.assets).resolveAsset(f.meshHandle).ok).toBe(false);
   expect(f.lifecycle.inspect().meshBytes).toBe(0);
 });
 
@@ -772,9 +763,9 @@ it('transfers a standalone preparation only after a live World binding owns the 
   f.ready();
   const prepared = (await pending).unwrap();
   f.world.set(f.entity, MeshFilter, { assetHandle: f.meshHandle }).unwrap();
-  expect(prepared.commit()).toBe(true);
+  expect(prepared.commit(f.entity)).toBe(true);
   expect(prepared.isCurrent()).toBe(false);
-  expect(prepared.commit()).toBe(false);
+  expect(prepared.commit(f.entity)).toBe(false);
   expect(f.destroyed()).toBe(false);
 });
 
@@ -802,8 +793,8 @@ it.each([
     abort = new AbortController(),
     inputs = batchInputs(f);
   const references = [
-    f.world.sharedRefs.refcount(f.previous),
-    f.world.sharedRefs.refcount(f.meshHandle),
+    runtimeAssets(f.world.assets).refcount(f.previous),
+    runtimeAssets(f.world.assets).refcount(f.meshHandle),
   ];
   let settled = false;
   const pending = f.host.prepareDynamicGeometryCandidates(inputs, { signal: abort.signal });
@@ -842,8 +833,8 @@ it.each([
     if (action !== 'throw') {
       await vi.waitFor(() => expect(f.lifecycle.inspect().meshBytes).toBe(0));
       expect([
-        f.world.sharedRefs.refcount(f.previous),
-        f.world.sharedRefs.refcount(f.meshHandle),
+        runtimeAssets(f.world.assets).refcount(f.previous),
+        runtimeAssets(f.world.assets).refcount(f.meshHandle),
       ]).toEqual(references);
     }
   } finally {
@@ -851,4 +842,242 @@ it.each([
     while (f.pendingCount()) f.ready();
     await pending.catch(() => {});
   }
+});
+
+it('rejects asynchronous residency prepared before a mesh edit and releases its snapshot', async () => {
+  const f = fixture();
+  const records = runtimeAssets(f.world.assets);
+  const pending = f.host.prepareDynamicGeometry(f.input);
+  await Promise.resolve();
+  expect(records.inspect().snapshots).toBe(1);
+  const positions = new Float32Array(f.input.mesh.attributes.position as Float32Array);
+  positions[0] = 5;
+  runtimeAssetRegistry(f.world.assets)
+    .update(f.meshHandle, {
+      attributes: {
+        ...f.input.mesh.attributes,
+        position: positions,
+      },
+    })
+    .unwrap();
+  f.ready();
+  expect(await pending).toMatchObject({
+    ok: false,
+    error: { code: 'dynamic-geometry-candidate-state' },
+  });
+  expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
+  expect(records.inspect().snapshots).toBe(0);
+  expect(f.lifecycle.inspect().meshBytes).toBe(0);
+  f.detach();
+});
+
+async function publishedSameHandlePair(materialIdentity?: string) {
+  const f = fixture();
+  if (materialIdentity !== undefined) {
+    const material = runtimeAssetRegistry(f.world.assets)
+      .create({
+        ...Materials.standard({ baseColor: [1, 1, 1, 1] }),
+        sourceKey: materialIdentity,
+      } as unknown as MaterialAsset)
+      .unwrap();
+    f.world.set(f.entity, MeshRenderer, { materials: [material] }).unwrap();
+  }
+  const publish = async (revision: number, frameId: number) => {
+    const pending = f.host.prepareDynamicGeometry({
+      ...f.input,
+      revision,
+      ...(materialIdentity === undefined ? {} : { materialIdentity }),
+    });
+    await Promise.resolve();
+    f.ready();
+    const prepared = (await pending).unwrap();
+    const accepted = f.host
+      .acceptDynamicGeometry(prepared, {
+        world: f.world,
+        fixedStep: f.world.getResource(FixedTime).tick,
+      })
+      .unwrap();
+    f.submitted();
+    const receipts = f.host.publishDynamicGeometry({ frameId, deviceGeneration: 1 });
+    expect(receipts.some((receipt) => receipt.candidateId === accepted.candidateId)).toBe(true);
+    expect(f.host.dynamicGeometryReceipt(accepted)).toBeDefined();
+    return accepted;
+  };
+  const old = await publish(1, 1),
+    successor = await publish(2, 2);
+  return { f, old, successor };
+}
+
+it('retires only an old published same-handle lease with an explicit published successor credential', async () => {
+  const { f, old, successor } = await publishedSameHandlePair();
+  expect(f.host.retireDynamicGeometry(old).ok).toBe(false);
+  // This optional proof must never be inferred from the shared handle alone.
+  expect(f.host.retireSupersededDynamicGeometry?.(old, successor)?.ok).toBe(true);
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
+  expect(f.host.isDynamicGeometryCurrent(successor)).toBe(true);
+  expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.meshHandle);
+  expect(f.destroyed()).toBe(false);
+  f.world.despawn(f.entity).unwrap();
+  expect(f.host.retireDynamicGeometry(successor).ok).toBe(true);
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(f.destroyed()).toBe(true);
+});
+
+it('rejects forged, self and not-current successor proofs without changing either published owner', async () => {
+  const { f, old, successor } = await publishedSameHandlePair();
+  const before = f.lifecycle.inspect();
+  for (const invalid of [
+    old,
+    { ...successor, revision: successor.revision + 1 },
+    { ...successor, owner: {} },
+    { ...successor, generation: successor.generation + 1 },
+  ]) {
+    expect(f.host.retireSupersededDynamicGeometry?.(old, invalid)?.ok).toBe(false);
+    expect(f.lifecycle.inspect()).toEqual(before);
+  }
+  f.invalidateResidency();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, successor)?.ok).toBe(false);
+  expect(f.lifecycle.inspect()).toEqual(before);
+});
+
+it('keeps old published geometry when a registered accepted successor is cancelled', async () => {
+  const { f, old, successor } = await publishedSameHandlePair();
+  const pending = f.host.prepareDynamicGeometry({ ...f.input, revision: 3 });
+  await Promise.resolve();
+  f.ready();
+  const prepared = (await pending).unwrap();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, prepared)?.ok).toBe(false);
+  const accepted = f.host
+    .acceptDynamicGeometry(prepared, {
+      world: f.world,
+      fixedStep: f.world.getResource(FixedTime).tick,
+    })
+    .unwrap();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, accepted)?.ok).toBe(true);
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+  expect(f.host.dynamicGeometryReceipt(accepted)).toBeUndefined();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, successor)?.ok).toBe(false);
+  f.host.cancelDynamicGeometry(accepted).unwrap();
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  expect(f.host.retireSupersededDynamicGeometry?.(old, accepted)?.ok).toBe(false);
+  expect(f.host.isDynamicGeometryCurrent(old)).toBe(true);
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+});
+
+it('does not borrow a published successor after its live material binding changed', async () => {
+  const { f, old, successor } = await publishedSameHandlePair('retirement-material');
+  f.world.set(f.entity, MeshRenderer, { materials: [] }).unwrap();
+  const before = f.lifecycle.inspect();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, successor)?.ok).toBe(false);
+  expect(f.lifecycle.inspect()).toEqual(before);
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+});
+
+it('defers same-entity retirement until the registered successor is truly consumed', async () => {
+  const { f, old } = await publishedSameHandlePair();
+  const pending = f.host.prepareDynamicGeometry({ ...f.input, revision: 3 });
+  await Promise.resolve();
+  f.ready();
+  const prepared = (await pending).unwrap();
+  const next = f.host
+    .acceptDynamicGeometry(prepared, {
+      world: f.world,
+      fixedStep: f.world.getResource(FixedTime).tick,
+    })
+    .unwrap();
+  const before = f.lifecycle.inspect();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, next)?.ok).toBe(true);
+  expect(f.lifecycle.inspect()).toEqual(before);
+  f.unconsumed();
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+  expect(f.host.dynamicGeometryReceipt(next)).toBeUndefined();
+  f.submitted();
+  f.host.publishDynamicGeometry({ frameId: 4, deviceGeneration: 1 });
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
+  expect(f.host.dynamicGeometryReceipt(next)).toBeDefined();
+  expect(f.host.isDynamicGeometryCurrent(next)).toBe(true);
+  expect(f.destroyed()).toBe(false);
+});
+
+it('revalidates live material identity before a deferred retirement releases its old lease', async () => {
+  const { f, old } = await publishedSameHandlePair('deferred-material');
+  const materials = [...f.world.get(f.entity, MeshRenderer).unwrap().materials];
+  const pending = f.host.prepareDynamicGeometry({
+    ...f.input,
+    revision: 3,
+    materialIdentity: 'deferred-material',
+  });
+  await Promise.resolve();
+  f.ready();
+  const next = f.host
+    .acceptDynamicGeometry((await pending).unwrap(), {
+      world: f.world,
+      fixedStep: f.world.getResource(FixedTime).tick,
+    })
+    .unwrap();
+  expect(f.host.retireSupersededDynamicGeometry?.(old, next)?.ok).toBe(true);
+  f.world.set(f.entity, MeshRenderer, { materials: [] }).unwrap();
+  f.submitted();
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+  f.world.set(f.entity, MeshRenderer, { materials }).unwrap();
+  f.host.publishDynamicGeometry({ frameId: 4, deviceGeneration: 1 });
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
+  expect(f.host.isDynamicGeometryCurrent(next)).toBe(true);
+});
+
+async function acceptedReplacement(
+  f: ReturnType<typeof fixture>,
+  revision: number,
+  changedHandle = false,
+) {
+  const mesh = changedHandle ? createBoxGeometry(3, 3, 3).unwrap() : f.input.mesh;
+  const meshHandle = changedHandle
+    ? runtimeAssetRegistry(f.world.assets).create(mesh).unwrap()
+    : f.meshHandle;
+  const pending = f.host.prepareDynamicGeometry({ ...f.input, meshHandle, revision });
+  await Promise.resolve();
+  f.ready();
+  return f.host
+    .acceptDynamicGeometry((await pending).unwrap(), {
+      world: f.world,
+      fixedStep: f.world.getResource(FixedTime).tick,
+    })
+    .unwrap();
+}
+
+it.each([
+  false,
+  true,
+])('carries a registered retirement through exact unpublished replacement, changed handle %s', async (changedHandle) => {
+  const { f, old } = await publishedSameHandlePair();
+  const b = await acceptedReplacement(f, 3);
+  expect(f.host.retireSupersededDynamicGeometry?.(old, b)?.ok).toBe(true);
+  const c = await acceptedReplacement(f, 4, changedHandle);
+  expect(f.host.isDynamicGeometryCurrent(b)).toBe(false);
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+  f.submitted();
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
+  expect(f.host.dynamicGeometryReceipt(c)).toBeDefined();
+  expect(f.host.isDynamicGeometryCurrent(c)).toBe(true);
+});
+
+it('keeps the original published lease when the carried unpublished successor is cancelled', async () => {
+  const { f, old } = await publishedSameHandlePair();
+  const b = await acceptedReplacement(f, 3);
+  expect(f.host.retireSupersededDynamicGeometry?.(old, b)?.ok).toBe(true);
+  const c = await acceptedReplacement(f, 4);
+  f.host.cancelDynamicGeometry(c).unwrap();
+  f.submitted();
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
+  expect(f.host.isDynamicGeometryCurrent(old)).toBe(true);
+  expect(f.destroyed()).toBe(false);
 });

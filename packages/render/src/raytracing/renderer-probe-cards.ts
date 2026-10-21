@@ -7,6 +7,7 @@ import type { GpuResidencyCache } from '../device/gpu-residency';
 import type { StandardProbeGlobal } from '../pipeline/standard-profile';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
+import type { MaterialFrame } from '../scene/material-dispatch';
 import { CardCaptureScheduler } from './card-capture-schedule';
 import { packCardLookupProjections } from './card-lookup';
 import { type CardResidencyFocus, cardResidencyScore, rankCardResidency } from './card-residency';
@@ -41,9 +42,11 @@ type MaterialTextures = Extract<
 export interface ProbeCardCapture {
   readonly device: RhiDevice;
   readonly capture: SurfaceCapture;
+  acceptMaterials(frame: MaterialFrame): void;
   readonly projections: { readonly buffer: Buffer; readonly size: number };
   readonly settings: { readonly buffer: Buffer; readonly size: number };
   readonly textures: readonly TexturePreparation[];
+  readonly textureRevision: number;
   readonly lookup: Extract<
     ReturnType<typeof createGlobalSdfCardLookupRecorder>,
     { ok: true }
@@ -54,7 +57,7 @@ export interface ProbeCardCapture {
   >['value']['record'];
   /**
    * Lowers one projected source instance onto Card capture input at Global row `row`.
-   * Texture residency must already be in this capture's pools; a miss throws (rebuild).
+   * Actual capture work pulls current native texture and sampler residency on demand.
    */
   readonly lower: (
     source: SceneFieldSource,
@@ -95,24 +98,120 @@ export async function prepareProbeCards(
     );
   if (!Number.isSafeInteger(profile.maxCaptureBytes) || profile.maxCaptureBytes < 1)
     throw new Error('native Card capture requires a positive explicit capture byte budget');
-  const pools = new Map<RenderResourceScope, Map<number, TexturePreparation>>();
-  const materials: MaterialTextures[] = [];
+  interface PoolEntry {
+    readonly preparation: TexturePreparation;
+    readonly revision: number | undefined;
+    readonly scope: RenderResourceScope;
+    readonly handle: number;
+    references: number;
+  }
+  const pools = new Map<RenderResourceScope, Map<number, PoolEntry>>();
+  const textureEntries: TexturePreparation[] = [];
+  const textureIndices = new Map<TexturePreparation, number>();
+  const pendingTextures = new Set<PoolEntry>();
+  const materials = new Set<MaterialTextures>();
+  let textureRevision = 0;
+  const releasePool = (entry: PoolEntry) => {
+    if (entry.references !== 0) return;
+    const pool = pools.get(entry.scope);
+    if (pool?.get(entry.handle) === entry) pool.delete(entry.handle);
+    pendingTextures.delete(entry);
+    const index = textureIndices.get(entry.preparation);
+    if (index === undefined) return;
+    textureIndices.delete(entry.preparation);
+    const tail = textureEntries.pop();
+    if (tail !== undefined && tail !== entry.preparation) {
+      textureEntries[index] = tail;
+      textureIndices.set(tail, index);
+    }
+    textureRevision++;
+    void entry.preparation.lease.release(false);
+  };
+  const referenceTexture = (
+    scope: RenderResourceScope,
+    handle: import('@forgeax/engine-types').AssetHandle<'texture'>,
+    payload: import('@forgeax/engine-types').TextureAsset,
+  ) => {
+    let pool = pools.get(scope);
+    if (pool === undefined) {
+      pool = new Map();
+      pools.set(scope, pool);
+    }
+    let entry = pool.get(handle);
+    const revision = scope.assetRevision(handle);
+    if (entry === undefined || entry.revision !== revision || !entry.preparation.current()) {
+      const result = store.prepareTextureResidencyForGraph(handle, payload, scope);
+      if (!result.ok) return result;
+      const base = result.value;
+      const next: PoolEntry = {
+        preparation: {
+          ...base,
+          get needsMipmaps() {
+            return pendingTextures.has(next) && base.needsMipmaps;
+          },
+        },
+        revision,
+        scope,
+        handle,
+        references: 0,
+      };
+      if (entry !== undefined) {
+        pendingTextures.delete(entry);
+        releasePool(entry);
+      }
+      entry = next;
+      pool.set(handle, entry);
+      textureIndices.set(entry.preparation, textureEntries.length);
+      textureEntries.push(entry.preparation);
+      pendingTextures.add(entry);
+      textureRevision++;
+    }
+    const retained = entry;
+    retained.references++;
+    let released = false;
+    return ok({
+      ...entry.preparation,
+      lease: {
+        track: (done: Promise<unknown>) => retained.preparation.lease.track(done),
+        release: (): undefined => {
+          if (released) return;
+          released = true;
+          retained.references--;
+          releasePool(retained);
+        },
+      },
+    });
+  };
+  const nativeMaterials = new WeakMap<
+    object,
+    {
+      textures(): MaterialTextures | undefined;
+      snapshot(): import('../render-system-extract').MaterialSnapshot | undefined;
+      refresh(snapshot: import('../render-system-extract').MaterialSnapshot): void;
+      release(): void;
+    }
+  >();
   const prepared: SurfaceCaptureSource[] = [];
   const priorities: number[] = [];
   const owned: Buffer[] = [];
   let capture: SurfaceCapture | undefined;
+  let materialFrame: MaterialFrame | undefined;
   let released = false;
+  const generation = runtime.deviceScope.generation;
+  // The region/field owner validates its source revision. An editable field
+  // advances that revision while retaining these same native Card resources.
+  const current = () => !released && runtime.deviceScope.generation === generation;
   const release = () => {
     if (released) return;
     released = true;
     capture?.dispose();
     for (const buffer of owned) device.destroyBuffer(buffer);
     for (const material of materials) void material.release();
-    for (const pool of pools.values())
-      for (const texture of pool.values()) void texture.lease.release(false);
+    for (const texture of [...textureEntries]) void texture.lease.release(false);
+    textureEntries.length = 0;
+    textureIndices.clear();
+    pendingTextures.clear();
   };
-  // Pools freeze once preparation ends: edits reuse resident textures or rebuild.
-  let frozen = false;
   const geometries = new WeakMap<
     object,
     {
@@ -176,13 +275,6 @@ export async function prepareProbeCards(
   };
   const lowerSections = (source: SceneFieldSource) => {
     const { mesh, scope } = source;
-    let pool = pools.get(scope);
-    if (pool === undefined) {
-      if (frozen) throw new Error('native Card edit needs a texture scope outside its capture');
-      pool = new Map();
-      pools.set(scope, pool);
-    }
-    const resident = pool;
     const sectionInputs: SurfaceCaptureSource['sections'][number][] = [];
     const materialKeys: unknown[] = [];
     let offset = 0;
@@ -190,37 +282,68 @@ export async function prepareProbeCards(
       const accepted = source.materials[sectionIndex];
       if (accepted === undefined || accepted.materialSlot !== section.materialSlot)
         throw new Error('native Card section must retain its actual accepted material slot');
-      const snapshot = accepted.snapshot;
+      const snapshot = materialFrame?.get(accepted.resource)?.snapshot ?? accepted.snapshot;
       const selected = snapshot.materialSurfacePrograms?.['card-capture'];
       if (selected === undefined)
         throw new Error(`native Card material ${accepted.handle} has no published Card derivative`);
       const artifact = shaders.findMaterialArtifact(selected.programKey).unwrap();
-      const textures = prepareSurfaceMaterialTextures(
-        store,
-        sampler,
-        artifact.paramSchema,
-        scope,
-        snapshot,
-        (handle, payload) => {
-          const old = resident.get(Number(handle));
-          if (old !== undefined) return ok(old);
-          if (frozen) throw new Error('native Card edit needs a texture outside its capture');
-          const next = store.prepareTextureResidencyForGraph(handle, payload, scope);
-          if (next.ok) resident.set(Number(handle), next.value);
-          return next;
-        },
-      ).unwrap();
-      materials.push(textures);
+      let native = nativeMaterials.get(accepted.resource);
+      if (native === undefined) {
+        let active: MaterialTextures | undefined;
+        let acceptedSnapshot: import('../render-system-extract').MaterialSnapshot | undefined;
+        native = {
+          snapshot: () => acceptedSnapshot,
+          textures: () => active,
+          refresh: (snapshot) => {
+            const next = prepareSurfaceMaterialTextures(
+              store,
+              sampler,
+              artifact.paramSchema,
+              scope,
+              snapshot,
+              (handle, payload) => referenceTexture(scope, handle, payload),
+            ).unwrap();
+            const previous = active;
+            active = next;
+            acceptedSnapshot = snapshot;
+            materials.add(next);
+            if (previous !== undefined) {
+              materials.delete(previous);
+              void previous.release();
+            }
+          },
+          release: () => {
+            const previous = active;
+            active = undefined;
+            acceptedSnapshot = undefined;
+            if (previous !== undefined) {
+              materials.delete(previous);
+              void previous.release();
+            }
+          },
+        };
+        native.refresh(snapshot);
+        nativeMaterials.set(accepted.resource, native);
+      } else if (native.snapshot() !== snapshot || native.textures()?.current() !== true)
+        native.refresh(snapshot);
+      const textures = native.textures();
+      if (textures === undefined)
+        throw new Error('native Card texture preparation did not complete');
       const indexCount = mesh.indices === undefined ? section.vertexCount : section.indexCount;
       sectionInputs.push({
         indexOffset: mesh.indices === undefined ? offset : section.indexOffset,
         indexCount,
         material: {
           id: sectionIndex,
+          identity: accepted.resource,
+          scope,
           snapshot,
+          refreshTextures: native.refresh,
+          releaseTextures: native.release,
           program: artifact,
           resolveTexture: (parameter) => {
-            const texture = textures.textures.get(parameter);
+            if (native.textures() === undefined) native.refresh(snapshot);
+            const texture = native.textures()?.textures.get(parameter);
             if (texture === undefined) throw new Error(`native Card material lost ${parameter}`);
             return ok(texture);
           },
@@ -328,7 +451,6 @@ export async function prepareProbeCards(
           : undefined,
       )
     ).unwrap();
-    frozen = true;
     const packedProjections = packCardLookupProjections(
       capture,
       globalSources.map((s) => ({ instanceId: s.instanceId, key: s.geometryKey })),
@@ -370,10 +492,12 @@ export async function prepareProbeCards(
         await compile(device, { code: PROBE_CARD_SUPPORT_WGSL, label: 'probe-global.card-support' })
       ).unwrap(),
     ).unwrap();
-    const textures = [...pools.values()].flatMap((pool) => [...pool.values()]);
     return {
       device,
       capture,
+      acceptMaterials: (frame) => {
+        materialFrame = frame;
+      },
       lower: (source, instance, row) => {
         if (released) throw new Error('native Card capture is released');
         const ordinal = instance.instanceId - source.firstInstance;
@@ -381,15 +505,32 @@ export async function prepareProbeCards(
       },
       projections: cards,
       settings,
-      textures,
+      textures: textureEntries,
+      get textureRevision() {
+        return textureRevision;
+      },
       lookup: lookup.record,
       support: support.record,
       schedule: new CardCaptureScheduler(capture.allocatedTiles, profile.budget),
-      current: () =>
-        !released && materials.every((m) => m.current()) && textures.every((t) => t.current()),
-      commit: () => textures.every((t) => t.current()) && textures.every((t) => t.commit()),
+      current,
+      commit: () => {
+        if (!current()) return false;
+        for (const entry of pendingTextures) {
+          if (
+            entry.scope.assetRevision(entry.handle) !== entry.revision ||
+            entry.preparation.entry.texture.isDestroyed
+          )
+            return false;
+          // Another view can publish a same-source allocation first. This submitted
+          // capture still owns its private allocation and its completed mip writers.
+          entry.preparation.commit();
+          pendingTextures.delete(entry);
+          textureRevision++;
+        }
+        return true;
+      },
       track: (done) => {
-        for (const texture of textures) texture.lease.track(done);
+        for (const texture of textureEntries) texture.lease.track(done);
         capture?.track(done);
       },
       release,

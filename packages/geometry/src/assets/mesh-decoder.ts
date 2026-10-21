@@ -8,7 +8,12 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import { validateMeshCollisionAttachment } from '../mesh-collision';
+import { prepareMeshData } from '../mesh-data';
+import {
+  decodeMeshDistanceFieldAttachment,
+  MESH_GEOMETRIC_DISTANCE_FIELD_CODEC,
+  MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
+} from '../mesh-distance-field-product';
 import { decodeMeshBinary, normalizeMeshPayload } from './mesh-binary';
 import { createProceduralMesh } from './primitive-mesh';
 
@@ -31,8 +36,31 @@ function proceduralMesh(payload: unknown): Result<MeshAsset, AssetLoadError> | u
 /** Geometry validates mesh payload shape before any render owner consumes it. */
 export const meshAssetDecoder: AssetDecoder<MeshAsset> = {
   async decode({ envelope, artifacts }): Promise<Result<MeshAsset, AssetLoadError>> {
-    const payload = envelope.payload;
-    const procedural = proceduralMesh(payload);
+    const invalid = (reason: string): Result<MeshAsset, AssetLoadError> =>
+      err({
+        code: 'asset-package-invalid',
+        expected: 'one validated Mesh geometry with complete matching attachments',
+        hint: 'recook and publish the mesh with its complete source dependency closure',
+        detail: { guid: envelope.guid, reason },
+      });
+    if (
+      envelope.payload === null ||
+      typeof envelope.payload !== 'object' ||
+      Array.isArray(envelope.payload)
+    )
+      return invalid('mesh payload must be an object');
+    const { distanceField, ...payload } = envelope.payload;
+    const body = envelope.artifacts.body;
+    if (body !== undefined && Object.keys(payload).some((key) => key !== 'kind'))
+      return invalid('native mesh data and a geometry body artifact cannot coexist');
+    if (
+      body === undefined &&
+      'geometry' in payload &&
+      Object.keys(payload).some((key) => key !== 'kind' && key !== 'geometry')
+    )
+      return invalid('procedural descriptors and native mesh data cannot coexist');
+    let mesh: MeshAsset | undefined;
+    const procedural = body === undefined ? proceduralMesh(payload) : undefined;
     if (procedural !== undefined) {
       if (!procedural.ok) {
         return err<AssetLoadError>({
@@ -42,41 +70,49 @@ export const meshAssetDecoder: AssetDecoder<MeshAsset> = {
           detail: { guid: envelope.guid, reason: 'procedural mesh creation failed' },
         });
       }
-      return procedural;
+      mesh = procedural.value;
     }
-    const body = envelope.artifacts.body;
     if (body !== undefined) {
       const bytes = await artifacts.read(body);
       if (!bytes.ok) return err<AssetLoadError>(bytes.error);
-      const decoded = decodeMeshBinary(bytes.value, envelope.refs);
-      if (decoded === undefined) {
-        return err({
-          code: 'asset-package-invalid',
-          expected: 'a valid mesh-binary/4 or /5 body artifact with a local-space AABB',
-          hint: 'recook the mesh binary and publish its validated geometry payload',
-          detail: { guid: envelope.guid, reason: 'mesh binary decode failed' },
-        });
+      mesh = decodeMeshBinary(bytes.value, envelope.refs);
+      if (mesh === undefined) return invalid('mesh binary decode failed');
+    } else if (mesh === undefined) {
+      if (payload.vertices instanceof Float32Array) {
+        const prepared = prepareMeshData(payload, envelope.guid);
+        if (!prepared.ok) return invalid(prepared.error.actual);
+        mesh = payload;
+      } else {
+        mesh = normalizeMeshPayload(payload, envelope.refs);
       }
-      return ok(decoded);
     }
-    const normalized = normalizeMeshPayload(payload, envelope.refs);
-    if (normalized !== undefined) return ok(normalized);
+    if (mesh === undefined) return invalid('mesh geometry validation failed');
+    const fieldDescriptor = envelope.artifacts['distance-field.bin'];
+    if (distanceField === undefined && fieldDescriptor === undefined) return ok(mesh);
+    if (fieldDescriptor === undefined) return invalid('mesh distance field artifact is missing');
+    const { assetCodec, integrity } = fieldDescriptor;
     if (
-      payload.kind !== 'mesh' ||
-      !(payload.vertices instanceof Float32Array) ||
-      payload.vertices.length === 0 ||
-      payload.aabb === undefined ||
-      (payload.collision !== undefined &&
-        !validateMeshCollisionAttachment(payload as MeshAsset, payload.collision).ok)
-    ) {
-      return err({
-        code: 'asset-package-invalid',
-        expected: 'a mesh payload with vertices and a local-space AABB',
-        hint: 'recook the mesh binary and publish its validated geometry payload',
-        detail: { guid: envelope.guid, reason: 'mesh payload failed geometry validation' },
-      });
-    }
-    return ok(payload);
+      assetCodec?.name !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.name ||
+      assetCodec.version !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.version ||
+      (assetCodec.profile !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.profile &&
+        assetCodec.profile !== MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.profile)
+    )
+      return invalid('unsupported mesh distance field artifact codec');
+    if (integrity === undefined)
+      return invalid('mesh distance field artifact integrity is missing');
+    const artifact = { integrity: { ...integrity }, assetCodec: { ...assetCodec } };
+    const read = await artifacts.read(fieldDescriptor);
+    if (!read.ok) return read;
+    const attached = await decodeMeshDistanceFieldAttachment(mesh, distanceField, read.value);
+    if (!attached.ok) return invalid(attached.error.detail.reason);
+    const field = attached.value;
+    const codec =
+      field.policy.kind === 'sampled-visibility'
+        ? MESH_VISIBILITY_DISTANCE_FIELD_CODEC
+        : MESH_GEOMETRIC_DISTANCE_FIELD_CODEC;
+    if (artifact.assetCodec.profile !== codec.profile)
+      return invalid('mesh distance field codec policy mismatch');
+    return ok({ ...mesh, distanceField: { ...field, artifact } });
   },
 };
 

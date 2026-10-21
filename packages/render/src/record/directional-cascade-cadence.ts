@@ -1,6 +1,7 @@
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { DirectionalCsmConfig, ExtractedLights } from '../render-system-extract';
+import { sameShadowMaterialFrames } from '../scene/material-shadow-content';
 import type {
   PersistentShadowCasterProjection,
   ShadowPublicationSource,
@@ -63,16 +64,33 @@ export function currentDirectionalShadowPublication(
 export function directionalShadowSourceChanged(
   previous: Pick<
     DirectionalShadowCache,
-    'worlds' | 'worldStateTokens' | 'assetCatalogEpoch' | 'meshContent' | 'casterContent'
+    | 'worlds'
+    | 'worldStateTokens'
+    | 'shadowMaterials'
+    | 'meshReads'
+    | 'lodSelection'
+    | 'casterContent'
   >,
   next: Pick<
     DirectionalShadowCache,
-    'worlds' | 'worldStateTokens' | 'assetCatalogEpoch' | 'meshContent' | 'casterContent'
+    | 'worlds'
+    | 'worldStateTokens'
+    | 'shadowMaterials'
+    | 'meshReads'
+    | 'lodSelection'
+    | 'casterContent'
   >,
 ): boolean {
   return (
-    previous.assetCatalogEpoch !== next.assetCatalogEpoch ||
-    previous.meshContent !== next.meshContent ||
+    !sameShadowMaterialFrames(previous.casterContent?.materials, next.casterContent?.materials) ||
+    !(next.shadowMaterials === undefined
+      ? previous.shadowMaterials === undefined
+      : next.shadowMaterials.length === previous.shadowMaterials?.length &&
+        next.shadowMaterials.every((content, index) =>
+          content.same(previous.shadowMaterials?.[index]),
+        )) ||
+    previous.meshReads !== next.meshReads ||
+    previous.lodSelection !== next.lodSelection ||
     previous.casterContent?.owner !== next.casterContent?.owner ||
     previous.casterContent?.dispatchRevision !== next.casterContent?.dispatchRevision ||
     previous.casterContent?.publicationSource?.resources !==

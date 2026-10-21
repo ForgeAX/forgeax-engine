@@ -1,3 +1,4 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   exposeLearnRenderTestApp,
   markLearnRenderTestBootstrapStage,
@@ -66,14 +67,14 @@ import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import type { World } from '@forgeax/engine-ecs';
 import type { CanvasAppError } from '@forgeax/engine-app';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-wood.pack.json';
 import { computeTransformAt } from './transform-animation';
@@ -194,7 +195,7 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
   let woodTextureHandle: number | undefined;
   if (!browserOnerrorGate) {
     markLearnRenderTestBootstrapStage(target, 'load-required-wood');
-    const woodHandleRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+    const woodHandleRes = await assets.load(woodGuidRes.value, 'texture');
     markLearnRenderTestBootstrapStage(target, 'required-wood-returned');
     if (!woodHandleRes.ok) {
       console.error(
@@ -203,15 +204,15 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
       );
       throw woodHandleRes.error;
     }
-    woodTextureHandle = unwrapHandle(world.allocSharedRef('TextureAsset', woodHandleRes.value));
+    woodTextureHandle = Number(woodHandleRes.value);
   }
 
-  const cubeAssetRes = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE);
+  const cubeAssetRes = createBoxGeometry(1, 1, 1);
   if (!cubeAssetRes.ok) {
     console.error('[learn-render 1.5 transformations] HANDLE_CUBE asset unavailable');
     return;
   }
-  assets.catalog<MeshAsset>(cubeGuidRes.value, cubeAssetRes.value);
+
 
   const matPack = materialPackJson as unknown as MaterialPackFile;
   const matEntry = matPack.assets.find((a) => a.kind === 'material');
@@ -231,10 +232,10 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
       ...(woodTextureHandle === undefined ? {} : { baseColorTexture: woodTextureHandle }),
     },
   };
-  assets.catalog<MaterialAsset>(matGuidRes.value, cubeMaterial);
 
-  const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuidRes.value);
-  const matHandleRes = await assets.loadByGuid<MaterialAsset>(matGuidRes.value);
+
+  const cubeHandleRes = assets.create(cubeAssetRes.value);
+  const matHandleRes = assets.create(cubeMaterial);
   if (!cubeHandleRes.ok || !matHandleRes.ok) {
     console.error(
       '[learn-render 1.5 transformations] loadByGuid failed:',
@@ -244,8 +245,8 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
     return;
   }
   // loadByGuid returns payloads (M8 D-17); mint user-tier column handles.
-  const cubeHandle = world.allocSharedRef('MeshAsset', cubeHandleRes.value);
-  const matHandle = world.allocSharedRef('MaterialAsset', matHandleRes.value);
+  const cubeHandle = cubeHandleRes.value;
+  const matHandle = matHandleRes.value;
 
   // Spawn the cube + camera onto the world. spawn-time defaults are
   // identity (the LO §1.5 glm::mat4(1.0f) baseline); the per-frame

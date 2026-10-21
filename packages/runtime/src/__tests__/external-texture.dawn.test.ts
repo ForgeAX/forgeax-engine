@@ -1,10 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, MeshFilter, MeshRenderer, type RenderError } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { createServer } from 'vite';
 import { expect, it } from 'vitest';
@@ -13,6 +12,7 @@ import {
   externalTextureMaterialFixture,
 } from '../../../../scripts/test/external-texture-material-fixture';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -97,16 +97,17 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
   );
   const { renderer, assets } = host;
   const errors: RenderError[] = [];
+  const details = (error: RenderError) => ('detail' in error ? error.detail : error);
   renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error as RenderError);
   });
-  const world = new World();
+  const world = new World({ assets });
   const owner = await createWorldContext(world, [scenePlugin()]);
   const lease = renderValue(renderer.attach(world));
   try {
     assets.configurePackIndex(new URL('__external-texture-material/pack-index.json', base).href);
     const guid = assets.parseGuid(EXTERNAL_TEXTURE_MATERIAL_GUID);
-    (await assets.loadByGuid<MaterialAsset>(guid)).unwrap();
+    const rootMaterial = (await assets.load(guid, 'material')).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3] } },
@@ -136,16 +137,18 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
     const handle = renderValue(
       await renderer.importTexture({ kind: 'gpu-texture', texture: caller }),
     );
-    const source = world.allocSharedRef('ExternalTextureSource', handle.source);
-    const material = world.allocSharedRef('MaterialAsset', {
-      kind: 'material',
-      parent: guid,
-      values: { videoTexture: source },
-    });
+    const source = { source: handle.source };
+    const material = assets.copy(rootMaterial).unwrap();
+    assets.update(material, { values: { videoTexture: source } }).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], scale: [3, 3, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -206,7 +209,7 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
 
     renderValue(handle.release());
     await draw(2);
-    expect(errors.map((e) => e.detail)).toEqual([
+    expect(errors.map(details)).toEqual([
       { operation: 'bind', reason: 'released', generation: expect.any(Number) },
     ]);
     expect(destroyedByEngine).toBe(0);
@@ -220,8 +223,8 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
           frames: 64,
           epsilon: EPSILON,
           externalSlotPixels: { top, bottom, replacedTop },
-          rejections: [usage, wrongDevice, video].map((r) => (r.ok ? null : r.error.detail)),
-          stateErrors: errors.map((e) => e.detail),
+          rejections: [usage, wrongDevice, video].map((r) => (r.ok ? null : details(r.error))),
+          stateErrors: errors.map(details),
           destroyedByEngine,
         },
         null,
@@ -229,11 +232,11 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
       ),
     );
   } finally {
-    lease.release?.();
+    lease.dispose();
     renderValue(await renderer.dispose());
-    owner.dispose?.();
+    await owner.fiber.dispose();
     target?.destroy();
-    probe.destroy?.();
+    foreign.destroy();
     await server.close();
   }
 });

@@ -1,8 +1,10 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { fnv1a32 } from '@forgeax/engine-types';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { type AtmosphereViews, atmosphereBindings } from '../environment/bindings';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import type { FrameList } from '../scene/frame-list';
 // @forgeax/engine-runtime - RenderSystem record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
@@ -16,7 +18,7 @@ import {
   RhiError,
   type TextureView,
 } from '@forgeax/engine-rhi';
-import { err, ok, type Result, toShared } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   PointShadowAtlasBoundsViolationError,
   PointShadowAtlasUninitializedError,
@@ -88,9 +90,9 @@ import type {
   RecordProfileRunner,
   RenderSystemInternals,
 } from './render-context';
-import { POINTS_LINES_VIEW_BYTES, VIEW_UNIFORM_BYTES } from './view-ubo';
+import { POINTS_LINES_VIEW_BYTES, SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BYTES } from './view-ubo';
 
-export interface StandardReflectionProbeBinding {
+interface StandardReflectionProbeBinding {
   readonly probeIndex: number | undefined;
   readonly useSkylight: boolean;
 }
@@ -170,6 +172,7 @@ export function buildPerFrameBindGroups(
   graphTargets?: {
     readonly directionalShadow?: TextureView | undefined;
     readonly spotShadow?: TextureView | undefined;
+    readonly shadowMoments?: TextureView | undefined;
     readonly cloudShadow?: TextureView | undefined;
     readonly atmosphere?: AtmosphereViews | undefined;
     readonly projector?: TextureView | undefined;
@@ -192,7 +195,7 @@ export function buildPerFrameBindGroups(
   let meshBindGroup: BindGroup | null = null;
   // Standard clustered group(2) bind group. Non-null when the prepared
   // topology selects the cluster transport and its persistent allocation
-  // succeeds; consumed by recordMainPass at `setBindGroup(2, ...)`.
+  // succeeds; consumed by encodeMainPass at `setBindGroup(2, ...)`.
   let hdrpClusterBindGroup: BindGroup | null = null;
   // The prepared Standard topology is the per-frame authority for whether
   // group(2) carries Cluster storage. A missing declaration is the prewarm /
@@ -273,6 +276,7 @@ export function buildPerFrameBindGroups(
         ltcLambertTextureView !== undefined &&
         ltcGgxTextureView !== undefined
           ? {
+              moments: graphTargets?.shadowMoments ?? cookieTextureView,
               sampler: pipelineState.defaultSampler,
               iesProfileTextureView,
               cookieTextureView,
@@ -292,6 +296,7 @@ export function buildPerFrameBindGroups(
       const extendedLightingViews =
         extendedLightingResources !== undefined
           ? [
+              extendedLightingResources.moments,
               extendedLightingResources.sampler,
               extendedLightingResources.iesProfileTextureView,
               extendedLightingResources.cookieTextureView,
@@ -417,6 +422,13 @@ export function buildPerFrameBindGroups(
               : []),
             ...(extendedLightingResources !== undefined
               ? [
+                  {
+                    binding: 24,
+                    resource: {
+                      kind: 'textureView' as const,
+                      value: extendedLightingResources.moments,
+                    },
+                  },
                   {
                     binding: 9,
                     resource: {
@@ -906,7 +918,7 @@ export function writeLightModifierTextures(
  * feat-20260612-point-light-shadows-urp-hdrp Round-2 F-1: 4 lanes x vec4<f32>;
  * lane[shadowAtlasLayer] = (near, far, depthBias, normalBias). Lanes for non-shadow
  * slots stay zero (the WGSL sample path is gated by PointLight.shadowAtlasLayer
- * >= 0). Always writes the full 64 B so stale non-zero lanes from a previous
+ * >= 0). Always writes the complete Point/Spot block so stale non-zero lanes from a previous
  * frame's allocation cannot poison the current frame.
  *
  * @internal
@@ -918,9 +930,7 @@ export function writeShadowParamsBuffer(
 ): void {
   const SHADOW_PARAMS_LANE_COUNT = 4;
   const SHADOW_PARAMS_FLOATS_PER_LANE = 4;
-  const shadowParamsArr = new Float32Array(
-    SHADOW_PARAMS_LANE_COUNT * SHADOW_PARAMS_FLOATS_PER_LANE,
-  );
+  const shadowParamsArr = new Float32Array(SHADOW_PARAMS_BYTES / Float32Array.BYTES_PER_ELEMENT);
   for (let i = 0; i < frameState.pointShadowSnapshots.length; i++) {
     const ps = frameState.pointShadowSnapshots[i];
     if (ps === undefined) continue;
@@ -934,7 +944,32 @@ export function writeShadowParamsBuffer(
     shadowParamsArr[base + 2] = ps.depthBias;
     // normalBias is authored in cube texels; one texel of a 90-degree face
     // spans 2 / mapSize world units per unit of light distance.
-    shadowParamsArr[base + 3] = (ps.normalBias * 2) / Math.max(ps.mapSize, 1);
+    shadowParamsArr[base + 3] =
+      ps.shadowBiasMode === 1 ? ps.normalBias : (ps.normalBias * 2) / Math.max(ps.mapSize, 1);
+    shadowParamsArr.set(ps.position, 48 + base);
+    shadowParamsArr[51 + base] = 0;
+    shadowParamsArr.set(
+      [
+        ps.pcfKernelSize ?? 3,
+        ps.shadowBiasMode ?? 0,
+        ps.shadowIntensity ?? 1,
+        ps.shadowFilter ?? 6,
+      ],
+      16 + base,
+    );
+  }
+  for (const spot of frameState.spotShadowSnapshots) {
+    const layer = spot.shadowAtlasTile;
+    if (layer < 0 || layer >= 4) continue;
+    shadowParamsArr.set(
+      [
+        spot.pcfKernelSize ?? 3,
+        spot.shadowBiasMode ?? 0,
+        spot.shadowFilter ?? 6,
+        spot.shadowMapAspect ?? 1,
+      ],
+      32 + layer * 4,
+    );
   }
   const shadowParamsWriteRes = internals.device.queue.writeBuffer(
     pipelineState.shadowParamsBuffer,
@@ -961,11 +996,11 @@ export function writeShadowParamsBuffer(
  */
 export function warnZeroLightStandard(
   frameState: RenderFrameState,
-  renderables: readonly RenderableSnapshot[],
+  renderables: FrameList<RenderableSnapshot>,
   skylight: SkylightSnapshot | undefined,
   totalLightCount: number,
 ): void {
-  const hasStandardMaterial = renderables.some((r) => isLitMaterialSnapshot(r.material));
+  const hasStandardMaterial = renderables.some((r) => isLitMaterialSnapshot(r.material.snapshot));
   if (
     skylight === undefined &&
     totalLightCount === 0 &&
@@ -1288,7 +1323,7 @@ export function resolveSkyboxActive(
   // equirect-to-cube upload has not completed yet.
   if (skybox !== undefined && tonemapActive) {
     const cubemapView = internals.gpuStore.getCubemapGpuView(
-      toShared<'EquirectAsset'>(skybox.equirectHandle),
+      skybox.equirectHandle as AssetHandle<'equirect'>,
       world,
     );
     if (cubemapView === undefined) {

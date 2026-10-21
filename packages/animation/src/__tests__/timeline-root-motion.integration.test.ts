@@ -1,12 +1,14 @@
-import { animationClipLoader } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, Name, Transform } from '@forgeax/engine-scene';
-import type { AnimationClip, AnimationTimelineKey, LoadContext } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { AnimationClip, AnimationTimelineKey, AssetHandle } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { defineAnimationMask } from '../animation-mask';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationTargetId, bindAnimationTargets } from '../animation-target';
+import { animationClipContribution } from '../assets/animation-decoder';
 import { defineAnimationGraph } from '../graph/define-animation-graph';
 import { playbackInterval } from '../playback-interval';
 import { animationPlugin } from '../plugin';
@@ -48,13 +50,13 @@ const clip: AnimationClip = {
 };
 
 async function fixture(graph = false, source = clip) {
-  const world = new World({ time: { maxDeltaSeconds: 20000 } });
-  const context = await createWorldContext(world, [
-    animationPlugin((guid) => (guid === 'clip' ? source : undefined)),
-  ]);
-  const handle = world.allocSharedRef('AnimationClip', source);
+  const world = new World({ assets: new AssetRegistry(), ...{ time: { maxDeltaSeconds: 20000 } } });
+  const context = await createWorldContext(world, [animationPlugin()]);
+  const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
   const graphHandle = graph
-    ? world.allocSharedRef('AnimationGraph', defineAnimationGraph((b) => b.clip('clip')).unwrap())
+    ? runtimeAssetRegistry(world.assets)
+        .create(defineAnimationGraph((b) => b.clip(handle)).unwrap())
+        .unwrap()
     : undefined;
   const player = world
     .spawn(
@@ -62,7 +64,7 @@ async function fixture(graph = false, source = clip) {
         component: AnimationPlayer,
         data: graph
           ? {
-              graph: toShared<'AnimationGraph'>(graphHandle ?? 0),
+              graph: (graphHandle ?? 0) as AssetHandle<'animation-graph'>,
               nodeTimes: [0.75],
               nodeSpeeds: [1],
             }
@@ -186,11 +188,21 @@ describe('timeline and root motion use the real default World schedule', () => {
       { time: 0.4, targetId, action: { kind: 'audio', clip: null, fromPosition: 0 } },
       { time: 0.5, targetId, action: { kind: 'animation', clip: null, fromPosition: 0 } },
     ];
-    const restored = animationClipLoader.load(
-      JSON.parse(JSON.stringify({ kind: 'animation-clip', duration: 1, channels: [], events })),
-      [],
-      {} as LoadContext,
-    ) as AnimationClip;
+    const restored = (
+      await animationClipContribution.decoder.decode({
+        envelope: {
+          guid: '019e2cc6-0c86-79da-aa76-b0984c86d45c',
+          kind: 'animation-clip',
+          payload: JSON.parse(
+            JSON.stringify({ kind: 'animation-clip', duration: 1, channels: [], events }),
+          ),
+          refs: [],
+          artifacts: {},
+        },
+        artifacts: { read: async () => ok(new Uint8Array()) },
+        signal: new AbortController().signal,
+      })
+    ).unwrap();
     expect(restored.events).toEqual(events);
     const { world, player } = await fixture(false, restored);
     const child = world.spawn({ component: AnimationPlayer, data: {} }).unwrap();
@@ -236,9 +248,7 @@ describe('timeline and root motion use the real default World schedule', () => {
     const { world, player, target } = await fixture(graph);
     const before = Array.from(world.get(target, Transform).unwrap().pos);
     expect(() =>
-      graph
-        ? evaluateAnimationGraph(world, 10000, (guid) => (guid === 'clip' ? clip : undefined))
-        : advanceAnimationPlayer(world, 10000),
+      graph ? evaluateAnimationGraph(world, 10000) : advanceAnimationPlayer(world, 10000),
     ).toThrow(expect.objectContaining({ code: 'animation-timeline-overflow' }));
     expect(Array.from(world.get(target, Transform).unwrap().pos)).toEqual(before);
     const state = world.get(player, AnimationPlayer).unwrap();
@@ -252,7 +262,9 @@ describe('timeline and root motion use the real default World schedule', () => {
   it('weights motion including a stationary slot, and honors root masks', async () => {
     const { world, player } = await fixture(false, { ...clip, events: [] });
     const moving = world.get(player, AnimationPlayer).unwrap().clips[0] ?? 0;
-    const still = world.allocSharedRef('AnimationClip', { ...clip, channels: [], events: [] });
+    const still = runtimeAssetRegistry(world.assets)
+      .create({ ...clip, channels: [], events: [] })
+      .unwrap();
     world
       .set(player, AnimationPlayer, {
         clips: [moving, still],

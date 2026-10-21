@@ -1,21 +1,21 @@
-import type { ParamSchemaEntry } from '@forgeax/engine-types';
+import type { MaterialProgramAbi, ParamSchemaEntry } from '@forgeax/engine-types';
 import {
   ParamSchemaProjectionOwner,
   STANDARD_MATERIAL_PARAM_SCHEMA,
-  STANDARD_PHYSICAL_PARAMETER_NAMES,
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
 } from '@forgeax/engine-types';
 import {
   STANDARD_PIPELINE_PARAM_SCHEMA as CANONICAL_STANDARD_PIPELINE_PARAM_SCHEMA,
   createStandardPbrArtifactReceipt,
-  type MaterialShaderArtifactReceipt,
 } from './material/artifact-types.js';
 
 export const STANDARD_PBR_ALPHA_CUTOFF_DEFAULT = 0;
 
 /** Shared material contract for the standard PBR and skinned PBR shaders. */
 export const DEFAULT_STANDARD_PBR_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
-  STANDARD_MATERIAL_PARAM_SCHEMA.filter((entry) => entry.name !== 'directMultiscatteringLut');
+  STANDARD_MATERIAL_PARAM_SCHEMA.filter(
+    (entry) => entry.name !== 'directMultiscatteringLut' && entry.name !== 'flatShading',
+  );
 
 /** Numeric WGSL override ID, stable across Naga symbol mangling. */
 export const STANDARD_TEXTURE_MASK_OVERRIDE = '64000';
@@ -154,11 +154,6 @@ export function standardSampleReuseMask(
 
 export type { StandardPhysicalTextureField } from '@forgeax/engine-types';
 /**
- * Backward-compatible export name for callers that need the physical
- * projection.  Every entry is selected from the Standard root schema above;
- * no independent defaults or binding inventory can drift from it.
- */
-/**
  * Stable physical texture injection order.  The order is part of the
  * Standard template's resource ABI and is derived from the root schema by
  * `standardPhysicalTextureFields`; render/cook must not maintain another
@@ -168,30 +163,6 @@ export {
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
   standardPhysicalTextureFields,
 } from '@forgeax/engine-types';
-
-export const STANDARD_PHYSICAL_LAYER_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
-  DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter((entry) =>
-    STANDARD_PHYSICAL_PARAMETER_NAMES.has(entry.name),
-  );
-
-/**
- * Canonical static Standard entry.  It deliberately contains only the base
- * contract (including the specular extension) so a base-only material keeps
- * its Deferred path and carries no second-stage physical resources.
- */
-export const STANDARD_BASE_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
-  DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter(
-    (entry) =>
-      !STANDARD_PHYSICAL_PARAMETER_NAMES.has(entry.name) &&
-      ![
-        'transmission',
-        'thickness',
-        'attenuationColor',
-        'attenuationDistance',
-        'transmissionTexture',
-        'thicknessTexture',
-      ].includes(entry.name),
-  );
 
 /**
  * Canonical boot-time user region for the shared Standard material BGL.
@@ -270,30 +241,36 @@ export const PARTICLE_MESH_SURFACE_PARAM_SCHEMA: readonly ParamSchemaEntry[] = O
 ]);
 
 /** The single producer receipt shared by direct and scene-index Standard PBR. */
-export const STANDARD_PBR_ARTIFACT_RECEIPT: MaterialShaderArtifactReceipt =
-  createStandardPbrArtifactReceipt();
+export const STANDARD_PBR_ARTIFACT_RECEIPT: MaterialProgramAbi = createStandardPbrArtifactReceipt();
 
 /** Skinned Standard PBR keeps the material receipt identity and adds palette ABI. */
-export const STANDARD_PBR_SKIN_ARTIFACT_RECEIPT: MaterialShaderArtifactReceipt =
+export const STANDARD_PBR_SKIN_ARTIFACT_RECEIPT: MaterialProgramAbi =
   createStandardPbrArtifactReceipt(true);
 
 export const DEFAULT_UNLIT_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'baseColor', type: 'color', default: [1, 1, 1, 1] },
   { name: 'alphaCutoff', type: 'f32', default: 0 },
   { name: 'alphaHash', type: 'f32', default: 0 },
+  { name: 'shadowAlphaMode', type: 'f32', default: 0 },
+  { name: 'alphaMode', type: 'f32', default: 0 },
+  { name: 'alphaToCoverage', type: 'f32', default: 0 },
   { name: 'shading', type: 'f32', default: 0 },
+  { name: 'alphaChannel', type: 'f32', default: 1 },
   { name: 'baseColorTexture', type: 'texture2d' },
+  { name: 'alphaTexture', type: 'texture2d' },
 ];
 
 export const DEFAULT_SPRITE_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
   new ParamSchemaProjectionOwner().admit({
     ownerId: 'forgeax::sprite',
-    revision: 1,
+    revision: 2,
     schema: [
       { name: 'colorTint', type: 'vec4', colorSpace: 'srgb', default: [1, 1, 1, 1] },
       { name: 'region', type: 'vec4', default: [0, 0, 1, 1] },
       { name: 'pivotAndSize', type: 'vec4', default: [0.5, 0.5, 1, 1] },
       { name: 'slicesAndMode', type: 'vec4', default: [0, 0, 0, 0] },
+      { name: 'flipX', type: 'f32', default: 0 },
+      { name: 'flipY', type: 'f32', default: 0 },
       { name: 'baseColorTexture', type: 'texture2d' },
     ],
   }).schema;

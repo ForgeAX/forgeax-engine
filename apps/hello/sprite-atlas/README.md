@@ -5,31 +5,23 @@
 ## 4-step recipe (charter F1 progressive disclosure)
 
 ```ts
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
-import { Transform } from '@forgeax/engine-scene';
-import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { SpriteRegionOverride } from '@forgeax/engine-render/authoring';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
-// Step 1: createApp(canvas, opts) -- one-screen takeoff
-const appRes = await createApp(target, { clearColor: [0.07, 0.07, 0.09, 1] });
-
-// Step 2: select the scoped dev catalog or the emitted production catalog
+// The App and its sprite shader have already been assembled (src/main.ts).
+const { assets, world } = app;
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-
-// Step 3: load the baked atlas by its authored GUID
-const atlasGuid = AssetGuid.parse('0e8657b1-c0ab-4940-a4f6-27fcd976823c');
-const texHandleRes = await assets.loadByGuid<TextureAsset>(atlasGuid.value);
-
-// Step 4: spawn independent entities; the renderer folds them transparently
+const texture = (await assets.load(atlasGuid, 'texture')).unwrap();
+const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+const materialHandle = assets.create({
+  ...material,
+  values: { ...material.values, baseColorTexture: texture },
+}).unwrap();
 for (const position of positions) world.spawn(
-  { component: Transform, data: { /* ... */ } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+  { component: Transform, data: { pos: position } },
+  { component: MeshFilter, data: { assetHandle: quad } },
   { component: MeshRenderer, data: { materials: [materialHandle] } },
-  { component: SpriteRegionOverride, data: { region: new Float32Array([0,0,0.5,0.5]) } },
-);
-
-// Start the rAF loop
+  { component: SpriteRegionOverride, data: { region: new Float32Array([0, 0, 0.5, 0.5]) } },
+).unwrap();
 app.start();
 ```
 
@@ -56,7 +48,7 @@ app.start();
 | `createApp` returns `!ok` | `AppError` | `app-error` | App-level failure | `reportAppError(err)` |
 | `renderer.ready` fails | `RhiError` | RHI-specific | `.hint` on error | Log + return |
 | `ATLAS_GUID` parse fails | `PackError` | `guid-parse-failed` | `.hint` on error | Log + return |
-| `loadByGuid` fails | `AssetError` | `asset-not-found` | `.hint` on error | Log error + return (fail-fast) |
+| `assets.load` fails | `AssetError` | `asset-not-found` | `.hint` on error | Log error + return (fail-fast) |
 | Sidecar fetch fails | `TypeError` / HTTP error | -- | `sidecar fetch error` | Log error + return (fail-fast) |
 | Sampler/material registration fails | `AssetError` | `asset-not-registered` | `.hint` on error | Log + return |
 | atlas Pack row is missing | `AssetError` | `asset-not-found` | GUID and Pack v2 catalog are not aligned | Repair the authored sidecar/catalog path |
@@ -75,8 +67,8 @@ flowchart TD
     sidecar --> metaJSON["walk.atlas.png.meta.json (GUID sidecar)"]
   end
   subgraph runtime["Runtime"]
-    metaJSON --> loadByGuid["assets.loadByGuid (TextureAsset)"]
-    loadByGuid --> tex["textureHandle"]
+    metaJSON --> loadAsset["assets.load(guid, texture)"]
+    loadAsset --> tex["textureHandle"]
     tex --> mat["one SpriteMaterialAsset"]
     mat --> mr["MeshRenderer.material"]
   end
@@ -130,7 +122,7 @@ git add -f apps/hello/sprite-atlas/scripts/reference-dawn-walk-frame-0.png
 | `scripts/smoke-dawn.mjs` | dawn-node headless smoke: 10000 sprite entities, 60-frame loop, asserts drawIndexed=1/frame + instanceCount=10000 + foldedDraws metric advance (M4 / w17) |
 | `vite.config.ts` | forgeaxShader + pluginPack, port 5194 |
 | `forgeax-engine-assets/demo-assets/hello-sprite-atlas/walk.atlas.json` | Atlas sidecar (charter F2 text channel): 4 regions [name, uMin, vMin, uW, vH] |
-| `forgeax-engine-assets/demo-assets/hello-sprite-atlas/walk.atlas.png.meta.json` | GUID sidecar for `loadByGuid<TextureAsset>` resolution |
+| `forgeax-engine-assets/demo-assets/hello-sprite-atlas/walk.atlas.png.meta.json` | GUID sidecar for `assets.load(guid, 'texture')` resolution |
 | `assets/walk.atlas.png` | 64x64 baked atlas PNG (4 walk frames, 2x2 grid) |
 
 ## Reference PNG

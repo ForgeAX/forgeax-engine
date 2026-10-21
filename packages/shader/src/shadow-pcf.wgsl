@@ -1,23 +1,10 @@
 #define_import_path forgeax_pbr::shadow_pcf
 
-// @forgeax/engine-shader - shadow-pcf.wgsl
-// feat-20260612-point-light-shadows-urp-hdrp M2 / T-M2-1 (plan-strategy D-4).
-//
-// Shared PCF (percentage-closer filtering) for directional and point-light
-// shadow sampling. Single SSOT for the 2D slope-scaled bias formula and 9-tap
-// 3x3 kernel-offset table. Directional shadows (2D) and point-light shadows
-// (cube_array) each have their own wrapper function; point receivers bias in
-// world space before depth reconstruction (evalPointShadowed).
-//
-// Exports:
-//   - PCF_OFFSETS: const array<vec2<i32>, 9> — 3x3 kernel offset table
-//   - sample_shadow_2d(...) -> f32 — directional 2D 9-tap software PCF
-//   - sample_shadow_cube_hw2x2(...) -> f32 — point cube hardware 2x2 PCF
-//
-// Bias formula (D-1 directional convention -- normalBias is the slope
-// coefficient, depthBias the floor; feat-20260621 m3-t5 rename):
-//   bias = max(normalBias * (1.0 - dot(N, L)), depthBias / 1000.0)
-//
+// Shared comparison sampling for directional, Spot and Point shadows.
+// Default directional/punctual filtering uses five rotated Vogel taps.
+// Punctual width 1 uses one hardware comparison; width 5 doubles the radius.
+// Legacy 2D grid helpers below remain available to volume/cascade callers.
+// Receiver bias and cascade admission belong to those callers.
 // Return: 1.0 = fully lit, 0.0 = fully shadowed.
 
 // === Directional PCSS sampling primitives ====================================
@@ -160,14 +147,8 @@ fn sample_shadow_2d_kernel(
 // `depthRef` is the reconstructed [0,1] NDC depth of the already-biased
 // receiver (largest-axis projection, Bevy fetch_point_shadow pattern).
 //
-// Hardware 2x2 PCF only: 2D texel offsets from PCF_OFFSETS have no direct 3D
-// cubemap mapping (no UV parameterization across face seams). A previous
-// 9-tap loop using the same cubemap direction every iteration was algorithmic
-// dead code — every iteration returned the same `lit` value, so 9-tap = 1-tap
-// (Reviewer F-2). This single call lets the GPU's silicon-level 2x2 PCF
-// resolve the local neighborhood within each face natively. Matches Bevy's
-// HARDWARE_2X2 path (research L0.6) and README §AC-11 default. Software 9-tap
-// on cubemaps requires face-basis vector offsets and is OOS-3 here.
+// The width-1 branch uses one native 2x2 comparison. Wider Point filters
+// below perturb the direction in its tangent plane before each comparison.
 
 fn sample_shadow_cube_hw2x2(
   shadowAtlas   : texture_depth_cube_array,
@@ -196,6 +177,54 @@ const SHADOW_VOGEL_OFFSETS = array<vec2<f32>, 5>(
   vec2<f32>(-0.9341812369, -0.1652435071),
 );
 
+fn shadow_vogel_rotation(pixel: vec2<f32>) -> vec2<f32> {
+  let noise = fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+  let angle = noise * 6.28318530718;
+  return vec2<f32>(cos(angle), sin(angle));
+}
+
+// Point and Spot use the same five-sample default as Three r184 WebGPU.
+// Width remains an author footprint, independent of the number of comparisons.
+fn sample_shadow_2d_punctual(
+  shadowMap: texture_depth_2d_array, shadowSampler: sampler_comparison,
+  uv: vec2<f32>, layer: i32, texel: vec2<f32>, depthRef: f32,
+  kernelSize: f32, pixel: vec2<f32>, extent: vec2<f32>,
+) -> f32 {
+  let radius = max(0.0, (kernelSize - 1.0) * 0.5);
+  if (radius == 0.0) {
+    let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMap));
+    return textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv, edge, extent - edge), layer, depthRef);
+  }
+  return sample_shadow_2d_vogel(shadowMap, shadowSampler, uv, layer,
+    texel * radius, depthRef, vec2<f32>(0.0), pixel, extent);
+}
+
+fn sample_shadow_cube_vogel(
+  shadowAtlas: texture_depth_cube_array, shadowSampler: sampler_comparison,
+  lightLocal: vec3<f32>, layer: i32, depthRef: f32,
+  kernelSize: f32, pixel: vec2<f32>,
+) -> f32 {
+  let radius = max(0.0, (kernelSize - 1.0) * 0.5);
+  if (radius == 0.0) {
+    return sample_shadow_cube_hw2x2(shadowAtlas, shadowSampler, lightLocal, layer, depthRef);
+  }
+  let direction = normalize(lightLocal);
+  let tangent = normalize(cross(direction,
+    select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(direction.x) > abs(direction.z))));
+  let bitangent = cross(direction, tangent);
+  let texel = radius / f32(textureDimensions(shadowAtlas).x);
+  let rotation = shadow_vogel_rotation(pixel);
+  var lit = 0.0;
+  for (var i = 0u; i < 5u; i++) {
+    let point = SHADOW_VOGEL_OFFSETS[i];
+    let offset = vec2<f32>(point.x * rotation.x - point.y * rotation.y,
+      point.x * rotation.y + point.y * rotation.x);
+    lit += textureSampleCompareLevel(shadowAtlas, shadowSampler,
+      direction + (tangent * offset.x + bitangent * offset.y) * texel, layer, depthRef);
+  }
+  return lit * 0.2;
+}
+
 fn sample_shadow_2d_vogel(
   shadowMap: texture_depth_2d_array,
   shadowSampler: sampler_comparison,
@@ -205,10 +234,13 @@ fn sample_shadow_2d_vogel(
   depthRef: f32,
   planeGradient: vec2<f32>,
   pixel: vec2<f32>,
+  extent: vec2<f32>,
 ) -> f32 {
-  let noise = fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
-  let angle = noise * 6.28318530718;
-  let rotation = vec2<f32>(cos(angle), sin(angle));
+  if (any(texel <= vec2<f32>(0.0))) {
+    let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMap));
+    return textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv, edge, extent - edge), layer, depthRef);
+  }
+  let rotation = shadow_vogel_rotation(pixel);
   var lit = 0.0;
   for (var i = 0u; i < 5u; i++) {
     let point = SHADOW_VOGEL_OFFSETS[i];
@@ -216,10 +248,55 @@ fn sample_shadow_2d_vogel(
       point.x * rotation.y + point.y * rotation.x);
     // Match Three's unclamped Vogel footprint. Clamp only the position used
     // by receiver-plane correction to the comparison sampler's edge texel.
-    let sampleUv = uv + offset * texel;
+    let physicalTexel = vec2<f32>(1.0) / vec2<f32>(textureDimensions(shadowMap));
+    let sampleUv = clamp(uv + offset * texel, physicalTexel * 0.5, extent - physicalTexel * 0.5);
     let receiverUv = clamp(sampleUv, 0.5 * texel, vec2<f32>(1.0) - 0.5 * texel);
     let sampleDepth = depthRef + dot(planeGradient, (receiverUv - uv) / texel);
     lit += textureSampleCompareLevel(shadowMap, shadowSampler, sampleUv, layer, sampleDepth);
   }
   return lit * 0.2;
+}
+
+// Sampling at the texel center gives one unfiltered comparison without mixing
+// raw depth loads with comparison sampling in the same shader.
+fn sample_shadow_2d_nearest(shadowMap: texture_depth_2d_array, shadowSampler: sampler_comparison,
+  uv: vec2<f32>, layer: i32, depthRef: f32, extent: vec2<f32>) -> f32 {
+  let dimensions = vec2<f32>(textureDimensions(shadowMap));
+  let pixel = clamp(floor(uv * dimensions), vec2<f32>(0.0), dimensions * extent - vec2<f32>(1.0));
+  return textureSampleCompareLevel(shadowMap, shadowSampler, (pixel + vec2<f32>(0.5)) / dimensions, layer, depthRef);
+}
+
+// Separable r184 PCFSoft weights: nine bilinear contributions on a 4x4 grid.
+fn sample_shadow_2d_soft(shadowMap: texture_depth_2d_array, shadowSampler: sampler_comparison,
+  uv: vec2<f32>, layer: i32, texel: vec2<f32>, depthRef: f32, extent: vec2<f32>) -> f32 {
+  let phase = fract(uv / texel + vec2<f32>(0.5));
+  let base = uv - phase * texel;
+  let wx = vec4<f32>(1.0 - phase.x, 1.0, 1.0, phase.x);
+  let wy = vec4<f32>(1.0 - phase.y, 1.0, 1.0, phase.y);
+  var sum = 0.0;
+  for (var y = 0u; y < 4u; y++) {
+    for (var x = 0u; x < 4u; x++) {
+      sum += textureSampleCompareLevel(shadowMap, shadowSampler,
+        clamp(base + (vec2<f32>(f32(x), f32(y)) - vec2<f32>(1.0)) * texel, texel * 0.5, extent - texel * 0.5), layer, depthRef) * wx[x] * wy[y];
+    }
+  }
+  return sum / 9.0;
+}
+
+// The extended lighting layout supplies an RG16F array of filtered moments.
+#ifdef EXTENDED_LIGHTING_AVAILABLE
+#import forgeax_view::common::{shadowMoments, spotModifierSampler}
+#endif
+fn sample_shadow_variance(uv : vec2<f32>, layer : i32, reversedDepth : f32, extent : vec2<f32>) -> f32 {
+#ifdef EXTENDED_LIGHTING_AVAILABLE
+  let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMoments));
+  let distribution = textureSampleLevel(shadowMoments, spotModifierSampler, clamp(uv, edge, extent - edge), layer, 0.0).rg;
+  let depth = 1.0 - reversedDepth;
+  if (depth <= distribution.x) { return 1.0; }
+  let variance = max(0.0000001, distribution.y * distribution.y);
+  let delta = depth - distribution.x;
+  return clamp((variance / (variance + delta * delta) - 0.3) / 0.65, 0.0, 1.0);
+#else
+  return 1.0;
+#endif
 }

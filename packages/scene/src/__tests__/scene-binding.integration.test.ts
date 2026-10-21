@@ -248,9 +248,9 @@ describe('shared null wire sentinel', () => {
       },
     } as unknown as import('@forgeax/engine-types').SceneAsset;
     const schemas: Record<string, Readonly<Record<string, string>>> = {
-      MeshFilter: { assetHandle: 'shared<MeshAsset>' },
-      MeshRenderer: { materials: 'array<shared<MaterialAsset>>' },
-      VolumetricFog: { density: 'shared<TextureAsset>', light: 'string' },
+      MeshFilter: { assetHandle: 'asset<mesh>' },
+      MeshRenderer: { materials: 'array<asset<material>>' },
+      VolumetricFog: { density: 'asset<texture>', light: 'string' },
       Transform: { pos: 'array<f32,3>' },
     };
     const result = externalizeSceneAsset(scene, (name) => schemas[name]);

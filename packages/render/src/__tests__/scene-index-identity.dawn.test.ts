@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
+import { vec3 } from '@forgeax/engine-math';
 import type { BindGroupLayout, Buffer, ComputePipeline } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { compileShader } from '../../../shader-compiler/src/compile';
 import { GpuScene } from '../gpu-scene';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { nativeDeviceFixture } from './native-device-fixture';
 
@@ -12,12 +14,13 @@ const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 
 const rootA = new Float32Array([0, 2, 0, 0, -3, 0, 0, 0, 0, 0, 0.5, 0, 4, -2, 7, 1]);
 const rootB = new Float32Array([1, 0.5, 0, 0, 0, -2, 0, 0, 0, 0, 4, 0, -3, 6, 2, 1]);
 const localA = new Float32Array([0.5, 0, 0, 0, 0, 0, 2, 0, 0, -1, 0, 0, 5, 3, -2, 1]);
-const material = {
-  baseColor: new Float32Array([0.25, 0.5, 0.75]),
+const material = new MaterialResource({
+  baseColor: vec3.create(0.25, 0.5, 0.75),
   metallic: 0.2,
   roughness: 0.8,
   materialHandle: 17,
-} as MaterialSnapshot;
+  passes: [],
+});
 
 function snapshot(
   entityKey: number,
@@ -274,7 +277,7 @@ fn sceneIndexLocalLoads() -> u32 { return sceneIndexLocalReadCount; }`
         .sync({
           ...projection.apply([]),
           created: slots.length,
-          createdSlots: slots,
+          createdSlots: [...slots],
           resynced: 1,
         })
         .unwrap();

@@ -15,12 +15,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import type { StateToken, StateTokenVariant } from './define-state';
 import type { StateError } from './errors';
 import { invalidVariant, stateNotRegistered } from './errors';
-import {
-  type NextStatePayload,
-  nextStateResourceKey,
-  previousStateResourceKey,
-  stateResourceKey,
-} from './resources';
+import { type StatePayload, stateResourceKey } from './resources';
 
 /**
  * Request a state transition for `token` to `variant` at the next frame.
@@ -54,8 +49,8 @@ function _runCheckAndWrite(
   variant: string,
   force: boolean,
 ): Result<void, StateError> {
-  const nsKey = nextStateResourceKey(token);
-  if (!world.hasResource(nsKey)) {
+  const key = stateResourceKey(token);
+  if (!world.hasResource(key)) {
     return err(stateNotRegistered(token.name));
   }
 
@@ -64,7 +59,10 @@ function _runCheckAndWrite(
     return err(invalidVariant(token.name, variant, token.variants));
   }
 
-  world.insertResource<NextStatePayload>(nsKey, { value: idx, force });
+  world.insertResource<StatePayload>(key, {
+    ...world.getResource<StatePayload>(key),
+    next: { value: idx, force },
+  });
   return ok(undefined);
 }
 
@@ -72,21 +70,26 @@ function _runCheckAndWrite(
  * Read the current state value for `token`.
  */
 export function getState(world: World, token: StateToken): Result<string, StateError> {
-  return readVariant(world, token, stateResourceKey(token));
+  return readVariant(world, token, 'current');
 }
 
 /**
  * Read the previous-frame state value for `token`.
  */
 export function getPreviousState(world: World, token: StateToken): Result<string, StateError> {
-  return readVariant(world, token, previousStateResourceKey(token));
+  return readVariant(world, token, 'previous');
 }
 
-function readVariant(world: World, token: StateToken, key: string): Result<string, StateError> {
+function readVariant(
+  world: World,
+  token: StateToken,
+  field: 'current' | 'previous',
+): Result<string, StateError> {
+  const key = stateResourceKey(token);
   if (!world.hasResource(key)) {
     return err(stateNotRegistered(token.name));
   }
-  const idx = world.getResource<number>(key);
+  const idx = world.getResource<StatePayload>(key)[field];
   const variant = token.variants[idx];
   if (variant === undefined) {
     return err(invalidVariant(token.name, String(idx), token.variants));

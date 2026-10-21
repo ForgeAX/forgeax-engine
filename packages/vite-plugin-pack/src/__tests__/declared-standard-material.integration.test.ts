@@ -1,27 +1,21 @@
 import { readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  AssetRegistry,
-  createMaterialLoader,
-  resolveAssetHandle,
-  walkMaterialPassesOverSharedRefs,
-} from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
+import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runtime';
+import { readMaterialContent, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { defineComponent, World } from '@forgeax/engine-ecs';
 import * as naga from '@forgeax/engine-naga';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import { Materials, MeshRenderer } from '@forgeax/engine-render';
+import { sceneAssetContribution } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import {
-  type Handle,
-  type MaterialAsset,
-  resolveMaterialAsset,
-  type SceneAsset,
-} from '@forgeax/engine-types';
+import { type MaterialAsset, resolveMaterialAsset, type SceneAsset } from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { afterAll, expect, it, vi } from 'vitest';
+import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { AssetOutputProducerRegistry } from '../../../import/src/scriptable-pack';
 import { buildScriptablePack } from '../../../import/src/scriptable-pack-build';
 import {
@@ -71,8 +65,8 @@ it.each([
     }).load({ guid: material.guid, specializationKey: record.specializationKey ?? '' });
     expect(ready.status).toBe('Ready');
     if (ready.status !== 'Ready') throw new Error('production material loader required');
-    const registry = new AssetRegistry(
-      new ShaderRegistry({
+    const registry = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({
         device: {
           createShaderModule() {
             throw new Error('publication must not compile on the GPU');
@@ -80,10 +74,8 @@ it.each([
         },
         manifestUrl: undefined,
       }),
-    );
-    const payload = material.payload as unknown as MaterialAsset;
-    registry.catalog(material.guid, payload).unwrap();
-    registry.recordMaterialReadiness(material.guid, ready);
+    });
+    const { payload } = (await loadMaterialFixture(registry, ready.record)).unwrap();
     expect(registry.getMaterialProjectionForPayload(payload)?.staticSelection).toContain(
       'static-switch:clearcoat=true',
     );
@@ -147,8 +139,8 @@ it('publishes the Bevy clearcoat material before admitting its physical layer', 
   }).load({ guid: material.guid, specializationKey: record.specializationKey ?? '' });
   expect(ready.status).toBe('Ready');
   if (ready.status !== 'Ready') throw new Error('production material loader required');
-  const registry = new AssetRegistry(
-    new ShaderRegistry({
+  const registry = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({
       device: {
         createShaderModule() {
           throw new Error('material admission must not use GPU compilation');
@@ -156,16 +148,13 @@ it('publishes the Bevy clearcoat material before admitting its physical layer', 
       },
       manifestUrl: undefined,
     }),
-  );
-  const payload = material.payload as MaterialAsset;
-  registry.catalog(material.guid, payload).unwrap();
-  registry.recordMaterialReadiness(material.guid, ready);
+  });
+  const { payload, handle } = (await loadMaterialFixture(registry, ready.record)).unwrap();
   expect(registry.getMaterialProjectionForPayload(payload)?.staticSelection).toContain(
     'static-switch:clearcoat=true',
   );
-  const world = new World();
-  const handle = world.allocSharedRef('MaterialAsset', payload);
-  expect(walkMaterialPassesOverSharedRefs(world, handle, registry).unwrap().values).toMatchObject({
+  const world = new World({ assets: registry });
+  expect(readMaterialContent(runtimeAssets(world.assets), handle).unwrap().values).toMatchObject({
     clearcoat: 1,
     clearcoatRoughness: 0.08,
   });
@@ -220,9 +209,8 @@ it('publishes the declared Brotato Standard shorthand and its dependent particle
   }).load({ guid: material.guid, specializationKey: record.specializationKey ?? '' });
   expect(loaded.status).toBe('Ready');
   if (loaded.status !== 'Ready') throw new Error('production material loader required');
-  const payload = material.payload as MaterialAsset;
-  const registry = new AssetRegistry(
-    new ShaderRegistry({
+  const registry = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({
       device: {
         createShaderModule() {
           throw new Error('budget query must not use GPU compilation');
@@ -230,17 +218,12 @@ it('publishes the declared Brotato Standard shorthand and its dependent particle
       },
       manifestUrl: undefined,
     }),
-  );
-  registry.assetCatalog.set(material.guid, {
-    guid: material.guid,
-    kind: 'material',
-    payload,
-    refs: material.refs,
   });
-  registry.recordMaterialReadiness(material.guid, loaded);
-  expect(registry.getMaterialProjectionForPayload(payload)).toBeDefined();
-  const world = new World();
-  const handle = world.allocSharedRef('MaterialAsset', payload);
+  const { payload: accepted, handle } = (
+    await loadMaterialFixture(registry, loaded.record)
+  ).unwrap();
+  expect(registry.getMaterialProjectionForPayload(accepted)).toBeDefined();
+  const world = new World({ assets: registry });
   expect(materialSampledTextureBudget(world, registry, handle)).toEqual({
     limit: 16,
     required: 16,
@@ -436,42 +419,43 @@ it('admits the authored Lab clearcoat toggle after ordinary material cooking', a
   );
   const authored = document.assets['material/blue-ball'];
   const source = { kind: authored.kind, ...authored.payload } as MaterialAsset;
-  const draft = await createMaterialPackCooker().cook({ guid: 'lab-blue-ball', source });
-  const root = draft.payload as MaterialAsset;
-  const world = new World();
-  const coatedHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    ...root,
-    values: { ...root.values, clearcoat: 0.85, clearcoatRoughness: 0.12 },
-  });
-  const coated = world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(coatedHandle).unwrap();
-  const resolved = resolveMaterialAsset('coated', { coated });
-  expect(resolved.ok, resolved.ok ? '' : JSON.stringify(resolved.error)).toBe(true);
-  expect(root.values?.clearcoat).toBe(0);
-  expect(root.parameters?.map((parameter) => parameter.name)).toEqual(
-    expect.arrayContaining(['clearcoat', 'clearcoatRoughness']),
-  );
-  if (!resolved.ok) throw resolved.error;
-  expect(resolved.value.asset.values).toMatchObject({ clearcoat: 0.85, clearcoatRoughness: 0.12 });
-  expect(coated).toHaveProperty('cooked', (draft.payload as { cooked: unknown }).cooked);
-  expect(coated.passes).toBe(root.passes);
-  const registry = new AssetRegistry(
-    new ShaderRegistry({
-      device: {
-        createShaderModule() {
-          throw new Error('material extraction must not compile on the GPU');
-        },
-      },
-      manifestUrl: undefined,
-    }),
-  );
-  expect(
-    walkMaterialPassesOverSharedRefs(world, coatedHandle, registry).unwrap().values,
-  ).toMatchObject({ clearcoat: 0.85, clearcoatRoughness: 0.12 });
-  const unknown = resolveMaterialAsset('unknown', {
-    unknown: { ...root, values: { ...root.values, undeclaredCoat: 1 } },
-  });
-  expect(unknown.ok).toBe(false);
-  if (!unknown.ok) expect(unknown.error.code).toBe('material-value-unknown');
+  const guid = '5a90b107-fb75-4a62-9b08-520a8d153019';
+  const draft = await createMaterialPackCooker().cook({ guid, source });
+  const record = validateCookedMaterialRecord(
+    (draft.payload as { cooked: unknown }).cooked,
+  ).unwrap();
+  const ready = await createMaterialLoader({
+    loadPublication: async () => ({ guid, record, artifacts: draft.artifacts }),
+  }).load({ guid, specializationKey: record.specializationKey ?? '' });
+  if (ready.status !== 'Ready') throw new Error('production material loader required');
+  const registry = new AssetRegistry();
+  try {
+    const {
+      handle,
+      payload: root,
+      projection,
+    } = (await loadMaterialFixture(registry, ready.record)).unwrap();
+    const coated = registry.copy(handle).unwrap();
+    registry.update(coated, { values: { clearcoat: 0.85, clearcoatRoughness: 0.12 } }).unwrap();
+    const value = registry.read(coated).unwrap();
+    expect(root.values?.clearcoat).toBe(0);
+    expect(root.parameters?.map((parameter) => parameter.name)).toEqual(
+      expect.arrayContaining(['clearcoat', 'clearcoatRoughness']),
+    );
+    expect(value.values).toMatchObject({ clearcoat: 0.85, clearcoatRoughness: 0.12 });
+    expect(
+      registry.getMaterialProjectionForPayload(
+        runtimeAssets(registry).borrow<MaterialAsset>(coated).unwrap(),
+      ),
+    ).toBe(projection);
+    const unknown = resolveMaterialAsset('unknown', {
+      unknown: { ...root, values: { ...root.values, undeclaredCoat: 1 } },
+    });
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.error.code).toBe('material-value-unknown');
+  } finally {
+    registry.dispose();
+  }
 });
 
 it('admits clearcoat on the material actually referenced by the authored BlueBall scene', async () => {
@@ -485,133 +469,117 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
   const intended = projected.assets.find((asset) => asset.sourceKey === 'material/blue-ball');
   if (scene === undefined || intended === undefined)
     throw new Error('Lab scene and BlueBall material required');
-  const registry = new AssetRegistry(
-    new ShaderRegistry({
-      device: {
-        createShaderModule() {
-          throw new Error('scene admission must not acquire a GPU');
-        },
-      },
-      manifestUrl: undefined,
-    }),
-  );
-  const loadedScene = registry.parseAssetPayload('scene', scene.payload, [
-    ...scene.refs,
-  ]) as SceneAsset;
-  const world = new World();
-  world.components.register(MeshRenderer).unwrap();
-  for (const asset of projected.assets) {
-    if (asset.kind === 'material')
-      registry
-        .catalog(asset.guid, { kind: 'material', ...asset.payload } as MaterialAsset)
-        .unwrap();
-  }
-  const blueball = loadedScene.entities.blueball;
-  if (blueball === undefined) throw new Error('authored BlueBall entity required');
-  const materialScene: SceneAsset = { ...loadedScene, entities: { blueball } };
-  registry
-    .catalog(
-      scene.guid,
-      materialScene,
-      scene.refs.map((guid) => ({ guid })),
-    )
-    .unwrap();
-  const bound = registry._resolveSceneGuids(materialScene, world, scene.guid).unwrap();
-  const references = bound.entities.blueball?.components.MeshRenderer?.materials as Handle<
-    'MaterialAsset',
-    'shared'
-  >[];
-  const reference = references[0];
-  if (reference === undefined) throw new Error('actual BlueBall material reference required');
-  const referencedGuid = registry.guidOf(
-    resolveAssetHandle<MaterialAsset>(world, reference).unwrap(),
-  );
-  world.sharedRefs.release(reference).unwrap();
-  const selected = projected.assets.find((asset) => asset.guid === referencedGuid);
+  const blueball = (scene.payload as { entities: SceneAsset['entities'] }).entities.blueball;
+  const materialIndex = blueball?.components.MeshRenderer?.materials;
+  if (!Array.isArray(materialIndex) || typeof materialIndex[0] !== 'number')
+    throw new Error('authored material wire reference required');
+  const guid = scene.refs[materialIndex[0]];
+  const selected = projected.assets.find((asset) => asset.guid === guid);
   if (selected?.kind !== 'material') throw new Error('actual BlueBall scene material must resolve');
+  expect(selected.guid).toBe(intended.guid);
   const draft = await createMaterialPackCooker().cook({
     guid: selected.guid,
     source: { kind: 'material', ...selected.payload } as MaterialAsset,
   });
-  const payload = registry.parseAssetPayload(
-    'material',
-    draft.payload as Record<string, unknown>,
-    [],
-  ) as MaterialAsset;
   const record = validateCookedMaterialRecord(
     (draft.payload as { cooked: unknown }).cooked,
   ).unwrap();
-  const readiness = await createMaterialLoader({
+  const ready = await createMaterialLoader({
     loadPublication: async () => ({ guid: selected.guid, record, artifacts: draft.artifacts }),
   }).load({ guid: selected.guid, specializationKey: record.specializationKey ?? '' });
-  expect(readiness.status).toBe('Ready');
-  if (readiness.status !== 'Ready') throw new Error('published BlueBall root required');
-  registry.catalog(selected.guid, payload).unwrap();
-  registry.recordMaterialReadiness(selected.guid, readiness);
-  expect(payload.staticSwitches?.clearcoat).toBe(true);
-  expect(payload).toHaveProperty('cooked', (draft.payload as { cooked: unknown }).cooked);
-  const authored = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', payload);
-  // Load the contributor gameplay fixture without making it a package build dependency.
-  const { cloneWithClearcoat } = await import(
-    fileURLToPath(
-      new URL(
-        '../../../../apps/game-capability-lab/assets/plugins/clearcoat-material.ts',
-        import.meta.url,
-      ),
+  if (ready.status !== 'Ready') throw new Error('published BlueBall root required');
+  const registry = new AssetRegistry();
+  const world = new World({ assets: registry });
+  world.components.register(MeshRenderer).unwrap();
+  world.components
+    .register(
+      defineComponent('SceneInstance', {
+        source: { type: 'asset<scene>' },
+        mapping: { type: 'array<entity>' },
+        state: { type: 'unique<SceneInstanceState>' },
+      }),
     )
-  );
-  const coated = cloneWithClearcoat(world, authored, registry) as typeof authored | undefined;
-  expect(coated, 'the actual Lab gameplay clone must apply').toBeDefined();
-  if (coated === undefined) throw new Error('actual clearcoat clone required');
-  const admission = walkMaterialPassesOverSharedRefs(world, coated, registry);
-  expect(admission.ok, admission.ok ? '' : JSON.stringify(admission.error)).toBe(true);
-  if (!admission.ok) throw admission.error;
-  expect(admission.value.values).toMatchObject({ clearcoat: 0.85, clearcoatRoughness: 0.12 });
-  expect(selected.guid, 'BlueBall must consume its own authored root contract').toBe(intended.guid);
-  const coatedPayload = world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(coated).unwrap();
-  expect(registry.getMaterialProjectionForPayload(coatedPayload)).toBe(
-    registry.getMaterialProjection(selected.guid),
-  );
-  const { cloneWithTexture } = await import(
-    fileURLToPath(
-      new URL(
-        '../../../../apps/game-capability-lab/assets/plugins/jpeg-texture-swap.ts',
-        import.meta.url,
+    .unwrap();
+  try {
+    const {
+      handle: authored,
+      payload,
+      projection,
+    } = (await loadMaterialFixture(registry, ready.record)).unwrap();
+    registry.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+    publishRuntimeAssets(registry, [
+      { guid: selected.guid, asset: payload },
+      {
+        guid: scene.guid,
+        asset: {
+          kind: 'scene',
+          entities: { blueball: { components: { MeshRenderer: { materials: [0] } } } },
+        } as SceneAsset,
+        refs: [selected.guid],
+      },
+    ]);
+    const sceneHandle = (await registry.load(scene.guid, 'scene')).unwrap();
+    const entities = registry.instantiateFlat(sceneHandle, world).unwrap();
+    const entity = entities[0];
+    if (entity === undefined) throw new Error('BlueBall scene entity required');
+    expect(Array.from(world.get(entity, MeshRenderer).unwrap().materials)).toEqual([authored]);
+    const { cloneWithClearcoat } = await import(
+      fileURLToPath(
+        new URL(
+          '../../../../apps/game-capability-lab/assets/plugins/clearcoat-material.ts',
+          import.meta.url,
+        ),
+      )
+    );
+    const coated = cloneWithClearcoat(authored, registry);
+    if (coated === undefined) throw new Error('actual Lab clearcoat clone required');
+    expect(registry.read(coated).unwrap().values).toMatchObject({
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.12,
+    });
+    expect(
+      registry.getMaterialProjectionForPayload(
+        runtimeAssets(registry).borrow<MaterialAsset>(coated).unwrap(),
       ),
-    )
-  );
-  const texture = world.allocSharedRef('TextureAsset', {
-    kind: 'texture' as const,
-    format: 'rgba8unorm' as const,
-    colorSpace: 'linear' as const,
-    shape: { viewDimension: '2d' as const, extent: { width: 1, height: 1 } },
-    mips: { kind: 'none' as const },
-    data: new Uint8Array([64, 128, 192, 255]),
-  });
-  for (const source of [authored, coated]) {
-    const swapped = cloneWithTexture(world, source, registry, texture);
-    if (swapped === undefined) throw new Error('actual JPEG swap clone required');
-    const swappedPayload = world.sharedRefs
-      .resolve<'MaterialAsset', MaterialAsset>(swapped)
+    ).toBe(projection);
+    const { cloneWithTexture } = await import(
+      fileURLToPath(
+        new URL(
+          '../../../../apps/game-capability-lab/assets/plugins/jpeg-texture-swap.ts',
+          import.meta.url,
+        ),
+      )
+    );
+    const texture = registry
+      .create({
+        kind: 'texture',
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        mips: { kind: 'none' },
+        data: new Uint8Array([64, 128, 192, 255]),
+      })
       .unwrap();
-    if (swappedPayload.parent === undefined) throw new Error('published JPEG parent required');
-    expect(AssetGuid.format(swappedPayload.parent)).toBe(selected.guid);
-    expect(swappedPayload.passes).toBeUndefined();
-    expect(swappedPayload).not.toHaveProperty('staticSwitches');
-    expect(swappedPayload).not.toHaveProperty('cooked');
-    expect(swappedPayload.values).toEqual(
-      source === authored
-        ? { baseColorTexture: texture }
-        : { clearcoat: 0.85, clearcoatRoughness: 0.12, baseColorTexture: texture },
-    );
-    expect(registry.getMaterialProjectionForPayload(swappedPayload)).toBe(
-      registry.getMaterialProjection(selected.guid),
-    );
-    world.sharedRefs.release(swapped).unwrap();
+    for (const source of [authored, coated]) {
+      const swapped = cloneWithTexture(source, registry, texture);
+      if (swapped === undefined) throw new Error('actual JPEG swap clone required');
+      expect(registry.read(swapped).unwrap().values).toMatchObject({
+        ...registry.read(source).unwrap().values,
+        baseColorTexture: texture,
+      });
+      expect(
+        registry.getMaterialProjectionForPayload(
+          runtimeAssets(registry).borrow<MaterialAsset>(swapped).unwrap(),
+        ),
+      ).toBe(projection);
+      registry.release(swapped).unwrap();
+    }
+    expect(registry.read(authored).unwrap().values?.baseColorTexture).not.toBe(texture);
+    registry.release(texture).unwrap();
+    registry.release(coated).unwrap();
+  } finally {
+    registry.dispose();
   }
-  world.sharedRefs.release(texture).unwrap();
-  world.sharedRefs.release(coated).unwrap();
-  world.sharedRefs.release(authored).unwrap();
 });
 
 import { createHash } from 'node:crypto';

@@ -11,8 +11,9 @@ import {
   type TypedArrayFor,
 } from '../component';
 import { Disabled, Entity } from '../entity';
-import type { EntityHandle } from '../entity-handle';
+import { type EntityHandle, encodeEntity, entityIndex } from '../entity-handle';
 import {
+  DerivedWriteActiveError,
   QueryDataRequiresFieldsError,
   QueryDescriptorConflictError,
   QueryIterationActiveError,
@@ -21,13 +22,16 @@ import {
   type QuerySpanUnavailableReason,
   RelationshipTargetReadonlyError,
 } from '../errors';
+import { worldPoisonedError } from '../errors/shared-kernel-errors';
+import type { WorldExecutionState } from '../execution/shared-kernel';
 import { DERIVED_WRITER } from '../internal';
 import { isRelationshipTarget, relationshipRole } from '../relationship-index';
 import { type Archetype, type ArchetypeId, archetypeHasComponent } from '../storage/archetype';
-import { PROJECTION_BLOCK_SIZE, sparseTagIndex } from '../storage/change-detection';
+import { sparseTagIndex } from '../storage/change-detection';
 import type { FieldView, ManagedColumnReader } from '../storage/column';
 import type { Table } from '../storage/table';
 import { type WorldInternal, worldInternal } from '../world-internal';
+import { ChangedEntityOrder } from './change-order';
 import { createDerivedRangeWriter, type DerivedRangeWriter } from './derived-range-writer';
 
 export interface QueryDescriptor<
@@ -106,6 +110,7 @@ export type QueryCreationError = QueryDescriptorConflictError | QueryDataRequire
 
 interface WorldQueryAccess {
   readonly [worldInternal]: WorldInternal;
+  readonly execution: WorldExecutionState;
 }
 
 interface CompiledDescriptor<
@@ -338,9 +343,10 @@ function buildColumnShape(
     const end = start + rowCount * column.arity;
     const view =
       start === 0 && end === column.view.length ? column.view : column.view.subarray(start, end);
-    const fieldType = componentSchema(component)[fieldName];
+    const fieldType =
+      componentSchema(component)[fieldName.endsWith(':count') ? fieldName.slice(0, -6) : fieldName];
     shape[fieldName] =
-      fieldType !== undefined && isManagedField(fieldType)
+      fieldType !== undefined && (isManagedField(fieldType) || fieldType.startsWith('array<asset<'))
         ? makeManagedColumnReader(view, view.length, fieldType)
         : view;
   }
@@ -358,6 +364,7 @@ class ExecutableQuery<
   private scannedStorageCount = 0;
   private lastObservedEpoch = 0;
   private active = false;
+  private changedOrder: ChangedEntityOrder | undefined;
 
   constructor(
     private readonly world: WorldQueryAccess,
@@ -366,9 +373,11 @@ class ExecutableQuery<
 
   [Symbol.iterator](): Iterator<QueryRow<R, W, O>> {
     this.beginIteration();
-    this.refreshMatches();
     const structureEpoch = this.world[worldInternal].getStructureEpoch();
     const upperBound = this.world[worldInternal].getMutationEpoch();
+    const changed = this.changedEntityCandidates(upperBound);
+    if (changed === undefined) this.refreshMatches();
+    let changedIndex = 0;
     const row = new QueryRowFacade<R, W, O>(this.world);
     const unchanged = this.hasUnchangedInput();
     let archetypeIndex = unchanged ? this.matchedArchetypes.length : 0;
@@ -380,18 +389,48 @@ class ExecutableQuery<
       if (finished) return;
       finished = true;
       this.active = false;
-      if (commit) this.lastObservedEpoch = upperBound;
+      if (commit) {
+        this.assertReadableChanges();
+        this.lastObservedEpoch = upperBound;
+      }
     };
 
     return {
       next: (): IteratorResult<QueryRow<R, W, O>> => {
         if (finished) return { done: true, value: undefined };
+        try {
+          this.assertReadableChanges();
+        } catch (cause) {
+          close(false);
+          throw cause;
+        }
         if (this.world[worldInternal].getStructureEpoch() !== structureEpoch) {
           close(false);
           throw new QueryIterationInvalidatedError(
             structureEpoch,
             this.world[worldInternal].getStructureEpoch(),
           );
+        }
+        if (changed !== undefined) {
+          const current =
+            this.world[worldInternal].getMutationEpoch() === upperBound ||
+            !this.hasFutureChangedInput(upperBound);
+          while (changedIndex < changed.length) {
+            const entity = changed[changedIndex++] as EntityHandle;
+            const archetype = this.world[worldInternal].getEntityArchetype(entity);
+            if (archetype === undefined) continue;
+            const record = this.world[worldInternal].getRecords()[entityIndex(entity)];
+            const tableRow = archetype.rows[record?.archetypeRow ?? -1] ?? -1;
+            const table = this.world[worldInternal].getGraph().tables[archetype.tableId];
+            if (
+              table === undefined ||
+              (!current && !this.changeMatches(entity, table, tableRow, upperBound))
+            )
+              continue;
+            return { done: false, value: row.bind(entity, archetype) };
+          }
+          close(true);
+          return { done: true, value: undefined };
         }
         if (!this.compiled.sparseRoute) {
           while (tableIndex < this.matchedTables.length) {
@@ -456,72 +495,86 @@ class ExecutableQuery<
     return ok({
       [Symbol.iterator](): Iterator<QuerySpan<R, W>> {
         query.beginIteration();
-        query.refreshMatches();
-        const structureEpoch = query.world[worldInternal].getStructureEpoch();
-        const upperBound = query.world[worldInternal].getMutationEpoch();
-        const filterIds = [...query.compiled.changedIds, ...query.compiled.addedIds];
-        let tableIndex = query.hasUnchangedInput() ? query.matchedTables.length : 0;
-        let rowIndex = 0;
+        const owner = query.world[worldInternal];
+        const structureEpoch = owner.getStructureEpoch();
+        const upperBound = owner.getMutationEpoch();
+        const changed = query.changedEntityCandidates(upperBound);
+        if (changed === undefined) query.refreshMatches();
+        let tableIndex = 0;
+        let changedIndex = 0;
         let finished = false;
         const close = (commit: boolean): void => {
           if (finished) return;
           finished = true;
           query.active = false;
-          if (commit) query.lastObservedEpoch = upperBound;
+          if (commit) {
+            query.assertReadableChanges();
+            query.lastObservedEpoch = upperBound;
+          }
         };
         return {
           next(): IteratorResult<QuerySpan<R, W>> {
             if (finished) return { done: true, value: undefined };
-            if (query.world[worldInternal].getStructureEpoch() !== structureEpoch) {
+            try {
+              query.assertReadableChanges();
+            } catch (cause) {
               close(false);
-              throw new QueryIterationInvalidatedError(
-                structureEpoch,
-                query.world[worldInternal].getStructureEpoch(),
-              );
+              throw cause;
             }
-            while (tableIndex < query.matchedTables.length) {
-              const table = query.matchedTables[tableIndex];
-              if (table === undefined || table.size === 0) {
-                tableIndex += 1;
-                rowIndex = 0;
-                continue;
+            if (owner.getStructureEpoch() !== structureEpoch) {
+              close(false);
+              throw new QueryIterationInvalidatedError(structureEpoch, owner.getStructureEpoch());
+            }
+            if (changed !== undefined) {
+              const current =
+                owner.getMutationEpoch() === upperBound || !query.hasFutureChangedInput(upperBound);
+              while (changedIndex < changed.length) {
+                const entity = changed[changedIndex++] as EntityHandle;
+                const record = owner.getRecords()[entityIndex(entity)];
+                const archetype =
+                  record === undefined
+                    ? undefined
+                    : owner.getGraph().archetypes[record.archetypeId];
+                const table =
+                  archetype === undefined ? undefined : owner.getGraph().tables[archetype.tableId];
+                const start = archetype?.rows[record?.archetypeRow ?? -1] ?? -1;
+                if (
+                  table === undefined ||
+                  (!current && !query.denseChangeMatches(entity, table, start, upperBound))
+                )
+                  continue;
+                let count = 1;
+                while (changedIndex < changed.length) {
+                  const next = changed[changedIndex] as EntityHandle;
+                  const nextRecord = owner.getRecords()[entityIndex(next)];
+                  const nextArchetype =
+                    nextRecord === undefined
+                      ? undefined
+                      : owner.getGraph().archetypes[nextRecord.archetypeId];
+                  const nextRow = nextArchetype?.rows[nextRecord?.archetypeRow ?? -1] ?? -1;
+                  if (
+                    nextArchetype?.tableId !== table.id ||
+                    nextRow !== start + count ||
+                    (!current && !query.denseChangeMatches(next, table, nextRow, upperBound))
+                  )
+                    break;
+                  changedIndex++;
+                  count++;
+                }
+                return {
+                  done: false,
+                  value: new QuerySpanFacade<R, W>(query.world, table, start, count),
+                };
               }
-              if (query.compiled.changedIds.length === 0 && query.compiled.addedIds.length === 0) {
-                tableIndex += 1;
-                rowIndex = 0;
+            } else {
+              while (tableIndex < query.matchedTables.length) {
+                const table = query.matchedTables[tableIndex++];
+                if (table === undefined || table.size === 0) continue;
                 return {
                   done: false,
                   value: new QuerySpanFacade<R, W>(query.world, table, 0, table.size),
                 };
               }
-              while (
-                rowIndex < table.size &&
-                !query.denseChangeMatches(table, rowIndex, upperBound)
-              ) {
-                const block = Math.floor(rowIndex / PROJECTION_BLOCK_SIZE);
-                const unchanged = filterIds.some(
-                  (id) =>
-                    (table.storage.get(id)?.epochs.blocks[block] ?? 0) <= query.lastObservedEpoch,
-                );
-                rowIndex = unchanged ? (block + 1) * PROJECTION_BLOCK_SIZE : rowIndex + 1;
-              }
-              if (rowIndex >= table.size) {
-                tableIndex += 1;
-                rowIndex = 0;
-                continue;
-              }
-              const start = rowIndex;
-              rowIndex += 1;
-              while (
-                rowIndex < table.size &&
-                query.denseChangeMatches(table, rowIndex, upperBound)
-              ) {
-                rowIndex += 1;
-              }
-              return {
-                done: false,
-                value: new QuerySpanFacade<R, W>(query.world, table, start, rowIndex - start),
-              };
             }
             close(true);
             return { done: true, value: undefined };
@@ -545,7 +598,6 @@ class ExecutableQuery<
         this.world as unknown as import('../world').World,
         component,
         {
-          structureEpoch: () => this.world[worldInternal].getStructureEpoch(),
           tables: () => {
             this.refreshMatches();
             return this.matchedTables;
@@ -599,6 +651,33 @@ class ExecutableQuery<
     };
   }
 
+  /** Only producer-indexed identities; physical ordering is derived for this actual iteration. */
+  private changedEntityCandidates(upper: number): EntityHandle[] | undefined {
+    const primary = this.compiled.changedIds[0] ?? this.compiled.addedIds[0];
+    if (primary === undefined) return undefined;
+    const entities: EntityHandle[] = [];
+    if (this.hasUnchangedInput()) return entities;
+    const owner = this.world[worldInternal];
+    const graph = owner.getGraph();
+    const records = owner.getRecords();
+    owner.getComponentChangeIndex(primary)?.visitSince(this.lastObservedEpoch, upper, (index) => {
+      const record = records[index];
+      const archetype = record === undefined ? undefined : graph.archetypes[record.archetypeId];
+      if (archetype === undefined || record === undefined || !this.archetypeMatches(archetype))
+        return;
+      const entity = encodeEntity(index, record.generation);
+      const table = graph.tables[archetype.tableId];
+      const row = archetype.rows[record.archetypeRow] ?? -1;
+      if (table !== undefined && this.changeMatches(entity, table, row, upper))
+        entities.push(entity);
+    });
+    if (entities.length > 1) {
+      this.changedOrder ??= new ChangedEntityOrder(owner, this.compiled.sparseRoute);
+      this.changedOrder.sort(entities);
+    }
+    return entities;
+  }
+
   private hasUnchangedInput(): boolean {
     const epochs = this.world[worldInternal].getComponentMutationEpochs();
     // Changed predicates are conjunctive. One unchanged input proves the
@@ -606,7 +685,26 @@ class ExecutableQuery<
     return this.compiled.changedIds.some((id) => (epochs[id] ?? 0) <= this.lastObservedEpoch);
   }
 
+  /** Called after health/derived/structure fences. Added facts are unchanged
+   * under that structure fence; unrelated value writes need no revalidation. */
+  private hasFutureChangedInput(upper: number): boolean {
+    const ids = this.compiled.changedIds;
+    const epochs = this.world[worldInternal].getComponentMutationEpochs();
+    for (let index = 0; index < ids.length; index++)
+      if ((epochs[ids[index] as ComponentId] ?? 0) > upper) return true;
+    return false;
+  }
+
+  private assertReadableChanges(): void {
+    if (this.compiled.changedIds.length > 0 || this.compiled.addedIds.length > 0) {
+      if (this.world[worldInternal].isDerivedWriteActive()) throw new DerivedWriteActiveError();
+      const poisoned = worldPoisonedError(this.world.execution);
+      if (poisoned !== undefined) throw poisoned;
+    }
+  }
+
   private beginIteration(): void {
+    this.assertReadableChanges();
     if (this.active) throw new QueryIterationActiveError();
     this.active = true;
   }
@@ -659,12 +757,9 @@ class ExecutableQuery<
   ): boolean {
     const graph = this.world[worldInternal].getGraph();
     for (const componentId of this.compiled.changedIds) {
-      const sparseSet = graph.sparseTags.get(componentId);
-      const denseIndex = sparseSet === undefined ? -1 : sparseTagIndex(sparseSet, entity);
       const epoch =
-        denseIndex >= 0
-          ? (sparseSet?.changed[denseIndex] ?? 0)
-          : (table.storage.get(componentId)?.epochs.changed[row] ?? 0);
+        this.world[worldInternal].getComponentChangeIndex(componentId)?.get(entityIndex(entity)) ??
+        0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
     for (const componentId of this.compiled.addedIds) {
@@ -673,23 +768,30 @@ class ExecutableQuery<
       const epoch =
         denseIndex >= 0
           ? (sparseSet?.added[denseIndex] ?? 0)
-          : (table.storage.get(componentId)?.epochs.added[row] ?? 0);
+          : (table.storage.get(componentId)?.added[row] ?? 0);
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
     return true;
   }
 
-  private denseChangeMatches(table: Table, row: number, upperBound: number): boolean {
+  private denseChangeMatches(
+    entity: EntityHandle,
+    table: Table,
+    row: number,
+    upperBound: number,
+  ): boolean {
     const changedIds = this.compiled.changedIds;
     for (let index = 0; index < changedIds.length; index++) {
       const componentId = changedIds[index] as ComponentId;
-      const epoch = table.storage.get(componentId)?.epochs.changed[row] ?? 0;
+      const epoch =
+        this.world[worldInternal].getComponentChangeIndex(componentId)?.get(entityIndex(entity)) ??
+        0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
     const addedIds = this.compiled.addedIds;
     for (let index = 0; index < addedIds.length; index++) {
       const componentId = addedIds[index] as ComponentId;
-      const epoch = table.storage.get(componentId)?.epochs.added[row] ?? 0;
+      const epoch = table.storage.get(componentId)?.added[row] ?? 0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
     return true;

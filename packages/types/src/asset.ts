@@ -1,3 +1,4 @@
+import type { AssetEnvelope } from './asset-reference.js';
 /** Pack v2 asset-local artifact contract. */
 
 export type ContentEncoding = 'identity' | 'zstd';
@@ -41,6 +42,12 @@ export interface ArtifactDescriptor {
   readonly contentEncoding?: ContentEncoding;
   readonly byteLength?: number;
   readonly integrity?: Integrity;
+  /** Stored window in a content-addressed transport chunk; integrity covers this artifact only. */
+  readonly byteRange?: {
+    readonly offset: number;
+    readonly length: number;
+    readonly containerDigest: string;
+  };
 }
 
 /** The publication identity shared by one Catalog row and one Pack envelope. */
@@ -69,11 +76,7 @@ export interface CookProduct<P = unknown> {
 }
 
 /** The canonical verified asset envelope consumed by runtime decoders. */
-export interface AssetEnvelopeV2<P = unknown> {
-  readonly guid: string;
-  readonly kind: string;
-  readonly name?: string;
-  readonly payload: P;
+export interface AssetEnvelopeV2<P = unknown> extends Omit<AssetEnvelope<P>, 'refs'> {
   readonly refs: readonly string[];
   readonly artifacts: Readonly<Record<string, AssetRuntimeArtifactDescriptor>>;
 }

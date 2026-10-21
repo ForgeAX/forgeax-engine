@@ -1,19 +1,15 @@
-import {
-  type AssetRegistry,
-  walkMaterialPassesOverSharedRefs,
-} from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { readMaterialContent, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
   standardTransmissionAdmission,
 } from './assembly/device-feature-admission';
 import { materialUsesDirectDfgLut } from './device/direct-dfg-lut';
+import { runtimeMaterialShaderIdForMaterial } from './material-resource';
 import { isCanonicalStandardPbrMaterialShader } from './pbr-pipeline';
-import {
-  materialStandardTextureMask,
-  runtimeMaterialShaderIdForMaterial,
-} from './render-system-extract';
+import { materialStandardTextureMask } from './render-system-extract';
 
 /** WebGPU's guaranteed `maxSampledTexturesPerShaderStage`: the portable authoring budget. */
 export const WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE = 16;
@@ -40,14 +36,13 @@ export interface MaterialSampledTextureBudget {
  */
 export function materialSampledTextureBudget(
   world: World,
-  assets: AssetRegistry,
+  _assets: AssetRegistry,
   materialHandle: number,
   limit: number = WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE,
 ): MaterialSampledTextureBudget | undefined {
-  const resolved = walkMaterialPassesOverSharedRefs(
-    world,
-    toShared<'MaterialAsset'>(materialHandle),
-    assets,
+  const resolved = readMaterialContent(
+    runtimeAssets(world.assets),
+    materialHandle as AssetHandle<'material'>,
   );
   if (!resolved.ok) return undefined;
   const { passes, parameters, values } = resolved.value;

@@ -1,21 +1,21 @@
+import type { RenderTextureSourceToken } from '@forgeax/engine-types';
 import type { RenderTargetTextureSource } from '../targets/contracts';
 import type { ExternalTextureSource } from './external-texture';
+import { isRenderTextureSourceToken, renderTextureSourceKey } from './source-token';
 
-/** Runtime material reference. Keep it in a World shared ref, never in a Pack. */
-export interface CanvasTextureSource {
-  readonly canvasTextureId: number;
-  /** Immutable UV orientation, retained by native render publications. */
-  readonly flipY: boolean;
+/** Copyable runtime material reference; native pixels stay with the CanvasTexture owner. */
+export interface CanvasTextureSource extends RenderTextureSourceToken {
+  readonly source: 'canvas';
 }
 
 interface CanvasState {
   readonly canvas: HTMLCanvasElement | OffscreenCanvas;
+  readonly flipY: boolean;
   readonly lifetime: AbortController;
   version: number;
 }
 
-const sources = new WeakMap<CanvasTextureSource, CanvasState>();
-let nextId = 1;
+const sources = new Map<string, CanvasState>();
 
 /** Canvas pixels stay with the author; each Renderer owns its uploaded texture. */
 export class CanvasTexture {
@@ -26,9 +26,19 @@ export class CanvasTexture {
     canvas: HTMLCanvasElement | OffscreenCanvas,
     options: { readonly flipY?: boolean } = {},
   ) {
-    this.state = { canvas, version: 1, lifetime: new AbortController() };
-    this.source = Object.freeze({ canvasTextureId: nextId++, flipY: options.flipY ?? true });
-    sources.set(this.source, this.state);
+    this.state = {
+      canvas,
+      flipY: options.flipY ?? true,
+      version: 1,
+      lifetime: new AbortController(),
+    };
+    this.source = Object.freeze({
+      kind: 'render-texture-source',
+      source: 'canvas',
+      owner: crypto.randomUUID(),
+      id: 1,
+    });
+    sources.set(renderTextureSourceKey(this.source), this.state);
   }
 
   /** Call after painting or resizing. Repeated draws share one upload of this version. */
@@ -39,6 +49,7 @@ export class CanvasTexture {
   /** Releases uploads in every Renderer; does not clear or destroy the caller's canvas. */
   dispose(): void {
     this.state.lifetime.abort();
+    sources.delete(renderTextureSourceKey(this.source));
   }
 }
 
@@ -48,17 +59,9 @@ export type MaterialTextureSource =
   | ExternalTextureSource;
 
 export function isCanvasTextureSource(source: unknown): source is CanvasTextureSource {
-  return (
-    typeof source === 'object' &&
-    source !== null &&
-    'canvasTextureId' in source &&
-    'flipY' in source &&
-    typeof source.flipY === 'boolean' &&
-    Number.isSafeInteger(source.canvasTextureId) &&
-    (source.canvasTextureId as number) > 0
-  );
+  return isRenderTextureSourceToken(source) && source.source === 'canvas';
 }
 
 export function canvasTextureState(source: CanvasTextureSource): CanvasState | undefined {
-  return sources.get(source);
+  return sources.get(renderTextureSourceKey(source));
 }

@@ -888,11 +888,6 @@ export class WebAudioEngine {
     const pending = this.pendingClips.get(entity);
     if (pending) pending.options = { ...pending.options, ...patch };
   }
-  invalidateAudioPublication(sourceKey: string): void {
-    for (const [entity, source] of this.sources)
-      if (source.sourceKey === sourceKey) this.stop(entity);
-  }
-
   setStreamBudget(maxBytes: number, retained: () => number): void {
     this.streamBudget.maxBytes = maxBytes;
     this.streamBudget.retained = retained;

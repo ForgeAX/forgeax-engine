@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   CAMERA_PROJECTION_PERSPECTIVE,
   Camera,
@@ -47,12 +48,14 @@ function spawnCamera(world: World): EntityHandle {
 
 describe('visibility picking boundary', () => {
   it('keeps pick results unchanged when the render candidate is hidden', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const camera = spawnCamera(world);
     const entity = world
       .spawn(
         { component: Transform, data: transform([0, 0, 0]) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: {} },
         { component: Visibility, data: { state: VisibilityStateValue.visible } },
       )

@@ -1,9 +1,10 @@
 import { parseKtx2 } from '@forgeax/engine-codec';
 import type { BasisEncodeMode, BasisEncodeOptions } from '@forgeax/engine-codec/encode';
 import { basisEncode } from '@forgeax/engine-codec/encode';
+import type { ImageMetadata } from '@forgeax/engine-types';
 
 /** The sidecar control-plane value (ImageMetadata.compressionMode). */
-export type CompressionMode = 'auto' | 'etc1s' | 'uastc' | 'none';
+export type CompressionMode = NonNullable<ImageMetadata['compressionMode']>;
 
 /** Source signals that drive 'auto' derivation (D-12) and encoder params. */
 export interface EncodeSourceInfo {

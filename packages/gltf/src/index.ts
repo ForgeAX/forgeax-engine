@@ -17,9 +17,9 @@
 // Sub-asset POD SSOT re-exports (from @forgeax/engine-types; replaces
 // the old unprefixed Ir types which are now Gltf-prefixed exports above).
 export type {
-  AnimationChannelPod,
   AnimationClipPod,
-  AnimationSamplerPod,
+  AnimationSampler,
+  AnimationTransformChannel,
   MaterialPod,
   MeshPod,
   MeshSubmeshPod,
@@ -145,8 +145,6 @@ export {
   reimportReuseMeta,
   subAssetKey,
 } from './reimport-reuse-meta.js';
-// Byte-stable meta JSON serialization (D-3; AC-04).
-export { serializeMetaJson } from './serialize-meta.js';
 export type {
   GltfSourceKeyConflictEntry,
   GltfSourceKeyError,

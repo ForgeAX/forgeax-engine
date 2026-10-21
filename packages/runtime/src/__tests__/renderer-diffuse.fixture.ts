@@ -16,8 +16,10 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -144,7 +146,7 @@ export async function verifyRendererDiffuse(
     if (event.kind === 'error') errors.push(event.error);
   });
   const original = renderer.inspect().profile;
-  const world = new World();
+  const world = new World({ assets });
   const load = async (name: string) => {
     const material = fixture.materials.find((entry) => entry.name === name);
     assert(material);
@@ -153,7 +155,7 @@ export async function verifyRendererDiffuse(
     ).unwrap();
     const ready = await createMaterialLoader({
       loadPublication: async () => ({
-        guid: name,
+        guid: record.guid,
         record,
         artifacts: Object.fromEntries(
           Object.entries(material.cookedPublication.artifacts).map(([path, bytes]) => [
@@ -162,15 +164,15 @@ export async function verifyRendererDiffuse(
           ]),
         ),
       }),
-    }).load({ guid: name, specializationKey: record.specializationKey ?? '' });
+    }).load({ guid: record.guid, specializationKey: record.specializationKey ?? '' });
     assert(ready.status === 'Ready', JSON.stringify(ready));
-    assets.catalog(name, material.asset).unwrap();
-    assets.recordMaterialReadiness(name, ready);
-    return world.allocSharedRef('MaterialAsset', material.asset);
+    return (await loadMaterialFixture(assets, ready.record)).unwrap().handle;
   };
   const matte = await load('matte');
   const emitterMaterial = await load('emission');
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 0.1).unwrap());
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(2, 2, 0.1).unwrap())
+    .unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -3] } },
@@ -549,7 +551,9 @@ export async function verifyRendererDiffuse(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(20, 20, 0.1).unwrap()),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(20, 20, 0.1).unwrap())
+              .unwrap(),
           },
         },
         { component: MeshRenderer, data: { materials: [emitterMaterial] } },

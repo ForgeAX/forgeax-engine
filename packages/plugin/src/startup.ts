@@ -29,12 +29,10 @@ export type PluginStartupError =
       readonly code: 'plugin-startup-failed';
       readonly expected: string;
       readonly hint: string;
-      readonly detail: {
+      readonly detail: PluginCleanupResult & {
         readonly guid: string;
         readonly reason: 'failed' | 'disposed' | 'timeout' | 'cancelled';
         readonly fibers: readonly PluginFiberInspection[];
-        readonly cleanup: 'completed' | 'timeout' | 'failed';
-        readonly cause?: unknown;
       };
     };
 

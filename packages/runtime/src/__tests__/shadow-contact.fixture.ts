@@ -15,6 +15,7 @@ import { assert, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const filters = ['pcf1', 'pcf3', 'pcf5', 'pcssHigh'] as const;
@@ -51,18 +52,15 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
     ).unwrap();
     const world = new World();
     const context = await createWorldContext(world, [scenePlugin()]);
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 }),
-    );
-    const floor = world.allocSharedRef(
-      'MeshAsset',
-      createBoxGeometry(small ? 2 : 12, 0.2, small ? 2 : 12).unwrap(),
-    );
-    const column = world.allocSharedRef(
-      'MeshAsset',
-      createBoxGeometry(small ? 0.05 : 1, small ? 0.05 : 3, small ? 0.05 : 1).unwrap(),
-    );
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 }))
+      .unwrap();
+    const floor = testAssets(world)
+      .create(createBoxGeometry(small ? 2 : 12, 0.2, small ? 2 : 12).unwrap())
+      .unwrap();
+    const column = testAssets(world)
+      .create(createBoxGeometry(small ? 0.05 : 1, small ? 0.05 : 3, small ? 0.05 : 1).unwrap())
+      .unwrap();
     for (const [mesh, pos] of [
       [floor, [0, -0.1, 0]],
       [column, [0, small ? 0.025 : 1.5, 0]],

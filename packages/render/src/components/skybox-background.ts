@@ -6,7 +6,7 @@
 // single-semantic component rule: no Component suffix (AGENTS.md rule #1).
 //
 // feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w16:
-// the field is `equirect: shared<EquirectAsset>` (the retired
+// the field is `equirect: asset<equirect>` (the retired
 // `cubemap: shared<CubeTextureAsset>` is gone). The skybox reuses the same
 // equirect handle as the Skylight; the cubemap projection is internal and
 // driven by the render-system record arm (no user upload call).
@@ -71,7 +71,7 @@ export function skyboxModeFromF32(value: number): SkyboxMode {
  * same GPU resource (the internally-projected cubemap).
  *
  * `equirect` is a `Handle<EquirectAsset>` resolved from a vite pack-index
- * GUID via `engine.assets.loadByGuid<EquirectAsset>(guid)`. The cubemap
+ * GUID via `engine.assets.load(guid, 'equirect')`. The cubemap
  * projection is internal and driven by the render-system record arm; there
  * is no user upload call.
  *
@@ -83,12 +83,12 @@ export function skyboxModeFromF32(value: number): SkyboxMode {
  * source equirectangular asset.
  *
  * @example Minimum spawn (defaults mode=0):
- *   // equirectHandle resolved from loadByGuid<EquirectAsset> (same handle as
+ *   // equirectHandle resolved from load(guid, 'equirect') (same handle as
  *   // the Skylight).
  *   world.spawn({ component: SkyboxBackground, data: { equirect: equirectHandle } });
  *
  * @example Single handle shared between Skylight (IBL) and SkyboxBackground:
- *   const hdrRes = await engine.assets.loadByGuid<EquirectAsset>(guid);
+ *   const hdrRes = await engine.assets.load(guid, 'equirect');
  *   if (!hdrRes.ok) throw hdrRes.error;
  *   world.spawn({ component: Skylight,     data: { equirect: hdrRes.value } });
  *   world.spawn({ component: SkyboxBackground, data: { equirect: hdrRes.value } });
@@ -97,7 +97,7 @@ export const SkyboxBackground = defineComponent('SkyboxBackground', {
   // The GPU skybox projection is render-owned presentation state; restore
   // keeps the portable mode/rotation controls and lets the owner re-resolve
   // the environment asset on the target world.
-  equirect: { type: 'shared<EquirectAsset>', simulationTransient: true },
+  equirect: { type: 'asset<equirect>', simulationTransient: true },
   mode: { type: 'f32', default: SKYBOX_MODE_CUBEMAP },
   rotation: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 0, 1]) },
 });

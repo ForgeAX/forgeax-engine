@@ -26,26 +26,26 @@ import type {
   RenderGraphFrame,
 } from './types.js';
 
-export interface TextureHandleData {
+interface TextureHandleData {
   readonly owner: object;
   readonly id: number;
   readonly kind: 'texture';
 }
 
-export interface TextureViewHandleData {
+interface TextureViewHandleData {
   readonly owner: object;
   readonly id: number;
   readonly kind: 'texture-view';
   readonly textureId: number;
 }
 
-export interface BufferHandleData {
+interface BufferHandleData {
   readonly owner: object;
   readonly id: number;
   readonly kind: 'buffer';
 }
 
-export interface AccelerationStructureHandleData {
+interface AccelerationStructureHandleData {
   readonly owner: object;
   readonly id: number;
   readonly kind: 'acceleration-structure';
@@ -104,33 +104,33 @@ interface ResourceRecordBase {
   readonly origin: GraphResourceOrigin;
 }
 
-export interface CreatedTextureRecord extends ResourceRecordBase {
+interface CreatedTextureRecord extends ResourceRecordBase {
   readonly kind: 'texture';
   readonly origin: 'created';
   readonly descriptor: GraphTextureDescriptor;
 }
 
-export interface ImportedTextureRecord<FrameCtx> extends ResourceRecordBase {
+interface ImportedTextureRecord<FrameCtx> extends ResourceRecordBase {
   readonly kind: 'texture';
   readonly origin: 'imported';
   readonly descriptor: ImportedTextureDescriptor;
   readonly resolve: (frame: FrameCtx) => Texture;
 }
 
-export interface CreatedBufferRecord extends ResourceRecordBase {
+interface CreatedBufferRecord extends ResourceRecordBase {
   readonly kind: 'buffer';
   readonly origin: 'created';
   readonly descriptor: GraphBufferDescriptor;
 }
 
-export interface ImportedBufferRecord<FrameCtx> extends ResourceRecordBase {
+interface ImportedBufferRecord<FrameCtx> extends ResourceRecordBase {
   readonly kind: 'buffer';
   readonly origin: 'imported';
   readonly descriptor: ImportedBufferDescriptor;
   readonly resolve: (frame: FrameCtx) => Buffer;
 }
 
-export interface ImportedAccelerationStructureRecord<FrameCtx> extends ResourceRecordBase {
+interface ImportedAccelerationStructureRecord<FrameCtx> extends ResourceRecordBase {
   readonly kind: 'acceleration-structure';
   readonly origin: 'imported';
   readonly descriptor: ImportedAccelerationStructureDescriptor;

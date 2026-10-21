@@ -198,7 +198,7 @@ describe('DevKit tool coverage contracts', () => {
       }),
       started: () => ({
         ok: true as const,
-        value: { state: 'started' as const },
+        value: { state: 'started' as const, leaseId: 'lease' },
         state: 'started' as const,
       }),
       execute: async () => ({
@@ -207,7 +207,7 @@ describe('DevKit tool coverage contracts', () => {
       }),
       exit: () => ({
         ok: true as const,
-        value: { state: 'exited' as const },
+        value: { state: 'exited' as const, leaseId: 'lease' },
         state: 'exited' as const,
       }),
     };
@@ -242,7 +242,7 @@ describe('DevKit tool coverage contracts', () => {
       lease: () => ({ ok: true as const, value: { leaseId: 'lease' }, state: 'leased' as const }),
       started: () => ({
         ok: true as const,
-        value: { state: 'started' as const },
+        value: { state: 'started' as const, leaseId: 'lease' },
         state: 'started' as const,
       }),
       exit: () => ({

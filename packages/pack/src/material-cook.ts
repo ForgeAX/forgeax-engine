@@ -4,6 +4,7 @@ export {
   createMaterialArtifactDigest,
   createMaterialCookIdentity,
   createMaterialProgramSetDigest,
+  isStandardMaterialRecord,
   type MaterialCookArtifact,
   type MaterialCookProgram,
   type MaterialCookProgramContext,

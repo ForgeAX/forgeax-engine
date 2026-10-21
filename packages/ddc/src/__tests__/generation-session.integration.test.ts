@@ -250,6 +250,8 @@ describe('DDC generation session integration', () => {
     const { lease, previousHead } = await lifecycle.beginWithSnapshot(GUID, KEY_B);
     await store.write(entry(KEY_B));
     const committed = await lifecycle.commit(lease, KEY_B);
+    expect(committed.result).toBe('current');
+    if (committed.result !== 'current') return;
     expect(committed.restoreFence).toMatchObject({ outcome: 'current' });
     await expect(
       lifecycle.restoreIfCurrent(previousHead, lease, committed.restoreFence),
@@ -257,7 +259,7 @@ describe('DDC generation session integration', () => {
     await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
       state: 'stale',
       currentKey: KEY,
-      revision: (committed.revision ?? 0) + 1,
+      revision: (committed.head.revision ?? 0) + 1,
       generation: lease.generation,
     });
   });
@@ -307,4 +309,29 @@ describe('DDC generation session integration', () => {
       revision: 2,
     });
   });
+});
+
+it('counts invalid entries through both candidate commit paths', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-invalid-commit-'));
+  const session = new DdcGenerationSession(root, { generation: 1 });
+  const publish = DdcEntryStore.prototype.publish;
+  const removeAfterPublish = vi
+    .spyOn(DdcEntryStore.prototype, 'publish')
+    .mockImplementation(async function (this: DdcEntryStore, staged) {
+      const result = await publish.call(this, staged);
+      await this.remove(staged.key);
+      return result;
+    });
+  try {
+    const candidate = await session.beginCandidate(GUID, KEY);
+    expect((await session.commitCandidate(candidate, KEY)).result).toBe('invalid');
+    const staged = await session.stageEntry(entry());
+    expect((await session.commitEntry(staged, KEY)).result).toBe('invalid');
+    expect(session.metrics().corruptCount).toBe(2);
+    await expect(session.commitEntry(staged, KEY)).rejects.toThrow('another generation session');
+  } finally {
+    removeAfterPublish.mockRestore();
+    await session.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

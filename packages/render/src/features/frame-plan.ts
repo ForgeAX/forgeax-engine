@@ -14,7 +14,7 @@ export function featureResourceKey(scope: RenderFeatureWorkScope, name: string):
   return JSON.stringify([featureScopeKey(scope), name]);
 }
 
-export interface FeatureWorkResources {
+interface FeatureWorkResources {
   readonly work: RenderFeatureWork;
   readonly closure: RenderFeatureWorkPlan;
   readonly native?: true;

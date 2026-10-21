@@ -8,7 +8,7 @@ import {
   defineParticleEffectSourceV3,
   parseParticleEffectSourceV3,
 } from '@forgeax/engine-vfx';
-import { reflectVfxLayoutV3, reflectVfxRendererV3 } from '@forgeax/engine-vfx-compiler';
+import { reflectVfxLayout, reflectVfxRendererV3 } from '@forgeax/engine-vfx-compiler';
 import {
   createTopologyResourcePlan,
   createVfxRenderInspectSnapshot,
@@ -52,7 +52,7 @@ const topologyPlans = renderers
     ...(renderer.topology === 'beam' ? { endpointField: renderer.endpointField } : {}),
   }), `${renderer.topology} resources`));
 
-const layout = requireOk(reflectVfxLayoutV3({
+const layout = requireOk(reflectVfxLayout({
   root: `
     struct VfxParameters {
       intensity: f32,
@@ -90,28 +90,20 @@ registry.register({
     };
   },
 });
-const committedDraft = requireOk(
-  await registry.runDraft('valid-candidate', source),
+const committedCook = requireOk(
+  await registry.runTransaction({ key: 'valid-candidate', input: source }),
   'valid HMR candidate',
 );
-const committedCook = {
-  draft: committedDraft,
-  generation: 1,
-  status: 'committed',
-  lastKnownGood: committedDraft,
-  candidateGeneration: 1,
-  lastKnownGoodGeneration: 1,
-};
-const rejectedCandidate = await registry.runDraft('invalid-candidate', source);
+if (committedCook.status !== 'committed' || committedCook.generation !== 1) {
+  throw new Error('valid HMR candidate did not commit its first generation');
+}
+const rejectedCandidate = await registry.runTransaction({ key: 'invalid-candidate', input: source });
 if (rejectedCandidate.ok) throw new Error('invalid HMR candidate unexpectedly cooked');
-const recoveredCook = {
-  ...committedCook,
-  status: 'recovered',
-  candidateGeneration: committedCook.generation + 1,
-  lastKnownGoodGeneration: committedCook.generation,
-  recoveryHint: 'repair invalid-candidate and submit a new candidate generation',
-};
-if (recoveredCook.status !== 'recovered' || recoveredCook.lastKnownGoodGeneration !== committedCook.generation) {
+const recoveredCook = requireOk(
+  await registry.runTransaction({ key: 'invalid-candidate', input: source, previous: committedCook }),
+  'recover HMR candidate',
+);
+if (recoveredCook.status !== 'recovered' || recoveredCook.generation !== committedCook.generation || recoveredCook.draft !== committedCook.draft) {
   throw new Error('invalid HMR candidate did not retain generation-scoped LKG');
 }
 
@@ -121,7 +113,7 @@ const visualEvidence = {
     { id: 'advanced-renderers-visible', observed: renderers.map(renderer => renderer.topology), verdict: 'pass' },
     { id: 'live-patch-continuity', observed: committed.generation, verdict: 'pass' },
     { id: 'event-sub-emitter-visible', observed: committed.channelInputs.length, verdict: 'pass' },
-    { id: 'hmr-last-known-good-visible', observed: recoveredCook.lastKnownGoodGeneration, verdict: 'pass' },
+    { id: 'hmr-last-known-good-visible', observed: recoveredCook.generation, verdict: 'pass' },
   ],
 };
 const report = {
@@ -151,8 +143,8 @@ const report = {
       gpuTiming: { frameMs: 0.5 },
     }),
     hmr: {
-      candidateGeneration: recoveredCook.candidateGeneration,
-      lastKnownGoodGeneration: recoveredCook.lastKnownGoodGeneration,
+      candidateGeneration: committedCook.generation + 1,
+      lastKnownGoodGeneration: recoveredCook.generation,
       state: recoveredCook.status,
     },
   }),

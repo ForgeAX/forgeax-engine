@@ -3,9 +3,11 @@ import {
   canvasTextureState,
   isCanvasTextureSource,
 } from '../textures/canvas-texture';
+import { renderTextureSourceKey } from '../textures/source-token';
 
 export interface PublishedCanvasFrame {
-  readonly id: number;
+  readonly id: string;
+  readonly flipY: boolean;
   readonly version: number;
   readonly disposed: boolean;
   /** Missing for a disposed or zero-sized canvas. */
@@ -15,6 +17,7 @@ export interface PublishedCanvasFrame {
 export interface ReceivedCanvasFrame {
   frame?: VideoFrame | undefined;
   version: number;
+  flipY: boolean;
   readonly key: object;
   readonly signal: AbortSignal;
 }
@@ -24,19 +27,22 @@ export function publicationCanvasFrames(
   consumers: ReadonlyMap<number, readonly CanvasTextureSource[]>,
 ): readonly PublishedCanvasFrame[] {
   if (consumers.size === 0) return [];
-  const frames = new Map<number, PublishedCanvasFrame>();
+  const frames = new Map<string, PublishedCanvasFrame>();
   try {
     for (const sources of consumers.values())
       for (const source of sources) {
-        if (!isCanvasTextureSource(source) || frames.has(source.canvasTextureId)) continue;
+        if (!isCanvasTextureSource(source) || frames.has(renderTextureSourceKey(source))) continue;
         const state = canvasTextureState(source);
-        if (state === undefined) throw new Error('Canvas texture has no source owner');
         const live =
-          !state.lifetime.signal.aborted && state.canvas.width > 0 && state.canvas.height > 0;
-        frames.set(source.canvasTextureId, {
-          id: source.canvasTextureId,
-          version: state.version,
-          disposed: state.lifetime.signal.aborted,
+          state !== undefined &&
+          !state.lifetime.signal.aborted &&
+          state.canvas.width > 0 &&
+          state.canvas.height > 0;
+        frames.set(renderTextureSourceKey(source), {
+          id: renderTextureSourceKey(source),
+          version: state?.version ?? 1,
+          flipY: state?.flipY ?? false,
+          disposed: state === undefined || state.lifetime.signal.aborted,
           ...(live
             ? { frame: new VideoFrame(state.canvas, { timestamp: state.version, alpha: 'keep' }) }
             : {}),
@@ -51,9 +57,9 @@ export function publicationCanvasFrames(
 
 /** Receiver session owns frame clones and stable GPU keys, including retirement. */
 export class CanvasFrameReceiver {
-  private readonly frames = new Map<number, ReceivedCanvasFrame & { lifetime: AbortController }>();
+  private readonly frames = new Map<string, ReceivedCanvasFrame & { lifetime: AbortController }>();
 
-  get(id: number): ReceivedCanvasFrame | undefined {
+  get(id: string): ReceivedCanvasFrame | undefined {
     return this.frames.get(id);
   }
 
@@ -69,10 +75,17 @@ export class CanvasFrameReceiver {
       let state = this.frames.get(row.id);
       if (state === undefined || state.signal.aborted) {
         const lifetime = new AbortController();
-        state = { key: {}, lifetime, signal: lifetime.signal, version: row.version };
+        state = {
+          key: {},
+          lifetime,
+          signal: lifetime.signal,
+          version: row.version,
+          flipY: row.flipY,
+        };
         this.frames.set(row.id, state);
       }
       state.version = row.version;
+      state.flipY = row.flipY;
       state.frame = row.frame;
       if (row.disposed) state.lifetime.abort();
     }

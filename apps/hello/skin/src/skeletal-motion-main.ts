@@ -65,20 +65,30 @@ async function start(target: HTMLCanvasElement) {
   );
   if (!assembled.ok) throw assembled.error;
   const host = assembled.value;
-  const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
+  const world = new World({
+    assets: host.assets,
+    time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 },
+  });
   const platform = createBrowserPlatform(target).unwrap();
   const app = (
-    await createApp({ platform,
+    await createApp({
+      platform,
       world,
       renderer: host.renderer,
       assets: host.assets,
       ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }),
       pluginPrograms: createPrograms(crypto.randomUUID(), 'skeletal-motion', 1),
-      plugins: [{ name: 'browser-platform', apply(ctx) { ctx.effect(() => () => platform.dispose()); } },
+      plugins: [
+        {
+          name: 'browser-platform',
+          apply(ctx) {
+            ctx.effect(() => () => platform.dispose());
+          },
+        },
         scenePlugin(),
         renderComponentsPlugin(),
         skinningPlugin(),
-        animationPlugin(undefined, { cadence: 'fixed' }),
+        animationPlugin({ cadence: 'fixed' }),
         physicsPlugin('rapier-3d'),
         skeletalMotionPlugin({ physics: true }),
       ],
@@ -203,7 +213,11 @@ async function start(target: HTMLCanvasElement) {
       async recoverDeviceLoss() {
         const phase = (name: string) => {
           const { state, frame, recovery } = host.renderer.inspect();
-          console.debug('skeletal-motion-recovery', name, JSON.stringify({ state, frame, recovery }));
+          console.debug(
+            'skeletal-motion-recovery',
+            name,
+            JSON.stringify({ state, frame, recovery }),
+          );
         };
         phase('await-native-loss');
         const native = host.renderer.nativeDevice();

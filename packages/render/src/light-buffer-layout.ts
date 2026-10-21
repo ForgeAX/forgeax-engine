@@ -90,10 +90,10 @@ export const DIRECT_LIGHT_SLOT_TILE_MASK = DIRECT_LIGHT_SLOT_PROJECTOR_FLAG - 1;
  */
 export const DIRECT_LIGHT_SLOT_KIND_MASK = 0xff;
 export const DIRECT_LIGHT_SLOT_PCF_SHIFT = 8;
-const SPOT_PCF_KERNEL_MAX = 5;
+const PUNCTUAL_PCF_KERNEL_MAX = 5;
 
-function spotPcfKernel(value: number | undefined): number {
-  return Math.min(SPOT_PCF_KERNEL_MAX, Math.max(1, Math.round(value ?? 3)));
+function punctualPcfKernel(value: number | undefined): number {
+  return Math.min(PUNCTUAL_PCF_KERNEL_MAX, Math.max(1, Math.round(value ?? 3)));
 }
 /** Byte size of the six-row Point/Spot/Rect transport slot. */
 export const DIRECT_LIGHT_SLOT_FLOAT_COUNT =
@@ -166,7 +166,7 @@ export function packDirectLightSlot(
     // Row 3 is the Rect auxiliary axis for RectArea lights. Spot uses x/y/z
     // for its receiver controls and w for roll; the surface direct-light
     // owner only consumes w, while the volume owner consumes the full row.
-    out[12] = snapshot.depthBias ?? 0.005;
+    out[12] = snapshot.depthBias ?? 0.00001;
     out[13] = snapshot.normalBias ?? 0.05;
     out[14] = snapshot.shadowIntensity ?? 1;
     out[15] = snapshot.rollDeg ?? 0;
@@ -184,10 +184,11 @@ export function packDirectLightSlot(
   const metadata = new Uint32Array(out.buffer);
   metadata[16] =
     snapshot.kind === 'point'
-      ? DirectLightSlotKind.POINT
+      ? DirectLightSlotKind.POINT |
+        (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
       : snapshot.kind === 'spot'
         ? DirectLightSlotKind.SPOT |
-          (spotPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
+          (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
         : DirectLightSlotKind.RECT_AREA;
   const spotProjectorSelected =
     snapshot.kind === 'spot' &&

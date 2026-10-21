@@ -30,10 +30,9 @@ import {
   type TilesetTileEntry,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
 function makeAssetRegistry(): AssetRegistry {
-  return new AssetRegistry(makeMockShaderRegistry());
+  return new AssetRegistry();
 }
 
 function makeTileset(overrides: Partial<TilesetAsset> = {}): TilesetAsset {
@@ -122,14 +121,14 @@ describe('validateTilesetPayload — M0 baseline (region + regionIndex)', () => 
   });
 });
 
-describe('AssetRegistry.catalog<TilesetAsset> wires validateTilesetPayload', () => {
+describe('AssetRegistry.create wires validateTilesetPayload', () => {
   it('rejects an out-of-range regionIndex via Result.err', () => {
     const registry = makeAssetRegistry();
     const asset = makeTileset({
       regions: [{ x: 0, y: 0, width: 16, height: 16 }],
       tiles: [{ regionIndex: 99 }],
     });
-    const result = registry.catalog<TilesetAsset>('test/tileset', asset);
+    const result = registry.create(asset);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe('tileset-region-index-out-of-range');
@@ -138,8 +137,18 @@ describe('AssetRegistry.catalog<TilesetAsset> wires validateTilesetPayload', () 
 
   it('accepts a valid tileset', () => {
     const registry = makeAssetRegistry();
-    const asset = makeTileset();
-    const result = registry.catalog<TilesetAsset>('test/tileset', asset);
+    const atlas = registry
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 32, height: 32 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array(32 * 32 * 4),
+      })
+      .unwrap();
+    const asset = makeTileset({ atlases: [atlas] });
+    const result = registry.create(asset);
     expect(result.ok).toBe(true);
   });
 });
@@ -613,13 +622,13 @@ describe('validateTilesetPayload -- M0 baseline cases remain GREEN after M1 exte
   });
 });
 
-describe('AssetRegistry.register<TilesetAsset> wires M1 fail-fast', () => {
+describe('AssetRegistry.create wires M1 fail-fast', () => {
   it('rejects tile entry with widthCells=0 via Result.err', () => {
     const registry = makeAssetRegistry();
     const asset = makeTileset({
       tiles: [{ regionIndex: 0, widthCells: 0 }, { regionIndex: 1 }],
     });
-    const result = registry.catalog<TilesetAsset>('test/tileset', asset);
+    const result = registry.create(asset);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe('tileset-tile-entry-malformed');
@@ -629,7 +638,7 @@ describe('AssetRegistry.register<TilesetAsset> wires M1 fail-fast', () => {
   it('rejects atlases=[] via Result.err', () => {
     const registry = makeAssetRegistry();
     const asset = makeTileset({ atlases: [] });
-    const result = registry.catalog<TilesetAsset>('test/tileset', asset);
+    const result = registry.create(asset);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe('tileset-tile-entry-malformed');

@@ -37,14 +37,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const world = app.world;
 
   const boxGeom = createBoxGeometry(0.5, 0.5, 0.5, 1, 1, 1);
   if (!boxGeom.ok) { console.error('box geom failed'); return; }
-  const boxHandle = world.allocSharedRef('MeshAsset', boxGeom.value);
+  const boxHandle = assets.create(boxGeom.value).unwrap();
 
   const matHandles = COLORS.map((color) =>
-    world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: color })),
+    assets.create(Materials.standard({ baseColor: color })).unwrap(),
   );
 
   // Spawn initial row of 5 cubes

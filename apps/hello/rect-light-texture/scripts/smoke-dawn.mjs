@@ -191,7 +191,7 @@ if (bcSupported) {
   for (const image of BC7_IMAGES) compressed.set(`${image}.bc7`, await encodeBc7(image));
 }
 
-const world = new World();
+const world = new World({ assets: constructed.value.assets });
 const attached = renderer.attach(world);
 if (!attached.ok) fail(`renderer.attach: ${attached.error.code} - ${attached.error.hint}`);
 const lease = attached.value;

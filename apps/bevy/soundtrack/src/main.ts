@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `soundtrack` example.
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
@@ -7,7 +8,7 @@ import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type AudioClipAsset, type Handle } from '@forgeax/engine-types';
+
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildSoundtrackWorld, HANDLE_NONE } from './soundtrack';
@@ -39,15 +40,15 @@ configureRuntimeAssetCatalog(assets, runtimeBinding);
 const audio = world.getResource<AudioBackend>('AudioEngine');
 if (!audio) throw new Error('bevy-soundtrack: AudioEngine resource missing');
 
-let peacefulHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
-let battleHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
+let peacefulHandle: AssetHandle<'audio'> = HANDLE_NONE;
+let battleHandle: AssetHandle<'audio'> = HANDLE_NONE;
 let loaded = 0;
-for (const [guidText, assign] of [[PEACEFUL_GUID, (handle: Handle<'AudioClipAsset', 'shared'>) => { peacefulHandle = handle; }], [BATTLE_GUID, (handle: Handle<'AudioClipAsset', 'shared'>) => { battleHandle = handle; }]] as const) {
+for (const [guidText, assign] of [[PEACEFUL_GUID, (handle: AssetHandle<'audio'>) => { peacefulHandle = handle; }], [BATTLE_GUID, (handle: AssetHandle<'audio'>) => { battleHandle = handle; }]] as const) {
   const guid = AssetGuid.parse(guidText);
   if (!guid.ok) throw new Error(`bevy-soundtrack: invalid audio GUID ${guidText}`);
-  const clipResult = await assets.loadByGuid<AudioClipAsset>(guid.value);
+  const clipResult = await assets.load(guid.value, 'audio');
   if (clipResult.ok) {
-    assign(world.allocSharedRef('AudioClipAsset', clipResult.value));
+    assign(clipResult.value);
     loaded += 1;
   } else console.error('[bevy-soundtrack] loadByGuid failed:', clipResult.error.code, clipResult.error.hint);
 }

@@ -45,6 +45,43 @@ const flush = async () => {
 afterEach(() => vi.useRealTimers());
 
 describe('bounded feedback contract and native ownership (test double, no physical evidence)', () => {
+  it('publishes the same named values admitted from prototype getters', () => {
+    const port = createGamepadFeedback();
+    let magnitudeReads = 0;
+    class Target {
+      get attachment() {
+        return 1;
+      }
+      get index() {
+        return 0;
+      }
+      get generation() {
+        return 2;
+      }
+    }
+    class Effect {
+      get durationMs() {
+        return 100;
+      }
+      get strongMagnitude() {
+        return magnitudeReads++ === 0 ? 0.5 : Number.NaN;
+      }
+      get weakMagnitude() {
+        return 0.2;
+      }
+    }
+    expect(port.play(new Target(), new Effect())).toEqual({ ok: true, id: 1 });
+    expect(JSON.parse(JSON.stringify(port.drainIntents()))).toEqual([
+      {
+        id: 1,
+        kind: 'play',
+        target: { attachment: 1, index: 0, generation: 2 },
+        effect: { durationMs: 100, strongMagnitude: 0.5, weakMagnitude: 0.2 },
+      },
+    ]);
+    port.dispose();
+  });
+
   it('keeps headless input attachment usable without a DOM owner', () => {
     const host = attachBrowserGamepadFeedback(undefined, undefined);
     expect(host.target(0)).toBeUndefined();

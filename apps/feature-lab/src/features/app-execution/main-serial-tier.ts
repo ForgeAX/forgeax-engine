@@ -1,6 +1,8 @@
 import { EXECUTION_WORKERS } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Main-serial execution tier',
@@ -11,8 +13,14 @@ export default defineFeature({
   expect:
     'All checks pass: realm=host, engine worker disabled, render/kernels engine-disabled, local frame credit highWater <= 2, World identity matches.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.85, 0.4, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.85, 0.4, 1] }), {
       pos: [0, 0.5, 0],
     });
     return {

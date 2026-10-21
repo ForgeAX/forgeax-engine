@@ -109,11 +109,16 @@ export function ensureProbeBlendRecordBuffer(
     projection?.capacity ??
       records.reduce((capacity, { record }) => Math.max(capacity, record.objectKey + 2), 1),
   );
-  const grows =
+  const replacesBuffer =
     buffer === undefined ||
     buffer.isDestroyed ||
     buffer.device !== device ||
-    frameState.probeBlendRecordBufferCapacity < requiredCapacity;
+    frameState.probeBlendRecordBufferCapacity < requiredCapacity ||
+    // The last local probe retires every old row at once. A sentinel-only
+    // binding keeps unchanged object generations from reading stale GPU bytes.
+    (input !== undefined &&
+      requiredCapacity === 1 &&
+      frameState.probeBlendRecordBufferCapacity > 1);
   const hasAcceptedBaseline =
     projection !== undefined &&
     accepted !== undefined &&
@@ -124,7 +129,7 @@ export function ensureProbeBlendRecordBuffer(
     accepted.projection.sourceIdentity === projection.sourceIdentity &&
     accepted.projection.revision === projection.baseRevision;
   const requiresCompletePublish =
-    grows ||
+    replacesBuffer ||
     (projection !== undefined && (!hasAcceptedBaseline || projection.dirtyRecords.length > 1));
   if (requiresCompletePublish) {
     const candidate = createCompleteProbeBlendBuffer(device, requiredCapacity, records);

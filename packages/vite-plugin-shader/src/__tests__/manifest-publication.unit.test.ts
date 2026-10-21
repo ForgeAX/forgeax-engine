@@ -6,6 +6,88 @@ import { describe, expect, it, vi } from 'vitest';
 import { mergeShaderManifestPublications, publishShaderManifest } from '../manifest-publication.js';
 
 describe('shared shader source publication', () => {
+  it('rejects invalid pooled references on direct entries, materials and every variant', () => {
+    const engine = publishShaderManifest(
+      [{ hash: 'engine', wgsl: 'fn main() {}', entryPoints: [] }],
+      [
+        {
+          composedWgsl: 'fn main() {}',
+          entryPoints: [],
+          variants: [{ composedWgsl: 'fn main() {}', entryPoints: [] }],
+        },
+      ],
+    );
+    const authored = publishShaderManifest([], []);
+    for (const row of [
+      engine.entries[0],
+      engine.materialShaders[0],
+      engine.materialShaders[0]?.variants[0],
+    ]) {
+      if (row === undefined) throw new Error('missing fixture row');
+      for (const invalid of [-1, 1, 0.5, '0', null, undefined]) {
+        Reflect.set(row, 'entryPointsIndex', invalid);
+        expect(() =>
+          mergeShaderManifestPublications(engine, authored, new Set(['engine'])),
+        ).toThrow('entryPointsIndex reference is missing');
+      }
+      Reflect.set(row, 'entryPointsIndex', 0);
+    }
+  });
+
+  it('pools exact entry-read arrays across the complete variant roster and remaps app tables', async () => {
+    const reads = [
+      {
+        name: 'main',
+        stage: 'fragment',
+        bindings: [
+          {
+            group: 1,
+            binding: 0,
+            fields: Array.from({ length: 100 }, (_, index) => `field_${index}`),
+          },
+        ],
+      },
+    ];
+    const alternate = [{ name: 'main', stage: 'fragment', bindings: [] }];
+    const original = {
+      entries: [{ hash: 'engine', wgsl: 'fn main() {}', entryPoints: reads }],
+      materialShaders: [
+        {
+          identifier: 'material',
+          composedWgsl: 'fn main() {}',
+          entryPoints: reads,
+          variants: Array.from({ length: 128 }, (_, index) => ({
+            definesKey: `MODE=${index}`,
+            composedWgsl: 'fn main() {}',
+            entryPoints: index % 2 === 0 ? structuredClone(reads) : alternate,
+          })),
+        },
+      ],
+    };
+    const publication = publishShaderManifest(original.entries, original.materialShaders);
+    expect(publication.entryPoints).toEqual([reads, alternate]);
+    expect(JSON.stringify(publication).length).toBeLessThan(JSON.stringify(original).length / 3);
+    const decoded = (await readShaderManifestPublication(
+      JSON.parse(JSON.stringify(publication)),
+    )) as typeof original;
+    expect(decoded).toEqual(original);
+    expect(decoded.materialShaders[0]?.variants[0]?.entryPoints).toBe(
+      decoded.entries[0]?.entryPoints,
+    );
+    const authoredEntries = [
+      { hash: 'authored', wgsl: 'fn authored() {}', entryPoints: alternate },
+      { hash: 'empty', wgsl: 'fn empty() {}', entryPoints: [] },
+      { hash: 'unknown', wgsl: 'fn unknown() {}' },
+    ];
+    const authored = publishShaderManifest(authoredEntries, []);
+    const merged = mergeShaderManifestPublications(publication, authored, new Set(['engine']));
+    expect(merged.entryPoints).toEqual([reads, alternate, []]);
+    expect(await readShaderManifestPublication(merged)).toEqual({
+      entries: [{ ...original.entries[0], glsl: '' }, ...authoredEntries],
+      materialShaders: original.materialShaders,
+    });
+  });
+
   it('interns repeated ABI receipts without losing nested facts or variant identity', async () => {
     const receipt = {
       receiptIdentity: 'shared',
@@ -218,7 +300,7 @@ describe('shared shader source publication', () => {
       ],
     };
     const published = publishShaderManifest(original.entries, original.materialShaders);
-    expect(published.schemaVersion).toBe('4.0.0');
+    expect(published.schemaVersion).toBe('5.0.0');
     expect(published.entries[0]).toMatchObject({
       hash: 'primary',
       sourceDigest: published.materialShaders[0]?.sourceDigest,

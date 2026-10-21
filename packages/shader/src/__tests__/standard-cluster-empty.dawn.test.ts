@@ -68,7 +68,7 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
   let viewDir = vec3(0.0, 0.0, 1.0);
   let baseColor = vec3(0.4, 0.6, 0.8);
   let f0 = vec3(0.06);
-  let actual = evaluateStandardClusterLights(ndc, select(-2.0, -8.0, far),
+  let actual = evaluateStandardClusterLights(ndc, p.xy, select(-2.0, -8.0, far),
     worldPos, normal, viewDir, baseColor, 0.3, 0.25, f0, vec3(0.0), false, false,
     channels, false);
   var expected = vec3(0.0);

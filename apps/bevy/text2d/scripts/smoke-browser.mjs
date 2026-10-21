@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
+import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { verifyDemoCapture } from '../../../shared/scripts/rhi-debug-verify.mjs';
 import {
   collectRhiDebugDraws,
@@ -56,6 +57,7 @@ async function runM34RecoveryBrowser() {
   mkdirSync(artifactDir, { recursive: true });
   const vite = spawn('pnpm', ['-F', packageName, 'dev'], {
     cwd: root,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let url;
@@ -72,16 +74,21 @@ async function runM34RecoveryBrowser() {
     if (url === undefined) throw new Error('M34 Vite dev server did not publish a URL in 30s');
     browser = await chromium.launch({
       headless: true,
-      channel: 'chrome',
-      args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--ignore-gpu-blocklist'],
+      channel: process.env.FORGEAX_CHROME_CHANNEL ?? browserLaunch.channel,
+      args: process.env.CI && process.platform === 'linux'
+        ? [...browserLaunch.args, '--use-angle=swiftshader']
+        : ['--enable-unsafe-webgpu', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--ignore-gpu-blocklist'],
       chromiumSandbox: true,
     });
     const page = await browser.newPage({ viewport: { width: 960, height: 540 } });
+    page.on('response', (response) => {
+      if (response.status() >= 400) process.stdout.write(`[http-error] ${response.status()} ${response.url()}\n`);
+    });
     const pageErrors = [];
     const consoleErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
     page.on('console', (message) => {
-      if (message.type() === 'error' && !message.text().includes('font-concurrency-exceeded')) {
+      if (message.type() === 'error') {
         consoleErrors.push(message.text());
       }
     });
@@ -104,53 +111,32 @@ async function runM34RecoveryBrowser() {
       };
     };
     const baseline = await capture('baseline', 'baseline');
-    const overflow = await capture('overflow', 'overflow');
+    const edited = await capture('edited', 'edit');
     const recovered = await capture('recovered', 'recover');
     const cleanup = await capture('cleanup', 'cleanup');
     const cleanupAgain = await page.evaluate(() => globalThis.__bevyText2dM34.cleanup());
-    const evidence = { baseline, overflow, recovered, cleanup, cleanupAgain, pageErrors, consoleErrors };
+    const evidence = { baseline, edited, recovered, cleanup, cleanupAgain, pageErrors, consoleErrors };
     writeFileSync(resolve(artifactDir, 'm34-browser-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`);
 
-    const overflowError = overflow.state.lastError;
     const failures = [];
-    if (baseline.state.prefixAttached !== 8 || !baseline.state.targetAttached || baseline.state.errorCount !== 0) {
-      failures.push(`baseline=${JSON.stringify(baseline.state)}`);
+    for (const [name, capture] of [['baseline', baseline], ['edited', edited], ['recovered', recovered]]) {
+      if (capture.state.labels !== 9 || capture.state.generatedComponents !== 0 ||
+          capture.state.liveFonts !== 9 || capture.state.errorCount !== 0 ||
+          capture.state.targetFontHandle !== baseline.state.targetFontHandle) {
+        failures.push(`${name}=${JSON.stringify(capture.state)}`);
+      }
     }
-    if (
-      overflow.state.prefixAttached !== 8 ||
-      overflow.state.targetAttached ||
-      overflow.state.errorCount !== 1 ||
-      overflow.state.liveRefs !== overflow.state.baselineLiveRefs - 2 ||
-      overflowError?.code !== 'font-concurrency-exceeded' ||
-      overflowError.expected !== '8' ||
-      overflowError.detail?.active !== 8 ||
-      overflowError.detail?.limit !== 8 ||
-      !Number.isInteger(overflowError.detail?.rejected)
-    ) {
-      failures.push(`overflow=${JSON.stringify(overflow.state)}`);
+    if (baseline.state.targetGlyphs === 0 || edited.state.targetGlyphs !== 0 ||
+        recovered.state.targetGlyphs !== baseline.state.targetGlyphs) {
+      failures.push('Font edit/restore did not preserve the reference and replace glyph content');
     }
-    if (
-      recovered.state.prefixAttached !== 8 ||
-      !recovered.state.targetAttached ||
-      recovered.state.errorCount !== 1 ||
-      recovered.state.liveRefs !== recovered.state.baselineLiveRefs ||
-      recovered.state.targetMeshHandle === baseline.state.targetMeshHandle ||
-      recovered.state.targetMaterialHandle === baseline.state.targetMaterialHandle
-    ) {
-      failures.push(`recovered=${JSON.stringify(recovered.state)}`);
-    }
-    if (
-      cleanup.state.prefixAttached !== 0 ||
-      cleanup.state.targetAttached ||
-      !cleanup.state.unrelatedPresent ||
-      cleanup.state.liveRefs !== cleanup.state.baselineLiveRefs - 27 ||
-      JSON.stringify(cleanupAgain) !== JSON.stringify(cleanup.state) ||
-      cleanup.state.errorCount !== 1
-    ) {
+    if (cleanup.state.labels !== 0 || cleanup.state.generatedComponents !== 0 ||
+        cleanup.state.liveFonts !== 0 || !cleanup.state.unrelatedPresent ||
+        cleanup.state.errorCount !== 0 || JSON.stringify(cleanupAgain) !== JSON.stringify(cleanup.state)) {
       failures.push(`cleanup=${JSON.stringify({ cleanup: cleanup.state, cleanupAgain })}`);
     }
-    if (baseline.bytes < 1000 || overflow.sha256 === baseline.sha256 || cleanup.sha256 === baseline.sha256) {
-      failures.push(`pixel evidence hashes=${JSON.stringify({ baseline, overflow, cleanup })}`);
+    if (baseline.bytes < 1000 || edited.sha256 === baseline.sha256 || cleanup.sha256 === baseline.sha256) {
+      failures.push(`pixel evidence hashes=${JSON.stringify({ baseline, edited, cleanup })}`);
     }
     if (pageErrors.length > 0 || consoleErrors.length > 0) {
       failures.push(`browser errors=${JSON.stringify({ pageErrors, consoleErrors })}`);
@@ -159,13 +145,17 @@ async function runM34RecoveryBrowser() {
       throw new Error(`[m34] FAIL - ${failures.join('; ')}`);
     }
     console.log(
-      `[m34] Browser PASS baseline=${baseline.sha256} overflow=${overflow.sha256} ` +
+      `[m34] Browser PASS baseline=${baseline.sha256} edited=${edited.sha256} ` +
         `recovered=${recovered.sha256} cleanup=${cleanup.sha256}`,
     );
   } finally {
     await browser?.close();
-    vite.kill('SIGTERM');
-    await sleep(500);
+    try {
+      if (process.platform === 'win32') vite.kill('SIGTERM');
+      else process.kill(-vite.pid, 'SIGTERM');
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
   }
 }
 

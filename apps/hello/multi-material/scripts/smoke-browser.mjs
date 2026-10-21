@@ -137,7 +137,7 @@ try {
       assert(baselineColors.red > 0 && baselineColors.cyan > 0, `M32 baseline pixels: ${JSON.stringify(baselineColors)}`);
       assert(baseline.bindings[0]?.handle === baseline.oldHandle, `M32 old handle was not bound: ${JSON.stringify(baseline)}`);
       assert(baseline.bindings[1]?.handle === baseline.siblingHandle, `M32 sibling was not bound: ${JSON.stringify(baseline)}`);
-      assert(baseline.refcounts.old === 2 && baseline.refcounts.sibling === 2, `M32 baseline refs: ${JSON.stringify(baseline)}`);
+      assert(baseline.retained.old && baseline.retained.sibling, `M32 baseline refs: ${JSON.stringify(baseline)}`);
 
       await page.evaluate(() => globalThis.__forgeaxMultiMaterial.m32Invalidate());
       await page.waitForFunction(
@@ -149,21 +149,11 @@ try {
       const preRepairPng = await page.locator('#app').screenshot({ path: preRepairPath });
       const stale = await page.evaluate(() => globalThis.__forgeaxMultiMaterial.readM32State());
       const preRepairColors = colors(preRepairPng);
-      assert(
-        stale.stale?.code === 'shared-ref-stale' &&
-          stale.stale.detail.slot === stale.oldSlot &&
-          stale.stale.detail.expectedGeneration === stale.oldGeneration &&
-          stale.stale.detail.actualGeneration === stale.replacementGeneration,
-        `M32 stale detail: ${JSON.stringify(stale)}`,
-      );
-      assert(
-        stale.replacementHandle !== stale.oldHandle &&
-          stale.replacementGeneration === stale.oldGeneration + 1,
-        `M32 old/fresh handles aliased: ${JSON.stringify(stale)}`,
-      );
-      assert(stale.bindings[0]?.handle !== stale.oldHandle && stale.bindings[0]?.source === 'mesh-default', `M32 stale handle remained visible: ${JSON.stringify(stale)}`);
+      assert(stale.stale?.code === 'asset-reference-invalid', `M32 stale error: ${JSON.stringify(stale)}`);
+      assert(stale.replacementHandle !== stale.oldHandle, `M32 old/fresh handles aliased: ${JSON.stringify(stale)}`);
+      assert(stale.bindings[0]?.handle !== stale.oldHandle && stale.bindings[0]?.source === 'renderer-override', `M32 stale handle remained visible: ${JSON.stringify(stale)}`);
       assert(stale.bindings[1]?.handle === baseline.bindings[1]?.handle, `M32 sibling changed before repair: ${JSON.stringify({ baseline, stale })}`);
-      assert(stale.refcounts.old === 0 && stale.refcounts.replacement === 1 && stale.refcounts.sibling === 2, `M32 stale refs: ${JSON.stringify(stale)}`);
+      assert(!stale.retained.old && stale.retained.replacement && stale.retained.sibling, `M32 stale refs: ${JSON.stringify(stale)}`);
       assert(
         Math.abs(preRepairColors.red - baselineColors.red) <= baselineColors.red * 0.02 &&
           Math.abs(preRepairColors.cyan - baselineColors.cyan) <= baselineColors.cyan * 0.02 &&
@@ -187,7 +177,7 @@ try {
       assert(repairedColors.blue > 0 && repairedColors.cyan > 0, `M32 repaired pixels: ${JSON.stringify(repairedColors)}`);
       assert(repairedColors.red < baselineColors.red / 4, `M32 target semantic identity did not change: ${JSON.stringify({ baselineColors, repairedColors })}`);
       assert(repaired.bindings[1]?.handle === baseline.bindings[1]?.handle, `M32 healthy sibling changed during repair: ${JSON.stringify({ baseline, repaired })}`);
-      assert(repaired.refcounts.old === 0 && repaired.refcounts.replacement === 2 && repaired.refcounts.sibling === 2, `M32 repaired refs: ${JSON.stringify(repaired)}`);
+      assert(!repaired.retained.old && repaired.retained.replacement && repaired.retained.sibling, `M32 repaired refs: ${JSON.stringify(repaired)}`);
 
       await page.evaluate(() => globalThis.__forgeaxMultiMaterial.m32Cleanup());
       await page.waitForFunction(
@@ -206,7 +196,7 @@ try {
       const cleanupAgain = await page.evaluate(() => globalThis.__forgeaxMultiMaterial.readM32State());
       const cleanupColors = colors(cleanupPng);
       assert(JSON.stringify(cleanupAgain) === JSON.stringify(cleanup), `M32 cleanup was not idempotent: ${JSON.stringify({ cleanup, cleanupAgain })}`);
-      assert(cleanup.refcounts.old === 0 && cleanup.refcounts.replacement === 0 && cleanup.refcounts.sibling === 0, `M32 refs were not balanced: ${JSON.stringify(cleanup)}`);
+      assert(!cleanup.retained.old && !cleanup.retained.replacement && !cleanup.retained.sibling, `M32 refs were not balanced: ${JSON.stringify(cleanup)}`);
       assert(
         cleanupColors.blue === 0 &&
           Math.abs(cleanupColors.red - baselineColors.red) <= baselineColors.red * 0.02 &&
@@ -271,7 +261,7 @@ try {
       `overflow detail is not structured: ${JSON.stringify(overflow)}`,
     );
     assert(
-      fault.bindings.every((binding) => binding.source === 'mesh-default'),
+      fault.bindings.every((binding, slot) => binding.source === 'renderer-override' && binding.handle === baseline.bindings[slot]?.handle),
       `invalid override displaced defaults: ${JSON.stringify(fault)}`,
     );
     assert(
@@ -292,7 +282,7 @@ try {
     const repairedPng = await page.locator('#app').screenshot({ path: repairedPath });
     const repaired = await page.evaluate(() => globalThis.__forgeaxMultiMaterial.readState());
     const repairedColors = colors(repairedPng);
-    assert(repaired.bindings[1]?.source === 'mesh-default', `healthy sibling lost default provenance: ${JSON.stringify(repaired)}`);
+    assert(repaired.bindings[1]?.source === 'renderer-override', `healthy sibling lost default provenance: ${JSON.stringify(repaired)}`);
     assert(repaired.bindings[1]?.handle === baseline.bindings[1]?.handle, 'healthy sibling handle changed during repair');
     assert(repairedColors.blue > 0 && repairedColors.cyan > 0, `repair pixels: ${JSON.stringify(repairedColors)}`);
     assert(repairedColors.red < baselineColors.red / 4, `target slot pixels did not change: ${JSON.stringify({ baselineColors, repairedColors })}`);

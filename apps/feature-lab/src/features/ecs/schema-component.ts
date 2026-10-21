@@ -16,7 +16,7 @@ export default defineFeature({
       alive: 'bool',
       label: { type: 'string', default: 'none' },
       target: 'entity',
-      mesh: 'shared<MeshAsset>',
+      mesh: 'asset<mesh>',
       tint: 'array<f32, 4>',
       path: 'array<f32>',
     });

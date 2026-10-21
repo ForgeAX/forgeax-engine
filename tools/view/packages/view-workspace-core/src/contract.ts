@@ -1,7 +1,10 @@
-import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools } from '@forgeax/engine/app';
+import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools, EngineWorkspacePreviewDisplay, EngineWorkspacePreviewDisplayOptions } from '@forgeax/engine/app';
 import { createWorkspaceId } from './id.ts';
 export type { PresentationSnapshot, WorkspacePresentation } from './presentation.ts';
 import { serializeWorkspaceSceneSelection } from './scene-selection.ts';
+/** Optional display producer projection. Consumers must discover the operation before calling. */
+export type WorkspacePreviewDisplayOptions = EngineWorkspacePreviewDisplayOptions;
+export type WorkspacePreviewDisplay = EngineWorkspacePreviewDisplay;
 
 export type WorkspaceTarget = Partial<EngineWorkspaceTarget> & Pick<EngineWorkspaceTarget, 'targetId'>;
 export type WorkspaceProject = EngineWorkspaceProject;
@@ -16,14 +19,15 @@ export type WorkspaceAsset = EngineWorkspaceAsset & {
 };
 export type WorkspaceThumbnail = { guid: string; state: 'queued' | 'cooking' | 'ready' | 'failed' | 'unsupported'; dataUrl?: string; publicationId?: string; error?: { code: string; expected: string; hint: string } };
 export type WorkspaceInspection = {
-  guid?: string; kind?: string; asset?: WorkspaceAsset; source?: { path?: string; kind?: string; revision?: string };
+  guid?: string; kind?: string; asset?: WorkspaceAsset; source?: { path?: string; kind?: string; revision?: string; publication?: EngineWorkspaceAssetBinding['publication'] };
   meta?: Record<string, unknown>; ddc?: WorkspaceDdc; revision?: string;
+  publication?: EngineWorkspaceAssetBinding['publication'];
 };
 export type WorkspaceSceneSelection = {
   targetId?: string; targetGeneration?: number; primary: { entityId: string; label?: string };
   entityIds?: readonly string[];
 };
-export type WorkspaceResourceOpen = { asset: WorkspaceAsset; preview?: WorkspacePreview; detailsOnly?: boolean; sequence?: number };
+export type WorkspaceResourceOpen = { catalogEpoch?: number; requestId?: string; pending?: WorkspaceOpenRequest; asset: WorkspaceAsset; preview?: WorkspacePreview; detailsOnly?: boolean; sequence?: number };
 export type WorkspaceTab = { tabId: string; kind: string; selected: boolean; state?: string; width?: number; height?: number; target?: WorkspaceTarget | null; targetId?: string; run?: unknown };
 export type WorkspaceRequest = { apiVersion: string; operation: string; clientId: string; requestId: string; args: Record<string, unknown>; token?: string };
 export type WorkspacePreview = {
@@ -34,6 +38,8 @@ export type WorkspaceOpenRequest = {
   requestId: string; sequence: number; asset: WorkspaceAsset; preview?: WorkspacePreview;
   target?: WorkspaceTarget; inspection?: WorkspaceInspection;
   detailsOnly?: boolean;
+  phase?: 'opening' | 'ready' | 'failed';
+  failure?: { code: string; expected: string; hint: string };
 };
 export type WorkspaceState = {
   apiVersion?: string; revision?: number; selectedTabId?: string | null; tabs?: readonly WorkspaceTab[];
@@ -128,6 +134,7 @@ export const VIEW_WORKSPACE_DOMAIN_OPERATION_EFFECTS = Object.freeze({
   'asset.inspect': 'command',
   'asset.source.rebuild': 'command',
   'asset.source.cold-cook': 'command',
+  'asset.source.draft': 'command',
   'asset.open': 'command',
   'runtime-pack.inspect': 'query',
   'runtime-pack.admit': 'command',
@@ -151,6 +158,8 @@ export const VIEW_WORKSPACE_DOMAIN_OPERATION_EFFECTS = Object.freeze({
   'preview.resize': 'command',
   'preview.texture.get': 'query',
   'preview.texture.set': 'command',
+  'preview.display.get': 'query',
+  'preview.display.set': 'command',
   'camera.get': 'query',
   'camera.begin': 'command',
   'camera.update': 'command',
@@ -461,6 +470,8 @@ export function serializeWorkspaceOpenRequest(request: WorkspaceOpenRequest | nu
   return {
     requestId: request.requestId,
     sequence: request.sequence,
+    ...(request.phase ? { phase: request.phase } : {}),
+    ...(request.failure ? { failure: { ...request.failure } } : {}),
     asset,
     ...(request.detailsOnly ? { detailsOnly: true } : {}),
     ...(previewTarget
@@ -468,6 +479,7 @@ export function serializeWorkspaceOpenRequest(request: WorkspaceOpenRequest | nu
           preview: {
             asset: previewAsset ? serializeWorkspaceAsset(previewAsset) : asset,
             target: serializeWorkspaceTarget(previewTarget),
+            ...(request.preview?.assetBinding ? { assetBinding: cloneWorkspaceValue(request.preview.assetBinding) } : {}),
           },
         }
       : {}),
@@ -487,6 +499,9 @@ export function serializeWorkspaceResourceOpens(opens: WorkspaceState['resourceO
     const previewTarget = entry.preview?.target;
     serialized[kind] = {
       asset,
+      ...(entry.catalogEpoch === undefined ? {} : { catalogEpoch: entry.catalogEpoch }),
+      ...(entry.requestId ? { requestId: entry.requestId } : {}),
+      ...(entry.pending ? { pending: serializeWorkspaceOpenRequest(entry.pending) } : {}),
       ...(entry.detailsOnly ? { detailsOnly: true } : {}),
       ...(entry.sequence === undefined ? {} : { sequence: entry.sequence }),
       ...(previewTarget
@@ -494,6 +509,7 @@ export function serializeWorkspaceResourceOpens(opens: WorkspaceState['resourceO
             preview: {
               asset: serializeWorkspaceAsset(entry.preview?.asset ?? asset),
               target: serializeWorkspaceTarget(previewTarget),
+              ...(entry.preview?.assetBinding ? { assetBinding: cloneWorkspaceValue(entry.preview.assetBinding) } : {}),
             },
           }
         : {}),
@@ -555,6 +571,7 @@ export function serializeWorkspaceInspection(inspection: WorkspaceInspection | n
             ...(source.path === undefined ? {} : { path: String(source.path) }),
             ...(source.kind === undefined ? {} : { kind: String(source.kind) }),
             ...(source.revision === undefined ? {} : { revision: String(source.revision) }),
+            ...(source.publication === undefined ? {} : { publication: cloneWorkspaceValue(source.publication) }),
           },
         }),
     ...(inspection.meta !== null && typeof inspection.meta === 'object' && !Array.isArray(inspection.meta)
@@ -564,6 +581,7 @@ export function serializeWorkspaceInspection(inspection: WorkspaceInspection | n
       ? {}
       : { ddc: serializeWorkspaceDdc(inspection.ddc) }),
     ...(inspection.revision === undefined ? {} : { revision: String(inspection.revision) }),
+    ...(inspection.publication === undefined ? {} : { publication: cloneWorkspaceValue(inspection.publication) }),
   };
 }
 

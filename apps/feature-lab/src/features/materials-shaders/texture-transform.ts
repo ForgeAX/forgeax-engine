@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials, MeshRenderer } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnCamera, spawnMesh, spawnSun } from '../../lab/stage';
+import { material, spawnCamera, spawnMesh, spawnSun } from '../../lab/stage';
 import { checker, sampler } from './lib/textures';
 
 export default defineFeature({
@@ -12,6 +14,12 @@ export default defineFeature({
   expect:
     'ON: both quads should show a dense, rotated red/yellow checker. OFF: both show the coarse 4x4 axis-aligned checker. Known gap: the Unlit shader ignores the transform, so the right quad stays coarse in both states.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     spawnCamera(world, { eye: [0, 1, 4.5], target: [0, 1, 0] });
     spawnSun(world, { direction: [0, -0.3, -1], intensity: 3 });
     const tex = checker(world, [230, 30, 30, 255], [250, 220, 40, 255]);
@@ -40,11 +48,11 @@ export default defineFeature({
     });
     const on = pair([4, 4], 0.6);
     const off = pair([1, 1], 0);
-    const left = spawnMesh(world, MESH.quad, on.standard, {
+    const left = spawnMesh(world, stageQuad, on.standard, {
       pos: [-1.3, 1, 0],
       scale: [2.2, 2.2, 1],
     });
-    const right = spawnMesh(world, MESH.quad, on.unlit, { pos: [1.3, 1, 0], scale: [2.2, 2.2, 1] });
+    const right = spawnMesh(world, stageQuad, on.unlit, { pos: [1.3, 1, 0], scale: [2.2, 2.2, 1] });
     return {
       toggle(enabled: boolean) {
         const set = enabled ? on : off;

@@ -32,7 +32,6 @@ describe('v7 public surface', () => {
   it('keeps the producer contract as the only model surface', () => {
     expect(root).not.toHaveProperty('buildViewerModel');
     expect(root).not.toHaveProperty('buildViewModel');
-    expect(root).not.toHaveProperty('captureAndUpload');
     expect(root).not.toHaveProperty('uploadTape');
   });
 });

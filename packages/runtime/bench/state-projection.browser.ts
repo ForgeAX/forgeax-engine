@@ -1,6 +1,6 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import * as assetsRuntime from '@forgeax/engine-assets-runtime';
 import {
-  type Component,
   createWorldContext,
   defineComponent,
   type EntityHandle,
@@ -24,7 +24,7 @@ declare module 'vitest/browser' {
   }
 }
 
-// Identical source is run against each revision's source aliases. Timings include
+// Each revision runs its native asset API. Timings include
 // real Chromium WebGPU submission and completion, never an inferred GPU duration.
 it('measures the real browser projection path', async () => {
   const contract = {
@@ -76,7 +76,9 @@ it('measures the real browser projection path', async () => {
       'parent',
       'material',
     ]) {
-      const world = new World();
+      const assets = new assetsRuntime.AssetRegistry();
+      const world = new World({ assets });
+      const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
       const scene = await createWorldContext(world, [scenePlugin()]);
       const parent = world.spawn({ component: Transform, data: {} }).unwrap();
       const count = workload === 'small' ? contract.smallEntities : contract.entities;
@@ -94,19 +96,7 @@ it('measures the real browser projection path', async () => {
         roughness: 0.5,
       };
       const material = Materials.standard(values);
-      const handle = world.allocSharedRef('MaterialAsset', material);
-      const contentType = Reflect.get(assetsRuntime, 'RuntimeMaterialValue') as
-        | Component
-        | undefined;
-      const content =
-        workload === 'material' && contentType !== undefined
-          ? world
-              .spawn({
-                component: contentType,
-                data: { asset: handle, parameter: 'roughness', value: [0.5] },
-              })
-              .unwrap()
-          : undefined;
+      const handle = assets.create(material).unwrap();
       const entities: EntityHandle[] = [];
       for (let i = 0; i < count; i++) {
         const entity = world
@@ -118,7 +108,7 @@ it('measures the real browser projection path', async () => {
                 scale: [0.035, 0.035, 0.035],
               },
             },
-            { component: MeshFilter, data: { assetHandle: assetsRuntime.HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: cube } },
             { component: MeshRenderer, data: { materials: [handle] } },
           )
           .unwrap();
@@ -163,17 +153,8 @@ it('measures the real browser projection path', async () => {
           }
           if (workload === 'parent')
             world.set(parent, Transform, { pos: [Math.sin(frame / 10) * 0.01, 0, 0] }).unwrap();
-          if (workload === 'material') {
-            if (content !== undefined && contentType !== undefined)
-              world.set(content, contentType, { value: [(frame % 10) / 10] }).unwrap();
-            else {
-              const mutable = material.values as { roughness: number };
-              mutable.roughness = (frame % 10) / 10;
-              (world.sharedRefs as unknown as { markChanged(handle: number): void }).markChanged(
-                handle,
-              );
-            }
-          }
+          if (workload === 'material')
+            assets.update(handle, { values: { roughness: (frame % 10) / 10 } }).unwrap();
           world.update(1 / 60).unwrap();
           const simulated = performance.now();
           const receipt = renderer
@@ -211,6 +192,7 @@ it('measures the real browser projection path', async () => {
       } finally {
         lease.dispose();
         await scene.fiber.dispose();
+        assets.dispose();
       }
     }
     await commands.writeStateProjectionCost({ contract, userAgent: navigator.userAgent, reports });

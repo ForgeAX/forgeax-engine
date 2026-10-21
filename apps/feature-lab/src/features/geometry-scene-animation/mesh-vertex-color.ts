@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { packInterleavedVertexAttributes } from '@forgeax/engine/geometry';
 import { MeshFilter } from '@forgeax/engine/render';
 import type { MeshAsset, VertexAttributeMap } from '@forgeax/engine/types';
@@ -37,12 +38,16 @@ export default defineFeature({
   expect:
     'ON: a quad with red / green / blue / yellow corners blended across the surface. OFF: the same quad and material without the color stream - flat white.',
   setup({ world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, { eye: [0, 0, 3.6], target: [0, 0, 0] });
     const colored = quad(true);
     const plain = quad(false);
     if (colored === undefined || plain === undefined) return {};
-    const withColor = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', colored);
-    const without = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', plain);
+    const withColor = sceneAssets.create(colored).unwrap();
+    const without = sceneAssets.create(plain).unwrap();
     const entity = spawnMesh(world, withColor, unlit(world, [1, 1, 1, 1]));
     return {
       toggle(on) {

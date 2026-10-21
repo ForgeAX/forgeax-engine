@@ -20,7 +20,7 @@ export const FieldShapePrimitiveFixture = defineComponent('FieldShapePrimitiveFi
   vector: { type: 'array<f32, 3>', shape: 'vector' },
   quaternion: { type: 'array<f32, 4>', shape: 'quaternion' },
   values: { type: 'array<f32>', shape: 'array' },
-  material: { type: 'shared<MaterialAsset>', shape: 'asset-ref' },
+  material: { type: 'asset<material>', shape: 'asset-ref' },
 });
 
 /** Container shapes that are not recoverable from the flat storage keyword. */

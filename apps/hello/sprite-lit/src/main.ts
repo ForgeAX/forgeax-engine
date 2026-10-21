@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/hello/sprite-lit -- sprite-lit material end-to-end demo
 // (feat-20260624-sprite-lit-shading-model-pure-2d-lighting M1' / w6).
 //
@@ -32,7 +33,7 @@
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -41,8 +42,12 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { PointLight, SpotLight } from '@forgeax/engine-render';
 
-import type { Handle, MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 type Mode = 'directional-only' | 'three-lights' | 'ab-compare';
 
@@ -104,10 +109,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app: App = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   console.warn(`[sprite-lit] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
 
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const mode = readModeFromUrl();
   console.warn(`[sprite-lit] mode=${mode}`);
 
@@ -115,7 +124,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // a forgeax-engine-assets submodule fetch. The colorTint per-slot
   // multiplies on top so the 4 quads stay visually distinct.
   const checkerboard = buildCheckerboardRgba(8);
-  const textureHandle = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+  const textureHandle = app.assets.create({
     kind: 'texture',
     shape: {
       viewDimension: '2d',
@@ -125,7 +134,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     data: checkerboard.data,
     colorSpace: 'srgb',
     mips: { kind: 'none' },
-  });
+  }).unwrap();
 
 
   // Step 3: lights. mode=directional-only spawns only the DirectionalLight;
@@ -206,10 +215,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Step 5: build the sprite-lit MaterialAsset handles. AC-13 SSOT: switching
   // shader id from 'forgeax::sprite' to 'forgeax::sprite-lit' is the
   // entire opt-in for the new shading model.
-  const litMaterialHandles: Array<Handle<'MaterialAsset', 'shared'>> = [];
+  const litMaterialHandles: Array<AssetHandle<'material'>> = [];
   for (const slot of SPRITE_SLOTS) {
     litMaterialHandles.push(
-      world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+      app.assets.create({
         kind: 'material',
         passes: [
           { name: 'Forward', program: { module: 'forgeax::sprite-lit' }, renderState: { ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND }, tags: { LightMode: 'Forward' }, queue: 3000 } },
@@ -225,7 +234,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           region: [0, 0, 1, 1],
           pivotAndSize: [0.5, 0.5, 1, 1],
         },
-      }),
+      }).unwrap(),
     );
   }
 
@@ -233,10 +242,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // AB compare: shift the lit row down (-0.45 Y) and add a row of plain
     // forgeax::sprite (unlit) at +0.45 Y, both rows over 4 slots. AC-13
     // visual gate is "left/right share base art, only shader id differs".
-    const unlitMaterialHandles: Array<Handle<'MaterialAsset', 'shared'>> = [];
+    const unlitMaterialHandles: Array<AssetHandle<'material'>> = [];
     for (const slot of SPRITE_SLOTS) {
       unlitMaterialHandles.push(
-        world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+        app.assets.create({
           kind: 'material',
         passes: [
           { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND }, tags: { LightMode: 'Forward' }, queue: 3000 } },
@@ -248,7 +257,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
             region: [0, 0, 1, 1],
             pivotAndSize: [0.5, 0.5, 1, 1],
           },
-        }),
+        }).unwrap(),
       );
     }
     spawnSpriteRow(world, SPRITE_SLOTS, unlitMaterialHandles, 0.45);
@@ -264,7 +273,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // (different shading models by design) but the cube being lit in the same
   // colour direction is the AC-14 visual signal.
   if (mode !== 'ab-compare') {
-    const cubeMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+    const cubeMaterial = app.assets.create({
       kind: 'material',
       passes: [
         { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -274,13 +283,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         metallic: 0.0,
         roughness: 0.8,
       },
-    });
+    }).unwrap();
     world.spawn(
       {
         component: Transform,
         data: { pos: [0.0, -0.6, 0.0], quat: [0, 0, 0, 1], scale: [0.3, 0.3, 0.3]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMaterial] } },
     ).unwrap();
   }
@@ -296,9 +305,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 function spawnSpriteRow(
   world: World,
   slots: typeof SPRITE_SLOTS,
-  handles: ReadonlyArray<Handle<'MaterialAsset', 'shared'>>,
+  handles: ReadonlyArray<AssetHandle<'material'>>,
   yOffset: number,
 ): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     const matHandle = handles[i];
@@ -310,7 +324,7 @@ function spawnSpriteRow(
           data: {
             pos: [slot.pos[0], slot.pos[1] + yOffset, slot.pos[2]], quat: [0, 0, 0, 1], scale: [0.45, 0.45, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        { component: MeshFilter, data: { assetHandle: primitiveQuad } },
         { component: MeshRenderer, data: { materials: [matHandle] } },
       )
       .unwrap();

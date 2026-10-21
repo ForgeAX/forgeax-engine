@@ -10,7 +10,9 @@ import { createRuntimePackOptions } from './runtime-packs';
 
 export async function runTools(delivery, saved) {
   const context = await createWorldContext(new World(), []);
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: [] }),
   }).unwrap();

@@ -113,7 +113,12 @@ export function isComponentFullyTransient(token: Component): boolean {
 }
 
 export function isFieldPortable(fieldType: string): boolean {
-  if (fieldType === 'ref' || fieldType.startsWith('unique<') || fieldType.startsWith('shared<')) {
+  if (
+    fieldType === 'ref' ||
+    fieldType.startsWith('unique<') ||
+    fieldType.startsWith('shared<') ||
+    fieldType.startsWith('asset<')
+  ) {
     return false;
   }
   if (fieldType.startsWith('array<') && fieldType.endsWith('>')) {

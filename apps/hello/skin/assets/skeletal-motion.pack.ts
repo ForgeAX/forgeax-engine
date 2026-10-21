@@ -179,7 +179,7 @@ function skinMesh(): MeshAsset {
 }
 
 export default definePack({
-  schemaVersion: '2.0.0',
+  schemaVersion: '2.0.0', plugins: true,
   packageId: MOTION_PACKAGE_ID,
   name: 'Managed skeletal motion',
   sceneComponents: [

@@ -25,7 +25,7 @@ it('captures and replays packed GBuffer, HDR, SSAO and SSR through Browser WebGP
     }),
   );
   try {
-    await verifyStandardGBufferReplay(host.renderer, recorder, async (name, bytes) => {
+    await verifyStandardGBufferReplay(host.renderer, host.assets, recorder, async (name, bytes) => {
       let binary = '';
       for (let offset = 0; offset < bytes.length; offset += 8192)
         binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
@@ -37,6 +37,7 @@ it('captures and replays packed GBuffer, HDR, SSAO and SSR through Browser WebGP
     });
   } finally {
     renderValue(await host.renderer.dispose());
+    host.assets.dispose();
     canvas.remove();
     (await recorder.dispose()).unwrap();
   }

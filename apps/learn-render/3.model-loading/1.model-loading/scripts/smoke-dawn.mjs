@@ -3,13 +3,13 @@ import testQuality from '../../../../../scripts/test/render-quality.json' with {
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 // learn-render 3.1 model-loading dawn-node smoke.
 //
-// The smoke loads Sponza via the canonical loadByGuid<SceneAsset> path
-// (configurePackIndex + loadByGuid + allocSharedRef + instantiate), mirroring
+// The smoke loads Sponza via the canonical load path
+// (configurePackIndex + load + instantiate), mirroring
 // production and the demo's src/index.ts. The HDR Skylight also loads via
-// loadByGuid.
+// load.
 //
 // A thin static file server (globalThis.fetch monkeypatch) serves every
-// sub-asset from the built dist/ directory as-is, so loadByGuid resolves the
+// sub-asset from the built dist/ directory as-is, so load resolves the
 // scene + its full cross-ref graph without a dev server. The build already
 // decoded textures to RGBA .bin; the smoke reads those pre-decoded bins
 // directly — no on-the-fly decode, same path as production.
@@ -21,7 +21,7 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 //       families (the production crash channel)
 //   (d) console.error fired 0 times during render
 //
-// Falsification (FALSIFY=wrong-guid): loadByGuid with a deliberately-wrong
+// Falsification (FALSIFY=wrong-guid): load with a deliberately-wrong
 // SceneAsset GUID must return an error and the smoke must exit non-zero.
 //   FALSIFY=wrong-guid pnpm -F @forgeax/app-learn-render-3-model-loading-1-model-loading smoke
 
@@ -118,7 +118,7 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
-// --- 3. Load Sponza + HDR via canonical loadByGuid path -------------------
+// --- 3. Load Sponza + HDR via canonical load path -------------------
 
 // 3a. Read pack-index, build URL maps.
 const PACK_INDEX_PATH = resolve(DIST_DIR, 'pack-index.json');
@@ -175,7 +175,7 @@ try {
 
 console.log('[learn-render 3.1 smoke] Standard host constructed');
 
-const world = new World();
+const world = new World({ assets: assets });
 const worldContext = await createWorldContext(world, [
   renderComponentsPlugin(),
   scenePlugin(),
@@ -259,7 +259,7 @@ globalThis.fetch = async (url) => {
   };
 };
 
-// 3d. configurePackIndex + loadByGuid<SceneAsset> + allocSharedRef + instantiate.
+// 3d. Configure the catalog, load a managed scene handle, then instantiate.
 assets.configurePackIndex('/pack-index.json');
 
 const sceneGuidStr = FALSIFY_WRONG_GUID ? '00000000-0000-0000-0000-000000000000' : SPONZA_SCENE_GUID;
@@ -274,29 +274,29 @@ if (!sceneGuidRes.ok) {
   process.exit(1);
 }
 
-const sceneRes = await assets.loadByGuid(sceneGuidRes.value);
+const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
 if (!sceneRes.ok) {
   if (FALSIFY_WRONG_GUID) {
-    console.error(`[smoke] FALSIFY=wrong-guid PASS - loadByGuid correctly failed: ${sceneRes.error.code} (exit non-zero proves gate is falsifiable)`);
+    console.error(`[smoke] FALSIFY=wrong-guid PASS - load correctly failed: ${sceneRes.error.code} (exit non-zero proves gate is falsifiable)`);
     process.exit(1);
   }
-  console.error(`[smoke] FAIL - loadByGuid<SceneAsset>: ${sceneRes.error.code} - ${sceneRes.error.hint ?? ''}`);
+  console.error('[smoke] FAIL - assets.load(scene):', sceneRes.error);
   process.exit(1);
 }
 
 if (FALSIFY_WRONG_GUID) {
-  console.error('[smoke] FALSIFY=wrong-guid BROKEN - loadByGuid succeeded with wrong GUID (gate is NOT falsifiable)');
+  console.error('[smoke] FALSIFY=wrong-guid BROKEN - load succeeded with wrong GUID (gate is NOT falsifiable)');
   process.exit(1);
 }
 
-const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
+const sceneHandle = sceneRes.value;
 const instRes = assets.instantiate(sceneHandle, world);
 if (!instRes.ok) {
   console.error(`[smoke] FAIL - scene instantiate: ${instRes.error.code}`);
   process.exit(1);
 }
 const loadWall = Date.now() - loadStart;
-console.log(`[smoke] Sponza scene instantiated via loadByGuid<SceneAsset> (load wall=${loadWall}ms)`);
+console.log(`[smoke] Sponza scene instantiated via load (load wall=${loadWall}ms)`);
 
 // 3e. HDR Skylight.
 const hdrGuidRes = AssetGuid.parse(NEWPORT_LOFT_GUID);
@@ -305,22 +305,21 @@ if (!hdrGuidRes.ok) {
   process.exit(1);
 }
 
-const hdrPodRes = await assets.loadByGuid(hdrGuidRes.value);
+const hdrPodRes = await assets.load(hdrGuidRes.value, 'equirect');
 if (!hdrPodRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid(HDR): ${hdrPodRes.error.code} - ${hdrPodRes.error.hint ?? ''}`);
+  console.error(`[smoke] FAIL - load(HDR): ${hdrPodRes.error.code} - ${hdrPodRes.error.hint ?? ''}`);
   process.exit(1);
 }
-const hdrPod = hdrPodRes.value;
-// loadByGuid<EquirectAsset> returns the payload; mint a user-tier handle. The
-// equirect->cubemap + IBL projection is INTERNAL to the engine (lazy, in the
-// render record arm) -- the Skylight holds the equirect handle, no manual upload.
-const equirect = world.allocSharedRef('EquirectAsset', hdrPod);
+const hdrPod = assets.read(hdrPodRes.value).unwrap();
+// Skylight consumes the loaded handle; the read snapshot above is only for
+// metadata reporting. The renderer prepares its cubemap and IBL projection.
+const equirect = hdrPodRes.value;
 
 world.spawn({
   component: Skylight,
   data: { equirect, intensity: 1.0 },
 });
-console.log(`[smoke] HDR loadByGuid + Skylight spawn OK (format=${hdrPod.format} ${hdrPod.width}x${hdrPod.height})`);
+console.log(`[smoke] HDR load + Skylight spawn OK (format=${hdrPod.format} ${hdrPod.width}x${hdrPod.height})`);
 
 globalThis.fetch = originalFetch;
 

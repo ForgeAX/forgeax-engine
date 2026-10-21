@@ -3,7 +3,7 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Skylight } from '@forgeax/engine-render';
 import type { Renderer } from '@forgeax/engine-render';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { EquirectAsset } from '@forgeax/engine-types';
+import type { AssetHandle, EquirectAsset } from '@forgeax/engine-types';
 import type { Context } from '@forgeax/engine-plugin';
 
 export const GAME_DEFAULT_HDR_GUID = '81eec382-392f-5a93-8998-0ecf11ef7990';
@@ -44,9 +44,7 @@ type AssetContentEvidenceArgs = {
   readonly skylight: EntityHandle | undefined;
 };
 
-function witnessFromResult(result: Awaited<ReturnType<AssetRegistry['loadByGuid']>>): AssetLoadWitness {
-  if (!result.ok) return { ok: false, code: result.error.code };
-  const payload = result.value as EquirectAsset;
+function witnessFromPayload(payload: EquirectAsset): AssetLoadWitness {
   return {
     ok: true,
     kind: payload.kind,
@@ -68,29 +66,38 @@ export function installAssetContentEvidence(args: AssetContentEvidenceArgs): voi
   const guidResult = parseGuid(GAME_DEFAULT_HDR_GUID);
   const missingResult = parseGuid(MISSING_GUID);
   if (!guidResult.ok || !missingResult.ok) return;
+  const assets = args.assets;
   const guid = guidResult.value;
   const missingGuid = missingResult.value;
   let latest: AssetLoadWitness = { ok: false, code: 'not-started' };
   let reloads = 0;
 
-  const apply = (payload: EquirectAsset, intensity: number): void => {
-    if (args.skylight === undefined) return;
-    const equirect = args.world.allocSharedRef('EquirectAsset', payload);
-    args.world.set(args.skylight, Skylight, { equirect, intensity });
+  let equirect: AssetHandle<'equirect'> | undefined;
+  let disposed = false;
+  const load = async (): Promise<void> => {
+    const result = await assets.load(guid, 'equirect');
+    if (!result.ok) {
+      latest = { ok: false, code: result.error.code };
+      return;
+    }
+    if (disposed) {
+      assets.release(result.value).unwrap();
+      return;
+    }
+    equirect = result.value;
+    latest = witnessFromPayload(assets.read(equirect).unwrap());
+    if (args.skylight !== undefined) args.world.set(args.skylight, Skylight, { equirect, intensity: 0.25 }).unwrap();
   };
 
-  const load = async (): Promise<AssetLoadWitness> => {
-    const result = await args.assets!.loadByGuid<EquirectAsset>(guid);
-    latest = witnessFromResult(result);
-    if (result.ok) apply(result.value, 0.25);
-    return latest;
-  };
-
-  const ready = load().then(() => undefined);
+  const ready = load();
   const reload = async (): Promise<AssetLoadWitness> => {
-    args.assets!.invalidate(GAME_DEFAULT_HDR_GUID);
+    await ready;
+    if (disposed || equirect === undefined) return latest;
     reloads += 1;
-    return load();
+    const result = await assets.reload(equirect, { conflict: 'reject' });
+    if (disposed) return latest;
+    latest = result.ok ? witnessFromPayload(assets.read(equirect).unwrap()) : { ok: false, code: result.error.code };
+    return latest;
   };
   const setIntensity = (intensity: number): void => {
     if (args.skylight === undefined) return;
@@ -98,8 +105,10 @@ export function installAssetContentEvidence(args: AssetContentEvidenceArgs): voi
   };
   const reset = (): void => setIntensity(0.25);
   const probeMissing = async (): Promise<{ readonly ok: boolean; readonly code?: string }> => {
-    const result = await args.assets!.loadByGuid<EquirectAsset>(missingGuid);
-    return result.ok ? { ok: true } : { ok: false, code: result.error.code };
+    const result = await assets.load(missingGuid, 'equirect');
+    if (!result.ok) return { ok: false, code: result.error.code };
+    assets.release(result.value).unwrap();
+    return { ok: true };
   };
   const evidence: GameDefaultAssetEvidence = {
     ready,
@@ -111,7 +120,7 @@ export function installAssetContentEvidence(args: AssetContentEvidenceArgs): voi
       const skylight = args.skylight === undefined ? null : args.world.get(args.skylight, Skylight);
       return {
         guid: GAME_DEFAULT_HDR_GUID,
-        name: args.assets!.resolveName(GAME_DEFAULT_HDR_GUID),
+        name: args.assets!.catalogEntry(GAME_DEFAULT_HDR_GUID)?.name ?? GAME_DEFAULT_HDR_GUID,
         load: latest,
         reloads,
         intensity: skylight?.ok ? skylight.value.intensity : null,
@@ -123,6 +132,8 @@ export function installAssetContentEvidence(args: AssetContentEvidenceArgs): voi
   host[GAME_DEFAULT_ASSET_EVIDENCE_KEY] = evidence;
   args.context.effect(
     () => () => {
+      disposed = true;
+      if (equirect !== undefined) assets.release(equirect).unwrap();
       if (host[GAME_DEFAULT_ASSET_EVIDENCE_KEY] === evidence) delete host[GAME_DEFAULT_ASSET_EVIDENCE_KEY];
     },
     'game-default/asset-evidence',

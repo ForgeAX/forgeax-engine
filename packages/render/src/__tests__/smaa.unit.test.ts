@@ -7,10 +7,7 @@ import { ANTIALIAS_SMAA, antialiasFromF32, Camera } from '../components/camera';
 import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
 import { smaaLookupData } from '../features/smaa/lookup-data';
 import { createSmaaRenderFeature, SMAA_PROGRAMS } from '../features/smaa/shaders';
-import {
-  createStandardOutputPlan,
-  validateStandardOutputPlan,
-} from '../pipeline/standard-output/graph';
+import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 
 describe('SMAA authoring and production programs', () => {
@@ -27,12 +24,8 @@ describe('SMAA authoring and production programs', () => {
     expect(extractCameraSnapshots(world)[0]?.antialias).toBe('smaa');
     expect(() => antialiasFromF32(5)).toThrow();
   });
-  it.each([
-    'direct',
-    'clustered',
-  ] as const)('places SMAA after spatial effects and before the single output encoding in %s', (lane) => {
+  it('places SMAA after spatial effects and before the single output encoding', () => {
     const plan = createStandardOutputPlan({
-      lane,
       temporal: false,
       meter: false,
       bloom: true,
@@ -43,7 +36,6 @@ describe('SMAA authoring and production programs', () => {
       barrelDistortion: true,
       fxaa: false,
       smaa: true,
-      outputEncoding: 'explicit-oetf',
     });
     expect(plan.logicalStages).toEqual([
       'bloom',
@@ -59,8 +51,6 @@ describe('SMAA authoring and production programs', () => {
       input: 'linear-ldr',
       output: 'linear-ldr',
     });
-    expect(validateStandardOutputPlan(plan).ok).toBe(true);
-    expect(plan.outputEncodingCount).toBe(1);
   });
   it.each(SMAA_PROGRAMS)('validates the actual $name shader with Naga', async (program) => {
     const parsed = await parse(program.source);

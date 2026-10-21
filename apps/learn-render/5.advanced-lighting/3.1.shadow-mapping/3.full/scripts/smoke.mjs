@@ -18,6 +18,8 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const FALSIFY = process.env.FALSIFY ?? '';
@@ -176,9 +178,7 @@ const { createPlaneGeometry } = await import('@forgeax/engine-geometry');
 const { Materials } = await import('@forgeax/engine-render');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
@@ -215,6 +215,8 @@ if (assets === null) {
 }
 
 const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
 // --- 6. Register wood texture under its GUID ---
 
@@ -236,11 +238,10 @@ const woodTexAsset = {
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
 
-assets.catalog(woodGuidRes.value, woodTexAsset);
-const woodHandle = world.allocSharedRef('TextureAsset', woodTexAsset);
+const woodHandle = world.assets.create(woodTexAsset).unwrap();
 
 // Floor material POJO with wood texture.
-const floorMat = world.allocSharedRef('MaterialAsset', {
+const floorMat = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -257,7 +258,7 @@ const floorMat = world.allocSharedRef('MaterialAsset', {
   values: {
     baseColorTexture: unwrapHandle(woodHandle),
   },
-});
+}).unwrap();
 
 // --- 7. Spawn scene ---
 
@@ -269,7 +270,7 @@ if (!floorRes.ok) {
   console.error('[smoke] FAIL - createPlaneGeometry failed:', floorRes.error.code);
   process.exit(1);
 }
-const floorMesh = world.allocSharedRef('MeshAsset', floorRes.value);
+const floorMesh = world.assets.create(floorRes.value).unwrap();
 world.spawn(
   {
     component: Transform,
@@ -291,7 +292,7 @@ const cubes = [
 for (const c of cubes) {
   const [r, g, b] = c.color;
   const mat = Materials.standard({ baseColor: [r, g, b, 1] });
-  const matHandle = world.allocSharedRef('MaterialAsset', mat);
+  const matHandle = world.assets.create(mat).unwrap();
   world.spawn(
     {
       component: Transform,
@@ -301,7 +302,7 @@ for (const c of cubes) {
         scale: c.scale,
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   ).unwrap();
 }

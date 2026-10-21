@@ -1,5 +1,7 @@
 import type { AssetEnvelopeV2 } from './asset.js';
+import type { AssetError } from './asset-error-contracts.js';
 import type { AssetLoadError } from './asset-errors.js';
+import type { AssetHandle } from './asset-handle.js';
 import type { ArtifactDescriptor, Asset } from './index.js';
 import type { Result } from './result.js';
 
@@ -37,6 +39,18 @@ export interface AssetDecoderInput<P> {
 export interface AssetDecoder<P> {
   readonly references?: 'eager' | 'deferred';
   decode(input: AssetDecoderInput<P>): Promise<AssetDecoderResult<P>>;
+  /** Synchronous runtime admission. The returned value is captured before commit. */
+  prepare?(value: P, context: AssetPreparationContext): Result<P, AssetError>;
+}
+
+/** References visited by preparation become the accepted content's owned dependencies. */
+export interface AssetPreparationContext {
+  reference<K extends string>(
+    value: string | AssetHandle<K>,
+    kind: K,
+  ): Result<AssetHandle<K>, AssetError>;
+  /** An explicit detached read; it cannot mutate the candidate dependency. */
+  read<K extends string, P>(handle: AssetHandle<K, P>): Result<P, AssetError>;
 }
 
 /** Owner contribution installed into one host decoder map. */

@@ -59,12 +59,12 @@ export async function runChannelBrowserCase(
   };
   try {
     const samples = await verifyLightingChannels(host.renderer, {
+      assets: host.assets,
       receiver,
       paths,
       async preparePhysicalMaterial(source) {
-        await prepareChannelPhysicalMaterial(
+        return await prepareChannelPhysicalMaterial(
           host.assets,
-          source,
           await commands.prepareChannelPhysicalMaterial(source),
         );
       },

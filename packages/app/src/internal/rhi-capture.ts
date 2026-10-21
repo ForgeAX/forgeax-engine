@@ -37,23 +37,18 @@ export interface RhiTapeArtifactRef extends TapeArtifact {
       };
 }
 
-export type RhiTapeUploadOptions = Pick<
-  BrowserCaptureOptions,
-  'endpoint' | 'runId' | 'signal' | 'chunkBytes' | 'chunkAttempts'
->;
-
 export interface RhiCapture {
   captureFrame(options?: CaptureFrameOptions): Promise<Result<RhiTapeArtifactRef, RhiDebugError>>;
   /** Resumable chunked upload to the RHI-debug dev transport. */
   upload(
     artifact: RhiTapeArtifactRef,
-    options?: RhiTapeUploadOptions,
+    options?: BrowserCaptureOptions,
   ): Promise<Result<BrowserArtifactRef, BrowserCaptureError>>;
 }
 
 export function uploadRhiTape(
   artifact: RhiTapeArtifactRef,
-  options: RhiTapeUploadOptions = {},
+  options: BrowserCaptureOptions = {},
 ): Promise<Result<BrowserArtifactRef, BrowserCaptureError>> {
   return uploadTape(artifact, options);
 }

@@ -1,6 +1,7 @@
 import { isToolCommandContract } from '@forgeax/engine-tool-runtime';
 import {
   type CatalogEntry,
+  canonicalJson,
   err,
   ok,
   type PackV2Error,
@@ -14,15 +15,6 @@ import { type PackProgramError, verifyPackProgram } from './program.js';
 import type { FixedPackPublication } from './runtime-publication.js';
 import { validatePackV2 } from './schema-compiled.js';
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value !== null && typeof value === 'object')
-    return `{${Object.entries(value)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
-      .join(',')}}`;
-  return JSON.stringify(value) ?? 'null';
-}
 function text(value: unknown): boolean {
   return typeof value === 'string' && value.length > 0;
 }
@@ -61,7 +53,7 @@ export function validateFixedPackPublication(
       throw new TypeError('invalid fixed Catalog rows');
     if (
       selected &&
-      canonical(selected) !== canonical(rows.find((row) => row.guid === selected.guid))
+      canonicalJson(selected) !== canonicalJson(rows.find((row) => row.guid === selected.guid))
     )
       throw new TypeError('selected fixed row differs from the captured Catalog');
     const first = rows[0];
@@ -91,7 +83,7 @@ export function validateFixedPackPublication(
       receipt.outputDigest !== packDigest ||
       receipt.outputSetDigest !== outputSetDigest ||
       !text(receipt.inputFingerprint) ||
-      canonical(receipt.externalEvidence) !== canonical(publication.externalEvidence)
+      canonicalJson(receipt.externalEvidence) !== canonicalJson(publication.externalEvidence)
     )
       throw new TypeError('fixed publication receipt differs');
     const current = publication.current;
@@ -130,8 +122,8 @@ export function validateFixedPackPublication(
         !text(output.sourceKey) ||
         (row.sourceKey !== undefined && row.sourceKey !== output.sourceKey) ||
         !digest(output.digest) ||
-        canonical(output.refs) !== canonical(asset.refs) ||
-        canonical(row.publication) !== canonical(publication) ||
+        canonicalJson(output.refs) !== canonicalJson(asset.refs) ||
+        canonicalJson(row.publication) !== canonicalJson(publication) ||
         (row.lifecycle !== undefined && row.lifecycle !== 'current')
       )
         throw new TypeError('fixed sibling evidence differs');

@@ -1,21 +1,10 @@
-// feat-20260614 M5 / w25 — runtime rejection tests for the two retired
-// schema-vocab keyword families. Both renames preserve brand and storage
-// layout; only the keyword + dispatch arm changed. The
-// SchemaUnsupportedFieldError migration hint redirects AI users straight
-// to the new keyword (charter F1 single-entry indexability).
-//
-//   'ref<T>'    -> hint contains 'unique<T>'   (M1 rename)
-//   'handle<T>' -> hint contains 'shared<T>'   (M5 cut)
-//
-// AC-14 (requirements): writing either deprecated literal to defineComponent
-// must throw a structured error with the migration hint pointing at the
-// replacement keyword.
+// Retired schema vocabulary must fail with current ownership guidance.
 
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
 
 describe('w25 deprecated schema-vocab rejection', () => {
-  it("'handle<MeshAsset>' throws SchemaUnsupportedFieldError + hint mentions 'shared<MeshAsset>'", () => {
+  it("'handle<MeshAsset>' throws SchemaUnsupportedFieldError + hint mentions 'asset<mesh>'", () => {
     // gate-allow:ecs-brand
     let caught: unknown;
     try {
@@ -26,8 +15,8 @@ describe('w25 deprecated schema-vocab rejection', () => {
     expect(caught).toBeDefined();
     const e = caught as { code: string; hint: string };
     expect(e.code).toBe('schema-unsupported-field');
-    expect(e.hint).toContain("'shared<MeshAsset>'");
-    expect(e.hint).toContain('feat-20260614 M5');
+    expect(e.hint).toContain("'asset<mesh>'");
+    expect(e.hint).toContain('AssetRegistry');
   });
 
   it("'ref<PhysicsBody>' throws SchemaUnsupportedFieldError + hint mentions 'unique<PhysicsBody>'", () => {
@@ -45,9 +34,9 @@ describe('w25 deprecated schema-vocab rejection', () => {
     expect(e.hint).toContain('feat-20260614 M1');
   });
 
-  it("'shared<MeshAsset>' is accepted (the new keyword still works)", () => {
+  it("'asset<mesh>' is accepted (the new keyword still works)", () => {
     expect(() => {
-      defineComponent('w25SharedSample', { f: { type: 'shared<MeshAsset>' } });
+      defineComponent('w25SharedSample', { f: { type: 'asset<mesh>' } });
     }).not.toThrow();
   });
 

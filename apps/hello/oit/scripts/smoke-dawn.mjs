@@ -92,14 +92,15 @@ if (!constructed.ok) {
   process.exit(1);
 }
 const renderer = constructed.value.renderer;
+const assets = constructed.value.assets;
 const backend = renderer.inspect().capabilities.backendKind;
 console.log(`[hello-oit] backend=${backend}`);
 
-const world = new World();
+const world = new World({ assets });
 const attached = renderer.attach(world);
 if (!attached.ok) throw attached.error;
 const lease = attached.value;
-const scene = spawnOitScene(world);
+const scene = spawnOitScene(world, assets);
 const errors = [];
 renderer.subscribe((event) => {
   if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });

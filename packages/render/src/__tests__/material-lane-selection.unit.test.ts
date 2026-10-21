@@ -19,7 +19,6 @@ function entry(renderableIndex: number, materialHandle: number, lightMode: strin
     vertexEntry: 'vs_main',
     fragmentEntry: lightMode === 'Deferred' ? 'fs_gbuffer' : 'fs_main',
     materialShaderId: 'forgeax::default-standard-pbr',
-    paramSnapshot: undefined,
   };
 }
 

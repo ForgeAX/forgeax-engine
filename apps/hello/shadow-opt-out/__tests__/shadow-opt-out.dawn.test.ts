@@ -14,11 +14,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, ShadowParticipation } from '@forgeax/engine-render';
-import { createRenderer } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { Materials } from '@forgeax/engine-render';
 import type { Renderer } from '@forgeax/engine-render';
 
@@ -107,8 +109,8 @@ function createMockCanvas(width: number, height: number): HTMLCanvasElement {
   } as unknown as HTMLCanvasElement;
 }
 
-function buildWorld(): World {
-  const world = new World();
+function buildWorld(assets: AssetRegistry, cube: AssetHandle<'mesh'>): World {
+  const world = new World({assets});
 
   world.spawn(
     {
@@ -151,7 +153,7 @@ function buildWorld(): World {
       component: Transform,
       data: { pos: [0, -0.01, 0], quat: [0, 0, 0, 1], scale: [10, 0.02, 10]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cube } },
     { component: MeshRenderer, data: {} },
   );
 
@@ -173,13 +175,14 @@ describe('shadow-opt-out AC-17 dawn (ShadowParticipation + cutout)', () => {
         return;
       }
       const canvas = createMockCanvas(WIDTH, HEIGHT);
-      const created = await createRenderer(canvas, {}, { shaderManifestUrl: manifestUrl });
+      const created = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
       if (!created.ok) throw created.error;
       expect(created.ok).toBe(true);
-      const renderer: Renderer = created.value;
+      const {renderer, assets} = created.value;
+      const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
       expect(renderer.inspect().capabilities.backendKind).toBe('webgpu');
 
-      const world = buildWorld();
+      const world = buildWorld(assets, cube);
       const worldAttachment1 = renderer.attach(world);
       if (!worldAttachment1.ok) throw worldAttachment1.error;
       const frameRequest = {
@@ -189,30 +192,30 @@ describe('shadow-opt-out AC-17 dawn (ShadowParticipation + cutout)', () => {
       };
 
       // Cube A: casts shadow (default)
-      const matA = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] }));
+      const matA = assets.create(Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] })).unwrap();
       world.spawn(
         {
           component: Transform,
           data: { pos: [-3, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [matA] } },
       );
 
       // Cube B: no shadow (ShadowParticipation { cast: false })
-      const matB = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.1, 0.8, 0.1, 1] }));
+      const matB = assets.create(Materials.standard({ baseColor: [0.1, 0.8, 0.1, 1] })).unwrap();
       world.spawn(
         {
           component: Transform,
           data: { pos: [0, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [matB] } },
     { component: ShadowParticipation, data: { cast: false, receive: true } },
       );
 
       // Cube C: cutout shadow shader
-      const matC = world.allocSharedRef('MaterialAsset', {
+      const matC = assets.create({
         kind: 'material',
         passes: [
           { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -223,13 +226,13 @@ describe('shadow-opt-out AC-17 dawn (ShadowParticipation + cutout)', () => {
           },
         ],
         values: { baseColor: [0.1, 0.1, 0.9, 1], metallic: 0, roughness: 0.5 },
-      });
+      }).unwrap();
       world.spawn(
         {
           component: Transform,
           data: { pos: [3, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [matC] } },
       );
 

@@ -7,15 +7,19 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import type { InputSnapshot } from '@forgeax/engine-input';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const PAN_SPEED = 4;
 export const INITIAL_HALF_HEIGHT = 3;
@@ -46,11 +50,19 @@ function firstCamera(world: World): EntityHandle | null {
 }
 
 function colorMaterial(world: World, color: readonly [number, number, number, number]) {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard({ baseColor: color }));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard({ baseColor: color })).unwrap();
 }
 
 /** Build a colorful 2D-style cube field viewed by an orthographic pan camera. */
 export function buildCameraPanWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const colors: ReadonlyArray<readonly [number, number, number, number]> = [
     [0.9, 0.2, 0.2, 1],
     [0.2, 0.8, 0.3, 1],
@@ -69,7 +81,7 @@ export function buildCameraPanWorld(world: World): void {
     const material = colorMaterial(world, color);
     world.spawn(
       { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [1.4, 1.4, 0.2] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }

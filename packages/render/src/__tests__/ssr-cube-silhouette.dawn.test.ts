@@ -88,12 +88,12 @@ it.each([
       usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_STORAGE_BINDING,
     });
     const traced = device.createTexture({
-      size: [half, half],
+      size: [size, size],
       format: 'rgba16float',
       usage: GPU_TEXTURE_USAGE_STORAGE_BINDING | GPU_TEXTURE_USAGE_COPY_SRC,
     });
     const reactive = device.createTexture({
-      size: [half, half],
+      size: [size, size],
       format: 'r32float',
       usage: GPU_TEXTURE_USAGE_STORAGE_BINDING,
     });
@@ -220,26 +220,26 @@ struct Out { @builtin(frag_depth) depth:f32, @location(0) normal:u32, @location(
           { binding: 7, resource: temporal.createView() },
           { binding: 8, resource: reactive.createView() },
         ]),
-      half,
+      size,
     );
     const readback = device.createBuffer({
-      size: half * half * 8,
+      size: size * size * 8,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     });
-    encoder.copyTextureToBuffer({ texture: traced }, { buffer: readback, bytesPerRow: half * 8 }, [
-      half,
-      half,
+    encoder.copyTextureToBuffer({ texture: traced }, { buffer: readback, bytesPerRow: size * 8 }, [
+      size,
+      size,
     ]);
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPU_BUFFER_USAGE_MAP_READ);
     const words = new Uint16Array(readback.getMappedRange().slice(0));
     readback.unmap();
-    const hits = new Uint8Array(half * half);
+    const hits = new Uint8Array(size * size);
     // Mirror-box slab intersections are independent of the GPU march and depth-pyramid.
-    for (let y = 0; y < half; y++)
-      for (let x = 0; x < half; x++) {
-        const sx = (((2 * x + 0.5) / size) * 2 - 1) / Math.sqrt(3),
-          sy = (1 - ((2 * y + 0.5) / size) * 2) / Math.sqrt(3);
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        const sx = (((x + 0.5) / size) * 2 - 1) / Math.sqrt(3),
+          sy = (1 - ((y + 0.5) / size) * 2) / Math.sqrt(3);
         const d = [
           -2 / 3 + sx * Math.SQRT1_2 - sy / Math.sqrt(18),
           -1 / 3 + sy * Math.sqrt(8 / 9),
@@ -260,17 +260,17 @@ struct Out { @builtin(frag_depth) depth:f32, @location(0) normal:u32, @location(
           enter = Math.max(enter, Math.min(a, b));
           leave = Math.min(leave, Math.max(a, b));
         }
-        hits[y * half + x] = Number(enter > 0 && enter < leave);
+        hits[y * size + x] = Number(enter > 0 && enter < leave);
       }
     let interior = 0,
       misses = 0,
       exteriorHits = 0;
-    for (let y = 180; y < half - 1; y++)
-      for (let x = 1; x < half - 1; x++) {
+    for (let y = 360; y < size - 1; y++)
+      for (let x = 1; x < size - 1; x++) {
         const footprint = [-1, 0, 1].flatMap((dy) =>
-          [-1, 0, 1].map((dx) => hits[(y + dy) * half + x + dx] === 1),
+          [-1, 0, 1].map((dx) => hits[(y + dy) * size + x + dx] === 1),
         );
-        const offset = (y * half + x) * 4;
+        const offset = (y * size + x) * 4;
         const confident = (words[offset + 3] ?? 0) >= 0x3800; // positive half >= 0.5
         if (footprint.every(Boolean)) {
           interior++;

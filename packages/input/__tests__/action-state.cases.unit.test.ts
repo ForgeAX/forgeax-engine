@@ -380,7 +380,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         const sample = sampleForAction({ downKeys: [' '] });
         // prevActionStates: empty (no action was pressed)
         const prev: ActionState[] = [];
-        const states = deriveActionStates(sample, map, prev);
+        const states = deriveActionStates(sample, map, (action) => prev.find((state) => state.action === action)?.pressed ?? false);
         expect(justPressedOf(states, 'jump')).toBe(true);
         expect(justReleasedOf(states, 'jump')).toBe(false);
       });
@@ -394,7 +394,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         const prev: ActionState[] = [
           { deadzone: 0.2,  action: 'jump', pressed: true, justPressed: true, justReleased: false, strength: 1.0, raw: 1.0 },
         ];
-        const states = deriveActionStates(sample, map, prev);
+        const states = deriveActionStates(sample, map, (action) => prev.find((state) => state.action === action)?.pressed ?? false);
         expect(pressedOf(states, 'jump')).toBe(true);
         expect(justPressedOf(states, 'jump')).toBe(false);
       });
@@ -408,7 +408,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         const prev: ActionState[] = [
           { deadzone: 0.2,  action: 'jump', pressed: true, justPressed: false, justReleased: false, strength: 1.0, raw: 1.0 },
         ];
-        const states = deriveActionStates(sample, map, prev);
+        const states = deriveActionStates(sample, map, (action) => prev.find((state) => state.action === action)?.pressed ?? false);
         expect(pressedOf(states, 'jump')).toBe(false);
         expect(justReleasedOf(states, 'jump')).toBe(true);
       });
@@ -422,7 +422,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         const prev: ActionState[] = [
           { deadzone: 0.2,  action: 'jump', pressed: false, justPressed: false, justReleased: true, strength: 0, raw: 0 },
         ];
-        const states = deriveActionStates(sample, map, prev);
+        const states = deriveActionStates(sample, map, (action) => prev.find((state) => state.action === action)?.pressed ?? false);
         expect(justReleasedOf(states, 'jump')).toBe(false);
       });
     });

@@ -642,9 +642,9 @@
 
 .cb-preview-panel {
   display: flex;
-  flex: 0 0 var(--cb-preview-w, 280px);
+  flex: 0 0 var(--cb-preview-w, 380px);
   flex-direction: column;
-  width: var(--cb-preview-w, 280px);
+  width: var(--cb-preview-w, 380px);
   min-width: 180px;
   max-width: 560px;
   min-height: 0;

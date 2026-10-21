@@ -58,7 +58,8 @@ test('catalog gate owns the canonical audit vocabulary and staged recovery actio
 test('public ScriptablePack documentation exposes progressive consumer recovery', () => {
   for (const token of [
     'SCRIPTABLE_PACK_ASSET_KINDS',
-    'loadByGuid(guid)',
+    'assets.load(guid, kind)',
+    'assets.read(handle)',
     'sourceKey',
     'refs',
     'artifacts',
@@ -77,6 +78,9 @@ test('catalog gate derives the complete ScriptablePack documentation matrix from
     'SCRIPTABLE_PACK_ASSET_KINDS',
     'summary-only',
     'shared<AnimationClip> handle',
+    'loadByGuid',
+    'allocSharedRef',
+    'World-owned shared reference',
     '12-kind set',
   ]) {
     assert.ok(gate.includes(token), `catalog gate must enforce ${token}`);

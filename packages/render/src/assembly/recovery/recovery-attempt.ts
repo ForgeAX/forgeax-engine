@@ -561,18 +561,18 @@ export async function probeCandidateGraphExecution(
   }
 }
 
-export interface AcquiredDeviceGeneration {
+interface AcquiredDeviceGeneration {
   readonly adapter: RhiAdapter;
   readonly device: RhiDevice;
   readonly context: RhiCanvasContext;
 }
 
-export interface DeviceGenerationAcquisitionFailure {
+interface DeviceGenerationAcquisitionFailure {
   readonly stage: 'adapter' | 'device' | 'context';
   readonly error: RhiError;
 }
 
-export type RecoveryStepOutcome<T, E> =
+type RecoveryStepOutcome<T, E> =
   | { readonly kind: 'value'; readonly value: T }
   | { readonly kind: 'error'; readonly error: E }
   | { readonly kind: 'timeout'; readonly error: RhiError };

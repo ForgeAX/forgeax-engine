@@ -107,6 +107,11 @@ try {
    return parseImage(bytes,'image/png',{mipmap:false}).unwrap();
  };
  const set = (args,options) => client.call('preview.texture.set',{...args,options});
+ const meshAsset=assets.find(asset=>asset.sourceKey==='mesh/box');
+ assert.ok(meshAsset,'the independent Mesh page proof must be catalogued');
+ const meshState=await client.openAsset(meshAsset.guid,{projectId:state.project.id});
+ const meshTarget=meshState.resourceOpens.mesh.preview.target;
+ const meshArgs={targetId:meshTarget.targetId,targetGeneration:meshTarget.generation};
  const rgba = await open('texture/rgba-mips');
  assert.equal(rgba.info.mipCount,4);
  await capture(rgba.args,'rgba-checker');
@@ -205,8 +210,9 @@ try {
  await waitOptions(env.args,{projection:'cross'});
  await capture(env.args,'cube-cross');
  await page.screenshot({path:join(output,'environment-ui.png')});
- // Earlier pages retain their own Engine settings; closing invalidates the exact target.
- assert.equal((await client.call('preview.texture.get',rgba.args)).options.mip,3);
+ // A singleton Texture page retires replaced assets; other type pages retain their owners.
+ await assert.rejects(client.call('preview.texture.get',rgba.args),{code:'view-workspace-target-mismatch'});
+ await capture(meshArgs,'retained-mesh');
  await client.closePreview(env.args);
  await assert.rejects(set(env.args,{exposure:1}));
  const reopened=await open('equirect/environment');

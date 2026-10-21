@@ -1,11 +1,12 @@
-import { AssetRegistry, HANDLE_CUBE, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { ChildOf, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import {
   Camera,
   Instances,
@@ -22,6 +23,8 @@ import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
 } from '../scene/render-scene';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -49,7 +52,9 @@ function material(values: Record<string, unknown>): MaterialAsset {
 }
 
 function createWorld(withCamera: boolean) {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const mesh = assets.create(BUILTIN_CUBE).unwrap();
   registerPropagateTransforms(world);
   const values: Record<string, unknown> = {
     baseColor: [1, 0, 0, 1],
@@ -57,7 +62,7 @@ function createWorld(withCamera: boolean) {
     roughness: 0.5,
   };
   const materialAsset = material(values);
-  const materialHandle = world.allocSharedRef('MaterialAsset', materialAsset);
+  const materialHandle = assets.create(materialAsset).unwrap();
 
   if (withCamera) {
     world
@@ -86,7 +91,7 @@ function createWorld(withCamera: boolean) {
       { component: Transform, data: { pos: [0, 0, 0] } },
       { component: ChildOf, data: { parent: parentA } },
       { component: Visibility, data: { state: VisibilityStateValue.inherited } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: mesh } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
       { component: Instances, data: { transforms: matrices(2, 0) } },
     )
@@ -94,14 +99,14 @@ function createWorld(withCamera: boolean) {
   const sharedConsumer = world
     .spawn(
       { component: Transform, data: { pos: [0.5, 0, 0] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: mesh } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
     )
     .unwrap();
   const hiddenTarget = world
     .spawn(
       { component: Transform, data: { pos: [-0.5, 0, 0] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: mesh } },
       { component: MeshRenderer, data: {} },
       { component: Visibility, data: { state: VisibilityStateValue.visible } },
     )
@@ -109,13 +114,14 @@ function createWorld(withCamera: boolean) {
   const untouched = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -0.5] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: mesh } },
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
 
   world.update(0).unwrap();
   return {
+    assets,
     world,
     values,
     materialHandle,
@@ -142,8 +148,8 @@ function renderableFacts(frame: ExtractedFrame) {
               transforms: [...row.instances.transforms],
             },
       material: {
-        handle: row.material.materialHandle,
-        baseColor: [...row.material.baseColor],
+        handle: row.material.snapshot.materialHandle,
+        baseColor: [...row.material.snapshot.baseColor],
       },
     }))
     .sort((left, right) => left.key.localeCompare(right.key));
@@ -167,7 +173,7 @@ function rowFor(frame: ExtractedFrame, worldId: number, entityKey: EntityHandle)
 
 describe('PersistentRenderScene mixed World updates', () => {
   it('publishes instance inspection only with the accepted Scene and retires removed components', () => {
-    const { world, mixed } = createWorld(true);
+    const { assets, world, mixed } = createWorld(true);
     const instanceCollections = new InstanceProjectionStore();
     const scene = new PersistentRenderScene({ instanceCollections });
     const lease = createRenderReadLease(world);
@@ -183,7 +189,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       if (rejectCandidate && request !== 'none') throw new Error('reject prepared candidate');
       return frame;
     };
-    const draw = () => scene.extractComposition([world], owner, 0, build, [lease]);
+    const draw = () => scene.extractComposition([world], owner, assets, build, [lease]);
     try {
       draw();
       const before = instanceCollections._inspections(0);
@@ -228,10 +234,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     const scene = new PersistentRenderScene({ instanceCollections });
     const requests: PersistentRenderCandidateRequest[] = [];
     const materialCaches = scene.materialSnapshotCacheStore();
-    const assets = new AssetRegistry({
-      materialArtifact: () => undefined,
-      findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-    } as unknown as ShaderRegistry);
+    const assets = first.assets;
 
     const build = (request: PersistentRenderCandidateRequest) => {
       requests.push(request);
@@ -243,7 +246,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       });
       return result;
     };
-    const draw = () => scene.extractComposition(worlds, owner, 0, build, leases);
+    const draw = () => scene.extractComposition(worlds, owner, assets, build, leases);
     const oracle = () =>
       extractFrames(worlds, owner, assets, undefined, undefined, {
         cull: 'none',
@@ -282,17 +285,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       first.world
         .set(first.hiddenTarget, Visibility, { state: VisibilityStateValue.hidden })
         .unwrap();
-      first.world
-        .spawn({
-          component: RuntimeMaterialValue,
-          data: {
-            asset: first.materialHandle,
-            parameter: 'baseColor',
-            kind: 2,
-            value: [0, 1, 0, 1],
-          },
-        })
-        .unwrap();
+      first.assets.update(first.materialHandle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
       first.world.update(0).unwrap();
 
       const mixed = draw();
@@ -303,10 +296,10 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(requests).not.toContain('full');
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
       expect(rowFor(mixed, 0, first.mixed)?.instances?.instanceCount).toBe(3);
-      expect(rowFor(mixed, 0, first.sharedConsumer)?.material.baseColor).toEqual(
+      expect(rowFor(mixed, 0, first.sharedConsumer)?.material.snapshot.baseColor).toEqual(
         new Float32Array([0, 1, 0]),
       );
-      expect(rowFor(mixed, 1, second.sharedConsumer)?.material.baseColor).toEqual(
+      expect(rowFor(mixed, 1, second.sharedConsumer)?.material.snapshot.baseColor).toEqual(
         new Float32Array([1, 0, 0]),
       );
 
@@ -315,9 +308,9 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(unchanged?.temporal?.previousTransform.world).toEqual(
         initialOtherWorld?.transform.world,
       );
-      expect(rowFor(mixed, 0, first.mixed)?.temporal?.previousSource).toBe('current-seed');
+      expect(rowFor(mixed, 0, first.mixed)?.temporal?.previousSource).toBe('last-submitted');
       expect(rowFor(mixed, 0, first.mixed)?.temporal?.previousTransform.world).toEqual(
-        rowFor(mixed, 0, first.mixed)?.transform.world,
+        rowFor(initial, 0, first.mixed)?.transform.world,
       );
       submit(mixed);
 
@@ -354,14 +347,10 @@ describe('PersistentRenderScene mixed World updates', () => {
     let worlds: readonly World[] = [first.world, second.world];
     let leases = [createRenderReadLease(first.world), createRenderReadLease(second.world)];
     let owner = { cameraOwner: 0, resourceOwner: 0 };
-    let catalogEpoch = 0;
     const scene = new PersistentRenderScene({ instanceCollections });
     const requests: PersistentRenderCandidateRequest[] = [];
     const materialCaches = scene.materialSnapshotCacheStore();
-    const assets = new AssetRegistry({
-      materialArtifact: () => undefined,
-      findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-    } as unknown as ShaderRegistry);
+    const assets = first.assets;
     const build = (request: PersistentRenderCandidateRequest) => {
       requests.push(request);
       return extractFrames(worlds, owner, assets, undefined, materialCaches, {
@@ -371,7 +360,7 @@ describe('PersistentRenderScene mixed World updates', () => {
         instanceCollections,
       });
     };
-    const draw = () => scene.extractComposition(worlds, owner, catalogEpoch, build, leases);
+    const draw = () => scene.extractComposition(worlds, owner, assets, build, leases);
     const oracle = () =>
       extractFrames(worlds, owner, assets, undefined, undefined, {
         cull: 'none',
@@ -416,12 +405,14 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(reorderedRow?.temporal?.previousTransform.world).toEqual(initialRow?.transform.world);
       submit(reordered);
 
-      catalogEpoch = 1;
+      publishRuntimeAssets(first.assets, [
+        { guid: '91aee37a-5a6b-4e65-8682-539c9e2fe0c1', asset: { kind: 'sampler' } },
+      ]);
       requests.length = 0;
       const refreshed = draw();
       expect(frameFacts(refreshed)).toEqual(frameFacts(drawableOracle()));
       expect(requests).not.toContain('full');
-      expect(requests.some((request) => typeof request === 'object')).toBe(true);
+      expect(requests.every((request) => request === 'none')).toBe(true);
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
     } finally {
       leases[0]?.dispose();
@@ -436,10 +427,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     const first = createWorld(true);
     const lease = createRenderReadLease(first.world);
     const scene = new PersistentRenderScene({ instanceCollections });
-    const assets = new AssetRegistry({
-      materialArtifact: () => undefined,
-      findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-    } as unknown as ShaderRegistry);
+    const assets = first.assets;
     const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
     const build = (request: PersistentRenderCandidateRequest) =>
       extractFrames([first.world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
@@ -448,7 +436,7 @@ describe('PersistentRenderScene mixed World updates', () => {
         renderables: request,
         instanceCollections,
       });
-    const draw = () => scene.extractComposition([first.world], owner, 0, build, [lease]);
+    const draw = () => scene.extractComposition([first.world], owner, assets, build, [lease]);
 
     try {
       const initial = draw();
@@ -485,14 +473,11 @@ describe('PersistentRenderScene mixed World updates', () => {
   });
 });
 
-it('two Renderers independently observe shared content replacement, rebinding, deletion and retry', () => {
+it('two Renderers independently adopt asset edits, rebinding and retries', () => {
   const fixture = createWorld(true);
   const { world, materialHandle, sharedConsumer } = fixture;
   const owner = { cameraOwner: 0, resourceOwner: 0 };
-  const assets = new AssetRegistry({
-    materialArtifact: () => undefined,
-    findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-  } as unknown as ShaderRegistry);
+  const assets = fixture.assets;
   const consumers = [0, 1].map(() => {
     const instanceCollections = new InstanceProjectionStore();
     const scene = new PersistentRenderScene({ instanceCollections });
@@ -513,40 +498,31 @@ it('two Renderers independently observe shared content replacement, rebinding, d
     return {
       scene,
       lease,
-      draw: () => scene.extractComposition([world], owner, 0, build, [lease]),
+      draw: () => scene.extractComposition([world], owner, assets, build, [lease]),
       fail: () => {
         fail = true;
       },
     };
   });
   const color = (frame: ExtractedFrame) =>
-    Array.from(rowFor(frame, 0, sharedConsumer)?.material.baseColor ?? []);
+    Array.from(rowFor(frame, 0, sharedConsumer)?.material.snapshot.baseColor ?? []);
   try {
     for (const consumer of consumers) expect(color(consumer.draw())).toEqual([1, 0, 0]);
-    const content = world
-      .spawn({
-        component: RuntimeMaterialValue,
-        data: {
-          asset: materialHandle,
-          parameter: 'baseColor',
-          kind: 2,
-          value: [0, 1, 0, 1],
-        },
-      })
-      .unwrap();
+    fixture.assets.update(materialHandle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
+    world.set(sharedConsumer, Transform, { pos: [0.6, 0, 0] }).unwrap();
     for (const consumer of consumers) {
       consumer.fail();
       expect(() => consumer.draw()).toThrow('injected extraction failure');
       expect(color(consumer.draw())).toEqual([0, 1, 0]);
     }
-    const other = world.allocSharedRef('MaterialAsset', material({ baseColor: [0, 0, 1, 1] }));
-    world.set(content, RuntimeMaterialValue, { asset: other }).unwrap();
-    for (const consumer of consumers) expect(color(consumer.draw())).toEqual([1, 0, 0]);
-    world
-      .set(content, RuntimeMaterialValue, { asset: materialHandle, value: [0, 0, 1, 1] })
-      .unwrap();
+    const other = fixture.assets.create(material({ baseColor: [0, 0, 1, 1] })).unwrap();
+    world.set(sharedConsumer, MeshRenderer, { materials: [other] }).unwrap();
     for (const consumer of consumers) expect(color(consumer.draw())).toEqual([0, 0, 1]);
-    world.despawn(content).unwrap();
+    fixture.assets.update(materialHandle, { values: { baseColor: [1, 0, 1, 1] } }).unwrap();
+    for (const consumer of consumers) expect(color(consumer.draw())).toEqual([0, 0, 1]);
+    world.set(sharedConsumer, MeshRenderer, { materials: [materialHandle] }).unwrap();
+    for (const consumer of consumers) expect(color(consumer.draw())).toEqual([1, 0, 1]);
+    fixture.assets.update(materialHandle, { values: { baseColor: [1, 0, 0, 1] } }).unwrap();
     for (const consumer of consumers) expect(color(consumer.draw())).toEqual([1, 0, 0]);
   } finally {
     for (const consumer of consumers) {

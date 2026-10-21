@@ -6,6 +6,7 @@ import type {
   ShaderRegistry,
 } from '@forgeax/engine-shader';
 import { type GpuDrivenPbrProgram, resolveStandardPbrProgram } from '../../gpu-driven/pbr-program';
+import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../../pbr-pipeline';
 import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
 import { type LayoutKind, selectNoColorPbrVariant } from '../material-shader-policy';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../shader-prewarm-policy';
@@ -38,11 +39,8 @@ export function resolveMaterialPipelineShaderId(
   materialShaderId: string,
   passKind: string,
 ): string {
-  return passKind === 'shadow-caster' &&
-    (materialShaderId === 'forgeax::default-standard-pbr' ||
-      materialShaderId === 'forgeax::default-standard-pbr-skin' ||
-      materialShaderId === 'forgeax::pbr-skin')
-    ? 'forgeax::default-shadow-caster'
+  return passKind === 'shadow-caster' && isCanonicalStandardPbrMaterialShader(materialShaderId)
+    ? SHADOW_CASTER_SHADER_ID
     : materialShaderId;
 }
 
@@ -141,14 +139,19 @@ export function resolveMaterialPipelineBindGroups(
 export function isEngineOwnedMaterialShader(materialShaderId: string): boolean {
   return (
     materialShaderId === 'forgeax::default-unlit' ||
-    materialShaderId === 'forgeax::default-shadow-caster' ||
+    materialShaderId === SHADOW_CASTER_SHADER_ID ||
     materialShaderId === 'forgeax::sprite' ||
     materialShaderId === 'forgeax::sprite-lit' ||
     materialShaderId === 'forgeax::default-sprite' ||
     materialShaderId === 'forgeax::msdf-text' ||
-    materialShaderId === 'forgeax::default-standard-pbr' ||
-    materialShaderId === 'forgeax::pbr-skin' ||
-    materialShaderId === 'forgeax::default-standard-pbr-skin'
+    isCanonicalStandardPbrMaterialShader(materialShaderId)
+  );
+}
+
+/** Unlit's independent alpha map uses its schema's compact resource layout. */
+export function isSharedLayoutMaterialShader(materialShaderId: string): boolean {
+  return (
+    isEngineOwnedMaterialShader(materialShaderId) && materialShaderId !== 'forgeax::default-unlit'
   );
 }
 

@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -38,19 +40,18 @@ async function fixture(
     readonly rendererAdapter?: boolean;
   } = {},
 ) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   let generation = 1;
-  const materialHandle = world.allocSharedRef('MaterialAsset', { sourceKey: 'fixture-material' });
+  const materialHandle = runtimeAssetRegistry(world.assets)
+    .create({
+      kind: 'material',
+      sourceKey: 'fixture-material',
+      passes: [{ name: 'main', program: { module: 'fixture-material' } }],
+    })
+    .unwrap();
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused cubemap');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const topologyChanged = options.onTopologyChanged ?? vi.fn();
   const lifecycle = createDynamicGeometryLifecycle();
   const hostOptions = {
@@ -75,7 +76,10 @@ async function fixture(
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh()) } },
+        {
+          component: MeshFilter,
+          data: { assetHandle: runtimeAssetRegistry(world.assets).create(mesh()).unwrap() },
+        },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       )
       .unwrap(),
@@ -92,8 +96,7 @@ async function fixture(
     return host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: source,
-      meshHandle: world.allocSharedRef('MeshAsset', source),
+      meshHandle: runtimeAssetRegistry(world.assets).create(source).unwrap(),
       revision,
       ...(pairedPhysics ? { physicsEntity: Number(entity) } : {}),
       ...(materialIdentity === undefined ? {} : { materialIdentity }),
@@ -120,13 +123,13 @@ async function fixture(
         ...world.get(entity, MeshRenderer).unwrap().materials,
       ]),
       lifecycle: lifecycle.inspect(),
-      materialRefCount: world.sharedRefs.refcount(materialHandle),
+      materialRefCount: runtimeAssets(world.assets).refcount(materialHandle),
       sharedRefCounts: [...sharedHandles.entries()]
         .sort(([left], [right]) => left - right)
-        .map(([raw, handle]) => [raw, world.sharedRefs.refcount(handle)] as const),
+        .map(([raw, handle]) => [raw, runtimeAssets(world.assets).refcount(handle)] as const),
       sharedPayloads: candidates.map((candidate) => {
         const handle = candidate.meshHandle;
-        return handle === undefined ? undefined : world.sharedRefs.resolve(handle);
+        return handle === undefined ? undefined : runtimeAssets(world.assets).resolveAsset(handle);
       }),
     };
   };
@@ -170,8 +173,7 @@ describe('dynamic geometry batch admission', () => {
       return {
         world: f.world,
         entity,
-        mesh: source,
-        meshHandle: f.world.allocSharedRef('MeshAsset', source),
+        meshHandle: runtimeAssetRegistry(f.world.assets).create(source).unwrap(),
         revision: 1,
       };
     });
@@ -428,19 +430,24 @@ describe('dynamic geometry batch admission', () => {
 
   it('latches a synchronous GPU cleanup failure after commit and fences the next frame', async () => {
     const f = await fixture();
-    const retain = f.store.retainMeshResidency.bind(f.store);
+    const prepare = f.store.prepareMeshResidency.bind(f.store);
     let failRelease = false;
-    vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, worldId) => {
-      const lease = retain(handle, worldId);
-      if (lease === undefined) return undefined;
-      return {
-        track: (completed) => lease.track(completed),
-        release: (evict) => {
-          if (failRelease) throw new Error('injected GPU residency cleanup failure');
-          return lease.release(evict);
-        },
-      };
-    });
+    vi.spyOn(f.store, 'prepareMeshResidency').mockImplementation(
+      (handle, mesh, revision, scope, profile, capture) =>
+        prepare(handle, mesh, revision, scope, profile, (physical) => {
+          const lease = physical.lease;
+          Object.assign(physical, {
+            lease: {
+              track: (completed: Promise<void>) => lease.track(completed),
+              release: (evict: boolean) => {
+                if (failRelease) throw new Error('injected GPU residency cleanup failure');
+                return lease.release(evict);
+              },
+            },
+          });
+          capture?.(physical);
+        }),
+    );
     const ordering = { world: f.world, fixedStep: 0 };
     f.host.acceptDynamicGeometryCandidates(f.prepare(1), ordering).unwrap();
     const pending = f.prepare(2);

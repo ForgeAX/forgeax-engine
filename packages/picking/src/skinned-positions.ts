@@ -1,9 +1,10 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { Skin, skinVertexPosition } from '@forgeax/engine-skinning';
-import { type MeshAsset, type SkeletonAsset, toShared } from '@forgeax/engine-types';
+import type { MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
 
 /** Query-local world vertices: no retained pose, GPU readback or World mutation. */
 export function skinnedPositions(
@@ -15,10 +16,7 @@ export function skinnedPositions(
 ): { positions: Float32Array; bounds: Float32Array } | undefined {
   const skin = world.get(entity, Skin);
   if (!skin.ok) return undefined;
-  const resolved = resolveAssetHandle<SkeletonAsset>(
-    world,
-    toShared<'SkeletonAsset'>(Math.round(skin.value.skeleton as number)),
-  );
+  const resolved = runtimeAssets(world.assets).resolveAsset<SkeletonAsset>(skin.value.skeleton);
   if (!resolved.ok || resolved.value.kind !== 'skeleton') return undefined;
   const { jointCount, inverseBindMatrices } = resolved.value;
   const joints = skin.value.joints;

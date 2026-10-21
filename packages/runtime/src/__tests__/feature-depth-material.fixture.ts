@@ -11,7 +11,7 @@ import {
   buildEngineShaderManifest,
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
-import { expect, onTestFinished } from 'vitest';
+import { assert, expect, onTestFinished } from 'vitest';
 import { PARTICLE_MESH_VERTEX_BUFFER } from '../../../render/src/features/particle-mesh-layout';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { frameRequest, preparedWorld } from './render-feature-prepared-graphics.fixture';
@@ -130,6 +130,7 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) factor: f32
   onTestFinished(() => URL.revokeObjectURL(shaderManifestUrl));
   const materialGuid = AssetGuid.random();
   const meshGuid = AssetGuid.random();
+  let materialHandle = 0;
   const particleInputs = layout.allInputs
     ? ['heat', 'warm', 'hot', 'glow'].map((name, lane) => ({
         name,
@@ -154,6 +155,7 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) factor: f32
   const feature: RenderFeature<undefined> = {
     identity: identifier,
     extract: () => ok(undefined),
+    assetDependencies: () => (materialHandle === 0 ? [] : [materialHandle]),
     plan: (_, context) => {
       const work = context.views
         .filter((cameraView) => cameraView.render)
@@ -212,7 +214,7 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) factor: f32
                 kind: 'graphics-bindings',
                 name: 'material',
                 program: 'program',
-                values: { group: 1, material: { world: 0, guid: AssetGuid.format(materialGuid) } },
+                values: { group: 1, material: { world: 0, handle: materialHandle } },
               },
               { kind: 'vertex-data', name: 'instance', layout: layout.name, data: instance },
               ...(layout.mesh
@@ -331,56 +333,66 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) factor: f32
     if (!constructed.ok) throw constructed.error;
     const host = constructed.value;
     renderer = host.renderer;
-    const textureGuid = AssetGuid.random();
-    if (vfx !== undefined && !layout.playerMesh)
-      host.assets.catalog(meshGuid, createBoxGeometry(1, 1, 1).unwrap());
-    host.assets.catalog(textureGuid, {
-      kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-      format: 'rgba8unorm',
-      data: new Uint8Array([255, 0, 0, 255]),
-      colorSpace: 'linear',
-      mips: { kind: 'none' },
-    });
+    const meshHandle =
+      vfx !== undefined && !layout.playerMesh
+        ? host.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap()
+        : undefined;
+    const texture = host.assets
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        format: 'rgba8unorm',
+        data: new Uint8Array([255, 0, 0, 255]),
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+      })
+      .unwrap();
     if (missing !== 'material')
-      host.assets.catalog(materialGuid, {
-        kind: 'material',
-        passes: [
-          {
-            name: layout.particleKind === undefined ? 'Forward' : `particle-${layout.particleKind}`,
-            program: {
-              module: identifier,
-              bindings: view
-                ? 'render-material-and-scene-depth'
-                : 'render-material-with-scene-depth',
-              sceneDepth: 'read-only',
+      materialHandle = host.assets
+        .create({
+          kind: 'material',
+          passes: [
+            {
+              name:
+                layout.particleKind === undefined ? 'Forward' : `particle-${layout.particleKind}`,
+              program: {
+                module: identifier,
+                bindings: view
+                  ? 'render-material-and-scene-depth'
+                  : 'render-material-with-scene-depth',
+                sceneDepth: 'read-only',
+              },
+              renderState: {
+                tags: { LightMode: 'Forward' },
+                queue: 3000,
+                depthWriteEnabled: false,
+              },
             },
-            renderState: { tags: { LightMode: 'Forward' }, queue: 3000, depthWriteEnabled: false },
+          ],
+          ...(vfx === undefined
+            ? {}
+            : {
+                parameters: [
+                  { name: 'tint', type: 'vec4' },
+                  { name: 'selector', type: 'u32' },
+                  { name: 'direction', type: 'i32' },
+                  { name: 'baseColorTexture', type: 'texture' },
+                ],
+                particleInputs,
+              }),
+          values: {
+            tint: [0.5, 1, 1, 1],
+            selector: 3,
+            direction: -7,
+            baseColorTexture: { texture },
           },
-        ],
-        ...(vfx === undefined
-          ? {}
-          : {
-              parameters: [
-                { name: 'tint', type: 'vec4' },
-                { name: 'selector', type: 'u32' },
-                { name: 'direction', type: 'i32' },
-                { name: 'baseColorTexture', type: 'texture' },
-              ],
-              particleInputs,
-            }),
-        values: {
-          tint: [0.5, 1, 1, 1],
-          selector: 3,
-          direction: -7,
-          baseColorTexture: { texture: AssetGuid.format(textureGuid) as never },
-        },
-      });
+        })
+        .unwrap();
     const errors: unknown[] = [];
     renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error);
     });
-    const world = preparedWorld();
+    const world = preparedWorld(host.assets);
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
@@ -437,26 +449,49 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
       const attachment = await vfx.attachWorld({ world, assets: host.assets });
       if (!attachment.ok) throw attachment.error;
       attachedWorld = world;
+      if (!layout.playerMesh && particleRenderer.kind === 'mesh') assert(meshHandle !== undefined);
+      const effect = host.assets.create({
+        ...cooked.value.asset,
+        program: {
+          ...cooked.value.asset.program,
+          emitters: cooked.value.asset.program.emitters.map((emitter) => ({
+            ...emitter,
+            renderers: emitter.renderers.map((renderer) => ({
+              ...renderer,
+              material: materialHandle as import('@forgeax/engine-types').AssetHandle<'material'>,
+              ...(renderer.kind === 'mesh' && !layout.playerMesh && meshHandle !== undefined
+                ? { mesh: meshHandle }
+                : {}),
+            })),
+          })),
+        },
+      });
+      if (missing === 'material') {
+        expect(effect).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
+        return;
+      }
+      const effectHandle = effect.unwrap();
       const player = world
         .spawn({
           component: ParticleEffectPlayer,
           data: {
-            effect: world.allocSharedRef('ParticleEffectAsset', cooked.value.asset),
+            effect: effectHandle,
             playing: true,
             seed: 1,
             timeScale: 1,
           },
         })
         .unwrap();
+      host.assets.release(effectHandle).unwrap();
       if (layout.playerMesh) {
-        const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+        const mesh = host.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
         world
           .addComponent(player, {
             component: MeshFilter,
             data: { assetHandle: mesh },
           })
           .unwrap();
-        world.sharedRefs.release(mesh).unwrap();
+        host.assets.release(mesh).unwrap();
       }
       world.update(1 / 60).unwrap();
       const control = vfx.acquireControl(world).unwrap();

@@ -12,6 +12,10 @@ so a declaration edit cannot reuse an older inferred-layout publication.
 
 ## Engine inputs and ABI transport
 
+The plugin configures Vite Worker output as ES modules. App's native module
+Workers retain lazy runtime imports and code splitting without per-project
+Worker configuration; main-thread and Worker builds use the same runtime modules.
+
 Engine shader loading is kept in `src/engine-inputs/`. `load-engine-shader-entries.ts`
 owns the canonical WGSL entry and import closure; `shared-engine-inputs.ts`
 owns packaged dev/prod manifest projection. Both paths feed the same plugin
@@ -39,12 +43,14 @@ or WASM teardown with `terminate()`. Job errors retain precedence over shutdown
 errors, and a worker that exits before returning its job rejects that job.
 This applies to both Vite and the standalone source builder.
 
-Production and development publish the same `4.0.0` manifest: each WGSL source
+Production and development publish the same `5.0.0` manifest: each WGSL source
 is identified by a domain-separated SHA-256 digest of its ordered fragment
 digests, while repeated source blocks are stored once in a shared fragment table.
 Material variants and direct entries refer to those identities. Identical ABI
-receipts are stored once and variants refer to the receipt table. Every pooled
-fragment, source sequence and referenced receipt is still validated;
+receipts and entry-read arrays are stored once; each row retains the exact
+receipt and entry-read references, including the distinction between missing and
+empty facts. Every pooled fragment, source sequence, receipt and entry-read
+reference is still validated;
 all producer-declared variants survive publication. Runtime joins and retains
 only requested sources after complete admission. Packaged profiles from an older
 transport fall back to the complete source producer even when WGSL is unchanged;
@@ -53,7 +59,7 @@ runtime shader publication. Both source builds and prepared inputs omit redundan
 per-variant WGSL, GLSL and reflection files; inspection reads the manifest sources.
 The development HTTP producer carries the verified packaged or shared engine
 publication directly into the response, remapping only referenced fragment and
-receipt indices. Fresh authored sources use the same digest and fragment
+receipt and entry-read indices. Fresh authored sources use the same digest and fragment
 publisher. It does not expand and republish every engine variant; profile
 replacement and plugin close retire the prepared publication with its input
 generation. Source-byte validation, the variant roster and source-build fallback
@@ -245,3 +251,7 @@ walks the resulting import closure.
 The Rollup diagnostic projection derives shared fields from `ShaderError`. Compiler
 admission constructs that error directly; Vite retains the same error code,
 source position, typed detail and hints when forwarding it to bundler consumers.
+
+Engine compilation, packaged inputs and authored manifest maps derive their
+shader row fields from the runtime ManifestEntry contract. Build-time UV counts
+and the legacy empty GLSL field remain explicit boundary refinements.

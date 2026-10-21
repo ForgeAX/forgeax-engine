@@ -49,8 +49,6 @@ export interface RenderChangeBatch {
 }
 
 export interface RenderWorldChanges {
-  readonly fromEpoch: number;
-  readonly toEpoch: number;
   readonly changedComponentIds: readonly number[];
 }
 
@@ -168,22 +166,17 @@ export function createRenderReadLease(world: World): RenderReadLease {
     },
     readChanges(start: RenderReadVersion): RenderChangeBatch {
       assertLive();
-      const toEpoch = world[worldInternal].getMutationEpoch() as number;
+      const version = captureVersion();
       const componentEpochs = world[
         worldInternal
       ].getComponentMutationEpochs() as readonly number[];
       const changedComponentIds: number[] = [];
       for (let componentId = 0; componentId < componentEpochs.length; componentId += 1) {
         const epoch = componentEpochs[componentId] ?? 0;
-        if (epoch > start.mutationEpoch && epoch <= toEpoch) changedComponentIds.push(componentId);
+        if (epoch > start.mutationEpoch && epoch <= version.mutationEpoch)
+          changedComponentIds.push(componentId);
       }
-      const worldRead: RenderWorldChanges = {
-        fromEpoch: start.mutationEpoch,
-        toEpoch,
-        changedComponentIds,
-      };
-      const version = captureVersion();
-      return { version, world: worldRead };
+      return { version, world: { changedComponentIds } };
     },
     querySpans(request: RenderProjectionRequest): RenderProjectionSpans {
       assertLive();
@@ -201,7 +194,7 @@ export function createRenderReadLease(world: World): RenderReadLease {
 
 /**
  * Publish one owner-derived component value through the component's ordinary
- * version. Numeric consumers observe the same row epoch regardless of which
+ * version. Numeric consumers observe the same identity epoch regardless of which
  * owner computed the value; there is no parallel derived-change vocabulary.
  */
 export function setDerivedComponent(
@@ -212,7 +205,21 @@ export function setDerivedComponent(
 ): Result<void, EcsError> {
   const result = world[worldInternal].setQueryRow(entity, component, value);
   if (!result.ok) return result;
-  world[worldInternal].markComponentChanged(entity, componentId(component));
+  try {
+    world[worldInternal].markComponentChanged(entity, componentId(component));
+  } catch (cause) {
+    // Empty sparse tags have no payload write before this publication. An
+    // index write failure still retires itself at the World publication owner.
+    if (component.storage !== 'sparse')
+      world[worldInternal].poisonExecution({
+        code: 'shared-kernel-failed',
+        kernelName: `derived-component:${component.name}:publish`,
+        cause,
+        partialWrite: true,
+        retryable: false,
+      });
+    throw cause;
+  }
   return result;
 }
 

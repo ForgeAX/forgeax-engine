@@ -89,6 +89,7 @@ export function isVfxFieldTransform(value: unknown): value is readonly number[] 
 export function validateVfxForceFields(
   value: unknown,
   path = 'forceFields',
+  runtime = false,
 ): Result<readonly VfxForceField[], VfxForceFieldError> {
   if (!Array.isArray(value) || value.length === 0 || value.length > VFX_FORCE_FIELD_LIMIT)
     return vfxForceFieldFailure('vfx-field-capacity-exceeded', path, '1 through 8 authored fields');
@@ -126,7 +127,14 @@ export function validateVfxForceFields(
       );
     if (
       field.kind === 'vector' &&
-      (!isValidAssetGuidString(field.texture) || !['nearest', 'trilinear'].includes(field.sampling))
+      (!(
+        (runtime &&
+          Number.isInteger(field.texture) &&
+          field.texture > 0 &&
+          field.texture <= 0xffff_ffff) ||
+        isValidAssetGuidString(field.texture)
+      ) ||
+        !['nearest', 'trilinear'].includes(field.sampling))
     )
       return vfxForceFieldFailure(
         'vfx-field-invalid',
@@ -141,6 +149,15 @@ export function validateVfxForceFields(
 export function validateVfxVectorFieldTexture(
   texture: TextureAsset,
   guid: string,
+): Result<TextureAsset, VfxForceFieldError> {
+  return validateVfxVectorFieldRanges(texture, guid);
+}
+
+/** Engine-only: ranges require proven unchanged bytes from a validated fixed predecessor. */
+export function validateVfxVectorFieldRanges(
+  texture: TextureAsset,
+  guid: string,
+  ranges?: readonly { readonly byteOffset: number; readonly byteLength: number }[],
 ): Result<TextureAsset, VfxForceFieldError> {
   if (
     texture.kind !== 'texture' ||
@@ -178,13 +195,14 @@ export function validateVfxVectorFieldTexture(
       guid,
     );
   const data = new DataView(texture.data.buffer, texture.data.byteOffset, texture.data.byteLength);
-  for (let offset = 0; offset < data.byteLength; offset += 4)
-    if (!Number.isFinite(data.getFloat32(offset, true)))
-      return vfxForceFieldFailure(
-        'vfx-field-payload-invalid',
-        `texture.data[${offset}]`,
-        'finite f32 voxel components',
-        guid,
-      );
+  for (const range of ranges ?? [{ byteOffset: 0, byteLength: data.byteLength }])
+    for (let offset = range.byteOffset; offset < range.byteOffset + range.byteLength; offset += 4)
+      if (!Number.isFinite(data.getFloat32(offset, true)))
+        return vfxForceFieldFailure(
+          'vfx-field-payload-invalid',
+          `texture.data[${offset}]`,
+          'finite f32 voxel components',
+          guid,
+        );
   return ok(texture);
 }

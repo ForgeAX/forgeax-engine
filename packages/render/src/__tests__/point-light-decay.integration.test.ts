@@ -21,7 +21,7 @@ it('defaults to inverse-square and carries authored point decay without changing
       data: { innerConeDeg: 10, outerConeDeg: 30, castShadow: false },
     })
     .unwrap();
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const before = extractFrames([world], 0, assets).lights;
   expect(before.point[0]).toMatchObject({ decay: 2 });
   const spotBefore = packDirectLightSlot(required(before.spot[0]));
@@ -57,10 +57,13 @@ it.each([
     code: 'resource-invalid-value',
     detail: { receivedKey: 'decay' },
   });
-  expect(extractFrames([world], 0, new AssetRegistry({} as never)).lights.point).toHaveLength(0);
+  expect(
+    extractFrames([world], 0, new AssetRegistry({ shaderRegistry: {} as never })).lights.point,
+  ).toHaveLength(0);
   world.set(point, PointLight, { decay: 1.4 }).unwrap();
   expect(
-    extractFrames([world], 0, new AssetRegistry({} as never)).lights.point[0]?.decay,
+    extractFrames([world], 0, new AssetRegistry({ shaderRegistry: {} as never })).lights.point[0]
+      ?.decay,
   ).toBeCloseTo(1.4);
 });
 it('rejects NaN at the ECS numeric boundary', () => {

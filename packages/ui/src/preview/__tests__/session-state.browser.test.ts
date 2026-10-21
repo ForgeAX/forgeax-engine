@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { UiAsset } from '../../asset.js';
-import { createUiPreviewSession, type UiPreviewAssetSource } from '../session.js';
+import { createUiPreviewSession, type UiPreviewSessionOptions } from '../session.js';
 
 const asset: UiAsset = { guid: 'preview-guid', html: '<p>preview</p>', css: '' };
 
-function source(load: UiPreviewAssetSource['loadByGuid']): UiPreviewAssetSource {
-  return { invalidate: () => {}, loadByGuid: load };
+function source(load: UiPreviewSessionOptions['readAsset']): UiPreviewSessionOptions['readAsset'] {
+  return load;
 }
 
 function host() {
@@ -19,7 +19,7 @@ describe('UiPreviewSession state matrix', () => {
     const root = host();
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(async () => ({ ok: true, value: asset })),
+      readAsset: source(async () => ({ ok: true, value: asset })),
       root,
       rect: { width: 320, height: 120 },
     });
@@ -39,7 +39,7 @@ describe('UiPreviewSession state matrix', () => {
     let broken = true;
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(async () =>
+      readAsset: source(async () =>
         broken
           ? {
               ok: false,
@@ -72,7 +72,7 @@ describe('UiPreviewSession state matrix', () => {
     const root = host();
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(async () => ({ ok: true, value: asset })),
+      readAsset: source(async () => ({ ok: true, value: asset })),
       root,
       rect: { width: 320, height: 120 },
     });
@@ -95,7 +95,7 @@ describe('UiPreviewSession state matrix', () => {
     const resolvers: Array<(result: { readonly ok: true; readonly value: UiAsset }) => void> = [];
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source(() => new Promise((resolve) => resolvers.push(resolve))),
+      readAsset: source(() => new Promise((resolve) => resolvers.push(resolve))),
       root,
       rect: { width: 320, height: 120 },
     });

@@ -119,12 +119,14 @@ export function ktx2ColorSpace(parsed: Ktx2Parsed): 'srgb' | 'linear' | undefine
 const TD = new TextDecoder();
 
 function readU32(bytes: Uint8Array, byteOffset: number): number {
-  return new DataView(bytes.buffer, bytes.byteOffset + byteOffset, 4).getUint32(0, true);
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(byteOffset, true);
 }
 
 /** Read u64 LE as Number (safe for values < 2^53; all KTX2 offsets fit). */
 function readU64(bytes: Uint8Array, byteOffset: number): number {
-  return Number(new DataView(bytes.buffer, bytes.byteOffset + byteOffset, 8).getBigUint64(0, true));
+  return Number(
+    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(byteOffset, true),
+  );
 }
 
 /** Check that offset + length is within the byte array; throw if not. */
@@ -140,13 +142,16 @@ function assertBounds(bytes: Uint8Array, offset: number, length: number, context
 // DFD parser (spec sections 5.1-5.3)
 // ---------------------------------------------------------------------------
 
-function parseDfd(bytes: Uint8Array, offset: number, _dfdByteLength: number): Ktx2Dfd {
-  assertBounds(bytes, offset, 4, 'DFD-totalSize');
-  const totalSize = readU32(bytes, offset);
-  assertBounds(bytes, offset, totalSize, 'DFD-block');
-
-  // Descriptor block starts at offset+4 (after dfdTotalSize)
-  const dbOff = offset + 4;
+function parseDfd(bytes: Uint8Array): Ktx2Dfd {
+  const totalSize = readU32(bytes, 0);
+  assertBounds(bytes, 0, totalSize, 'DFD-block');
+  if (totalSize < 28) throw new Error('DFD requires a complete descriptor header');
+  const descriptorBlockSize = readU32(bytes, 8) >>> 16;
+  if (descriptorBlockSize < 24 || (descriptorBlockSize - 24) % 16 !== 0)
+    throw new Error('DFD descriptor requires a header and complete samples');
+  assertBounds(bytes.subarray(0, totalSize), 4, descriptorBlockSize, 'DFD-descriptor');
+  bytes = bytes.subarray(4, 4 + descriptorBlockSize);
+  const dbOff = 0;
 
   const word0 = readU32(bytes, dbOff);
   const vendorId = word0 & 0x1ffff;
@@ -154,7 +159,6 @@ function parseDfd(bytes: Uint8Array, offset: number, _dfdByteLength: number): Kt
 
   const word1 = readU32(bytes, dbOff + 4);
   const versionNumber = word1 & 0xffff;
-  const descriptorBlockSize = (word1 >>> 16) & 0xffff;
 
   const word2 = readU32(bytes, dbOff + 8);
   const colorModel = word2 & 0xff;
@@ -228,14 +232,11 @@ function parseDfd(bytes: Uint8Array, offset: number, _dfdByteLength: number): Kt
 // KV metadata parser (spec section 6)
 // ---------------------------------------------------------------------------
 
-function parseKv(bytes: Uint8Array, offset: number, kvdByteLength: number): Ktx2KvEntry[] {
-  if (kvdByteLength === 0) return [];
-
+function parseKv(bytes: Uint8Array): Ktx2KvEntry[] {
   const entries: Ktx2KvEntry[] = [];
-  let pos = offset;
-  const end = offset + kvdByteLength;
+  let pos = 0;
 
-  while (pos < end) {
+  while (pos < bytes.length) {
     assertBounds(bytes, pos, 4, 'KV-keyAndValueByteLength');
     const keyAndValueByteLength = readU32(bytes, pos);
     pos += 4;
@@ -276,7 +277,7 @@ function parseKv(bytes: Uint8Array, offset: number, kvdByteLength: number): Ktx2
  * Rejects unsupported supercompression schemes (BasisLZ=1, ZLIB=3, etc.)
  * with `ktx2-unsupported-scheme` that echoes the scheme value.
  */
-export async function parseKtx2(bytes: Uint8Array): Promise<CodecResult<Ktx2Parsed>> {
+export function parseKtx2(bytes: Uint8Array): CodecResult<Ktx2Parsed> {
   try {
     // 1. Validate identifier (12 bytes, spec section 1)
     if (bytes.length < 12) {
@@ -357,14 +358,18 @@ export async function parseKtx2(bytes: Uint8Array): Promise<CodecResult<Ktx2Pars
     let dfd: Ktx2Dfd | null = null;
     if (index.dfdByteLength > 0) {
       assertBounds(bytes, index.dfdByteOffset, index.dfdByteLength, 'DFD');
-      dfd = parseDfd(bytes, index.dfdByteOffset, index.dfdByteLength);
+      dfd = parseDfd(
+        bytes.subarray(index.dfdByteOffset, index.dfdByteOffset + index.dfdByteLength),
+      );
     }
 
     // 6. KV metadata (spec section 6)
     let kvEntries: Ktx2KvEntry[] = [];
     if (index.kvdByteLength > 0) {
       assertBounds(bytes, index.kvdByteOffset, index.kvdByteLength, 'KVD');
-      kvEntries = parseKv(bytes, index.kvdByteOffset, index.kvdByteLength);
+      kvEntries = parseKv(
+        bytes.subarray(index.kvdByteOffset, index.kvdByteOffset + index.kvdByteLength),
+      );
     }
 
     // 7. Supercompression Global Data (spec section 7)

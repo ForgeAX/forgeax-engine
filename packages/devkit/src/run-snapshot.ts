@@ -1274,6 +1274,8 @@ async function planSnapshot(
     ancestors = new Set<string>(),
   ): Promise<void> {
     signal?.throwIfAborted();
+    // Compiler state can change during a run start; it is not a runtime input.
+    if (source.endsWith('.tsbuildinfo')) return;
     const canonical = await realpath(source);
     const info = await stat(canonical, { bigint: true });
     if (info.isFile()) {
@@ -1553,9 +1555,30 @@ async function createRunSnapshotAttempt(
     }
     // Re-resolve links as well as file metadata: an installed package can be
     // replaced without modifying the old directory that we just copied.
-    if (JSON.stringify(await planSnapshot(resolve(projectRoot), signal)) !== JSON.stringify(plan)) {
+    const currentPlan = await planSnapshot(resolve(projectRoot), signal);
+    if (JSON.stringify(currentPlan) !== JSON.stringify(plan)) {
+      let change: { section: keyof SnapshotPlan; before: unknown; after: unknown } = {
+        section: 'binding',
+        before: plan.binding,
+        after: currentPlan.binding,
+      };
+      if (plan.binding === currentPlan.binding) {
+        for (const section of ['files', 'links', 'proofs'] as const) {
+          const before = plan[section];
+          const after = currentPlan[section];
+          const length = Math.max(before.length, after.length);
+          let index = 0;
+          while (index < length && JSON.stringify(before[index]) === JSON.stringify(after[index]))
+            index++;
+          if (index < length) {
+            change = { section, before: before[index], after: after[index] };
+            break;
+          }
+        }
+      }
       throw new SnapshotChangedError(
-        'Project inputs changed while snapshotting; retry from a stable version.',
+        `Project inputs changed while snapshotting; retry from a stable version: ${JSON.stringify(change)}`,
+        { cause: change },
       );
     }
     signal?.throwIfAborted();

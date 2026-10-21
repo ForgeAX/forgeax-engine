@@ -1,6 +1,5 @@
 import type { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
-import type { FontAsset } from '@forgeax/engine/types';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
 import { checker, errorCode, guid, installMemoryPack } from './fixtures/memory-pack';
@@ -37,7 +36,7 @@ const GLYPHS = {
 async function load(assets: AssetRegistry, id: string) {
   const parsed = AssetGuid.parse(id);
   if (!parsed.ok) return { ok: false as const, error: parsed.error };
-  return assets.loadByGuid<FontAsset>(parsed.value);
+  return assets.load(parsed.value, 'font');
 }
 
 export default defineFeature({
@@ -53,7 +52,7 @@ export default defineFeature({
     const checks: FeatureCheck[] = [];
     const assets = app.assets;
     if (assets === undefined) return { checks: () => [{ name: 'app.assets present', ok: false }] };
-    installMemoryPack(
+    await installMemoryPack(
       assets,
       [
         {
@@ -116,23 +115,28 @@ export default defineFeature({
       ...(font.ok ? {} : { detail: errorCode(font.error) }),
     });
     if (font.ok) {
+      const payload = assets.read(font.value).unwrap();
       checks.push({
         name: 'two glyphs decoded',
-        ok: Object.keys(font.value.glyphs).length === 2,
-        detail: Object.keys(font.value.glyphs).join(','),
+        ok: Object.keys(payload.glyphs).length === 2,
+        detail: Object.keys(payload.glyphs).join(','),
       });
       checks.push({
         name: 'common block intact',
-        ok: JSON.stringify(font.value.common) === JSON.stringify(COMMON),
+        ok: JSON.stringify(payload.common) === JSON.stringify(COMMON),
       });
       checks.push({
         name: 'atlas and sampler GUIDs preserved',
         ok:
-          AssetGuid.format(font.value.atlas) === ATLAS &&
-          AssetGuid.format(font.value.sampler) === SAMPLER,
+          (typeof payload.atlas === 'number'
+            ? assets.source(payload.atlas).unwrap()?.guid
+            : undefined) === ATLAS &&
+          (typeof payload.sampler === 'number'
+            ? assets.source(payload.sampler).unwrap()?.guid
+            : undefined) === SAMPLER,
       });
     }
-    const atlas = await load(assets, ATLAS);
+    const atlas = await assets.load(ATLAS, 'texture');
     checks.push({
       name: 'referenced atlas loads',
       ok: atlas.ok,

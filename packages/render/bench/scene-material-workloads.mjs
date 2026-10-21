@@ -9,12 +9,12 @@ import { performance } from 'node:perf_hooks';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder, createPlaneGeometry } from '@forgeax/engine-geometry';
 import { Camera, CameraView, CubeCamera, DirectionalLight, Materials, MeshFilter, MeshRenderer, PlanarReflection, ProjectedDecal, ReflectionProbe } from '@forgeax/engine-render';
-import { constructRendererHost } from '@forgeax/engine-render/internal/construct-renderer';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { create, globals } from '@forgeax/engine-dawn-node';
-
-import { makeCanvas, rgba, spawnScene, timingFacts, trackDiagnosticErrors, value } from './scene-material-scaling.mjs';
+import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+import { drawReady, makeCanvas, rgba, spawnScene, timingFacts, trackDiagnosticErrors, value } from './scene-material-scaling.mjs';
 
 const root = resolve(import.meta.dirname, '../../..');
 const out = resolve(process.argv[2] ?? 'artifacts/scene-material-scaling/workloads');
@@ -36,22 +36,23 @@ async function run(config) {
  const manifest=await readFile(resolve(root,'shared-build-inputs/shaders/manifest.json'),'utf8');
  const errors=[];
  const restoreDiagnostics=trackDiagnosticErrors(errors);
- const host=value(await constructRendererHost(makeCanvas(devices,textures,errors),{rhi,gpuPassTiming:{}},{shaderManifestUrl:`data:application/json,${encodeURIComponent(manifest)}`}));
+ const host=value(await constructRuntimeRendererHost(makeCanvas(devices,textures,errors),{rhi,gpuPassTiming:{}},{shaderManifestUrl:`data:application/json,${encodeURIComponent(manifest)}`}));
  const renderer=host.renderer;
- const world=new World();
+ const assets=host.assets;
+ const world=new World({assets});
  const scene=spawnScene(world,config.count ?? 1000,false);
  const lease=value(renderer.attach(world));
  const unsubscribe=renderer.subscribe(event=>{if(event.kind==='error')errors.push(event.error);});
  value(renderer.setProfile({...renderer.inspect().profile,gpuOcclusion:false,...(suite==='decals'?{renderPath:'deferred'}:{})}));
- const spawnMesh=(mesh,material,pos,scale)=>value(world.spawn({component:Transform,data:{pos,scale}},{component:MeshFilter,data:{assetHandle:world.allocSharedRef('MeshAsset',mesh)}},{component:MeshRenderer,data:{materials:[world.allocSharedRef('MaterialAsset',material)]}}));
+ const spawnMesh=(mesh,material,pos,scale)=>value(world.spawn({component:Transform,data:{pos,scale}},{component:MeshFilter,data:{assetHandle:value(assets.create(mesh))}},{component:MeshRenderer,data:{materials:[value(assets.create(material))]}}));
  const targets=[],decals=[],probes=[],planars=[];
  let lodMeshes;
  const target=(shape,size)=>{ const t=value(renderer.createRenderTarget({shape,width:size,height:size,format:'rgba8unorm',mipLevels:1,sampleCount:1,sampled:true,readback:true}));targets.push({target:t,size,shape});return world.allocSharedRef('RenderTarget',t); };
  if(suite==='lod') {
   const makeLevel=low=>{const mesh=value(createPlaneGeometry(low?.112:.14,.14,low?1:4,low?1:4));const count=mesh.attributes.position.length/3;return value(createMeshBuilder({attributes:{...mesh.attributes,color:Float32Array.from({length:count*4},(_,i)=>i%4===(low?1:0)||i%4===3?1:0)},indices:mesh.indices}).build());};
-  const lowerGuid=host.assets.parseGuid('019a0000-0000-7000-8000-000000000322');value(host.assets.catalog(lowerGuid,makeLevel(true)));
-  const rootMesh=makeLevel(false);lodMeshes=Object.fromEntries(['A','B'].map(mode=>[mode,world.allocSharedRef('MeshAsset',{...rootMesh,lods:[{mesh:lowerGuid,screenCoverage:.03}],lodHysteresis:mode==='B'?.1:0})]));
-  const material=world.allocSharedRef('MaterialAsset',Materials.standard({baseColor:[1,1,1,1],roughness:1,specular:0,renderState:{cullMode:'none'}}));
+  const lowerMesh=value(assets.create(makeLevel(true)));
+  const rootMesh=makeLevel(false);lodMeshes=Object.fromEntries(['A','B'].map(mode=>[mode,value(assets.create({...rootMesh,lods:[{mesh:lowerMesh,screenCoverage:.03}],lodHysteresis:mode==='B'?.1:0}))]));
+  const material=value(assets.create(Materials.standard({baseColor:[1,1,1,1],roughness:1,specular:0,renderState:{cullMode:'none'}})));
   for(const {entity} of scene.entities)value(world.set(entity,MeshRenderer,{materials:[material]}));
   const half=Math.hypot(.07,.07)/config.height;value(world.set(scene.camera,Camera,{projection:1,left:-half,right:half,bottom:-half,top:half}));
   value(world.set(scene.light,DirectionalLight,{castShadow:false}));
@@ -62,7 +63,7 @@ async function run(config) {
  }
  if(suite==='decals') {
   spawnMesh(value(createPlaneGeometry(scene.side*.18,scene.side*.18)),Materials.standard({baseColor:[.3,.3,.3,1],roughness:.65}),[0,0,.15],[1,1,1]);
-  const material=world.allocSharedRef('MaterialAsset',Materials.standard({baseColor:[.8,.1,.1,1],roughness:.1}));
+  const material=value(assets.create(Materials.standard({baseColor:[.8,.1,.1,1],roughness:.1})));
   for(let i=0;i<config.decals;i++)decals.push(value(world.spawn({component:Transform,data:{pos:[(i%8-3.5)*.35,(Math.floor(i/8)-3.5)*.35,.15],scale:config.coverage==='near'?[20,20,15]:[.4,.4,.2]}},{component:ProjectedDecal,data:{material,opacity:1,roughnessOpacity:1}})));
  }
  if(suite==='capture') {
@@ -99,7 +100,7 @@ async function run(config) {
   const start=performance.now();value(world.update(1/60));value(propagateTransforms(world));const cpuWorldMs=performance.now()-start;
   if(picture)value(renderer.requestObservation(['final-display']));
   const tickets=picture?targets.map(t=>value(renderer.requestTargetReadback(t.target,{mipLevel:0,layer:t.shape==='cube'?5:0}))):[];
-  const drawStart=performance.now();const receipt=value(renderer.draw({leases:[lease],camera:{lease},environment:{lease},...(config.geometryLane===undefined?{}:{geometryLane:config.geometryLane})}));const cpuDrawMs=performance.now()-drawStart;
+  const drawStart=performance.now();const receipt=await drawReady(renderer,{leases:[lease],camera:{lease},environment:{lease},...(config.geometryLane===undefined?{}:{geometryLane:config.geometryLane})});const cpuDrawMs=performance.now()-drawStart;
   const waitStart=performance.now();value(await receipt.completed);const completionWaitMs=performance.now()-waitStart;
   const observed=value(await renderer.observe(receipt,{include:picture?['timings','final-display','target-readbacks']:['timings'],...(picture?{targetReadbacks:tickets}:{})}));
   const inspection=renderer.inspect();

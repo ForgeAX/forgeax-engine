@@ -3,7 +3,6 @@ export const PROBE_BLEND_RECORD_BYTE_SIZE = 160;
 export const PROBE_BLEND_RECORD_STRIDE = 256;
 
 export const PROBE_BLEND_RECORD_CAPACITY = 64;
-const PROBE_BLEND_SENTINEL = -1;
 
 export type ProbeBlendRecordSentinel =
   | 'capacity-exceeded'
@@ -22,25 +21,6 @@ export interface ProbeBlendRecord {
   readonly accepted: boolean;
   readonly lastKnownGood: boolean;
   readonly sentinel?: ProbeBlendRecordSentinel;
-}
-
-export function emptyProbeBlendRecord(
-  objectKey = PROBE_BLEND_SENTINEL,
-  sentinel: ProbeBlendRecordSentinel = 'no-lkg',
-): ProbeBlendRecord {
-  const bytes = new Uint8Array(PROBE_BLEND_RECORD_BYTE_SIZE);
-  return {
-    objectKey,
-    generation: 0,
-    localBlendFraction: 0,
-    shPreblend: new Array<number>(27).fill(0),
-    bytes,
-    byteLength: bytes.byteLength,
-    candidate: false,
-    accepted: false,
-    lastKnownGood: false,
-    sentinel,
-  };
 }
 
 export function probeBlendRecordOffset(objectKey: number): number {

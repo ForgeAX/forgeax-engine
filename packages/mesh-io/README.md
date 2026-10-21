@@ -12,7 +12,7 @@ flowchart LR
     Admission --> Importer["registered format Importer"]
     Importer --> Mesh["geometry-owned MeshAsset"]
     Mesh --> Cook["mesh-bin v5 / Cook / Catalog"]
-    Cook --> Runtime["loadByGuid / Renderer"]
+    Cook --> Runtime["assets.load / Renderer"]
     Mesh --> Export["static placements → OBJ / STL / glTF / GLB"]
 ```
 
@@ -115,3 +115,17 @@ This contract does not advertise full Phong material equivalence. Static export 
 File admission and all three Importers consume that same closure. OBJ includes
 its MTL/image companions; STL and SVG return empty companion collections. The
 geometry-only `parseObj`, `parseStl` and `parseSvg` entries remain available.
+
+Static Three geometry admission and export share one semantic-name map, including
+all eight UV sets, color and authored tangents. Missing tangents still derive
+through Geometry's tangent kernel; provided tangents retain their orientation and
+handedness. Export storage widths come from Geometry's canonical layout, while
+RGB input colors expand to RGBA after the source attribute's normalization.
+
+OBJ material admission uses the completed name-keyed material collection for
+duplicate detection, unresolved references, and output order. `usemtl` declarations
+and missing-UV evidence come from the same source traversal.
+
+SVG parsing and glTF export share one short-lived Worker completion owner: one
+result wins, an exit without a result fails promptly, and success, failure, or
+timeout waits for Worker retirement before returning.

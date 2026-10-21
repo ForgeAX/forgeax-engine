@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { MeshAsset, ParticleEffectAsset } from '@forgeax/engine-types';
 import {
@@ -12,6 +14,7 @@ import {
   MESH_GEOMETRY_MATERIAL_INSTANCE_VERTEX_BUFFERS,
   particleMaterialInputVertexBuffers,
 } from '../../../render/src/assembly/webgpu-vertex-layouts';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import {
   freezeVfxPlan as freezeRenderFeaturePlan,
   gpuParticleRenderFeature,
@@ -85,8 +88,10 @@ async function fixture(
     emitters: emitters.map(({ id, capacity }) => ({ id, capacity })),
     program: { ...cooked.program, fingerprint: cooked.fingerprint },
   };
-  const world = new World();
-  const handle = world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'effect' });
+  const world = new World({ assets: new AssetRegistry() });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, { ...asset, guid: 'effect' }))
+    .unwrap();
   const player = world
     .spawn({
       component: ParticleEffectPlayer,
@@ -146,7 +151,7 @@ async function fixture(
 it('keeps material scope in the original composition when a preceding World has no VFX', async () => {
   const f = await fixture([emitter('world-isolation')]);
   try {
-    const { plan } = f.frame(new World());
+    const { plan } = f.frame(new World({ assets: new AssetRegistry() }));
     const bindings = planResources(plan).filter(
       (resource) => resource.kind === 'graphics-bindings' && resource.values.group === 1,
     );

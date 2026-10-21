@@ -23,6 +23,7 @@ export function terrainSampleHeight(
   source: TerrainSource,
   u: number,
   v: number,
+  read?: (index: number) => number,
 ): number | undefined {
   if (
     !Number.isFinite(u) ||
@@ -37,7 +38,10 @@ export function terrainSampleHeight(
   const iz = Math.min(Math.floor(v), source.rows - 2);
   const a = u - ix;
   const b = v - iz;
-  const at = (dx: number, dz: number) => source.heights[(iz + dz) * source.columns + ix + dx] ?? 0;
+  const at = (dx: number, dz: number) => {
+    const index = (iz + dz) * source.columns + ix + dx;
+    return read === undefined ? (source.heights[index] ?? 0) : read(index);
+  };
   const h00 = at(0, 0),
     h10 = at(1, 0),
     h01 = at(0, 1),

@@ -31,22 +31,8 @@ export type ToolPreviewTraceEvent =
 
 export interface ToolPreviewTrace {
   readonly events: readonly ToolPreviewTraceEvent[];
-  readonly backend: string;
-  readonly adapter: string;
   readonly presentation: ToolPreviewPresentation;
 }
-
-export type ToolPreviewTraceValidation =
-  | { readonly ok: true; readonly value: ToolPreviewTrace }
-  | {
-      readonly ok: false;
-      readonly error: {
-        readonly code: 'tool-preview-invalid-trace';
-        readonly expected: string;
-        readonly hint: string;
-        readonly detail: { readonly missing: string; readonly index: number };
-      };
-    };
 
 export function createToolPreviewRecipe(options: ToolPreviewRecipeOptions): ToolPreviewRecipe {
   if (options.backend !== undefined && options.backend !== 'webgpu') {
@@ -89,44 +75,4 @@ export function createToolPreviewRecipe(options: ToolPreviewRecipeOptions): Tool
     deltaSeconds,
     frames,
   };
-}
-
-const REQUIRED_EVENTS: readonly ToolPreviewTraceEvent[] = [
-  'canvas-created',
-  'rhi-debug-armed',
-  'renderer-created',
-  'world-updated',
-  'draw-submitted',
-  'validation-complete',
-];
-
-export function validateToolPreviewTrace(trace: ToolPreviewTrace): ToolPreviewTraceValidation {
-  if (trace.backend !== 'webgpu') {
-    return {
-      ok: false,
-      error: {
-        code: 'tool-preview-invalid-trace',
-        expected: 'trace.backend === "webgpu"',
-        hint: 'run the same recipe with a real WebGPU adapter; RHI-null is not a preview backend',
-        detail: { missing: 'webgpu-backend', index: -1 },
-      },
-    };
-  }
-  let last = -1;
-  for (const event of REQUIRED_EVENTS) {
-    const index = trace.events.indexOf(event);
-    if (index <= last) {
-      return {
-        ok: false,
-        error: {
-          code: 'tool-preview-invalid-trace',
-          expected: `event '${event}' occurs after the previous recipe phase`,
-          hint: 'arm RHI-debug before Renderer construction and retain update/draw/validation evidence',
-          detail: { missing: event, index },
-        },
-      };
-    }
-    last = index;
-  }
-  return { ok: true, value: trace };
 }

@@ -322,7 +322,7 @@ eval(script) executes in a host new Function scope with five injected live roots
 |:--|:--|:--|
 | world | World from @forgeax/engine-ecs | ECS spawn/despawn/set/query. |
 | renderer | Renderer | Render-target lifecycle and backbuffer reads. |
-| assets | AssetRegistry | loadByGuid / resolveName / rename. |
+| assets | AssetRegistry | load(guid, kind) / read / update / enumerateCatalog. |
 | rhiCapture | { captureFrame(options?) } \| undefined | Returns a single { kind: 'rhi-tape', digest, bytes } artifact. Injected only with FORGEAX_ENGINE_RHI_DEBUG=1; guard before use. World/renderer/assets remain present. |
 | `profiler` | `Profiler \| undefined` | Bounded CPU capture through `startCapture({ frameLimit, eventLimit })`; injected only when the host opts in. |
 

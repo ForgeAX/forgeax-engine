@@ -1,5 +1,10 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import type { Handle, LocalEntityId } from '@forgeax/engine-types';
+import type {
+  AssetHandle,
+  LocalEntityId,
+  SceneAsset,
+  SceneEntityAddress,
+} from '@forgeax/engine-types';
 import type { MountOverride } from './runtime-types.js';
 
 /**
@@ -49,13 +54,17 @@ export interface SceneInstanceOverrideRecord {
  * override operations own mutation of the maps.
  */
 export interface SceneInstanceState {
-  readonly source: Handle<'SceneAsset', 'shared'>;
+  readonly source: AssetHandle<'scene'>;
+  /** The source values captured when this instance was created. */
+  readonly sourceContent: SceneAsset;
   readonly sceneSourceKey?: string;
   /** Authored key for each private numeric slot, retained for collection. */
   readonly keyByLocalId: Map<number, string>;
   /** Authored key of this instance when it is nested in a parent scene. */
   readonly instanceKey?: string;
   readonly bindings: Map<string, EntityHandle>;
+  /** Reverse index populated with bindings, scoped to this exact instance. */
+  readonly entityAddresses: ReadonlyMap<EntityHandle, SceneEntityAddress>;
   readonly entityToLocalId: Map<EntityHandle, LocalEntityId>;
   readonly detachedLocalIds: Set<LocalEntityId>;
   readonly overrides: Map<LocalEntityId, Map<string, SceneInstanceOverrideRecord>>;

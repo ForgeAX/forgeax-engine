@@ -25,6 +25,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { testAssets } from './helpers/runtime-assets';
 import { type SaveEvidence, unwrap } from './specular-aa.fixture';
 
 export type RenderPath = 'forward' | 'deferred';
@@ -84,23 +85,26 @@ function uniformEquirect(world: World) {
   const data = new Uint8Array(16 * 8 * 8);
   const view = new DataView(data.buffer);
   for (let i = 0; i < 16 * 8 * 4; i++) view.setUint16(i * 2, 0x3c00, true);
-  return world.allocSharedRef('EquirectAsset', {
-    kind: 'equirect',
-    width: 16,
-    height: 8,
-    format: 'rgba16float',
-    colorSpace: 'linear',
-    data,
-  });
+  return testAssets(world)
+    .create({
+      kind: 'equirect',
+      width: 16,
+      height: 8,
+      format: 'rgba16float',
+      colorSpace: 'linear',
+      data,
+    })
+    .unwrap();
 }
 
 function buildFurnaceScene(world: World) {
-  const sphere = world.allocSharedRef('MeshAsset', createSphereGeometry(RADIUS, 96, 64).unwrap());
+  const sphere = testAssets(world)
+    .create(createSphereGeometry(RADIUS, 96, 64).unwrap())
+    .unwrap();
   FURNACE_ROUGHNESS.forEach((roughness, i) => {
-    const metal = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness }),
-    );
+    const metal = testAssets(world)
+      .create(Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness }))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: CENTERS[i] as [number, number, number] } },

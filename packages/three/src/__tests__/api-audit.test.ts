@@ -12,13 +12,13 @@ it('agrees with actual caller diagnostics, including optional and defaulted argu
   const file = resolve(root, 'src/__tests__/audit-consumer.ts');
   const calls = [
     ['render', 'renderer.render(new Group(), camera);'],
-    ['setRenderTarget', 'renderer.setRenderTarget(new WebGLRenderTarget(16, 16));'],
+    ['setRenderTarget', 'renderer.setRenderTarget(new RenderTarget(16, 16));'],
     ['setSize', 'renderer.setSize(16, 16, undefined);'],
     ['setClearColor', "renderer.setClearColor('#000', undefined);"],
   ] as const;
   const source = [
-    "import { Group, PerspectiveCamera, WebGLRenderer, WebGLRenderTarget } from '../index';",
-    'declare const renderer: WebGLRenderer;',
+    "import { Group, PerspectiveCamera, WebGPURenderer, RenderTarget } from '../index';",
+    'declare const renderer: WebGPURenderer;',
     'const camera = new PerspectiveCamera();',
     ...calls.map(([, call]) => call),
   ].join('\n');
@@ -50,7 +50,7 @@ it('agrees with actual caller diagnostics, including optional and defaulted argu
     };
   };
   const renderer = report.declarationExports.mismatches.find(
-    (entry) => entry.name === 'WebGLRenderer' && entry.reason === 'incompatible-type',
+    (entry) => entry.name === 'WebGPURenderer' && entry.reason === 'incompatible-type',
   );
   for (const [index, [member]] of calls.entries())
     expect(renderer?.incompatibleMembers?.includes(member) ?? false, member).toBe(

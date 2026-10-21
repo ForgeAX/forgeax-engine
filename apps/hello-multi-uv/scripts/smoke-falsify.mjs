@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../scripts/test/ready-render-frame.mjs';
 import { solidTexture } from './texture-fixture.mjs';
 import { readShaderManifestPublication } from '@forgeax/engine-shader';
 // smoke-falsify.mjs -- feat-20260629-multi-uv-set-support m5-w4
@@ -194,10 +195,12 @@ const { createRenderer } = enginePkg;
 const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 
-const world = new World();
+const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
+const assets = await createPublicationAssets({shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(new URL('../dist/shaders/manifest.json', import.meta.url), 'utf8'))}`});
+const world = new World({assets});
 const DEMO_MATERIAL_SHADER_PATH = 'hello-multi-uv::multi-uv-demo';
-const baseColorTextureHandle = world.allocSharedRef('TextureAsset', solidTexture([255, 128, 64, 255]));
-const detailTextureHandle = world.allocSharedRef('TextureAsset', solidTexture([64, 192, 255, 255]));
+const baseColorTextureHandle = assets.create(solidTexture([255, 128, 64, 255])).unwrap();
+const detailTextureHandle = assets.create(solidTexture([64, 192, 255, 255])).unwrap();
 const meshAsset = {
   kind: 'mesh',
   vertices,
@@ -223,8 +226,8 @@ const materialAsset = {
     detailTexture: detailTextureHandle,
   },
 };
-const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-const matHandle = world.allocSharedRef('MaterialAsset', materialAsset);
+const meshHandle = assets.create(meshAsset).unwrap();
+const matHandle = assets.create(materialAsset).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0.5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
   { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -266,7 +269,7 @@ try {
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-const drawFrame = () => renderer.draw({
+const drawFrame = () => drawReadyFrame(renderer, {
   leases: [lease],
   camera: { lease },
   environment: { lease },
@@ -290,8 +293,7 @@ if (!demoShaderEntry) {
 }
 const canonicalVariant = (demoShaderEntry.variants ?? []).find((variant) => variant?.definesKey === '');
 if (typeof canonicalVariant?.composedWgsl !== 'string') {
-  console.error('[falsify-smoke] FAIL - multi-UV shader has no canonical variant composedWgsl');
-  process.exit(1);
+  throw new Error('The multi-UV canonical variant must contain composed WGSL');
 }
 const demoComposedWgsl = canonicalVariant.composedWgsl;
 const manifestParamSchema =
@@ -318,14 +320,13 @@ console.log('[falsify-smoke] texture binding: PASS schema=baseColorTexture+detai
 const yieldTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 for (let warm = 0; warm < 16; warm++) {
   world.update().unwrap();
-  drawFrame();
+  await drawFrame();
   await yieldTick();
 }
 
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const r = drawFrame();
-  if (!r.ok) console.error(`[falsify-smoke] draw frame ${i} error: ${r.error.code}`);
+  await drawFrame();
 }
 await sharedDevice.queue.onSubmittedWorkDone();
 

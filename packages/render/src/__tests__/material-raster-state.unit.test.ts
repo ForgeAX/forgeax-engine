@@ -139,4 +139,27 @@ describe('material raster state', () => {
     expect(shadow).not.toHaveProperty('colorWriteMask');
     expect(shadow).not.toHaveProperty('depthWriteEnabled');
   });
+
+  it.each([
+    [undefined, 'front'],
+    ['back', 'front'],
+    ['front', 'back'],
+    ['none', 'none'],
+  ] as const)('generated shadows reverse single-sided color culling (%s -> %s)', (cullMode, shadowCull) => {
+    const renderState = {
+      ...(cullMode === undefined ? {} : { cullMode }),
+      frontFace: 'cw' as const,
+    };
+    for (const material of [
+      Materials.unlit([1, 1, 1, 1], { renderState }),
+      Materials.standard({ baseColor: [1, 1, 1, 1], renderState }),
+    ]) {
+      expect(
+        material.passes?.find((pass) => pass.name === 'shadow-caster')?.renderState,
+      ).toMatchObject({ cullMode: shadowCull, frontFace: 'cw' });
+      expect(material.passes?.find((pass) => pass.name === 'forward')?.renderState).toMatchObject(
+        renderState,
+      );
+    }
+  });
 });

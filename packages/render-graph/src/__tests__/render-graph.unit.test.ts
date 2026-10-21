@@ -48,7 +48,7 @@ import { RenderGraph } from '../graph.js';
         colorConnections: [{ source: 'source', destination: 'destination' }],
       } as never);
 
-      const result = graph.compile({ backendKind: 'null', caps });
+      const result = graph.compile({ caps });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('expected invalid color domain');
       expect(result.error.code).toBe('invalid-color-domain');
@@ -62,7 +62,7 @@ import { RenderGraph } from '../graph.js';
         colorConnections: [{ source: 'source', destination: 'destination' }],
       } as never);
 
-      const result = graph.compile({ backendKind: 'null', caps });
+      const result = graph.compile({ caps });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('expected missing color domain');
       expect(result.error.code).toBe('missing-color-domain');
@@ -77,7 +77,7 @@ import { RenderGraph } from '../graph.js';
         colorConnections: [{ source: 'source', destination: 'destination' }],
       } as never);
 
-      const result = graph.compile({ backendKind: 'null', caps });
+      const result = graph.compile({ caps });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('expected a domain mismatch');
       expect(result.error.code).toBe('color-domain-mismatch');
@@ -98,7 +98,7 @@ import { RenderGraph } from '../graph.js';
         ],
       } as never);
 
-      const result = graph.compile({ backendKind: 'null', caps });
+      const result = graph.compile({ caps });
       expect(result.ok).toBe(true);
     });
 
@@ -109,7 +109,7 @@ import { RenderGraph } from '../graph.js';
         writes: ['destination'],
         colorConnections: [{ source: 'source', destination: 'destination' }],
       } as never);
-      const result = graph.compile({ backendKind: 'null', caps });
+      const result = graph.compile({ caps });
       expect(result.ok).toBe(true);
       expect(graph.listResources().map((resource) => resource.key)).toEqual([
         'source',
@@ -143,7 +143,6 @@ import { RenderGraph } from '../graph.js';
       });
       g.addPass('main', { reads: [], writes: ['transient'] });
       const compiled = g.compile({
-        backendKind: 'webgpu',
         caps: {
           backendKind: 'webgpu',
           compute: true,
@@ -274,7 +273,7 @@ import { RenderGraph } from '../graph.js';
         execute: () => calls.push('consumer'),
       });
 
-      const compiled = g.compile({ backendKind: 'webgpu', caps: mockCaps() });
+      const compiled = g.compile({ caps: mockCaps() });
       expect(compiled.ok).toBe(true);
       const executedPasses: string[] = [];
       g.execute({ frame: 1 }, (name, run) => {
@@ -287,7 +286,7 @@ import { RenderGraph } from '../graph.js';
     });
 
     it('preserves shadow -> main pass ordering (shadow before main in compiled order)', () => {
-      const r = buildPerFrameGraph().compile({ backendKind: 'wgpu-native', caps: mockCaps() });
+      const r = buildPerFrameGraph().compile({ caps: mockCaps() });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const order = r.value.passes.map((p) => p.name);
@@ -356,7 +355,7 @@ import { RenderGraph } from '../graph.js';
       g.addPass('tonemap', { reads: ['hdrComposited'], writes: [] });
       g.addPass('fxaa', { reads: [], writes: ['fxaaIntermediate'] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps() });
+      const r = g.compile({ caps: mockCaps() });
       expect(r.ok).toBe(true);
     });
 
@@ -373,7 +372,7 @@ import { RenderGraph } from '../graph.js';
       });
       g.addPass('tonemap', { reads: ['hdrComposited'], writes: [] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps() });
+      const r = g.compile({ caps: mockCaps() });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const order = r.value.passes.map((p) => p.name);
@@ -401,7 +400,7 @@ import { RenderGraph } from '../graph.js';
         writes: ['hdrComposited'],
       });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps() });
+      const r = g.compile({ caps: mockCaps() });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const order = r.value.passes.map((p) => p.name);
@@ -441,7 +440,7 @@ import { RenderGraph } from '../graph.js';
       });
       g.addPass('tonemap', { reads: ['hdrComposited'], writes: [] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps() });
+      const r = g.compile({ caps: mockCaps() });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const order = r.value.passes.map((p) => p.name);
@@ -503,7 +502,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('passA', { reads: ['orphanKey'], writes: [] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: mockCaps({}),
       });
 
@@ -527,7 +525,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('passA', { reads: ['ghost'], writes: [] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: mockCaps({}),
       });
 
@@ -546,7 +543,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('writer', { reads: [], writes: ['unregisteredOut'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: mockCaps({}),
       });
 
@@ -573,7 +569,6 @@ import { RenderGraph } from '../graph.js';
       });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: mockCaps({ compute: false }),
       });
 
@@ -596,7 +591,6 @@ import { RenderGraph } from '../graph.js';
       });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: mockCaps({ storageBuffer: false }),
       });
 
@@ -622,7 +616,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('B', { reads: ['X'], writes: ['Y'] });
       g.addPass('C', { reads: [], writes: ['Z'] });
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: mockCaps({}),
       });
 
@@ -1170,7 +1163,7 @@ import { RenderGraph } from '../graph.js';
       graph.addPass('main', { reads: [], writes: ['persistent', 'sibling'] });
 
       graph.setSwapChainSize(64, 32);
-      expect(graph.compile({ backendKind: 'webgpu', caps, device: device as never }).ok).toBe(true);
+      expect(graph.compile({ caps, device: device as never }).ok).toBe(true);
       const persistentTexture = graph.getColorTargetTexture('persistent');
       const persistentView = graph.getColorTargetView('persistent');
       const siblingTexture = graph.getColorTargetTexture('sibling');
@@ -1183,14 +1176,14 @@ import { RenderGraph } from '../graph.js';
       ]);
 
       graph.setSwapChainSize(64, 32);
-      expect(graph.compile({ backendKind: 'webgpu', caps, device: device as never }).ok).toBe(true);
+      expect(graph.compile({ caps, device: device as never }).ok).toBe(true);
       expect(graph.getColorTargetTexture('persistent')).toBe(persistentTexture);
       expect(graph.getColorTargetView('persistent')).toBe(persistentView);
       expect(graph.getColorTargetTexture('sibling')).toBe(siblingTexture);
       expect(created).toHaveLength(2);
 
       graph.setSwapChainSize(128, 32);
-      expect(graph.compile({ backendKind: 'webgpu', caps, device: device as never }).ok).toBe(true);
+      expect(graph.compile({ caps, device: device as never }).ok).toBe(true);
       const replacementTexture = graph.getColorTargetTexture('persistent');
       const replacementView = graph.getColorTargetView('persistent');
       expect(replacementTexture).not.toBe(persistentTexture);
@@ -1211,7 +1204,7 @@ import { RenderGraph } from '../graph.js';
       expect(destroyed).toEqual([persistentTexture]);
 
       graph.setSwapChainSize(128, 32);
-      expect(graph.compile({ backendKind: 'webgpu', caps, device: device as never }).ok).toBe(true);
+      expect(graph.compile({ caps, device: device as never }).ok).toBe(true);
       expect(graph.getColorTargetTexture('persistent')).toBe(replacementTexture);
       expect(graph.getColorTargetView('persistent')).toBe(replacementView);
       expect(created).toHaveLength(3);
@@ -1243,7 +1236,7 @@ import { RenderGraph } from '../graph.js';
           );
         },
       });
-      const options = { backendKind: device.caps.backendKind, caps: device.caps, device };
+      const options = { caps: device.caps, device };
       const compiled = graph.compile(options).unwrap();
       const pair = compiled.colorTargets.get('source');
       expect(pair).toBeDefined();
@@ -1301,7 +1294,7 @@ import { RenderGraph } from '../graph.js';
       });
       graph.addPass('healthy-pass', { reads: [], writes: ['healthy'] });
 
-      const initial = graph.compile({ backendKind: 'webgpu', caps, device: device as never });
+      const initial = graph.compile({ caps, device: device as never });
       expect(initial.ok).toBe(true);
       const healthyTexture = graph.getColorTargetTexture('healthy');
       const healthyView = graph.getColorTargetView('healthy');
@@ -1322,7 +1315,7 @@ import { RenderGraph } from '../graph.js';
       graph.addPass('faulty-pass', { reads: [], writes: ['faulty-target'] });
       failOnCreateCall = createCalls + 2;
 
-      const refused = graph.compile({ backendKind: 'webgpu', caps, device: device as never });
+      const refused = graph.compile({ caps, device: device as never });
       expect(refused.ok).toBe(false);
       if (refused.ok) return;
       expect(refused.error.code).toBe('resource-alloc-failed');
@@ -1337,7 +1330,7 @@ import { RenderGraph } from '../graph.js';
       expect(graph.getColorTargetTexture('faulty-target')).toBeUndefined();
 
       failOnCreateCall = undefined;
-      const recovered = graph.compile({ backendKind: 'webgpu', caps, device: device as never });
+      const recovered = graph.compile({ caps, device: device as never });
       expect(recovered.ok).toBe(true);
       expect(graph.getColorTargetTexture('new-target')).not.toBe(created[1]);
       expect(graph.getColorTargetTexture('faulty-target')).toBeDefined();
@@ -1376,7 +1369,7 @@ import { RenderGraph } from '../graph.js';
         usage: 0,
       });
       graph.addPass('healthy-pass', { reads: [], writes: ['healthy'] });
-      const initial = graph.compile({ backendKind: 'webgpu', caps, device: device as never });
+      const initial = graph.compile({ caps, device: device as never });
       expect(initial.ok).toBe(true);
       const healthyTexture = graph.getColorTargetTexture('healthy');
       const healthyView = graph.getColorTargetView('healthy');
@@ -1392,7 +1385,7 @@ import { RenderGraph } from '../graph.js';
       });
       graph.addPass('candidate-pass', { reads: [], writes: ['candidate'] });
 
-      const refused = graph.compile({ backendKind: 'webgpu', caps, device: device as never });
+      const refused = graph.compile({ caps, device: device as never });
       expect(refused.ok).toBe(false);
       if (refused.ok) return;
       expect(refused.error.code).toBe('invalid-format');
@@ -1515,7 +1508,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: drainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDrainDevice(probe) as any,
@@ -1541,7 +1533,6 @@ import { RenderGraph } from '../graph.js';
       });
       g.addPass('shadow', { reads: [], writes: ['shadowDepth'] });
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: drainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDrainDevice(probe) as any,
@@ -1567,7 +1558,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: drainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDrainDevice(probe) as any,
@@ -1646,7 +1636,7 @@ import { RenderGraph } from '../graph.js';
       });
       g.addPass('mainPass', { reads: [], writes: ['lightBuf'] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps({ storageBuffer: false }) });
+      const r = g.compile({ caps: mockCaps({ storageBuffer: false }) });
 
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -1663,7 +1653,7 @@ import { RenderGraph } from '../graph.js';
       });
       g.addPass('mainPass', { reads: [], writes: ['lightBuf'] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps({ storageBuffer: true }) });
+      const r = g.compile({ caps: mockCaps({ storageBuffer: true }) });
 
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -1684,11 +1674,9 @@ import { RenderGraph } from '../graph.js';
       };
 
       const noStorage = build().compile({
-        backendKind: 'webgpu',
         caps: mockCaps({ storageBuffer: false }),
       });
       const withStorage = build().compile({
-        backendKind: 'webgpu',
         caps: mockCaps({ storageBuffer: true }),
       });
 
@@ -1711,11 +1699,9 @@ import { RenderGraph } from '../graph.js';
       };
 
       const withStorage = build().compile({
-        backendKind: 'webgpu',
         caps: mockCaps({ storageBuffer: true }),
       });
       const noStorage = build().compile({
-        backendKind: 'webgpu',
         caps: mockCaps({ storageBuffer: false }),
       });
 
@@ -1731,7 +1717,7 @@ import { RenderGraph } from '../graph.js';
       g.addResource('plainBuf', { kind: 'buffer', lifetime: 'persistent' });
       g.addPass('mainPass', { reads: [], writes: ['plainBuf'] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps({ storageBuffer: false }) });
+      const r = g.compile({ caps: mockCaps({ storageBuffer: false }) });
 
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -1744,7 +1730,7 @@ import { RenderGraph } from '../graph.js';
       g.addResource('hdrColor', { kind: 'texture', lifetime: 'transient' });
       g.addPass('mainPass', { reads: [], writes: ['hdrColor'] });
 
-      const r = g.compile({ backendKind: 'webgpu', caps: mockCaps({ storageBuffer: true }) });
+      const r = g.compile({ caps: mockCaps({ storageBuffer: true }) });
 
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -1838,7 +1824,6 @@ import { RenderGraph } from '../graph.js';
       // Compile at 64x64.
       g.setSwapChainSize(64, 64);
       const r1 = g.compile({
-        backendKind: 'webgpu',
         caps: resizeDrainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeResizeDrainDevice(probe) as any,
@@ -1853,7 +1838,6 @@ import { RenderGraph } from '../graph.js';
       expect(resizeDetected).toBe(true);
 
       const r2 = g.compile({
-        backendKind: 'webgpu',
         caps: resizeDrainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeResizeDrainDevice(probe) as any,
@@ -1887,7 +1871,6 @@ import { RenderGraph } from '../graph.js';
       // Compile at 64x64 — no prior size set, so setSwapChainSize(64,64) returns true.
       g.setSwapChainSize(64, 64);
       const r1 = g.compile({
-        backendKind: 'webgpu',
         caps: resizeDrainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeResizeDrainDevice(probe) as any,
@@ -1902,7 +1885,6 @@ import { RenderGraph } from '../graph.js';
       expect(resizeDetected).toBe(false);
 
       const r2 = g.compile({
-        backendKind: 'webgpu',
         caps: resizeDrainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeResizeDrainDevice(probe) as any,
@@ -1934,7 +1916,6 @@ import { RenderGraph } from '../graph.js';
 
       g.setSwapChainSize(64, 64);
       const r1 = g.compile({
-        backendKind: 'webgpu',
         caps: resizeDrainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeResizeDrainDevice(probe) as any,
@@ -1950,7 +1931,6 @@ import { RenderGraph } from '../graph.js';
       // Resize.
       g.setSwapChainSize(128, 128);
       const r2 = g.compile({
-        backendKind: 'webgpu',
         caps: resizeDrainMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeResizeDrainDevice(probe) as any,
@@ -2053,7 +2033,6 @@ import { RenderGraph } from '../graph.js';
       // Compile at 64x64.
       g.setSwapChainSize(64, 64);
       const r1 = g.compile({
-        backendKind: 'webgpu',
         caps: deferredMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDeferredDevice(probe) as any,
@@ -2069,7 +2048,6 @@ import { RenderGraph } from '../graph.js';
       expect(resizeDetected).toBe(true);
 
       const r2 = g.compile({
-        backendKind: 'webgpu',
         caps: deferredMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDeferredDevice(probe) as any,
@@ -2096,7 +2074,6 @@ import { RenderGraph } from '../graph.js';
 
       g.setSwapChainSize(64, 64);
       g.compile({
-        backendKind: 'webgpu',
         caps: deferredMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDeferredDevice(probe) as any,
@@ -2104,7 +2081,6 @@ import { RenderGraph } from '../graph.js';
 
       g.setSwapChainSize(128, 128);
       g.compile({
-        backendKind: 'webgpu',
         caps: deferredMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDeferredDevice(probe) as any,
@@ -2130,7 +2106,6 @@ import { RenderGraph } from '../graph.js';
 
       g.setSwapChainSize(64, 64);
       g.compile({
-        backendKind: 'webgpu',
         caps: deferredMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDeferredDevice(probe) as any,
@@ -2140,7 +2115,6 @@ import { RenderGraph } from '../graph.js';
 
       g.setSwapChainSize(128, 128);
       g.compile({
-        backendKind: 'webgpu',
         caps: deferredMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: makeDeferredDevice(probe) as any,
@@ -2244,7 +2218,6 @@ import { RenderGraph } from '../graph.js';
 
       // Compile to set lastDevice and populate transientPool.
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: sameKeyMockCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: mockDevice as any,
@@ -2418,7 +2391,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: b1ToleranceCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: mockDevice as any,
@@ -2485,7 +2457,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('main', { reads: [], writes: ['a', 'b'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: b1ToleranceCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: mockDevice as any,
@@ -2536,7 +2507,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('main', { reads: [], writes: ['a'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: b1ToleranceCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: mockDevice as any,
@@ -2597,7 +2567,6 @@ import { RenderGraph } from '../graph.js';
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
 
       const r = g.compile({
-        backendKind: 'webgpu',
         caps: clearPendingCaps(),
         // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
         device: mockDevice as any,

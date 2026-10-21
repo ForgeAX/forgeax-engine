@@ -183,6 +183,7 @@ describe('Standard PBR artifact assembly', () => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const labels: string[] = [];
     const seeds = new Map<string, unknown>();
+    const created = new Map<string, unknown>();
     const input = {
       registry,
       device,
@@ -192,7 +193,9 @@ describe('Standard PBR artifact assembly', () => {
         descriptor: { code: string; label?: string | undefined },
       ) => {
         labels.push(descriptor.label ?? '');
-        return rhi.createShaderModule(owner, descriptor);
+        const module = await rhi.createShaderModule(owner, descriptor);
+        if (module.ok) created.set(descriptor.label ?? '', module.value);
+        return module;
       },
       immediateCreateShaderModule: immediate
         ? () => {
@@ -220,8 +223,8 @@ describe('Standard PBR artifact assembly', () => {
       seedShaderModule: (label: string, module: unknown) => seeds.set(label, module),
       admitsVariant: ADMIT_EVERY_VARIANT,
     };
-    const ready = await buildGpuDrivenPbrReadyModules(input);
-    expect(seeds.get('module-forgeax::pbr-skin')).toBe(ready.pbrSkinModule);
+    await buildGpuDrivenPbrReadyModules(input);
+    expect(seeds.get('module-forgeax::pbr-skin')).toBe(created.get('pbr-skin'));
     expect(labels).toEqual(
       immediate ? ['pbr-skin'] : ['pbr-skin', 'module-forgeax::pbr-skin#optional'],
     );

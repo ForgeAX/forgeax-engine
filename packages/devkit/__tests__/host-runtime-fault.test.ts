@@ -104,8 +104,8 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
       logLevel: 'error',
       plugins: [
         executionWorkerEntries([
-          '@forgeax/engine/assets-runtime',
           '@forgeax/engine/ecs',
+          '@forgeax/engine/geometry',
           '@forgeax/engine/render',
           '@forgeax/engine/scene',
         ]),

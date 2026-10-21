@@ -24,7 +24,7 @@ export const RectAreaLight = defineComponent('RectAreaLight', {
   width: { type: 'f32', default: 10 },
   height: { type: 'f32', default: 10 },
   range: { type: 'f32', default: Number.POSITIVE_INFINITY },
-  sourceTexture: { type: 'shared<TextureAsset>' },
+  sourceTexture: { type: 'asset<texture>' },
   // Center-direction photometry modulates the existing finite-area LTC light.
-  iesProfile: { type: 'shared<IesProfileAsset>' },
+  iesProfile: { type: 'asset<ies-profile>' },
 });

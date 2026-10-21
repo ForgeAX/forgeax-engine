@@ -12,6 +12,7 @@ import {
   capabilityUnavailableError,
   operationCommandPath,
   type ToolApi,
+  type ToolApiProviderInput,
   type ToolApiRunOptions,
   type ToolContribution,
   type ToolDescriptor,
@@ -207,7 +208,16 @@ export const assetListInputSchema: ToolJsonSchema = {
 
 export const assetInspectInputSchema: ToolJsonSchema = {
   type: 'object',
-  properties: { root: packRootSchema, subject: packStringSchema, json: packBooleanSchema },
+  properties: {
+    root: packRootSchema,
+    subject: packStringSchema,
+    json: packBooleanSchema,
+    parametersOnly: {
+      type: 'boolean',
+      description:
+        'Read and validate only .pack.ts parameter declarations, with generation/runtime mode, bindings and source locations. No module execution, project scan, generation or runtime target validation.',
+    },
+  },
   required: ['subject'],
   additionalProperties: false,
 };
@@ -435,13 +445,10 @@ function projectDescriptor(descriptor: ToolDescriptor): ToolCatalogEntry {
   };
 }
 
-export interface ToolRealmOwner {
-  readonly realm: ToolDescriptor['realm'];
-  readonly contributions: readonly ToolContribution[];
-  /** Optional explicit provider identity for multiple owners in one realm. */
-  readonly sourceId?: string;
-  readonly providerId?: string;
-  readonly module?: string;
+export interface ToolRealmOwner
+  extends Pick<ToolApiProviderInput, 'realm' | 'module'>,
+    Partial<Pick<ToolApiProviderInput, 'sourceId' | 'providerId'>> {
+  readonly contributions: ToolApiProviderInput['tools'];
 }
 
 export interface ToolRealmDispatch {

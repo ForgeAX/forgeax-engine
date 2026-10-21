@@ -20,6 +20,7 @@ import type {
   ColliderSnapshot,
   PhysicsWorld2D,
   RaycastHit2D,
+  RigidBodyType,
 } from '@forgeax/engine-physics';
 import {
   CharacterController,
@@ -47,6 +48,7 @@ interface Rapier2DKinematicControllerState {
 
 interface PhysicsEntityRecord {
   bodyHandle: number;
+  lockRotation: boolean;
 }
 
 interface PhysicsTransform2D {
@@ -125,7 +127,7 @@ function applyKccTuning(ctrl: any, cc: CharacterControllerData): void {
  * `controller-requires-kinematic` error detail.
  */
 // biome-ignore lint/suspicious/noExplicitAny: Rapier module enum from dynamic module
-function rapierBodyTypeToString(rapier: any, bodyType: number): string {
+function rapierBodyTypeToString(rapier: any, bodyType: number): RigidBodyType {
   if (bodyType === rapier.RigidBodyType.Dynamic) return 'dynamic';
   if (bodyType === rapier.RigidBodyType.Fixed) return 'static';
   return 'kinematic';
@@ -616,6 +618,7 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
       angularDamping: number;
       gravityScale: number;
       ccdEnabled: number;
+      lockRotation?: boolean;
       additionalSolverIterations?: number;
     },
     collider: ColliderSnapshot,
@@ -628,6 +631,7 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
       const body = this.raw.getRigidBody(existing.bodyHandle);
       if (body.additionalSolverIterations() !== solverIterations)
         body.setAdditionalSolverIterations(solverIterations);
+      this.syncRotationLock(existing, body, Boolean(rigidBody.lockRotation));
       return;
     }
     if (collider.shape > 2)
@@ -691,6 +695,8 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
     body.setAdditionalSolverIterations(solverIterations);
     body.userData = entity;
     this.registerBody(entity, body.handle);
+    const record = this.entityMap.get(entity);
+    if (record !== undefined) this.syncRotationLock(record, body, Boolean(rigidBody.lockRotation));
 
     // ── Create ColliderDesc (2D) ──
     const scaleX = Math.abs(transform.scale.x);
@@ -809,8 +815,19 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
 
   // ─── ECS integration helpers ───────────────────────────────────────────
 
+  private syncRotationLock(
+    record: PhysicsEntityRecord,
+    body: RapierRigidBody2D,
+    locked: boolean,
+  ): void {
+    if (record.lockRotation === locked) return;
+    body.lockRotations(locked, true);
+    if (locked) body.setAngvel(0, true);
+    record.lockRotation = locked;
+  }
+
   registerBody(entity: number, bodyHandle: number): void {
-    this.entityMap.set(entity, { bodyHandle });
+    this.entityMap.set(entity, { bodyHandle, lockRotation: false });
     this.poseWritebackEntities.add(entity);
   }
 
@@ -1029,6 +1046,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
             angularDamping: number;
             gravityScale: number;
             ccdEnabled: number;
+            lockRotation?: boolean;
             additionalSolverIterations: number;
           })
         : undefined;
@@ -1106,6 +1124,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
           angularDamping: number;
           gravityScale: number;
           ccdEnabled: number;
+          lockRotation?: boolean;
           additionalSolverIterations?: number;
         } = rbType
           ? {
@@ -1115,6 +1134,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
               angularDamping: (rbAngDamp?.[row] ?? 0) as number,
               gravityScale: (rbGravScale?.[row] ?? 1) as number,
               ccdEnabled: (rbCcd?.[row] ?? 0) as number,
+              lockRotation: Boolean(rigidBodyData?.lockRotation),
               additionalSolverIterations: rigidBodyData?.additionalSolverIterations ?? 0,
             }
           : {
@@ -1124,6 +1144,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
               angularDamping: 0,
               gravityScale: 1,
               ccdEnabled: 0,
+              lockRotation: false,
             };
 
         const collider = snapshotCollider(colliderData);

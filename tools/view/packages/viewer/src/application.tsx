@@ -87,6 +87,7 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
             slotRegistry={window.__forgeaxViewSlotRegistry!}
             pageRegistry={pageRegistry}
             pageHost={pageHost}
+            panelHost={panelHost}
             workspaceClient={workspaceClient}
             hostConnection={hostConnection}
             responsiveAutoTuck={responsiveAutoTuck}

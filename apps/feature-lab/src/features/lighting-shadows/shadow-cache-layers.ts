@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DirectionalLight } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 interface RasterSample {
   readonly passCount: number;
@@ -20,11 +22,17 @@ export default defineFeature({
   expect:
     'Checks: settled scene has passCount 0 with every view a hit and static-layer companions present; after one cube moves, at least one view misses with a named reason.',
   async setup({ world, app, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { sun } = spawnStage(world, { eye: [0, 4, 7], target: [0, 0, 0] });
     world.set(sun, DirectionalLight, { cascadeCount: 2 } as never);
     const mat = standard(world, { baseColor: [0.9, 0.4, 0.1, 1] });
     const cubes = [-2, 0, 2].map((x) =>
-      spawnMesh(world, MESH.cube, mat, { pos: [x, 0.5, 0], scale: [0.8, 1, 0.8] }),
+      spawnMesh(world, stageCube, mat, { pos: [x, 0.5, 0], scale: [0.8, 1, 0.8] }),
     );
     const sample = (): RasterSample => {
       const raster = app.renderer.inspect().shadowRaster;

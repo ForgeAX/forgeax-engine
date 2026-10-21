@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { animationClipContribution } from '../dist/index.mjs';
 // Independent live AnimationPlayer + retarget oracle against baked AnimationPlayer, between keys.
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -14,7 +16,9 @@ mkdirSync(out,{recursive:true});
 const report = { mapping:'4 source joints to 3 target joints; animated unmapped intermediate', duration:1.13, loopPolicy:'terminal sampled without wrap; closed-clip endpoints and actual player wrap compared separately',
   thresholds:{ angularRadians:0.002, translation:1e-5, fps:60 }, cases:[] };
 for (const fps of [15,30,60,120]) {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+  const world = new World({ assets });
   const context = await createWorldContext(world,[scenePlugin(),animationPlugin()]);
   const chain = (name,length) => {
     const joints=[];
@@ -50,7 +54,7 @@ for (const fps of [15,30,60,120]) {
   const baked=retargetAnimationClip(world,{...options,clip,fps}).unwrap();
   const bakeMs=performance.now()-started;
   for(const [joints,payload] of [[source,clip],[target,baked]]) {
-    world.addComponent(joints[0],{component:AnimationPlayer,data:{clips:[world.allocSharedRef('AnimationClip',payload)],
+    world.addComponent(joints[0],{component:AnimationPlayer,data:{clips:[assets.create(payload).unwrap()],
       times:[0],weights:[1],speeds:[0],paused:true,looping:false}}).unwrap();
     bindAnimationTargets(world,joints[0],joints).unwrap();
   }
@@ -91,5 +95,6 @@ for (const fps of [15,30,60,120]) {
   if(fps>=60) {assert(row.maxAngle<report.thresholds.angularRadians); assert(row.maxTranslation<report.thresholds.translation);}
   report.cases.push(row); console.log(JSON.stringify({...row,rows:undefined}));
   await context.fiber.dispose();
+  assets.dispose();
 }
 writeFileSync(resolve(out,'bake-error.json'),JSON.stringify(report,null,2));

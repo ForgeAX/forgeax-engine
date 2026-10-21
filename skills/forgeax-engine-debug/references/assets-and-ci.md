@@ -6,29 +6,16 @@ Use the symptom table in `../SKILL.md` to select one recipe. Verify the signal b
 
 **Signal**: a textured demo renders a uniform white square without detail or lighting gradients; material registration succeeds.
 
-**Cause**: raw pack paramValues contain GUID strings in baseColorTexture/metallicRoughnessTexture. Extraction binds only resolved numeric Handles; strings select the white placeholder.
+**Check**: capture the failing frame through the RHI Debug skill and inspect the material's texture and sampler bindings. Runtime materials reference managed texture/sampler handles; Pack source references GUIDs which the asset decoder resolves before publication adoption.
 
-**Check**: inspect the extraction type guard.
 ```bash
-grep -n "typeof pv.baseColorTexture === 'number'" packages/runtime/src/render-system-extract.ts
+rg -n 'baseColorTexture|sampler' packages/render/src/render-system-extract.ts
+rg -n 'resolveDependency|texture' packages/assets-runtime/src/registry/validate-material.ts
 ```
 
-**Repair**: replace texture GUIDs with loadByGuid<TextureAsset> result handles. On load failure, omit the slot so normal fallback applies rather than passing a string.
+**Repair**: use `assets.load(guid, 'texture')` for source assets or `assets.create(texture)` for runtime assets, then assign the returned handle through `assets.update(material, { ...changedFields })`. Follow the material's schema for its texture/sampler descriptor. Repair missing source dependencies or invalid publication artifacts at their producer; retain the structured failure until the intended texture loads. A placeholder does not verify that a requested texture works.
 
-```ts
-for (const [k, v] of Object.entries(paramValuesIn)) {
-  if (k === 'baseColorTexture') {
-    if (!diffuseRes.ok) continue;       // drop slot -> 1x1 placeholder
-    filteredValues[k] = diffuseRes.value; // resolved numeric Handle
-    continue;
-  }
-  // Apply the same resolution to metallicRoughnessTexture.
-  filteredValues[k] = v;
-}
-```
-
-> [!CAUTION]
-> Handle<T> is a branded number (packages/types/src/handle.ts). Pack JSON stores GUID strings, requiring loadByGuid resolution before runtime use. Extraction does not resolve strings.
+`assets.read(handle)` returns an isolated snapshot. Mutating that snapshot does not edit the managed asset; use `assets.update` so validation, revision advancement and runtime adoption happen together.
 
 ---
 
@@ -41,7 +28,7 @@ for (const [k, v] of Object.entries(paramValuesIn)) {
 **Check**: compare data fields against error.detail.knownFields.
 ```bash
 # Inspect schema fields.
-grep -n "defineComponent('<ComponentName>'" packages/runtime/src/components/*.ts
+rg -n "defineComponent('<ComponentName>'" packages/*/src/components/
 ```
 
 **Repair**: use schema names and migrate all spawn sites together after renames. Commands.spawn throws from the system body, identifying the call site in its stack.
@@ -125,7 +112,7 @@ asset-not-imported or fails to receive the scene Pack.
 importProbeHits >= 3 and scene in kindUnion. This probes whether the configured
 pluginPack producer actually prepares the scene GUID. Clearing roots or removing
 the sidecar must fail. Dawn directly calls
-gltfDocToSceneAsset -> register(handle), bypassing development producer/package fetch,
+glTF scene preparation -> assets.create(scene), bypassing development producer/package fetch,
 so it cannot replace this browser gate.
 
 ---

@@ -28,6 +28,8 @@ use naga::{
 use serde::{Deserialize, Serialize};
 use serde_json;
 use wasm_bindgen::prelude::*;
+#[path = "naga_entry_reads.rs"]
+mod entry_reads;
 
 // === Three-phase export handles ====================================================
 
@@ -44,6 +46,54 @@ pub struct ParsedModule {
 pub struct ValidatedModule {
     module: Module,
     info: ModuleInfo,
+}
+
+#[derive(Serialize)]
+struct ComputeEntrySource {
+    #[serde(rename = "entryPoint")]
+    entry_point: String,
+    source: String,
+}
+
+// This is a build-time projection. Naga retains the selected entry's workgroup
+// size, overrides and reachable globals/functions, and remaps every IR handle.
+fn compute_entry_sources(source: &str, entries: &[String]) -> Result<Vec<ComputeEntrySource>, String> {
+    let parsed = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
+    Validator::new(ValidationFlags::all(), Capabilities::all())
+        .validate(&parsed).map_err(|e| e.to_string())?;
+    let mut output = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let mut module = parsed.clone();
+        module.entry_points.retain(|ep| ep.stage == ShaderStage::Compute && ep.name == *entry);
+        if module.entry_points.len() != 1 {
+            return Err(format!("expected one compute entry named {entry}"));
+        }
+        // Pipeline constants can name any original override, even one unused
+        // by this entry. Compaction can remove that declaration, and the WGSL
+        // writer cannot round-trip override-sized workgroups. Keep the exact
+        // source for these modules rather than changing their public contract.
+        if !parsed.overrides.is_empty() {
+            output.push(ComputeEntrySource { entry_point: entry.clone(), source: source.into() });
+            continue;
+        }
+        naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&module).map_err(|e| e.to_string())?;
+        let source = naga::back::wgsl::write_string(
+            &module, &info, naga::back::wgsl::WriterFlags::empty(),
+        ).map_err(|e| e.to_string())?;
+        output.push(ComputeEntrySource { entry_point: entry.clone(), source });
+    }
+    Ok(output)
+}
+
+/// Produce portable WGSL for each selected compute entry; never driver binaries.
+#[wasm_bindgen]
+pub fn specialize_compute_entries(source: &str, entries_json: &str) -> Result<String, JsError> {
+    let entries: Vec<String> = serde_json::from_str(entries_json)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let output = compute_entry_sources(source, &entries).map_err(|e| JsError::new(&e))?;
+    serde_json::to_string(&output).map_err(|e| JsError::new(&e.to_string()))
 }
 
 // === Phase 1: parse ================================================================
@@ -188,6 +238,7 @@ pub fn emit_reflection(validated: &ValidatedModule, options_json: &str) -> Resul
         schema_version: "shader-reflection/2",
         bound_globals: derive_bound_globals(&validated.module, &validated.info),
         uv_set_count,
+        entry_points: entry_reads::derive(&validated.module, &validated.info),
         bindings: bgls,
     };
     serde_json::to_string(&output)
@@ -301,6 +352,8 @@ struct ReflectionOutput {
     bound_globals: Vec<BoundGlobal>,
     #[serde(rename = "uvSetCount")]
     uv_set_count: u32,
+    #[serde(rename = "entryPoints")]
+    entry_points: Vec<entry_reads::EntryReads>,
     // Keep the generic BGL projection in this wire during the one-cut reader
     // migration. It has no Material classification and is removed once all
     // consumers read boundGlobals directly.

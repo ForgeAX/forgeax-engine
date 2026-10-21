@@ -1,3 +1,4 @@
+import { isShaderEntryPointReads, type ShaderEntryPointReads } from './runtime-contracts.js';
 /**
  * Producer-published material program facts shared by Pack and runtime
  * rendering.  This is deliberately a data-only contract: it describes the
@@ -6,8 +7,10 @@
  * resources and device generation.
  */
 
+import { MATERIAL_RESOURCE_KINDS, type MaterialResourceKind } from './derive-paramschema.js';
 import {
   deriveMaterialDynamicInputLayout,
+  isMaterialSurfaceModel,
   type MaterialDynamicFieldType,
   type MaterialDynamicInputLayout,
   type MaterialDynamicInputSchema,
@@ -49,7 +52,7 @@ export function isMaterialProgramBindingContract(
 export interface MaterialProgramResourceSlot {
   readonly name: string;
   readonly parameter: string;
-  readonly kind: 'sampler' | 'texture' | 'storage-buffer';
+  readonly kind: MaterialResourceKind;
   readonly group: number;
   readonly binding: number;
 }
@@ -61,6 +64,14 @@ export interface MaterialProgramVertexInput {
 }
 
 export type MaterialSurfacePassKind = 'nearest-layer' | 'color';
+
+/** Ordered Surface passes each model's program publishes. */
+export const MATERIAL_SURFACE_MODEL_PASSES: Readonly<
+  Record<MaterialSurfaceModel, readonly MaterialSurfacePassKind[]>
+> = Object.freeze({
+  standard: Object.freeze(['color'] as const),
+  'single-layer-medium': Object.freeze(['nearest-layer', 'color'] as const),
+});
 
 /** Producer-owned model facts shared by the direct and scene-index entries. */
 export interface MaterialSurfaceProgramAbi {
@@ -80,6 +91,7 @@ export interface MaterialSurfaceProgramAbi {
 
 /** Complete immutable ABI projection for one material program family. */
 export interface MaterialProgramAbi {
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
   /** Omitted selects the ordinary Render material interface. Never inferred from WGSL text. */
   readonly bindings?: MaterialProgramBindingContract;
   /** Explicit attachment read or independent snapshot of depth before this pass. */
@@ -219,18 +231,16 @@ export function isMaterialSurfaceProgramAbi(value: unknown): value is MaterialSu
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const surface = value as Record<string, unknown>;
   if (
-    (surface.model !== 'standard' && surface.model !== 'single-layer-medium') ||
+    !isMaterialSurfaceModel(surface.model) ||
     typeof surface.module !== 'string' ||
     !SURFACE_MODULE_RE.test(surface.module) ||
     typeof surface.inputAbi !== 'string' ||
     typeof surface.outputAbi !== 'string' ||
-    !Array.isArray(surface.passes) ||
-    surface.passes.some((pass) => pass !== 'nearest-layer' && pass !== 'color')
+    !Array.isArray(surface.passes)
   )
     return false;
   const passes = surface.passes as unknown[];
-  const expectedPasses =
-    surface.model === 'single-layer-medium' ? ['nearest-layer', 'color'] : ['color'];
+  const expectedPasses = MATERIAL_SURFACE_MODEL_PASSES[surface.model];
   if (
     passes.length !== expectedPasses.length ||
     passes.some((pass, index) => pass !== expectedPasses[index])
@@ -316,8 +326,8 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
         (resource as { name: string }).name.length > 0 &&
         typeof (resource as { parameter?: unknown }).parameter === 'string' &&
         (resource as { parameter: string }).parameter.length > 0 &&
-        ['sampler', 'texture', 'storage-buffer'].includes(
-          (resource as { kind?: unknown }).kind as string,
+        (MATERIAL_RESOURCE_KINDS as readonly unknown[]).includes(
+          (resource as { kind?: unknown }).kind,
         ) &&
         validIndex((resource as { group?: unknown }).group) &&
         validIndex((resource as { binding?: unknown }).binding),
@@ -338,6 +348,7 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
       ((abi.skinPaletteAddress as { stride: number }).stride ?? 0) > 0);
   const validSurface = abi.surface === undefined || isMaterialSurfaceProgramAbi(abi.surface);
   const validShape =
+    (abi.entryPoints === undefined || isShaderEntryPointReads(abi.entryPoints)) &&
     (abi.bindings === undefined || isMaterialProgramBindingContract(abi.bindings)) &&
     (abi.sceneDepth === undefined ||
       abi.sceneDepth === 'read-only' ||

@@ -97,7 +97,7 @@ export interface SkeletalMotionBinding {
 }
 
 class ManagedSkeletalMotion implements SkeletalMotionBinding {
-  status: 'bound' | 'waiting-physics' | 'active' | 'failed' | 'disposed' = 'bound';
+  status: SkeletalMotionBinding['status'] = 'bound';
   failure: SkeletalMotionFailure | undefined;
   fixedSteps = 0;
   private readonly pose: SkeletonPose;

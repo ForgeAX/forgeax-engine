@@ -17,6 +17,8 @@ export type PanelClaim = {
 };
 export type PanelMount = PanelClaim & { panel: string; props?: Record<string, unknown> };
 export type PageController = {
+  beforeClose?: (signal: AbortSignal) => void | Promise<void>;
+  getStatus?: () => { phase: 'opening' | 'failed'; message?: string } | undefined;
   getResource?: () => PresentationResource | undefined;
   getTitle?: () => string | undefined; subscribeTitle?: (listener: () => void) => () => void; dispose?: () => void;
 };

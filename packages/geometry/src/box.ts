@@ -7,33 +7,26 @@
 // failure red line (requirements §9 geometry double-semantics for
 // 'asset-parse-failed').
 //
-// Attributes populated: position / normal / uv (Float32Array views of the
-// interleaved `vertices` buffer; 8 floats per vertex). This is the AC-15
-// narrowing anchor: each factory includes a
-// `for (const [key] of Object.entries(attrs))` loop that TypeScript infers as
-// the VertexAttributeMap key union (no `as` cast).
+// Factories fill canonical position, normal and UV arrays. The shared primitive
+// finalizer adds tangents, packs runtime vertices and computes local bounds.
 //
 // Related: requirements §AC-06 / §AC-14 / §AC-15;
 //          plan-strategy §M3 + D-P5 (6 procedural geometries lowercase keys);
 //          plan-tasks.json w8 acceptanceCheck;
 //          research Finding 4 (Three.js r184 BufferGeometry mental migration).
 
-import { box3 } from '@forgeax/engine-math';
 import {
   ASSET_ERROR_HINTS,
   AssetError,
   err,
   type MeshAsset,
-  ok,
   type Result,
-  type VertexAttributeMap,
 } from '@forgeax/engine-types';
-import { computeTangentVec4 } from './tangent';
-import { packInterleavedVertexAttributes } from './vertex-attribute-layout';
+import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
 
 /**
- * Floats per vertex for the procedural-geometry interleaved buffer that the
- * factory bodies fill in (position(3) + normal(3) + uv(2)). The
+ * Floats per vertex accepted by the public interleaved input adapter
+ * (position(3) + normal(3) + uv(2)). The
  * `meshFromInterleaved` helper expands this into the runtime 12-float
  * (position + normal + uv + tangent) layout consumed by the standard
  * pipeline (feat-20260518 M4 D-10).
@@ -118,38 +111,7 @@ export function meshFromInterleaved(
     uvs[i * 2 + 0] = vertices[base + 6] as number;
     uvs[i * 2 + 1] = vertices[base + 7] as number;
   }
-  const tangentResult = computeTangentVec4(positions, normals, uvs, indices);
-  if (!tangentResult.ok) return tangentResult;
-  const tangents = tangentResult.value;
-  const attributes: VertexAttributeMap = {
-    position: positions,
-    normal: normals,
-    uv: uvs,
-    tangent: tangents,
-  };
-  const packed = packInterleavedVertexAttributes(attributes, vertexCount);
-  if (!packed.ok) return packed;
-  return ok({
-    kind: 'mesh',
-    vertices: packed.value.vertices,
-    indices,
-    attributes,
-    submeshes: [
-      {
-        indexOffset: 0,
-        indexCount: indices.length,
-        vertexCount,
-        topology: 'triangle-list',
-        materialSlot: 0,
-      },
-    ],
-    materialSlots: [{ slotName: 'Default' }],
-    // Procedural meshes carry their own local-space AABB: after feat-20260614
-    // (D-15) `allocSharedRef` stores the payload verbatim -- there is no
-    // `withMeshAabb` pass like the old `register`/`catalog` path -- so the cull
-    // + pick path can only read an AABB the POD already holds.
-    aabb: box3.fromPositions(box3.create(), positions),
-  });
+  return finishPrimitiveMesh({ position: positions, normal: normals, uv: uvs }, indices);
 }
 
 /** Shared helper: AssetError for degenerate geometry parameters. */
@@ -302,7 +264,7 @@ export function createBoxGeometry(
     indexCount += f.uSegs * f.vSegs * 6;
   }
 
-  const vertices = new Float32Array(vertexCount * FACTORY_FLOATS_PER_VERTEX);
+  const attributes = createPrimitiveAttributes(vertexCount);
   const indices = new Uint32Array(indexCount);
   let vIdx = 0;
   let iIdx = 0;
@@ -324,16 +286,15 @@ export function createBoxGeometry(
         pos[f.wAxis] = halfW * f.wSign;
         const normal: [number, number, number] = [0, 0, 0];
         normal[f.wAxis] = f.wSign;
-        const base = vIdx * FACTORY_FLOATS_PER_VERTEX;
-        vertices[base + 0] = pos[0];
-        vertices[base + 1] = pos[1];
-        vertices[base + 2] = pos[2];
-        vertices[base + 3] = normal[0];
-        vertices[base + 4] = normal[1];
-        vertices[base + 5] = normal[2];
-        vertices[base + 6] = i / f.uSegs;
+        attributes.position[vIdx * 3 + 0] = pos[0];
+        attributes.position[vIdx * 3 + 1] = pos[1];
+        attributes.position[vIdx * 3 + 2] = pos[2];
+        attributes.normal[vIdx * 3 + 0] = normal[0];
+        attributes.normal[vIdx * 3 + 1] = normal[1];
+        attributes.normal[vIdx * 3 + 2] = normal[2];
+        attributes.uv[vIdx * 2 + 0] = i / f.uSegs;
         // UV.v uses the WebGPU top-left convention (V=0 = image top).
-        vertices[base + 7] = j / f.vSegs;
+        attributes.uv[vIdx * 2 + 1] = j / f.vSegs;
         vIdx++;
       }
     }
@@ -381,5 +342,5 @@ export function createBoxGeometry(
     }
   }
 
-  return meshFromInterleaved(vertices, indices);
+  return finishPrimitiveMesh(attributes, indices);
 }

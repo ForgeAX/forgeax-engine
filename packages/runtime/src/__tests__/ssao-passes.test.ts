@@ -6,16 +6,15 @@
 // typed graph fixture and keep the GPU dispatch/binding predicates intact.
 
 import { RenderGraph } from '@forgeax/engine-render-graph';
-import type { RhiDevice } from '@forgeax/engine-rhi';
+import type { RhiDevice, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../../render/src/device/device-scope';
 import type { BloomPersistentBundle } from '../../../render/src/record/render-context';
 import {
+  encodeSkyboxPass,
+  recordBloomBlurPass,
   recordBloomCompositePass,
-  recordBloomHorizontalPass,
-  recordBloomVerticalPass,
   recordFxaaPass,
-  recordSkyboxPass,
 } from '../../../render/src/record/skybox-post-pass';
 import { VIEW_UNIFORM_BYTES } from '../../../render/src/record/view-ubo';
 import type { RenderPipelineContext } from '../../../render/src/render-contract';
@@ -244,8 +243,6 @@ function makeDispatchSpyCtx(
     skylightCount: 0,
     skybox: undefined,
     msaaActive: false,
-    geometryColorResolveView: null,
-    ldrSpriteColorView: null,
     tonemapActive: true,
   } as unknown as RenderPipelineContext;
 
@@ -698,6 +695,7 @@ interface PostProcessBindGroupCreate {
 
 function makePostProcessRecordCtx(): {
   ctx: _InternalRenderPipelineContext;
+  pass: RhiRenderPassEncoder;
   bindGroupCreates: PostProcessBindGroupCreate[];
 } {
   const bindGroupCreates: PostProcessBindGroupCreate[] = [];
@@ -756,8 +754,6 @@ function makePostProcessRecordCtx(): {
       colorAttachmentFormat: 'bgra8unorm-srgb',
       viewUniformBuffer: { label: 'view-uniform' },
       perPassResources: {
-        hdrColorView: { label: 'hdr-color' },
-        hdrColorMsaaView: null,
         skyboxPipeline: { label: 'skybox-pipeline' },
         skyboxPipelineMsaa: null,
         skyboxBindGroupLayout: { label: 'skybox-bgl' },
@@ -787,12 +783,12 @@ function makePostProcessRecordCtx(): {
     targetH: 600,
     currentTexture: { label: 'swapchain' },
   } as unknown as _InternalRenderPipelineContext;
-  return { ctx, bindGroupCreates };
+  return { ctx, pass: pass as unknown as RhiRenderPassEncoder, bindGroupCreates };
 }
 
 describe('post-process bindgroup identity cache (issue #670)', () => {
   it('reuses live-view bindgroups and rebuilds changed-view bindings across postprocess paths', () => {
-    const { ctx, bindGroupCreates } = makePostProcessRecordCtx();
+    const { ctx, pass, bindGroupCreates } = makePostProcessRecordCtx();
     const views = {
       hdrColor: { label: 'hdr-color' },
       ldrColor: { label: 'ldr-color' },
@@ -815,12 +811,12 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
 
     const recordAll = () => {
       for (let level = 0; level < 5; level += 1) {
-        recordBloomHorizontalPass(ctx, resolve, undefined, level);
-        recordBloomVerticalPass(ctx, resolve, undefined, level);
+        recordBloomBlurPass(ctx, 'horizontal', resolve, undefined, level);
+        recordBloomBlurPass(ctx, 'vertical', resolve, undefined, level);
       }
       recordBloomCompositePass(ctx, resolve);
       recordFxaaPass(ctx, resolve);
-      recordSkyboxPass(ctx);
+      encodeSkyboxPass(ctx, pass);
     };
     recordAll();
     expect(ctx.encoder.copyTextureToTexture).not.toHaveBeenCalled();

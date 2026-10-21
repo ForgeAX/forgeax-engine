@@ -1,6 +1,33 @@
 import { expect, it } from 'vitest';
 import { WebAudioEngine } from '../web-audio-engine';
 
+it('renders the named bus values admitted from prototype accessors', async () => {
+  const context = new OfflineAudioContext(1, 4800, 48000);
+  const engine = new WebAudioEngine({ context });
+  let volumeReads = 0;
+  class Bus {
+    get id() {
+      return 'master';
+    }
+    get parent() {
+      return null;
+    }
+    get volume() {
+      return volumeReads++ === 0 ? 0.5 : Number.NaN;
+    }
+  }
+  try {
+    expect(engine.configureBuses([new Bus()]).ok).toBe(true);
+    const buffer = context.createBuffer(1, 4800, 48000);
+    buffer.getChannelData(0).fill(0.1);
+    engine.play(1, buffer, { loop: false, volume: 1, spatialBlend: 0, bus: 'master' });
+    const samples = (await context.startRendering()).getChannelData(0);
+    expect(samples[2400]).toBeCloseTo(0.05, 5);
+  } finally {
+    engine.destroy();
+  }
+});
+
 it('rejects duplicate effect nodes and retains the accepted native output graph', async () => {
   const context = new OfflineAudioContext(1, 4800, 48000);
   const engine = new WebAudioEngine({ context });

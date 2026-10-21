@@ -30,10 +30,13 @@ import { decodeColorAccessor } from './accessor/decode-color.js';
 import { checkExtensions, type GltfExtensionsJson } from './check-extensions.js';
 import { Base64DecodeError, dataUriBase64Payload, decodeBase64 } from './data-uri.js';
 import { err, type GltfError, gltfErr, ok, type Result } from './errors.js';
+import { type GltfImageIr, type GltfImageJson, parseGltfImages } from './extract-image-bytes.js';
+
+export type { GltfImageIr } from './extract-image-bytes.js';
+
 import { withFlatNormals } from './flat-normals.js';
 import { type GltfLodRelation, parseGltfLodExtension } from './lod/parse-lod.js';
 import {
-  type GltfImageIr,
   type GltfMaterialIr,
   type GltfMaterialJson,
   type GltfSamplerIr,
@@ -54,7 +57,6 @@ import type { GltfSourceKeyError } from './source-key.js';
 import { type DecomposedTransform, decomposeNodeTransform } from './transform.js';
 
 export type {
-  GltfImageIr,
   GltfMaterialIr,
   GltfMaterialJson,
   GltfNormalTextureInfoIr,
@@ -414,12 +416,7 @@ interface RootGltfJson extends GltfExtensionsJson {
     readonly source?: number;
     readonly name?: string;
   }>;
-  readonly images?: ReadonlyArray<{
-    readonly uri?: string;
-    readonly mimeType?: string;
-    readonly bufferView?: number;
-    readonly name?: string;
-  }>;
+  readonly images?: readonly GltfImageJson[];
   readonly samplers?: ReadonlyArray<{
     readonly magFilter?: number;
     readonly minFilter?: number;
@@ -919,33 +916,14 @@ async function parseGltfWithBin(
     textures.push(texIr);
   }
 
-  const imagesJson = json.images ?? [];
-  const images: GltfImageIr[] = [];
-  for (const imgJson of imagesJson) {
-    const mimeType = imgJson.mimeType;
-    if (mimeType !== undefined && mimeType !== 'image/jpeg' && mimeType !== 'image/png') {
-      return err(gltfErr('gltf-image-mime-unsupported', { mimeType }));
-    }
-    const imgIr: GltfImageIr = {
-      ...(imgJson.uri === undefined ? {} : { uri: imgJson.uri }),
-      ...(imgJson.mimeType === undefined ? {} : { mimeType: imgJson.mimeType }),
-      ...(imgJson.bufferView === undefined ? {} : { bufferView: imgJson.bufferView }),
-      ...(imgJson.name === undefined ? {} : { name: imgJson.name }),
-    };
-    images.push(imgIr);
-  }
-
-  // Load external image URIs via externalLoader.
-  for (const img of images) {
-    if (img.uri !== undefined) {
-      if (dataUriBase64Payload(img.uri) !== undefined) continue; // data: URI, skip external load
-      try {
-        await ctx.externalLoader(img.uri);
-      } catch (_e) {
-        return err(gltfErr('gltf-texture-load-failed', { uri: img.uri }));
-      }
-    }
-  }
+  const parsedImages = await parseGltfImages(
+    json.images ?? [],
+    rawBufferViews,
+    buffers,
+    ctx.externalLoader,
+  );
+  if (!parsedImages.ok) return parsedImages;
+  const images = parsedImages.value;
 
   const samplersJson = json.samplers ?? [];
   const samplers: GltfSamplerIr[] = [];
@@ -1294,26 +1272,10 @@ export function toAssetPack(
       };
     });
     if (rootOutput?.sourceKey !== undefined && levels.every((level) => level.meshGuid !== '')) {
-      const previousLodMeta = (() => {
-        const raw = existingMeta?.sourceOverrides?.[rootOutput.sourceKey]?.lods;
-        if (!Array.isArray(raw)) return undefined;
-        return raw.flatMap((entry) => {
-          if (entry === null || typeof entry !== 'object') return [];
-          const value = entry as Record<string, unknown>;
-          return typeof value.sourceKey === 'string' && typeof value.meshGuid === 'string'
-            ? [
-                {
-                  sourceKey: value.sourceKey,
-                  meshGuid: value.meshGuid,
-                  ...(typeof value.screenCoverage === 'number'
-                    ? { screenCoverage: value.screenCoverage }
-                    : {}),
-                },
-              ]
-            : [];
-        });
-      })();
-      const projected = reconcileMeshLodMeta(previousLodMeta ?? [], levels);
+      const projected = reconcileMeshLodMeta(
+        existingMeta?.sourceOverrides?.[rootOutput.sourceKey]?.lods,
+        levels,
+      );
       if (!projected.ok)
         return err(
           gltfErr('gltf-lod-invalid', {

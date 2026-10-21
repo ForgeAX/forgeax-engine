@@ -1,4 +1,6 @@
 // Font and render-pipeline asset contracts.
+
+import type { AssetHandle } from './asset-handle.js';
 import type { AssetGuid } from './image-pack-contracts.js';
 
 // === FontAsset POD shape (feat-20260531-world-space-msdf-text-rendering M2 / w5) ===
@@ -43,34 +45,14 @@ export interface GlyphMetric {
   };
 }
 
-/**
- * Font asset POD — atlas texture handle + sampler handle + per-codepoint
- * glyph metrics + common layout block.
- *
- * AI users obtain a FontAsset via `assets.loadByGuid<FontAsset>(guid)` and
- * hand the resulting `Handle<FontAsset>` to `GlyphText.fontHandle`. The atlas
- * texture and sampler are resolved through the handle chain by the glyph
- * layout system; the per-glyph metrics drive the quad-position-and-UV baking
- * (plan-strategy D-6).
- *
- * | Field | Purpose |
- * |:--|:--|
- * | `atlas` | Handle to the baked MSDF atlas `TextureAsset` |
- * | `sampler` | Handle to the `SamplerAsset` for atlas sampling |
- * | `glyphs` | `Record<codepoint, GlyphMetric>` — O(1) codepoint lookup |
- * | `common` | Common layout block (lineHeight / base / distanceRange / pxRange / atlas width/height) |
- * | `notdef` | Optional fallback glyph metric for missing codepoints (TOFU, AC-14) |
- */
+/** Font metrics plus atlas/sampler dependencies. Runtime admission links source
+ * GUIDs to managed references; rendering and queries consume fixed current content. */
 export interface FontAsset {
   readonly kind: 'font';
-  /**
-   * Atlas texture GUID (D-19). Payload-internal sub-asset ref stored as an
-   * AssetGuid, not a handle — the loadByGuid recursion mints no handle; the
-   * World-holding consumer (glyph-text-layout) resolves it once at read time.
-   */
-  readonly atlas: AssetGuid;
-  /** Sampler GUID (D-19). Same GUID-identity contract as `atlas`. */
-  readonly sampler: AssetGuid;
+  /** Source GUID; the runtime asset owner links and retains one Texture reference. */
+  readonly atlas: AssetGuid | AssetHandle<'texture'>;
+  /** Source GUID; the runtime asset owner links and retains one Sampler reference. */
+  readonly sampler: AssetGuid | AssetHandle<'sampler'>;
   readonly glyphs: Record<number, GlyphMetric>;
   readonly common: {
     readonly lineHeight: number;

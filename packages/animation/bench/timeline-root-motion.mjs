@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { animationClipContribution } from '../dist/index.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { cpus, platform, release } from 'node:os';
@@ -18,11 +20,13 @@ function stats(values) {
 for (const count of [100,1000]) {
   // ABBA reduces, but cannot remove, host contention and thermal drift.
   for (const mode of ['baseline','both','both','baseline','events','motion']) {
-    const world = new World();
+    const assets = new AssetRegistry();
+  assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+  const world = new World({ assets });
     const context = await createWorldContext(world,[animationPlugin()]);
     const source = {kind:'animation-clip',duration:1,channels:[{targetId,property:'translation',sampler:{input:new Float32Array([0,1]),output:new Float32Array([0,0,0,2,0,0]),interpolation:'LINEAR'}}],
       ...(mode==='both'||mode==='events' ? {events:[0.25,0.75].map(time=>({time,targetId,action:{kind:'method',name:'footstep',args:[]}}))}: {})};
-    const clip = world.allocSharedRef('AnimationClip',source);
+    const clip = assets.create(source).unwrap();
     const players=[];
     for (let i=0;i<count;i++) {
       const player=world.spawn({component:AnimationPlayer,data:{clips:[clip],times:[0],speeds:[1],weights:[1]}},
@@ -43,6 +47,7 @@ for (const count of [100,1000]) {
     const row={count,mode,eventCount,ms:stats(rawMs),rawMs}; report.cases.push(row);
     console.log(JSON.stringify({...row,rawMs:undefined}));
     await context.fiber.dispose();
+  assets.dispose();
   }
 }
 writeFileSync(resolve(out,'cpu-performance.json'),JSON.stringify(report,null,2));

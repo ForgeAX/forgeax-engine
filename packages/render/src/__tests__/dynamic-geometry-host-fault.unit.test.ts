@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -13,6 +15,25 @@ import { MeshRenderer } from '../components/mesh-renderer';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import type { DynamicGeometryCandidate } from '../dynamic-geometry';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
+import { worldRenderResources } from '../publication/resource-scope';
+
+function interceptLease(
+  store: GpuResidencyCache,
+  change: (
+    lease: import('../device/residency-lifetime').ResidencyLease,
+    scope: Parameters<GpuResidencyCache['prepareMeshResidency']>[3],
+  ) => import('../device/residency-lifetime').ResidencyLease,
+) {
+  const prepare = store.prepareMeshResidency.bind(store);
+  return vi
+    .spyOn(store, 'prepareMeshResidency')
+    .mockImplementation((handle, mesh, revision, scope, profile, capture) =>
+      prepare(handle, mesh, revision, scope, profile, (physical) => {
+        Object.assign(physical, { lease: change(physical.lease, scope) });
+        capture?.(physical);
+      }),
+    );
+}
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('fixture requires a live value');
@@ -34,19 +55,17 @@ function mesh(): MeshAsset {
 }
 
 async function fixture(options: { readonly onTopologyChanged?: () => void } = {}) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   let generation = 1;
-  const materialHandle = world.allocSharedRef('MaterialAsset', { sourceKey: 'fixture-material' });
+  const materialHandle = runtimeAssetRegistry(world.assets)
+    .create({
+      kind: 'material',
+      passes: [{ name: 'main', program: { module: 'fixture-material' } }],
+    })
+    .unwrap();
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused cubemap');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const topologyChanged = options.onTopologyChanged ?? vi.fn();
   const lifecycle = createDynamicGeometryLifecycle();
   const attachedWorlds = new Set([world]);
@@ -62,7 +81,10 @@ async function fixture(options: { readonly onTopologyChanged?: () => void } = {}
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh()) } },
+        {
+          component: MeshFilter,
+          data: { assetHandle: runtimeAssetRegistry(world.assets).create(mesh()).unwrap() },
+        },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       )
       .unwrap(),
@@ -79,8 +101,8 @@ async function fixture(options: { readonly onTopologyChanged?: () => void } = {}
     return host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: source,
-      meshHandle: world.allocSharedRef('MeshAsset', source),
+
+      meshHandle: runtimeAssetRegistry(world.assets).create(source).unwrap(),
       revision,
       ...(pairedPhysics ? { physicsEntity: Number(entity) } : {}),
       ...(materialIdentity === undefined ? {} : { materialIdentity }),
@@ -107,13 +129,13 @@ async function fixture(options: { readonly onTopologyChanged?: () => void } = {}
         ...world.get(entity, MeshRenderer).unwrap().materials,
       ]),
       lifecycle: lifecycle.inspect(),
-      materialRefCount: world.sharedRefs.refcount(materialHandle),
+      materialRefCount: runtimeAssets(world.assets).refcount(materialHandle),
       sharedRefCounts: [...sharedHandles.entries()]
         .sort(([left], [right]) => left - right)
-        .map(([raw, handle]) => [raw, world.sharedRefs.refcount(handle)] as const),
+        .map(([raw, handle]) => [raw, runtimeAssets(world.assets).refcount(handle)] as const),
       sharedPayloads: candidates.map((candidate) => {
         const handle = candidate.meshHandle;
-        return handle === undefined ? undefined : world.sharedRefs.resolve(handle);
+        return handle === undefined ? undefined : runtimeAssets(world.assets).resolveAsset(handle);
       }),
     };
   };
@@ -153,9 +175,7 @@ it('rejects credentials owned by pending detach cleanup before any scalar write'
   const completed = new Promise<void>((resolve) => {
     complete = resolve;
   });
-  const retain = f.store.retainMeshResidency.bind(f.store);
-  vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
-    const lease = retain(handle, world);
+  interceptLease(f.store, (lease) => {
     lease?.track(completed);
     return lease;
   });
@@ -179,9 +199,7 @@ it('refuses stale accepted credentials while generation cleanup holds their fenc
   const completed = new Promise<void>((resolve) => {
     complete = resolve;
   });
-  const retain = f.store.retainMeshResidency.bind(f.store);
-  vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
-    const lease = retain(handle, world);
+  interceptLease(f.store, (lease) => {
     lease?.track(completed);
     return lease;
   });
@@ -258,11 +276,8 @@ describe('dynamic geometry host fault ownership', () => {
 
   it('does not leave a reusable prepared candidate after native residency cancellation throws', async () => {
     const f = await fixture();
-    const retain = f.store.retainMeshResidency.bind(f.store);
     let fail = true;
-    vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
-      const lease = retain(handle, world);
-      if (lease === undefined) return undefined;
+    interceptLease(f.store, (lease) => {
       return {
         track: (completed) => lease.track(completed),
         release: (evict) => {
@@ -284,7 +299,8 @@ describe('dynamic geometry host fault ownership', () => {
       thrown = error;
     }
     const nativeResidentAfterCancel =
-      f.store.getMeshGpuHandles(required(prepared.meshHandle), f.world) !== undefined;
+      f.store.getMeshGpuHandles(required(prepared.meshHandle), worldRenderResources(f.world)) !==
+      undefined;
     let reusableAcceptOk = false;
     let reusableThrown: unknown;
     try {
@@ -322,10 +338,10 @@ describe('dynamic geometry host fault ownership', () => {
     const f = await fixture();
     const prepared = f.prepareOne(0, 1).unwrap();
     const before = f.snapshot([prepared]);
-    const release = f.world.sharedRefs.release.bind(f.world.sharedRefs);
-    const absent = release(0 as never);
+    const release = runtimeAssets(f.world.assets).release.bind(runtimeAssets(f.world.assets));
+    const absent = release(-1);
     expect(absent.ok).toBe(false);
-    vi.spyOn(f.world.sharedRefs, 'release').mockImplementation((handle) =>
+    vi.spyOn(runtimeAssets(f.world.assets), 'release').mockImplementation((handle) =>
       handle === prepared.meshHandle ? absent : release(handle),
     );
     let cancelled: ReturnType<typeof f.host.cancelDynamicGeometry> | undefined;
@@ -339,7 +355,7 @@ describe('dynamic geometry host fault ownership', () => {
       before,
       cancelOk: cancelled?.ok ?? false,
       cancelThrown: String(cancelThrown),
-      candidateRefCount: f.world.sharedRefs.refcount(required(prepared.meshHandle)),
+      candidateRefCount: runtimeAssets(f.world.assets).refcount(required(prepared.meshHandle)),
       releaseError: absent,
     });
     vi.restoreAllMocks();
@@ -356,15 +372,15 @@ describe('dynamic geometry host fault ownership', () => {
   it('latches native prepare failure and owns both retained shared references', async () => {
     const f = await fixture();
     const source = mesh();
-    const handle = f.world.allocSharedRef('MeshAsset', source);
+    const handle = runtimeAssetRegistry(f.world.assets).create(source).unwrap();
     const old = required(f.handles()[0]);
     const before = {
       lifecycle: f.lifecycle.inspect(),
-      oldRef: f.world.sharedRefs.refcount(old),
-      candidateRef: f.world.sharedRefs.refcount(handle),
+      oldRef: runtimeAssets(f.world.assets).refcount(old),
+      candidateRef: runtimeAssets(f.world.assets).refcount(handle),
     };
-    const ensure = f.store.ensureResident.bind(f.store);
-    vi.spyOn(f.store, 'ensureResident').mockImplementation((...args) => {
+    const ensure = f.store.prepareMeshResidency.bind(f.store);
+    vi.spyOn(f.store, 'prepareMeshResidency').mockImplementation((...args) => {
       const resident = ensure(...args);
       expect(resident.ok).toBe(true);
       throw new Error('independent prepare post-native-resident exception');
@@ -374,7 +390,7 @@ describe('dynamic geometry host fault ownership', () => {
       f.host.prepareDynamicGeometry({
         world: f.world,
         entity: required(f.entities[0]),
-        mesh: source,
+
         meshHandle: handle,
         revision: 1,
       });
@@ -384,9 +400,10 @@ describe('dynamic geometry host fault ownership', () => {
     record('prepare-post-native-resident', f, {
       before,
       thrown: String(thrown),
-      oldRef: f.world.sharedRefs.refcount(old),
-      candidateRef: f.world.sharedRefs.refcount(handle),
-      nativeResident: f.store.getMeshGpuHandles(handle, f.world) !== undefined,
+      oldRef: runtimeAssets(f.world.assets).refcount(old),
+      candidateRef: runtimeAssets(f.world.assets).refcount(handle),
+      nativeResident:
+        f.store.getMeshGpuHandles(handle, worldRenderResources(f.world)) !== undefined,
     });
     vi.restoreAllMocks();
     try {
@@ -408,10 +425,10 @@ describe('dynamic geometry host fault ownership', () => {
     f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 });
     f.world.set(required(f.entities[0]), MeshFilter, { assetHandle: old }).unwrap();
     const before = f.snapshot([accepted]);
-    const release = f.world.sharedRefs.release.bind(f.world.sharedRefs);
-    const absent = release(0 as never);
+    const release = runtimeAssets(f.world.assets).release.bind(runtimeAssets(f.world.assets));
+    const absent = release(-1);
     expect(absent.ok).toBe(false);
-    vi.spyOn(f.world.sharedRefs, 'release').mockImplementation((handle) =>
+    vi.spyOn(runtimeAssets(f.world.assets), 'release').mockImplementation((handle) =>
       handle === old ? absent : release(handle),
     );
     let retired: ReturnType<typeof f.host.retireDynamicGeometry> | undefined;
@@ -461,10 +478,7 @@ describe('dynamic geometry host fault ownership', () => {
       .addSystem(FixedUpdate, { name: 'independent-clock', queries: [], fn: () => {} })
       .unwrap();
     f.world.update(1 / 60).unwrap();
-    const retain = f.store.retainMeshResidency.bind(f.store);
-    vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
-      const lease = retain(handle, world);
-      if (lease === undefined) return undefined;
+    interceptLease(f.store, (lease) => {
       return {
         track: (completed) => lease.track(completed),
         release: (evict) => {
@@ -540,13 +554,21 @@ describe('dynamic geometry host fault ownership', () => {
 });
 
 function replacementWorld(f: Awaited<ReturnType<typeof fixture>>) {
-  const world = new World();
-  const material = world.allocSharedRef('MaterialAsset', { sourceKey: 'fixture-material' });
+  const world = new World({ assets: new AssetRegistry() });
+  const material = runtimeAssetRegistry(world.assets)
+    .create({
+      kind: 'material',
+      passes: [{ name: 'main', program: { module: 'fixture-material' } }],
+    })
+    .unwrap();
   const entities = Array.from({ length: 2 }, () =>
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh()) } },
+        {
+          component: MeshFilter,
+          data: { assetHandle: runtimeAssetRegistry(world.assets).create(mesh()).unwrap() },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap(),
@@ -554,12 +576,12 @@ function replacementWorld(f: Awaited<ReturnType<typeof fixture>>) {
   f.attachedWorlds.delete(f.world);
   f.attachedWorlds.add(world);
   const source = mesh();
-  const handle = world.allocSharedRef('MeshAsset', source);
+  const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
   const prepared = f.host
     .prepareDynamicGeometry({
       world,
       entity: required(entities[0]),
-      mesh: source,
+
       meshHandle: handle,
       revision: 1,
     })
@@ -580,10 +602,8 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
       reject = fail;
     });
     let releases = 0;
-    const retain = f.store.retainMeshResidency.bind(f.store);
-    vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
-      const lease = retain(handle, world);
-      if (lease === undefined || world !== f.world) return lease;
+    interceptLease(f.store, (lease, world) => {
+      if (world !== worldRenderResources(f.world)) return lease;
       return {
         track: (completed) => lease.track(completed),
         release: (evict) => {
@@ -596,9 +616,11 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     const prepared = f.prepareOne(0, 1).unwrap();
     const before = f.snapshot([prepared]);
     f.host.invalidateDynamicGeometryWorld(f.world);
-    expect(f.store.getMeshGpuHandles(required(prepared.meshHandle), f.world)).toBeUndefined();
+    expect(
+      f.store.getMeshGpuHandles(required(prepared.meshHandle), worldRenderResources(f.world)),
+    ).toBeUndefined();
     const replacement = replacementWorld(f);
-    expect(replacement.prepared.meshHandle).toBe(prepared.meshHandle);
+    expect(replacement.prepared.meshHandle).not.toBe(prepared.meshHandle);
     reject(new Error('release failed after native eviction and replacement attachment'));
     await settle();
     record('detached-async-native-failure', f, {
@@ -613,7 +635,7 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     expect(f.lifecycle.inspect().meshBytes).toBe(
       prepared.meshBytes + replacement.prepared.meshBytes,
     );
-    expect(f.world.sharedRefs.refcount(required(prepared.meshHandle))).toBe(2);
+    expect(runtimeAssets(f.world.assets).refcount(required(prepared.meshHandle))).toBe(2);
     f.host.invalidateDynamicGeometryWorld(f.world);
     expect(releases).toBe(1);
     const accepted = f.host
@@ -642,19 +664,24 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
       complete = resolve;
     });
     f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed });
-    const native = f.store.getMeshGpuHandles(required(accepted.meshHandle), f.world);
+    const native = f.store.getMeshGpuHandles(
+      required(accepted.meshHandle),
+      worldRenderResources(f.world),
+    );
     f.world.set(required(f.entities[0]), MeshFilter, { assetHandle: old }).unwrap();
-    const release = f.world.sharedRefs.release.bind(f.world.sharedRefs);
-    const absent = release(0 as never);
+    const release = runtimeAssets(f.world.assets).release.bind(runtimeAssets(f.world.assets));
+    const absent = release(-1);
     let attempts = 0;
-    vi.spyOn(f.world.sharedRefs, 'release').mockImplementation((handle) => {
+    vi.spyOn(runtimeAssets(f.world.assets), 'release').mockImplementation((handle) => {
       if (handle !== old) return release(handle);
       attempts += 1;
       return absent;
     });
     f.host.retireDynamicGeometry(accepted).unwrap();
     f.host.retireDynamicGeometry(accepted).unwrap();
-    expect(f.store.getMeshGpuHandles(required(accepted.meshHandle), f.world)).toBe(native);
+    expect(
+      f.store.getMeshGpuHandles(required(accepted.meshHandle), worldRenderResources(f.world)),
+    ).toBe(native);
     expect(f.lifecycle.inspect().meshBytes).toBe(accepted.meshBytes);
     expect(attempts).toBe(0);
     const replacement = replacementWorld(f);
@@ -663,14 +690,17 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     record('detached-async-reference-failure', f, {
       attempts,
       nativeResident:
-        f.store.getMeshGpuHandles(required(accepted.meshHandle), f.world) !== undefined,
+        f.store.getMeshGpuHandles(required(accepted.meshHandle), worldRenderResources(f.world)) !==
+        undefined,
     });
-    expect(f.store.getMeshGpuHandles(required(accepted.meshHandle), f.world)).toBeUndefined();
+    expect(
+      f.store.getMeshGpuHandles(required(accepted.meshHandle), worldRenderResources(f.world)),
+    ).toBeUndefined();
     expect(f.host.dynamicGeometryFault(replacement.world)).toBeUndefined();
     expect(f.lifecycle.inspect().meshBytes).toBe(
       accepted.meshBytes + replacement.prepared.meshBytes,
     );
-    expect(f.world.sharedRefs.refcount(old)).toBe(3);
+    expect(runtimeAssets(f.world.assets).refcount(old)).toBe(3);
     f.host.invalidateDynamicGeometryWorld(f.world);
     expect(attempts).toBe(1);
     expect(f.lifecycle.inspect().meshBytes).toBe(
@@ -683,10 +713,10 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     const f = await fixture();
     const prepared = f.prepareOne(0, 1).unwrap();
     const before = f.snapshot([prepared]);
-    const release = f.world.sharedRefs.release.bind(f.world.sharedRefs);
-    const absent = release(0 as never);
+    const release = runtimeAssets(f.world.assets).release.bind(runtimeAssets(f.world.assets));
+    const absent = release(-1);
     let attempts = 0;
-    vi.spyOn(f.world.sharedRefs, 'release').mockImplementation((handle) => {
+    vi.spyOn(runtimeAssets(f.world.assets), 'release').mockImplementation((handle) => {
       if (handle !== prepared.meshHandle) return release(handle);
       attempts += 1;
       return absent;
@@ -698,7 +728,7 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     record('failed-cleanup-generation-budget', f, { before, attempts });
     expect(f.lifecycle.inspect().generation).toBe(1);
     expect(f.lifecycle.inspect().meshBytes).toBe(prepared.meshBytes);
-    expect(f.world.sharedRefs.refcount(required(prepared.meshHandle))).toBe(2);
+    expect(runtimeAssets(f.world.assets).refcount(required(prepared.meshHandle))).toBe(2);
     expect(attempts).toBe(1);
     f.store.destroyAll();
   });
@@ -706,14 +736,14 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
   it('recovers the pre-upload registered owner after upload throws before returning a credential', async () => {
     const f = await fixture();
     const source = mesh();
-    const handle = f.world.allocSharedRef('MeshAsset', source);
+    const handle = runtimeAssetRegistry(f.world.assets).create(source).unwrap();
     const old = required(f.handles()[0]);
     const before = {
-      old: f.world.sharedRefs.refcount(old),
-      candidate: f.world.sharedRefs.refcount(handle),
+      old: runtimeAssets(f.world.assets).refcount(old),
+      candidate: runtimeAssets(f.world.assets).refcount(handle),
     };
-    const upload = f.store.ensureResident.bind(f.store);
-    vi.spyOn(f.store, 'ensureResident').mockImplementation((...args) => {
+    const upload = f.store.prepareMeshResidency.bind(f.store);
+    vi.spyOn(f.store, 'prepareMeshResidency').mockImplementation((...args) => {
       upload(...args).unwrap();
       throw new Error('post-upload failure before credential return');
     });
@@ -721,20 +751,20 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
       f.host.prepareDynamicGeometry({
         world: f.world,
         entity: required(f.entities[0]),
-        mesh: source,
+
         meshHandle: handle,
         revision: 1,
       }),
     ).toThrow();
     expect(f.lifecycle.inspect().prepared).toBe(1);
     expect(f.lifecycle.inspect().meshBytes).toBeGreaterThan(0);
-    expect(f.store.getMeshGpuHandles(handle, f.world)).toBeDefined();
+    expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBeUndefined();
     expect(() => f.prepareOne(0, 2)).toThrow();
     f.host.invalidateDynamicGeometryWorld(f.world);
-    expect(f.store.getMeshGpuHandles(handle, f.world)).toBeUndefined();
+    expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBeUndefined();
     expect(f.lifecycle.inspect().meshBytes).toBe(0);
-    expect(f.world.sharedRefs.refcount(old)).toBe(before.old);
-    expect(f.world.sharedRefs.refcount(handle)).toBe(before.candidate);
+    expect(runtimeAssets(f.world.assets).refcount(old)).toBe(before.old);
+    expect(runtimeAssets(f.world.assets).refcount(handle)).toBe(before.candidate);
     record('post-upload-owned-recovery', f, { before });
     f.store.destroyAll();
   });
@@ -785,10 +815,9 @@ describe('native preparation ownership before credential publication', () => {
   it('keeps unknown lease acquisition owned and faulted instead of acquiring a substitute lease', async () => {
     const f = await fixture();
     let acquisitions = 0;
-    const retain = f.store.retainMeshResidency.bind(f.store);
-    vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
+    interceptLease(f.store, (lease) => {
       acquisitions += 1;
-      expect(retain(handle, world)).toBeDefined();
+      expect(lease).toBeDefined();
       throw new Error('native lease acquired before returning an exception');
     });
     expect(() => f.prepareOne(0, 1)).toThrow();
@@ -804,12 +833,17 @@ describe('native preparation ownership before credential publication', () => {
   it('faults a native refusal after actual upload while retaining the recovery owner', async () => {
     const f = await fixture();
     const source = mesh();
-    const handle = f.world.allocSharedRef('MeshAsset', source);
-    const missingDevice = new GpuResidencyCache().ensureResident(handle, source, f.world);
+    const handle = runtimeAssetRegistry(f.world.assets).create(source).unwrap();
+    const missingDevice = new GpuResidencyCache().prepareMeshResidency(
+      handle,
+      source,
+      1,
+      worldRenderResources(f.world),
+    );
     expect(missingDevice.ok).toBe(false);
     if (missingDevice.ok) throw new Error('expected a real missing device error');
-    const upload = f.store.ensureResident.bind(f.store);
-    vi.spyOn(f.store, 'ensureResident').mockImplementation((...args) => {
+    const upload = f.store.prepareMeshResidency.bind(f.store);
+    vi.spyOn(f.store, 'prepareMeshResidency').mockImplementation((...args) => {
       upload(...args).unwrap();
       return err(missingDevice.error);
     });
@@ -817,19 +851,20 @@ describe('native preparation ownership before credential publication', () => {
       f.host.prepareDynamicGeometry({
         world: f.world,
         entity: required(f.entities[0]),
-        mesh: source,
+
         meshHandle: handle,
         revision: 1,
       }),
     ).toThrow();
     record('post-upload-native-refusal', f, {
-      nativeResident: f.store.getMeshGpuHandles(handle, f.world) !== undefined,
+      nativeResident:
+        f.store.getMeshGpuHandles(handle, worldRenderResources(f.world)) !== undefined,
     });
     expect(f.lifecycle.inspect().meshBytes).toBeGreaterThan(0);
     f.host.invalidateDynamicGeometryWorld(f.world);
-    expect(f.store.getMeshGpuHandles(handle, f.world)).toBeUndefined();
+    expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBeUndefined();
     expect(f.lifecycle.inspect().meshBytes).toBe(0);
-    expect(f.world.sharedRefs.refcount(handle)).toBe(1);
+    expect(runtimeAssets(f.world.assets).refcount(handle)).toBe(1);
     f.store.destroyAll();
   });
 });
@@ -853,7 +888,7 @@ describe('submitted frame failure ownership', () => {
     await settle();
     record('submitted-fence-rejection', f);
     expect(f.host.dynamicGeometryFault(replacement.world)).toBeUndefined();
-    expect(f.world.sharedRefs.refcount(old)).toBe(3);
+    expect(runtimeAssets(f.world.assets).refcount(old)).toBe(3);
     expect(f.lifecycle.inspect().meshBytes).toBe(
       accepted.meshBytes + replacement.prepared.meshBytes,
     );
@@ -866,11 +901,8 @@ describe('submitted frame failure ownership', () => {
 
   it('faults and retains the published receipt owner when native submission tracking throws after recording', async () => {
     const f = await fixture();
-    const retain = f.store.retainMeshResidency.bind(f.store);
     let releases = 0;
-    vi.spyOn(f.store, 'retainMeshResidency').mockImplementation((handle, world) => {
-      const lease = retain(handle, world);
-      if (lease === undefined) return undefined;
+    interceptLease(f.store, (lease) => {
       return {
         track: (completed) => {
           lease.track(completed);
@@ -919,7 +951,9 @@ it('preserves the published owner when submitted failure is observed before deta
   f.host.invalidateDynamicGeometryWorld(f.world);
   record('submitted-failure-before-detach', f, { before });
   expect(f.lifecycle.inspect().meshBytes).toBe(accepted.meshBytes);
-  expect(f.world.sharedRefs.refcount(required(accepted.meshHandle))).toBe(3);
-  expect(f.store.getMeshGpuHandles(required(accepted.meshHandle), f.world)).toBeDefined();
+  expect(runtimeAssets(f.world.assets).refcount(required(accepted.meshHandle))).toBe(3);
+  expect(
+    f.store.getMeshGpuHandles(required(accepted.meshHandle), worldRenderResources(f.world)),
+  ).toBeDefined();
   f.store.destroyAll();
 });

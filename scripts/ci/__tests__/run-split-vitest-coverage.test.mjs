@@ -163,7 +163,24 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 6);
+  assert.equal(exclusiveRuns, 7);
+});
+
+test('cold large-scene contracts execute once without competing coverage children', () => {
+  const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-render'], 8);
+  for (const file of [
+    'packages/scene/src/__tests__/flat-propagation.contract.test.ts',
+    'packages/render/src/__tests__/managed-production-batches.unit.test.ts',
+  ]) {
+    const owners = groups.filter((group) => group.files.includes(file));
+    assert.equal(owners.length, 1);
+    assert.equal(isExclusiveCoverageGroup(owners[0]), true);
+    assert.ok(
+      groups
+        .filter((group) => !group.files.includes(file))
+        .every((group) => group.excludes.includes(file) || group.files.length > 0),
+    );
+  }
 });
 
 test('allows CI coverage to reuse the repository-wide typecheck gate', () => {
@@ -290,7 +307,8 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
   ];
   const liveProcessFile = 'packages/devkit/src/__tests__/live-dev-process.integration.test.ts';
-  const devkitFiles = [...nativeFiles, liveProcessFile];
+  const sceneFile = 'packages/scene/src/__tests__/flat-propagation.contract.test.ts';
+  const allFiles = [sceneFile, ...nativeFiles, liveProcessFile];
   const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-devkit'], 8);
   assert.deepEqual(
     groups.map(({ projects, files, excludes, gpuLease }) => ({
@@ -300,8 +318,9 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       gpuLease,
     })),
     [
-      { projects: ['@forgeax/engine-scene'], files: [], excludes: devkitFiles, gpuLease: false },
-      { projects: ['@forgeax/engine-devkit'], files: [], excludes: devkitFiles, gpuLease: false },
+      { projects: ['@forgeax/engine-scene'], files: [], excludes: allFiles, gpuLease: false },
+      { projects: ['@forgeax/engine-scene'], files: [sceneFile], excludes: [], gpuLease: false },
+      { projects: ['@forgeax/engine-devkit'], files: [], excludes: allFiles, gpuLease: false },
       {
         projects: ['@forgeax/engine-devkit'],
         files: [nativeFiles[0]],
@@ -585,7 +604,7 @@ test('repository scan files have one exclusive coverage owner and remain in the 
     assert.ok(
       groups
         .filter((group) => !group.files.includes(file))
-        .every((group) => group.excludes.includes(file)),
+        .every((group) => group.excludes.includes(file) || group.files.length > 0),
     );
   }
   const active = new Set();
@@ -607,7 +626,7 @@ test('repository scan files have one exclusive coverage owner and remain in the 
       return group.label;
     },
   });
-  assert.equal(scanRuns, 1);
+  assert.equal(scanRuns, 2);
 });
 
 test('cold Standard raster and ray compilation has one exclusive instrumented owner', () => {

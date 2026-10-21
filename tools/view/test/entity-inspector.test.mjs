@@ -111,7 +111,7 @@ describe('all scene entity Details', () => {
     assert.equal(collection.length, 300); assert.equal(collection.entries.length, 3); assert.equal(collection.truncated, true);
     assert.equal(inspectorCollection({ fields: { a: 1 }, truncated: true, length: 200 }).entries[0][0], 'a');
     assert.equal(inspectorCollection({ unavailable: 'depth-limit' }).unavailable, 'depth-limit');
-    const source = inspect([{ name: 'MeshRenderer', values: { materials: { items: [1025, 0], truncated: true, length: 300 } }, fields: { materials: { type: 'array<shared<MaterialAsset>>' } } }]);
+    const source = inspect([{ name: 'MeshRenderer', values: { materials: { items: [1025, 0], truncated: true, length: 300 } }, fields: { materials: { type: 'array<asset<material>>' } } }]);
     assert.equal(source.materialOverridesTruncated, true);
     assert.equal(source.materialOverrides.length, 2);
     assert.equal(source.materialOverrides[1].inherited, true);
@@ -121,7 +121,7 @@ describe('all scene entity Details', () => {
     assert.equal(colorCollection.components[0].fields[0].presentation, 'collection');
   });
   it('only navigates explicit GUIDs and searches actual resource names', () => {
-    const components = [{ name: 'AudioSource', values: { clip: 'audio-guid' }, fields: { clip: { type: 'shared<AudioClipAsset>' } } }];
+    const components = [{ name: 'AudioSource', values: { clip: 'audio-guid' }, fields: { clip: { type: 'asset<audio>' } } }];
     const source = inspectorEntityFromInspection({ entityId: 'audio', components }, [{ guid: 'audio-guid', kind: 'audio', name: 'Ambient Wind' }]);
     assert.equal(source.components[0].fields[0].resource.guid, 'audio-guid');
     assert.equal(inspectorFieldMatches(source.components[0].fields[0], 'wind'), true);

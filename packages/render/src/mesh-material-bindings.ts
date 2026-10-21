@@ -1,4 +1,4 @@
-import type { AssetErrorDetail, AssetGuid, MeshAsset } from '@forgeax/engine-types';
+import type { AssetErrorDetail, AssetGuid, AssetHandle, MeshAsset } from '@forgeax/engine-types';
 
 export type MeshMaterialBindingSource = 'renderer-override' | 'mesh-default' | 'engine-default';
 
@@ -280,7 +280,7 @@ export type ResolveMeshMaterialBindingsResult =
       readonly ok: false;
       readonly code: 'mesh-default-material-not-ready';
       readonly slotIndex: number;
-      readonly defaultMaterial: AssetGuid;
+      readonly defaultMaterial: AssetGuid | AssetHandle<'material'>;
     };
 
 /**
@@ -293,7 +293,9 @@ export function resolveMeshMaterialBindings(
   rendererOverrides: ArrayLike<number>,
   deps: {
     readonly isValidOverride: (handle: number) => boolean;
-    readonly resolveMeshDefault: (guid: AssetGuid) => number | undefined;
+    readonly resolveMeshDefault: (
+      reference: AssetGuid | AssetHandle<'material'>,
+    ) => number | undefined;
   },
 ): ResolveMeshMaterialBindingsResult {
   const bindings: ResolvedMeshMaterialBinding[] = [];

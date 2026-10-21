@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_TAA,
   Camera,
@@ -31,10 +32,12 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 
 export async function verifyAdaptiveDrs(
   renderer: Renderer,
+  assets: AssetRegistry,
   recorder: RecorderAttachment,
   save: Save,
 ) {
-  const world = new World();
+  const world = new World({ assets });
+  const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const lease = value(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -61,11 +64,11 @@ export async function verifyAdaptiveDrs(
     [-0.6, 0, [0.9, 0.12, 0.05, 1]],
     [0.65, 0.2, [0.03, 0.7, 0.25, 1]],
   ] as const) {
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([...color]));
+    const material = assets.create(Materials.unlit([...color])).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [x, y, 0], scale: [0.8, 1.3, 0.5] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

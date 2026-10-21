@@ -26,7 +26,7 @@ export function adapterUnavailable(): Result<never, RhiError> {
  * so AI users learn the canonical pre-check pattern (charter proposition 4
  * explicit failure + capability-gated form).
  */
-export function featureNotEnabledError(featureName?: string | undefined): RhiError {
+function featureNotEnabledError(featureName?: string | undefined): RhiError {
   const fname = featureName ?? 'compute';
   return new RhiError({
     code: 'feature-not-enabled',

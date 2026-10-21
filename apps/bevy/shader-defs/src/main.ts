@@ -2,12 +2,14 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { assertMaterialAsset, type MaterialAsset, type TextureAsset } from '@forgeax/engine-types';
+import { assertMaterialAsset, type MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackage from './shader-defs.pack.json';
 import redMaterialPackage from './shader-defs-red.pack.json';
 import './shader-defs.wgsl';
 import './shader-defs-red.wgsl';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 const authoredPayload = materialPackage.assets[0]?.payload;
 assertMaterialAsset(authoredPayload, 'shader-defs.pack.json');
@@ -33,13 +35,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const geometry = createBoxGeometry(1, 1, 1);
   if (!geometry.ok) {
     console.error('[bevy-shader-defs] createBoxGeometry failed:', geometry.error);
     return;
   }
-  const mesh = app.world.allocSharedRef('MeshAsset', geometry.value);
-  const texture = app.world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', {
+  const mesh = assets.create(geometry.value).unwrap();
+  const texture = assets.create({
     kind: 'texture',
     shape: {
       viewDimension: '2d',
@@ -54,7 +58,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     ]),
     colorSpace: 'linear',
     mips: { kind: 'none' },
-  });
+  }).unwrap();
   const blue = makeMaterial(app.world, authoredMaterial, [0.05, 0.25, 1], texture);
   const red = makeMaterial(app.world, redAuthoredMaterial, [0.05, 1, 0.1], texture);
 
@@ -86,8 +90,11 @@ function makeMaterial(
   world: import('@forgeax/engine-ecs').World,
   sourceMaterial: MaterialAsset,
   baseColor: readonly [number, number, number],
-  texture: import('@forgeax/engine-types').Handle<'TextureAsset', 'shared'>,
-): import('@forgeax/engine-types').Handle<'MaterialAsset', 'shared'> {
+  texture: import('@forgeax/engine-types').AssetHandle<'texture'>,
+): import('@forgeax/engine-types').AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   if (sourceMaterial.parent !== undefined) {
     throw new Error('shader-defs material child cannot override the root pass');
   }
@@ -101,5 +108,5 @@ function makeMaterial(
     }],
     values: { baseColor: [...baseColor, 1], time: 0, speed: 1, baseColorTexture: texture },
   } satisfies MaterialAsset;
-  return world.allocSharedRef('MaterialAsset', material);
+  return sceneAssets.create(material).unwrap();
 }

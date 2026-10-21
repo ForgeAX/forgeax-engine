@@ -1,0 +1,33 @@
+[package]
+name = "forgeax-shared-geometry-native-tests"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+parry3d = { path = "../parry/crates/parry3d", default-features = false, features = ["required-features", "std", "alloc", "serde-serialize"] }
+rapier3d = { path = "../rapier/crates/rapier3d", features = ["serde-serialize"] }
+
+[patch.crates-io]
+parry3d = { path = "../parry/crates/parry3d" }
+
+[[test]]
+name = "affine_bvh"
+path = "../parry/crates/parry3d/tests/affine_bvh.rs"
+
+[[test]]
+name = "shared_geometry"
+path = "../rapier/crates/rapier3d/tests/shared_geometry.rs"
+
+[[test]]
+name = "manifold_transfer"
+path = "../parry/crates/parry3d/tests/manifold_transfer.rs"
+
+[[test]]
+name = "coalesced_voxel_ccd"
+path = "../parry/crates/parry3d/tests/coalesced_voxel_ccd.rs"
+
+[[test]]
+name = "rotating_voxel_sweep"
+path = "../parry/crates/parry3d/tests/rotating_voxel_sweep.rs"

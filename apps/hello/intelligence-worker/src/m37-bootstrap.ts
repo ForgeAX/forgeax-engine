@@ -15,10 +15,14 @@ import {
   type IntelligencePortClient,
   type IntelligenceRealmMessage,
 } from '@forgeax/engine-intelligence';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { M37_LIMITS, M37_PROVIDER_A_ID, M37_PROVIDER_B_ID, M37_PROVIDER_C_ID } from './m37-provider';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 interface M37HostCloseDetail {
   readonly origin: 'host-binding.after-cancel-command-fault';
@@ -468,6 +472,11 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
     inject: ['world', 'intelligence'],
     apply(ctx) {
       const world = ctx.world;
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
       const clientA = ctx.intelligence as IntelligencePortClient | undefined;
       if (clientA === undefined) throw new Error('M37 control intelligence service was not provided');
       const currentProof: M37Proof = {
@@ -942,7 +951,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
         world
           .spawn(
             { component: Transform, data: { pos: [0, 0, 0] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: primitiveCube } },
             { component: MeshRenderer, data: {} },
           )
           .unwrap(),

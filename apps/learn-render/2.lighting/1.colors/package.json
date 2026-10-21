@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "learn-render LearnOpenGL section 2.lighting 1.colors \u2014 colored object + lamp marker via @forgeax/engine-app + standard material + DirectionalLight.",
+  "description": "learn-render LearnOpenGL section 2.lighting 1.colors — colored object + lamp marker via @forgeax/engine-app + standard material + DirectionalLight.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -56,7 +56,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

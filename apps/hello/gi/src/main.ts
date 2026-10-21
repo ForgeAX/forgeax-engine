@@ -12,7 +12,7 @@ import {
 } from '@forgeax/engine-render';
 import { uploadTape } from '@forgeax/engine-rhi-debug/browser';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
+
 import {
   configureRuntimeAssetCatalog,
   createRuntimeAssetImportTransport,
@@ -98,8 +98,8 @@ let controls: Pick<GiSceneControls, 'setLight' | 'setEmissive' | 'setCamera'>;
 if (sceneId === 'sponza') {
   const guid = AssetGuid.parse(SPONZA.sceneGuid);
   if (!guid.ok) throw guid.error;
-  const scene = (await assets.loadByGuid(guid.value)).unwrap();
-  assets.instantiate(world.allocSharedRef('SceneAsset', scene), world).unwrap();
+  const scene = (await assets.load(guid.value, 'scene')).unwrap();
+  assets.instantiate(scene, world).unwrap();
   const light = spawnLight(world, SPONZA.light);
   const camera = spawnCamera(world, SPONZA.camera, 1);
   controls = {
@@ -122,9 +122,9 @@ if (sceneId === 'sponza') {
 async function loadMaterial(name: GiMaterialName) {
   if (assets === undefined) throw new Error('hello-gi: asset registry unavailable');
   const material = (
-    await assets.loadByGuid<MaterialAsset>(assets.parseGuid(giMaterialGuid(name)))
+    await assets.load(assets.parseGuid(giMaterialGuid(name)), 'material')
   ).unwrap();
-  return world.allocSharedRef('MaterialAsset', material);
+  return material;
 }
 
 function fail(message: string): never {

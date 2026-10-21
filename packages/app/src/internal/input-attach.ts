@@ -3,8 +3,6 @@ import {
   type BrowserInputBackendOptions,
   type CompositeInputBackend,
   makeCompositeBackend,
-  type PointerLockProvider,
-  type VirtualJoystickConfig,
 } from '@forgeax/engine-input';
 
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
@@ -27,30 +25,23 @@ interface InputAttachHandle {
   setOnErrorDispatch(fn: (err: AppError) => void): void;
 }
 
-/**
- * Acquire a browser input backend. This Host helper owns only DOM listeners;
- * the Cordis input plugin owns every World resource and system contribution.
- */
-/**
- * Options forwarded to attachBrowserInputBackend at attach time. Currently only
- * the neutral PointerLock gate (host decides whether a canvas click captures the
- * cursor); the backend stays host-opaque. Optional so existing call sites are
- * unchanged.
- */
-export interface InputAttachOptions {
-  /** Host-owned UI root used to route Shadow DOM events away from gameplay. */
-  readonly uiRoot?: Node;
-  readonly pointerLockAllowed?: () => boolean;
-  /** M3: virtual joystick configurations passed through to browser backend. */
-  readonly virtualJoysticks?: readonly VirtualJoystickConfig[];
-  /**
-   * M2: pointer-lock provider injected by the host (e.g. editor play-runtime).
-   * Forwarded to BrowserInputBackendOptions.lockProvider. When absent, the
-   * backend falls back to the W3C requestPointerLock() path.
-   * Type SSOT is @forgeax/engine-input's PointerLockProvider.
-   */
-  readonly lockProvider?: PointerLockProvider;
+/** Gameplay input options admitted by both local and Worker App hosts. */
+export type InputAttachOptions = Pick<
+  BrowserInputBackendOptions,
+  'uiRoot' | 'pointerLockAllowed' | 'virtualJoysticks' | 'lockProvider'
+>;
+
+/** Project only App-owned options; DOM test overrides stay with the Input owner. */
+export function browserInputOptions(options: InputAttachOptions): InputAttachOptions {
+  return {
+    ...(options.uiRoot ? { uiRoot: options.uiRoot } : {}),
+    ...(options.pointerLockAllowed ? { pointerLockAllowed: options.pointerLockAllowed } : {}),
+    ...(options.virtualJoysticks ? { virtualJoysticks: options.virtualJoysticks } : {}),
+    ...(options.lockProvider ? { lockProvider: options.lockProvider } : {}),
+  };
 }
+
+/** Acquire browser listeners and the local App's synthetic input lease. */
 
 export function attachInputAuto(
   canvas: HTMLCanvasElement,
@@ -64,10 +55,7 @@ export function attachInputAuto(
   let onLockErrorDispatch: ((err: AppError) => void) | undefined;
 
   const backendOpts: BrowserInputBackendOptions = {
-    ...(options.uiRoot ? { uiRoot: options.uiRoot } : {}),
-    ...(options.pointerLockAllowed ? { pointerLockAllowed: options.pointerLockAllowed } : {}),
-    ...(options.virtualJoysticks ? { virtualJoysticks: options.virtualJoysticks } : {}),
-    ...(options.lockProvider ? { lockProvider: options.lockProvider } : {}),
+    ...browserInputOptions(options),
     onLockError: (detail: { path: 'w3c' | 'provider'; cause: unknown }) => {
       // D-4: wrap the backend's onLockError signal into a structured AppError
       // and fan-out through createApp's onError channel. The dispatch function

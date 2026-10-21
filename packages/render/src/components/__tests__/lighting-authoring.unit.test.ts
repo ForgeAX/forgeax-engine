@@ -6,6 +6,7 @@ import {
   SpotLight,
   validateLightProbeData,
   validateRectAreaLightData,
+  validateSpotLightData,
 } from '../index';
 
 describe('lighting authoring contracts', () => {
@@ -21,11 +22,34 @@ describe('lighting authoring contracts', () => {
       'iesProfile',
     ]);
     expect(Object.keys(LightProbe.fields)).toEqual(['irradiance', 'radius']);
-    expect(SpotLight.fields.iesProfile.type).toBe('shared<IesProfileAsset>');
-    expect(PointLight.fields.iesProfile.type).toBe('shared<IesProfileAsset>');
-    expect(RectAreaLight.fields.iesProfile.type).toBe('shared<IesProfileAsset>');
-    expect(SpotLight.fields.cookie.type).toBe('shared<TextureAsset>');
+    expect(SpotLight.fields.iesProfile.type).toBe('asset<ies-profile>');
+    expect(PointLight.fields.iesProfile.type).toBe('asset<ies-profile>');
+    expect(RectAreaLight.fields.iesProfile.type).toBe('asset<ies-profile>');
+    expect(SpotLight.fields.cookie.type).toBe('asset<texture>');
     expect(SpotLight.fields.rollDeg.default).toBe(0);
+  });
+
+  it('admits bounded variance filtering through the native SpotLight validator', () => {
+    expect(
+      validateSpotLightData({
+        direction: [0, -1, 0],
+        castShadow: true,
+        shadowFilter: 8,
+        shadowBlurSamples: 16,
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateSpotLightData({ direction: [0, -1, 0], castShadow: true, shadowFilter: 9 }).ok,
+    ).toBe(false);
+    for (const shadowBlurSamples of [0, 1.5, 65, NaN])
+      expect(
+        validateSpotLightData({
+          direction: [0, -1, 0],
+          castShadow: true,
+          shadowFilter: 8,
+          shadowBlurSamples,
+        }).ok,
+      ).toBe(false);
   });
 
   it('keeps defaults and rejects invalid Rect/Probe facts before rendering', () => {

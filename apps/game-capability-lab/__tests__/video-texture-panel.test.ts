@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { VIDEO_SOURCE_PROVIDER_KEY, VideoPlayer, type VideoSourceProvider } from '@forgeax/engine-graphics-extras';
 import { Transform } from '@forgeax/engine-scene';
 import { World } from '@forgeax/engine-ecs';
@@ -25,21 +25,8 @@ describe('game-default guided WebM hit context', () => {
     } as unknown as HTMLVideoElement;
     vi.stubGlobal('document', { createElement: vi.fn(() => video) });
 
-    let loadCount = 0;
-    const assets = {
-      catalog: vi.fn(),
-      resolveName: vi.fn(() => 'cutscene.webm'),
-      loadByGuid: vi.fn(async () => {
-        loadCount += 1;
-        return {
-          ok: true as const,
-          value: loadCount === 1
-            ? { kind: 'video' as const, url: '/cutscene.webm' }
-            : { kind: 'material' as const, passes: [], values: {} },
-        };
-      }),
-    } as unknown as AssetRegistry;
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const target = world.spawn({ component: Transform, data: {} }).unwrap();
     const panel = await createVideoTexturePanel(world, assets, target);
     expect(panel).toBeDefined();
@@ -62,7 +49,9 @@ describe('game-default guided WebM hit context', () => {
     expect(video.currentTime).toBeCloseTo(0, 5);
     panel.dispose();
     expect(world.hasResource(VIDEO_SOURCE_PROVIDER_KEY)).toBe(false);
-    expect(assets.catalog).toHaveBeenCalledWith(expect.anything(), expect.anything());
-    expect(assets.catalog).toHaveBeenCalledTimes(2);
+    expect(assets.validate(panel.videoHandle).ok).toBe(false);
+    expect(assets.validate(panel.materialHandle).ok).toBe(false);
+    world.despawn(target).unwrap();
+    assets.dispose();
   });
 });

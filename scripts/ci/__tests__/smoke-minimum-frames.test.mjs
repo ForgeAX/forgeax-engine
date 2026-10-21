@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { driveReadyAppFrames } from '../../test/ready-render-frame.mjs';
+import { drawReadyFrame, driveReadyAppFrames } from '../../test/ready-render-frame.mjs';
 import * as smoke from '../run-dawn-smoke-roster.mjs';
 
 const head = '0123456789abcdef0123456789abcdef01234567';
@@ -561,4 +561,98 @@ test('missing App callbacks fail immediately and release their listener', async 
   const d = driver([]);
   await assert.rejects(driveReadyAppFrames(d.renderer, d.tick), /did not schedule/);
   assert.equal(d.state().disposed, true);
+});
+
+test('ready observation retries consume preparation receipts within the native unread bound', async () => {
+  const request = {},
+    domains = ['linear-hdr'],
+    unread = new Set(),
+    observed = [];
+  let frames = 0;
+  const renderer = {
+    requestObservation(actual) {
+      assert.equal(actual, domains);
+      return unread.size < 4
+        ? { ok: true }
+        : { ok: false, error: new Error('four unread observations') };
+    },
+    draw(actual) {
+      assert.equal(actual, request);
+      const receipt = {
+        frameId: ++frames,
+        presentation: frames <= 6 ? 'pending' : 'ready',
+        observationDomains: domains,
+        completed: Promise.resolve({ ok: true }),
+      };
+      unread.add(receipt);
+      return { ok: true, value: receipt };
+    },
+    async observe(receipt, options) {
+      assert.deepEqual(options.include, domains);
+      assert.equal((await receipt.completed).ok, true);
+      assert.equal(unread.delete(receipt), true);
+      observed.push(receipt.frameId);
+      return { ok: true, value: {} };
+    },
+  };
+  const receipt = await drawReadyFrame(renderer, request, domains);
+  assert.equal(receipt.frameId, 7);
+  assert.deepEqual(observed, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual([...unread], [receipt]);
+  await renderer.observe(receipt, { include: domains });
+  assert.equal(unread.size, 0);
+});
+
+test('preparation observation readback failure remains terminal', async () => {
+  const error = new Error('preparation readback failed');
+  let draws = 0;
+  const renderer = {
+    requestObservation: () => ({ ok: true }),
+    draw: () => ({
+      ok: true,
+      value: {
+        frameId: ++draws,
+        observationDomains: ['linear-hdr'],
+        presentation: 'pending',
+        completed: Promise.resolve({ ok: true }),
+      },
+    }),
+    observe: async () => ({ ok: false, error }),
+  };
+  await assert.rejects(drawReadyFrame(renderer, {}, ['linear-hdr']), (actual) => actual === error);
+  assert.equal(draws, 1);
+});
+
+test('ready observation retries distinguish empty barriers and partial pending captures', async () => {
+  const requested = ['linear-hdr', 'final-display'],
+    captured = [[], ['final-display'], requested];
+  const reads = [];
+  let frames = 0;
+  const renderer = {
+    requestObservation: () => ({ ok: true }),
+    draw() {
+      const domains = captured[frames++];
+      assert.ok(domains);
+      return {
+        ok: true,
+        value: {
+          frameId: frames,
+          presentation: frames < 3 ? 'pending' : 'ready',
+          observationDomains: domains,
+          completed: Promise.resolve({ ok: true }),
+        },
+      };
+    },
+    async observe(receipt, options) {
+      assert.notEqual(receipt.observationDomains.length, 0);
+      assert.deepEqual(options.include, receipt.observationDomains);
+      reads.push(receipt.frameId);
+      return { ok: true, value: {} };
+    },
+  };
+  const receipt = await drawReadyFrame(renderer, {}, requested);
+  assert.equal(receipt.frameId, 3);
+  assert.deepEqual(reads, [2]);
+  await renderer.observe(receipt, { include: requested });
+  assert.deepEqual(reads, [2, 3]);
 });

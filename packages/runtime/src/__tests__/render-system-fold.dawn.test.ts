@@ -75,7 +75,6 @@ function mockDispatchEntry(opts: {
     // owners; these fixtures model sprite/tilemap draws rather than generic
     // transparent Standard PBR geometry.
     materialShaderId: 'forgeax::sprite',
-    paramSnapshot: undefined,
   };
 }
 
@@ -92,7 +91,16 @@ function mockRenderable(tz: number, tx = 0, ty = 0): FoldRenderableLike {
   // `transparent === true`; these dawn integration tests assume fold-eligible
   // behavior so default to `transparent: true` (the M3 ablation collapsed the
   // sprite shadingModel discriminator into the generic transparent flag).
-  return { transform: { world }, material: { transparent: true } };
+  return {
+    transform: { world },
+    material: {
+      transparent: true,
+      passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+      baseColor: [1, 1, 1],
+      metallic: 0,
+      roughness: 1,
+    },
+  };
 }
 
 describe('fold operator dawn integration (w7) — drawIndexed count drops to bucket count', () => {

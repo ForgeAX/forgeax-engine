@@ -5,16 +5,40 @@
   "type": "module",
   "license": "Apache-2.0",
   "description": "Reproduce Bevy's texture_atlas example with prebuilt atlas regions and sampler variants.",
-  "scripts": { "dev": "vite", "typecheck": "tsc --noEmit", "build": "vite build", "smoke": "node scripts/smoke-dawn.mjs" },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
   "forgeax": {
-    "bevyExample": { "name": "texture_atlas", "category": "2D Rendering", "status": "implemented" },
+    "bevyExample": {
+      "name": "texture_atlas",
+      "category": "2D Rendering",
+      "status": "implemented"
+    },
     "smokeInvocation": "pnpm --filter @forgeax/bevy-texture-atlas smoke",
     "metrics": {
-      "bundle-size": { "enabled": false, "reason": "static demo bundle; engine package sizes are tracked at their package boundaries" },
-      "fps": { "enabled": false, "reason": "static atlas comparison; runtime performance is covered by engine render gates" },
-      "bench": { "enabled": false, "reason": "static demo; benchmark focus remains on engine packages" },
-      "gate": { "enabled": true, "command": "pnpm --filter @forgeax/bevy-texture-atlas smoke" },
-      "spike-report": { "enabled": false, "reason": "not a spike app; Bevy texture atlas reproduction" }
+      "bundle-size": {
+        "enabled": false,
+        "reason": "static demo bundle; engine package sizes are tracked at their package boundaries"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "static atlas comparison; runtime performance is covered by engine render gates"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "static demo; benchmark focus remains on engine packages"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-texture-atlas smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; Bevy texture atlas reproduction"
+      }
     }
   },
   "dependencies": {
@@ -24,8 +48,15 @@
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
-    "@forgeax/engine-image": "workspace:*", "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*", "@forgeax/engine-vite-plugin-shader": "workspace:*", "@webgpu/types": "^0.1.74", "vite": "8.0.16", "@forgeax/engine-dawn-node": "workspace:*" }
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
 }

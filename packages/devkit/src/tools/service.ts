@@ -5,22 +5,19 @@ import {
   disconnectedError,
   domainFailureError,
   type JsonValue,
+  type ServiceAdmissionExpectation,
   type ServiceAdmissionRef,
   type ServiceCapability,
   type ToolContribution,
   type ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
 
-export interface ServiceExecutorOptions<TArgs, TResult> {
+export interface ServiceExecutorOptions<TArgs, TResult>
+  extends Omit<ServiceAdmissionExpectation, 'toolId' | 'backend'> {
   readonly contribution: ToolContribution<TArgs, TResult>;
   readonly privateExecutor: (args: TArgs) => Promise<ToolTerminal<TResult>>;
   readonly transport: AuthenticatedLoopbackTransport;
   readonly admission?: ServiceAdmissionRef;
-  readonly descriptorDigest: string;
-  readonly recipeDigest: string;
-  readonly workloadClass: string;
-  readonly codeDigest: string;
-  readonly browserVersion: string;
   readonly bearerToken?: string;
 }
 

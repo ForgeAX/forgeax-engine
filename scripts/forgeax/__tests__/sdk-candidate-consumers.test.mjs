@@ -136,6 +136,111 @@ test('candidate consumer aggregation binds all four full owners to the exact ZIP
   }
 });
 
+test('archive consumers verify transported ZIP bytes without downloading the npm payload', () => {
+  const input = fixture();
+  try {
+    rmSync(resolve(input.sdkRoot, 'npm'), { recursive: true });
+    const verify = () =>
+      verifyCandidateSeedManifest({
+        sdkRoot: input.sdkRoot,
+        manifest: input.seedManifest,
+        expectedHead: engineCommit,
+        version,
+        group: 'archive',
+      });
+    assert.equal(verify().sha256, input.seedManifest.archive.sha256);
+    writeFileSync(input.archivePath, 'changed archive');
+    assert.throws(verify, /sdk-candidate-seed-archive-bytes/);
+  } finally {
+    rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test('npm consumers verify their complete package closure without downloading the ZIP', () => {
+  const input = fixture();
+  try {
+    rmSync(input.archivePath);
+    const verify = (manifest = input.seedManifest) =>
+      verifyCandidateSeedManifest({
+        sdkRoot: input.sdkRoot,
+        manifest,
+        expectedHead: engineCommit,
+        version,
+        group: 'npm',
+      });
+    assert.equal(verify().sha256, input.seedManifest.archive.sha256);
+    assert.throws(
+      () =>
+        verify({
+          ...input.seedManifest,
+          archive: { ...input.seedManifest.archive, sha256: 'f'.repeat(64) },
+        }),
+      /sdk-candidate-seed-archive-identity/,
+    );
+    writeFileSync(resolve(input.sdkRoot, 'npm/packages/engine.tgz'), 'changed package');
+    assert.throws(verify, /sdk-candidate-seed-byte-closure/);
+    assert.throws(
+      () => createCandidateConsumerReports({ ...input, expectedHead: engineCommit, version }),
+      /ENOENT/,
+    );
+  } finally {
+    rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test('seed verification rejects an unknown transport group', () => {
+  const input = fixture();
+  try {
+    assert.throws(
+      () =>
+        verifyCandidateSeedManifest({
+          sdkRoot: input.sdkRoot,
+          manifest: input.seedManifest,
+          expectedHead: engineCommit,
+          version,
+          group: 'typo',
+        }),
+      /sdk-candidate-seed-group/,
+    );
+  } finally {
+    rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+for (const group of ['archive', 'npm'])
+  test(`the actual consumer CLI verifies a ${group}-only transport`, () => {
+    const input = fixture();
+    try {
+      const manifestPath = resolve(input.root, 'seed.json');
+      writeFileSync(manifestPath, JSON.stringify(input.seedManifest));
+      if (group === 'archive') rmSync(resolve(input.sdkRoot, 'npm'), { recursive: true });
+      else rmSync(input.archivePath);
+      const result = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            resolve(import.meta.dirname, '../sdk-candidate-consumers.mjs'),
+            '--verify-seed',
+            '--sdk',
+            input.sdkRoot,
+            '--seed-manifest',
+            manifestPath,
+            '--expected-head',
+            engineCommit,
+            '--version',
+            version,
+            '--group',
+            group,
+          ],
+          { encoding: 'utf8' },
+        ),
+      );
+      assert.deepEqual(result, { ok: true, engineCommit, sdkVersion: version, viewCommit });
+    } finally {
+      rmSync(input.root, { recursive: true, force: true });
+    }
+  });
+
 test('candidate consumer aggregation rejects missing, extra, mismatched, or stale evidence and seed bytes', () => {
   const input = fixture();
   try {

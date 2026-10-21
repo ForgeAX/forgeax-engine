@@ -7,6 +7,8 @@ import type { TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { worldRenderResources } from '../publication/resource-scope';
+import { testAssets } from './helpers/runtime-assets';
 
 /** Real graph mip writers, same-handle replacement and fresh-device replay. */
 export async function verifyGraphTextureResidency() {
@@ -24,9 +26,6 @@ export async function verifyGraphTextureResidency() {
   store.configureGpuDevice(
     device,
     (_device, descriptor) => recorder.backend.createShaderModule(device, descriptor),
-    () => {
-      throw new Error('no cubemap');
-    },
     device.caps,
   );
   (await store.prewarmMipmapPipeline(device, ['rgba8unorm'])).unwrap();
@@ -40,7 +39,7 @@ export async function verifyGraphTextureResidency() {
     data: Uint8Array.from(Array.from({ length: 16 }, () => rgba).flat()),
   });
   const red = source([255, 0, 0, 255]);
-  const handle = world.allocSharedRef('TextureAsset', red);
+  const handle = testAssets(world).create(red).unwrap();
   const facts: {
     stage: string;
     rgba: number[];
@@ -59,13 +58,18 @@ export async function verifyGraphTextureResidency() {
       [0, 255, 0, 255],
       [0, 0, 255, 255],
     ].entries()) {
+      testAssets(world)
+        .update(handle, { data: source(rgba).data })
+        .unwrap();
       const omitMips = index === 2;
       const beforeSubmissions = submit.mock.calls.length;
       const start = performance.now();
-      const candidate = store.prepareTextureResidencyForGraph(handle, source(rgba), world).unwrap();
+      const candidate = store
+        .prepareTextureResidencyForGraph(handle, source(rgba), worldRenderResources(world))
+        .unwrap();
       const prepareCpuMs = performance.now() - start;
       expect(candidate.needsMipmaps).toBe(true);
-      expect(store.getTextureGpuView(handle, world)).toBeUndefined();
+      expect(store.getTextureGpuView(handle, worldRenderResources(world))).toBeUndefined();
       expect(submit.mock.calls.length).toBe(beforeSubmissions);
       const staging = device.createBuffer({ size: 256, usage: 9 }).unwrap();
       const builder = new RenderGraphBuilder();
@@ -145,15 +149,17 @@ export async function verifyGraphTextureResidency() {
       if (!omitMips) {
         expect(candidate.current()).toBe(true);
         expect(candidate.commit()).toBe(true);
-        const hot = store.prepareTextureResidencyForGraph(handle, source(rgba), world).unwrap();
+        const hot = store
+          .prepareTextureResidencyForGraph(handle, source(rgba), worldRenderResources(world))
+          .unwrap();
         expect(hot.needsMipmaps).toBe(false);
         expect(hot.entry).toBe(candidate.entry);
         const releasedHot = hot.lease.release(false);
         // Publication invalidates the mapping while accepted users still hold this allocation.
-        store.invalidateTexture(handle, world);
+        store.invalidateTexture(handle, worldRenderResources(world));
         expect(candidate.current()).toBe(false);
         expect(candidate.commit()).toBe(false);
-        expect(store.getTextureGpuView(handle, world)).toBeUndefined();
+        expect(store.getTextureGpuView(handle, worldRenderResources(world))).toBeUndefined();
         expect(candidate.entry.texture.isDestroyed).toBe(false);
         await completed;
         await releasedHot;

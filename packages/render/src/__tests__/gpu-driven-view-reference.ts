@@ -1,6 +1,7 @@
 /** Test-owned CPU oracle for the GPU-driven visibility protocol. */
 import { box3, frustum, mat4 } from '@forgeax/engine-math';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
+import type { FrameList } from '../scene/frame-list';
 import type { RenderSceneSlot } from '../scene/render-scene';
 
 export const INDEXED_INDIRECT_STRIDE = 20;
@@ -18,7 +19,7 @@ export interface GpuDrivenViewReferenceResult {
 /** CPU oracle for the storage-buffer compute protocol and WebGL2 fallback semantics. */
 export function classifyGpuDrivenView(
   plan: SubmissionPlan,
-  slots: readonly RenderSceneSlot[],
+  slots: FrameList<RenderSceneSlot>,
   planes: Float32Array,
   capacityByBatch?: ReadonlyMap<number, number>,
 ): GpuDrivenViewReferenceResult {
@@ -42,7 +43,7 @@ export function classifyGpuDrivenView(
   let visibleCount = 0;
 
   for (let batchIndex = 0; batchIndex < plan.batches.length; batchIndex += 1) {
-    const batch = plan.batches[batchIndex];
+    const batch = plan.batches.at(batchIndex);
     if (batch === undefined) continue;
     const capacity = capacityByBatch?.get(batch.batchId) ?? batch.visibleCapacity;
     let count = 0;

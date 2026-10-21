@@ -1,13 +1,13 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_QUAD, type AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, MaterialValue, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialValue } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import './parallax.wgsl';
 
@@ -36,6 +36,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const app = appResult.value;
   const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
+const demoPrimitive = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
   if (assets === undefined) {
     console.error('[bevy-parallax-mapping] asset owner unavailable');
     return;
@@ -53,7 +55,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       normalTexture: textureHandles.normal,
       heightTexture: textureHandles.height,
     };
-    return app.world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+    return assets.create({
       kind: 'material',
       passes: [{ name: 'Forward', program: { module: SHADER_ID }, renderState: { tags: { LightMode: 'Forward' } } }],
       parameters: [
@@ -65,14 +67,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         { name: 'heightTexture', type: 'texture' },
       ],
       values,
-    });
+    }).unwrap();
   });
 
   const labels = ['basic', 'steep', 'POM'];
   for (let i = 0; i < materials.length; i += 1) {
     app.world.spawn(
       { component: Transform, data: { pos: [(i - 1) * 2.25, 0, 0], scale: [1.85, 1.85, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: demoPrimitive } },
       { component: MeshRenderer, data: { materials: [materials[i]!] } },
     );
     console.info(`[bevy-parallax-mapping] panel=${labels[i]} heightScale=0.1`);
@@ -101,6 +103,9 @@ async function loadTextures(
   world: World,
   assets: AssetRegistry,
 ): Promise<{ diffuse: number; normal: number; height: number } | null> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const diffuseGuid = AssetGuid.parse(TEXTURE_GUIDS.diffuse);
   const normalGuid = AssetGuid.parse(TEXTURE_GUIDS.normal);
   const heightGuid = AssetGuid.parse(TEXTURE_GUIDS.height);
@@ -109,17 +114,17 @@ async function loadTextures(
     return null;
   }
 
-  const diffuse = await assets.loadByGuid<TextureAsset>(diffuseGuid.value);
-  const normal = await assets.loadByGuid<TextureAsset>(normalGuid.value);
-  const height = await assets.loadByGuid<TextureAsset>(heightGuid.value);
+  const diffuse = await assets.load(diffuseGuid.value, 'texture');
+  const normal = await assets.load(normalGuid.value, 'texture');
+  const height = await assets.load(heightGuid.value, 'texture');
   if (!diffuse.ok || !normal.ok || !height.ok) {
     console.error('[bevy-parallax-mapping] texture loading failed');
     return null;
   }
 
   return {
-    diffuse: unwrapHandle(world.allocSharedRef('TextureAsset', diffuse.value)),
-    normal: unwrapHandle(world.allocSharedRef('TextureAsset', normal.value)),
-    height: unwrapHandle(world.allocSharedRef('TextureAsset', height.value)),
+    diffuse: diffuse.value,
+    normal: normal.value,
+    height: height.value,
   };
 }

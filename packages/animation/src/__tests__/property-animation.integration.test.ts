@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, defineComponent, World } from '@forgeax/engine-ecs';
 import type { AnimationClip } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -19,7 +21,7 @@ const Controls = defineComponent('PropertyAnimationControls', {
 
 describe('property animation through the player clock', () => {
   it('animates component scalars, arrays, booleans and strings without Transform', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const context = await createWorldContext(world, [animationPlugin()]);
     const target = world.spawn({ component: Controls, data: { color: [0, 0, 0] } }).unwrap();
     const clip: AnimationClip = {
@@ -72,7 +74,7 @@ describe('property animation through the player clock', () => {
       .spawn({
         component: AnimationPlayer,
         data: {
-          clips: [world.allocSharedRef('AnimationClip', clip)],
+          clips: [runtimeAssetRegistry(world.assets).create(clip).unwrap()],
           times: [0],
           weights: [1],
           speeds: [1],
@@ -102,7 +104,7 @@ describe('property animation through the player clock', () => {
   });
 
   it('binds nested native objects once, blends, and disposes without affecting another World', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [animationPlugin()]);
     const object = { material: { opacity: 0 } };
     const clip = (value: number): AnimationClip => ({
@@ -126,8 +128,8 @@ describe('property animation through the player clock', () => {
         component: AnimationPlayer,
         data: {
           clips: [
-            world.allocSharedRef('AnimationClip', clip(2)),
-            world.allocSharedRef('AnimationClip', clip(6)),
+            runtimeAssetRegistry(world.assets).create(clip(2)).unwrap(),
+            runtimeAssetRegistry(world.assets).create(clip(6)).unwrap(),
           ],
           times: [0, 0],
           weights: [1, 3],

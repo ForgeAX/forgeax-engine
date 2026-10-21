@@ -14,15 +14,18 @@ import type { GpuDrivenShadowBatchProjection } from '../gpu-driven/production-ra
 import { createSkylightFallback, skylightBindGroupResources } from '../ibl/skylight-bind-group';
 import { buildBindGroupLayoutDescriptor } from '../pbr-pipeline';
 import type { PipelineSpec } from '../pipeline-spec-types';
+import { worldRenderResources } from '../publication/resource-scope';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
-import { MATERIAL_UNIFORM_BYTES } from '../record/render-context';
+import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from '../record/render-context';
 import { encodeStaticShadowPass } from '../record/shadow-pass';
 import { defaultMaterialSnapshot } from '../render-system-extract';
+import { updateShadowView } from './helpers/gpu-input-read-domain';
+import { testAssets } from './helpers/runtime-assets';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { shadowBundleCommands } from './shadow-bundle.fixture';
 import { preparedShadowFixture } from './shadow-indirect.fixture';
@@ -50,20 +53,18 @@ const TEXTURED_WITNESS = `${WITNESS.replace('fn vs_main', 'fn vs_scene_index')}
 function customMaterialFixture(device: RhiDevice) {
   const world = new World();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused cubemap');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
+  const assets = testAssets(world);
   const fallback = createSkylightFallback(device, device.queue);
   const materialBuffer = device
-    .createBuffer({ size: MATERIAL_UNIFORM_BYTES, usage: 8 | 64 })
+    .createBuffer({ size: 2 * MATERIAL_PER_ENTITY_STRIDE, usage: 8 | 64 })
     .unwrap();
   const sceneBuffer = device.createBuffer({ size: 256, usage: 128 }).unwrap();
-  const schema: ParamSchemaEntry[] = [{ name: 'depthTexture', type: 'texture2d' }];
+  const schema: ParamSchemaEntry[] = [
+    { name: 'depth', type: 'f32' },
+    { name: 'depthTexture', type: 'texture2d' },
+  ];
+  let parameters = { depth: 0 };
   const shaderId = 'test::accepted-shadow-material';
   const layout = device
     .createBindGroupLayout(
@@ -92,10 +93,11 @@ function customMaterialFixture(device: RhiDevice) {
     mips: { kind: 'none' },
     data: new Uint8Array([255, 255, 255, 255]),
   };
-  const texture = world.allocSharedRef('TextureAsset', source);
+  const texture = assets.create(source).unwrap();
   const material = {
     ...defaultMaterialSnapshot(17),
     materialShaderId: shaderId,
+    materialParamSchema: schema,
     textureHandles: new Map([['depthTexture', texture]]),
   };
   const receipt = createStandardPbrArtifactReceipt();
@@ -118,6 +120,7 @@ function customMaterialFixture(device: RhiDevice) {
   const deps = {
     runtime: {
       device,
+      preparedMaterialParameters: () => parameters,
       getMaterialShaderArtifact: queries.artifact,
       getParamSchema: queries.schema,
       getMaterialBindGroupLayout: queries.layout,
@@ -132,7 +135,7 @@ function customMaterialFixture(device: RhiDevice) {
       fallbackTextureView: fallback.brdfLutView,
       skylightFallback: fallback,
     },
-    world,
+    world: worldRenderResources(world),
     store,
     materialSlice: MATERIAL_UNIFORM_BYTES,
     videoHighPerfAvailable: false,
@@ -149,6 +152,7 @@ function customMaterialFixture(device: RhiDevice) {
     {
       ...defaultMaterialSnapshot(18),
       materialShaderId: shaderId,
+      materialParamSchema: schema,
     },
     0,
   );
@@ -163,10 +167,15 @@ function customMaterialFixture(device: RhiDevice) {
     materialBuffer,
     sceneBuffer,
     fallback,
+    setDepth(depth: number) {
+      parameters = { depth };
+    },
     replaceTexture() {
-      const previous = store.getTextureGpuView(texture, world);
-      store.invalidateTexture(texture, world);
-      const replacement = store.ensureResident(texture, source, world).unwrap();
+      const previous = store.getTextureGpuView(texture, worldRenderResources(world));
+      store.invalidateTexture(texture, worldRenderResources(world));
+      const replacement = store
+        .ensureResident(texture, source, worldRenderResources(world))
+        .unwrap();
       expect(replacement.view).not.toBe(previous);
     },
     dispose() {
@@ -286,7 +295,6 @@ it.each([
       projections.set(id, {
         ...projection,
         material: custom.material,
-        materialEntityKey: id,
         shadowArtifact: custom.artifact,
       });
     const state = fixture.context.pipelineState;
@@ -344,12 +352,12 @@ it.each([
           source.update({ ...shadowSourceSnapshot(3, 20, 5), mobility: 'static' });
         else if (frame > 1) source.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
         const input = source.input();
-        const update = source.pool.update(input).unwrap();
+        const update = updateShadowView(source.pool, input).unwrap();
         expect(update.cache).toBe('invalidated');
         if (frame === 0) sourceResourceGeneration = update.view.inspect().resourceGeneration;
         if (frame === 1) {
           expect(input.ignoredChangeSlots.size).toBe(1);
-          expect(source.pool.invalidationReason(source.identity)).toBe('content-changed');
+          expect(source.pool.invalidationReason(source.identity)).toBe('membership-changed');
           expect(source.pool.dirtyRects(source.identity)).toHaveLength(2);
         }
         if (frame === 2) {
@@ -362,6 +370,7 @@ it.each([
         }
       }
       const value = frame === 0 ? 0.75 : frame % 2 === 1 ? 0.25 : 0.5;
+      custom?.setDepth(value);
       device.queue
         .writeBuffer(
           custom?.materialBuffer ?? buffer,
@@ -398,8 +407,8 @@ it.each([
       const observations = reuseAdjacentShadow ? 1 : fixture.batches.length;
       expect(fixture.pipelineLookup).toHaveBeenCalledTimes(observations);
       if (custom !== undefined && bindings !== undefined) {
-        for (const query of Object.values(custom.queries))
-          expect(query).toHaveBeenCalledTimes(observations);
+        for (const [name, query] of Object.entries(custom.queries))
+          expect(query, name).toHaveBeenCalledTimes(observations);
         const encoded = bundles?.mock.calls.flatMap(([handles]) => shadowBundleCommands(handles));
         const bound =
           encoded?.filter((row) => row.method === 'setBindGroup' && row.args[0] === 1).at(-1)
@@ -453,7 +462,8 @@ it.each([
         mapped.unmap();
       }
     }
-    if (source !== undefined) expect(source.pool.update(source.input()).unwrap().cache).toBe('hit');
+    if (source !== undefined)
+      expect(updateShadowView(source.pool, source.input()).unwrap().cache).toBe('hit');
     expect(await native.popErrorScope()).toBeNull();
   } finally {
     source?.dispose();

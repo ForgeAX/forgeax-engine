@@ -902,21 +902,7 @@ export function perspectiveNO(
   near: number,
   far: number,
 ): Mat4 {
-  const f = 1 / Math.tan(fovYRadians / 2);
-  out[0] = f / aspect;
-  out[1] = 0;
-  out[2] = 0;
-  out[3] = 0;
-  out[4] = 0;
-  out[5] = f;
-  out[6] = 0;
-  out[7] = 0;
-  out[8] = 0;
-  out[9] = 0;
-  out[11] = -1;
-  out[12] = 0;
-  out[13] = 0;
-  out[15] = 0;
+  perspective(out, fovYRadians, aspect, near, far);
 
   if (far === Number.POSITIVE_INFINITY) {
     out[10] = -1;
@@ -966,21 +952,7 @@ export function perspectiveReverseZ(
   near: number,
   far: number,
 ): Mat4 {
-  const f = 1 / Math.tan(fovYRadians / 2);
-  out[0] = f / aspect;
-  out[1] = 0;
-  out[2] = 0;
-  out[3] = 0;
-  out[4] = 0;
-  out[5] = f;
-  out[6] = 0;
-  out[7] = 0;
-  out[8] = 0;
-  out[9] = 0;
-  out[11] = -1;
-  out[12] = 0;
-  out[13] = 0;
-  out[15] = 0;
+  perspective(out, fovYRadians, aspect, near, far);
 
   if (far === Number.POSITIVE_INFINITY) {
     out[10] = 0;
@@ -1045,25 +1017,10 @@ export function orthographicNO(
   near: number,
   far: number,
 ): Mat4 {
-  const lr = 1 / (left - right);
-  const bt = 1 / (bottom - top);
+  orthographic(out, left, right, top, bottom, near, far);
   const nf = 1 / (near - far);
-  out[0] = -2 * lr;
-  out[1] = 0;
-  out[2] = 0;
-  out[3] = 0;
-  out[4] = 0;
-  out[5] = -2 * bt;
-  out[6] = 0;
-  out[7] = 0;
-  out[8] = 0;
-  out[9] = 0;
-  out[10] = 2 * nf; // [-1,1] NDC: near→-1, far→1
-  out[11] = 0;
-  out[12] = (left + right) * lr;
-  out[13] = (top + bottom) * bt;
+  out[10] = 2 * nf;
   out[14] = (near + far) * nf;
-  out[15] = 1;
   return out;
 }
 
@@ -1086,27 +1043,10 @@ export function orthographicReverseZ(
   near: number,
   far: number,
 ): Mat4 {
-  const lr = 1 / (left - right);
-  const bt = 1 / (bottom - top);
-  const fn = 1 / (far - near); // reversed-Z [0,1]: near→1, far→0
-  out[0] = -2 * lr;
-  out[1] = 0;
-  out[2] = 0;
-  out[3] = 0;
-  out[4] = 0;
-  out[5] = -2 * bt;
-  out[6] = 0;
-  out[7] = 0;
-  out[8] = 0;
-  out[9] = 0;
-  // Derivation: -m[10]*near + m[14] = 1, -m[10]*far + m[14] = 0
-  //   → m[10] = 1/(far-near), m[14] = far/(far-near)
+  orthographic(out, left, right, top, bottom, near, far);
+  const fn = 1 / (far - near);
   out[10] = fn;
-  out[11] = 0;
-  out[12] = (left + right) * lr;
-  out[13] = (top + bottom) * bt;
   out[14] = far * fn;
-  out[15] = 1;
   return out;
 }
 

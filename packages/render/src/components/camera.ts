@@ -607,7 +607,7 @@ export const Camera = defineComponent('Camera', {
   whitePoint: { type: 'f32', default: 4.0 },
   temperature: { type: 'f32', default: 6504 },
   tint: { type: 'f32', default: 0 },
-  colorLut: { type: 'shared<TextureAsset>', default: 0 as never },
+  colorLut: { type: 'asset<texture>', default: 0 as never },
   colorLutStrength: { type: 'f32', default: 1 },
   antialias: { type: 'f32', default: 0 },
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },

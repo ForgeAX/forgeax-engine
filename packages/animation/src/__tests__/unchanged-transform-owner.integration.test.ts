@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip } from '@forgeax/engine-types';
@@ -9,7 +10,8 @@ import { deriveAnimationTargetId } from '../target-id';
 import { drainAnimationEvents } from '../timeline';
 
 function fixture(values = [0.1, 0.2, 0.3]) {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const targetId = deriveAnimationTargetId(['Root', 'Joint']);
   const clip: AnimationClip = {
     kind: 'animation-clip',
@@ -27,7 +29,7 @@ function fixture(values = [0.1, 0.2, 0.3]) {
       },
     ],
   };
-  const handle = world.allocSharedRef('AnimationClip', clip);
+  const handle = assets.create(clip).unwrap();
   const player = world
     .spawn({
       component: AnimationPlayer,
@@ -51,7 +53,7 @@ function fixture(values = [0.1, 0.2, 0.3]) {
   const writes = vi.spyOn(world, 'set');
   const targetWrites = () =>
     writes.mock.calls.filter(([entity, component]) => entity === target && component === Transform);
-  return { world, player, target, writes, targetWrites, clip, handle };
+  return { assets, world, player, target, writes, targetWrites, clip, handle };
 }
 
 describe('animation owns only changed f32 Transform submissions', () => {
@@ -88,17 +90,19 @@ describe('animation owns only changed f32 Transform submissions', () => {
   });
 
   it('suppresses unchanged blended results after destination f32 rounding', () => {
-    const { world, player, clip, handle, targetWrites, writes } = fixture();
-    const second = world.allocSharedRef('AnimationClip', {
-      ...clip,
-      channels: clip.channels.map((channel) => ({
-        ...channel,
-        sampler: {
-          ...channel.sampler,
-          output: new Float32Array([0.3, 0.4, 0.5, 0.3, 0.4, 0.5]),
-        },
-      })),
-    });
+    const { assets, world, player, clip, handle, targetWrites, writes } = fixture();
+    const second = assets
+      .create({
+        ...clip,
+        channels: clip.channels.map((channel) => ({
+          ...channel,
+          sampler: {
+            ...channel.sampler,
+            output: new Float32Array([0.3, 0.4, 0.5, 0.3, 0.4, 0.5]),
+          },
+        })),
+      })
+      .unwrap();
     world
       .set(player, AnimationPlayer, {
         clips: [handle, second],
@@ -134,19 +138,21 @@ describe('animation owns only changed f32 Transform submissions', () => {
   });
 
   it('keeps unauthored channels when the active clip switches between translation and rotation', () => {
-    const { world, player, target, clip, handle } = fixture();
+    const { assets, world, player, target, clip, handle } = fixture();
     advanceAnimationPlayer(world, 0.25);
-    const rotation = world.allocSharedRef('AnimationClip', {
-      ...clip,
-      channels: clip.channels.map((channel) => ({
-        ...channel,
-        property: 'rotation' as const,
-        sampler: {
-          ...channel.sampler,
-          output: new Float32Array([0, 1, 0, 0, 0, 1, 0, 0]),
-        },
-      })),
-    });
+    const rotation = assets
+      .create({
+        ...clip,
+        channels: clip.channels.map((channel) => ({
+          ...channel,
+          property: 'rotation' as const,
+          sampler: {
+            ...channel.sampler,
+            output: new Float32Array([0, 1, 0, 0, 0, 1, 0, 0]),
+          },
+        })),
+      })
+      .unwrap();
     world.set(player, AnimationPlayer, { clips: [rotation] }).unwrap();
     advanceAnimationPlayer(world, 0.25);
     expect([...world.get(target, Transform).unwrap().pos]).toEqual(
@@ -162,10 +168,11 @@ describe('animation owns only changed f32 Transform submissions', () => {
   });
 
   it('isolates an outer pose submission from a nested animation evaluation', () => {
-    const { world, player, target, clip, writes } = fixture();
+    const { assets, world, player, target, clip, handle, writes } = fixture();
     const output = clip.channels[0]?.sampler.output;
     if (!(output instanceof Float32Array)) throw Error('expected numeric animation output');
     output.set([0, 0, 0, 10, 0, 0]);
+    assets.update(handle, { channels: clip.channels }).unwrap();
     advanceAnimationPlayer(world, 0);
     const set = World.prototype.set;
     let nested = false;

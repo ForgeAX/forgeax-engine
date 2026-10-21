@@ -1,3 +1,4 @@
+import { defineAssetKind } from '@forgeax/engine-assets-runtime';
 import { AudioListener } from '@forgeax/engine-audio';
 import type { GameHost } from '@forgeax/engine-app';
 import { type EntityHandle, type World } from '@forgeax/engine-ecs';
@@ -62,8 +63,12 @@ async function loadUiAsset(host: GameHost | undefined, guidText: string): Promis
   if (host?.assets === undefined) return fail('Asset registry is unavailable');
   const guid = AssetGuid.parse(guidText);
   if (!guid.ok) return fail(`Invalid UI GUID: ${guidText}`);
-  const loaded = await host.assets.loadByGuid<UiAsset>(guid.value);
-  if (loaded.ok) return loaded;
+  const loaded = await host.assets.load(guid.value, defineAssetKind<UiAsset, 'ui'>('ui'));
+  if (loaded.ok) {
+    const read = host.assets.read(loaded.value);
+    host.assets.release(loaded.value).unwrap();
+    return read.ok ? { ok: true, value: read.value } : fail(`${read.error.code}: ${read.error.hint}`);
+  }
   return fail(`${loaded.error.code}: ${loaded.error.hint}`);
 }
 

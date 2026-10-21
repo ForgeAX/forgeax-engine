@@ -34,7 +34,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { CAMERA_PROJECTION_ORTHOGRAPHIC } from '@forgeax/engine-render';
@@ -42,8 +42,10 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { SpriteRegionOverride, SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
-import { ok as okResult, type MaterialAsset, type TextureAsset } from '@forgeax/engine-types';
+import { ok as okResult, type MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const ATLAS_GUID = '0e8657b1-c0ab-4940-a4f6-27fcd976823c';
 
@@ -102,6 +104,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
   const world = app.world;
+const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 
   // Step 2: load the atlas texture. The 4-region walk.atlas.json sidecar
   // (charter F2) is not fetched here — the fold-validation demo uses one
@@ -113,7 +117,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[sprite-atlas] ATLAS_GUID parse failed:', atlasGuidRes.error.code);
     return;
   }
-  const texHandleRes = await assets.loadByGuid<TextureAsset>(atlasGuidRes.value);
+  const texHandleRes = await assets.load(atlasGuidRes.value, 'texture');
   if (!texHandleRes.ok) {
     console.error(
       '[sprite-atlas] atlas texture loadByGuid failed:',
@@ -122,7 +126,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     );
     return;
   }
-  const textureHandle = world.allocSharedRef('TextureAsset', texHandleRes.value);
+  const textureHandle = texHandleRes.value;
 
   // Step 3: mint sampler + one shared MaterialAsset handle (all 10000
   // sprite entities reference this same handle so the fold operator
@@ -150,7 +154,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       pivotAndSize: [0.5, 0.5, 1, 1],
     },
   };
-  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  const materialHandle = assets.create(material).unwrap();
 
   // Step 4: spawn ortho camera. Camera frustum spans roughly the 100x100
   // grid (each cell is SPRITE_SPACING wide, total grid extent ~= 1.78
@@ -203,7 +207,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [cx, cy, 0], quat: [0, 0, 0, 1], scale: [SPRITE_SPACING * 0.9, SPRITE_SPACING * 0.9, 1],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
       {
         component: SpriteRegionOverride,

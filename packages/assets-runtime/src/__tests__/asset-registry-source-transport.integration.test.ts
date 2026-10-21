@@ -1,6 +1,5 @@
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import type { MeshAsset } from '@forgeax/engine-types';
 import {
   type CatalogDelta,
   type CatalogEntry,
@@ -30,7 +29,7 @@ describe('explicit producer source and content transport', () => {
     const hash = await crypto.subtle.digest('SHA-256', new Uint8Array(body.bytes));
     const digest = `sha256:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     const packageUrl = 'https://runtime.invalid/mesh/pack.json';
-    const { pack } = createRuntimePackPublication({
+    const { pack, publication } = createRuntimePackPublication({
       pack: {
         assets: [
           {
@@ -41,6 +40,7 @@ describe('explicit producer source and content transport', () => {
             artifacts: {
               body: {
                 path: 'mesh.bin',
+                contentEncoding: 'identity',
                 mediaType: body.mediaType,
                 assetCodec: body.assetCodec,
                 byteLength: body.bytes.byteLength,
@@ -50,7 +50,7 @@ describe('explicit producer source and content transport', () => {
           },
         ],
       },
-      scopeId: 'runtime-mesh',
+      scopeId: 'runtime-fixture',
       sourcePath: 'mesh',
       sourceRevision: 'mesh',
       packageUrl,
@@ -62,21 +62,23 @@ describe('explicit producer source and content transport', () => {
           ? new Response(new Uint8Array(body.bytes))
           : new Response('', { status: 404 }),
     );
-    const registry = new AssetRegistry({} as never);
+    const registry = new AssetRegistry({ scopeId: 'runtime-fixture' });
+    registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
     if (bound)
       registry.configureRuntimeBinding(createStandaloneRuntimeAssetBinding('runtime-mesh'));
     registry.setCatalogSource({
       openPackage: () => fetcher,
       enumerate: async () =>
-        ok([{ guid, kind: 'mesh', packageUrl, sourcePath: 'mesh', sourceKey: 'box' }]),
+        ok([{ guid, kind: 'mesh', packageUrl, sourcePath: 'mesh', sourceKey: 'box', publication }]),
       subscribe: () => () => {},
     });
-    const loaded = (await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid))).unwrap();
+    const handle = (await registry.load(guid, 'mesh')).unwrap();
+    const loaded = registry.read(handle).unwrap();
     expect(loaded.attributes.position).toEqual(original.attributes.position);
     expect(loaded.indices).toEqual(original.indices);
     expect(loaded.aabb).toEqual(original.aabb);
     expect(fetcher).toHaveBeenCalledTimes(2);
-    registry.clearCatalogSource();
+    registry.dispose();
   });
   it('loads newly published definitions without a pack-index URL and invalidates only changed GUIDs', async () => {
     const rows: CatalogEntry[] = [];
@@ -97,40 +99,48 @@ describe('explicit producer source and content transport', () => {
         status: body === undefined ? 404 : 200,
       });
     });
-    const registry = new AssetRegistry({} as never);
+    const registry = new AssetRegistry({ scopeId: 'runtime-fixture' });
     registry.setCatalogSource(catalog, fetcher);
     expect((await registry.enumerateCatalog()).unwrap()).toEqual([]);
     const publish = (id: string, generation: number) => {
       const packageUrl = `https://runtime.invalid/${id}/${generation}/pack.json`;
+      const publication = createRuntimePackPublication({
+        scopeId: 'runtime-fixture',
+        sourcePath: `runtime/${id}`,
+        sourceRevision: String(generation),
+        packageUrl,
+        pack: {
+          assets: [
+            {
+              guid: id,
+              kind: 'plugin',
+              payload: { kind: 'plugin', program: `runtime:${id}`, config: { generation } },
+              refs: [],
+              artifacts: {},
+            },
+          ],
+        },
+      });
       const row = {
         guid: id,
         kind: 'plugin',
         packageUrl,
         sourcePath: `runtime/${id}`,
         sourceKey: 'plugin',
+        publication: publication.publication,
       };
-      bodies.set(packageUrl, {
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        scopeId: 'runtime-fixture',
-        generation,
-        digest: `sha256:${'a'.repeat(64)}`,
-        outputSetDigest: `sha256:${'b'.repeat(64)}`,
-        assets: [
-          {
-            guid: id,
-            kind: 'plugin',
-            payload: { kind: 'plugin', program: `runtime:${id}`, config: { generation } },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      });
+      bodies.set(packageUrl, publication.pack);
       const index = rows.findIndex((value) => value.guid === id);
       if (index < 0) rows.push(row);
       else rows[index] = row;
       for (const listener of listeners)
-        listener({ added: index < 0 ? [row] : [], changed: index < 0 ? [] : [row], removed: [] });
+        listener({
+          scopeId: 'runtime-fixture',
+          generation: 0,
+          added: index < 0 ? [row] : [],
+          changed: index < 0 ? [] : [row],
+          removed: [],
+        });
     };
     publish(guid, 1);
     publish(other, 1);
@@ -140,29 +150,38 @@ describe('explicit producer source and content transport', () => {
         .map((row) => row.guid)
         .sort(),
     ).toEqual([guid, other].sort());
-    const first = (await registry.loadByGuid<PluginAsset>(registry.parseGuid(guid))).unwrap();
-    const bystander = (await registry.loadByGuid<PluginAsset>(registry.parseGuid(other))).unwrap();
-    expect(first.config).toEqual({ generation: 1 });
+    const first = (await registry.load(guid, 'plugin')).unwrap();
+    const bystander = (await registry.load(other, 'plugin')).unwrap();
+    expect(registry.read(first).unwrap().config).toEqual({ generation: 1 });
     expect((await registry.readPluginDefinition(guid)).unwrap().asset.config).toEqual({
       generation: 1,
     });
     publish(guid, 2);
-    const updated = (await registry.loadByGuid<PluginAsset>(registry.parseGuid(guid))).unwrap();
-    expect(updated.config).toEqual({ generation: 2 });
-    expect(first.config).toEqual({ generation: 1 });
-    expect((await registry.loadByGuid<PluginAsset>(registry.parseGuid(other))).unwrap()).toBe(
-      bystander,
-    );
+    expect(registry.read(first).unwrap().config).toEqual({ generation: 1 });
+    const snapshot = registry.snapshot(first).unwrap();
+    (await registry.reload(first, { conflict: 'reject' })).unwrap();
+    expect(registry.read(first).unwrap().config).toEqual({ generation: 2 });
+    expect(snapshot.read<PluginAsset>(first).unwrap().config).toEqual({ generation: 1 });
+    snapshot.dispose();
+    expect(registry.read(bystander).unwrap().config).toEqual({ generation: 1 });
     expect(fetcher).toHaveBeenCalledTimes(3);
-    expect(registry.packIndexUrl).toBeUndefined();
     rows.splice(
       rows.findIndex((row) => row.guid === guid),
       1,
     );
-    for (const listener of listeners) listener({ added: [], changed: [], removed: [guid] });
-    expect((await registry.loadByGuid<PluginAsset>(registry.parseGuid(guid))).ok).toBe(false);
-    expect(registry.lookup(guid)).toBeUndefined();
-    registry.clearCatalogSource();
+    for (const listener of listeners)
+      listener({
+        scopeId: 'runtime-fixture',
+        generation: 0,
+        added: [],
+        changed: [],
+        removed: [guid],
+      });
+    expect((await registry.reload(first, { conflict: 'reject' })).ok).toBe(false);
+    expect(registry.read(first).unwrap().config).toEqual({ generation: 2 });
+    registry.release(first).unwrap();
+    registry.release(bystander).unwrap();
+    registry.dispose();
     expect(listeners.size).toBe(0);
   });
 });

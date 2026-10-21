@@ -1,5 +1,7 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // transform-hierarchy-pixel-diff.dawn.test.ts -
 // feat-20260531-render-consume-global-transform-hierarchy / M3 / w13.
@@ -19,7 +21,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Follows the fxaa-pixel-diff.dawn.test.ts pattern for canvas mock,
 // device capture, and pixel readback.
 
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
@@ -154,25 +155,25 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
     const device = sharedDevice;
     if (device === undefined) throw new Error('GPUDevice not captured');
 
-    // Single World wires the consume path through renderer.attach so the
-    // child's resolved GlobalTransform.world mat4 is derived each frame. feat-20260614
-    // M8: the material is a per-World column handle minted via allocSharedRef
-    // (AssetRegistry has no handle concept).
+    // Attach the World so the renderer consumes the child's derived world
+    // transform and the managed material handle.
     const world = new World();
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
 
-    const materialHandle = world.allocSharedRef('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-standard-pbr' },
-          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-        },
-      ],
-      values: { baseColor: [0.7, 0.7, 0.7], metallic: 0, roughness: 0.4 },
-    });
+    const materialHandle = testAssets(world)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-standard-pbr' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: { baseColor: [0.7, 0.7, 0.7], metallic: 0, roughness: 0.4 },
+      })
+      .unwrap();
 
     const parent = world
       .spawn(
@@ -184,7 +185,12 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
             scale: [0.4, 0.4, 0.4],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       )
       .unwrap();
@@ -196,7 +202,12 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
           data: { pos: [0, 2.0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
         },
         { component: ChildOf, data: { parent } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       )
       .unwrap();
@@ -207,7 +218,12 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
           component: Transform,
           data: { pos: [1.4, 0, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('sphere').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       )
       .unwrap();

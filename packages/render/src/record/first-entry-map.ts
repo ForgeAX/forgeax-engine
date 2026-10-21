@@ -44,7 +44,3 @@ export class FirstEntryMap<K, V> {
     return this;
   }
 }
-
-export interface EntryLookup<K, V> {
-  get(key: K): V | undefined;
-}

@@ -27,6 +27,7 @@ import { ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -303,21 +304,19 @@ export async function verifyVisibleSurfaceReplay(
     ],
     materialSlots: [{ slotName: 'solid' }, { slotName: 'cutout' }],
   };
-  const solid = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.2, 0.1, 1] }),
-  );
-  const cutout = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.2, 0.1, 0], alphaCutoff: 0.5 }),
-  );
+  const solid = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.6, 0.2, 0.1, 1] }))
+    .unwrap();
+  const cutout = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.6, 0.2, 0.1, 0], alphaCutoff: 0.5 }))
+    .unwrap();
   let entity = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -4] } },
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', mesh),
+          assetHandle: testAssets(world).create(mesh).unwrap(),
         },
       },
       {
@@ -666,7 +665,9 @@ export async function verifyVisibleSurfaceReplay(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(4, 3, 0.1).unwrap()),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(4, 3, 0.1).unwrap())
+              .unwrap(),
           },
         },
         { component: MeshRenderer, data: { materials: [solid] } },
@@ -753,10 +754,9 @@ export async function verifyVisibleSurfaceReplay(
       })
       .unwrap();
     await draw();
-    const editedMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.1, 0.4, 0.7, 1] }),
-    );
+    const editedMaterial = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.1, 0.4, 0.7, 1] }))
+      .unwrap();
     world.set(entity, MeshRenderer, { materials: [editedMaterial, solid] }).unwrap();
     const materialEdited = await snapshot('material-edited');
     expect(materialEdited.motion[3]).toBe(3);
@@ -864,7 +864,7 @@ export async function verifyVisibleSurfaceReplay(
     entity = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, -4] } },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+        { component: MeshFilter, data: { assetHandle: testAssets(world).create(mesh).unwrap() } },
         { component: MeshRenderer, data: { materials: [solid, solid] } },
         {
           component: Instances,

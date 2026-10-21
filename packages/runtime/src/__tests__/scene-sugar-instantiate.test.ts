@@ -1,4 +1,6 @@
 import * as SceneOwner from '@forgeax/engine-scene';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { testAssets } from './helpers/runtime-assets';
 // scene-sugar-instantiate.test - engine.assets.instantiate sugar wrapper
 // runtime equivalence (feat-20260514-scene-as-world-blueprint w30; M3 rewrite
 // from old SceneInstanceId returns to new Entity returns).
@@ -17,20 +19,17 @@ import * as SceneOwner from '@forgeax/engine-scene';
 //       rename, no message rewrite (research §error-model + plan-strategy
 //       §3.3 closed-union transparency).
 
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { SceneInstance } from '@forgeax/engine-render';
 import { ChildOf } from '@forgeax/engine-scene';
-import type { Handle, SceneAsset, SceneEntity } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 import { registerRuntimeComponents } from './helpers/register-runtime-components';
 
 function buildScene(): SceneAsset {
   const Transform = defineComponent('Transform', { pos: 'array<f32, 3>' });
   void Transform;
-  const nodes: SceneEntity[] = [
+  const nodes: (SceneEntity & { key: string })[] = [
     { key: 'entity-0', components: { Transform: { pos: [1, 0, 0] } } },
     { key: 'entity-1', components: { Transform: { pos: [2, 0, 0] } } },
   ];
@@ -40,14 +39,13 @@ function buildScene(): SceneAsset {
   };
 }
 
-function registerSceneAsset(world: World, asset: SceneAsset): Handle<'SceneAsset', 'shared'> {
-  return world.allocSharedRef('SceneAsset', asset);
+function registerSceneAsset(world: World, asset: SceneAsset): AssetHandle<'scene'> {
+  return testAssets(world).create(asset).unwrap();
 }
 
 describe('w30 - engine.assets.instantiate sugar wrapper equivalence (AC-03)', () => {
   it('(a) sugar entry produces the same Entity root / mapping shape as the main entry', () => {
     defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const asset = buildScene();
     // Direct path baseline.
     const worldA = new World();
@@ -67,7 +65,7 @@ describe('w30 - engine.assets.instantiate sugar wrapper equivalence (AC-03)', ()
     const worldB = new World();
     registerRuntimeComponents(worldB);
     const handleB = registerSceneAsset(worldB, asset);
-    const sugarRes = reg.instantiate<SceneAsset>(handleB, worldB);
+    const sugarRes = testAssets(worldB).instantiate(handleB, worldB);
     expect(sugarRes.ok).toBe(true);
     if (!sugarRes.ok) return;
     const sugarRoot: EntityHandle = sugarRes.value;
@@ -85,7 +83,6 @@ describe('w30 - engine.assets.instantiate sugar wrapper equivalence (AC-03)', ()
 
   it('(b) parent? passthrough attaches ChildOf via the sugar entry', () => {
     const Transform = defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const asset = buildScene();
     const world = new World();
     registerRuntimeComponents(world);
@@ -97,7 +94,7 @@ describe('w30 - engine.assets.instantiate sugar wrapper equivalence (AC-03)', ()
     expect(parentSpawn.ok).toBe(true);
     if (!parentSpawn.ok) return;
     const parentEntity: EntityHandle = parentSpawn.value;
-    const sugarRes = reg.instantiate<SceneAsset>(handle, world, parentEntity);
+    const sugarRes = testAssets(world).instantiate(handle, world, parentEntity);
     expect(sugarRes.ok).toBe(true);
     if (!sugarRes.ok) return;
     const sugarRoot: EntityHandle = sugarRes.value;
@@ -114,12 +111,11 @@ describe('w30 - engine.assets.instantiate sugar wrapper equivalence (AC-03)', ()
   });
 
   it('(c) error passthrough: invalid handle -> sugar returns Err verbatim', () => {
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const world = new World();
     registerRuntimeComponents(world);
     // Use a handle that is not a managed ref -> instantiateScene returns Err.
-    const bogusHandle = toShared<'SceneAsset'>(9999);
-    const r = reg.instantiate<SceneAsset>(bogusHandle, world);
+    const bogusHandle = 9999 as AssetHandle<'scene'>;
+    const r = testAssets(world).instantiate(bogusHandle, world);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(typeof r.error).toBe('object');
@@ -168,12 +164,11 @@ function postInstantiateEntity(entity: EntityHandle | number | undefined): Entit
 describe('M5 post-instantiate component injection (w13 / AC-09 + AC-10)', () => {
   it('(d) AC-09: rootEntities() + world.addComponent -> hasComponent is true', () => {
     defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const asset = buildPostScene();
     const world = new World();
     registerRuntimeComponents(world, [Enemy, Waypoint]);
     const handle = registerSceneAsset(world, asset);
-    const r = reg.instantiate<SceneAsset>(handle, world);
+    const r = testAssets(world).instantiate(handle, world);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const root: EntityHandle = r.value;
@@ -199,12 +194,11 @@ describe('M5 post-instantiate component injection (w13 / AC-09 + AC-10)', () => 
 
   it('(e) AC-10: mapping[localId] + world.addComponent -> hasComponent is true', () => {
     defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const asset = buildPostScene();
     const world = new World();
     registerRuntimeComponents(world, [Enemy, Waypoint]);
     const handle = registerSceneAsset(world, asset);
-    const r = reg.instantiate<SceneAsset>(handle, world);
+    const r = testAssets(world).instantiate(handle, world);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const root: EntityHandle = r.value;
@@ -231,16 +225,18 @@ describe('M5 post-instantiate component injection (w13 / AC-09 + AC-10)', () => 
   it('(d-ii) AC-09: addComponent on a second root entity (multi-root scene)', () => {
     // Two root nodes, each gets a different component via query-after.
     defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const multiRoot: SceneEntity[] = [
+    const multiRoot: (SceneEntity & { key: string })[] = [
       { key: 'entity-0', components: { Transform: { pos: [0, 0, 0] } } },
       { key: 'entity-1', components: { Transform: { pos: [10, 0, 0] } } },
     ];
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const world = new World();
     registerRuntimeComponents(world, [Enemy, Waypoint]);
-    const asset: SceneAsset = { kind: 'scene', entities: multiRoot };
+    const asset: SceneAsset = {
+      kind: 'scene',
+      entities: Object.fromEntries(multiRoot.map(({ key, ...node }) => [key, node])),
+    };
     const handle = registerSceneAsset(world, asset);
-    const r = reg.instantiate<SceneAsset>(handle, world);
+    const r = testAssets(world).instantiate(handle, world);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const root: EntityHandle = r.value;
@@ -268,15 +264,17 @@ describe('M5 post-instantiate component injection (w13 / AC-09 + AC-10)', () => 
 
   it('rootEntities snapshot is stable (not a live view)', () => {
     defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const world = new World();
     registerRuntimeComponents(world, [Enemy, Waypoint]);
-    const singleRoot: SceneEntity[] = [
+    const singleRoot: (SceneEntity & { key: string })[] = [
       { key: 'entity-0', components: { Transform: { pos: [0, 0, 0] } } },
     ];
-    const asset: SceneAsset = { kind: 'scene', entities: singleRoot };
+    const asset: SceneAsset = {
+      kind: 'scene',
+      entities: Object.fromEntries(singleRoot.map(({ key, ...node }) => [key, node])),
+    };
     const handle = registerSceneAsset(world, asset);
-    const r = reg.instantiate<SceneAsset>(handle, world);
+    const r = testAssets(world).instantiate(handle, world);
     if (!r.ok) throw new Error(`instantiate failed: ${JSON.stringify(r.error)}`);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -301,12 +299,11 @@ describe('M5 post-instantiate component injection (w13 / AC-09 + AC-10)', () => 
 
   it('mapping identity: mapping[localId] returns the same Entity across calls', () => {
     defineComponent('Transform', { pos: 'array<f32, 3>' });
-    const reg = new AssetRegistry(makeMockShaderRegistry());
     const world = new World();
     registerRuntimeComponents(world);
     const asset = buildPostScene();
     const handle = registerSceneAsset(world, asset);
-    const r = reg.instantiate<SceneAsset>(handle, world);
+    const r = testAssets(world).instantiate(handle, world);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const root: EntityHandle = r.value;

@@ -206,14 +206,14 @@ try {
     removeEventListener() {},
   };
 
-  const [app, ecs, render, scene, runtime, shader, assetsRuntime] = await Promise.all([
+  const [app, ecs, render, scene, runtime, shader, geometry] = await Promise.all([
     import('@forgeax/engine-app'),
     import('@forgeax/engine-ecs'),
     import('@forgeax/engine-render'),
     import('@forgeax/engine-scene'),
     import('@forgeax/engine-runtime/internal/renderer-host'),
     import('@forgeax/engine-vite-plugin-shader'),
-    import('@forgeax/engine-assets-runtime'),
+    import('@forgeax/engine-geometry'),
   ]);
   atlasCapacity = render.SHADOW_ATLAS_DEFAULT_LAYERS;
   const manifest = await shader.buildEngineShaderManifest({ pointShadows: true });
@@ -235,21 +235,20 @@ try {
   assert.equal(overBudgetAdmission?.ok, false, 'over-budget admission must be structured');
   missingCapabilityAdmission = app.admitPointShadowBudget(1, 'storageBuffer');
   assert.equal(missingCapabilityAdmission.ok, false, 'missing capability must be structured');
-  const world = new ecs.World();
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    render.Materials.standard({
+  const assets = constructed.value.assets;
+  const world = new ecs.World({assets});
+  const cube = assets.create(geometry.createPrimitiveMesh('cube').unwrap()).unwrap();
+  const material = world.assets.create(render.Materials.standard({
       baseColor: [0.82, 0.36, 0.08, 1],
       metallic: 0,
       roughness: 0.45,
-    }),
-  );
+    })).unwrap();
 
   // The cube is the caster and the flattened cube is the receiver. Their
   // material's built-in shadow-caster pass is part of the production recipe.
   world.spawn(
     { component: scene.Transform, data: { pos: [0, 0, 0], scale: [1.25, 1.25, 1.25] } },
-    { component: render.MeshFilter, data: { assetHandle: assetsRuntime.HANDLE_CUBE } },
+    { component: render.MeshFilter, data: { assetHandle: cube } },
     { component: render.MeshRenderer, data: { materials: [material] } },
   );
   world.spawn({
@@ -265,7 +264,7 @@ try {
   });
   world.spawn(
     { component: scene.Transform, data: { pos: [0, -1.7, 0], scale: [3.5, 0.15, 3.5] } },
-    { component: render.MeshFilter, data: { assetHandle: assetsRuntime.HANDLE_CUBE } },
+    { component: render.MeshFilter, data: { assetHandle: cube } },
     { component: render.MeshRenderer, data: { materials: [material] } },
   );
   world.spawn(
@@ -343,23 +342,22 @@ try {
   shadowSurface = await readSurface(sharedDevice, renderTarget);
   assert.ok(shadowSurface.nonZeroPixels > 0, 'point-shadow recipe must produce non-black output');
 
-  const noShadowWorld = new ecs.World();
-  const noShadowMaterial = noShadowWorld.allocSharedRef(
-    'MaterialAsset',
-    render.Materials.standard({
+  const noShadowAssets = await runtime.createPublicationAssets({ shaderManifestUrl: manifestUrl });
+  const noShadowWorld = new ecs.World({assets:noShadowAssets});
+  const noShadowCube = noShadowAssets.create(geometry.createPrimitiveMesh('cube').unwrap()).unwrap();
+  const noShadowMaterial = noShadowWorld.assets.create(render.Materials.standard({
       baseColor: [0.82, 0.36, 0.08, 1],
       metallic: 0,
       roughness: 0.45,
-    }),
-  );
+    })).unwrap();
   noShadowWorld.spawn(
     { component: scene.Transform, data: { pos: [0, 0, 0], scale: [1.25, 1.25, 1.25] } },
-    { component: render.MeshFilter, data: { assetHandle: assetsRuntime.HANDLE_CUBE } },
+    { component: render.MeshFilter, data: { assetHandle: noShadowCube } },
     { component: render.MeshRenderer, data: { materials: [noShadowMaterial] } },
   );
   noShadowWorld.spawn(
     { component: scene.Transform, data: { pos: [0, -1.7, 0], scale: [3.5, 0.15, 3.5] } },
-    { component: render.MeshFilter, data: { assetHandle: assetsRuntime.HANDLE_CUBE } },
+    { component: render.MeshFilter, data: { assetHandle: noShadowCube } },
     { component: render.MeshRenderer, data: { materials: [noShadowMaterial] } },
   );
   noShadowWorld.spawn(

@@ -1,8 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials } from '@forgeax/engine/render';
 import { TransparentSort } from '@forgeax/engine/render/authoring';
 import { RenderQueue } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage } from '../../lab/stage';
+import { material, spawnMesh, spawnStage } from '../../lab/stage';
 
 const BLEND = {
   depthWriteEnabled: false,
@@ -21,6 +23,12 @@ export default defineFeature({
   expect:
     'ON (distance): the near red panel is blended over the far blue one. OFF (layer-z, which sorts by world z instead): the far blue panel wrongly draws over red.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [6, 1.2, 0], target: [0, 1.2, 0] });
     const panel = (rgba: readonly [number, number, number, number]) =>
       material(
@@ -30,11 +38,11 @@ export default defineFeature({
           renderState: BLEND,
         }),
       );
-    spawnMesh(world, MESH.cube, panel([1, 0.1, 0.1, 0.85]), {
+    spawnMesh(world, stageCube, panel([1, 0.1, 0.1, 0.85]), {
       pos: [1, 1.2, -0.4],
       scale: [0.05, 2, 2],
     });
-    spawnMesh(world, MESH.cube, panel([0.1, 0.3, 1, 0.85]), {
+    spawnMesh(world, stageCube, panel([0.1, 0.3, 1, 0.85]), {
       pos: [-1, 1.2, 0.4],
       scale: [0.05, 2, 2],
     });

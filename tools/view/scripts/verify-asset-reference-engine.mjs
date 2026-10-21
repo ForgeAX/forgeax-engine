@@ -1,4 +1,4 @@
-/** Production View resident service against an actual Scene App and runtime Pack owner. */
+/** Production frontend adapter and navigation against actual Engine inspection. */
 import assert from 'node:assert/strict';
 import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,13 +6,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startViewLiveIntegration } from './workspace-fixture.mjs';
+import { createAssetReferenceSession } from '../packages/view-plugin-asset-references/src/session.ts';
 
 const suppliedProject = process.env.FORGEAX_REFERENCE_PROJECT;
 const root = suppliedProject ? resolve(suppliedProject) : await mkdtemp(join(tmpdir(), 'view-asset-reference-engine-'));
 const view = resolve(import.meta.dirname, '..');
 const engine = dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json')));
 const output = process.env.FORGEAX_EVIDENCE_DIR ?? '/tmp/view-asset-reference-engine';
-let browser, page, live;
+let browser, page, live, referencesSession;
 const errors = [];
 try {
   await mkdir(output, { recursive: true });
@@ -34,27 +35,28 @@ try {
   page.on('console', message => { if (message.type() === 'error') console.error(message.text()); });
   live = await startViewLiveIntegration({ page, projectRoot: root });
   const workspace = live.pageWorkspace;
-  await page.waitForFunction(() => ['ready', 'failed'].includes(globalThis.assetReferenceProof?.getState().phase), undefined, { timeout: 90000 });
-  const initial = await page.evaluate(() => globalThis.assetReferenceProof.getState());
+  const client = { subscribe: listener => workspace.subscribe(listener), call: (...args) => workspace.invoke(...args) };
+  referencesSession = createAssetReferenceSession({ client });
+  const initial = referencesSession.getState();
   assert.equal(initial.phase, 'ready', JSON.stringify(initial));
   const state = workspace.snapshot();
   const scene = state.assets.find(asset => asset.kind === 'scene' && (!process.env.FORGEAX_REFERENCE_SCENE || asset.sourceKey === process.env.FORGEAX_REFERENCE_SCENE));
   assert(scene, 'The requested scene must be in the project Catalog');
-  await workspace.openAsset({ projectId: state.project.id, guid: scene.guid });
+  if (workspace.snapshot().scenePreview?.asset?.guid !== scene.guid)
+    await workspace.openAsset({ projectId: state.project.id, guid: scene.guid });
   const target = workspace.snapshot().scenePreview.target;
   const scope = { projectId: state.project.id, targetId: target.targetId, targetGeneration: target.generation };
   const tree = await workspace.getSceneTree(scope);
   const mesh = tree.nodes.find(node => node.name === (process.env.FORGEAX_REFERENCE_ENTITY ?? 'Inspector proof mesh'))
     ?? tree.nodes.find(node => node.componentNames.includes('MeshFilter'));
   assert(mesh);
-  await page.waitForFunction(() => globalThis.assetReferenceProof.getState().phase === 'ready', undefined, { timeout: 90000 });
-  const references = await page.evaluate(id => globalThis.assetReferenceProof.query(id), mesh.entityId);
+  const references = await referencesSession.query(mesh.entityId);
   assert.equal(references.references.find(ref => ref.key === 'MeshFilter.assetHandle')?.status, 'resolved');
   if (!suppliedProject) assert.equal(references.references.filter(ref => ref.origin === 'mesh-default' && ref.guid).length, 2);
-  const current = await page.evaluate(() => globalThis.assetReferenceProof.getState());
+  const current = referencesSession.getState();
   const additionalReferences = [];
   for (const node of tree.nodes.filter(node => node.componentNames.some(name => ['SceneInstance', 'Skylight', 'SkyboxBackground', 'Skin'].includes(name))).slice(0, 8)) {
-    const value = await page.evaluate(id => globalThis.assetReferenceProof.query(id), node.entityId);
+    const value = await referencesSession.query(node.entityId);
     additionalReferences.push({ name: node.name, references: value.references });
   }
   assert(additionalReferences.some(entry => entry.references.some(ref => ref.component === 'SceneInstance' && ref.status === 'resolved')));
@@ -86,13 +88,16 @@ try {
   await page.locator(`[data-cb-guid="${meshGuid}"][aria-selected="true"]`).waitFor();
   await page.keyboard.press('Escape');
   await page.screenshot({ path: join(output, 'asset-reference-card.png') });
+  await body.locator('.insp-header').click();
   await meshField.getByTestId('asset-reference-open').click();
   const asset = workspace.snapshot().assets.find(asset => asset.guid === meshGuid);
   const assetName = asset.name ?? asset.sourceKey?.split('/').at(-1);
   await page.getByRole('tab').filter({ hasText: assetName }).waitFor();
   assert.equal(await page.getByRole('tab').filter({ hasText: assetName }).count(), 1);
-  const meshPreview = workspace.snapshot().previews.find(preview => preview.asset?.guid === meshGuid);
+  await page.getByTestId('panel-mesh-preview').locator('canvas[data-forgeax-asset-preview]').waitFor({ state: 'visible' });
+  const meshPreview = workspace.snapshot().openRequest?.preview;
   assert(meshPreview);
+  assert.equal(meshPreview.asset.guid, meshGuid);
   const capture = await workspace.capture({ projectId: state.project.id, targetId: meshPreview.target.targetId, targetGeneration: meshPreview.target.generation });
   assert.equal(capture.errors?.length ?? 0, 0);
   await writeFile(join(output, 'mesh-preview-pixels.png'), Buffer.from(capture.png.split(',')[1], 'base64'));
@@ -112,31 +117,31 @@ try {
     await page.keyboard.press('Escape');
     await body.locator('.insp-header').click();
     await materialField.getByTestId('asset-reference-open').click();
-    await page.waitForFunction(guid => document.querySelector('[data-testid="panel-material-properties"]') &&
-      globalThis.assetReferenceProof.getState().phase === 'ready', material.guid);
+    await page.getByTestId('panel-material-properties').waitFor();
     assert.equal(workspace.snapshot().openRequest.asset.guid, material.guid);
     await page.screenshot({ path: join(output, 'material-asset-viewer.png') });
   }
-  assert.equal((await page.evaluate(() => globalThis.assetReferenceProof.getState())).packageId, current.packageId);
+  assert.deepEqual(referencesSession.getState().scope, current.scope);
   const fallback = workspace.snapshot().assets.find(asset => ['skeleton', 'animation-clip', 'font', 'audio'].includes(asset.kind));
   if (fallback) {
     const count = workspace.snapshot().previews.length;
-    await page.evaluate(guid => globalThis.assetReferenceProof.open(guid), fallback.guid);
+    await workspace.openAsset({ projectId: state.project.id, guid: fallback.guid, detailsOnly: true });
     await page.getByTestId('panel-asset-properties').waitFor();
     assert.equal(workspace.snapshot().openRequest.detailsOnly, true);
     assert.equal(workspace.snapshot().previews.length, count);
     await page.screenshot({ path: join(output, 'generic-asset-details.png') });
   }
   const installations = await workspace.invoke('runtime-pack.plugin-inspect', { ...scope, worldId: target.worldId });
-  const installed = installations.plugins.find(plugin => plugin.name === 'forgeax:view-asset-reference-query');
-  assert(installed, JSON.stringify(installations));
-  await workspace.invoke('runtime-pack.plugin-dispose', { ...scope, worldId: target.worldId, uid: installed.uid });
-  await page.waitForFunction(() => globalThis.assetReferenceProof.getState().phase === 'unavailable');
-  await page.evaluate(id => globalThis.assetReferenceProof.query(id), mesh.entityId);
-  assert.equal((await page.evaluate(() => globalThis.assetReferenceProof.getState())).phase, 'ready');
+  assert(!installations.plugins.some(plugin => plugin.name === 'forgeax:view-asset-reference-query'), JSON.stringify(installations));
+  referencesSession.dispose();
+  const withoutConsumer = await workspace.invoke('entity.inspect', { ...scope, entityId: mesh.entityId });
+  assert.deepEqual(withoutConsumer.assetReferences.references, references.references.map(({ primary, ...reference }) => reference));
+  referencesSession = createAssetReferenceSession({ client });
+  await referencesSession.query(mesh.entityId);
+  assert.equal(referencesSession.getState().phase, 'ready');
   await page.screenshot({ path: join(output, 'resident-service.png') });
   const result = { passed: true, beforeScene: initial.phase, afterScene: current.phase, references,
-    additionalReferences, nativeProviderRevoked: true, nativeProviderRestored: true, nameDoesNotNavigate: true,
+    additionalReferences, legacyQueryPluginAbsent: true, nativeWithoutConsumer: true, consumerRestored: true, nameDoesNotNavigate: true,
     fieldBrowse: true, contextBrowse: true, fieldOpen: true, reopenRetainsPreviewCount: true,
     materialFieldNavigation: Boolean(material), genericFallback: Boolean(fallback), errors };
   await writeFile(join(output, 'result.json'), JSON.stringify(result, null, 2));
@@ -144,9 +149,10 @@ try {
 } catch (error) {
   await page?.screenshot({ path: join(output, 'failure.png') }).catch(() => {});
   await writeFile(join(output, 'failure.json'), JSON.stringify({ message: error.message, errors,
-    service: await page?.evaluate(() => globalThis.assetReferenceProof?.getState()).catch(() => undefined) }, null, 2));
+    service: referencesSession?.getState() }, null, 2));
   throw error;
 } finally {
+  referencesSession?.dispose();
   await live?.dispose().catch(error => console.error('proof cleanup', error));
   await browser?.close();
   if (!suppliedProject) await rm(root, { recursive: true, force: true });

@@ -350,7 +350,7 @@ const GPU_DRIVEN_COUNTERS = [
   'preparedBatchBuilds',
   'filteredBatchBuilds',
   'sceneTableUploadBytes',
-  'candidateUploadBytes',
+  'sharedInputUploadBytes',
   'batchUploadBytes',
   'paletteUploadBytes',
   'shadowCasterFlips',

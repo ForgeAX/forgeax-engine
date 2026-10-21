@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from '@forgeax/engine-ecs';
 import { halfFloat } from '@forgeax/engine-math';
+import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import {
   Camera,
   DynamicResolution,
@@ -12,7 +13,7 @@ import {
   PointLight,
   type Renderer,
 } from '@forgeax/engine-render';
-import type { DeviceLostInfo } from '@forgeax/engine-rhi';
+import type { RhiDevice } from '@forgeax/engine-rhi';
 import { attachRecorder, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import * as captureWebgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -26,13 +27,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { renderValue } from './standard-gbuffer-replay.fixture';
 import {
   assertMaterialPayload,
   assertSurfacePixelFalsification,
   createSurfaceDynamicInput,
   createSurfaceWaterInstanceTransforms,
+  loadSurfaceMaterial,
   parseSurfaceGuid,
   populateSurfaceWorld,
+  runSurfaceManagedMediumOracle,
   runSurfaceMsaaEdgeOracle,
   runSurfaceOpticalOracle,
   SURFACE_CASES,
@@ -202,7 +206,7 @@ function createDawnCanvas(onDevice: (device: GPUDevice) => void): DawnCanvas {
         configure(descriptor: { device: GPUDevice; format?: GPUTextureFormat }) {
           if (configured !== undefined && configured.device !== descriptor.device) {
             canvas.target?.destroy();
-            canvas.target = undefined;
+            delete canvas.target;
             targetSize = { width: 0, height: 0 };
           }
           onDevice(descriptor.device);
@@ -273,7 +277,7 @@ function samplePresentedRoi(
     for (let x = centerX - ROI_RADIUS; x < centerX + ROI_RADIUS; x += 1) {
       const offset = y * BYTES_PER_ROW + x * 4;
       for (let channel = 0; channel < 4; channel += 1) {
-        sum[channel] += pixels[offset + channel] ?? 0;
+        sum[channel] = (sum[channel] ?? 0) + (pixels[offset + channel] ?? 0);
       }
       count += 1;
     }
@@ -413,7 +417,7 @@ describe('Standard Surface runtime Dawn publication', () => {
         return encoder;
       };
     });
-    let injectDeviceLoss: ((info: DeviceLostInfo) => void) | undefined;
+    let injectDeviceLoss: ((info: Awaited<RhiDevice['lost']>) => void) | undefined;
     const captureRoot = process.env.FORGEAX_SURFACE_RHI_CAPTURE_DIR;
     if (captureRoot !== undefined) recorder = attachRecorder(captureWebgpu).unwrap();
     const constructed = await constructRuntimeRendererHost(
@@ -424,7 +428,7 @@ describe('Standard Surface runtime Dawn publication', () => {
           deviceLost: (device) => {
             return Promise.race([
               device.lost,
-              new Promise<DeviceLostInfo>((resolveLost) => {
+              new Promise<Awaited<RhiDevice['lost']>>((resolveLost) => {
                 injectDeviceLoss = resolveLost;
               }),
             ]).then((info) => {
@@ -450,15 +454,9 @@ describe('Standard Surface runtime Dawn publication', () => {
     });
     const assets = constructed.value.assets;
     assets.configureRuntimeBinding(liveBinding);
-    const catalogDeadline = Date.now() + 180_000;
-    while (!(await assets.refreshCatalog())) {
-      if (Date.now() >= catalogDeadline) {
-        throw new Error(
-          `surface-standard: timed out waiting for catalog ${liveBinding.catalogUrl}`,
-        );
-      }
-      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 100));
-    }
+    await Promise.all(
+      SURFACE_CASES.map(async ({ guid }) => (await assets.load(guid, 'material')).unwrap()),
+    );
     const catalog = assets.listCatalog();
     const materials: MaterialAsset[] = [];
     const publications = [];
@@ -468,13 +466,16 @@ describe('Standard Surface runtime Dawn publication', () => {
       expect(row?.packageUrl).toMatch(/^http/);
       const publicationResponse = await fetch(row?.packageUrl ?? '');
       expect(publicationResponse.ok).toBe(true);
-      const publication = (await publicationResponse.json()) as {
+      const decoded = decodeMaterialProgramWire(await publicationResponse.json());
+      expect(decoded.ok).toBe(true);
+      if (!decoded.ok) throw new Error(decoded.error.expected);
+      const publication = decoded.value as {
         generation?: unknown;
         digest?: unknown;
       };
       expect(Number.isSafeInteger(publication.generation)).toBe(true);
       expect(typeof publication.digest).toBe('string');
-      const loaded = await assets.loadByGuid<MaterialAsset>(parseSurfaceGuid(surfaceCase.guid));
+      const loaded = await loadSurfaceMaterial(assets, parseSurfaceGuid(surfaceCase.guid));
       expect(loaded.ok, loaded.ok ? '' : describeStructuredError(loaded.error)).toBe(true);
       if (!loaded.ok) throw new Error(describeStructuredError(loaded.error));
       const material = assertMaterialPayload(surfaceCase, loaded.value);
@@ -534,7 +535,13 @@ describe('Standard Surface runtime Dawn publication', () => {
         ...msaaEdgeEvidence,
       }),
     );
-    const world = new World();
+    const managedMedium = await runSurfaceManagedMediumOracle(renderer, assets);
+    expect(managedMedium).toHaveLength(4);
+    // biome-ignore lint/suspicious/noConsole: native pixel falsifiers are gate evidence.
+    console.log(
+      JSON.stringify({ kind: 'managed-medium', backend: 'dawn', records: managedMedium }),
+    );
+    const world = new World({ assets });
     const { mediumMembers, probeDomains, cameraEntity } = populateSurfaceWorld(
       world,
       materials,
@@ -627,6 +634,10 @@ describe('Standard Surface runtime Dawn publication', () => {
           frame < SURFACE_TIMELINE.swapProbes ? 1 : frame < SURFACE_TIMELINE.stopped ? 2 : 3,
         frameTime,
       });
+      const finalCapture =
+        frame === SURFACE_TIMELINE.totalFrames - 1 ? recorder?.captureFrame() : undefined;
+      if (finalCapture !== undefined && recorder !== undefined)
+        (await recorder.frameBoundary()).unwrap();
       world.update(1 / 60).unwrap();
       const receipt = await drawReadyFrame(renderer, {
         leases: [attached.value],
@@ -638,6 +649,28 @@ describe('Standard Surface runtime Dawn publication', () => {
           ? { geometryLane: 'direct' as const }
           : {}),
       });
+      if (finalCapture !== undefined && recorder !== undefined && captureRoot !== undefined) {
+        (await recorder.frameBoundary()).unwrap();
+        const tape = (await finalCapture).unwrap();
+        mkdirSync(captureRoot, { recursive: true });
+        writeFileSync(resolve(captureRoot, 'lifecycle-final.rhitape'), tape.bytes);
+        writeFileSync(
+          resolve(captureRoot, 'lifecycle-final.json'),
+          JSON.stringify(
+            {
+              channels: renderer.inspect().renderScene.gpuDriven.channels,
+              materials: materials.map(({ passes, parameters, surface, values }) => ({
+                passes,
+                parameters,
+                surface,
+                values,
+              })),
+            },
+            null,
+            2,
+          ),
+        );
+      }
       completedFrames += 1;
       const evidenceFrames = [
         SURFACE_TIMELINE.direct,
@@ -923,7 +956,9 @@ describe('Standard Surface runtime Dawn publication', () => {
         }
         expect(
           Math.max(
-            ...directRoi.slice(0, 3).map((value, channel) => Math.abs(value - gpuRoi[channel])),
+            ...directRoi
+              .slice(0, 3)
+              .map((value, channel) => Math.abs(value - (gpuRoi[channel] ?? Number.NaN))),
           ) / 255,
           `surface-standard: water ${index} coldDirect=${JSON.stringify(directRoi)} gpu=${JSON.stringify(gpuRoi)}`,
         ).toBeLessThanOrEqual(SURFACE_PIXEL_EPSILON);
@@ -931,7 +966,7 @@ describe('Standard Surface runtime Dawn publication', () => {
           Math.max(
             ...switchedDirectRoi
               .slice(0, 3)
-              .map((value, channel) => Math.abs(value - gpuRoi[channel])),
+              .map((value, channel) => Math.abs(value - (gpuRoi[channel] ?? Number.NaN))),
           ) / 255,
           `surface-standard: water ${index} switchedDirect=${JSON.stringify(switchedDirectRoi)} gpu=${JSON.stringify(gpuRoi)}`,
         ).toBeLessThanOrEqual(SURFACE_PIXEL_EPSILON);
@@ -944,7 +979,9 @@ describe('Standard Surface runtime Dawn publication', () => {
     }
     expect(
       Math.max(
-        ...activeRoi.slice(0, 3).map((value, index) => Math.abs(value - stoppedRoi[index])),
+        ...activeRoi
+          .slice(0, 3)
+          .map((value, index) => Math.abs(value - (stoppedRoi[index] ?? Number.NaN))),
       ) / 255,
     ).toBeGreaterThan(SURFACE_PIXEL_EPSILON);
     // biome-ignore lint/suspicious/noConsole: fixed-ROI lifecycle values are the physical evidence artifact.
@@ -969,7 +1006,10 @@ describe('Standard Surface runtime Dawn publication', () => {
       (channel) => channel.viewPass === 'main' || channel.viewPass === 'directional-shadow',
     );
     expect(gpuChannels.length).toBeGreaterThan(0);
-    expect(gpuChannels.every((channel) => channel.lane === 'gpu')).toBe(true);
+    expect(
+      gpuChannels.every((channel) => channel.lane === 'gpu'),
+      JSON.stringify(gpuChannels),
+    ).toBe(true);
     expect(gpuChannels.every((channel) => channel.residualDrawCount === 0)).toBe(true);
     const probeRecords = observed.renderScene.probeBlend?.records.filter(
       (record) => record.accepted,
@@ -1126,7 +1166,7 @@ describe('Standard Surface runtime Dawn publication', () => {
           })
           .unwrap();
       }
-      renderer.setProfile({ ...originalProfile, renderPath, ssao }).unwrap();
+      renderValue(renderer.setProfile({ ...originalProfile, renderPath, ssao }));
       world.set(cameraEntity, Camera, { antialias, bloom }).unwrap();
       for (let frame = 0; frame < 6; frame++) {
         const capture =
@@ -1343,7 +1383,7 @@ describe('Standard Surface runtime Dawn publication', () => {
     renderer.setSurfaceDynamicInput(undefined);
     rendererErrors.length = 0;
     world.despawn(point).unwrap();
-    renderer.setProfile(originalProfile).unwrap();
+    renderValue(renderer.setProfile(originalProfile));
     expect(rendererErrors).toEqual([]);
     expect(nativeErrors, 'Surface pipelines must pass native GPU validation').toEqual([]);
     // biome-ignore lint/suspicious/noConsole: runtime provenance is the test artifact.

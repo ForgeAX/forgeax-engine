@@ -43,6 +43,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 const REQUESTED_FRAMES = smokeFrameBudget();
 // GPU performance sampling has its own fixed window, independent of fleet soak.
@@ -323,10 +327,7 @@ const {
   TONEMAP_REINHARD_EXTENDED,
 } = renderPkg;
 const { Transform } = scenePkg;
-const {
-  HANDLE_CUBE,
-  HANDLE_SPHERE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..', '..', '..');
@@ -355,12 +356,14 @@ console.log(`[hello-bloom] backend=${app.renderer.inspect().capabilities.backend
 
 // Register standard PBR material (non-emissive).
 const assets = app.assets;
-if (assets === null) {
+if (assets === undefined) {
   originalConsoleError('[smoke] FAIL - AssetRegistry is null');
   process.exit(1);
 }
 
-const matHandle = app.world.allocSharedRef('MaterialAsset', {
+const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
+const sphereMesh = assets.create(BUILTIN_SPHERE).unwrap();
+const matHandle = assets.create({
   kind: 'material',
   passes: [
     {
@@ -374,10 +377,10 @@ const matHandle = app.world.allocSharedRef('MaterialAsset', {
     metallic: 0.0,
     roughness: 0.4,
   },
-});
+}).unwrap();
 
 // Mint emissive material (emissiveIntensity > 1.0 feeds bloom).
-const emissiveHandle = app.world.allocSharedRef('MaterialAsset', {
+const emissiveHandle = assets.create({
   kind: 'material',
   passes: [
     {
@@ -393,7 +396,7 @@ const emissiveHandle = app.world.allocSharedRef('MaterialAsset', {
     emissive: FALSIFY_BLOOM ? [0.0, 0.0, 0.0] : [1.0, 0.7, 0.3],
     emissiveIntensity: FALSIFY_BLOOM ? 0.0 : 2.0,
   },
-});
+}).unwrap();
 
 // Spawn emissive sphere (left) and non-emissive cube (right).
 app.world.spawn(
@@ -401,7 +404,7 @@ app.world.spawn(
     component: Transform,
     data: { pos: [-0.6, 0.2, 0], quat: [0, 0, 0, 1], scale: [0.6, 0.6, 0.6]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: sphereMesh } },
   { component: MeshRenderer, data: { materials: [emissiveHandle] } },
 );
 
@@ -410,7 +413,7 @@ app.world.spawn(
     component: Transform,
     data: { pos: [0.6, 0, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: cubeMesh } },
   { component: MeshRenderer, data: { materials: [matHandle] } },
 );
 

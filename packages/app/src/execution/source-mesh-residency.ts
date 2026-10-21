@@ -242,6 +242,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
             source: session.source,
             epoch: session.epoch,
             meshHandle: input.meshHandle,
+            revision: input.assetRevision,
             mesh: input.mesh,
             ...(input.pipelinePreparation === undefined
               ? {}

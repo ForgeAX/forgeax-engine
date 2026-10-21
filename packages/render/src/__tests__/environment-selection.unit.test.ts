@@ -40,13 +40,11 @@ function selection(
   environments: readonly EnvironmentCandidate[],
   fogs: readonly FogCandidate[] = [],
   suns: readonly ReturnType<typeof sun>[] = [],
-  lane: 'direct' | 'clustered' = 'direct',
 ) {
   return selectEnvironment({
     environments,
     fogs,
     suns,
-    lane,
   });
 }
 
@@ -69,7 +67,7 @@ describe('Environment and Fog selection (M2)', () => {
     expect(forward.ok).toBe(false);
     expect(reverse.ok).toBe(false);
     if (forward.ok || reverse.ok) return;
-    expect(forward.error.code).toBe('environment-source-conflict');
+    if (forward.error.code !== 'environment-source-conflict') throw forward.error;
     expect(forward.error.expected).toContain('exactly one');
     expect(forward.error.hint).toContain('one');
     expect(forward.error.detail).toEqual(reverse.error.detail);
@@ -210,18 +208,14 @@ describe('Environment and Fog selection (M2)', () => {
     expect(baseline.value.signature).toContain('absorptionHalfWidth');
   });
 
-  it('keeps Fog orthogonal and produces identical direct/clustered frame facts', () => {
+  it('keeps Fog orthogonal to the selected Environment', () => {
     const environments = [atmosphere(3, 'sky-a')] as const;
     const fogs = [fog(8)] as const;
     const suns = [sun(4)] as const;
-    const direct = selection(environments, fogs, suns, 'direct');
-    const clustered = selection(environments, fogs, suns, 'clustered');
-    expect(direct.ok).toBe(true);
-    expect(clustered.ok).toBe(true);
-    if (!direct.ok || !clustered.ok) return;
-    expect(direct.value).toEqual(clustered.value);
-    expect(direct.value.fog).toEqual(fogs[0]);
-    expect(direct.value.signature).toBe(clustered.value.signature);
+    const selected = selection(environments, fogs, suns);
+    expect(selected.ok).toBe(true);
+    if (!selected.ok) return;
+    expect(selected.value.fog).toEqual(fogs[0]);
   });
 
   it('derives independent Environment and Fog reset signatures', () => {

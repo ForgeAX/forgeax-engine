@@ -90,7 +90,16 @@ it.skipIf(process.env.TAA_MATURITY !== 'motion')(
                   .unwrap();
               }
             }
+            const movingCapture =
+              scale === 0.5 && scenario === 'translate' && f === 60
+                ? recorder.captureFrame()
+                : undefined;
+            if (movingCapture) (await recorder.frameBoundary()).unwrap();
             const image = await current.pixels();
+            if (movingCapture) {
+              (await recorder.frameBoundary()).unwrap();
+              save('motion-moving.rhitape', (await movingCapture).unwrap().bytes);
+            }
             if ([8, 32, 60].includes(f)) {
               const truth = downsample(await reference.hdr(), WIDTH, HEIGHT);
               const control = await alias.pixels();

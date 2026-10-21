@@ -76,7 +76,7 @@ function plan(kind: 'owned' | 'mutable' | 'camera' | 'force-fields' | 'events' |
     parameterBlock: new Uint8Array(kind === 'parameters' ? 16 : 0),
   };
   const api = {
-    program: vi.fn(),
+    program: vi.fn((..._arguments: readonly unknown[]) => {}),
     retain: vi.fn(() => false),
     admit: vi.fn(() => ({})),
     upload: vi.fn(),
@@ -93,37 +93,38 @@ function plan(kind: 'owned' | 'mutable' | 'camera' | 'force-fields' | 'events' |
     nativePlanning: true,
     retainedResources: true,
   });
-  const result = feature.plan(
-    {
-      frameNumber: 1,
-      worlds: [
-        {
-          sourceWorldIndex: 0,
-          worldId: 0,
-          runtimeId: 0,
-          renderGeneration: 0,
-          camera,
-          views: [{ identity: 'main', camera }],
-          intents: [intent],
-          retained: [],
-          materials: new Map(),
-          meshes: new Map(),
-          emitterState: new Map([
-            ['1:stock', { enabled: true, localToWorld: matrix, player: 1, emitter: reference }],
-          ]),
-        },
-      ],
-    } as never,
-    {
-      views: [{ identity: 'main', render: true, targets: [], frame: { frameNumber: 1 } }],
-      generation: 0,
-      frame: { frameNumber: 1 },
-      caps: {},
-      resolveAsset: () => ok(owned),
-      createNativePlan,
-    } as never,
-  );
-  return { result, api, createNativePlan };
+  const execute = () =>
+    feature.plan(
+      {
+        frameNumber: 1,
+        worlds: [
+          {
+            sourceWorldIndex: 0,
+            worldId: 0,
+            runtimeId: 0,
+            renderGeneration: 0,
+            camera,
+            views: [{ identity: 'main', camera }],
+            intents: [intent],
+            retained: [],
+            materials: new Map(),
+            meshes: new Map(),
+            emitterState: new Map([
+              ['1:stock', { enabled: true, localToWorld: matrix, player: 1, emitter: reference }],
+            ]),
+          },
+        ],
+      } as never,
+      {
+        views: [{ identity: 'main', render: true, targets: [], frame: { frameNumber: 1 } }],
+        generation: 0,
+        frame: { frameNumber: 1 },
+        caps: {},
+        resolveAsset: () => ok(owned),
+        createNativePlan,
+      } as never,
+    );
+  return { result: execute(), api, createNativePlan, emitter, execute };
 }
 
 it('admits the owned stock resource domain before declarations', () => {
@@ -134,8 +135,28 @@ it('admits the owned stock resource domain before declarations', () => {
   expect(f.api.upload).toHaveBeenCalledTimes(2);
 });
 
+it('owns a mutable emitter once before native admission and ignores later external mutation', () => {
+  const f = plan('mutable');
+  expect(f.result.ok).toBe(true);
+  expect(f.createNativePlan).toHaveBeenCalledOnce();
+  expect(f.api.admit).toHaveBeenCalledOnce();
+  const program = f.api.program.mock.calls[0]?.[2];
+  expect(program).toMatchObject({
+    wgsl: 'synthetic',
+    entryPoints: ['forgeax_vfx_spawn_main', 'forgeax_vfx_update_compact_main'],
+  });
+  expect(Object.isFrozen(f.emitter)).toBe(false);
+  f.emitter.wgsl = 'externally changed';
+  f.emitter.reflection.entryPoints.push('externally_added_entry');
+  expect(f.execute().ok).toBe(true);
+  expect(f.api.program.mock.calls.at(-1)?.[2]).toBe(program);
+  expect(program).toMatchObject({
+    wgsl: 'synthetic',
+    entryPoints: ['forgeax_vfx_spawn_main', 'forgeax_vfx_update_compact_main'],
+  });
+});
+
 it.each([
-  'mutable',
   'camera',
   'force-fields',
 ] as const)('keeps %s effects on the original declaration owner', (kind) => {

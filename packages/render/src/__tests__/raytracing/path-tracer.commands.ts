@@ -36,7 +36,10 @@ export async function prepareRayPathFixture() {
   const { materials, ...programs } = await readPreparedRayPathFixture();
   return structuredClone({
     ...programs,
-    materials: materials.map(({ cookedPublication: _publication, ...material }) => material),
+    materials: materials.map((material) => ({
+      ...material,
+      cookedPublication: material.name === 'emission' ? material.cookedPublication : undefined,
+    })),
   });
 }
 
@@ -87,7 +90,10 @@ function cutoutRayMaterial() {
     roughness: 0.65,
     specular: 0,
     alphaCutoff: 0.5,
-    baseColorTexture: { texture: 'coverage', sampler: 'nearest' },
+    baseColorTexture: {
+      texture: '00000000-0000-7000-8000-000000000711',
+      sampler: '00000000-0000-7000-8000-000000000712',
+    },
   });
 }
 

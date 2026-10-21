@@ -21,7 +21,6 @@ import {
   SpriteAnimation,
   SpriteInstances,
   SpriteRegionOverride,
-  TileLayer,
   Tilemap,
 } from '@forgeax/engine-render/authoring';
 import {
@@ -55,7 +54,6 @@ const RUNTIME_COMPONENTS: readonly Component[] = [
   SpriteAnimation,
   SpriteInstances,
   SpriteRegionOverride,
-  TileLayer,
   Tilemap,
   Transform,
   GlobalTransform,

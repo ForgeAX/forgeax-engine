@@ -2,7 +2,7 @@ import type { World } from '@forgeax/engine-ecs';
 import { box3, type Mat4Like, mat4 } from '@forgeax/engine-math';
 import { skinVertexPosition } from '@forgeax/engine-skinning';
 import type { MeshAsset } from '@forgeax/engine-types';
-import { compareSkinGeometryBytes } from './skin-geometry-bytes';
+import { compareBufferBytes } from './buffer-bytes';
 import type { SkinPose } from './systems/skin-palette-types';
 
 const cachesByWorld = new WeakMap<World, Map<string, SkinPosedBoundsCache>>();
@@ -49,7 +49,7 @@ function sameBytes(first: ArrayBufferView, second: ArrayBufferView): boolean {
   const secondOffset = offsetOf?.call(second) as number;
   const firstBuffer = bufferOf?.call(first) as ArrayBuffer;
   const secondBuffer = bufferOf?.call(second) as ArrayBuffer;
-  const compared = compareSkinGeometryBytes(
+  const compared = compareBufferBytes(
     firstBuffer,
     firstOffset,
     secondBuffer,

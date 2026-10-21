@@ -1,13 +1,16 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { type ComponentData, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createDynamicGeometryHost } from '../assembly/dynamic-geometry-host';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { ResidencyLifetime } from '../device/residency-lifetime';
+import { worldRenderResources } from '../publication/resource-scope';
 
 function residencyLease(handle: number, invalidated: number[]) {
   const lifetime = new ResidencyLifetime(() => invalidated.push(handle));
@@ -16,34 +19,30 @@ function residencyLease(handle: number, invalidated: number[]) {
 
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 
-const mesh = (): MeshAsset => ({
-  kind: 'mesh',
-  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-  indices: new Uint16Array([0, 1, 2]),
-  attributes: { position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) },
-  aabb: new Float32Array([0, 0, 0, 1, 1, 0]),
-  submeshes: [
-    { indexOffset: 0, indexCount: 3, vertexCount: 3, topology: 'triangle-list', materialSlot: 0 },
-  ],
-  materialSlots: [{ slotName: 'default', sourceKey: 'default' }],
-});
+const mesh = (): MeshAsset => {
+  const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  return {
+    kind: 'mesh',
+    vertices,
+    indices: new Uint16Array([0, 1, 2]),
+    attributes: { position: vertices },
+    aabb: new Float32Array([0, 0, 0, 1, 1, 0]),
+    submeshes: [
+      { indexOffset: 0, indexCount: 3, vertexCount: 3, topology: 'triangle-list', materialSlot: 0 },
+    ],
+    materialSlots: [{ slotName: 'default', sourceKey: 'default' }],
+  };
+};
 
 describe('dynamic geometry ECS publication host', () => {
   it.each([
     false,
     true,
   ])('releases cancelled candidate capacity with later submissions (unbind: %s)', async (unbind) => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('unused cubemap');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const lifecycle = createDynamicGeometryLifecycle();
     const host = createDynamicGeometryHost({
       lifecycle,
@@ -52,8 +51,9 @@ describe('dynamic geometry ECS publication host', () => {
       currentGeneration: () => 1,
       isConsumedByRenderFrame: () => false,
     });
+    const physicalPrepare = vi.spyOn(store, 'prepareMeshResidency');
     const source = mesh();
-    const handle = world.allocSharedRef('MeshAsset', source);
+    const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -62,9 +62,10 @@ describe('dynamic geometry ECS publication host', () => {
       )
       .unwrap();
     const candidate = host
-      .prepareDynamicGeometry({ world, entity, mesh: source, meshHandle: handle, revision: 1 })
+      .prepareDynamicGeometry({ world, entity, meshHandle: handle, revision: 1 })
       .unwrap();
-    const allocation = store.getMeshGpuHandles(handle, world);
+    const allocation = physicalPrepare.mock.results[0]?.value.unwrap().entry;
+    expect(store.getMeshGpuHandles(handle, worldRenderResources(world))).toBeUndefined();
     if (allocation === undefined) throw new Error('candidate allocation missing');
     let finishExisting!: () => void, finishLater!: () => void;
     const existing = new Promise<void>((resolve) => {
@@ -75,7 +76,7 @@ describe('dynamic geometry ECS publication host', () => {
     });
     store.trackMeshSubmission(existing);
     if (unbind) world.despawn(entity).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    runtimeAssets(world.assets).release(handle).unwrap();
     host.cancelDynamicGeometry(candidate).unwrap();
     expect(lifecycle.inspect().meshBytes).toBeGreaterThan(0);
     store.trackMeshSubmission(later);
@@ -87,15 +88,23 @@ describe('dynamic geometry ECS publication host', () => {
       for (let turn = 0; turn < 16 && lifecycle.inspect().meshBytes !== 0; turn += 1)
         await Promise.resolve();
       expect(lifecycle.inspect().meshBytes).toBe(0);
-      expect(world.sharedRefs.resolve(handle).ok).toBe(!unbind);
+      expect(runtimeAssets(world.assets).resolveAsset(handle).ok).toBe(!unbind);
       expect(allocation.vertexBuffer.isDestroyed).toBe(false);
       expect(allocation.indexBuffer?.isDestroyed).toBe(false);
       if (unbind) {
-        expect(store.getMeshGpuHandles(handle, world)).toBeUndefined();
+        expect(store.getMeshGpuHandles(handle, worldRenderResources(world))).toBeUndefined();
         // Ordinary later frames cannot retain the allocation after cache retirement.
         store.trackMeshSubmission(new Promise<void>(() => {}));
       } else {
-        expect(store.getMeshGpuHandles(handle, world)).toBe(allocation);
+        expect(store.getMeshGpuHandles(handle, worldRenderResources(world))).toBeUndefined();
+        // A remaining ECS binding uses ordinary residency on its next draw.
+        expect(
+          store.ensureResident(
+            handle,
+            runtimeAssets(world.assets).resolveAsset<MeshAsset>(handle).unwrap(),
+            worldRenderResources(world),
+          ).ok,
+        ).toBe(true);
       }
     } finally {
       finishLater();
@@ -110,17 +119,10 @@ describe('dynamic geometry ECS publication host', () => {
   });
 
   it('prepares a streamed MeshAsset before publication and supports cancellation or commit', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('unused cubemap');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const host = createDynamicGeometryHost({
       lifecycle: createDynamicGeometryLifecycle(),
       attachedWorlds: new Set([world]),
@@ -128,15 +130,15 @@ describe('dynamic geometry ECS publication host', () => {
       currentGeneration: () => 1,
       isConsumedByRenderFrame: () => false,
     });
-    const cancelledHandle = world.allocSharedRef('MeshAsset', mesh());
+    const cancelledHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const cancelled = host.prepareMeshResidency(world, cancelledHandle).unwrap();
     expect(cancelled.isCurrent()).toBe(true);
     cancelled.cancel();
-    expect(store.getMeshGpuHandles(cancelledHandle, world)).toBeUndefined();
-    expect(cancelled.commit()).toBe(false);
-    world.sharedRefs.release(cancelledHandle).unwrap();
+    expect(store.getMeshGpuHandles(cancelledHandle, worldRenderResources(world))).toBeUndefined();
+    expect(cancelled.commit(0)).toBe(false);
+    runtimeAssets(world.assets).release(cancelledHandle).unwrap();
 
-    const committedHandle = world.allocSharedRef('MeshAsset', mesh());
+    const committedHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const committed = host.prepareMeshResidency(world, committedHandle).unwrap();
     const entity = world
       .spawn(
@@ -145,12 +147,12 @@ describe('dynamic geometry ECS publication host', () => {
         { component: MeshRenderer, data: { materials: [] } },
       )
       .unwrap();
-    expect(committed.commit()).toBe(true);
+    expect(committed.commit(entity)).toBe(true);
     committed.cancel();
-    expect(store.getMeshGpuHandles(committedHandle, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(committedHandle, worldRenderResources(world))).toBeDefined();
     world.despawn(entity).unwrap();
-    store.invalidateMesh(committedHandle, world);
-    world.sharedRefs.release(committedHandle).unwrap();
+    store.invalidateMesh(committedHandle, worldRenderResources(world));
+    runtimeAssets(world.assets).release(committedHandle).unwrap();
     store.destroyAll();
   });
 
@@ -160,17 +162,10 @@ describe('dynamic geometry ECS publication host', () => {
     'duplicate-cancel',
     'detach',
   ] as const)('keeps unpublished submitted allocations bounded through %s', async (mode) => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('unused cubemap');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     const lifecycle = createDynamicGeometryLifecycle();
     const host = createDynamicGeometryHost({
       lifecycle,
@@ -179,7 +174,7 @@ describe('dynamic geometry ECS publication host', () => {
       currentGeneration: () => 1,
       isConsumedByRenderFrame: () => false,
     });
-    const original = world.allocSharedRef('MeshAsset', mesh());
+    const original = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -191,17 +186,17 @@ describe('dynamic geometry ECS publication host', () => {
     const pending = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const handles: Handle<'MeshAsset', 'shared'>[] = [];
+    const handles: AssetHandle<'mesh'>[] = [];
     let latest: import('../dynamic-geometry').DynamicGeometryCandidate | undefined;
     // Supersession retains one current World resident beside 32 fenced releases.
     const residentCount = mode === 'supersession' ? 1 : 0;
     for (let revision = 1; revision <= 40; revision++) {
       const source = mesh();
-      const handle = world.allocSharedRef('MeshAsset', source);
+      const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
       const prepared = host.prepareDynamicGeometry({
         world,
         entity,
-        mesh: source,
+
         meshHandle: handle,
         revision,
       });
@@ -214,13 +209,13 @@ describe('dynamic geometry ECS publication host', () => {
           limit: 32,
           pendingFenceCandidates: 32,
         });
-        world.sharedRefs.release(handle).unwrap();
+        runtimeAssets(world.assets).release(handle).unwrap();
         break;
       }
       latest = host.acceptDynamicGeometry(prepared.value, { world, fixedStep: 0 }).unwrap();
       handles.push(handle);
       store.trackMeshSubmission(pending);
-      world.sharedRefs.release(handle).unwrap();
+      runtimeAssets(world.assets).release(handle).unwrap();
       if (mode === 'cancel' || mode === 'duplicate-cancel') {
         host.cancelDynamicGeometry(latest).unwrap();
         if (mode === 'duplicate-cancel') expect(host.cancelDynamicGeometry(latest).ok).toBe(false);
@@ -233,7 +228,9 @@ describe('dynamic geometry ECS publication host', () => {
     expect(handles).toHaveLength(32 + residentCount);
     expect(lifecycle.inspect().accepted).toBe(residentCount);
     expect(lifecycle.inspect().meshBytes).toBeGreaterThan(0);
-    expect(handles.every((handle) => world.sharedRefs.resolve(handle).ok)).toBe(true);
+    expect(handles.every((handle) => runtimeAssets(world.assets).resolveAsset(handle).ok)).toBe(
+      true,
+    );
     if (mode === 'supersession' && latest !== undefined)
       host.cancelDynamicGeometry(latest).unwrap();
     finish();
@@ -243,12 +240,12 @@ describe('dynamic geometry ECS publication host', () => {
   });
 
   it('keeps the old ECS binding visible while staging and restores it on cancellation', () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const oldMesh = mesh();
-    const oldHandle = world.allocSharedRef('MeshAsset', oldMesh);
+    const oldHandle = runtimeAssetRegistry(world.assets).create(oldMesh).unwrap();
     const nextMesh = mesh();
     nextMesh.vertices[0] = 4;
-    const nextHandle = world.allocSharedRef('MeshAsset', nextMesh);
+    const nextHandle = runtimeAssetRegistry(world.assets).create(nextMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -260,15 +257,21 @@ describe('dynamic geometry ECS publication host', () => {
     // component remains the only visible binding. Candidate preparation must
     // retain that old binding before the ECS swap so cancellation can restore
     // a live handle instead of reporting success with a stale MeshFilter.
-    expect(world.sharedRefs.release(oldHandle).ok).toBe(true);
+    expect(runtimeAssets(world.assets).release(oldHandle).ok).toBe(true);
     const invalidated: number[] = [];
     const host = createDynamicGeometryHost({
       lifecycle: createDynamicGeometryLifecycle(),
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
           invalidateMesh: (handle: number) => invalidated.push(handle),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
@@ -278,35 +281,35 @@ describe('dynamic geometry ECS publication host', () => {
     const prepared = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: nextMesh,
+
       meshHandle: nextHandle,
       revision: 2,
     });
     expect(prepared.ok).toBe(true);
-    expect(world.sharedRefs.refcount(nextHandle)).toBe(2);
-    expect(world.sharedRefs.resolve(oldHandle).ok).toBe(true);
+    expect(runtimeAssets(world.assets).refcount(nextHandle)).toBe(2);
+    expect(runtimeAssets(world.assets).resolveAsset(oldHandle).ok).toBe(true);
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(oldHandle);
     if (!prepared.ok) return;
 
     const accepted = host.acceptDynamicGeometry(prepared.value, { world, fixedStep: 0 });
     expect(accepted.ok).toBe(true);
-    expect(world.sharedRefs.refcount(nextHandle)).toBe(3);
+    expect(runtimeAssets(world.assets).refcount(nextHandle)).toBe(3);
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(nextHandle);
     if (!accepted.ok) return;
 
     expect(host.cancelDynamicGeometry(accepted.value).ok).toBe(true);
-    expect(world.sharedRefs.refcount(nextHandle)).toBe(1);
-    expect(world.sharedRefs.resolve(oldHandle).ok).toBe(true);
+    expect(runtimeAssets(world.assets).refcount(nextHandle)).toBe(1);
+    expect(runtimeAssets(world.assets).resolveAsset(oldHandle).ok).toBe(true);
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(oldHandle);
     expect(invalidated).toEqual([nextHandle]);
   });
 
   it('refuses an external binding change instead of clobbering the live ECS state', () => {
-    const world = new World();
-    const oldHandle = world.allocSharedRef('MeshAsset', mesh());
+    const world = new World({ assets: new AssetRegistry() });
+    const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const nextMesh = mesh();
-    const nextHandle = world.allocSharedRef('MeshAsset', nextMesh);
-    const externalHandle = world.allocSharedRef('MeshAsset', mesh());
+    const nextHandle = runtimeAssetRegistry(world.assets).create(nextMesh).unwrap();
+    const externalHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -320,8 +323,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
           invalidateMesh: (handle: number) => invalidated.push(handle),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
@@ -330,7 +339,7 @@ describe('dynamic geometry ECS publication host', () => {
     const prepared = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: nextMesh,
+
       meshHandle: nextHandle,
       revision: 2,
     });
@@ -345,12 +354,12 @@ describe('dynamic geometry ECS publication host', () => {
   });
 
   it('refuses cancellation after an accepted candidate is replaced by a foreign binding', () => {
-    const world = new World();
-    const oldHandle = world.allocSharedRef('MeshAsset', mesh());
+    const world = new World({ assets: new AssetRegistry() });
+    const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const nextMesh = mesh();
     nextMesh.vertices[0] = 9;
-    const nextHandle = world.allocSharedRef('MeshAsset', nextMesh);
-    const foreignHandle = world.allocSharedRef('MeshAsset', mesh());
+    const nextHandle = runtimeAssetRegistry(world.assets).create(nextMesh).unwrap();
+    const foreignHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -364,8 +373,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
           invalidateMesh: (handle: number) => invalidated.push(handle),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
@@ -374,7 +389,7 @@ describe('dynamic geometry ECS publication host', () => {
     const prepared = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: nextMesh,
+
       meshHandle: nextHandle,
       revision: 2,
     });
@@ -392,7 +407,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(foreignHandle);
     // The old binding remains retained while cancellation is refused, so the
     // host can restore it after the foreign owner reconciles the entity.
-    expect(world.sharedRefs.resolve(oldHandle).ok).toBe(true);
+    expect(runtimeAssets(world.assets).resolveAsset(oldHandle).ok).toBe(true);
     expect(invalidated).toEqual([]);
 
     expect(world.set(entity, MeshFilter, { assetHandle: nextHandle }).ok).toBe(true);
@@ -402,11 +417,11 @@ describe('dynamic geometry ECS publication host', () => {
   });
 
   it('rejects forged owner credentials before cancellation or retirement can touch ECS', () => {
-    const world = new World();
-    const oldHandle = world.allocSharedRef('MeshAsset', mesh());
+    const world = new World({ assets: new AssetRegistry() });
+    const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const nextMesh = mesh();
     nextMesh.vertices[0] = 8;
-    const nextHandle = world.allocSharedRef('MeshAsset', nextMesh);
+    const nextHandle = runtimeAssetRegistry(world.assets).create(nextMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -421,8 +436,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
           invalidateMesh: (handle: number) => invalidated.push(handle),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
@@ -431,7 +452,7 @@ describe('dynamic geometry ECS publication host', () => {
     const prepared = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: nextMesh,
+
       meshHandle: nextHandle,
       revision: 1,
     });
@@ -459,15 +480,15 @@ describe('dynamic geometry ECS publication host', () => {
 
   it('derives an omitted publication tick from the attached World FixedTime', () => {
     const invalidated: number[] = [];
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     expect(
       world.addSystem(FixedUpdate, { name: 'advance-fixed-time', queries: [], fn: () => {} }).ok,
     ).toBe(true);
     expect(world.update(1 / 60).ok).toBe(true);
-    const oldHandle = world.allocSharedRef('MeshAsset', mesh());
+    const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const nextMesh = mesh();
     nextMesh.vertices[0] = 7;
-    const nextHandle = world.allocSharedRef('MeshAsset', nextMesh);
+    const nextHandle = runtimeAssetRegistry(world.assets).create(nextMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -480,8 +501,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
       isConsumedByRenderFrame: () => true,
@@ -489,7 +516,7 @@ describe('dynamic geometry ECS publication host', () => {
     const prepared = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: nextMesh,
+
       meshHandle: nextHandle,
       revision: 1,
     });
@@ -508,19 +535,18 @@ describe('dynamic geometry ECS publication host', () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
-    const world = new World();
-    const oldHandle = world.allocSharedRef('MeshAsset', mesh());
+    store.configureGpuDevice(device, undefined, device.caps);
+    const invalidated: number[] = [];
+    const invalidateMesh = store.invalidateMesh.bind(store);
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+      invalidated.push(handle);
+      invalidateMesh(handle, worldId);
+    });
+    const world = new World({ assets: new AssetRegistry() });
+    const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const firstMesh = mesh();
     firstMesh.vertices[0] = 2;
-    const firstHandle = world.allocSharedRef('MeshAsset', firstMesh);
+    const firstHandle = runtimeAssetRegistry(world.assets).create(firstMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -538,7 +564,7 @@ describe('dynamic geometry ECS publication host', () => {
     const first = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: firstMesh,
+
       meshHandle: firstHandle,
       revision: 1,
       topologyRevision: 1,
@@ -559,7 +585,7 @@ describe('dynamic geometry ECS publication host', () => {
         0,
       ),
     ).toHaveLength(1);
-    expect(store.getMeshGpuHandles(firstHandle, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(firstHandle, worldRenderResources(world))).toBeDefined();
     let completeSecond!: () => void;
     const secondCompleted = new Promise<void>((resolve) => {
       completeSecond = resolve;
@@ -580,11 +606,11 @@ describe('dynamic geometry ECS publication host', () => {
 
     const secondMesh = mesh();
     secondMesh.vertices[0] = 3;
-    const secondHandle = world.allocSharedRef('MeshAsset', secondMesh);
+    const secondHandle = runtimeAssetRegistry(world.assets).create(secondMesh).unwrap();
     const second = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: secondMesh,
+
       meshHandle: secondHandle,
       revision: 2,
       topologyRevision: 2,
@@ -597,39 +623,38 @@ describe('dynamic geometry ECS publication host', () => {
     expect(host.dynamicGeometryReceipt(firstAccepted.value)).toBeDefined();
 
     expect(host.retireDynamicGeometry(firstAccepted.value).ok).toBe(true);
-    expect(store.getMeshGpuHandles(firstHandle, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(firstHandle, worldRenderResources(world))).toBeDefined();
     completeFirst();
     await Promise.resolve();
-    expect(store.getMeshGpuHandles(firstHandle, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(firstHandle, worldRenderResources(world))).toBeDefined();
     completeSecond();
     await Promise.resolve();
-    expect(store.getMeshGpuHandles(firstHandle, world)).toBeUndefined();
-    expect(store.getMeshGpuHandles(secondHandle, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(firstHandle, worldRenderResources(world))).toBeUndefined();
+    expect(store.getMeshGpuHandles(secondHandle, worldRenderResources(world))).toBeDefined();
     expect(host.cancelDynamicGeometry(secondAccepted.value).ok).toBe(true);
-    expect(store.getMeshGpuHandles(secondHandle, world)).toBeUndefined();
+    expect(store.getMeshGpuHandles(secondHandle, worldRenderResources(world))).toBeUndefined();
   });
 
   it('tracks a live entity after another entity advances topology', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
-    const world = new World();
-    const oldA = world.allocSharedRef('MeshAsset', mesh());
+    store.configureGpuDevice(device, undefined, device.caps);
+    const invalidated: number[] = [];
+    const invalidateMesh = store.invalidateMesh.bind(store);
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+      invalidated.push(handle);
+      invalidateMesh(handle, worldId);
+    });
+    const world = new World({ assets: new AssetRegistry() });
+    const oldA = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const candidateAMesh = mesh();
     candidateAMesh.vertices[0] = 10;
-    const candidateA = world.allocSharedRef('MeshAsset', candidateAMesh);
-    const oldB = world.allocSharedRef('MeshAsset', mesh());
+    const candidateA = runtimeAssetRegistry(world.assets).create(candidateAMesh).unwrap();
+    const oldB = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const candidateBMesh = mesh();
     candidateBMesh.vertices[0] = 11;
-    const candidateB = world.allocSharedRef('MeshAsset', candidateBMesh);
+    const candidateB = runtimeAssetRegistry(world.assets).create(candidateBMesh).unwrap();
     const entityA = world
       .spawn(
         { component: Transform, data: {} },
@@ -654,7 +679,7 @@ describe('dynamic geometry ECS publication host', () => {
     const preparedA = host.prepareDynamicGeometry({
       world,
       entity: entityA,
-      mesh: candidateAMesh,
+
       meshHandle: candidateA,
       revision: 1,
       topologyRevision: 1,
@@ -680,7 +705,7 @@ describe('dynamic geometry ECS publication host', () => {
     const preparedB = host.prepareDynamicGeometry({
       world,
       entity: entityB,
-      mesh: candidateBMesh,
+
       meshHandle: candidateB,
       revision: 2,
       topologyRevision: 2,
@@ -704,44 +729,43 @@ describe('dynamic geometry ECS publication host', () => {
       expect.arrayContaining([acceptedA.value.candidateId, acceptedB.value.candidateId]),
     );
     expect(host.dynamicGeometryReceipt(acceptedA.value)).toMatchObject({ frameId: 2 });
-    expect(store.getMeshGpuHandles(candidateA, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateA, worldRenderResources(world))).toBeDefined();
 
     expect(world.set(entityA, MeshFilter, { assetHandle: oldA }).ok).toBe(true);
     expect(host.retireDynamicGeometry(acceptedA.value).ok).toBe(true);
-    expect(store.getMeshGpuHandles(candidateA, world)).toBeDefined();
-    expect(store.getMeshGpuHandles(candidateB, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateA, worldRenderResources(world))).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateB, worldRenderResources(world))).toBeDefined();
     completeFirst();
     await Promise.resolve();
-    expect(store.getMeshGpuHandles(candidateA, world)).toBeDefined();
-    expect(store.getMeshGpuHandles(candidateB, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateA, worldRenderResources(world))).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateB, worldRenderResources(world))).toBeDefined();
     completeSecond();
     await Promise.resolve();
-    expect(store.getMeshGpuHandles(candidateA, world)).toBeUndefined();
-    expect(store.getMeshGpuHandles(candidateB, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateA, worldRenderResources(world))).toBeUndefined();
+    expect(store.getMeshGpuHandles(candidateB, worldRenderResources(world))).toBeDefined();
 
     expect(world.set(entityB, MeshFilter, { assetHandle: oldB }).ok).toBe(true);
     expect(host.retireDynamicGeometry(acceptedB.value).ok).toBe(true);
-    expect(store.getMeshGpuHandles(candidateB, world)).toBeUndefined();
+    expect(store.getMeshGpuHandles(candidateB, worldRenderResources(world))).toBeUndefined();
   });
 
   it('keeps shared residency for another candidate while a receipt is pending', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
-    const world = new World();
-    const oldA = world.allocSharedRef('MeshAsset', mesh());
-    const oldB = world.allocSharedRef('MeshAsset', mesh());
+    store.configureGpuDevice(device, undefined, device.caps);
+    const invalidated: number[] = [];
+    const invalidateMesh = store.invalidateMesh.bind(store);
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+      invalidated.push(handle);
+      invalidateMesh(handle, worldId);
+    });
+    const world = new World({ assets: new AssetRegistry() });
+    const oldA = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
+    const oldB = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const sharedMesh = mesh();
     sharedMesh.vertices[0] = 12;
-    const sharedHandle = world.allocSharedRef('MeshAsset', sharedMesh);
+    const sharedHandle = runtimeAssetRegistry(world.assets).create(sharedMesh).unwrap();
     const entityA = world
       .spawn(
         { component: Transform, data: {} },
@@ -766,7 +790,7 @@ describe('dynamic geometry ECS publication host', () => {
     const preparedA = host.prepareDynamicGeometry({
       world,
       entity: entityA,
-      mesh: sharedMesh,
+
       meshHandle: sharedHandle,
       revision: 1,
     });
@@ -790,7 +814,7 @@ describe('dynamic geometry ECS publication host', () => {
     const preparedB = host.prepareDynamicGeometry({
       world,
       entity: entityB,
-      mesh: sharedMesh,
+
       meshHandle: sharedHandle,
       revision: 2,
     });
@@ -802,28 +826,29 @@ describe('dynamic geometry ECS publication host', () => {
     // B only owns a prepared candidate. Cancelling it releases B's lease but
     // cannot evict H while A's submitted frame still owns the cache entry.
     expect(host.cancelDynamicGeometry(preparedB.value).ok).toBe(true);
-    expect(store.getMeshGpuHandles(sharedHandle, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(sharedHandle, worldRenderResources(world))).toBeDefined();
+    expect(invalidated).toEqual([]);
 
     completeA();
     await Promise.resolve();
-    expect(store.getMeshGpuHandles(sharedHandle, world)).toBeUndefined();
+    expect(store.getMeshGpuHandles(sharedHandle, worldRenderResources(world))).toBeUndefined();
+    expect(invalidated).toEqual([sharedHandle]);
   });
 
   it('keeps pending retirements inside the count and byte budget', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('cubemap registration is not part of this test');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
+    const invalidated: number[] = [];
+    const invalidateMesh = store.invalidateMesh.bind(store);
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+      invalidated.push(handle);
+      invalidateMesh(handle, worldId);
+    });
     const lifecycle = createDynamicGeometryLifecycle();
-    const world = new World();
-    const liveHandle = world.allocSharedRef('MeshAsset', mesh());
+    const world = new World({ assets: new AssetRegistry() });
+    const liveHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -839,16 +864,16 @@ describe('dynamic geometry ECS publication host', () => {
       isConsumedByRenderFrame: () => true,
     });
     const completions: Array<() => void> = [];
-    const handles: Handle<'MeshAsset', 'shared'>[] = [];
+    const handles: AssetHandle<'mesh'>[] = [];
     let candidateBytes = 0;
     for (let revision = 1; revision <= 32; revision += 1) {
       const candidateMesh = mesh();
       candidateMesh.vertices[0] = revision;
-      const handle = world.allocSharedRef('MeshAsset', candidateMesh);
+      const handle = runtimeAssetRegistry(world.assets).create(candidateMesh).unwrap();
       const prepared = host.prepareDynamicGeometry({
         world,
         entity,
-        mesh: candidateMesh,
+
         meshHandle: handle,
         revision,
       });
@@ -876,12 +901,12 @@ describe('dynamic geometry ECS publication host', () => {
     }
 
     const blockedMesh = mesh();
-    const blockedHandle = world.allocSharedRef('MeshAsset', blockedMesh);
+    const blockedHandle = runtimeAssetRegistry(world.assets).create(blockedMesh).unwrap();
     expect(
       host.prepareDynamicGeometry({
         world,
         entity,
-        mesh: blockedMesh,
+
         meshHandle: blockedHandle,
         revision: 33,
       }),
@@ -889,7 +914,7 @@ describe('dynamic geometry ECS publication host', () => {
       ok: false,
       error: { code: 'dynamic-geometry-budget-exceeded' },
     });
-    expect(world.sharedRefs.release(blockedHandle).ok).toBe(true);
+    expect(runtimeAssets(world.assets).release(blockedHandle).ok).toBe(true);
     expect(lifecycle.inspect()).toMatchObject({
       prepared: 0,
       accepted: 0,
@@ -898,7 +923,9 @@ describe('dynamic geometry ECS publication host', () => {
       meshBytes: candidateBytes * 32,
     });
     expect(
-      handles.filter((handle) => store.getMeshGpuHandles(handle, world) !== undefined),
+      handles.filter(
+        (handle) => store.getMeshGpuHandles(handle, worldRenderResources(world)) !== undefined,
+      ),
     ).toHaveLength(32);
 
     completions.forEach((complete) => {
@@ -906,20 +933,23 @@ describe('dynamic geometry ECS publication host', () => {
     });
     await Promise.resolve();
     await vi.waitFor(() => expect(lifecycle.inspect().meshBytes).toBe(0));
-    expect(handles.every((handle) => store.getMeshGpuHandles(handle, world) === undefined)).toBe(
-      true,
-    );
+    expect(invalidated).toHaveLength(32);
+    expect(
+      handles.every(
+        (handle) => store.getMeshGpuHandles(handle, worldRenderResources(world)) === undefined,
+      ),
+    ).toBe(true);
   });
 
   it('supersedes an older un-published candidate after a newer ECS swap', () => {
-    const world = new World();
-    const oldHandle = world.allocSharedRef('MeshAsset', mesh());
+    const world = new World({ assets: new AssetRegistry() });
+    const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const firstMesh = mesh();
     firstMesh.vertices[0] = 2;
-    const firstHandle = world.allocSharedRef('MeshAsset', firstMesh);
+    const firstHandle = runtimeAssetRegistry(world.assets).create(firstMesh).unwrap();
     const secondMesh = mesh();
     secondMesh.vertices[0] = 3;
-    const secondHandle = world.allocSharedRef('MeshAsset', secondMesh);
+    const secondHandle = runtimeAssetRegistry(world.assets).create(secondMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -933,8 +963,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
           invalidateMesh: (handle: number) => invalidated.push(handle),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
@@ -943,7 +979,7 @@ describe('dynamic geometry ECS publication host', () => {
     const first = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: firstMesh,
+
       meshHandle: firstHandle,
       revision: 1,
     });
@@ -953,7 +989,7 @@ describe('dynamic geometry ECS publication host', () => {
     const second = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: secondMesh,
+
       meshHandle: secondHandle,
       revision: 2,
     });
@@ -970,15 +1006,19 @@ describe('dynamic geometry ECS publication host', () => {
   });
 
   it('preserves another entity candidate when a newer topology is accepted', () => {
-    const world = new World();
-    const firstLive = world.allocSharedRef('MeshAsset', mesh());
+    const world = new World({ assets: new AssetRegistry() });
+    const firstLive = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const firstCandidateMesh = mesh();
     firstCandidateMesh.vertices[0] = 5;
-    const firstCandidateHandle = world.allocSharedRef('MeshAsset', firstCandidateMesh);
-    const secondLive = world.allocSharedRef('MeshAsset', mesh());
+    const firstCandidateHandle = runtimeAssetRegistry(world.assets)
+      .create(firstCandidateMesh)
+      .unwrap();
+    const secondLive = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const secondCandidateMesh = mesh();
     secondCandidateMesh.vertices[0] = 6;
-    const secondCandidateHandle = world.allocSharedRef('MeshAsset', secondCandidateMesh);
+    const secondCandidateHandle = runtimeAssetRegistry(world.assets)
+      .create(secondCandidateMesh)
+      .unwrap();
     const firstEntity = world
       .spawn(
         { component: Transform, data: {} },
@@ -999,8 +1039,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
           invalidateMesh: (handle: number) => invalidated.push(handle),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
@@ -1009,7 +1055,7 @@ describe('dynamic geometry ECS publication host', () => {
     const first = host.prepareDynamicGeometry({
       world,
       entity: firstEntity,
-      mesh: firstCandidateMesh,
+
       meshHandle: firstCandidateHandle,
       revision: 1,
       topologyRevision: 1,
@@ -1019,7 +1065,7 @@ describe('dynamic geometry ECS publication host', () => {
     const second = host.prepareDynamicGeometry({
       world,
       entity: secondEntity,
-      mesh: secondCandidateMesh,
+
       meshHandle: secondCandidateHandle,
       revision: 2,
       topologyRevision: 2,
@@ -1030,13 +1076,13 @@ describe('dynamic geometry ECS publication host', () => {
     expect(invalidated).not.toContain(firstCandidateHandle);
     expect(host.cancelDynamicGeometry(first.value).ok).toBe(true);
     expect(invalidated).toContain(firstCandidateHandle);
-    expect(world.sharedRefs.refcount(firstCandidateHandle)).toBe(1);
+    expect(runtimeAssets(world.assets).refcount(firstCandidateHandle)).toBe(1);
   });
 
   it('requires a live MeshFilter/MeshRenderer binding and withholds receipts until draw consumption', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const sourceMesh = mesh();
-    const meshHandle = world.allocSharedRef('MeshAsset', sourceMesh);
+    const meshHandle = runtimeAssetRegistry(world.assets).create(sourceMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -1049,10 +1095,16 @@ describe('dynamic geometry ECS publication host', () => {
     const invalidatedMeshes: Array<{ readonly handle: number; readonly world: World }> = [];
     let consumedByFrame = false;
     const gpuStore = {
-      ensureResident: () => ({ ok: true as const, value: {} }),
-      retainMeshResidency: (handle: number) => {
+      prepareMeshResidency: (handle: number) => {
         const lifetime = new ResidencyLifetime(() => invalidatedMeshes.push({ handle, world }));
-        return lifetime.retain(() => lifetime.retire());
+        return {
+          ok: true as const,
+          value: {
+            lease: lifetime.retain(() => lifetime.retire()),
+            current: () => true,
+            commit: () => true,
+          },
+        };
       },
       invalidateMesh: (handle: number, invalidationWorld: World) => {
         invalidatedMeshes.push({ handle, world: invalidationWorld });
@@ -1069,7 +1121,7 @@ describe('dynamic geometry ECS publication host', () => {
     const prepared = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: sourceMesh,
+
       meshHandle,
       revision: 1,
       topologyRevision: 1,
@@ -1080,7 +1132,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
 
-    const replacementHandle = world.allocSharedRef('MeshAsset', mesh());
+    const replacementHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     expect(world.set(entity, MeshFilter, { assetHandle: replacementHandle }).ok).toBe(true);
     expect(host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, [world], 0)).toEqual(
       [],
@@ -1118,11 +1170,11 @@ describe('dynamic geometry ECS publication host', () => {
 
     const topologyMesh = mesh();
     topologyMesh.vertices[0] = 8;
-    const topologyHandle = world.allocSharedRef('MeshAsset', topologyMesh);
+    const topologyHandle = runtimeAssetRegistry(world.assets).create(topologyMesh).unwrap();
     const topologyCandidate = host.prepareDynamicGeometry({
       world,
       entity,
-      mesh: topologyMesh,
+
       meshHandle: topologyHandle,
       revision: 2,
       topologyRevision: 2,
@@ -1154,16 +1206,22 @@ describe('dynamic geometry ECS publication host', () => {
 
   it('rejects a candidate without an actual ECS render entity before GPU admission', () => {
     const invalidated: number[] = [];
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const sourceMesh = mesh();
-    const meshHandle = world.allocSharedRef('MeshAsset', sourceMesh);
+    const meshHandle = runtimeAssetRegistry(world.assets).create(sourceMesh).unwrap();
     const host = createDynamicGeometryHost({
       lifecycle: createDynamicGeometryLifecycle(),
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
       isConsumedByRenderFrame: () => false,
@@ -1172,7 +1230,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(
       host.prepareDynamicGeometry({
         world,
-        mesh: sourceMesh,
+
         meshHandle,
         revision: 1,
       }),
@@ -1186,15 +1244,16 @@ describe('dynamic geometry ECS publication host', () => {
       )
       .unwrap();
     expect(
-      host.prepareDynamicGeometry({ world, entity, mesh: sourceMesh, revision: 2 }),
-    ).toMatchObject({ ok: false, error: { code: 'dynamic-geometry-gpu-not-ready' } });
+      // @ts-expect-error A missing asset reference is rejected for untyped callers.
+      host.prepareDynamicGeometry({ world, entity, revision: 2 }),
+    ).toMatchObject({ ok: false, error: { code: 'dynamic-geometry-invalid' } });
   });
 
   it('requires active PhysicsWorld admission, not an already committed publication', () => {
     const invalidated: number[] = [];
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const sourceMesh = mesh();
-    const meshHandle = world.allocSharedRef('MeshAsset', sourceMesh);
+    const meshHandle = runtimeAssetRegistry(world.assets).create(sourceMesh).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -1213,8 +1272,14 @@ describe('dynamic geometry ECS publication host', () => {
       attachedWorlds: new Set([world]),
       getGpuStore: () =>
         ({
-          ensureResident: () => ({ ok: true as const, value: {} }),
-          retainMeshResidency: (handle: number) => residencyLease(handle, invalidated),
+          prepareMeshResidency: (handle: number) => ({
+            ok: true as const,
+            value: {
+              lease: residencyLease(handle, invalidated),
+              current: () => true,
+              commit: () => true,
+            },
+          }),
         }) as unknown as GpuResidencyCache,
       currentGeneration: () => 1,
       isConsumedByRenderFrame: () => true,
@@ -1223,7 +1288,7 @@ describe('dynamic geometry ECS publication host', () => {
       world,
       entity,
       physicsEntity: entity,
-      mesh: sourceMesh,
+
       meshHandle,
       revision: 1,
     });

@@ -31,6 +31,18 @@ const records = [],
   errors = [],
   consoleErrors = [];
 let browser, server, targetId;
+let startupProfile;
+const stopStartupProfile = async () => {
+  if (!startupProfile) return;
+  const session = startupProfile;
+  startupProfile = undefined;
+  try {
+    const { profile } = await session.send('Profiler.stop');
+    await writeFile(join(evidence, 'play-startup.cpuprofile'), JSON.stringify(profile));
+  } finally {
+    await session.detach();
+  }
+};
 let hostAdmissions = 0;
 let documentRequests = 0;
 let replacingBackend = false;
@@ -208,8 +220,31 @@ try {
     const play = view.locator('iframe[data-forgeax-scene-play]');
     // Presentation stays transparent until native readiness; observe startup while attached.
     await play.waitFor({ state: 'attached' });
+    const playDocument = await (await play.elementHandle()).contentFrame();
+    assert.ok(playDocument, 'Play must expose its actual document');
+    if (cycle === 0 && process.env.FORGEAX_MCP_PROFILE === '1') {
+      let owner = playDocument;
+      for (;;) {
+        try {
+          startupProfile = await browser.contexts()[0].newCDPSession(owner);
+          break;
+        } catch (error) {
+          if (!String(error).includes('part of the parent frame')) throw error;
+          const parent = owner.parentFrame();
+          if (parent) owner = parent;
+          else {
+            startupProfile = await browser.contexts()[0].newCDPSession(page);
+            break;
+          }
+        }
+      }
+      await startupProfile.send('Profiler.enable');
+      await startupProfile.send('Profiler.start');
+    }
     assert.ok((await play.getAttribute('src')) === null, 'Hosted Play must not navigate loopback');
-    const playFrame = view.frameLocator('iframe[data-forgeax-scene-play]');
+    // Keep the exact admitted frame. Re-resolving the nested iframe every poll
+    // makes Playwright preview its multi-megabyte srcdoc on the browser thread.
+    const playFrame = playDocument;
     const playHtml = playFrame.locator('html');
     const deadline = performance.now() + 180000;
     while (Number(await playHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
@@ -218,13 +253,12 @@ try {
       await page.waitForTimeout(50);
     }
     await play.waitFor({ state: 'visible' });
+    await stopStartupProfile();
     const readyMs = Math.round(performance.now() - playStarted);
     if (cycle === 0) {
-      const document = await (await play.elementHandle()).contentFrame();
-      assert.ok(document, 'Running Play must expose its actual document');
-      const read = () => document.evaluate(() => globalThis.__forgeaxGameInspection?.read('game-3d.runtime-vase'));
+      const read = () => playDocument.evaluate(() => globalThis.__forgeaxGameInspection?.read('game-3d.runtime-vase'));
       records.push({ runtimeVase: await read() });
-      records.push({ runtimeVaseProbe: await probeRuntimeVase(document, read,
+      records.push({ runtimeVaseProbe: await probeRuntimeVase(playDocument, read,
         join(evidence, 'runtime-vase'), options => page.screenshot(options)) });
     }
     const placement = await play.evaluate(element => ({
@@ -391,6 +425,7 @@ try {
       })).catch(() => undefined) });
   throw error;
 } finally {
+  await stopStartupProfile().catch(error => records.push({ profileError: String(error) }));
   for (const owner of backendStarts) {
     try {
       const files = collectViewBackendDiagnostics({ ...owner, outputDirectory: join(evidence, 'backend') });

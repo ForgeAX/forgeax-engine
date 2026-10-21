@@ -13,8 +13,9 @@ const graphics = `
 }
 @fragment fn fs()->@location(0) vec4f { return vec4f(0.25,0.5,0.75,1); }
 `;
-const computation =
+const computeClosure =
   '@group(0) @binding(0) var<storage,read_write> value:array<u32>; @compute @workgroup_size(1) fn cs(){value[0]=73u;}';
+const computation = `${computeClosure}\nfn unused_effect() -> u32 { return 19u; }`;
 
 /** Real native creation, fresh-device import and pixel/storage readback. */
 export async function verifyPipelineLibraryGpu(
@@ -66,6 +67,18 @@ export async function verifyPipelineLibraryGpu(
       },
     }).unwrap();
     const manifest = JSON.parse(JSON.stringify(libraryA.export().unwrap()));
+    const originalComputeModule = manifest.shaders.findIndex(
+      (s: { code: string }) => s.code === computation,
+    );
+    if (originalComputeModule < 0) throw new Error('Missing captured compute source');
+    manifest.computeEntryModules = [
+      {
+        module: originalComputeModule,
+        entryPoint: 'cs',
+        specializedModule: manifest.shaders.length,
+      },
+    ];
+    manifest.shaders.push({ code: computeClosure });
     const started = performance.now();
     const prepared = (await libraryB.prepare(manifest)).unwrap();
     const warmupMs = performance.now() - started;

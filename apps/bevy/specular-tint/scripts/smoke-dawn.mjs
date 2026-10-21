@@ -42,7 +42,6 @@ const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(await buildEngi
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { createDevImportTransport } = await import('@forgeax/engine-runtime');
 const { buildSpecularTintWorld } = await import(resolve(appRoot, 'src', 'specular-tint.ts'));
 const distDir = resolve(appRoot, 'dist');
@@ -83,11 +82,11 @@ subscribeSmokeErrors(app.renderer, (error) => errors.push(error)); app.onError((
 const hdrParsed = AssetGuid.parse(hdrGuid); const tintParsed = AssetGuid.parse(tintGuid);
 if (!hdrParsed.ok || !tintParsed.ok) { console.error('[smoke] GUID parse failed'); process.exit(1); }
 app.assets.configurePackIndex('/pack-index.json');
-const hdr = await app.assets.loadByGuid(hdrParsed.value); const tint = await app.assets.loadByGuid(tintParsed.value);
+const hdr = await app.assets.load(hdrParsed.value, 'equirect'); const tint = await app.assets.load(tintParsed.value, 'texture');
 if (!hdr.ok || !tint.ok) { console.error(`[smoke] asset load failed: ${hdr.ok ? tint.error.code : hdr.error.code}`); process.exit(1); }
-const equirect = app.world.allocSharedRef('EquirectAsset', hdr.value);
-const texture = app.world.allocSharedRef('TextureAsset', tint.value);
-buildSpecularTintWorld(app.world, equirect, unwrapHandle(texture), width / height);
+const equirect = hdr.value;
+const texture = tint.value;
+buildSpecularTintWorld(app.world, equirect, texture, width / height);
 const frameStartTimestamp = performance.now();
 let callbacks = 0;
 const frames = await runSmokeAppFrames(app, () => {

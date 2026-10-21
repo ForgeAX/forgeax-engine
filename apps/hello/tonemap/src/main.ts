@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 // apps/hello/tonemap - Reinhard-extended tonemap opt-in exemplar
 // (feat-20260519-tonemap-reinhard-mvp / M4 / T-M4.1).
 //
@@ -64,7 +65,6 @@ import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime'
 import { Materials } from '@forgeax/engine-render';
 
 import { createSphereGeometry } from '@forgeax/engine-geometry';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
@@ -94,19 +94,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
 
-  const sphereHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', sphereRes.value);
+  const sphereHandle = assets.create(sphereRes.value).unwrap();
 
   // Mid-grey standard PBR material; the high-intensity light is what
   // pushes the luminance > 1.0 into the integer-white burn band on the
   // default path. feat-20260523 M8-T03: schema-driven register form.
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0.0, roughness: 0.4 }),
-  );
+  const materialHandle = assets.create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0.0, roughness: 0.4 })).unwrap();
 
   // Sphere at origin (PBR; standard pipeline; 12F vertex stride).
   world.spawn(

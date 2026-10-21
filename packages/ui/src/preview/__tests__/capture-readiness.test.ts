@@ -12,7 +12,7 @@ const asset: UiAsset = {
 function session() {
   return createUiPreviewSession({
     guid: asset.guid,
-    assets: { invalidate: () => {}, loadByGuid: async () => ({ ok: true, value: asset }) },
+    readAsset: async () => ({ ok: true, value: asset }),
     root: document.createElement('div'),
     rect: { width: 320, height: 180 },
   });

@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
-import type { ArtifactDescriptor, CookReceipt, ImportedArtifactBody } from '@forgeax/engine-types';
+import type {
+  ArtifactDescriptor,
+  AssetEnvelopeV2,
+  CookReceipt,
+  ImportedArtifactBody,
+} from '@forgeax/engine-types';
+import { encodeMaterialProgramWire } from './material-program-wire.js';
 
 export type PackageArtifactBody = ImportedArtifactBody;
 
-export interface PackageProductAsset {
-  readonly guid: string;
-  readonly kind: string;
-  readonly name?: string;
-  readonly payload: Readonly<Record<string, unknown>>;
-  readonly refs: readonly string[];
+export interface PackageProductAsset
+  extends Omit<AssetEnvelopeV2<Readonly<Record<string, unknown>>>, 'artifacts'> {
   readonly artifacts: Readonly<Record<string, PackageArtifactBody>>;
 }
 
@@ -25,12 +27,8 @@ export interface PackageDocumentArtifact extends ArtifactDescriptor {
   readonly integrity: { readonly algorithm: 'sha256'; readonly digest: string };
 }
 
-export interface PackageDocumentAsset {
-  readonly guid: string;
-  readonly kind: string;
-  readonly name?: string;
+export interface PackageDocumentAsset extends Omit<PackageProductAsset, 'payload' | 'artifacts'> {
   readonly payload: Record<string, unknown>;
-  readonly refs: readonly string[];
   readonly artifacts: Readonly<Record<string, PackageDocumentArtifact>>;
 }
 
@@ -47,22 +45,14 @@ export interface PackageFinalizePolicy {
   readonly sink?: (path: string, bytes: Uint8Array) => void | Promise<void>;
 }
 
-export interface FinalizedPackageProduct {
+export interface FinalizedPackageProduct extends Omit<PackageProduct, 'assets'> {
   readonly pack: PackageDocument;
   readonly packageUrl: string;
   readonly digest: string;
-  readonly receipts: readonly CookReceipt[];
-  readonly diagnostics: readonly unknown[];
-  readonly sourceRevision: string;
-  readonly sourceKey?: string;
 }
 
-interface PackageTransportSource {
-  readonly assets: readonly PackageProduct['assets'][number][];
-  readonly receipts?: readonly CookReceipt[];
-  readonly diagnostics?: readonly unknown[];
-  readonly sourceKey?: string;
-}
+type PackageTransportSource = Pick<PackageProduct, 'assets'> &
+  Partial<Pick<PackageProduct, 'receipts' | 'diagnostics' | 'sourceKey'>>;
 
 export interface PackageFinalizerError {
   readonly code:
@@ -269,7 +259,9 @@ async function finalizeProduct(
   const assets = [...product.assets].sort((left, right) => left.guid.localeCompare(right.guid));
   const document = packageDocument(assets, policy.artifactPath, digestBytes);
   if (policy.sink !== undefined) {
-    const packageBytes = new TextEncoder().encode(JSON.stringify(sorted(document)));
+    const packageBytes = new TextEncoder().encode(
+      JSON.stringify(sorted(encodeMaterialProgramWire(document))),
+    );
     for (const asset of assets) {
       for (const [key, artifact] of Object.entries(asset.artifacts)) {
         const path = policy.artifactPath(asset.guid, key);

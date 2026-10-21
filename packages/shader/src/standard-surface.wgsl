@@ -4,8 +4,8 @@
 #import forgeax_view::fog::{translucent_fog_transmission}
 #import forgeax_pbr::brdf::{f_schlick}
 #import forgeax_pbr::specular_aa::{geometricNormalSpread, specularAntiAliasedRoughness}
-#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular, environmentScattering}
-#import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
+#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular}
+#import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment}
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal, applyTBN}
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactorAtPixel}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
@@ -138,33 +138,18 @@ fn materialTextureFilteringWitness() {
 // BindGroup (no extra setBindGroup(4) call). Identity (default) resources
 // produce ambient = 0; with a real Skylight, ibl_sampling helpers project
 // the IBL irradiance + split-sum specular into `ambient` below.
-struct SkylightUniforms {
-  intensity : f32,
-  // The former pad0/1/2 lanes now carry the linear-space ambient `color` tint
-  // (downstream integration #4). Kept as three scalars (NOT vec3<f32>) so the
-  // struct stays exactly 16 B: a vec3 has 16-byte alignment in std140 and
-  // would push `color` to offset 16. The rotation vec4 follows at offset 16,
-  // so the host writes one 32 B payload.
-  colorR : f32,
-  colorG : f32,
-  colorB : f32,
-  rotation : vec4<f32>,
-  // Probe mode retains the global diffuse environment independently.
-  diffuseScale : vec4<f32>,
-  diffuseRotation : vec4<f32>,
-  ambientIrradiance : vec4<f32>,
-};
+
 @group(1) @binding(17) var irradianceMap        : texture_cube<f32>;
 @group(1) @binding(18) var irradianceSampler    : sampler;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
 @group(1) @binding(72) var directDfgLut: texture_2d<f32>;
 #endif
-@group(1) @binding(19) var prefilterMap         : texture_cube<f32>;
+@group(1) @binding(19) var prefilterMap         : texture_2d<f32>;
 @group(1) @binding(20) var prefilterSampler     : sampler;
 @group(1) @binding(21) var brdfLut              : texture_2d<f32>;
 @group(1) @binding(22) var<uniform> skylight    : SkylightUniforms;
 // Global specular remains resident when the per-draw prefilter slot holds a probe.
-@group(1) @binding(47) var skylightPrefilterMap : texture_cube<f32>;
+@group(1) @binding(47) var skylightPrefilterMap : texture_2d<f32>;
 
 #ifdef PROBE_BLEND_AVAILABLE
 // Optional consumer lane. The host must provide the retained 160B record
@@ -306,17 +291,7 @@ fn alphaTest(alpha : f32) {
 // The renderer supplies the retained ProbeBlendRecord at the per-object
 // consumer boundary. This helper deliberately accepts only diffuse inputs;
 // Skylight/ReflectionProbe continue to own specular.
-fn composeProbeDiffuse(
-  shPreblend : array<vec4<f32>, 9>,
-  localBlendFraction : f32,
-  normal : vec3<f32>,
-  skyIrradiance : vec3<f32>,
-  kD : vec3<f32>,
-  albedo : vec3<f32>,
-  metallic : f32,
-) -> vec3<f32> {
-  return evaluateProbeDiffuse(shPreblend, localBlendFraction, normal, skyIrradiance, kD, albedo, metallic);
-}
+
 
 struct StandardPbrOutput {
   @location(0) color : vec4<f32>,
@@ -498,61 +473,26 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   // per-cascade light-space matrix in the fragment stage for shadow-map PCF
   // lookup (CSM, feat-20260613). Cluster owns punctual BRDF evaluation in the
   // clustered variant above.
-  let scattering = environmentScattering(max(dot(n, v), 0.001), iblRoughness, f0, brdfLut, irradianceSampler);
-  let kD = max(vec3<f32>(0.0), vec3<f32>(1.0) - scattering.single - scattering.multi) * (1.0 - metallic);
-  var irradiance = vec3<f32>(0.0);
-  var specularIbl = vec3<f32>(0.0);
-  if (skylight.intensity < 0.0) {
-    irradiance = sampleIblDiffuse(n, skylight.diffuseRotation, irradianceMap, irradianceSampler);
-    // A negative intensity is the renderer-owned probe sentinel. The producer
-    // stores -(probeIntensity + 1), so intensity=0 remains distinguishable
-    // from the ordinary Skylight zero payload. The four color/rotation lanes
-    // carry probe center and half extents in this mode; Skylight resources
-    // remain unchanged and therefore preserve the ABI.
-    specularIbl = sampleReflectionProbeSpecular(
-      n, v, iblRoughness, f0, in.worldPos,
-      vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB),
-      skylight.rotation.xyz, vec4<f32>(0.0, 0.0, 0.0, 1.0),
-      prefilterMap, prefilterSampler, brdfLut, irradianceSampler,
-      skylightPrefilterMap, skylight.diffuseRotation, skylight.diffuseScale.xyz,
-      max(-skylight.intensity - 1.0, 0.0), skylight.rotation.w > 0.5,
-    );
-  } else {
-    irradiance = sampleIblDiffuse(n, skylight.rotation, irradianceMap, irradianceSampler);
-    specularIbl = sampleIblSpecular(
-      n, v, iblRoughness, f0,
-      skylight.rotation,
-      prefilterMap, prefilterSampler, brdfLut, irradianceSampler,
-    );
-  }
+  var probeShPreblend : array<vec4<f32>, 9>;
+  var probeLocalBlendFraction = 0.0;
+#ifdef PROBE_BLEND_AVAILABLE
+  probeShPreblend = array<vec4<f32>, 9>(
+    probeBlendRecords[1], probeBlendRecords[2], probeBlendRecords[3],
+    probeBlendRecords[4], probeBlendRecords[5], probeBlendRecords[6],
+    probeBlendRecords[7], probeBlendRecords[8], probeBlendRecords[9]);
+  probeLocalBlendFraction = probeBlendRecords[0].z;
+#endif
+  let environment = evaluateStandardEnvironment(in.worldPos, n, v,
+    diffuseAlbedo, vec3<f32>(0.0), metallic, iblRoughness, f0,
+    vec4<f32>(vec3<f32>(dielectricF0) * specularTint, 1.0), albedo,
+    skylight, irradianceMap, irradianceSampler, prefilterMap, prefilterSampler,
+    brdfLut, skylightPrefilterMap, probeShPreblend, probeLocalBlendFraction);
   let occlusionUv = transformedMaterialUv(material.occlusionTextureCoordinatesTransform, material.occlusionTextureCoordinatesMetadata, material.occlusionTextureCoordinatesRotation, in);
   let aoSample = sampleMaterialTexture(occlusionTexture, occlusionTexture_sampler, occlusionUv, material.occlusionTextureCoordinatesMetadata.zw);
   let ao = mix(1.0, aoSample.r, material.occlusionStrength);
-  // feat-20260612-hdrp-ssao M7 round-2: `var` (mutable) so the
-  // CLUSTER_FORWARD_AVAILABLE branch below can `ambient *=` the SSAO
-  // factor. The non-HDRP path leaves ambient untouched.
-  let skyColor = vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB);
-  let skyFactor = select(skyColor * skylight.intensity, skylight.diffuseScale.xyz, skylight.intensity < 0.0);
-  let specularEnvironmentScale = decodeSpecularEnvironmentScale(skyColor, skylight.intensity);
-  var reflectionFallback = specularIbl * specularEnvironmentScale * (vec3<f32>(1.0) - coatF);
-  var ambient = ((kD * diffuseAlbedo + scattering.multi) * irradiance * skyFactor + specularIbl * specularEnvironmentScale) * (vec3<f32>(1.0) - coatF);
-#ifdef PROBE_BLEND_AVAILABLE
-  // group(3) is the per-object bind group; record zero is the object selected
-  // by this draw, independent of instance count.
-  let probeShPreblend = array<vec4<f32>, 9>(
-    probeBlendRecords[1], probeBlendRecords[2], probeBlendRecords[3],
-    probeBlendRecords[4], probeBlendRecords[5], probeBlendRecords[6],
-    probeBlendRecords[7], probeBlendRecords[8], probeBlendRecords[9],
-  );
-  let probeLocalBlendFraction = probeBlendRecords[0].z;
-  let probeDiffuseK = kD / max(vec3<f32>(1.0 - metallic), vec3<f32>(0.0001));
-  let probeDiffuse = composeProbeDiffuse(probeShPreblend, probeLocalBlendFraction, n, irradiance * skyFactor, probeDiffuseK, albedo, metallic);
-  let multiIrradiance = composeProbeDiffuse(probeShPreblend, probeLocalBlendFraction, n, irradiance * skyFactor,
-    vec3<f32>(1.0), vec3<f32>(1.0), 0.0);
-  ambient = (probeDiffuse + scattering.multi * multiIrradiance + specularIbl * specularEnvironmentScale) * (vec3<f32>(1.0) - coatF);
-#endif
-  ambient += skylight.ambientIrradiance.xyz * diffuseAlbedo * (1.0 - metallic)
-    * 0.3183098861837907 * (vec3<f32>(1.0) - coatF);
+  let specularEnvironmentScale = decodeSpecularEnvironmentScale(vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB), skylight.intensity);
+  var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF);
+  var ambient = (environment.diffuse + environment.specular) * (vec3<f32>(1.0) - coatF);
   if (factors.clearcoat != 0.0) {
     // Keep the clearcoat lobe on the same selected environment as the base
     // specular lobe. Probe mode reuses the packed center/extents lanes in the
@@ -695,7 +635,7 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
     pow(safeAttenuationColor, vec3<f32>(attenuationExponent)),
     safeAttenuationDistance > 1e-6 && worldThickness > 0.0,
   );
-  transmittedCoefficient=transmittedEnergy*beerAttenuation;
+  transmittedCoefficient=transmittedEnergy*albedo*beerAttenuation;
   transmittedContribution=finiteColor(transmittedBackdrop,vec3<f32>(0.0))*transmittedCoefficient;
   color+=transmittedContribution;
 #endif
@@ -735,7 +675,7 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   // NDC from vertex shader (perspective-divided clip-space, interpolated).
   // view_z: NDC depth for cluster Z-slice lookup.
   color = color + evaluateStandardClusterLights(
-    in.ndc.xyz, in.viewZ, in.worldPos, n, v, diffuseAlbedo, metallic, a, f0, vec3<f32>(0.0), false, factors.receiveShadows, 0xffffffffu,
+    in.ndc.xyz, in.clip.xy, in.viewZ, in.worldPos, n, v, diffuseAlbedo, metallic, a, f0, vec3<f32>(0.0), false, factors.receiveShadows, 0xffffffffu,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, irradianceSampler,
@@ -743,7 +683,7 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   );
   if (factors.clearcoat != 0.0) {
       color = color + factors.clearcoat * evaluateStandardClusterLights(
-        in.ndc.xyz, in.viewZ, in.worldPos, n, v, vec3<f32>(0.0), 1.0, coatAlpha, vec3<f32>(0.04), vec3<f32>(0.0), false, factors.receiveShadows, 0xffffffffu,
+        in.ndc.xyz, in.clip.xy, in.viewZ, in.worldPos, n, v, vec3<f32>(0.0), 1.0, coatAlpha, vec3<f32>(0.04), vec3<f32>(0.0), false, factors.receiveShadows, 0xffffffffu,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, irradianceSampler,

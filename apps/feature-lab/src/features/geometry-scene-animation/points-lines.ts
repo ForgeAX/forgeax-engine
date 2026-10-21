@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine/geometry';
 import { Lines, Materials, PointShapeValue, Points } from '@forgeax/engine/render';
@@ -40,6 +41,10 @@ export default defineFeature({
   expect:
     'ON: five large yellow round dots above three thick magenta bars. OFF: the same vertices at 1 px - nearly invisible specks and hairlines.',
   setup({ app, world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const errors: string[] = [];
     app.onError((error) => {
       errors.push(
@@ -74,14 +79,14 @@ export default defineFeature({
       material(world, Materials.unlit(rgba));
     const dots: EntityHandle = spawnMesh(
       world,
-      world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', points),
+      sceneAssets.create(points).unwrap(),
       style([1, 0.9, 0.1, 1]),
       {},
       { component: Points, data: { sizePx: 40, shape: PointShapeValue.circle } },
     );
     const bars: EntityHandle = spawnMesh(
       world,
-      world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', lines),
+      sceneAssets.create(lines).unwrap(),
       style([1, 0.2, 0.9, 1]),
       {},
       { component: Lines, data: { width: 16 } },

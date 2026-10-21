@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
+<link rel="icon" href="data:,">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Three.js → Forgeax</title>
 <style>
@@ -34,12 +35,12 @@
     <pre>import * as THREE from
   '@forgeax/engine/three';
 
-const renderer = new THREE.WebGLRenderer({ canvas });
+const renderer = new THREE.WebGPURenderer({ canvas });
 await renderer.init();
 renderer.setAnimationLoop(() =&gt; {
   renderer.render(scene, camera);
 });</pre>
-    <div class="actions"><button id="pause">Pause rotation</button><button id="affine">Apply matrix shear</button><button id="lens">Offset camera lens</button><button id="material">Use normal material</button><button id="exposure">Exposure: 1×</button><button id="color">Change shared material</button><button id="clearcoat">Disable clearcoat</button><button id="light">Use spot light</button><button id="remove">Remove sphere</button></div>
+    <div class="actions"><button id="pause">Pause rotation</button><button id="affine">Apply matrix shear</button><button id="lens">Offset camera lens</button><button id="flat">Use flat shading</button><button id="normals">Remove sphere normals</button><button id="material">Use matcap material</button><button id="exposure">Exposure: 1×</button><button id="color">Change shared material</button><button id="clearcoat">Disable clearcoat</button><button id="light">Use spot light</button><button id="remove">Remove sphere</button></div>
     <p id="status">Initializing Forgeax…</p>
     <h2>RHI Debug</h2>
     <p>Capture this scene’s submitted GPU work. Download a standard .rhitape and its source object mapping.</p>
@@ -48,6 +49,6 @@ renderer.setAnimationLoop(() =&gt; {
     <p id="error" role="alert"></p>
   </aside>
 </main>
-<footer>Matrix shear uses Three.js manual matrices; camera offset uses setViewOffset. These share Forgeax's native affine transforms and camera lens inputs. Normal shows surface directions as color; Physical responds to lights and clearcoat. Full public API compatibility is still in progress, including synchronous renderer calls, physical texture combinations, shadows, render targets and post-processing. Only custom shaders and native WebGL calls may require migration.</footer>
+<footer><a class="download" href="./compare.html">Compare Three WebGPU and Forgeax →</a><a class="download" href="./textures.html">Explore texture inputs →</a><p>Three r184 authoring objects render through Forgeax WebGPU. Try affine transforms, lens offsets, flat shading, the procedural Matcap and Physical clearcoat. The compatibility report distinguishes supported inputs from native gaps in shadows, fog, render targets, Normal output and node materials. WebGL-only APIs and addon expansion are outside this work.</p></footer>
 <script type="module" src="./main.ts"></script>
 </html>

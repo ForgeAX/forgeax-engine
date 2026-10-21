@@ -135,7 +135,7 @@ it.each([
           `${pluginSource}
         import { definePack, definePackageId } from '@forgeax/engine/pack/source';
         import { ok } from '@forgeax/engine/types';
-        export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId(${JSON.stringify(packageId)}), build() { return ok(${JSON.stringify(outputs)}); } });
+        export default definePack({ schemaVersion: '2.0.0', plugins: true, packageId: definePackageId(${JSON.stringify(packageId)}), build() { return ok(${JSON.stringify(outputs)}); } });
       `,
         );
       } else {
@@ -296,7 +296,11 @@ it.each([
         // document-dependent dynamic-import preload helper.
         const output = await build({
           ...config,
-          build: { target: 'es2022', modulePreload: false },
+          build: {
+            target: 'es2022',
+            modulePreload: false,
+            rollupOptions: { preserveEntrySignatures: 'strict' },
+          },
         });
         if (Array.isArray(output) || !('output' in output)) throw new Error('missing bundle');
         const helper = output.output.find(

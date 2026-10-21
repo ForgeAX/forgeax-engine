@@ -20,6 +20,7 @@ import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -55,19 +56,23 @@ function descriptorField(model: FrameModel, id: string, field: string): unknown 
 
 /** The shared light-texture array: a 32-layer 2d-array view over a 9-mip rgba8unorm texture. */
 function lightTextureId(model: FrameModel, work: WorkEntry): string {
-  const matches = work.bindings.flatMap((binding) => {
-    if (binding.resourceKind !== 'textureView' || binding.resourceId === null) return [];
-    const view = descriptorField(model, binding.resourceId, 'desc') as
-      | { arrayLayerCount?: number; dimension?: string }
-      | undefined;
-    const source = descriptorField(model, binding.resourceId, 'sourceHandleId');
-    if (view?.dimension !== '2d-array' || view.arrayLayerCount !== 32) return [];
-    if (typeof source !== 'string') return [];
-    const texture = descriptorField(model, source, 'desc') as
-      | { format?: string; mipLevelCount?: number }
-      | undefined;
-    return texture?.format === 'rgba8unorm' && texture.mipLevelCount === 9 ? [source] : [];
-  });
+  const matches = [
+    ...new Set(
+      work.bindings.flatMap((binding) => {
+        if (binding.resourceKind !== 'textureView' || binding.resourceId === null) return [];
+        const view = descriptorField(model, binding.resourceId, 'desc') as
+          | { arrayLayerCount?: number; dimension?: string }
+          | undefined;
+        const source = descriptorField(model, binding.resourceId, 'sourceHandleId');
+        if (view?.dimension !== '2d-array' || view.arrayLayerCount !== 32) return [];
+        if (typeof source !== 'string') return [];
+        const texture = descriptorField(model, source, 'desc') as
+          | { format?: string; mipLevelCount?: number }
+          | undefined;
+        return texture?.format === 'rgba8unorm' && texture.mipLevelCount === 9 ? [source] : [];
+      }),
+    ),
+  ];
   expect(matches).toHaveLength(1);
   return matches[0] as string;
 }
@@ -180,7 +185,7 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
     if (event.kind === 'error') errors.push(event.error);
   });
   try {
-    const floor = world.allocSharedRef('MeshAsset', createPlaneGeometry(8, 8).unwrap());
+    const floor = testAssets(world).create(createPlaneGeometry(8, 8).unwrap()).unwrap();
     const material = Materials.standard({ baseColor: [0.8, 0.8, 0.8, 1], roughness: 0.6 });
     world
       .spawn(
@@ -188,7 +193,7 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
         { component: MeshFilter, data: { assetHandle: floor } },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', material)] },
+          data: { materials: [testAssets(world).create(material).unwrap()] },
         },
       )
       .unwrap();
@@ -198,7 +203,7 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
         { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 20 } },
       )
       .unwrap();
-    const texture = world.allocSharedRef('TextureAsset', panel());
+    const texture = testAssets(world).create(panel()).unwrap();
     const lightData = {
       width: HALF_WIDTH * 2,
       height: HALF_HEIGHT * 2,

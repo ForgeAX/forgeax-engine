@@ -38,6 +38,7 @@ function abiKey(value: object): string | undefined {
 /** Only freshly parsed resource-package JSON enters this owner. */
 export function retainJsonMaterialFacts(assets: readonly unknown[]): void {
   const abis = new Map<string, MaterialProgramAbi>();
+  const programs = new WeakSet<object>();
   for (const raw of assets) {
     const asset = object(raw);
     if (asset?.kind !== 'material') continue;
@@ -50,7 +51,10 @@ export function retainJsonMaterialFacts(assets: readonly unknown[]): void {
     )
       continue;
     for (const rawProgram of cooked.programs) {
-      const selections = object(rawProgram)?.selections;
+      const program = object(rawProgram);
+      if (program === undefined || programs.has(program)) continue;
+      programs.add(program);
+      const selections = program.selections;
       if (!Array.isArray(selections)) continue;
       for (const rawSelection of selections) {
         const selection = object(rawSelection);

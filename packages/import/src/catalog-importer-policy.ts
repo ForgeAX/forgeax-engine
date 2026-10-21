@@ -16,8 +16,6 @@ export const DEFAULT_CATALOG_IMPORTER_KEYS = [
   'ui',
 ] as const;
 
-export type CatalogImporterDisposition = 'publish' | 'exclude' | 'missing';
-
 /**
  * Resolve Catalog visibility from provider registration, not from a Vite
  * adapter's importer list. The shader transform is deliberately excluded;
@@ -31,7 +29,6 @@ export function catalogImporterPolicy(
   if (importer === SHADER_RESERVED_IMPORTER_KEY) {
     return {
       disposition: 'exclude',
-      hostProvided: false,
       expected: 'the provider must publish cooked runtime output before Catalog projection',
       hint: 'remove the source declaration from Pack roots or publish its cooked runtime module',
     };
@@ -39,7 +36,6 @@ export function catalogImporterPolicy(
   if ((DEFAULT_CATALOG_IMPORTER_KEYS as readonly string[]).includes(importer)) {
     return {
       disposition: 'publish',
-      hostProvided: false,
       expected: 'a standard Catalog provider declaration',
       hint: 'let the provider producer materialize the declared output',
     };
@@ -47,14 +43,12 @@ export function catalogImporterPolicy(
   if (hostImporterKeys.has(importer)) {
     return {
       disposition: 'publish',
-      hostProvided: true,
       expected: 'a registered host Catalog provider declaration',
       hint: 'let the registered provider materialize the declared output',
     };
   }
   return {
     disposition: 'missing',
-    hostProvided: false,
     expected: 'the sidecar importer must be present in the registered provider set',
     hint: 'wire the provider through the host importer registry before building the Catalog',
   };

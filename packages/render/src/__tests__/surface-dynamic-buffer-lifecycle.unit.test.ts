@@ -154,8 +154,8 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
       })
       .unwrap();
     const inputs = standardPbrInputs(device, shader, viewLayout);
-    const pipelineState = inputs.standardPbrPipelineState;
-    const baseArtifact = inputs.standardPbrArtifact;
+    const pipelineState = inputs.materialPipelineState;
+    const baseArtifact = inputs.materialArtifact;
     expect(pipelineState).toBeDefined();
     expect(baseArtifact).toBeDefined();
     if (pipelineState === undefined || baseArtifact === undefined) return;
@@ -393,16 +393,16 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
       .unwrap();
     const inputs = standardPbrInputs(device, shader, viewLayout);
     const pipelineState =
-      inputs.standardPbrPipelineState === undefined
+      inputs.materialPipelineState === undefined
         ? undefined
         : {
-            ...inputs.standardPbrPipelineState,
+            ...inputs.materialPipelineState,
             surfaceDirectInstancesBindGroupLayout: buildSurfaceDirectInstancesBindGroupLayout(
               device,
               { storageBuffer: true },
             ),
           };
-    const baseArtifact = inputs.standardPbrArtifact;
+    const baseArtifact = inputs.materialArtifact;
     expect(pipelineState).toBeDefined();
     expect(baseArtifact).toBeDefined();
     if (pipelineState === undefined || baseArtifact === undefined) return;

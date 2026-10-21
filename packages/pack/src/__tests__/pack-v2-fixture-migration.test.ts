@@ -21,6 +21,9 @@ const fixtures = [
           '008e4f75-e7a3-4715-b05b-b93a9ec12074',
         ],
       },
+      { guid: 'cbe42beb-8975-5096-b3a1-3dda4cb4c077', refs: [] },
+      { guid: 'f6af7007-158f-4d92-9e47-93bf2f213e1f', refs: [] },
+      { guid: '008e4f75-e7a3-4715-b05b-b93a9ec12074', refs: [] },
     ],
   },
   {

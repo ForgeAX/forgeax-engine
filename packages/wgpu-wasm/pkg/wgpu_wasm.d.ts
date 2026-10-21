@@ -463,6 +463,11 @@ export function emit_reflection(validated: ValidatedModule, options_json: string
  */
 export function parse(source: string): ParsedModule;
 
+/**
+ * Produce portable WGSL for each selected compute entry; never driver binaries.
+ */
+export function specialize_compute_entries(source: string, entries_json: string): string;
+
 export function start(): void;
 
 /**
@@ -612,13 +617,14 @@ export interface InitOutput {
     readonly rhiwgputexture_width: (a: number) => number;
     readonly rhiwgputextureview_forgeaxResourceKind: (a: number) => [number, number];
     readonly rhiwgputextureview_forgeaxToken: (a: number) => number;
+    readonly specialize_compute_entries: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly start: () => void;
     readonly validate: (a: number) => [number, number, number];
     readonly validate_render_entries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h37f68b3672e8b7bf: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h2e98ac29f1fbd5db: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__ha2ac7301205511eb: (a: number, b: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__hf4075af474fd64d6: (a: number, b: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

@@ -1,8 +1,9 @@
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, decodeMeshBinary } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { AssetGuid as AssetGuidType, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
+  createAssetOutputProducerRegistry,
   materialAssetOutputProducer,
   meshAssetOutputProducer,
 } from '../scriptable-pack-output-producers.js';
@@ -19,6 +20,66 @@ const TEXTURE_GUID = guid('019ffa97-3000-7000-8000-000000000003');
 const SAMPLER_GUID = guid('019ffa97-3000-7000-8000-000000000004');
 
 describe('ScriptablePack standard output producers', () => {
+  it.each([
+    'target',
+    'canvas',
+    'external',
+  ] as const)('rejects a runtime %s source at the Pack output boundary', async (source) => {
+    const result = await materialAssetOutputProducer.produce({
+      guid: AssetGuid.format(MATERIAL_GUID),
+      sourceKey: 'material/runtime-source',
+      asset: {
+        kind: 'material',
+        parameters: [{ name: 'map', type: 'texture' }],
+        values: {
+          map: { source: { kind: 'render-texture-source', source, owner: 'runtime-owner', id: 1 } },
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        detail: {
+          reason:
+            'Pack material textures require source GUIDs; runtime render sources cannot be persisted',
+        },
+      },
+    });
+  });
+
+  it('rejects a runtime source in a parameter default before it enters the cook contract', async () => {
+    const result = await materialAssetOutputProducer.produce({
+      guid: AssetGuid.format(MATERIAL_GUID),
+      sourceKey: 'material/runtime-default',
+      asset: {
+        kind: 'material',
+        parameters: [
+          {
+            name: 'map',
+            type: 'texture',
+            default: {
+              source: {
+                kind: 'render-texture-source',
+                source: 'canvas',
+                owner: 'runtime-owner',
+                id: 1,
+              },
+            },
+          },
+        ],
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        detail: {
+          reason:
+            'Pack material textures require source GUIDs; runtime render sources cannot be persisted',
+        },
+      },
+    });
+  });
+
   it('packs generated mesh bytes and derives default-material references', async () => {
     const mesh: MeshAsset = {
       ...createBoxGeometry(1, 1, 1).unwrap(),
@@ -33,7 +94,10 @@ describe('ScriptablePack standard output producers', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.payload).toBe(mesh);
+    expect(result.value.payload).toEqual({ kind: 'mesh' });
+    const body = result.value.artifacts.body;
+    if (body === undefined) throw new Error('missing mesh binary');
+    expect(decodeMeshBinary(body.bytes, [AssetGuid.format(MATERIAL_GUID)])).toEqual(mesh);
     expect(result.value.refs).toEqual([
       {
         guid: AssetGuid.format(MATERIAL_GUID),
@@ -175,5 +239,34 @@ describe('ScriptablePack standard output producers', () => {
     expect((result.value.payload as { values?: Record<string, unknown> }).values).toEqual({
       label: 'authoring-note',
     });
+  });
+});
+
+it('Tileset Pack outputs retain source GUIDs and reject runtime atlas handles', async () => {
+  const producer = createAssetOutputProducerRegistry().get('tileset');
+  if (producer === undefined) throw new Error('missing Tileset producer');
+  const asset = {
+    kind: 'tileset' as const,
+    atlases: [TEXTURE_GUID],
+    tileWidth: 1,
+    tileHeight: 1,
+    columns: 1,
+    rows: 1,
+    regions: [{ x: 0, y: 0, width: 1, height: 1 }],
+    tiles: [{ regionIndex: 0 }],
+  };
+  const input = { guid: AssetGuid.format(MATERIAL_GUID), sourceKey: 'tileset/atlas', asset };
+  const result = await producer.produce(input);
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.refs[0]?.guid).toBe(AssetGuid.format(TEXTURE_GUID));
+  expect(
+    await producer.produce({ ...input, asset: { ...asset, atlases: [123 as never] } }),
+  ).toMatchObject({
+    ok: false,
+    error: {
+      detail: {
+        reason: 'Pack Tileset atlases require source GUIDs; runtime handles cannot be persisted',
+      },
+    },
   });
 });

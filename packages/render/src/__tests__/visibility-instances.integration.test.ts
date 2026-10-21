@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { Instances } from '../components/instances';
@@ -10,11 +11,18 @@ import { extractFrames } from '../render-system-extract-tail';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
-function spawnInstance(world: World, state: keyof typeof VisibilityStateValue) {
+function spawnInstance(
+  world: World,
+  assets: AssetRegistry,
+  state: keyof typeof VisibilityStateValue,
+) {
   return world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: { assetHandle: assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap() },
+      },
       { component: MeshRenderer, data: {} },
       { component: Instances, data: { transforms: new Float32Array(IDENTITY) } },
       { component: Visibility, data: { state: VisibilityStateValue[state] } },
@@ -24,21 +32,23 @@ function spawnInstance(world: World, state: keyof typeof VisibilityStateValue) {
 
 describe('visibility instance producer gate', () => {
   it('gates an explicit Instances owner before producing a renderable', () => {
-    const world = new World();
-    const entity = spawnInstance(world, 'hidden');
+    const worldAssets = new AssetRegistry();
+    const world = new World({ assets: worldAssets });
+    const entity = spawnInstance(world, worldAssets, 'hidden');
 
-    const frame = extractFrames([world], 0);
+    const frame = extractFrames([world], 0, worldAssets);
 
     expect(frame.renderables.some((item) => item.entityKey === entity)).toBe(false);
     expect(frame.dispatch.some((item) => item.entityIndex === 0)).toBe(false);
   });
 
   it('keeps visible members of a mixed batch independent from hidden members', () => {
-    const world = new World();
-    spawnInstance(world, 'hidden');
-    const visible = spawnInstance(world, 'visible');
+    const worldAssets = new AssetRegistry();
+    const world = new World({ assets: worldAssets });
+    spawnInstance(world, worldAssets, 'hidden');
+    const visible = spawnInstance(world, worldAssets, 'visible');
 
-    const frame = extractFrames([world], 0);
+    const frame = extractFrames([world], 0, worldAssets);
 
     expect(frame.renderables.map((item) => item.entityKey)).toEqual([visible]);
     expect(frame.dispatch.length).toBe(2);

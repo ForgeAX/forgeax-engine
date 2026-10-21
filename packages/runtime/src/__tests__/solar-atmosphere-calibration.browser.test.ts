@@ -11,6 +11,7 @@ import { scenePlugin } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 import {
   attachRenderer,
   captureFrame,
@@ -54,7 +55,7 @@ it('calibrates physical Mie scattering and anisotropy with fixed exposure and su
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, {
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
     aspect: OUTPUT_WIDTH / OUTPUT_HEIGHT,
     includeAtmosphere: true,
   });

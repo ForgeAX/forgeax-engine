@@ -8,7 +8,7 @@ import {
   type PointsLinesLane,
   type PointsLinesLaneContract,
 } from './record';
-import type { PointsLinesRetainedSnapshot } from './snapshot';
+import type { PointsLinesPreparedSnapshot } from './snapshot';
 
 export interface PointsLinesGpuResourceAdapter<Resource> {
   create(geometry: PointsLinesExpandedGeometry): Result<Resource, Error>;
@@ -20,7 +20,7 @@ export interface PointsLinesGpuResourceAdapter<Resource> {
 interface PointsLinesPreparedResource<Resource> {
   readonly resource: Resource;
   readonly geometry: PointsLinesExpandedGeometry;
-  readonly snapshot: PointsLinesRetainedSnapshot;
+  readonly snapshot: PointsLinesPreparedSnapshot;
   readonly uploadedBytes: number;
   readonly lastKnownGood: true;
 }
@@ -33,7 +33,7 @@ interface PointsLinesPreparationOptions<Resource> {
 export interface PointsLinesLanePreparationAdapter<Resource> {
   readonly contract: PointsLinesLaneContract;
   prepare(
-    snapshot: PointsLinesRetainedSnapshot,
+    snapshot: PointsLinesPreparedSnapshot,
     mesh: MeshAsset,
   ): Result<PointsLinesPreparedResource<Resource>, PointsLinesPrepareFailedError>;
   resetForDeviceLoss(): void;
@@ -71,7 +71,7 @@ export class PointsLinesPreparation<Resource> {
   constructor(private readonly options: PointsLinesPreparationOptions<Resource>) {}
 
   prepare(
-    snapshot: PointsLinesRetainedSnapshot,
+    snapshot: PointsLinesPreparedSnapshot,
     mesh: MeshAsset,
   ): Result<PointsLinesPreparedResource<Resource>, PointsLinesPrepareFailedError> {
     const geometry = this.options.cache.getOrCreate(snapshot, mesh);
@@ -148,7 +148,7 @@ export class PointsLinesPreparation<Resource> {
   }
 
   private fail(
-    snapshot: PointsLinesRetainedSnapshot,
+    snapshot: PointsLinesPreparedSnapshot,
     cause: Error,
   ): Result<never, PointsLinesPrepareFailedError> {
     this.pendingCandidateBytes = 0;

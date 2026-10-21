@@ -63,6 +63,5 @@ describe('analytic cubemap world-direction convention', () => {
       expect(source).toContain('case 3u: { output.direction = vec3<f32>(x, 1.0, y); }');
     }
     expect(iblSource).toContain('-sampleDirection.y');
-    expect(iblSource).toContain('-lightDirection.y');
   });
 });

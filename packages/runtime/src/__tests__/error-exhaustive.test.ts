@@ -1,20 +1,3 @@
-// error-exhaustive.test - locks the AssetErrorCode 23-member exhaustive
-// switch with the M1 +`tileset-tile-entry-malformed` arm
-// (feat-20260608-tilemap-object-layer-rendering M1; plan-tasks m1-t3 /
-// m1-t4; plan-strategy §D-6 closed union + .detail.field 7-variant enum;
-// charter P3 explicit failure + P4 consistent abstraction).
-//
-// Why a new focused file?
-//   The pre-existing `errors.unit.test.ts` is a merged super-file that
-//   covers many error codes; this file scopes the M1 contract for
-//   tileset-tile-entry-malformed so AI users grep `error-exhaustive`
-//   to land on the closed-union assertions without paging the larger
-//   merged file (charter F1 single-import affordance).
-//
-// RED before m1-t4: 'tileset-tile-entry-malformed' is not yet a member
-// of AssetErrorCode; the exhaustive `switch (code)` body fails TS narrow
-// + the `const code: AssetErrorCode = '...'` assignment fails compile.
-
 import {
   ASSET_ERROR_HINTS,
   AssetError,
@@ -23,7 +6,7 @@ import {
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
-describe('ASSET_ERROR_HINTS runtime guard (28-member key set)', () => {
+describe('ASSET_ERROR_HINTS runtime guard', () => {
   it('ASSET_ERROR_HINTS includes the tileset-tile-entry-malformed key with non-empty hint', () => {
     expect(ASSET_ERROR_HINTS).toHaveProperty('tileset-tile-entry-malformed');
     const hint: string = ASSET_ERROR_HINTS['tileset-tile-entry-malformed'];
@@ -45,11 +28,6 @@ describe('ASSET_ERROR_HINTS runtime guard (28-member key set)', () => {
     expect(hint.length).toBeGreaterThan(0);
   });
 
-  it('Object.keys(ASSET_ERROR_HINTS) length is 28', () => {
-    const keys = Object.keys(ASSET_ERROR_HINTS);
-    expect(keys.length).toBe(28);
-  });
-
   it('hint contains >= 3 of the 7 .detail.field tokens', () => {
     const hint: string = ASSET_ERROR_HINTS['tileset-tile-entry-malformed'];
     const tokens = [
@@ -66,10 +44,16 @@ describe('ASSET_ERROR_HINTS runtime guard (28-member key set)', () => {
   });
 });
 
-describe('AssetErrorCode 28-member exhaustive switch', () => {
-  it('exhaustive switch over the 28 members compiles without a default branch', () => {
+describe('AssetErrorCode exhaustive switch', () => {
+  it('every code has an exhaustive classification and a nonempty hint', () => {
     function classify(code: AssetErrorCode): string {
       switch (code) {
+        case 'asset-not-ready':
+        case 'asset-reference-invalid':
+        case 'asset-owner-closed':
+        case 'asset-write-conflict':
+        case 'asset-budget-exceeded':
+          return code;
         case 'asset-not-found':
           return 'not-found';
         case 'asset-parse-failed':
@@ -130,6 +114,10 @@ describe('AssetErrorCode 28-member exhaustive switch', () => {
           return 'mipgen-unsupported-compressed-format';
       }
       // No default -- TS proves completeness (charter P3).
+    }
+    for (const code of Object.keys(ASSET_ERROR_HINTS) as AssetErrorCode[]) {
+      expect(classify(code).length).toBeGreaterThan(0);
+      expect(ASSET_ERROR_HINTS[code].length).toBeGreaterThan(0);
     }
     expect(classify('tileset-tile-entry-malformed')).toBe('tileset-tile-entry-malformed');
     expect(classify('tileset-region-index-out-of-range')).toBe('tileset-region-index-out-of-range');

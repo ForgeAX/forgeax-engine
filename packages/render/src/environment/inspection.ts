@@ -11,7 +11,6 @@ export interface EnvironmentInspectionFailure {
 export interface EnvironmentInspectionGeneration {
   readonly signature: string;
   readonly generation: number;
-  readonly lane: 'direct' | 'clustered';
   readonly source: 'none' | 'image' | 'atmosphere';
   readonly resourceCount: number;
   readonly bytes: number;
@@ -22,7 +21,6 @@ export interface EnvironmentInspectionGeneration {
 export interface EnvironmentInspection {
   readonly signature: string | undefined;
   readonly generation: number | undefined;
-  readonly lane: 'direct' | 'clustered' | undefined;
   readonly retired: boolean | undefined;
   readonly source: 'none' | 'image' | 'atmosphere' | undefined;
   readonly status: EnvironmentInspectionStatus;
@@ -76,7 +74,6 @@ export function inspectEnvironment(
   return Object.freeze({
     signature: generation?.signature,
     generation: generation?.generation,
-    lane: generation?.lane,
     retired: generation?.retired,
     source: details.source,
     status,

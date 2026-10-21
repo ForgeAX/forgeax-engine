@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { createWorldContext, World, type EntityHandle } from '@forgeax/engine-ecs';
@@ -5,8 +6,8 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { Context } from '@forgeax/engine-plugin';
 import { Camera, type RenderWorldLease } from '@forgeax/engine-render';
 import { GlobalTransform, Transform, scenePlugin } from '@forgeax/engine-scene';
-import { type Handle, type MaterialAsset } from '@forgeax/engine-types';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   createVfxEffectContract,
   loadVfxGpuEffect,
@@ -131,10 +132,13 @@ async function loadMaterial(
   world: World,
   assets: AssetRegistry,
   guid: string,
-): Promise<Handle<'MaterialAsset', 'shared'>> {
-  const loaded = await assets.loadByGuid<MaterialAsset>(assets.parseGuid(guid));
+): Promise<AssetHandle<'material'>> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const loaded = await assets.load(assets.parseGuid(guid), 'material');
   if (!loaded.ok) throw new Error(`boss-lightning: material load failed ${guid}: ${loaded.error.hint}`);
-  return world.allocSharedRef('MaterialAsset', loaded.value);
+  return loaded.value;
 }
 
 export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
@@ -173,6 +177,9 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const assets = appResult.value.assets;
   if (assets === undefined) throw new Error('boss-lightning: App did not expose its AssetRegistry');
   const world = appResult.value.world;
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   renderer.subscribe((event) => {
     if (event.kind !== 'error') return;
     const error = event.error;
@@ -201,7 +208,8 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   cameraEntities.set(world, cameraEntity);
   const loaded = await loadVfxGpuEffect(assets, EFFECT_GUID);
   if (!loaded.ok) throw new Error(`boss-lightning: GPU effect load failed: ${String(loaded.error)}`);
-  const effect = world.allocSharedRef('ParticleEffectAsset', loaded.value);
+  const effect = loaded.value;
+  const effectAsset = assets.read(effect).unwrap();
   world.addComponent(scene.player, {
     component: ParticleEffectPlayer,
     data: {
@@ -212,6 +220,7 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     },
   }).unwrap();
   let m35World: World | undefined;
+
   let m35Player: EntityHandle | undefined;
   let m35Context: Context | undefined;
   let mainLease: RenderWorldLease | undefined;
@@ -220,7 +229,7 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     const attachedMainRendererWorld = renderer.attach(world);
     if (!attachedMainRendererWorld.ok) throw attachedMainRendererWorld.error;
     mainLease = attachedMainRendererWorld.value;
-    m35World = new World();
+    m35World = new World({ assets: assets });
     const m35Camera = m35World
       .spawn(
         { component: Transform, data: { pos: [0, 1.2, 7.5] } },
@@ -231,7 +240,7 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       )
       .unwrap();
     cameraEntities.set(m35World, m35Camera);
-    const m35Effect = m35World.allocSharedRef('ParticleEffectAsset', loaded.value);
+    const m35Effect = loaded.value;
     m35Player = m35World
       .spawn(
         { component: Transform, data: { pos: [0, -0.2, 0] } },
@@ -307,12 +316,12 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       player: scene.player,
       renderer,
       feature: host.feature,
-      effectAsset: loaded.value,
+      effectAsset,
       scene,
       status: () => {
         const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
         const eventCounters = runtime.eventCounters(scene.player);
-        const stage = stageEvidence(loaded.value, falsifyMode, runtime.hasPlayer(scene.player));
+        const stage = stageEvidence(effectAsset, falsifyMode, runtime.hasPlayer(scene.player));
         return {
           queuedIntents: runtime.snapshot().length,
           renderGeneration: runtime.renderGeneration,
@@ -332,8 +341,8 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
         const status = runtime.eventCounters(scene.player);
         const committed = runtime.lastCommitted(scene.player);
-        const stage = stageEvidence(loaded.value, falsifyMode, runtime.hasPlayer(scene.player));
-        const renderers = loaded.value.program.emitters.flatMap((emitter) =>
+        const stage = stageEvidence(effectAsset, falsifyMode, runtime.hasPlayer(scene.player));
+        const renderers = effectAsset.program.emitters.flatMap((emitter) =>
           emitter.renderers.map((renderer) => renderer.kind),
         );
         return {

@@ -51,9 +51,9 @@ export function spawnBiasesScene(world, aspect) {
   const plane = createPlaneGeometry(2 * SPAWN_PLANE_DEPTH, 2 * SPAWN_PLANE_DEPTH);
   if (!sphere.ok) throw sphere.error;
   if (!plane.ok) throw plane.error;
-  const sphereMesh = world.allocSharedRef('MeshAsset', sphere.value);
+  const sphereMesh = world.assets.create(sphere.value).unwrap();
   const white = (roughness) =>
-    world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness }));
+    world.assets.create(Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness })).unwrap();
   const sphereMaterial = white(0.5);
   for (let z = -SPAWN_PLANE_DEPTH; z <= 0; z += 2) {
     world.spawn(
@@ -64,7 +64,7 @@ export function spawnBiasesScene(world, aspect) {
   }
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: FLAT, scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', plane.value) } },
+    { component: MeshFilter, data: { assetHandle: world.assets.create(plane.value).unwrap() } },
     { component: MeshRenderer, data: { materials: [white(1)] } },
   ).unwrap();
 

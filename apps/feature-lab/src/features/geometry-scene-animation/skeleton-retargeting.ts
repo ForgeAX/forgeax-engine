@@ -7,6 +7,7 @@ import {
   deriveAnimationTargetId,
   retargetAnimationClip,
 } from '@forgeax/engine/animation';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { defineSystem, type EntityHandle, Update } from '@forgeax/engine/ecs';
 import { Name, Transform } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
@@ -25,6 +26,10 @@ export default defineFeature({
   expect:
     'ON: the orange tall strip copies the cyan source bend, keeping 1.4 m bones against the source 0.9 m bones. The green strip matches the orange runtime target through baked playback. OFF: both targets stand straight while the source stays bent.',
   setup({ world, app }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0.4, 2, 12], target: [0.4, 1.3, 0] });
     const source = spawnAnimatedRig(world, -2.7, 0.9, [0.1, 0.8, 1, 1]);
     const target = spawnAnimatedRig(world, 0, 1.4, [1, 0.45, 0.08, 1]);
@@ -56,7 +61,7 @@ export default defineFeature({
       .addComponent(source[0], {
         component: AnimationPlayer,
         data: {
-          clips: [world.allocSharedRef('AnimationClip', clip)],
+          clips: [sceneAssets.create(clip).unwrap()],
           times: [1],
           weights: [1],
           speeds: [0],
@@ -83,7 +88,7 @@ export default defineFeature({
       .addComponent(bakedJoints[0], {
         component: AnimationPlayer,
         data: {
-          clips: [world.allocSharedRef('AnimationClip', baked)],
+          clips: [sceneAssets.create(baked).unwrap()],
           times: [1],
           weights: [1],
           speeds: [0],

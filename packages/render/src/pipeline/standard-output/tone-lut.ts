@@ -92,6 +92,7 @@ export function addStandardToneLutPass(
     encode: ({ frame, pass, resources }) => {
       const { runtime } = frame as _InternalRenderPipelineContext;
       const device = runtime.device;
+      const binding = lut.bind(frame);
       const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
       const entry = runtime.lookupPostProcess?.(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID);
       const params = frame.postProcessParams.get(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID);
@@ -125,7 +126,7 @@ export function addStandardToneLutPass(
           cached.source === entry.source &&
           cached.format === output.format &&
           cached.sampleCount === output.sampleCount &&
-          cached.lutLayout === lut.bindGroupLayout,
+          cached.lutLayout === binding.bindGroupLayout,
       );
       if (program === undefined) {
         const empty = device.createBindGroupLayout({ entries: [] });
@@ -139,7 +140,7 @@ export function addStandardToneLutPass(
         });
         if (!inputLayout.ok) throw inputLayout.error;
         const layout = device.createPipelineLayout({
-          bindGroupLayouts: [empty.value, inputLayout.value, lut.bindGroupLayout],
+          bindGroupLayouts: [empty.value, inputLayout.value, binding.bindGroupLayout],
         });
         if (!layout.ok) throw layout.error;
         const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
@@ -165,7 +166,7 @@ export function addStandardToneLutPass(
           source: entry.source,
           format: output.format,
           sampleCount: output.sampleCount,
-          lutLayout: lut.bindGroupLayout,
+          lutLayout: binding.bindGroupLayout,
           inputLayout: inputLayout.value,
           sampler: sampler.value,
           pipeline: pipeline.value,
@@ -210,7 +211,7 @@ export function addStandardToneLutPass(
       }
       pass.setPipeline(program.pipeline);
       pass.setBindGroup(1, retainedBinding.group);
-      pass.setBindGroup(2, lut.bindGroup);
+      pass.setBindGroup(2, binding.bindGroup);
       pass.draw(3, 1, 0, 0);
     },
   });

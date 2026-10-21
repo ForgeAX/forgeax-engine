@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { observeNextFrame } from './support/observe';
 
 export default defineFeature({
@@ -11,10 +13,16 @@ export default defineFeature({
   expect:
     'All checks pass: one linear-hdr observation for the exact receipt frame, rgba16float bytes sized bytesPerRow x height, non-black content, and matching graph generation.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [1, 0.2, 0.1, 1], emissive: [2, 0.4, 0.2] }),
       {
         pos: [0, 0.6, 0],

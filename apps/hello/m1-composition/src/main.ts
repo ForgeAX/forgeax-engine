@@ -1,11 +1,13 @@
 import { createApp } from '@forgeax/engine-app/browser';
 import { FixedUpdate, Update, defineComponent } from '@forgeax/engine-ecs';
 import { INPUT_MAP_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { addOnEnter, addOnExit, defineState, despawnOnExit, getState, setNextState } from '@forgeax/engine-state';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const Mode = defineState('M1LiveCompositionMode', ['menu', 'play']);
 const Marker = defineComponent('M1LiveCompositionMarker', { value: 'u32' });
@@ -39,7 +41,11 @@ if (!appResult.ok) {
 }
 
 const app = appResult.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
 const { world } = app;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const liveState = { value: 'boot' };
 const liveFrames = { value: 0 };
 const liveFixedTicks = { value: 0 };
@@ -85,10 +91,10 @@ world.insertResource(INPUT_MAP_KEY, [
 ]);
 world.insertResource('m1LiveInput', { jump: false, justPressed: false });
 
-const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.1, 0.7, 0.95, 1]));
+const material = app.assets.create(Materials.unlit([0.1, 0.7, 0.95, 1])).unwrap();
 const root = world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], scale: [1, 1, 1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [material] } },
 ).unwrap();
 const child = world.spawn({ component: Marker, data: { value: 7 } }).unwrap();

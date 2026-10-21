@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
@@ -5,7 +7,7 @@ import type {
   AnimationClip,
   AnimationTargetIdValue,
   AnimationTransformChannel,
-  Handle,
+  AssetHandle,
 } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { subscribeAnimationDiagnostics } from '../animation-diagnostic';
@@ -36,7 +38,7 @@ function clip(targetId = TARGET_ID): AnimationClip {
 
 async function playerWithClip(world: World, animationClip = clip()): Promise<EntityHandle> {
   await createWorldContext(world, [animationPlugin()]);
-  const handle = world.allocSharedRef('AnimationClip', animationClip);
+  const handle = runtimeAssetRegistry(world.assets).create(animationClip).unwrap();
   return world
     .spawn({
       component: AnimationPlayer,
@@ -55,7 +57,7 @@ afterEach(() => {
 
 describe('animation runtime diagnostics', () => {
   it('projects unique channels to subscribers while preserving per-channel console facts', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const singleChannel = clip();
     const firstChannel = singleChannel.channels[0];
     if (firstChannel === undefined) throw new Error('fixture requires one animation channel');
@@ -98,8 +100,8 @@ describe('animation runtime diagnostics', () => {
   });
 
   it('emits a readonly structured missing-target diagnostic once per full tuple and World', async () => {
-    const first = new World();
-    const second = new World();
+    const first = new World({ assets: new AssetRegistry() });
+    const second = new World({ assets: new AssetRegistry() });
     const firstPlayer = await playerWithClip(first);
     await playerWithClip(second);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -128,7 +130,7 @@ describe('animation runtime diagnostics', () => {
   });
 
   it('reuses stable target bindings until relationship inputs change', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const player = await playerWithClip(world);
     const target = world.spawn({ component: Transform, data: {} }).unwrap() as EntityHandle;
     world
@@ -166,7 +168,7 @@ describe('animation runtime diagnostics', () => {
   });
 
   it('emits structured diagnostics for missing Transform, duplicate IDs, and missing channels', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const player = await playerWithClip(world);
     const target = world.spawn({ component: Transform, data: {} }).unwrap() as EntityHandle;
     world
@@ -203,13 +205,11 @@ describe('animation runtime diagnostics', () => {
     world.update(0.25);
 
     const secondClip: AnimationClip = { kind: 'animation-clip', duration: 1, channels: [] };
-    const secondHandle = world.allocSharedRef('AnimationClip', secondClip);
+    const secondHandle = runtimeAssetRegistry(world.assets).create(secondClip).unwrap();
     world.set(player, AnimationPlayer, {
       clips: [
-        world.get(player, AnimationPlayer).unwrap().clips[0] as unknown as Handle<
-          'AnimationClip',
-          'shared'
-        >,
+        world.get(player, AnimationPlayer).unwrap()
+          .clips[0] as unknown as AssetHandle<'animation-clip'>,
         secondHandle,
       ],
       times: [0, 0],
@@ -226,7 +226,7 @@ describe('animation runtime diagnostics', () => {
   });
 
   it('preserves missing-slot diagnostic order and the first covering channel across three clips', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const translation = clip();
     const player = await playerWithClip(world, translation);
     const rotation: AnimationClip = {
@@ -244,15 +244,21 @@ describe('animation runtime diagnostics', () => {
         },
       ],
     };
-    const rotationHandle = world.allocSharedRef('AnimationClip', rotation);
-    const emptyHandle = world.allocSharedRef('AnimationClip', {
-      kind: 'animation-clip',
-      duration: 1,
-      channels: [],
-    } satisfies AnimationClip);
+    const rotationHandle = runtimeAssetRegistry(world.assets).create(rotation).unwrap();
+    const emptyHandle = runtimeAssetRegistry(world.assets)
+      .create({
+        kind: 'animation-clip',
+        duration: 1,
+        channels: [],
+      } satisfies AnimationClip)
+      .unwrap();
     world
       .set(player, AnimationPlayer, {
-        clips: [world.allocSharedRef('AnimationClip', translation), rotationHandle, emptyHandle],
+        clips: [
+          runtimeAssetRegistry(world.assets).create(translation).unwrap(),
+          rotationHandle,
+          emptyHandle,
+        ],
         times: [0, 0, 0],
         weights: [1, 1, 1],
         speeds: [1, 1, 1],
@@ -292,7 +298,7 @@ describe('animation runtime diagnostics', () => {
     const saved = proc.process?.env.NODE_ENV;
     if (proc.process !== undefined) proc.process.env.NODE_ENV = 'production';
     try {
-      const world = new World();
+      const world = new World({ assets: new AssetRegistry() });
       await playerWithClip(world);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       world.update(0.25);

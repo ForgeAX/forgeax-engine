@@ -13,19 +13,11 @@ import {
   type World,
 } from '@forgeax/engine-ecs';
 import { TransformInterpolation } from '@forgeax/engine-scene';
+import type { RigidBodyType } from '@forgeax/engine-types';
 import type { PhysicsVector } from './derived-physics.js';
 import { PhysicsError } from './errors.js';
 
-/**
- * RigidBody motion type — 3-state discriminant mirroring Rapier's
- * Dynamic / Fixed / KinematicPositionBased triplet.
- *
- * `'static'`: infinite mass, never moves (Rapier Fixed).
- * `'dynamic'`: driven by forces, gravity, collisions (Rapier Dynamic).
- * `'kinematic'`: user-controlled position, velocity derived by engine
- *                (Rapier KinematicPositionBased).
- */
-export type RigidBodyType = 'static' | 'dynamic' | 'kinematic';
+export type { RigidBodyType };
 
 /**
  * Collider shape discriminant — 3 AI-friendly shape names.
@@ -126,6 +118,7 @@ export const RigidBody = defineComponent(
     angularDamping: { type: 'f32', default: 0 },
     gravityScale: { type: 'f32', default: 1 },
     ccdEnabled: { type: 'bool', default: false },
+    lockRotation: { type: 'bool', default: false },
     additionalSolverIterations: { type: 'u32', default: 0 },
   },
   { requires: [TransformInterpolation] },
@@ -145,7 +138,7 @@ export const RigidBody = defineComponent(
  * |:--|:--|:--|:--|
  * | `shape` | `ColliderShape` | — | Shape discriminant |
  * | `halfExtents` | `[number, number, number]` | `[0.5, 0.5, 0.5]` | Cuboid half-width/height/depth |
- * | `mesh` | `shared<MeshAsset>` | `0` | Cooked source for convexHull / trimesh |
+ * | `mesh` | `asset<mesh>` | `0` | Cooked source for convexHull / trimesh |
  * | `radius` | `number` | `0.5` | Sphere / capsule / cylinder / cone radius |
  * | `halfHeight` | `number` | `0.5` | Capsule / cylinder / cone half-height |
  * | `friction` | `number` | `0.5` | Coulomb friction coefficient |
@@ -158,7 +151,7 @@ export const RigidBody = defineComponent(
 export const Collider = defineComponent('Collider', {
   shape: { type: 'enum', default: COLLIDER_SHAPE_CUBOID, labels: ColliderShapeValue },
   /** ConvexHull/trimesh resolve this ordinary mesh asset; slot zero is unbound. */
-  mesh: { type: 'shared<MeshAsset>' },
+  mesh: { type: 'asset<mesh>' },
   // feat-20260709 M4: cuboid half-extents collapsed from 3 per-axis scalar
   // columns into one inline array<f32,3> column. Explicit layer-2 default
   // (the array layer-3 fallback is all-zero, which would give a degenerate

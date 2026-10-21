@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { Box, Folder, Image, Settings, SlidersHorizontal } from 'lucide-react';
+import { Box, Eye, Folder, Image, Play, RotateCcw, Settings, SlidersHorizontal, Square } from 'lucide-react';
 import { useState } from 'react';
 import {
   Button,
@@ -7,6 +7,7 @@ import {
   ConfigPreviewLayout,
   FileRow,
   IconButton,
+  MenuDropdown,
   NavigationRail,
   PanelHeader,
   PropertyRow,
@@ -15,6 +16,7 @@ import {
   Text,
   TextInput,
   Toolbar,
+  Tooltip,
 } from './components';
 import { InspectorForm } from './InspectorForm';
 import { AssetReferenceField } from './AssetReferenceField';
@@ -59,6 +61,49 @@ export const PanelChrome: Story = {
   ),
 };
 
+function ViewportToolbarExamples() {
+  const [playing, setPlaying] = useState(false);
+  const [wireframe, setWireframe] = useState(false);
+  const [statistics, setStatistics] = useState(true);
+  return <div style={{ display: 'grid', gap: 16, maxWidth: 640 }}>
+    <section aria-label="Scene">
+      <Toolbar className="fx-toolbar--viewport" aria-label="Scene execution">
+        <IconButton label={playing ? 'Stop' : 'Play'} icon={playing ? <Square className="fx-icon" /> : <Play className="fx-icon" />} size="compact" onClick={() => setPlaying(value => !value)} />
+      </Toolbar>
+    </section>
+    <section aria-label="Mesh">
+      <Toolbar className="fx-toolbar--viewport" aria-label="Mesh preview options">
+        <Tooltip title="View mode" description="Switch between material and wireframe previews." placement="bottom" portaled>
+          <MenuDropdown label="View mode" trigger={<IconButton label="View mode" title="" icon={<Box className="fx-icon" />} size="compact" />} items={[
+            { id: 'material', label: 'Material', selection: 'radio', checked: !wireframe, onSelect: () => setWireframe(false) },
+            { id: 'wireframe', label: 'Wireframe', selection: 'radio', checked: wireframe, onSelect: () => setWireframe(true) },
+          ]} />
+        </Tooltip>
+        <Tooltip title="Show" description="Set visibility for collision, bounds and statistics." placement="bottom" portaled>
+          <MenuDropdown label="Show" trigger={<IconButton label="Show" title="" icon={<Eye className="fx-icon" />} size="compact" />} items={[
+            { id: 'statistics', label: 'Statistics', selection: 'checkbox', checked: statistics, onSelect: () => setStatistics(value => !value) },
+          ]} />
+        </Tooltip>
+        <Tooltip title="Reset view" description="Restore the view from when this mesh preview was opened." placement="bottom" portaled>
+          <IconButton label="Reset view" title="" icon={<RotateCcw className="fx-icon" />} size="compact" onClick={() => { setWireframe(false); setStatistics(true); }} />
+        </Tooltip>
+      </Toolbar>
+    </section>
+    <section aria-label="Material">
+      <Toolbar className="fx-toolbar--viewport" aria-label="Material preview">
+        <Tooltip title="Restore view" description="Restore the view from when this material preview was opened." placement="bottom" portaled>
+          <IconButton label="Restore view" title="" icon={<RotateCcw className="fx-icon" />} size="compact" disabled />
+        </Tooltip>
+      </Toolbar>
+    </section>
+  </div>;
+}
+
+export const ViewportToolbars: Story = {
+  parameters: { docs: { description: { story: 'Scene, mesh and material actions share a normal-flow toolbar above the preview. Only Scene contributes execution commands.' } } },
+  render: () => <ViewportToolbarExamples />,
+};
+
 export const InspectorSections: Story = {
   parameters: { docs: { description: { story: 'Trailing controls are siblings of the disclosure button. They remain keyboard accessible and do not toggle the section.' } } },
   render: () => (
@@ -78,6 +123,14 @@ export const InspectorSections: Story = {
       </CollapsibleSection>
     </div>
   ),
+};
+
+export const NativeInspectionFacts: Story = {
+  parameters: { docs: { description: { story: 'Native metadata uses full field paths, keeping repeated identity and metadata names independently keyed.' } } },
+  render: () => <div style={{ width: 360 }}><InspectorForm inspection={{
+    guid: 'mesh-guid', asset: { kind: 'mesh', name: 'Cube' },
+    meta: { kind: 'mesh', vertexCount: 24, collision: { kind: 'triangles', triangleCount: 12 } },
+  }} /></div>,
 };
 
 export const ReadOnlyInspectorForm: Story = {

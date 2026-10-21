@@ -1,6 +1,6 @@
 import { vec3 } from '@forgeax/engine-math';
 import type { PhysicsContactObservation } from '@forgeax/engine-physics';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
 import type { World as RapierWorld } from '../../pkg/rapier.mjs';
@@ -43,7 +43,7 @@ it.each([
         body(1),
         {
           shape,
-          mesh: toShared<'MeshAsset'>(0),
+          mesh: 0 as AssetHandle<'mesh'>,
           halfExtents: [0.2, 0.2, 0.2],
           radius: 0.2,
           halfHeight: 0.2,

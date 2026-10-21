@@ -63,7 +63,7 @@ it('preserves exact physical bytes across authored LOD prefixes and zero-capacit
       // A new plan identity with identical encoded bytes must not upload any
       // part of the unchanged table, even when authored prefixes are long.
       f.update({ ...plan, revision: ++revision }).unwrap();
-      expect(f.view.inspect().candidateUploadBytes).toBe(0);
+      expect(f.view.inspect().sharedInputUploadBytes).toBe(0);
       f.update(f.original).unwrap();
     }
     f.update(f.changed).unwrap();

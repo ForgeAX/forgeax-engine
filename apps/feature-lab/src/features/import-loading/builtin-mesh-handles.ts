@@ -1,28 +1,10 @@
-import {
-  BUILTIN_BASE,
-  BuiltinAssetRegistry,
-  builtinMeshGuid,
-  HANDLE_CUBE,
-  HANDLE_CYLINDER,
-  HANDLE_NINESLICE_QUAD,
-  HANDLE_QUAD,
-  HANDLE_SPHERE,
-  HANDLE_TRIANGLE,
-  resolveAssetHandle,
-} from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { MeshRenderer } from '@forgeax/engine/render';
-import { defineFeature, type FeatureCheck } from '../../lab/feature';
+import { defineFeature } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
-const HANDLES = [
-  ['cube', HANDLE_CUBE],
-  ['triangle', HANDLE_TRIANGLE],
-  ['quad', HANDLE_QUAD],
-  ['sphere', HANDLE_SPHERE],
-  ['nine-slice quad', HANDLE_NINESLICE_QUAD],
-  ['cylinder', HANDLE_CYLINDER],
-] as const;
-
+const SHAPES = ['cube', 'triangle', 'quad', 'sphere', 'nine-slice-quad', 'cylinder'] as const;
 const COLORS = [
   [0.9, 0.2, 0.2, 1],
   [0.95, 0.6, 0.15, 1],
@@ -33,16 +15,21 @@ const COLORS = [
 ] as const;
 
 export default defineFeature({
-  title: 'Builtin mesh handles',
+  title: 'Code-created primitive assets',
   catalog: 'Builtin mesh handles',
   kind: 'visual',
   summary:
-    'All six HANDLE_* builtins render straight from process-static payloads: no catalog, no loadByGuid, no World shared-ref slot. Each handle also maps to a stable builtin GUID.',
+    'Six geometry factories create ordinary runtime mesh assets; the host owns their identity, contents and lifetime.',
   expect:
-    'ON: cube, triangle, quad, sphere, nine-slice quad and cylinder in six saturated colors. OFF: the same six shapes turn plain white. Checks: every handle resolves without a World, maps to a GUID, and sits below BUILTIN_BASE.',
-  setup({ world }) {
+    'ON: six saturated shapes. OFF: the same shapes turn white. Each mesh resolves through its owner and rejects a foreign owner.',
+  setup({ app, world }) {
     spawnStage(world);
-    const liveBefore = world.sharedRefs._liveCount();
+    const assets = app.assets;
+    if (assets === undefined) throw new Error('App asset service is unavailable');
+    const sharedBefore = world.sharedRefs._liveCount();
+    const meshes = SHAPES.map((shape) =>
+      assets.create(createPrimitiveMesh(shape).unwrap()).unwrap(),
+    );
     const tinted = COLORS.map((baseColor) =>
       standard(world, { baseColor, roughness: 0.5, renderState: { cullMode: 'none' } }),
     );
@@ -51,42 +38,35 @@ export default defineFeature({
       roughness: 0.5,
       renderState: { cullMode: 'none' },
     });
-    const entities = HANDLES.map(([, handle], index) =>
-      spawnMesh(world, handle, tinted[index] as (typeof tinted)[number], {
-        pos: [-2.5 + index, 0.6, 0],
-        scale: [0.8, 0.8, 0.8],
-      }),
-    );
-    const liveAfter = world.sharedRefs._liveCount();
+    const entities = meshes.map((mesh, index) => {
+      const material = tinted[index];
+      if (material === undefined) throw new Error('Primitive material is unavailable');
+      return {
+        material,
+        entity: spawnMesh(world, mesh, material, {
+          pos: [-2.5 + index, 0.6, 0],
+          scale: [0.8, 0.8, 0.8],
+        }),
+      };
+    });
     return {
       toggle(on) {
-        entities.forEach((entity, index) => {
-          world.set(entity, MeshRenderer, { materials: [on ? tinted[index] : white] } as never);
+        entities.forEach(({ entity, material }) => {
+          world.set(entity, MeshRenderer, { materials: [on ? material : white] }).unwrap();
         });
       },
       checks() {
-        const perHandle: FeatureCheck[] = HANDLES.flatMap(([name, handle]) => {
-          const payload = BuiltinAssetRegistry.resolve(handle);
-          const viaWorld = resolveAssetHandle(world, handle);
-          return [
-            {
-              name: `${name}: resolves without a World`,
-              ok: payload !== null && payload.kind === 'mesh',
-            },
-            { name: `${name}: resolves through the World path`, ok: viaWorld.ok },
-            {
-              name: `${name}: stable builtin GUID`,
-              ok: typeof builtinMeshGuid(handle) === 'string',
-            },
-            { name: `${name}: slot below BUILTIN_BASE`, ok: Number(handle) < BUILTIN_BASE },
-          ];
-        });
+        const foreign = new AssetRegistry();
+        const checks = meshes.flatMap((mesh, index) => [
+          { name: `${SHAPES[index]} resolves through its owner`, ok: assets.read(mesh).ok },
+          { name: `${SHAPES[index]} rejects a foreign owner`, ok: !foreign.read(mesh).ok },
+        ]);
+        foreign.dispose();
         return [
-          ...perHandle,
+          ...checks,
           {
-            name: 'builtin meshes take no shared-ref slot (only the 7 materials do)',
-            ok: liveAfter - liveBefore === COLORS.length + 1,
-            detail: `${liveAfter - liveBefore} slots`,
+            name: 'assets occupy no ECS shared-value slot',
+            ok: world.sharedRefs._liveCount() === sharedBefore,
           },
         ];
       },

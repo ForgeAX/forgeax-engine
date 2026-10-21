@@ -7,8 +7,68 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import { pnpmCommand } from '../../lib/pnpm-command.mjs';
+import { cleanRetiredModelingSubmoduleCheckout } from '../prepare-pnpm-workspace.mjs';
 
 const script = resolve('scripts/ci/prepare-pnpm-workspace.mjs');
+
+test('removes only an untracked retired Modeling submodule from its own CI workspace', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-retired-modeling-checkout-'));
+  const workspaceEnvironment = { GITHUB_ACTIONS: 'true', GITHUB_WORKSPACE: root };
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    git('init', '-q');
+    const modeling = join(root, 'packages/modeling');
+    mkdirSync(modeling, { recursive: true });
+    writeFileSync(join(modeling, '.git'), 'gitdir: ../../.git/modules/packages/modeling\n');
+    writeFileSync(join(modeling, 'package.json'), '{"name":"retired-modeling"}\n');
+
+    assert.equal(cleanRetiredModelingSubmoduleCheckout(root, workspaceEnvironment), true);
+    assert.equal(existsSync(modeling), false);
+
+    mkdirSync(modeling, { recursive: true });
+    writeFileSync(join(modeling, 'package.json'), '{"name":"current-modeling"}\n');
+    git('add', 'packages/modeling/package.json');
+    git(
+      'config',
+      '--local',
+      'submodule.packages/modeling.url',
+      'https://example.invalid/modeling.git',
+    );
+    assert.equal(cleanRetiredModelingSubmoduleCheckout(root, workspaceEnvironment), false);
+    assert.equal(existsSync(join(modeling, 'package.json')), true);
+
+    assert.equal(
+      cleanRetiredModelingSubmoduleCheckout(root, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_WORKSPACE: `${root}-different`,
+      }),
+      false,
+    );
+    assert.equal(existsSync(join(modeling, 'package.json')), true);
+
+    git('rm', '--cached', 'packages/modeling/package.json');
+    assert.equal(cleanRetiredModelingSubmoduleCheckout(root, workspaceEnvironment), true);
+    assert.equal(existsSync(modeling), false);
+    assert.notEqual(
+      spawnSync('git', [
+        '-C',
+        root,
+        'config',
+        '--local',
+        '--get',
+        'submodule.packages/modeling.url',
+      ]).status,
+      0,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('keeps the pinned View source and removes a stale uninitialized checkout', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-pnpm-workspace-'));

@@ -8,19 +8,14 @@
 //   1. decodeImageFromFile(container.jpg) via @forgeax/engine-image
 //      (the LO 1.5 lecture re-uses the LO 1.4 wood JPG; src/index.ts
 //      uses WOOD_TEXTURE_GUID = '019e3969-1d46-773e-988c-a10e305ff2a4').
-//   2. registerWithGuid<TextureAsset>(woodGuid, ...) so the deferred
-//      AssetRegistry path resolves the texture handle.
-//   3. registerWithGuid<MeshAsset>(cubeGuid, HANDLE_CUBE asset) so the
-//      cube geometry is reachable via GUID (mirrors the demo's
-//      registerWithGuid + loadByGuid<MeshAsset> recipe).
-//   4. Material registered carrying baseColorTexture: woodHandle.
+//   2. assets.create(texture) returns the managed wood texture handle.
+//   3. assets.create(mesh) returns the managed cube geometry handle.
+//   4. Create a material carrying baseColorTexture: woodHandle.
 //   5. spawn cube with the LO 1.5 Z-axis rotation baked into the quat
 //      (no animation -- smoke is a static-frame verdict).
 //
 // Differential axes vs hello-triangle (D-2 / D-8 byte-level):
-//   - GUID set: WOOD_TEXTURE_GUID (LO §1.4 source) + CUBE_MESH_GUID
-//     (engine builtin alias) + CUBE_MATERIAL_GUID (LO §1.5 own) -- 3
-//     registerWithGuid calls, not 0.
+//   - Asset set: wood texture, cube mesh and textured material.
 //   - clear color: engine teal default (0.2, 0.3, 0.3).
 //   - sample sites: single textured cube at origin with LO 1.5 Z-axis
 //     rotation; named cubeUL / cubeBR / cubeCenter (NOT triLeft/triRight
@@ -39,6 +34,10 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -183,9 +182,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 
 const decodeRes = await decodeImageFromFile(CONTAINER_SRC_PATH);
@@ -236,7 +233,12 @@ const woodTexAsset = {
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -245,17 +247,16 @@ const frameRequest = {
   camera: { lease: worldAttachment1.value },
   environment: { lease: worldAttachment1.value },
 };
-// Mint user-tier column handles (M8 D-17). The baseColorTexture slot
-// carries the resolved numeric Handle via unwrapHandle; the cube enters
-// the world via the engine builtin HANDLE_CUBE directly (no GUID round-trip).
-const woodTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', woodTexAsset));
-const woodMaterial = world.allocSharedRef('MaterialAsset', {
+// Bind the managed wood texture handle into the material; the cube mesh
+// is created in the same World asset registry.
+const woodTexHandle = unwrapHandle(world.assets.create(woodTexAsset).unwrap());
+const woodMaterial = world.assets.create({
   kind: 'material',
   passes: [
     { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 },
   ],
   values: { baseColor: [1.0, 1.0, 1.0, 1.0], baseColorTexture: woodTexHandle },
-});
+}).unwrap();
 // Single cube at origin with LO 1.5 Z-axis 30deg rotation baked in.
 world.spawn(
   {
@@ -263,7 +264,7 @@ world.spawn(
     data: {
       pos: [0, 0, 0], quat: [0, 0, ROT_QUAT_Z, ROT_QUAT_W], scale: [1, 1, 1],},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   {
     component: MeshRenderer,
     data: { materials: [woodMaterial] },

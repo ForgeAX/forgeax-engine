@@ -1,5 +1,11 @@
-import type { LoaderRegistry } from '@forgeax/engine-assets-runtime';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  type AssetDecoderContribution,
+  AssetError,
+  type AssetKind,
+  err,
+  ok,
+  type Result,
+} from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import {
@@ -273,9 +279,21 @@ function sections(probeCount: number) {
 }
 
 /** Little-endian, self-describing and byte-deterministic: equal content, equal bytes. */
-export function encodeIrradianceVolume(
-  volume: IrradianceVolumeContent,
-): Result<Uint8Array, IrradianceVolumeError> {
+/** Validate runtime volume data without copying or encoding its probe arrays. */
+function validateVolumeContent(
+  value: unknown,
+): Result<IrradianceVolumeContent, IrradianceVolumeError> {
+  if (value === null || typeof value !== 'object')
+    return failure('irradiance-volume-corrupt', 'volume must be an object');
+  const volume = value as IrradianceVolume;
+  if (
+    !Array.isArray(volume.origin) ||
+    !Array.isArray(volume.dimensions) ||
+    !(volume.irradiance instanceof Float32Array) ||
+    !(volume.moments instanceof Float32Array) ||
+    !(volume.meta instanceof Uint32Array)
+  )
+    return failure('irradiance-volume-corrupt', 'volume requires a lattice and typed probe arrays');
   const counted = validateIrradianceLattice(volume);
   if (!counted.ok) return counted;
   const size = sections(counted.value);
@@ -286,6 +304,32 @@ export function encodeIrradianceVolume(
     volume.meta.byteLength !== size.meta
   )
     return failure('irradiance-volume-corrupt', 'probe sections do not match the lattice');
+  for (const data of [volume.irradiance, volume.moments])
+    for (const sample of data)
+      if (!Number.isFinite(sample) || sample < 0)
+        return failure(
+          'irradiance-volume-corrupt',
+          'probe arrays require finite nonnegative values',
+        );
+  return ok(volume);
+}
+
+export function validateIrradianceVolume(
+  value: unknown,
+): Result<IrradianceVolume, IrradianceVolumeError> {
+  const valid = validateVolumeContent(value);
+  if (!valid.ok) return valid;
+  if (typeof (value as IrradianceVolume).digest !== 'string')
+    return failure('irradiance-volume-corrupt', 'volume requires its source digest');
+  return ok(value as IrradianceVolume);
+}
+
+export function encodeIrradianceVolume(
+  volume: IrradianceVolumeContent,
+): Result<Uint8Array, IrradianceVolumeError> {
+  const checked = validateVolumeContent(volume);
+  if (!checked.ok) return checked;
+  const size = sections(volume.probeCount);
   const bytes = new Uint8Array(size.total);
   const view = new DataView(bytes.buffer);
   view.setUint32(0, MAGIC, true);
@@ -342,16 +386,7 @@ export function decodeIrradianceVolume(
   const irradiance = new Float32Array(read(HEADER_BYTES, size.irradiance).buffer);
   const moments = new Float32Array(read(HEADER_BYTES + size.irradiance, size.moments).buffer);
   const meta = read(HEADER_BYTES + size.irradiance + size.moments, size.meta);
-  for (const value of irradiance)
-    if (!(Number.isFinite(value) && value >= 0))
-      return failure(
-        'irradiance-volume-corrupt',
-        'irradiance holds a negative or non-finite value',
-      );
-  for (const value of moments)
-    if (!(Number.isFinite(value) && value >= 0))
-      return failure('irradiance-volume-corrupt', 'moments hold a negative or non-finite value');
-  return ok({
+  return validateIrradianceVolume({
     origin,
     spacing,
     dimensions,
@@ -375,17 +410,51 @@ export function irradianceVolumeProbeBlocks(volume: IrradianceVolumeContent): Fl
   return blocks;
 }
 
-type PackLoader = Parameters<LoaderRegistry['registerPackLoader']>[0];
+/** Typed owner contribution; runtime assembly installs it with the other render decoders. */
+export const irradianceVolumeKind = { kind: IRRADIANCE_VOLUME_KIND } as AssetKind<
+  IrradianceVolume,
+  typeof IRRADIANCE_VOLUME_KIND
+>;
 
-/** Runtime loader: decodes the cooked artifact into an {@link IrradianceVolume}. */
-export const irradianceVolumePackLoader: PackLoader = {
-  kind: IRRADIANCE_VOLUME_KIND,
-  load(input) {
-    const artifact = input.artifacts[IRRADIANCE_VOLUME_ARTIFACT];
-    const decoded =
-      artifact === undefined
-        ? failure('irradiance-volume-corrupt', 'missing volume artifact')
-        : decodeIrradianceVolume(artifact.bytes);
-    return decoded.ok ? { ok: true, value: decoded.value } : { ok: false, error: decoded.error };
+export const irradianceVolumeContribution: AssetDecoderContribution<
+  IrradianceVolume,
+  typeof IRRADIANCE_VOLUME_KIND
+> = {
+  kind: irradianceVolumeKind,
+  consumer: 'Render baked irradiance field',
+  decoder: {
+    prepare(value) {
+      const valid = validateIrradianceVolume(value);
+      return valid.ok
+        ? valid
+        : err(
+            new AssetError({
+              code: 'asset-invalid-value',
+              expected: valid.error.expected,
+              hint: valid.error.hint,
+            }),
+          );
+    },
+    async decode({ envelope, artifacts }) {
+      const descriptor = envelope.artifacts[IRRADIANCE_VOLUME_ARTIFACT];
+      if (descriptor !== undefined) {
+        const bytes = await artifacts.read(descriptor);
+        if (!bytes.ok) return bytes;
+        const decoded = decodeIrradianceVolume(bytes.value);
+        if (decoded.ok) return decoded;
+        return err({
+          code: 'asset-package-invalid',
+          expected: decoded.error.expected,
+          hint: decoded.error.hint,
+          detail: { guid: envelope.guid, reason: decoded.error.detail.reason },
+        });
+      }
+      return err({
+        code: 'asset-package-invalid',
+        expected: 'a cooked irradiance volume artifact',
+        hint: 'rebake the volume through its NativeCooker',
+        detail: { guid: envelope.guid, reason: 'missing volume artifact' },
+      });
+    },
   },
 };

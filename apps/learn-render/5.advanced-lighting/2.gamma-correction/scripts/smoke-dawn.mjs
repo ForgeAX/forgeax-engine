@@ -14,6 +14,10 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const PER_STATE_FRAMES = Math.max(30, Math.ceil(SMOKE_MIN_FRAMES / 2));
@@ -225,9 +229,7 @@ const {
 } = await import('@forgeax/engine-render');
 const { createFullscreenRenderFeature } = await import('@forgeax/engine-app');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -299,16 +301,20 @@ const woodTexAsset = {
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
 // Catalogue the texture under its GUID, then mint a shared-ref column handle.
-assets.catalog(woodGuidRes.value, woodTexAsset);
-const woodHandle = world.allocSharedRef('TextureAsset', woodTexAsset);
+const woodHandle = world.assets.create(woodTexAsset).unwrap();
 
-const planeMat = world.allocSharedRef('MaterialAsset', {
+const planeMat = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -323,7 +329,7 @@ const planeMat = world.allocSharedRef('MaterialAsset', {
     roughness: 0.8,
     baseColorTexture: unwrapHandle(woodHandle),
   },
-});
+}).unwrap();
 
 world
   .spawn(
@@ -332,7 +338,7 @@ world
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [planeMat] } },
   )
   .unwrap();

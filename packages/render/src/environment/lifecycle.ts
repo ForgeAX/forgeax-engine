@@ -3,7 +3,6 @@ import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope'
 import { EnvironmentGenerationFailedError } from '../errors/render';
 import { type EnvironmentFrame, SKYLIGHT_RECOVERY_FALLBACK } from './frame';
 import type { EnvironmentGeneration, EnvironmentGenerationFailure } from './generation';
-import { sharedEnvironmentFrame } from './graph';
 import {
   type EnvironmentInspection,
   type EnvironmentInspectionFailure,
@@ -38,7 +37,6 @@ export class EnvironmentLifecycle {
     | {
         readonly deviceGeneration: number;
         readonly frame: EnvironmentFrame;
-        readonly lane: 'direct' | 'clustered';
       }
     | undefined;
 
@@ -60,7 +58,6 @@ export class EnvironmentLifecycle {
       this.recovery = Object.freeze({
         deviceGeneration,
         frame,
-        lane: this.active?.lane ?? 'direct',
       });
     }
   }
@@ -68,7 +65,7 @@ export class EnvironmentLifecycle {
   /**
    * Create an environment owner for a recovery candidate without moving the
    * active owner's scope or generation maps. Only the selected CPU frame and
-   * its lane are shared; every candidate generation/frame map starts empty.
+   * is shared; every candidate generation/frame map starts empty.
    */
   createRecoveryCandidate(scope: DeviceScope): EnvironmentLifecycle {
     const candidate = new EnvironmentLifecycle(scope);
@@ -79,7 +76,6 @@ export class EnvironmentLifecycle {
       candidate.recovery = Object.freeze({
         deviceGeneration: scope.generation,
         frame: activeFrame,
-        lane: this.recovery?.lane ?? this.active?.lane ?? 'direct',
       });
     }
     candidate.lastCandidateFailure = this.lastCandidateFailure;
@@ -173,10 +169,8 @@ export class EnvironmentLifecycle {
 
   ensure(
     frame: EnvironmentFrame,
-    laneOrFailure: 'direct' | 'clustered' | EnvironmentGenerationFailure = 'direct',
+    { failureAt }: EnvironmentGenerationFailure = {},
   ): Result<EnvironmentGeneration, EnvironmentGenerationFailedError> {
-    const lane = typeof laneOrFailure === 'string' ? laneOrFailure : 'direct';
-    const failureAt = typeof laneOrFailure === 'string' ? undefined : laneOrFailure.failureAt;
     if (failureAt !== undefined) {
       return err(
         new EnvironmentGenerationFailedError(
@@ -186,11 +180,11 @@ export class EnvironmentLifecycle {
       );
     }
     if (this.active?.signature === frame.signature && this.active.scope.isAlive()) {
-      return ok(this.active.lane === lane ? this.active : this.laneView(this.active, lane));
+      return ok(this.active);
     }
     const existing = this.candidates.get(frame.signature);
     if (existing?.scope.isAlive()) {
-      return ok(existing.lane === lane ? existing : this.laneView(existing, lane));
+      return ok(existing);
     }
     if (existing !== undefined) {
       this.candidates.delete(frame.signature);
@@ -210,7 +204,6 @@ export class EnvironmentLifecycle {
     const created: EnvironmentGeneration = {
       signature: frame.signature,
       generation,
-      lane,
       scope: generationScope,
       liveHandle: (resource?.value ?? { signature: frame.signature, generation }) as object,
       resourceCount: resource === undefined ? 0 : 1,
@@ -302,7 +295,6 @@ export class EnvironmentLifecycle {
       return Object.freeze({
         signature: value.signature,
         generation: value.generation,
-        lane: value.lane,
         source,
         resourceCount,
         bytes: resourceBytes,
@@ -358,18 +350,8 @@ export class EnvironmentLifecycle {
     if (previousFrame === undefined) {
       return err(new EnvironmentGenerationFailedError('none', 'prepare'));
     }
-    const result = await this.ensure(
-      sharedEnvironmentFrame(previousFrame, previous?.lane ?? 'direct'),
-      this.recovery?.lane ?? previous?.lane ?? 'direct',
-    );
+    const result = await this.ensure(previousFrame);
     if (!result.ok) return result;
     return ok(result.value);
-  }
-
-  private laneView(
-    generation: EnvironmentGeneration,
-    lane: 'direct' | 'clustered',
-  ): EnvironmentGeneration {
-    return { ...generation, lane };
   }
 }

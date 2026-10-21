@@ -20,7 +20,7 @@
 // structured error (charter P3, requirements AC-11) so it can never be minted
 // into a GUID handle or serialized into a pack (AC-14).
 
-import type { AnimationGraph, AnimationGraphNode } from '@forgeax/engine-types';
+import type { AnimationGraph, AnimationGraphNode, AssetHandle } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   AnimationGraphCycleError,
@@ -48,7 +48,7 @@ export type AnimationGraphNodeRef = number & {
  */
 export interface AnimationGraphBuilder {
   /** Add a Clip leaf sampling `clip` with the given static `weight` (default 1). */
-  clip(clip: string, weight?: number): AnimationGraphNodeRef;
+  clip(clip: string | AssetHandle<'animation-clip'>, weight?: number): AnimationGraphNodeRef;
   /** Add a Blend node (normalizing lerp) over `children` with static `weight` (default 1). */
   blend(children: readonly AnimationGraphNodeRef[], weight?: number): AnimationGraphNodeRef;
   /** Add an Add node (non-normalizing) stacking `additive` layers onto `base`; static `weight` default 1. */
@@ -178,7 +178,7 @@ function validateAnimationGraph(
  * Construct an {@link AnimationGraph} declaratively. The callback receives a
  * builder, adds clip/blend/add nodes, and returns the ref of the root node.
  * The graph's topology is validated at construction time; on success the POD is
- * returned in `ok(graph)` ready to be minted into a `shared<AnimationGraph>`
+ * returned in `ok(graph)` ready to be minted into a `asset<animation-graph>`
  * handle (AC-02) and serialized (AC-14). On an illegal topology a structured
  * {@link AnimationGraphError} is returned in `err(...)` (AC-11).
  */

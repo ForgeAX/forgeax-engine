@@ -1,4 +1,4 @@
-import { attachMeshDistanceField, createBoxGeometry, createPlaneGeometry } from '@forgeax/engine-geometry';
+import { decodeMeshDistanceFieldAttachment, createBoxGeometry, createPlaneGeometry } from '@forgeax/engine-geometry';
 import { cookMeshDistanceFieldProduct } from '@forgeax/engine-import';
 import { definePack } from '@forgeax/engine-pack/source';
 import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
@@ -12,11 +12,11 @@ export default definePack({
   async build() {
     const mesh = createBoxGeometry(2, 2, 2).unwrap();
     const product = await cookMeshDistanceFieldProduct(mesh, sdfGuid('mesh/box'), { resolution: 32 }, [0]);
-    const attached = await attachMeshDistanceField(mesh, product.payload, product.artifacts['distance-field.bin'].bytes);
+    const attached = await decodeMeshDistanceFieldAttachment(mesh, product.payload, product.artifacts['distance-field.bin'].bytes);
     if (!attached.ok) return attached;
     const plane = createPlaneGeometry(2, 2).unwrap();
     const planeProduct = await cookMeshDistanceFieldProduct(plane, sdfGuid('mesh/plane'), { resolution: 32 }, [1]);
-    const planeAttached = await attachMeshDistanceField(plane, planeProduct.payload, planeProduct.artifacts['distance-field.bin'].bytes);
+    const planeAttached = await decodeMeshDistanceFieldAttachment(plane, planeProduct.payload, planeProduct.artifacts['distance-field.bin'].bytes);
     if (!planeAttached.ok) return planeAttached;
     const effect = async (module: string, capacity = 1024) => {
       // Renderer source admission is bounded at 65536 per emitter. Keep exact
@@ -45,8 +45,8 @@ export default definePack({
       }
     }
     return ok({
-      'mesh/box': attached.value,
-      'mesh/plane': planeAttached.value,
+      'mesh/box': { ...mesh, distanceField: attached.value },
+      'mesh/plane': { ...plane, distanceField: planeAttached.value },
       'mesh/no-field': mesh,
       'material/obstacle': { ...material, values: { ...material.values, baseColor: [0.15, 0.2, 0.3, 1] } },
       'material/particle': material,

@@ -1,8 +1,9 @@
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import type { App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { createFrontendHost } from '@forgeax/engine-host/frontend';
 import { createHostAssembly } from '@forgeax/engine-host/protocol';
 import { connectHostWebSocket, type HostTransportClient } from '@forgeax/engine-host/transport';
@@ -26,10 +27,8 @@ import {
   orthographic,
   type Renderer,
 } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
 import { SNAKE_HOST_VERSION, snakeHostRoot } from './host';
-
 import { type Direction, encodeCommand, encodeDirectionCommand } from './shared/commands';
 import {
   Food,
@@ -325,39 +324,27 @@ export function registerReplicaDerivation(
   sinks: ReplicaRenderSinks = {},
   session?: SnakeCommandSession,
 ): Map<number, EntityHandle> {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const hasBrowserVisuals = sinks.stateTarget !== undefined && globalThis.document !== undefined;
   const hideBodyForVisualFalsification =
     globalThis.location?.search.includes('visual-sabotage=hide-body') ?? false;
   const renderEntities = new Map<number, EntityHandle>();
   let localPlayerNetworkId: number | undefined;
   const snakeMaterials = [
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.unlit([0.13, 0.83, 0.93, 1]),
-    ),
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.unlit([0.98, 0.45, 0.09, 1]),
-    ),
+    sceneAssets.create(Materials.unlit([0.13, 0.83, 0.93, 1])).unwrap(),
+    sceneAssets.create(Materials.unlit([0.98, 0.45, 0.09, 1])).unwrap(),
   ] as const;
   const snakeBodyMaterials = [
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.unlit([0.05, 0.46, 0.54, 1]),
-    ),
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.unlit([0.61, 0.24, 0.04, 1]),
-    ),
+    sceneAssets.create(Materials.unlit([0.05, 0.46, 0.54, 1])).unwrap(),
+    sceneAssets.create(Materials.unlit([0.61, 0.24, 0.04, 1])).unwrap(),
   ] as const;
-  const foodMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.96, 0.23, 0.38, 1]),
-  );
-  const boundaryMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.2, 0.27, 0.38, 1]),
-  );
+  const foodMaterial = sceneAssets.create(Materials.unlit([0.96, 0.23, 0.38, 1])).unwrap();
+  const boundaryMaterial = sceneAssets.create(Materials.unlit([0.2, 0.27, 0.38, 1])).unwrap();
   let foodEntity: EntityHandle | undefined;
   let joinedEpoch: number | undefined;
   let readyEpoch: number | undefined;
@@ -365,7 +352,7 @@ export function registerReplicaDerivation(
     foodEntity = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], scale: [0.55, 0.55, 0.55] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [foodMaterial] } },
       )
       .unwrap();
@@ -390,7 +377,7 @@ export function registerReplicaDerivation(
       world
         .spawn(
           { component: Transform, data: { pos, scale } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: primitiveCube } },
           { component: MeshRenderer, data: { materials: [boundaryMaterial] } },
         )
         .unwrap();
@@ -399,6 +386,12 @@ export function registerReplicaDerivation(
     name: 'snake-replica-derivation',
     queries: [],
     fn: (world) => {
+      const sceneAssets = world.assets;
+      if (!(sceneAssets instanceof AssetRegistry))
+        throw new Error('Scene requires its runtime asset owner');
+
+      const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
       const liveIds = new Set<number>();
       const snakes: ReplicatedSnake[] = [];
       let food: { x: number; y: number } | undefined;
@@ -460,7 +453,7 @@ export function registerReplicaDerivation(
           entity = world
             .spawn(
               { component: Transform, data: { pos: [0, 0, 0] } },
-              { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+              { component: MeshFilter, data: { assetHandle: primitiveCube } },
               {
                 component: MeshRenderer,
                 data: {
@@ -535,7 +528,7 @@ export function registerReplicaDerivation(
           entity = world
             .spawn(
               { component: Transform, data: { pos: [0, 0, 0], scale: [0.9, 0.9, 0.9] } },
-              { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+              { component: MeshFilter, data: { assetHandle: primitiveCube } },
               {
                 component: MeshRenderer,
                 data: { materials: [snakeBodyMaterials[color] ?? snakeBodyMaterials[0]] },

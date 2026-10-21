@@ -61,7 +61,9 @@ function makeAssets(): AssetRegistry {
       } as unknown as ReturnType<ShaderRegistryDevice['createShaderModule']>;
     },
   };
-  return new AssetRegistry(new ShaderRegistry({ device: mockDevice, manifestUrl: undefined }));
+  return new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ device: mockDevice, manifestUrl: undefined }),
+  });
 }
 
 /** Spawn a Camera entity with a distinguishing fov so snapshots are identifiable. */

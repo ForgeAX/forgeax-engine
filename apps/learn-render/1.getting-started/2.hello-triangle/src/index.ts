@@ -48,11 +48,16 @@
 // DirectionalLight: LO 1.2 renders flat orange.
 import { World } from '@forgeax/engine-ecs';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
-import { HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime';
+import { EngineEnvironmentError } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 type LearnRenderError = { code: string; hint?: string };
 type CaptureHook = () => Promise<Uint8Array>;
@@ -79,6 +84,11 @@ function reportBootstrapError(
 // matches LO 1.1 / 1.3 teal so the captured frame is comparable across
 // the seven learn-render examples.
 function spawnTriangleScene(world: World, clearOnly: boolean): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
   // Triangle entity (Transform + MeshFilter + MeshRenderer) at origin /
   // identity rotation / unit scale. Color = LO 1.2 frag literal orange
   // (1.0, 0.5, 0.2). metallic / roughness are unused on the engine v1
@@ -91,7 +101,7 @@ function spawnTriangleScene(world: World, clearOnly: boolean): void {
         data: {
           pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+      { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
       {
         component: MeshRenderer,
         data: {},
@@ -132,12 +142,12 @@ void bootstrap(canvas);
 
 async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   try {
-    const created = await createRenderer(target, {}, forgeaxBundlerAdapter());
+    const created = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
     if (!created.ok) {
       reportBootstrapError('[learn-render 1.2 hello-triangle] renderer construction failed:', created.error);
       return;
     }
-    const renderer = created.value;
+    const { renderer, assets } = created.value;
     renderer.subscribe((event) => {
       if (event.kind !== 'error') return;
       reportBootstrapError('[learn-render 1.2 hello-triangle] renderer error:', event.error);
@@ -149,7 +159,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       __learnRenderTriangleClearOnly: clearOnly,
       __learnRenderTriangleDrawCalls: () => drawCalls,
     });
-    const world = new World();
+    const world = new World({ assets });
     spawnTriangleScene(world, clearOnly);
     const attached = renderer.attach(world);
     if (!attached.ok) {

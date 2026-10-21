@@ -13,7 +13,7 @@ import {
   publicationMaterialSchemaRebinder,
 } from '../publication/programs';
 import type { RenderPublicationReceiver } from '../publication/receiver';
-import type { PublishedRenderResources } from '../publication/resource-scope';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type {
   CandidatePipelineInput,
   PreparedCandidatePipelines,
@@ -33,7 +33,7 @@ export function createPublishedMeshResidencyHost(options: {
   readonly completeUploads: () => Promise<void>;
   readonly isCurrentFrame: (frame: FrameReceipt) => boolean;
   readonly recordStageLane: (
-    resources: PublishedRenderResources,
+    resources: RenderResourceScope,
     entity: number,
     meshHandle: number,
   ) => DynamicGeometryRecordStageLane | undefined;
@@ -66,7 +66,12 @@ export function createPublishedMeshResidencyHost(options: {
     const source = prepared.value;
     const generation = options.currentGeneration();
     const store = options.getGpuStore();
-    const resident = store.ensureResident(meshHandle, source.mesh, source.resources);
+    const resident = store.prepareMeshResidency(
+      input.meshHandle,
+      source.mesh,
+      input.revision,
+      source.resources,
+    );
     if (!resident.ok) {
       source.release();
       return err(
@@ -78,11 +83,13 @@ export function createPublishedMeshResidencyHost(options: {
         ),
       );
     }
-    const lease = store.retainMeshResidency(meshHandle, source.resources);
-    if (lease === undefined) {
-      source.release();
-      throw new Error('published mesh upload has no owned residency lease');
-    }
+    const physical = resident.value;
+    const lease = physical.lease;
+    if (
+      source.resources.resolveAsset(input.meshHandle).ok &&
+      source.resources.resolveAsset(input.meshHandle).unwrap() === source.mesh
+    )
+      physical.commit();
     let released = false;
     const pipelineAbort = new AbortController();
     const signal = preparationOptions?.signal;
@@ -98,7 +105,7 @@ export function createPublishedMeshResidencyHost(options: {
       source.isCurrent() &&
       options.currentGeneration() === generation &&
       options.getGpuStore() === store &&
-      store.getMeshGpuHandles(meshHandle, source.resources) === resident.value;
+      physical.current();
     const release = (evict = true) => {
       if (physicalReleased) return completion;
       released = true;
@@ -129,6 +136,7 @@ export function createPublishedMeshResidencyHost(options: {
       release(true);
     };
     published = () => {
+      physical.commit();
       if (released) release(false);
     };
     try {
@@ -149,15 +157,15 @@ export function createPublishedMeshResidencyHost(options: {
         const rebind = publicationMaterialSchemaRebinder(options.assets.shaderRegistry);
         const preparation = {
           ...input.pipelinePreparation,
-          template: {
-            ...input.pipelinePreparation.template,
-            snapshot: rebind(input.pipelinePreparation.template.snapshot),
-          },
+          materials: input.pipelinePreparation.materials.map((row) => ({
+            ...row,
+            value: rebind(row.value),
+          })),
         };
         pipelines = options.prepareCandidatePipelines(
           {
             preparation,
-            mesh: resident.value,
+            mesh: physical.entry,
             asset: source.mesh,
             isCurrent,
           },

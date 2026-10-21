@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   AnimationPlayer,
   AnimationTargetId,
@@ -7,11 +8,12 @@ import {
 } from '@forgeax/engine-animation';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { ChildOf, Name, Transform } from '@forgeax/engine-scene';
-import type { AnimationClip, AnimationTargetIdValue, Handle } from '@forgeax/engine-types';
+import type { AnimationClip, AnimationTargetIdValue } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 export type AnimatedTransformInstanceKey = 'direct' | 'graph';
 
-export const TRANSFORM_CLIP_GUID = 'demo/animated-transform/clip';
 
 export interface AnimatedTransformInstance {
   readonly key: AnimatedTransformInstanceKey;
@@ -88,8 +90,11 @@ function spawnInstance(
   world: World,
   key: AnimatedTransformInstanceKey,
   x: number,
-  clipHandle: Handle<'AnimationClip', 'shared'>,
+  clipHandle: AssetHandle<'animation-clip'>,
 ): AnimatedTransformInstance {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const player = spawnNamed(world, `${key}-player`, undefined, [x, 0, 0]);
   if (key === 'direct') {
     world
@@ -106,9 +111,9 @@ function spawnInstance(
       })
       .unwrap();
   } else {
-    const graph = defineAnimationGraph((builder) => builder.clip(TRANSFORM_CLIP_GUID));
+    const graph = defineAnimationGraph((builder) => builder.clip(clipHandle));
     if (!graph.ok) throw graph.error;
-    const graphHandle = world.allocSharedRef('AnimationGraph', graph.value);
+    const graphHandle = sceneAssets.create(graph.value).unwrap();
     world
       .addComponent(player, {
         component: AnimationPlayer,
@@ -140,7 +145,10 @@ export function buildAnimatedTransformWorld(
   world: World,
   clip: AnimationClip = transformClip(),
 ): AnimatedTransformDemo {
-  const clipHandle = world.allocSharedRef('AnimationClip', clip);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const clipHandle = sceneAssets.create(clip).unwrap();
   return {
     instances: [
       spawnInstance(world, 'direct', -4, clipHandle),

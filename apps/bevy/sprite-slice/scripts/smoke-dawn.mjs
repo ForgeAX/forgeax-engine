@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -23,11 +24,12 @@ const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (options) => { const adapter = await originalRequestAdapter(options); if (!adapter) return adapter; const requestDevice = adapter.requestDevice.bind(adapter); adapter.requestDevice = async (descriptor) => { device = await requestDevice(descriptor); return device; }; return adapter; };
 const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { buildSpriteSliceWorld, makeSlicePixels, TEXTURE_SIZE } = await import(resolve(here, '..', 'src', 'sprite-slice.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}` });
-const world = new World();
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}` });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 gpu.requestAdapter = originalRequestAdapter;
@@ -42,8 +44,8 @@ const texture = {
   colorSpace: 'srgb',
   mips: { kind: 'none' },
 };
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-buildSpriteSliceWorld(world, unwrapHandle(textureHandle));
+const textureHandle = world.assets.create(texture).unwrap();
+buildSpriteSliceWorld(world, textureHandle);
 for (let i = 0; i < frames; i += 1) {
   world.update().unwrap();
   const result = await drawSmokeFrame(renderer, world);

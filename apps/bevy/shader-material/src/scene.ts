@@ -5,6 +5,8 @@ import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authori
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
 import type { World } from '@forgeax/engine-ecs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 export const SHADER_ID = 'bevy::shader_material';
 export const TEXTURE_SIZE = 32;
@@ -55,10 +57,13 @@ export function makeMaterial(texture: number): MaterialAsset {
 }
 
 export function buildShaderMaterialWorld(world: World, texture: number, aspect = 320 / 180): boolean {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const geometry = createBoxGeometry(1.6, 1.6, 1.6);
   if (!geometry.ok) return false;
-  const mesh = world.allocSharedRef('MeshAsset', geometry.value);
-  const material = world.allocSharedRef('MaterialAsset', makeMaterial(texture));
+  const mesh = sceneAssets.create(geometry.value).unwrap();
+  const material = sceneAssets.create(makeMaterial(texture)).unwrap();
   const eye: [number, number, number] = [2.6, 2.2, 5.2];
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1] } },

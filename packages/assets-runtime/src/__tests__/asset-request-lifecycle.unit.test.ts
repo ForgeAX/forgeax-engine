@@ -140,6 +140,43 @@ describe('shared Pack reader lifecycle', () => {
 });
 
 describe('ArtifactCache invalidation', () => {
+  it('isolates concurrent readers and retires least recently read bytes within its limits', async () => {
+    const cache = new ArtifactCache(4, 2);
+    let reads = 0;
+    const read = async () => {
+      reads++;
+      return ok(Uint8Array.of(1, 2));
+    };
+    const [a, b] = await Promise.all([cache.read('a', read), cache.read('a', read)]);
+    a.unwrap()[0] = 9;
+    expect(b.unwrap()).toEqual(Uint8Array.of(1, 2));
+    expect(reads).toBe(1);
+    await cache.read('b', read);
+    await cache.read('a', read);
+    await cache.read('c', read);
+    expect(cache.snapshot()).toMatchObject({ entries: 2, bytes: 4 });
+    await cache.read('a', read);
+    expect(reads).toBe(3);
+    await cache.read('b', read);
+    expect(reads).toBe(4);
+    cache.clear();
+    expect(cache.snapshot()).toMatchObject({ entries: 0, bytes: 0 });
+  });
+  it('trims completed bytes while preserving in-flight deduplication', async () => {
+    const cache = new ArtifactCache();
+    await cache.read('complete', async () => ok(Uint8Array.of(1)));
+    const pending = deferred<Result<Uint8Array, AssetLoadError>>();
+    const first = cache.read('pending', () => pending.promise);
+    cache.trim();
+    expect(cache.snapshot()).toMatchObject({ entries: 0, bytes: 0, pending: 1 });
+    const second = cache.read('pending', () => {
+      throw new Error('trim must preserve the existing request');
+    });
+    pending.resolve(ok(Uint8Array.of(2)));
+    expect((await first).unwrap()).toEqual(Uint8Array.of(2));
+    expect((await second).unwrap()).toEqual(Uint8Array.of(2));
+    expect(cache.snapshot()).toMatchObject({ entries: 1, bytes: 1, pending: 0 });
+  });
   it.each([
     undefined,
     'bytes',
@@ -162,7 +199,7 @@ describe('ArtifactCache invalidation', () => {
     const duplicate = cache.read('bytes', () => {
       throw new Error('must share');
     });
-    expect(b).toBe(duplicate);
+    expect(b).not.toBe(duplicate); // Callers share I/O, never mutable byte results.
     fresh.resolve(ok(Uint8Array.of(2)));
     await b;
     stale.resolve(ok(Uint8Array.of(1)));
@@ -202,7 +239,7 @@ it('materializes a fresh snapshot on demand and keeps listener counters current'
   graph.dispose();
 });
 
-it('invalidates pending dependency parents and keeps late traversal from changing fresh edges', async () => {
+it('rejects a pending stale dependency without invalidating its parents', async () => {
   const late = deferred<Result<Value, AssetLoadError>>();
   const entered = deferred<void>();
   let dependencyReads = 0;
@@ -218,18 +255,18 @@ it('invalidates pending dependency parents and keeps late traversal from changin
   });
   const old = graph.load('root');
   await entered.promise;
-  expect(graph.invalidate('dependency')).toEqual(['dependency', 'root']);
-  expect(await graph.load('root')).toMatchObject({ ok: true });
+  expect(graph.invalidate('dependency')).toEqual(['dependency']);
   late.resolve(value(1, ['old-only']));
   expect(await old).toMatchObject({ ok: false });
+  expect(await graph.load('root')).toMatchObject({ ok: true });
   expect(graph.lookup('dependency')).toEqual({ revision: 2 });
   expect(graph.snapshot().ready).toEqual(['dependency', 'root']);
-  expect(graph.invalidate('dependency')).toEqual(['dependency', 'root']);
+  expect(graph.invalidate('dependency')).toEqual(['dependency']);
   graph.dispose();
 });
 
 describe('asset dependency closure promotion', () => {
-  it('reads shared and cyclic edges once, records each SCC, and invalidates reverse parents', async () => {
+  it('reads shared and cyclic edges once and reloads only the changed dependency', async () => {
     const refs: Record<string, string[]> = {
       root: ['a', 'a', 'self', 'shared'],
       a: ['b', 'shared'],
@@ -259,11 +296,14 @@ describe('asset dependency closure promotion', () => {
     });
     expect(await graph.load('b')).toMatchObject({ ok: true });
     expect(read).toHaveBeenCalledTimes(7);
-    expect(graph.invalidate('c')).toEqual(['a', 'b', 'c', 'd', 'root']);
-    expect(graph.snapshot()).toMatchObject({ ready: ['self', 'shared'], sccs: [] });
+    expect(graph.invalidate('c')).toEqual(['c']);
+    expect(graph.snapshot()).toMatchObject({
+      ready: ['a', 'b', 'd', 'root', 'self', 'shared'],
+      sccs: [['a', 'b'], ['self']],
+    });
     expect(await graph.load('root')).toMatchObject({ ok: true });
-    expect(read).toHaveBeenCalledTimes(12);
-    expect(graph.snapshot().sccs).toEqual([['self'], ['c', 'd'], ['a', 'b']]);
+    expect(read).toHaveBeenCalledTimes(8);
+    expect(graph.snapshot().sccs).toEqual([['c', 'd'], ['a', 'b'], ['self']]);
     graph.dispose();
   });
 
@@ -299,7 +339,7 @@ describe('asset dependency closure promotion', () => {
     graph.dispose();
   });
 
-  it('retains deferred edges for SCC and invalidation without eagerly reading them', async () => {
+  it('retains deferred edges without reading or invalidating their owner', async () => {
     type DeferredValue = Value & { references?: 'deferred' };
     const read = vi.fn(
       async (guid: string): Promise<Result<DeferredValue, AssetLoadError>> =>
@@ -314,8 +354,8 @@ describe('asset dependency closure promotion', () => {
     expect(read).toHaveBeenCalledTimes(1);
     expect(graph.snapshot()).toMatchObject({ ready: ['root'], resources: 1, sccs: [['root']] });
     expect(graph.lookup('child')).toBeUndefined();
-    expect(graph.invalidate('child')).toEqual(['child', 'root']);
-    expect(graph.snapshot().ready).toEqual([]);
+    expect(graph.invalidate('child')).toEqual(['child']);
+    expect(graph.snapshot().ready).toEqual(['root']);
     graph.dispose();
   });
 });

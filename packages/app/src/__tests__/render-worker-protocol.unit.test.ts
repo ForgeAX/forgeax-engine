@@ -93,6 +93,7 @@ beforeEach(() => {
 async function start(
   options: {
     readonly gpuPassTiming?: object;
+    readonly shadowWorkload?: boolean;
     readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
     readonly gbufferBatchOrderDiagnostic?: {
       readonly order: 'near' | 'far';
@@ -143,6 +144,7 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
       revision,
       features: [],
       templates: [],
+      materials: [],
       videoFrames: source === 'video' ? [{ frame: { close } }] : [],
       canvasFrames:
         source === 'canvas'
@@ -797,6 +799,7 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
         revision: 1,
         features: [],
         templates: [],
+        materials: [],
         videoFrames: [],
         upserts: new Float32Array(0),
         removed: new Uint32Array(0),
@@ -838,6 +841,7 @@ it('reports publication overflow as deterministic protocol failure and drains ow
       revision,
       features: [],
       templates: [],
+      materials: [],
       videoFrames: [{ frame: { close: closeFrames[revision - 1] } }],
       upserts: new Float32Array(0),
       removed: new Uint32Array(0),
@@ -925,6 +929,7 @@ it.each([
         revision: 1,
         features: [],
         templates: [],
+        materials: [],
         videoFrames: [],
       },
     },
@@ -1919,4 +1924,49 @@ it.each([
   expect(mocks.configure.mock.invocationCallOrder[0]).toBeLessThan(
     mocks.setProfile.mock.invocationCallOrder[0] as number,
   );
+});
+
+it('relays receipt-owned shadow workload with independent Renderer identity through submitted and completed', async () => {
+  const complete = deferred<{ ok: true; value: undefined }>();
+  const shadowWorkload = Object.freeze({
+    status: 'complete',
+    scope: 'display-views',
+    frameId: 901,
+    deviceGeneration: 7,
+    graphGeneration: 111,
+    views: Object.freeze([]),
+  });
+  mocks.draw.mockReturnValueOnce({
+    ok: true,
+    value: {
+      frameId: 901,
+      deviceGeneration: 7,
+      graphGeneration: 111,
+      shadowWorkload,
+      completed: complete.promise,
+    },
+  });
+  const { post, receive } = await start({ shadowWorkload: true });
+  try {
+    expect(mocks.construct.mock.calls[0]?.[1]).toMatchObject({ shadowWorkload: true });
+    receive({ data: drawMessage(1) });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([m]) => m.kind === 'submitted')).toHaveLength(1),
+    );
+    complete.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([m]) => m.kind === 'completed')).toHaveLength(1),
+    );
+    for (const [message] of post.mock.calls) {
+      if (message.kind === 'submitted' || message.kind === 'completed') {
+        expect(message.frame.frameId).toBe(1);
+        expect(message.frame.shadowWorkload).toBe(shadowWorkload);
+        expect(structuredClone(message).frame.shadowWorkload.frameId).toBe(901);
+      }
+    }
+  } finally {
+    complete.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
 });

@@ -1741,6 +1741,35 @@ export function parse(source) {
     return ParsedModule.__wrap(ret[0]);
 }
 
+/**
+ * Produce portable WGSL for each selected compute entry; never driver binaries.
+ * @param {string} source
+ * @param {string} entries_json
+ * @returns {string}
+ */
+export function specialize_compute_entries(source, entries_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(entries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.specialize_compute_entries(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
 export function start() {
     wasm.start();
 }
@@ -3143,12 +3172,12 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [String, String], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h37f68b3672e8b7bf);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h2e98ac29f1fbd5db);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 7, ret: RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }, inner_ret: Some(RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__ha2ac7301205511eb);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hf4075af474fd64d6);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -3217,8 +3246,8 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__ha2ac7301205511eb(arg0, arg1) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__ha2ac7301205511eb(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__hf4075af474fd64d6(arg0, arg1) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hf4075af474fd64d6(arg0, arg1);
     return RhiWgpuCompletionRequest.__wrap(ret);
 }
 
@@ -3233,12 +3262,12 @@ function wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b(arg0, arg1, arg2, arg3);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h37f68b3672e8b7bf(arg0, arg1, arg2, arg3) {
+function wasm_bindgen__convert__closures_____invoke__h2e98ac29f1fbd5db(arg0, arg1, arg2, arg3) {
     const ptr0 = passStringToWasm0(arg2, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(arg3, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
-    wasm.wasm_bindgen__convert__closures_____invoke__h37f68b3672e8b7bf(arg0, arg1, ptr0, len0, ptr1, len1);
+    wasm.wasm_bindgen__convert__closures_____invoke__h2e98ac29f1fbd5db(arg0, arg1, ptr0, len0, ptr1, len1);
 }
 
 const ParsedModuleFinalization = (typeof FinalizationRegistry === 'undefined')

@@ -25,6 +25,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from './helpers/runtime-assets';
 
 export type SaveEvidence = (name: string, bytes: Uint8Array) => void;
 
@@ -64,19 +65,21 @@ export const TINY_SPHERES = [-1.5, -0.5, 0.5, 1.5].flatMap((y) =>
  * specular AA. A flat dielectric backdrop is the zero-curvature control.
  */
 export function buildSpecularAaScene(world: World) {
-  const sphere = world.allocSharedRef('MeshAsset', createSphereGeometry(RADIUS, 128, 96).unwrap());
-  const tiny = world.allocSharedRef(
-    'MeshAsset',
-    createSphereGeometry(TINY_RADIUS, 32, 24).unwrap(),
-  );
-  const tinyMetal = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.95, 0.93, 0.88, 1],
-      metallic: 1,
-      roughness: SPHERE_ROUGHNESS[1],
-    }),
-  );
+  const sphere = testAssets(world)
+    .create(createSphereGeometry(RADIUS, 128, 96).unwrap())
+    .unwrap();
+  const tiny = testAssets(world)
+    .create(createSphereGeometry(TINY_RADIUS, 32, 24).unwrap())
+    .unwrap();
+  const tinyMetal = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0.95, 0.93, 0.88, 1],
+        metallic: 1,
+        roughness: SPHERE_ROUGHNESS[1],
+      }),
+    )
+    .unwrap();
   for (const center of TINY_SPHERES)
     world
       .spawn(
@@ -86,10 +89,9 @@ export function buildSpecularAaScene(world: World) {
       )
       .unwrap();
   for (const { center, roughness } of SPHERES) {
-    const metal = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.95, 0.93, 0.88, 1], metallic: 1, roughness }),
-    );
+    const metal = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.95, 0.93, 0.88, 1], metallic: 1, roughness }))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: center } },
@@ -104,21 +106,24 @@ export function buildSpecularAaScene(world: World) {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(14, 14, 0.1).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(14, 14, 0.1).unwrap())
+            .unwrap(),
         },
       },
       {
         component: MeshRenderer,
         data: {
           materials: [
-            world.allocSharedRef(
-              'MaterialAsset',
-              Materials.standard({
-                baseColor: [0.35, 0.35, 0.35, 1],
-                metallic: 0,
-                roughness: BACKDROP_ROUGHNESS,
-              }),
-            ),
+            testAssets(world)
+              .create(
+                Materials.standard({
+                  baseColor: [0.35, 0.35, 0.35, 1],
+                  metallic: 0,
+                  roughness: BACKDROP_ROUGHNESS,
+                }),
+              )
+              .unwrap(),
           ],
         },
       },
@@ -414,18 +419,24 @@ export async function verifySpecularAaGBuffer(
         await openReplay(source, { device, createShaderModule: webgpu.createShaderModule })
       ).unwrap();
       try {
-        const words = async (resourceId: string) => {
+        const words = async (resourceId: string, format: 'r32uint' | 'rg32uint') => {
           const texels = (await replay.readResourceAtWork(resourceId, target.workIndex)).unwrap();
-          if (texels.format !== 'r32uint') throw new Error(`unexpected ${texels.format}`);
-          save(`${label}-${resourceId.replace(':', '-')}.r32uint`, texels.bytes);
-          return new Uint32Array(
+          if (texels.format !== format) throw new Error(`expected ${format}, got ${texels.format}`);
+          save(`${label}-${resourceId.replace(':', '-')}.${format}`, texels.bytes);
+          const packed = new Uint32Array(
             texels.bytes.buffer.slice(
               texels.bytes.byteOffset,
               texels.bytes.byteOffset + texels.bytes.byteLength,
             ),
           );
+          // Reflectance stores mixed and dielectric response in separate words;
+          // this classifier consumes mixed F0 in the red channel.
+          return format === 'rg32uint' ? packed.filter((_, index) => index % 2 === 0) : packed;
         };
-        return { roughness: await words(normalRoughness), f0: await words(reflectance) };
+        return {
+          roughness: await words(normalRoughness, 'r32uint'),
+          f0: await words(reflectance, 'rg32uint'),
+        };
       } finally {
         (await replay.dispose()).unwrap();
       }

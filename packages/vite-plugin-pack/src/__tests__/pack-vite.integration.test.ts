@@ -206,7 +206,7 @@ describe('ScriptablePack and Pack development publication', () => {
       import { definePack, definePackageId } from '@forgeax/engine-pack/source';
       import { ok } from '@forgeax/engine-types';
       export const root = { apply() {} };
-      export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('${ROOT_PACKAGE_ID}'),
+      export default definePack({ schemaVersion: '2.0.0', plugins: true, packageId: definePackageId('${ROOT_PACKAGE_ID}'),
         build() { return ok({ 'plugin/engine': { kind: 'plugin', module: { specifier: './root.pack.ts', export: 'root' } } }); } });
     `,
     );
@@ -258,16 +258,24 @@ describe('ScriptablePack and Pack development publication', () => {
     const beforeImport = await catalog();
     expect(beforeImport.find((row) => row.guid === definition.guid)?.publication).toBeDefined();
     const read = async () => {
-      const registry = new AssetRegistry({} as never);
+      const registry = new AssetRegistry({ shaderRegistry: {} as never });
       registry.configureRuntimeBinding({ ...binding, catalogUrl });
       registry.setCatalogSource(createCatalogSource({ url: catalogUrl, expectedScope: binding }));
       try {
         return await registry.readPluginDefinition(definition.guid);
       } finally {
-        registry.clearCatalogSource();
+        registry.dispose();
       }
     };
-    expect((await read()).ok).toBe(true);
+    const initial = (await read()).unwrap();
+    const acceptedPublication = beforeImport.find(
+      (row) => row.guid === definition.guid,
+    )?.publication;
+    expect(initial.evidence).toEqual({
+      kind: 'publication',
+      publication: { ...acceptedPublication, scopeId: binding.scopeId },
+    });
+    expect(initial.evidence).toMatchObject(definition.evidence);
     const imported = await fetch(new URL(`${binding.importUrlBase}/${uiGuid}`, base), {
       method: 'POST',
     });
@@ -279,7 +287,7 @@ describe('ScriptablePack and Pack development publication', () => {
     );
     const reopened = await read();
     expect(reopened.ok, JSON.stringify(reopened)).toBe(true);
-    if (reopened.ok) expect(reopened.value.evidence).toEqual(definition.evidence);
+    if (reopened.ok) expect(reopened.value).toEqual(initial);
     const afterImport = await catalog();
     expect(afterImport.find((row) => row.guid === definition.guid)).toEqual(
       beforeImport.find((row) => row.guid === definition.guid),

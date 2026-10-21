@@ -6,7 +6,7 @@ import { freemem, loadavg } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assembleRuntimePacks, createAssetRuntimeAssembly } from '@forgeax/engine-app';
-import { createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
@@ -23,6 +23,7 @@ import {
   toRgba8,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
+import { defaultAssetDecoderContributions } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { GlobalTransform, scenePlugin, Transform } from '@forgeax/engine-scene';
 import {
@@ -214,8 +215,6 @@ async function run(collision, depthOnly = false) {
           createShaderModule: recorder.backend.createShaderModule,
           createShaderModuleImmediate: recorder.backend.createShaderModuleImmediate,
         });
-  let world = new World();
-  let context = await createWorldContext(world, [scenePlugin()]);
   const host = createVfxRuntimeHost({
     camera: {
       read(currentWorld) {
@@ -260,7 +259,10 @@ async function run(collision, depthOnly = false) {
       },
     ),
   );
-  const { renderer, assets } = assembly;
+  const { renderer } = assembly;
+  let assets = assembly.assets;
+  let world = new World({ assets });
+  let context = await createWorldContext(world, [scenePlugin()]);
   const errors = [];
   renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -285,43 +287,49 @@ async function run(collision, depthOnly = false) {
     lifecycle === 'same-guid-republication'
       ? prepared.republication.guid
       : guid(`mesh/${scenario.mesh}`);
-  const mesh = unwrap(await assets.loadByGuid(assets.parseGuid(meshGuid)));
-  assert.equal(
-    mesh.distanceField.policy.kind,
-    scenario.mesh === 'plane' ? 'two-sided' : 'signed-solid',
-  );
-  const material = unwrap(await assets.loadByGuid(assets.parseGuid(guid('material/obstacle'))));
-  let transforms = structuredClone(scenario.obstacles);
-  const effect = unwrap(
-    await loadVfxGpuEffect(
-      assets,
-      depthOnly
-        ? prepared.depth.guid
-        : guid(
-            benchmarkCapacity === undefined
-              ? `effect/${label}`
-              : `effect/benchmark/${benchmarkCapacity}/${label}`,
-          ),
-    ),
-  );
-  if (depthOnly)
-    assert.deepEqual(
-      effect.program.emitters[0].reflection.dataInterfaces.map((row) => row.kind),
-      ['camera', 'scene-depth'],
-    );
   const totalCapacity = benchmarkCapacity ?? 1024;
-  assert.equal(
-    effect.program.emitters.reduce((sum, emitter) => sum + emitter.capacity, 0),
-    totalCapacity,
-  );
-  assert.equal(
-    effect.program.emitters.reduce((sum, emitter) => sum + emitter.renderers[0].capacity, 0),
-    totalCapacity,
-  );
-  assert.equal(
-    effect.program.emitters.reduce((sum, emitter) => sum + emitter.schedule.bursts[0].count, 0),
-    totalCapacity,
-  );
+  async function loadWorldAssets(owner) {
+    const sourceMesh = unwrap(await owner.load(owner.parseGuid(meshGuid), 'mesh'));
+    const mesh = owner.read(sourceMesh).unwrap();
+    assert.equal(
+      mesh.distanceField.policy.kind,
+      scenario.mesh === 'plane' ? 'two-sided' : 'signed-solid',
+    );
+    const material = unwrap(await owner.load(owner.parseGuid(guid('material/obstacle')), 'material'));
+    const effectHandle = unwrap(
+      await loadVfxGpuEffect(
+        owner,
+        depthOnly
+          ? prepared.depth.guid
+          : guid(
+              benchmarkCapacity === undefined
+                ? `effect/${label}`
+                : `effect/benchmark/${benchmarkCapacity}/${label}`,
+            ),
+      ),
+    );
+    const effect = owner.read(effectHandle).unwrap();
+    if (depthOnly)
+      assert.deepEqual(
+        effect.program.emitters[0].reflection.dataInterfaces.map((row) => row.kind),
+        ['camera', 'scene-depth'],
+      );
+    assert.equal(
+      effect.program.emitters.reduce((sum, emitter) => sum + emitter.capacity, 0),
+      totalCapacity,
+    );
+    assert.equal(
+      effect.program.emitters.reduce((sum, emitter) => sum + emitter.renderers[0].capacity, 0),
+      totalCapacity,
+    );
+    assert.equal(
+      effect.program.emitters.reduce((sum, emitter) => sum + emitter.schedule.bursts[0].count, 0),
+      totalCapacity,
+    );
+    return { sourceMesh, mesh, material, effectHandle, effect };
+  }
+  let { sourceMesh, mesh, material, effectHandle, effect } = await loadWorldAssets(assets);
+  let transforms = structuredClone(scenario.obstacles);
   function populateWorld(world) {
     const cameraEntity = world
       .spawn(
@@ -377,8 +385,8 @@ async function run(collision, depthOnly = false) {
         )
         .unwrap();
     }
-    const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const meshHandle = sourceMesh;
+    const materialHandle = material;
     const obstacles = transforms.map((transform) =>
       world
         .spawn(
@@ -392,7 +400,7 @@ async function run(collision, depthOnly = false) {
       .spawn({
         component: ParticleEffectPlayer,
         data: {
-          effect: world.allocSharedRef('ParticleEffectAsset', effect),
+          effect: effectHandle,
           playing: true,
           seed: 15,
           timeScale: 1,
@@ -446,17 +454,16 @@ async function run(collision, depthOnly = false) {
           const publication = prepared.republication;
           runtime.producer.withdraw(publication.packageId);
           unwrap(await runtime.producer.restore(preparedSnapshot(publication.rows[1])));
-          assets.invalidate(publication.guid);
-          const replacement = unwrap(await assets.loadByGuid(assets.parseGuid(publication.guid)));
-          assert.notEqual(replacement, mesh);
+          const held = assets.snapshot(sourceMesh).unwrap();
+          unwrap(await assets.reload(sourceMesh, {conflict: 'reject'}));
+          const current = assets.snapshot(sourceMesh).unwrap();
+          const replacement = assets.read(sourceMesh).unwrap();
+          assert(current.version(sourceMesh).unwrap() > held.version(sourceMesh).unwrap());
           assert.equal(replacement.aabb[3], Math.fround(1.2));
-          assert.equal(
-            replacement.distanceField.artifact.integrity.digest,
-            publication.rows[1].field.integrity.digest,
-          );
-          const replacementHandle = world.allocSharedRef('MeshAsset', replacement);
-          for (const entity of obstacles)
-            world.set(entity, MeshFilter, { assetHandle: replacementHandle }).unwrap();
+          assert.equal(replacement.distanceField.artifact.integrity.digest, publication.rows[1].field.integrity.digest);
+          for (const entity of obstacles) assert.equal(world.get(entity, MeshFilter).unwrap().assetHandle, sourceMesh);
+          held.dispose();
+          current.dispose();
           for (const transform of transforms) transform.reimported = true;
           writeFileSync(
             resolve(output, `${label}-republication.json`),
@@ -578,6 +585,8 @@ async function run(collision, depthOnly = false) {
         (row) => row.label.startsWith('scene-sdf.') && !row.destroyed,
       );
       const before = structuredClone({
+        assetOwner: assets.identity,
+        handles: { mesh: sourceMesh, material, effect: effectHandle },
         host: host.inspect(world),
         renderer: renderer.inspect(),
         fields: oldFields.map((row) => ({ ...row })),
@@ -597,9 +606,18 @@ async function run(collision, depthOnly = false) {
         oldFields.every((row) => row.destroyed),
         'Retired World must release every accepted SDF buffer',
       );
-      world = new World();
+      assets.dispose();
+      assets = new AssetRegistry({ shaderRegistry: assembly.assets.shaderRegistry });
+      for (const contribution of defaultAssetDecoderContributions)
+        assets.installDecoder(contribution.kind, contribution.decoder);
+      assets.configurePackIndex('/pack-index.json');
+      world = new World({ assets });
       context = await createWorldContext(world, [scenePlugin()]);
       unwrap(await host.attachWorld({ world, assets }));
+      ({ sourceMesh, mesh, material, effectHandle, effect } = await loadWorldAssets(assets));
+      assert.notEqual(assets.identity, before.assetOwner);
+      for (const handle of Object.values(before.handles))
+        assert.equal(assets.validate(handle).ok, false, 'Fresh World rejects retired asset handles');
       // Raise only the floor. The new analytic oracle rejects an old field;
       // the ordinary frame24 wall update and collision-off control remain.
       transforms = structuredClone(scenario.obstacles);
@@ -632,6 +650,8 @@ async function run(collision, depthOnly = false) {
       worldRebuildInitialTapes = { before: originalInitialTape, after: captures.get(0) };
       assert(worldRebuildInitialTapes.after);
       const after = structuredClone({
+        assetOwner: assets.identity,
+        handles: { mesh: sourceMesh, material, effect: effectHandle },
         host: host.inspect(world),
         renderer: renderer.inspect(),
         fields: allocations
@@ -665,7 +685,7 @@ async function run(collision, depthOnly = false) {
         JSON.stringify(
           {
             route:
-              'Fresh World and Cordis scene context on the same ordinary Renderer/AssetRegistry/device; no App.execution or driver-reset claim',
+              'Fresh World, AssetRegistry and Cordis scene context on the same ordinary Renderer/device; no App.execution or driver-reset claim',
             before,
             after,
             raisedFloorWorldUnits: 1,
@@ -730,9 +750,9 @@ async function run(collision, depthOnly = false) {
         ),
       );
     } else if (collision && lifecycle === 'missing-field') {
-      const uncooked = unwrap(await assets.loadByGuid(assets.parseGuid(guid('mesh/no-field'))));
-      assert.equal(uncooked.distanceField, undefined);
-      const invalidHandle = world.allocSharedRef('MeshAsset', uncooked);
+      const uncooked = unwrap(await assets.load(assets.parseGuid(guid('mesh/no-field')), 'mesh'));
+      assert.equal(assets.read(uncooked).unwrap().distanceField, undefined);
+      const invalidHandle = uncooked;
       for (const entity of obstacles)
         world.set(entity, MeshFilter, { assetHandle: invalidHandle }).unwrap();
       world.update(1 / 60).unwrap();
@@ -828,13 +848,13 @@ async function run(collision, depthOnly = false) {
         else {
           const replacement = unwrap(await loadVfxGpuEffect(assets, guid('effect/free')));
           assert(
-            !replacement.program.emitters[0].reflection.dataInterfaces?.some(
+            !assets.read(replacement).unwrap().program.emitters[0].reflection.dataInterfaces?.some(
               (row) => row.kind === 'scene-sdf',
             ),
           );
           world
             .set(player, ParticleEffectPlayer, {
-              effect: world.allocSharedRef('ParticleEffectAsset', replacement),
+              effect: replacement,
             })
             .unwrap();
         }
@@ -883,6 +903,7 @@ async function run(collision, depthOnly = false) {
     await renderer.dispose();
     await context.fiber.dispose();
     assetAssembly?.dispose();
+    assets.dispose();
     if (recorder !== undefined) unwrap(await recorder.dispose());
     if (benchmarkCapacity !== undefined || lifecycle !== undefined) raw.createBuffer = createBuffer;
     shim.sharedDevice?.destroy();

@@ -7,7 +7,7 @@
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CanvasAppError } from '@forgeax/engine-app';
 import {
-  buildMeshAttributeMapForUvSets,
+  createMeshBuilder,
   createBoxGeometry,
   createEdgesGeometry,
   createWireframeGeometry,
@@ -24,44 +24,20 @@ import {
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import type { AssetError, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { AssetError, MeshAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
-const FLOATS_PER_VERTEX = 12;
 const FOCUSED_ROUTES = ['?evidenceLane=webgpu', '?evidenceLane=wgpu-webgl2'] as const;
-
-function meshAsset(
-  topology: 'point-list' | 'line-list',
-  vertices: Float32Array,
-  position: Float32Array,
-  vertexCount: number,
-): MeshAsset {
-  return {
-    kind: 'mesh',
-    vertices,
-    attributes: { ...buildMeshAttributeMapForUvSets(1), position },
-    submeshes: [{
-      indexOffset: 0,
-      indexCount: 0,
-      vertexCount,
-      topology,
-      materialSlot: 0,
-    }],
-    materialSlots: [{ slotName: 'focused-points-lines' }],
-  };
-}
 
 function createFocusedMesh(topology: 'point-list' | 'line-list'): MeshAsset {
   const positions = topology === 'point-list'
     ? [[-0.65, 0.25, 0], [-0.2, 0.55, 0], [0.25, 0.2, 0], [0.65, 0.5, 0]]
     : [[-0.8, -0.45, 0], [0.8, -0.45, 0], [-0.8, -0.1, 0], [0.8, -0.1, 0], [-0.8, 0.25, 0], [0.8, 0.25, 0]];
-  const vertices = new Float32Array(positions.length * FLOATS_PER_VERTEX);
-  const position = new Float32Array(positions.length * 3);
-  positions.forEach((value, index) => {
-    vertices.set(value, index * FLOATS_PER_VERTEX);
-    position.set(value, index * 3);
-  });
-  return meshAsset(topology, vertices, position, positions.length);
+  return createMeshBuilder({
+    attributes: { position: new Float32Array(positions.flat()) },
+    submeshes: [{ topology }],
+    materialSlots: [{ slotName: 'focused-points-lines' }],
+  }).build().unwrap();
 }
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
@@ -85,6 +61,8 @@ async function bootstrapFocused(
   const appResult = await createApp(target, appOptions, forgeaxBundlerAdapter());
   if (!appResult.ok) return reportAppError(appResult.error);
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('topology requires runtime assets');
   const world = app.world;
   const material = Materials.unlit([0.1, 0.9, 1, falsify === 'alpha' ? 0.4 : 1], {
     renderState: {
@@ -102,9 +80,9 @@ async function bootstrapFocused(
     },
     queue: falsify === 'sort' ? 3001 : 3000,
   });
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material);
-  const pointMeshHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', createFocusedMesh('point-list'));
-  const lineMeshHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', createFocusedMesh('line-list'));
+  const materialHandle = assets.create(material).unwrap();
+  const pointMeshHandle = assets.create(createFocusedMesh('point-list')).unwrap();
+  const lineMeshHandle = assets.create(createFocusedMesh('line-list')).unwrap();
 
   world.spawn(
     { component: Transform, data: { pos: [falsify === 'frustum' ? 0.85 : 0, 0, -2], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
@@ -227,7 +205,7 @@ async function bootstrapLegacy(target: HTMLCanvasElement): Promise<void> {
   if (!appResult.ok) return reportAppError(appResult.error);
   const app = appResult.value;
   const assets = app.assets;
-  if (assets === null) {
+  if (assets === undefined) {
     console.error('[topology] AssetRegistry is null (renderer construction failed)');
     return;
   }
@@ -239,14 +217,10 @@ async function bootstrapLegacy(target: HTMLCanvasElement): Promise<void> {
   if (!edgesResult.ok) return reportGeometryError(edgesResult.error);
 
   const world = app.world;
-  const wireframeHandle = world.allocSharedRef('MeshAsset', wireframeResult.value);
-  const edgesHandle = world.allocSharedRef('MeshAsset', edgesResult.value);
-  const wireMaterialHandle = world.allocSharedRef(
-    'MaterialAsset', Materials.unlit([0.1, 0.9, 1, 1]),
-  );
-  const edgesMaterialHandle = world.allocSharedRef(
-    'MaterialAsset', Materials.unlit([1, 0.65, 0.12, 1]),
-  );
+  const wireframeHandle = assets.create(wireframeResult.value).unwrap();
+  const edgesHandle = assets.create(edgesResult.value).unwrap();
+  const wireMaterialHandle = assets.create(Materials.unlit([0.1, 0.9, 1, 1])).unwrap();
+  const edgesMaterialHandle = assets.create(Materials.unlit([1, 0.65, 0.12, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [-1.1, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: wireframeHandle } },

@@ -3,15 +3,17 @@ import type { DirectionalShadowQuality } from '../components/directional-shadow-
 import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { CapsuleShadowSubmission } from './inspection';
+import type { FrameList } from '../scene/frame-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
+import { type CapsuleShadowSubmission, capsuleShadowParticipates } from './inspection';
 import { WORLD_CAPSULE_STRIDE } from './world-capsules';
 
 /** Per-frame capsule budget; farther capsules are dropped first. */
 export const MAX_FRAME_CAPSULES = 1024;
-export const CAPSULE_TILE_SIZE = 16;
+const CAPSULE_TILE_SIZE = 16;
 export const MAX_CAPSULES_PER_TILE = 32;
 /** Shared tile index pool; tiles past it keep fewer capsules and count as overflow. */
-export const CAPSULE_TILE_INDEX_CAPACITY = 65536;
+const CAPSULE_TILE_INDEX_CAPACITY = 65536;
 /** Tile header packing: index offset in the high bits, count in the low bits. */
 export const CAPSULE_TILE_COUNT_BITS = 6;
 
@@ -25,7 +27,7 @@ const MAX_CONE = Math.PI / 6;
  * (`b.w` carries the reach), and a tile table whose first `tilesX * tilesY`
  * words are packed headers followed by the capsule index lists.
  */
-export interface CapsuleShadowFrame {
+interface CapsuleShadowFrame {
   readonly capsules: Float32Array;
   readonly tiles: Uint32Array;
   readonly tilesX: number;
@@ -72,7 +74,8 @@ interface Candidate {
  * reach and cone falloff.
  */
 export function buildCapsuleShadowFrame(
-  renderables: readonly { readonly source: RenderableSnapshot }[],
+  renderables: FrameList<RenderableSnapshot>,
+  materials: MaterialFrame | undefined,
   camera: CameraSnapshot,
   lightDirection: ArrayLike<number>,
   coneHalfAngle: number,
@@ -88,9 +91,9 @@ export function buildCapsuleShadowFrame(
   const cy = camera.position[1] ?? 0;
   const cz = camera.position[2] ?? 0;
   const candidates: Candidate[] = [];
-  for (const { source } of renderables) {
+  for (const source of renderables) {
     const state = source.capsuleShadow;
-    if (state?.status !== 'ready') continue;
+    if (state?.status !== 'ready' || !capsuleShadowParticipates(source, materials)) continue;
     for (let offset = 0; offset < state.capsules.length; offset += WORLD_CAPSULE_STRIDE) {
       const c = state.capsules;
       const mx = ((c[offset] as number) + (c[offset + 4] as number)) / 2 - cx;

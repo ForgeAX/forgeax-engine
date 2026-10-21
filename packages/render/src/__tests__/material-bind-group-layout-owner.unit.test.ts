@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import type { BindGroup, BindGroupEntry, BindGroupLayout, Buffer } from '@forgeax/engine-rhi';
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   buildPerSubmeshMaterialBg,
@@ -7,7 +8,7 @@ import {
 } from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import { MATERIAL_PER_ENTITY_STRIDE } from '../record/render-context';
-import type { MaterialSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
 
 function fixture() {
   const resource = () => ({});
@@ -18,6 +19,7 @@ function fixture() {
     runtime: {
       device: {
         caps: { storageBuffer: false },
+        queue: { writeBuffer: () => ok(undefined) },
         limits: { maxSampledTexturesPerShaderStage: 16 },
         createBindGroup: (descriptor: { layout: object; entries: BindGroupEntry[] }) => {
           layouts.push(descriptor.layout);
@@ -52,8 +54,12 @@ function fixture() {
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},
   } as unknown as PerSubmeshMaterialBgDeps;
-  const material = { materialHandle: 1, materialShaderId: 'game::replaceable' } as MaterialSnapshot;
-  const draw = (): BindGroup => buildPerSubmeshMaterialBg(deps, { ...material }, 1);
+  const material = {
+    ...defaultMaterialSnapshot(),
+    materialHandle: 1,
+    materialShaderId: 'game::replaceable',
+  };
+  const draw = (): BindGroup => buildPerSubmeshMaterialBg(deps, material, 1);
   return {
     deps,
     draw,
@@ -125,9 +131,17 @@ it('selects the physical material page while reusing groups within that page', (
       buffers: [first, second],
     },
   });
-  const material = { materialHandle: 1, materialShaderId: 'game::replaceable' } as MaterialSnapshot;
-  const draw = (slot: number) =>
-    buildPerSubmeshMaterialBg(f.deps, material, 1, f.deps.world, material.materialShaderId, slot);
+  const materials = Array.from({ length: 14 }, (_, index) => ({
+    ...defaultMaterialSnapshot(),
+    materialHandle: index + 1,
+    materialShaderId: 'game::replaceable',
+  }));
+  const draw = (slot: number) => {
+    const material = materials[slot];
+    if (material === undefined) throw new Error('missing material');
+    return buildPerSubmeshMaterialBg(f.deps, material, 1, f.deps.world, material.materialShaderId);
+  };
+  for (let slot = 0; slot < 11; slot++) draw(slot);
   const a = draw(11);
   const b = draw(12);
   expect(b).not.toBe(a);
@@ -137,4 +151,42 @@ it('selects the physical material page while reusing groups within that page', (
   expect(buffer(b)).toMatchObject({ kind: 'buffer', value: { buffer: second, offset: 0 } });
   expect(draw(13)).toBe(b);
   expect(draw(0)).toBe(a);
+});
+
+it('binds prepared material views and observes appearance, replacement and removal in the same cache', () => {
+  const f = fixture();
+  let prepared:
+    | {
+        textureView: import('@forgeax/engine-rhi').TextureView;
+        sampler: import('@forgeax/engine-rhi').Sampler;
+      }
+    | undefined;
+  Object.assign(f.deps.runtime, {
+    getParamSchema: () => [{ name: 'field', type: 'texture2d' }],
+    preparedMaterialTexture: (_material: MaterialSnapshot, field: string) =>
+      field === 'field' ? prepared : undefined,
+  });
+  const original = f.draw();
+  const entries = (group: BindGroup) => (group as unknown as { entries: BindGroupEntry[] }).entries;
+  prepared = {
+    textureView: {} as import('@forgeax/engine-rhi').TextureView,
+    sampler: {} as import('@forgeax/engine-rhi').Sampler,
+  };
+  const first = f.draw();
+  expect(first).not.toBe(original);
+  expect(entries(first).find((entry) => entry.binding === 2)?.resource).toEqual({
+    kind: 'textureView',
+    value: prepared.textureView,
+  });
+  expect(entries(first).find((entry) => entry.binding === 1)?.resource).toEqual({
+    kind: 'sampler',
+    value: prepared.sampler,
+  });
+  expect(f.draw()).toBe(first);
+  prepared = { ...prepared, textureView: {} as import('@forgeax/engine-rhi').TextureView };
+  const second = f.draw();
+  expect(second).not.toBe(first);
+  expect(f.draw()).toBe(second);
+  prepared = undefined;
+  expect(f.draw()).toBe(original);
 });

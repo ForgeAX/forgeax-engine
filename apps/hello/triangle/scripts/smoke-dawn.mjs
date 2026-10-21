@@ -16,7 +16,7 @@
 // variant invalid by contract -- rhi-wgpu is browser-only WebGL2 fallback now).
 // (feat-20260514-ci-jscpd-duplication-gate M3 T-012 / clone #1+#3 cash-out). Token
 // preservation contract: this file still hosts the canonical ECS/runtime imports,
-// `HANDLE_TRIANGLE`, and a lease-bound Renderer draw request that the smoke gate checks.
+// `BUILTIN_TRIANGLE`, and a lease-bound Renderer draw request that the smoke gate checks.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,9 @@ import {
   SMOKE_HELPERS_DEFAULTS,
 } from './smoke-helpers.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_TRIANGLE = createPrimitiveMesh('triangle').unwrap();
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? String(DEFAULTS.SMOKE_DURATION_MS), 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? String(DEFAULTS.SMOKE_MIN_FRAMES), 10);
@@ -49,15 +52,13 @@ const { mockCanvas } = shim;
 const { World } = await import('@forgeax/engine-ecs');
 await import('@forgeax/engine-runtime');
 const { constructRuntimeRendererHost: createRenderer } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const assets = await import('@forgeax/engine-assets-runtime');
+
 const render = await import('@forgeax/engine-render');
 const scene = await import('@forgeax/engine-scene');
 const { _internal_getRawDevice: captureRawDevice, rhi } = await import('@forgeax/engine-rhi-webgpu');
 
 // World spawn: data-equivalent mirror of apps/hello/triangle/src/main.ts M0
 // SSOT lock values (charter proposition 5 co-source binding exemplar).
-const world = new World();
-populateSmokeWorld(world, { ...render, ...scene }, assets);
 
 // rhi.requestDevice was deprecated by feat-20260510-rhi-resource-creation
 // breaking point #2 (top-level single-step factory removed; spec-aligned
@@ -79,11 +80,15 @@ void rhi;
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
-const { renderer, errors } = await bootRenderer({
+const { renderer, assets, errors } = await bootRenderer({
   createRenderer,
   mockCanvas,
   shaderManifestUrl: MANIFEST_URL,
 });
+const world = new World({ assets });
+const triangle = assets.create(BUILTIN_TRIANGLE).unwrap();
+populateSmokeWorld(world, { ...render, ...scene }, triangle);
+assets.release(triangle).unwrap();
 const attachment = renderer.attach(world);
 if (!attachment.ok) throw attachment.error;
 

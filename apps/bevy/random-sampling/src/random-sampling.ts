@@ -1,19 +1,25 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { type World } from '@forgeax/engine-ecs';
-import { buildMeshAttributeMapForUvSets } from '@forgeax/engine-geometry';
+import { buildMeshAttributeMapForUvSets, deriveVertexLayoutProjection, unpackInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
-import { type MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
-import { quat } from '@forgeax/engine-math';
 
-const FLOATS_PER_VERTEX = 12;
+import type { MeshAsset } from '@forgeax/engine-types';
+import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
+
+const VERTEX_LAYOUT = deriveVertexLayoutProjection(buildMeshAttributeMapForUvSets(1));
+const FLOATS_PER_VERTEX = VERTEX_LAYOUT.arrayStride / Float32Array.BYTES_PER_ELEMENT;
 
 function wireframeCube(half: number): MeshAsset {
   const c: readonly (readonly [number, number, number])[] = [
@@ -26,7 +32,6 @@ function wireframeCube(half: number): MeshAsset {
   ];
   const vc = edges.length * 2;
   const vertices = new Float32Array(vc * FLOATS_PER_VERTEX);
-  const pos = new Float32Array(vc * 3);
   let v = 0;
   for (const [a, b] of edges) {
     for (const ci of [a, b]) {
@@ -34,16 +39,15 @@ function wireframeCube(half: number): MeshAsset {
       vertices[v * FLOATS_PER_VERTEX] = cr[0];
       vertices[v * FLOATS_PER_VERTEX + 1] = cr[1];
       vertices[v * FLOATS_PER_VERTEX + 2] = cr[2];
-      pos[v * 3] = cr[0];
-      pos[v * 3 + 1] = cr[1];
-      pos[v * 3 + 2] = cr[2];
       v++;
     }
   }
+  const attributes = unpackInterleavedVertexAttributes(vertices, VERTEX_LAYOUT);
+  if (attributes === undefined) throw new Error('Wireframe vertices must match their layout');
   return {
     kind: 'mesh',
     vertices,
-    attributes: { ...buildMeshAttributeMapForUvSets(1), position: pos },
+    attributes,
     submeshes: [{ indexOffset: 0, indexCount: 0, vertexCount: vc, topology: 'line-list', materialSlot: 0 }],
     materialSlots: [{ slotName: 'Default' }],
   };
@@ -74,16 +78,16 @@ function randomOnCube(half: number): [number, number, number] {
 
 export function buildRandomSamplingWorld(world: World): {
   wireframeHalf: number;
-  pointMat: Handle<'MaterialAsset', 'shared'>;
+  pointMat: AssetHandle<'material'>;
 } {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const half = 1.2;
 
   // Wireframe cube to show the bounding region
-  const wireMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.5, 0.5, 0.5, 1]),
-  );
-  const wireMesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', wireframeCube(half));
+  const wireMat = sceneAssets.create(Materials.unlit([0.5, 0.5, 0.5, 1])).unwrap();
+  const wireMesh = sceneAssets.create(wireframeCube(half)).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: wireMesh } },
@@ -111,10 +115,7 @@ export function buildRandomSamplingWorld(world: World): {
   );
 
   // Point material (shared, used for all spawned sample points)
-  const pointMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0.8, 0.8, 1], metallic: 0.8 }),
-  );
+  const pointMat = sceneAssets.create(Materials.standard({ baseColor: [1, 0.8, 0.8, 1], metallic: 0.8 })).unwrap();
 
   return { wireframeHalf: half, pointMat };
 }
@@ -123,12 +124,17 @@ export function spawnSamplePoint(
   world: World,
   mode: 'interior' | 'boundary',
   half: number,
-  pointMat: Handle<'MaterialAsset', 'shared'>,
+  pointMat: AssetHandle<'material'>,
 ) {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const pos = mode === 'interior' ? randomInCube(half) : randomOnCube(half);
   return world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [0.04, 0.04, 0.04] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [pointMat] } },
   );
 }

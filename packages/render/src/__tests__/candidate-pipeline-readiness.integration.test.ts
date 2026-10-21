@@ -1,4 +1,4 @@
-import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
 import {
@@ -15,6 +15,10 @@ import {
 } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import {
+  createDynamicGeometrySourceHost,
+  type DynamicGeometryResidencyPort,
+} from '../assembly/dynamic-geometry-host';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { createAsyncDynamicGeometryHost } from '../async-dynamic-geometry';
 import {
@@ -29,6 +33,7 @@ import {
   VisibilityStateValue,
 } from '../components';
 import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import { Materials } from '../materials';
 import { renderPublicationTransfers } from '../publication/contract';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
@@ -164,7 +169,8 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
   expect(
     renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
   ).toBe(true);
-  const world = new World();
+  const assets = host.assetRegistry;
+  const world = new World({ assets });
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
   const positions = mesh.attributes.position;
   if (!(positions instanceof Float32Array) || mesh.indices === undefined)
@@ -178,8 +184,8 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
   })
     .build()
     .unwrap();
-  const previous = world.allocSharedRef('MeshAsset', mesh);
-  const next = world.allocSharedRef('MeshAsset', candidateMesh);
+  const previous = assets.create(mesh).unwrap();
+  const next = assets.create(candidateMesh).unwrap();
   const materialAsset = unlit
     ? Materials.unlit([0.8, 0.5, 0.2, 1])
     : Materials.standard({
@@ -187,7 +193,7 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
         roughness: 0.6,
         metallic: 0.1,
       });
-  const material = world.allocSharedRef('MaterialAsset', materialAsset);
+  const material = assets.create(materialAsset).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -302,10 +308,11 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
       rejected = true;
     },
     asyncHost: createAsyncDynamicGeometryHost(renderer),
-    input: { world, entity, mesh: candidateMesh, meshHandle: next, revision: 1 },
+    input: { world, entity, meshHandle: next, revision: 1 },
     publishedInput: (candidateEntity = entity) => ({
       ...identity,
       meshHandle: next,
+      revision: runtimeAssets(assets).version(next).unwrap(),
       mesh: candidateMesh,
       pipelinePreparation: captureMeshPipelinePreparation({
         world,
@@ -548,14 +555,15 @@ it('prepares the first published GPU material while the current scene remains un
         ([descriptor]) => descriptor.vertex.entryPoint === 'vs_scene_index',
       ),
     ).toEqual([]);
-    const standard = f.world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        roughness: 0.6,
-        metallic: 0.1,
-      }),
-    );
+    const standard = f.assets
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          roughness: 0.6,
+          metallic: 0.1,
+        }),
+      )
+      .unwrap();
     f.world.set(f.entity, MeshRenderer, { materials: [standard] }).unwrap();
     f.world.update(1 / 60).unwrap();
     const input = structuredClone(f.publishedInput());
@@ -642,12 +650,16 @@ it('keeps ordinary published hidden chunks out of raster demand until their cand
     });
     const original = Materials.standard({ baseColor: [0.2, 0.6, 0.8, 1] });
     if (original.passes === undefined) throw new Error('missing Standard material passes');
-    const material = f.world.allocSharedRef('MaterialAsset', {
-      ...original,
-      passes: original.passes.map((pass) =>
-        pass.name === 'forward' ? { ...pass, program: { module: shader } } : pass,
-      ),
-    });
+    const [firstPass, ...remainingPasses] = original.passes.map((pass) =>
+      pass.name === 'forward' ? { ...pass, program: { module: shader } } : pass,
+    );
+    if (firstPass === undefined) throw new Error('missing Standard material pass');
+    const material = f.assets
+      .create({
+        ...original,
+        passes: [firstPass, ...remainingPasses],
+      })
+      .unwrap();
     const chunk = f.world
       .spawn(
         { component: Transform, data: { pos: [2, 0, 0] } },
@@ -758,6 +770,63 @@ it('returns a rejected asynchronous pipeline to the candidate without failing th
 });
 
 it.each([
+  'asset',
+  'binding',
+] as const)('reads pending candidate currentness without scanning after %s changes', async (edit) => {
+  const f = await fixture('color');
+  const replacement = f.assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
+  const capture = vi.fn(() => ok(f.publishedInput().pipelinePreparation));
+  const residencyToken = Object.freeze({});
+  let complete!: (result: Awaited<ReturnType<DynamicGeometryResidencyPort['prepare']>>) => void;
+  const host = createDynamicGeometrySourceHost({
+    lifecycle: createDynamicGeometryLifecycle(),
+    attachedWorlds: new Set([f.world]),
+    currentGeneration: () => 1,
+    isConsumedByRenderFrame: () => false,
+    capturePipelinePreparation: capture,
+    residency: {
+      maxConcurrentPreparations: 1,
+      currentnessToken: () => residencyToken,
+      prepare: () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    },
+  });
+  const reads = vi.spyOn(f.world, 'get');
+  try {
+    const pending = host.prepareDynamicGeometry(f.input);
+    await Promise.resolve();
+    expect(capture).toHaveBeenCalledTimes(1);
+    const before = host.dynamicGeometryCurrentness?.(f.world);
+    expect(before).toBeDefined();
+    if (edit === 'asset')
+      f.assets.update(f.material, { values: { baseColor: [0.1, 0.4, 0.8, 1] } }).unwrap();
+    else f.world.set(f.entity, MeshRenderer, { materials: [replacement] }).unwrap();
+    reads.mockClear();
+    capture.mockClear();
+    const current = host.dynamicGeometryCurrentness?.(f.world);
+    expect(current).not.toBe(before);
+    for (let repeat = 0; repeat < 64; repeat++)
+      expect(host.dynamicGeometryCurrentness?.(f.world)).toBe(current);
+    expect(reads).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    complete(ok({ isCurrent: () => true, release: () => undefined }));
+    const candidate = await pending;
+    // The actual candidate checks its own material proof on completion: a
+    // numeric edit keeps it valid, while a changed binding rejects adoption.
+    expect(candidate.ok).toBe(edit === 'asset');
+    expect(reads).toHaveBeenCalled();
+    if (candidate.ok) host.cancelDynamicGeometry(candidate.value).unwrap();
+  } finally {
+    reads.mockRestore();
+    complete(ok({ isCurrent: () => true, release: () => undefined }));
+    host.invalidateDynamicGeometryWorld(f.world);
+    await f.dispose();
+  }
+});
+
+it.each([
   'uniform',
   'alpha-mask',
 ] as const)('rechecks %s edits on the same material handle before synchronous admission', async (edit) => {
@@ -768,36 +837,19 @@ it.each([
     f.release();
     const candidate = (await finish(f, pending)).unwrap();
     const compileCount = f.asyncPipelines.mock.calls.length;
-    if (edit === 'uniform') {
-      f.world
-        .spawn({
-          component: RuntimeMaterialValue,
-          data: {
-            asset: f.material,
-            parameter: 'baseColor',
-            kind: 2,
-            value: [0.1, 0.4, 0.8, 1],
-          },
-        })
-        .unwrap();
-    } else {
-      f.world
-        .spawn({
-          component: RuntimeMaterialValue,
-          data: {
-            asset: f.material,
-            parameter: 'alphaHash',
-            kind: 0,
-            value: [1],
-          },
-        })
-        .unwrap();
-    }
+    f.assets
+      .update(f.material, {
+        values: edit === 'uniform' ? { baseColor: [0.1, 0.4, 0.8, 1] } : { alphaHash: 1 },
+      })
+      .unwrap();
     f.world.update(1 / 60).unwrap();
-    if (edit === 'alpha-mask')
+    if (edit === 'alpha-mask') {
+      const preparation = f.publishedInput().pipelinePreparation;
       expect(
-        f.publishedInput().pipelinePreparation.template.snapshot.material.paramSnapshot?.alphaHash,
+        preparation.materials.find(({ id }) => id === preparation.template.snapshot.material)?.value
+          .paramSnapshot?.alphaHash,
       ).toBe(1);
+    }
     expect(Array.from(f.world.get(f.entity, MeshRenderer).unwrap().materials)).toEqual([
       f.material,
     ]);

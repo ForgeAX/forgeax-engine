@@ -24,6 +24,7 @@ import {
   type ExternalTextureKind,
   type ExternalTextureSource,
 } from '../textures/external-texture';
+import { renderTextureSourceKey } from '../textures/source-token';
 
 /**
  * Formats a material slot samples as filterable float without extra features.
@@ -167,9 +168,10 @@ function validateGpuTextureShape(
 export function createExternalTextureHost(
   options: ExternalTextureHostOptions,
 ): ExternalTextureHost {
-  const entries = new WeakMap<ExternalTextureSource, Entry>();
-  const live = new Set<Entry>();
-  const foreignReported = new WeakSet<ExternalTextureSource>();
+  const sourceOwner = crypto.randomUUID();
+  let nextSourceId = 1;
+  const entries = new Map<number, Entry>();
+  const foreignReported = new Set<string>();
   const failedVideoImports = new WeakSet<HTMLVideoElement | VideoFrame>();
   let frameImports = new Map<HTMLVideoElement | VideoFrame, RhiExternalTexture | null>();
 
@@ -343,7 +345,7 @@ export function createExternalTextureHost(
       entry.released = true;
       entry.lifetime.abort();
       dropImported(entry);
-      live.delete(entry);
+      entries.delete(entry.source.id);
       return { ok: true, value: undefined };
     },
   });
@@ -399,7 +401,7 @@ export function createExternalTextureHost(
       const admitted = await admit('import', input);
       if (!admitted.ok) return admitted;
       const entry: Entry = {
-        source: createExternalTextureSource(),
+        source: createExternalTextureSource(sourceOwner, nextSourceId++),
         input,
         imported: admitted.value,
         generation: options.getGeneration(),
@@ -409,8 +411,7 @@ export function createExternalTextureHost(
         reported: undefined,
         copyKeys: { flipped: {}, direct: {} },
       };
-      entries.set(entry.source, entry);
-      live.add(entry);
+      entries.set(entry.source.id, entry);
       return { ok: true, value: handleFor(entry) };
     },
     nativeDevice() {
@@ -429,14 +430,18 @@ export function createExternalTextureHost(
       };
     },
     resolve(source, slotExternal) {
-      const entry = entries.get(source);
+      const entry = source.owner === sourceOwner ? entries.get(source.id) : undefined;
+      const key = renderTextureSourceKey(source);
       if (entry === undefined) {
-        if (!foreignReported.has(source)) {
-          foreignReported.add(source);
+        if (!foreignReported.has(key)) {
+          foreignReported.add(key);
           options.onError(
             new ExternalTextureStateInvalidError({
               operation: 'bind',
-              reason: 'foreign-renderer',
+              reason:
+                source.owner === sourceOwner && source.id > 0 && source.id < nextSourceId
+                  ? 'released'
+                  : 'foreign-renderer',
               generation: options.getGeneration(),
             }),
           );
@@ -485,16 +490,18 @@ export function createExternalTextureHost(
     },
     recover() {
       frameImports = new Map();
-      for (const entry of live) if (entry.input.kind === 'gpu-texture') entry.imported = undefined;
+      for (const entry of entries.values())
+        if (entry.input.kind === 'gpu-texture') entry.imported = undefined;
     },
     dispose() {
       frameImports = new Map();
-      for (const entry of live) {
+      for (const entry of entries.values()) {
         entry.released = true;
         entry.lifetime.abort();
         dropImported(entry);
       }
-      live.clear();
+      entries.clear();
+      foreignReported.clear();
     },
   };
 }

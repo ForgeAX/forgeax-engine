@@ -82,7 +82,7 @@ function executeCapture(overrides: CaptureOverrides = {}) {
   const submitted = executeCompiledFrameGraph(
     internals,
     frameState,
-    {} as never,
+    { pipelineState: {} } as never,
     encoder,
     undefined,
     overrides.onSubmitted === undefined ? undefined : { onSubmitted: overrides.onSubmitted },

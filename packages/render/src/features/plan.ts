@@ -1,7 +1,7 @@
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import type { GraphBufferAccess, GraphTextureAccess } from '@forgeax/engine-render-graph';
 import type { RhiCaps, TextureFormat } from '@forgeax/engine-rhi';
-import { type Asset, err, type Handle, ok, type Result } from '@forgeax/engine-types';
+import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import { isSceneDataTarget, type SceneDataTarget } from '../temporal/scene-data';
 import {
@@ -325,7 +325,8 @@ export interface RenderFeaturePlanContext {
   /** Resolve an exact asset in the corresponding source World or accepted publication. */
   readonly resolveAsset?: (
     sourceWorldIndex: number,
-    handle: Handle<string, 'shared'>,
+    handle: number,
+    revision?: number,
   ) => Result<Asset, unknown>;
 
   /** Read a build-time cooked utility selected for the receiving device. */

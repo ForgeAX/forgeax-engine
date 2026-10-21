@@ -38,7 +38,7 @@ try {
     const terrainEntity = baseline.physics?.entity;
     const schema = app.world.components.resolve('Terrain');
     if (terrainEntity === undefined || schema === undefined) throw new Error('actual Terrain schema/publication must exist');
-    const root = app.world.sharedRefs.resolve(app.world.get(terrainEntity, schema).unwrap().asset).unwrap();
+    const root = app.assets.read(app.world.get(terrainEntity, schema).unwrap().asset).unwrap();
     const submissions = [], targets = [], failures = [], completionOrder = [];
     let unsubscribe, timer, intentUtcMs, intentMs, firstUpdatedSubmission, frozenWindow = false, finished = false;
     const snapshot = (status) => ({ schemaVersion: 2, status,

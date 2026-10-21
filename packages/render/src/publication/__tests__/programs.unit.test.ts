@@ -33,7 +33,9 @@ function program(key = 'forgeax::publication-program') {
 }
 
 it('does not re-admit unchanged programs across 60 Worker-cloned publications', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = program();
   installPublicationPrograms(assets, [row]);
   const installed = assets.shaderRegistry.findMaterialArtifact(row.key).unwrap();
@@ -46,7 +48,9 @@ it('does not re-admit unchanged programs across 60 Worker-cloned publications', 
 });
 
 it('admits a cold publication once and retains its validated program and schema facts', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = structuredClone(program());
   const admit = vi.spyOn(ShaderRegistry.prototype, 'installMaterialArtifact');
   installPublicationPrograms(assets, [row]);
@@ -70,7 +74,7 @@ it('admits a cold publication once and retains its validated program and schema 
 
 it('reuses startup program analysis inside isolated Worker publication validation', () => {
   const registry = new ShaderRegistry({ manifestUrl: undefined });
-  const assets = new AssetRegistry(registry);
+  const assets = new AssetRegistry({ shaderRegistry: registry });
   const row = structuredClone(program());
   const warmed = registry.materialProgram(row.shader.source);
   installPublicationPrograms(assets, [row]);
@@ -85,9 +89,13 @@ it('reuses startup program analysis inside isolated Worker publication validatio
 
 it('fully admits the same publication in a new registry', () => {
   const row = program();
-  const first = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const first = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   installPublicationPrograms(first, [row]);
-  const next = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const next = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   installPublicationPrograms(next, structuredClone([row]));
   expect(next.shaderRegistry.paramSchemaProjectionStats().projections).toBe(1);
   expect(next.shaderRegistry.findMaterialArtifact(row.key).unwrap()).not.toBe(
@@ -101,7 +109,9 @@ it.each([
   'receipt',
   'invalid-receipt',
 ] as const)('rejects a same-key %s change and permits a corrected batch retry', (dimension) => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = program();
   installPublicationPrograms(assets, [row]);
   const fresh = program('forgeax::fresh-program');
@@ -129,7 +139,9 @@ it.each([
   'abi',
   'receipt',
 ] as const)('compares repeated artifact %s even when its producer digest is unchanged', (dimension) => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = program();
   installPublicationPrograms(assets, [row]);
   const changed = structuredClone(row);
@@ -145,7 +157,9 @@ it.each([
 });
 
 it('still validates an installed receipt when the incoming object was mutated in place', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = program();
   installPublicationPrograms(assets, [row]);
   Object.assign(row.shader.receipt, { generation: Number.NaN });
@@ -154,7 +168,9 @@ it('still validates an installed receipt when the incoming object was mutated in
 });
 
 it('owns receipt content so an in-place valid change cannot alter the admitted program', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = program();
   installPublicationPrograms(assets, [row]);
   const installed = assets.shaderRegistry.findMaterialArtifact(row.key).unwrap();
@@ -165,7 +181,9 @@ it('owns receipt content so an in-place valid change cannot alter the admitted p
 });
 
 it('does not trust schema JSON hooks as evidence of unchanged parameter content', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const row = program();
   installPublicationPrograms(assets, [row]);
   const changed = structuredClone(row);
@@ -178,7 +196,9 @@ it('does not trust schema JSON hooks as evidence of unchanged parameter content'
 });
 
 it('rejects undeclared sampled textures on first admission without retaining the earlier program', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const fresh = program();
   const invalid = {
     key: 'game::undeclared-texture',
@@ -199,7 +219,7 @@ fn sample() -> vec4f { return textureSample(baseColorTexture, tex_sampler, vec2f
 
 it('rejects conflicting programs atomically and preserves the installed shader', () => {
   const shaders = new ShaderRegistry({ manifestUrl: undefined });
-  const assets = new AssetRegistry(shaders);
+  const assets = new AssetRegistry({ shaderRegistry: shaders });
   const first = { key: 'forgeax::publication-test', shader: { source: 'first', paramSchema: [] } };
   installPublicationPrograms(assets, [first]);
   expect(() =>

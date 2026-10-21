@@ -18,6 +18,8 @@ publication.
 
 ## AI cold-start manifest
 
+`FramePass` derives pass identity and work indices from `TapePassEntry`, while the frame model owns nullable completion and mutable attachment observations. Texture layouts inherit format block dimensions; batch readback requests select the same computed footprint and slices.
+
 | Step | Input | Stable result | Next coordinate |
 |:--|:--|:--|:--|
 | Capture | one bounded frame | `EncodedTape` (`TapeArtifact`: `byteLength`, `chunks(n)`, lazy `digest`/`bytes`) | stream it with `uploadTape`, or keep digest and bytes |
@@ -667,3 +669,5 @@ Replay resources have one physical tag per native value (for example,
 determines lookup and creation types; callers cannot choose a return type or
 combine a broad resource kind with an unrelated role. Recorded tape kinds and
 the serialized protocol remain owned by the tape schema.
+
+FrameModel pipeline availability is a discriminated result: `available` guarantees a captured pipeline handle, kind, descriptor and shader roster; `unavailable` carries a reason and an empty roster. Missing shader source remains `null` within an available pipeline. Pipeline and shader indexes retain their admitted event kinds.

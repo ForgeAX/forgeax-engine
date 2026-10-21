@@ -31,3 +31,5 @@ The Host adapter derives launch, session, notification and run-result fields
 from the pinned SDK. Its factory seam accepts the same harness options; the
 SDK receives copied argument/environment containers while each Activity retains
 its independent process and close lifecycle.
+
+Concurrent provider closes share one retirement completion. Each Activity is registered before its asynchronous runtime starts, and every terminal path shares that Activity’s SDK-close completion.

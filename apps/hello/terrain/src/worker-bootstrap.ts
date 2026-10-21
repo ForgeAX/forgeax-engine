@@ -2,7 +2,7 @@ import { AssetGuid } from '@forgeax/engine-pack/source';
 import { terrainBootstrapData } from './identity.ts';
 import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { validateCatalogDelta, type TerrainAsset } from '@forgeax/engine-types';
+import { validateCatalogDelta } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
 import type { ExecutionBootstrapEntry } from '@forgeax/engine-app';
 import { physicsPlugin } from '@forgeax/engine-physics';
@@ -135,10 +135,10 @@ const entry: ExecutionBootstrapEntry = (data) => {
             'terrain/writer-audit',
           );
           const root = ctx.world.get(subjects.terrain, Terrain).unwrap().asset;
-          const source = ctx.world.sharedRefs.resolve<'TerrainAsset', TerrainAsset>(root).unwrap();
+          const source = ctx.world.assets!.read(root).unwrap();
           if (
             source.kind !== 'terrain' ||
-            ctx.assets.lookup(AssetGuid.format(input.rootGuid)) !== source
+            ctx.assets.source(root).unwrap()?.guid !== AssetGuid.format(input.rootGuid)
           )
             throw new Error('Worker terrain must have the selected Catalog identity');
           ctx.executionBootstrapHost.port?.postMessage({

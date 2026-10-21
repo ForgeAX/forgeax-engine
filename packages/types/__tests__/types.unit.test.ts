@@ -1948,18 +1948,7 @@ describe('Submesh interface', () => {
   });
 });
 
-describe('AssetErrorCode — 28 members', () => {
-  it('ASSET_ERROR_HINTS has exactly 28 keys (runtime guard, not hardcoded)', () => {
-    const keys = Object.keys(ASSET_ERROR_HINTS);
-    expect(keys).toHaveLength(28);
-  });
-
-  it('all 28 codes are distinct', () => {
-    const keys = Object.keys(ASSET_ERROR_HINTS);
-    const set = new Set(keys);
-    expect(set.size).toBe(28);
-  });
-
+describe('AssetErrorCode — closed union', () => {
   it('mesh slot and renderer override codes are present with hint strings', () => {
     const codes = [
       'mesh-renderer-material-override-invalid',
@@ -1994,7 +1983,7 @@ describe('AssetErrorCode — 28 members', () => {
     expect(ASSET_ERROR_HINTS['source-not-imported'].length).toBeGreaterThan(0);
   });
 
-  it('all 28 codes have non-empty hint strings', () => {
+  it('all codes have non-empty hint strings', () => {
     for (const [code, hint] of Object.entries(ASSET_ERROR_HINTS)) {
       expect(hint.length, `hint for ${code} must be non-empty`).toBeGreaterThan(0);
     }
@@ -2003,9 +1992,19 @@ describe('AssetErrorCode — 28 members', () => {
   // Type-level: verify exhaustive switch on 22-member AssetErrorCode compiles
   // without default case. TS compiler validates union completeness at compile
   // time — this function exists solely for tsc type-checking.
-  it('switch on AssetErrorCode with all 28 cases compiles without default', () => {
+  it('switch on AssetErrorCode with every case compiles without default', () => {
     function describe(code: AssetErrorCode): string {
       switch (code) {
+        case 'asset-not-ready':
+          return 'asset-not-ready';
+        case 'asset-reference-invalid':
+          return 'asset-reference-invalid';
+        case 'asset-owner-closed':
+          return 'asset-owner-closed';
+        case 'asset-write-conflict':
+          return 'asset-write-conflict';
+        case 'asset-budget-exceeded':
+          return 'asset-budget-exceeded';
         case 'asset-not-found':
           return 'not found';
         case 'asset-parse-failed':

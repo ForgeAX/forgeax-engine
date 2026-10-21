@@ -1,3 +1,5 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { atmosphereEvidenceControls, type AtmosphereEvidenceSettings } from './atmosphere-evidence';
 import { installSurfaceControls } from './surface-controls';
 import { verifyProbeAtmosphere } from './probe-atmosphere-evidence';
@@ -15,7 +17,7 @@ import {
   trackLearnRenderTestBootstrap,
 } from '../../../shared/src/learn-render-test-lifecycle';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { World, type EntityHandle } from '@forgeax/engine-ecs';
 import type { RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -44,6 +46,10 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import './ssr-reflection.wgsl';
 import { spawnReflectionScene, resolveSsrFixture, SSR_PARAMETERS } from './reflection-scene.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 const TARGET_ID = 'target-hello-ssr';
 const CUBE_REFLECTION_SHADER_ID = 'hello_ssr::reflection' as const;
@@ -401,6 +407,7 @@ function mountCubeFaceLegend(): void {
 
 function spawnConsumerScene(
   world: World,
+  assets: AssetRegistry,
   target: RenderTarget,
   source: RenderTargetTextureSource,
   aspect: number,
@@ -417,6 +424,7 @@ function spawnConsumerScene(
   if (reflectionEvidence) {
     const scene = spawnReflectionScene(
       world,
+      assets,
       aspect,
       resolveSsrFixture(new URLSearchParams(location.search).get('fixture') ?? 'cube'),
       new URLSearchParams(location.search).get('aa') ?? 'taa',
@@ -426,10 +434,12 @@ function spawnConsumerScene(
     }
     return scene;
   }
+  const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
+  const sphereHandle = assets.create(BUILTIN_SPHERE).unwrap();
   let skylightEntity: EntityHandle | undefined;
   let reflectionProbeEntity: EntityHandle | undefined;
   const targetHandle = world.allocSharedRef('RenderTarget', target);
-  const sourceHandle = world.allocSharedRef('RenderTargetTextureSource', source);
+  const sourceHandle = { source: source };
   const materialPayload: MaterialAsset = reflectionEvidence
     ? Materials.standard({
         baseColor: [0.8, 0.9, 1, 1],
@@ -458,7 +468,7 @@ function spawnConsumerScene(
           cubeTexture: sourceHandle,
         },
       };
-  const material = world.allocSharedRef('MaterialAsset', materialPayload);
+  const material = assets.create(materialPayload).unwrap();
 
   const panelTransforms: readonly [
     readonly [number, number, number],
@@ -491,10 +501,7 @@ function spawnConsumerScene(
   ];
   if (!reflectionEvidence) {
     for (let faceIndex = 0; faceIndex < CUBE_FACE_COLORS.length; faceIndex += 1) {
-      const panelMaterial = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit(CUBE_FACE_COLORS[faceIndex]!),
-      );
+      const panelMaterial = assets.create(Materials.unlit(CUBE_FACE_COLORS[faceIndex]!)).unwrap();
       const [position, scale] = panelTransforms[faceIndex]!;
       world
         .spawn(
@@ -502,16 +509,13 @@ function spawnConsumerScene(
             component: Transform,
             data: { pos: position, quat: [0, 0, 0, 1], scale },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cubeHandle } },
           { component: MeshRenderer, data: { materials: [panelMaterial] } },
         )
         .unwrap();
     }
 
-    const neutralAccentMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([0.45, 0.45, 0.45, 1]),
-    );
+    const neutralAccentMaterial = assets.create(Materials.unlit([0.45, 0.45, 0.45, 1])).unwrap();
     const accentColumns: readonly [
       readonly [number, number, number],
       readonly [number, number, number],
@@ -536,16 +540,13 @@ function spawnConsumerScene(
             component: Transform,
             data: { pos: position, quat: [0, 0, 0, 1], scale },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cubeHandle } },
           { component: MeshRenderer, data: { materials: [neutralAccentMaterial] } },
         )
         .unwrap();
     }
 
-    const markerMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([1, 1, 1, 1]),
-    );
+    const markerMaterial = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
     const plusZMarkerParts: readonly [
       readonly [number, number, number],
       readonly [number, number, number],
@@ -566,7 +567,7 @@ function spawnConsumerScene(
             component: Transform,
             data: { pos: position, quat: [0, 0, 0, 1], scale },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cubeHandle } },
           { component: MeshRenderer, data: { materials: [markerMaterial] } },
         )
         .unwrap();
@@ -607,7 +608,7 @@ function spawnConsumerScene(
           scale: [1.7, 1.7, 1.7],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: sphereHandle } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -632,17 +633,14 @@ function spawnConsumerScene(
         },
       )
       .unwrap();
-    const outsideMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 0.12, 0.04, 1], metallic: 0.1, roughness: 0.35 }),
-    );
+    const outsideMaterial = assets.create(Materials.standard({ baseColor: [1, 0.12, 0.04, 1], metallic: 0.1, roughness: 0.35 })).unwrap();
     world
       .spawn(
         {
           component: Transform,
           data: { pos: [2.25, 0, 0], quat: [0, 0, 0, 1], scale: [0.45, 0.45, 0.45] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cubeHandle } },
         { component: MeshRenderer, data: { materials: [outsideMaterial] } },
       )
       .unwrap();
@@ -796,9 +794,12 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     reportError('[hello-ssr] cube source creation failed', sourceResult.error);
     return;
   }
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('SSR requires runtime assets');
   const world = app.world;
   const sceneEntities = spawnConsumerScene(
     world,
+    assets,
     targetResult.value,
     sourceResult.value,
     canvas.width / canvas.height,
@@ -1044,9 +1045,9 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       const committedProbe = inspection.reflectionFallbacks?.find((row) => row.source === 'probe');
       return (
         inspection.rawFacesCaptured === 6 &&
-        inspection.filteredStepsCompleted === 30 &&
+        inspection.filteredStepsCompleted === 54 &&
         inspection.activeCount > 0 &&
-        inspection.filteredMipLevels.length === 5 &&
+        inspection.filteredMipLevels.length === 9 &&
         fallbackReadback?.readbackStatus === 'complete' &&
         fallbackReadback.linearHdr.slice(0, 3).some(
           (value) => Number.isFinite(value) && value !== 0,
@@ -1085,12 +1086,12 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     const rawFaces = owner.rawFacesCaptured;
     const filteredSteps = owner.filteredStepsCompleted;
     const mipLevels = owner.filteredMipLevels;
-    if (rawFaces !== 6 || filteredSteps !== 30) {
+    if (rawFaces !== 6 || filteredSteps !== 54) {
       throw new Error(
         `ReflectionProbe owner counters rawFaces=${rawFaces}, filteredSteps=${filteredSteps}`,
       );
     }
-    if (mipLevels.length !== 5 || mipLevels[0] !== 0 || mipLevels[4] !== 4) {
+    if (mipLevels.length !== 9 || mipLevels[0] !== 0 || mipLevels[8] !== 8) {
       throw new Error(`ReflectionProbe owner mip levels=${JSON.stringify(mipLevels)}`);
     }
     const fallbackReadback = owner.reflectionFallbackReadback;
@@ -1359,7 +1360,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     return pixels.value;
   };
 
-  const setAtmosphereSettings = atmosphereEvidenceControls(world,sceneEntities);
+  const setAtmosphereSettings = atmosphereEvidenceControls(world,assets,sceneEntities);
 
   // Preparation owns every producer draw; live comparison reads the captured
   // presentation without advancing the cube or probe to a different frame.
@@ -1387,13 +1388,10 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         const report = await verifyProbeAtmosphere(world, renderer, sceneEntities.reflectionProbe, sceneEntities.movingObject, sceneEntities.skylight, sceneEntities.sun,
           async () => {
             world.update(1 / 60).unwrap();
-            const frame = renderer.draw({ leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
-            if (!frame.ok) throw frame.error;
-            const completed = await frame.value.completed;
-            if (!completed.ok) throw completed.error;
+            const frame = await drawReadyFrame(renderer, { leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
             await new Promise<void>(resolve => setTimeout(resolve, 0));
             if (new URLSearchParams(location.search).has('timings')) {
-              const observation = await renderer.observe(frame.value, { include: ['timings'] });
+              const observation = await renderer.observe(frame, { include: ['timings'] });
               if (!observation.ok) throw observation.error;
               return observation.value.timings;
             }
@@ -1403,6 +1401,9 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         return report;
       } finally {
         world.addComponent(sceneEntities.camera, { component: ScreenSpaceReflection, data: SSR_PARAMETERS }).unwrap();
+        // Restoring SSR can prepare a new graph before it submits visible work.
+        // The shared recorder must capture a ready frame after this transition.
+        await drawReadyFrame(renderer, { leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
         app.resume().unwrap();
       }
     },
@@ -1419,6 +1420,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       try {
         const report = await verifyProbeUpdates(
           world,
+          assets,
           renderer,
           sceneEntities.reflectionProbe,
           sceneEntities.movingObject,

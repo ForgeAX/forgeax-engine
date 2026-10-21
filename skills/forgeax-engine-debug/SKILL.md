@@ -12,6 +12,11 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For a Browser measured-roster coverage failure, refresh missing file costs from
+completed successful exact-child observations through [Browser gates](../../scripts/ci/README.md#browser-gates).
+Keep the 85% floor, inherited costs and retained cases; skipped or interrupted
+work does not establish a measured cost.
+
 For Three browser group timeouts, compare each complete native/reference/replay
 journey with its planner weight. Shadow/filter mutations, manual-update replay, loading, material-output,
 environment, transmission, output, rendering and texture comparisons must
@@ -53,11 +58,25 @@ frames and preserve metric producer failures through the required aggregate.
 For Bevy input tails that stop before release, use the existing ready-receipt
 frame driver; RAF callbacks are not completed App frames. Preserve authored
 simulation horizons when reducing ECS fixture submissions.
+For Bloom device-loss recovery with an empty pre-loss graph, inspect completed
+`ready` receipts before triggering the crash. Submitted warming frames and HUD
+pixels do not establish a rendered scene. Follow the Bloom recovery gate in the
+[CI guide](../../scripts/ci/README.md); preserve its deadlines and pixel thresholds.
 Measure complete Runner minutes and the critical path without queue time.
 For compiler `sourceContentKey` mismatches during input restoration, compare the
 actual wgpu/Blitz checkouts with the Engine gitlinks before rebuilding. The shared
 input entry must synchronize existing public source checkouts too; `Cargo.toml`
 presence is not pin admission. Retain compiler source and byte verification.
+For frozen-install `ERR_PNPM_PACKAGE_MANAGER_NO_IMPORTER`, check whether the named
+package exists in target HEAD. A removed submodule left by checkout routes to
+`prepare-pnpm-workspace.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
+and retain the checkout warning and original install error.
+An independent nested checkout can have an embedded `.git` directory and no
+root submodule config. Prove its exact historical gitlink from the local HEAD
+reflog before pruning; preserve unrelated repositories and changed commits.
+For a Dawn overall job cancellation with passing groups, compare complete group
+costs, ordinary-file backfill and lane headroom in `dawn-gate-roster.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
+while preserving the full roster, native process isolation and existing deadlines.
 
 For Linux software validation, use `pnpm ci:graphics setup` and the
 [isolated graphics contract](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
@@ -294,14 +313,30 @@ original shard evidence after failure.
 Use the [CI operating guide](../../scripts/ci/README.md). It owns the current
 four Browser lanes, four Dawn lanes, core Smoke roster and four SDK consumers.
 Every matrix stays within four actual jobs, including platform entries.
+Compare focused and full CI CPU admission before treating a diagnostic pass as
+reproduction. The shared material-edit fixture keeps one complete-case budget
+across Browser and Dawn; all lifecycle, pixel and error assertions still run.
+For interrupted dpkg state, use the existing system-dependency installer. A
+skipped target-repair step is missing recovery evidence, even when its job is green.
 For measured Browser roster coverage failures, refresh missing costs from completed
 process receipts using the [Browser cost formula](../../scripts/ci/README.md#browser-gates).
 Keep source-run provenance, distinguish amortized group costs from independent
 file timings, and preserve the coverage threshold without counting startup twice.
+For all-zero TAA Dawn readbacks, inspect native pipeline validation in the actual
+RHI capture and use validated async pipeline creation in the fixture. Nearest
+samplers paired with unfilterable float textures require non-filtering layouts.
+For resize equivalence failures, compare the frozen reference and production
+attachments before changing WGSL. Keep texel-boundary witnesses away from exact
+interpolation ties and retain a GPU falsifier for the physical-lattice guard.
 The suite deliberately retains representative core coverage. Keep unique browser
 transport, Worker, media and recovery cases; shared numerical fixtures can have
 one real-backend owner. Do not restore deleted duplicate tests or historical
 scheduling guards just to reproduce the former inventory.
+For `live-dev-client` startup-deadline teardown ENOENT, retain the 500 ms project
+deadline and three-second case bound. The detached fixture child may still be
+starting without a published session file. Stop the actual spawned child and
+await its exit before deleting the project; keep the owner-liveness assertion.
+
 For a Dawn job cancelled at its 27-minute limit during or after native execution,
 inspect the job annotation, complete owner costs and runner variation through the [Dawn cost table](../../scripts/ci/README.md#dawn-gates).
 Preserve the cancelled receipt and qualify the refreshed placement with full final-head CI.
@@ -309,6 +344,8 @@ If a full-lane retry of the same head hits the same deadline, refresh completed
 file and owner costs before another attempt; do not attribute the repeated delay
 to transient contention without evidence.
 Refresh the existing file/owner table from multiple completed native rosters.
+When fixed reservations and observed tails diverge, redistribute complete owners
+within the existing four lanes and let the same sequencer place ordinary files.
 For a cancelled run, admit only individually completed owners and ordinary-file
 receipts; never treat a partial owner or an unstarted tail as complete. Retain
 per-file observation provenance in the investigation artifact. For a deadline
@@ -457,7 +494,9 @@ For cold dependency installation, compare downloaded package platforms with the
 actual host. Ordinary CI keeps `PNPM_CONFIG_SUPPORTED_ARCHITECTURES` consistent
 across install and run/exec; one-off install flags cause pnpm 12 to reinstall
 the broad closure. `prepare-pnpm-workspace.mjs --install` avoids `--force` and
-root postinstall hooks. SDK publication
+root postinstall hooks. SDK PR preflight and benchmark installs use that same
+preparation, including SDK source-rebuild reinstalls; a retired workspace importer is not a reason to
+regenerate its lockfile. SDK publication
 still requires its complete installed platform closure; keep that preparation
 with the distribution owner rather than changing the global workspace policy.
 For Snake browser ACK exhaustion, check that the process fixture disables the

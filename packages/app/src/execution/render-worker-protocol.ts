@@ -10,6 +10,7 @@ import type {
   RenderSceneBounds,
 } from '@forgeax/engine-render';
 import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-debug';
+import type { RhiRemoteCaptureCompletion } from '../internal/rhi-capture';
 import type {
   ExecutionFrameCompletion,
   ExecutionFrameSubmitted,
@@ -170,7 +171,11 @@ export type RenderWorkerOutput =
         | {
             readonly ok: true;
             /** The materialized container; its buffer is transferred, not cloned. */
-            readonly value: { readonly kind: 'rhi-tape'; readonly bytes: Uint8Array<ArrayBuffer> };
+            readonly value: {
+              readonly kind: 'rhi-tape';
+              readonly bytes: Uint8Array<ArrayBuffer>;
+              readonly submittedFrame: RhiRemoteCaptureCompletion;
+            };
           }
         | { readonly ok: false; readonly error: RhiDebugError };
     }

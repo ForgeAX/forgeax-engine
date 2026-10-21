@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import type { DynamicGeometryLifecycleOptions } from '../index';
 
-const MESH_BYTES = 36;
+// Complete owned content, including submesh/material metadata.
+const MESH_BYTES = 528;
 const DEFAULT_MESH_BYTES = 64 * 1024 * 1024;
 const RETAINED_65: DynamicGeometryLifecycleOptions = { maxRetainedCandidates: 65 };
 

@@ -131,6 +131,7 @@ import { activeFrustum, occlusionCamera, shadowViewClipping } from './production
 import {
   admittedRasterBatchCount,
   type LodProjectionState,
+  lodCoverageMayFade,
   lodProjectionState,
   lodSelectionChangeCount,
   lodViewCameraFromMatrix,
@@ -140,6 +141,7 @@ import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
   SurfaceFrameProjectionOwner,
+  standardSurfaceDiscardMask,
 } from './production-raster-material';
 import {
   assemblePreparedPlan,
@@ -210,6 +212,11 @@ export type ShadowViewRequest = Omit<
   'sourcePlan' | 'scene' | 'cameraCull' | 'inputReads'
 > & {
   readonly cameraCull?: ShadowCameraCullDilation;
+  /**
+   * `false` projects a final view once with every caster and retains no
+   * static layer for it. Absent keeps the cached static layer.
+   */
+  readonly staticLayer?: false;
 };
 
 function isSingleLayerMediumArtifact(artifact: MaterialShaderArtifact): boolean {
@@ -368,18 +375,76 @@ class BatchPreparation {
       readonly signature: string;
       readonly artifact: MaterialShaderArtifact | undefined;
       readonly value: PreparedBatchRows;
+      /** Identity facts that let a retained execution skip signature derivation. */
+      readonly execution?: BatchExecution;
+      readonly materialAddress?: number | undefined;
+      readonly geometryAddress?: number | undefined;
+      /** Render state is author-mutable in place; its serialization stays observed. */
+      readonly renderState?: string | undefined;
     }
   >();
   cached:
     | {
         readonly plan: SubmissionPlan;
+        /** Current immutable frame lookup for attribution, independent of prepared geometry. */
         readonly slotAt: PersistentGpuDrivenState['slotAt'];
         readonly worldKeys: readonly number[] | undefined;
         readonly scene: PersistentGpuDrivenState['scene'];
         readonly batchRows: readonly PreparedBatchRows[];
         readonly value: PreparedProductionPlan;
+        /** Exact inputs of an unchanged assembly; equal inputs skip the row walk. */
+        readonly inputs?: PreparedAssemblyInputs;
       }
     | undefined;
+}
+
+interface PreparedAssemblyInputs {
+  readonly batchExecutions: object;
+  readonly materials: object | undefined;
+  readonly meshes: readonly [object, unknown];
+  /** Distinct resident meshes and the content epoch each row captured. */
+  readonly meshEpochs: readonly (readonly [MeshGpuHandles, unknown])[];
+  /** Distinct author-mutable Pass states and their observed serialization. */
+  readonly states: readonly (readonly [object, string])[];
+}
+
+function preparedAssemblyInputs(
+  batchExecutions: object,
+  materials: object | undefined,
+  meshes: readonly [object, unknown],
+  batchRows: readonly PreparedBatchRows[],
+  serializedStates: ReadonlyMap<object, string>,
+): PreparedAssemblyInputs {
+  const resident = new Map<MeshGpuHandles, unknown>();
+  for (const rows of batchRows)
+    if (rows.mesh !== undefined) resident.set(rows.mesh, rows.meshContentEpoch);
+  return {
+    batchExecutions,
+    materials,
+    meshes,
+    meshEpochs: [...resident],
+    states: [...serializedStates],
+  };
+}
+
+function samePreparedAssemblyInputs(
+  inputs: PreparedAssemblyInputs | undefined,
+  batchExecutions: object,
+  materials: object | undefined,
+  meshes: readonly [object, unknown],
+): boolean {
+  if (
+    inputs === undefined ||
+    inputs.batchExecutions !== batchExecutions ||
+    inputs.materials !== materials ||
+    inputs.meshes[0] !== meshes[0] ||
+    inputs.meshes[1] !== meshes[1]
+  )
+    return false;
+  for (const [mesh, epoch] of inputs.meshEpochs) if (mesh.contentEpoch !== epoch) return false;
+  for (const [state, serialized] of inputs.states)
+    if (JSON.stringify(state) !== serialized) return false;
+  return true;
 }
 
 export interface GpuDrivenPrepareInput {
@@ -604,6 +669,18 @@ export class GpuDrivenProduction {
   private shadowBatchProjections = publishReadonlyMap(
     new Map<string, ReadonlyMap<number, GpuDrivenShadowBatchProjection>>(),
   );
+  /** Final views last projected without a static layer; a mode change invalidates both layers. */
+  private readonly shadowSingleLayerViews = new Set<string>();
+  /** Per-view inputs of the last projection; identical inputs skip whole-plan change scans. */
+  private readonly shadowUnchangedInputs = new Map<
+    string,
+    {
+      readonly projections: object;
+      readonly filtered: object;
+      readonly executions: object;
+      readonly artifacts: object;
+    }
+  >();
   /** Draw bindings follow physical resources and topology, independently of depth invalidation. */
   private readonly shadowProjectionSources = new WeakMap<
     ReadonlyMap<number, GpuDrivenShadowBatchProjection>,
@@ -1356,6 +1433,8 @@ export class GpuDrivenProduction {
     // layer, including one that survives a graph recompile, must not keep it.
     const viewClipping = shadowViewClipping(input.camera);
     if (viewClipping !== this.committedViewClipping) shadowViewPool.invalidateViewClipping();
+    // Camera planes keep the Standard view clipping discard; a toggle recompiles.
+    const viewClippingLive = (input.camera.clipping?.planes.length ?? 0) > 0;
     // Visible items address GPU Scene instance rows directly: the vertex
     // stage reads current/previous transforms, temporal flags and material
     // rows from the scene tables, so no per-batch row projection exists.
@@ -1401,8 +1480,9 @@ export class GpuDrivenProduction {
       materialRaster.visibleBindingIdentity,
       skinRaster?.visibleBindingIdentity,
     );
-    const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}`;
-    const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}`;
+    const discardSignature = viewClippingLive ? '|view-clipping' : '';
+    const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${discardSignature}`;
+    const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${discardSignature}`;
     const shadowTopologySignature = () =>
       this.shadowViews
         ?.inspect()
@@ -1744,6 +1824,11 @@ export class GpuDrivenProduction {
           const topology = rendererRecording ? prepared.batch.key.topology : undefined;
           const renderState = rendererRecording ? prepared.renderState : undefined;
           const standardTextureMask = rendererRecording ? prepared.standardTextureMask : undefined;
+          // Class key splits LOD fade capability, the signature view clipping.
+          const standardSurfaceDiscards = standardSurfaceDiscardMask(
+            lodCoverageMayFade(prepared.batch),
+            viewClippingLive,
+          );
           // Raw projections retain physical mesh identities and graph accesses.
           // Stock recording binds live residency-owned meshes like direct draws.
           // Pipeline preparation depends only on immutable shader/layout facts;
@@ -1760,6 +1845,7 @@ export class GpuDrivenProduction {
                   stripIndexFormat ?? '',
                   renderState ?? null,
                   standardTextureMask ?? -1,
+                  standardSurfaceDiscards,
                   artifact.material,
                   artifact.pass,
                   artifact.layoutIdentity,
@@ -1830,6 +1916,7 @@ export class GpuDrivenProduction {
                   rendererRecording ? standardTextureMask : prepared.standardTextureMask,
                   forwardColorPass,
                   preparation ? input.materialPipelinePreparationFactory : undefined,
+                  standardSurfaceDiscards,
                 );
                 if (selected.ok) {
                   projectedPipelines ??= new Map();
@@ -2016,6 +2103,7 @@ export class GpuDrivenProduction {
                         fragmentEntry: fragmentEntryPoint,
                         coverageOnly,
                         visibleSurface: input.visibleSurface !== undefined,
+                        viewClipping: viewClippingLive,
                         ...(onPending === undefined ? {} : { onPending }),
                       })
                     )
@@ -2709,13 +2797,25 @@ export class GpuDrivenProduction {
     const previous = preparation.cached;
     const sameInputs =
       previous !== undefined &&
-      previous.slotAt === scene.slotAt &&
       previous.worldKeys === scene.worldKeys &&
       previous.scene === scene.scene;
     let sameRows = true;
     let fixedMembership = true;
     let missingArtifact: GpuDrivenPreparationError | undefined;
+    if (
+      sameInputs &&
+      previous.plan === scene.plan &&
+      samePreparedAssemblyInputs(previous.inputs, batchExecutions, materials, [
+        meshByBinding,
+        scene.meshes,
+      ])
+    ) {
+      if (previous.slotAt !== scene.slotAt)
+        preparation.cached = { ...previous, slotAt: scene.slotAt };
+      return ok(previous.value);
+    }
     let rebuiltBatches = 0;
+    const serializedStates = new Map<object, string>();
     const batchRows = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/plan/rows',
@@ -2770,6 +2870,39 @@ export class GpuDrivenProduction {
               owner: 'geometry',
               expected: 'resident shared geometry for the accepted frame',
             });
+          const mesh =
+            sourceBatch.binding === undefined ? undefined : meshByBinding.get(sourceBatch.binding);
+          const retained = preparation.batches.get(sourceBatch.batchId);
+          let renderState: string | undefined;
+          if (execution.route === 'gpu') {
+            // Shared Pass state is serialized once per assembly, still observing in-place edits.
+            const state = execution.pass.renderState;
+            renderState = state === undefined ? 'undefined' : serializedStates.get(state);
+            if (renderState === undefined && state !== undefined) {
+              renderState = JSON.stringify(state);
+              serializedStates.set(state, renderState);
+            }
+          }
+          // Signature, execution key and artifact all derive from these captured identities.
+          if (
+            sameInputs &&
+            nativeMembership &&
+            renderState !== undefined &&
+            retained !== undefined &&
+            retained.renderState === renderState &&
+            capturedGpuDrivenBatchKey(sourceBatch) !== undefined &&
+            retained.source === sourceBatch &&
+            retained.execution === execution &&
+            retained.materialAddress === materialAddress &&
+            retained.geometryAddress === geometryAddress &&
+            retained.value.mesh === mesh &&
+            retained.value.meshContentEpoch === mesh?.contentEpoch &&
+            samePreparedBatchLod(retained.value.lod, sourceBatch, mesh)
+          ) {
+            sameRows &&= retained.value === previous.batchRows[index];
+            rows.push(retained.value);
+            continue;
+          }
           const capturedKey = capturedGpuDrivenBatchKey(sourceBatch);
           const executionKey =
             capturedKey !== undefined && execution.route === 'gpu'
@@ -2796,20 +2929,16 @@ export class GpuDrivenProduction {
             execution.route === 'gpu' &&
             executionKey !== undefined
           ) {
-            // resourceIdentity is the captured materialResourceClass. Other
-            // execution and residency facts are observed on every preparation.
-            signature = `${capturedKey}\n${JSON.stringify([
+            // resourceIdentity is already in capturedKey. Compare the retained row's
+            // immutable execution fields directly; serialize only the live facts.
+            signature = JSON.stringify([
               execution.route,
               materialAddress,
               geometryAddress,
-              executionKey.preparedIdentity,
-              executionKey.pipelineClass,
-              executionKey.admission,
-              executionKey.materialPass,
               execution.pass.renderState,
               execution.material.materialHandle,
               execution.material.standardTextureMask,
-            ])}`;
+            ]);
           } else {
             batch = materializeBatch();
             signature = JSON.stringify([
@@ -2844,8 +2973,6 @@ export class GpuDrivenProduction {
               expected: `published artifact for ${prepared.identity.material} (${prepared.receiptIdentity}@${prepared.receiptGeneration})`,
             });
           }
-          const mesh =
-            sourceBatch.binding === undefined ? undefined : meshByBinding.get(sourceBatch.binding);
           const sameMeshes =
             cached?.value.mesh === mesh && cached?.value.meshContentEpoch === mesh?.contentEpoch;
           if (
@@ -2856,12 +2983,26 @@ export class GpuDrivenProduction {
             cached.value.source.generation === sourceBatch.generation &&
             cached.value.source.contentEpoch === sourceBatch.contentEpoch &&
             cached.signature === signature &&
+            (executionKey === undefined ||
+              (capturedGpuDrivenBatchKey(cached.source) === capturedKey &&
+                cached.value.source.key.preparedIdentity === executionKey.preparedIdentity &&
+                cached.value.source.key.pipelineClass === executionKey.pipelineClass &&
+                cached.value.source.key.admission === executionKey.admission &&
+                cached.value.source.key.materialPass === executionKey.materialPass)) &&
             sameMaterialArtifact(cached.artifact, artifact) &&
             sameMeshes &&
             samePreparedBatchLod(cached.value.lod, currentBatch, mesh)
           ) {
             if (cached.source === sourceBatch) {
               sameRows &&= cached.value === previous.batchRows[index];
+              if (cached.execution !== execution || cached.renderState !== renderState)
+                preparation.batches.set(currentBatch.batchId, {
+                  ...cached,
+                  execution,
+                  materialAddress,
+                  geometryAddress,
+                  renderState,
+                });
               rows.push(cached.value);
               continue;
             }
@@ -2876,6 +3017,10 @@ export class GpuDrivenProduction {
               ...cached,
               source: sourceBatch,
               value: rebased,
+              execution,
+              materialAddress,
+              geometryAddress,
+              renderState,
             });
             rows.push(rebased);
             continue;
@@ -2899,6 +3044,10 @@ export class GpuDrivenProduction {
                     ...(artifact.receipt === undefined ? {} : { receipt: { ...artifact.receipt } }),
                   },
             value,
+            execution,
+            materialAddress,
+            geometryAddress,
+            renderState,
           });
           rebuiltBatches += 1;
           rows.push(value);
@@ -2926,6 +3075,19 @@ export class GpuDrivenProduction {
       sameRows &&
       previous.batchRows.length === batchRows.length
     ) {
+      // Pose-only snapshots replace their lookup without changing execution facts.
+      if (previous.slotAt !== scene.slotAt)
+        preparation.cached = { ...previous, slotAt: scene.slotAt };
+      preparation.cached = {
+        ...(preparation.cached ?? previous),
+        inputs: preparedAssemblyInputs(
+          batchExecutions,
+          materials,
+          [meshByBinding, scene.meshes],
+          batchRows,
+          serializedStates,
+        ),
+      };
       return ok(previous.value);
     }
     this.gpuOwnedSnapshotsMaterialized = 0;
@@ -2949,6 +3111,13 @@ export class GpuDrivenProduction {
       scene: scene.scene,
       batchRows,
       value,
+      inputs: preparedAssemblyInputs(
+        batchExecutions,
+        materials,
+        [meshByBinding, scene.meshes],
+        batchRows,
+        serializedStates,
+      ),
     };
     return ok(value);
   }
@@ -3065,6 +3234,7 @@ export class GpuDrivenProduction {
     );
     const projectView = ({
       cameraCull,
+      staticLayer: _staticLayer,
       ...input
     }: ShadowViewRequest): Result<ShadowViewUpdate['cache'], RhiError> =>
       runRecordProfilePhase(
@@ -3080,7 +3250,17 @@ export class GpuDrivenProduction {
           // Membership already invalidates depth through the source plan and bounds.
           // A publication edit can leave both unchanged: observe only receipts this
           // view consumed, before its depth-cache decision, including unsubmitted work.
+          // A view whose projections, filtered rows, executions and receipts are the
+          // same objects as its last unchanged check cannot observe a new edit.
+          const unchangedInputs = this.shadowUnchangedInputs.get(identityKey);
+          const sameInputs =
+            previousProjections !== undefined &&
+            unchangedInputs?.projections === previousProjections &&
+            unchangedInputs.filtered === filtered &&
+            unchangedInputs.executions === batchExecutions &&
+            unchangedInputs.artifacts === artifacts;
           const artifactsChanged =
+            !sameInputs &&
             previousSource !== undefined &&
             previousSource.artifacts !== artifacts &&
             previousSource.plan.batches.some((batch) => {
@@ -3088,6 +3268,7 @@ export class GpuDrivenProduction {
               return artifacts.has(key) && previousSource.artifacts.get(key) !== artifacts.get(key);
             });
           const meshesChanged =
+            !sameInputs &&
             previousSource !== undefined &&
             filtered.batches.some((prepared) => {
               const previous = previousProjections?.get(prepared.batch.batchId);
@@ -3100,6 +3281,7 @@ export class GpuDrivenProduction {
           if (artifactsChanged) shadowViews.invalidate('artifact-changed', input.identity);
           else if (meshesChanged) shadowViews.invalidate('content-changed', input.identity);
           else if (
+            !sameInputs &&
             previousSource?.plan.batches.some((batch) => {
               const execution =
                 batch.binding === undefined
@@ -3353,6 +3535,12 @@ export class GpuDrivenProduction {
               ? previousProjections
               : publishReadonlyMap(projections ?? new Map());
           nextProjections.set(identityKey, publishedProjections);
+          this.shadowUnchangedInputs.set(identityKey, {
+            projections: publishedProjections,
+            filtered,
+            executions: batchExecutions,
+            artifacts,
+          });
           this.shadowProjectionSources.set(publishedProjections, {
             plan: submission.plan,
             filtered,
@@ -3399,10 +3587,33 @@ export class GpuDrivenProduction {
         if (!projected.ok) return projected;
         continue;
       }
-      // The static layer holds settled casters and is re-rastered only when
-      // one of them changes; the final layer copies it and adds the rest.
       const staticIdentity: ShadowViewIdentity = { ...input.identity, layer: 'static' };
       const viewClasses = restrictShadowCasterClasses(classes, input.candidatePrimitiveIndices);
+      const singleLayer = input.staticLayer === false;
+      // A mode change swaps the final layer's caster set and its graph
+      // composition. Neither layer's retained depth may survive it: a
+      // re-enabled static layer kept its depth while it was not drawn.
+      const viewKey = shadowViewIdentityKey(input.identity);
+      if (singleLayer !== this.shadowSingleLayerViews.has(viewKey)) {
+        if (singleLayer) this.shadowSingleLayerViews.add(viewKey);
+        else this.shadowSingleLayerViews.delete(viewKey);
+        shadowViews.invalidate('configuration-changed', input.identity);
+        shadowViews.invalidate('configuration-changed', staticIdentity);
+      }
+      if (singleLayer) {
+        // Settled casters draw with the rest every time the view rasters.
+        const projected = projectView({
+          ...input,
+          candidatePrimitiveIndices:
+            input.identity.kind === 'directional'
+              ? viewClasses.directionalCasterSlots
+              : viewClasses.casterSlots,
+        });
+        if (!projected.ok) return projected;
+        continue;
+      }
+      // The static layer holds settled casters and is re-rastered only when
+      // one of them changes; the final layer copies it and adds the rest.
       retained.push(staticIdentity);
       const staticProjected = projectView({
         ...input,
@@ -3717,6 +3928,8 @@ export class GpuDrivenProduction {
     if (!this.telemetryPrepared) return Promise.resolve(undefined);
     const view = this.view;
     const filtered = this.filteredCache?.value;
+    const sourceFrame = this.preparations.forward.cached;
+    const filteredWorldKeys = this.filteredCache?.prepared.worldKeys;
     const telemetryCandidateCount = this.telemetryCandidateCount;
     if (view === undefined) return Promise.resolve(undefined);
     return view.readLodSelection().then((selection) => {
@@ -3774,8 +3987,7 @@ export class GpuDrivenProduction {
       // still need the same World join for receipt attribution. Recover that
       // metadata from the stable primitive slot instead of dropping the whole
       // readback when the first such batch is encountered.
-      const slotAt = this.preparations.forward.cached?.slotAt;
-      const filteredWorldKeys = this.filteredCache?.prepared.worldKeys;
+      const slotAt = sourceFrame?.slotAt;
       if (slotAt !== undefined) {
         for (const batch of filtered.plan.batches) {
           if (preparedByBatchId.has(batch.batchId)) continue;
@@ -3878,7 +4090,7 @@ export class GpuDrivenProduction {
             ) {
               return [];
             }
-            const slot = this.preparations.forward.cached?.slotAt(member.primitiveIndex);
+            const slot = sourceFrame?.slotAt(member.primitiveIndex);
             if (slot === undefined) return [];
             const memberId = this.surfaceFrames.memberId(
               slot.worldId,

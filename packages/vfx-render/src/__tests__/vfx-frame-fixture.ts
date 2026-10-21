@@ -13,7 +13,7 @@ import type {
 import { ok } from '@forgeax/engine-types';
 import {
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuEffectAssetAny,
+  type VfxGpuEffectAsset,
   type VfxGpuTickIntent,
 } from '@forgeax/engine-vfx';
 import { afterEach } from 'vitest';
@@ -22,7 +22,7 @@ import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-
 import { prepareRuntimeParticleEffect } from '../../../vfx/src/runtime-prepare';
 import { gpuParticleRenderFeature as createFeature } from '../feature/gpu-particle-feature';
 
-const pinnedFixtures = new Set<AssetVersion<VfxGpuEffectAssetAny>>();
+const pinnedFixtures = new Set<AssetVersion<VfxGpuEffectAsset>>();
 const fixtureAssets: { assets: AssetRegistry; handle: number }[] = [];
 afterEach(() => {
   for (const { assets, handle } of fixtureAssets) assets.release(handle).unwrap();
@@ -32,10 +32,10 @@ afterEach(() => {
   for (const version of pinnedFixtures) version.dispose();
   pinnedFixtures.clear();
 });
-const fixtureDefinitions = new WeakMap<World, Map<string, AssetVersion<VfxGpuEffectAssetAny>>>();
+const fixtureDefinitions = new WeakMap<World, Map<string, AssetVersion<VfxGpuEffectAsset>>>();
 
 /** Repeated hand-written tick fixtures name one complete definition, captured by the real owner. */
-function fixtureVersion(world: World, effect: VfxGpuEffectAssetAny) {
+function fixtureVersion(world: World, effect: VfxGpuEffectAsset) {
   if (world.assets === undefined) world.bindAssets(new AssetRegistry()).unwrap();
   let definitions = fixtureDefinitions.get(world);
   if (definitions === undefined) {
@@ -47,7 +47,7 @@ function fixtureVersion(world: World, effect: VfxGpuEffectAssetAny) {
   if (version === undefined) {
     const assets = runtimeAssetRegistry(world.assets);
     const handle = assets.create(runtimeEffectFixture(world, effect)).unwrap();
-    version = runtimeAssets(assets).pin<VfxGpuEffectAssetAny>(handle).unwrap();
+    version = runtimeAssets(assets).pin<VfxGpuEffectAsset>(handle).unwrap();
     assets.release(handle).unwrap();
     definitions.set(key, version);
     pinnedFixtures.add(version);
@@ -63,7 +63,7 @@ export function vfxTestEmitter(
 ) {
   if (world.assets === undefined) world.bindAssets(new AssetRegistry()).unwrap();
   const assets = runtimeAssetRegistry(world.assets);
-  const definition: VfxGpuEffectAssetAny = {
+  const definition: VfxGpuEffectAsset = {
     guid: 'fixture',
     kind: 'particle-effect',
     schemaVersion: 3,
@@ -77,7 +77,7 @@ export function vfxTestEmitter(
       : (reference.effect as import('@forgeax/engine-types').AssetHandle<'particle-effect'>);
   if (reference === undefined) fixtureAssets.push({ assets, handle });
   else assets.replace(handle, runtimeEffectFixture(world, definition)).unwrap();
-  const version = runtimeAssets(assets).pin<VfxGpuEffectAssetAny>(handle).unwrap();
+  const version = runtimeAssets(assets).pin<VfxGpuEffectAsset>(handle).unwrap();
   pinnedFixtures.add(version);
   return Object.assign(reference ?? {}, {
     effect: version.handle,
@@ -89,7 +89,7 @@ export function vfxTestEmitter(
 /** Supply an immutable effect owner for deliberately hand-authored intent fixtures. */
 export function vfxTestIntent(
   world: World,
-  intent: Omit<VfxGpuTickIntent, 'effect'> & { effect?: VfxGpuEffectAssetAny },
+  intent: Omit<VfxGpuTickIntent, 'effect'> & { effect?: VfxGpuEffectAsset },
 ): VfxGpuTickIntent {
   const effect = runtimeEffectFixture(
     world,
@@ -179,8 +179,7 @@ export function withVfxFrameSubmission(
                 return typeof value === 'function' ? value.bind(target) : value;
               if (key === 'renderGeneration') return 0;
               if (key === 'effectVersion')
-                return (effect: VfxGpuEffectAssetAny) =>
-                  fixtureVersion(state.current.world, effect);
+                return (effect: VfxGpuEffectAsset) => fixtureVersion(state.current.world, effect);
               if (key === 'forEachEmitterSource') return () => {};
               if (key === 'lastCommittedEmitter') return () => undefined;
               return value;

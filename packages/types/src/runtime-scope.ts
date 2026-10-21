@@ -116,11 +116,3 @@ export function createStandaloneRuntimeAssetBinding(
     packageUrlBase: prefix,
   };
 }
-
-export function runtimeScopeMatches(
-  binding: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'> | undefined,
-  scopeId: string,
-  generation: number,
-): boolean {
-  return binding?.scopeId === scopeId && binding.generation === generation;
-}

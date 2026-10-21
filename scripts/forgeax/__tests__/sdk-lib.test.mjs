@@ -1084,9 +1084,8 @@ describe('SDK verifier template contract', () => {
     expect(candidateWorkflow).toContain('workflow_dispatch:');
     expect(candidateWorkflow).toContain('needs.resolve-source.outputs.source_sha');
     expect(candidateWorkflow).toContain('release-policy.mjs');
-    expect(candidateWorkflow).toContain('--workflow ci.yml');
-    expect(candidateWorkflow).toContain('--commit "$sha"');
-    expect(candidateWorkflow).toContain('SDK candidates require successful same-commit CI');
+    expect(candidateWorkflow).not.toContain('--workflow ci.yml');
+    expect(candidateWorkflow).not.toContain('SDK candidates require successful same-commit CI');
     expect(candidateWorkflow).toContain('Build exact SDK candidate seed once');
     expect(candidateWorkflow).toContain('Aggregate exact npm and archive owner receipts');
     expect(candidateWorkflow).toContain('--expected-count 4 --merge-multiple');

@@ -5807,6 +5807,7 @@
         "@forgeax/engine-assets-runtime": "workspace:*",
         "@forgeax/engine-audio": "workspace:*",
         "@forgeax/engine-audio-webaudio": "workspace:*",
+        "@forgeax/engine-codec": "workspace:*",
         "@forgeax/engine-dawn-node": "workspace:*",
         "@forgeax/engine-ddc": "workspace:*",
         "@forgeax/engine-fbx": "workspace:*",

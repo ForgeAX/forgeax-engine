@@ -9,10 +9,6 @@ function exhaustiveSwitchOnSkinCode(code: SkinErrorCode): string {
   switch (code) {
     case 'skin-asset-unresolved':
       return code;
-    case 'skin-joint-count-exceeded':
-      return code;
-    case 'skin-joint-despawned':
-      return code;
     case 'skin-joint-path-unresolved':
       return code;
     case 'skin-instances-coexist-forbidden':
@@ -36,14 +32,6 @@ function narrowSkinError(err: SkinError): void {
     case 'skin-asset-unresolved':
       void err.detail.skinEntity;
       void err.detail.skeletonHandle;
-      break;
-    case 'skin-joint-count-exceeded':
-      void err.detail.jointCount; // number
-      void err.detail.max; // number
-      break;
-    case 'skin-joint-despawned':
-      void err.detail.meshEntity; // number
-      void err.detail.jointIndex; // number
       break;
     case 'skin-joint-path-unresolved':
       void err.detail.skinEntity; // number

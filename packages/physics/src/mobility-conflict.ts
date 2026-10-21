@@ -1,6 +1,6 @@
 import { type EntityHandle, type Query, Update, type World } from '@forgeax/engine-ecs';
 import { emitMobilityDiagnostic, Mobility, MobilityKindValue } from '@forgeax/engine-scene';
-import { RIGID_BODY_TYPE_STATIC, RigidBody, rigidBodyTypeFromF32 } from './components.js';
+import { RigidBody, RigidBodyTypeValue, rigidBodyTypeFromF32 } from './components.js';
 
 export const MOBILITY_PHYSICS_CONFLICT_SYSTEM = 'mobilityPhysicsConflict' as const;
 
@@ -29,7 +29,7 @@ function collectConflicts(query: Query, out: Map<number, number>): void {
     const types = span.get(RigidBody).type;
     for (let row = 0; row < span.length; row += 1) {
       const type = types[row] as number;
-      if (kinds[row] === MobilityKindValue.static && type !== RIGID_BODY_TYPE_STATIC) {
+      if (kinds[row] === MobilityKindValue.static && type !== RigidBodyTypeValue.static) {
         out.set(span.entities[row] as number, type);
       }
     }

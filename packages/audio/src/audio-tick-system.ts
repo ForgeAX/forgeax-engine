@@ -49,22 +49,6 @@ function samePose(left: AudioSourcePose | undefined, right: AudioSourcePose): bo
   );
 }
 
-export type EdgeAction = 'none' | 'play-start' | 'play-stop';
-
-export function detectEdge(previous: boolean, current: boolean): EdgeAction {
-  if (!previous && current) return 'play-start';
-  if (previous && !current) return 'play-stop';
-  return 'none';
-}
-
-export function detectRemovedEntities(
-  previous: readonly number[],
-  current: readonly number[],
-): number[] {
-  const currentSet = new Set(current);
-  return previous.filter((entity) => !currentSet.has(entity));
-}
-
 interface SourceState {
   entity: EntityHandle;
   bus: string;

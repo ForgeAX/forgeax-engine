@@ -100,12 +100,6 @@ export function createSceneDepthProvider(
   return availableProvider('vfx:scene-depth', 'scene-depth', 'sampled-depth', source);
 }
 
-export function createNoiseProvider(
-  source: VfxDataInterfaceAvailabilitySource,
-): VfxDataInterfaceProvider<'noise'> {
-  return availableProvider('vfx:noise', 'noise', 'sampled-float', source);
-}
-
 export function createVfxDataInterfaceRegistry(
   initialProviders: readonly VfxDataInterfaceProvider[] = [],
 ): VfxDataInterfaceRegistry {

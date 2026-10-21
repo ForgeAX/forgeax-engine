@@ -50,15 +50,11 @@ export {
   type AudioIntent,
   type AudioIntentBackend,
   type AudioIntentBackendOptions,
-  audioIntentErrorState,
   createAudioIntentBackend,
 } from './audio-intent';
 export { admitAudioStream, validAudioStream } from './audio-stream';
 export {
   audioTickSystem,
-  detectEdge,
-  detectRemovedEntities,
-  type EdgeAction,
   listenerPoseFromWorldMatrix,
   sourcePoseFromWorldMatrix,
 } from './audio-tick-system';

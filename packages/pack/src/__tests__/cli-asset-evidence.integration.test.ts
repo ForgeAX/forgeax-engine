@@ -217,7 +217,7 @@ it.each([
   pack.assets[0].artifacts.data.byteRange = {
     offset: 1,
     length: mode === 'out-of-bounds' ? 99 : 4,
-    containerDigest: `sha256:${createHash('sha256').update(stored).digest('hex')}`,
+    bundleDigest: `sha256:${createHash('sha256').update(stored).digest('hex')}`,
   };
   if (mode === 'outside-corruption') stored[0] = 0;
   if (mode === 'window-corruption') stored[2] = 0;

@@ -41,6 +41,7 @@
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-audio": "workspace:*",
     "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-fbx": "workspace:*",
     "@forgeax/engine-font": "workspace:*",
     "@forgeax/engine-gltf": "workspace:*",

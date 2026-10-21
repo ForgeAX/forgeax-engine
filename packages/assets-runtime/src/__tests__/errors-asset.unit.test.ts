@@ -4,53 +4,10 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  MaterialResolvedEmptyPassesError,
-  MeshSsboCapacityExceededError,
   MeshSsboCeilingReachedError,
   SceneCollectAssetGuidUnresolvedError,
   SceneCollectEntityRefOutOfClosureError,
 } from '../errors/asset';
-
-describe('MaterialResolvedEmptyPassesError', () => {
-  it('missing-parent reason carries the parent handle in expected/hint/detail', () => {
-    const e = new MaterialResolvedEmptyPassesError('mat-guid', 'missing-parent', 42);
-    expect(e.code).toBe('material-resolved-empty-passes');
-    expect(e.name).toBe('MaterialResolvedEmptyPassesError');
-    expect(e.detail).toEqual({
-      materialGuid: 'mat-guid',
-      reason: 'missing-parent',
-      missingParentHandle: 42,
-    });
-    expect(e.expected).toContain('42');
-    expect(e.hint).toContain('mat-guid');
-    expect(e.message).toContain('42');
-  });
-
-  it('no-pass-in-chain reason omits missingParentHandle from detail', () => {
-    const e = new MaterialResolvedEmptyPassesError('mat-guid', 'no-pass-in-chain');
-    expect(e.detail).toEqual({ materialGuid: 'mat-guid', reason: 'no-pass-in-chain' });
-    expect('missingParentHandle' in e.detail).toBe(false);
-    expect(e.expected).toContain('at least one material');
-    expect(e.message).toContain('zero passes');
-  });
-
-  it('missing-parent with undefined handle still omits it from detail', () => {
-    const e = new MaterialResolvedEmptyPassesError('g', 'missing-parent', undefined);
-    expect('missingParentHandle' in e.detail).toBe(false);
-  });
-});
-
-describe('MeshSsboCapacityExceededError', () => {
-  it('surfaces requested / capacity / ceiling across all four fields', () => {
-    const e = new MeshSsboCapacityExceededError(100, 64, 1024);
-    expect(e.code).toBe('mesh-ssbo-capacity-exceeded');
-    expect(e.name).toBe('MeshSsboCapacityExceededError');
-    expect(e.detail).toEqual({ requested: 100, capacity: 64, ceiling: 1024 });
-    expect(e.expected).toContain('100');
-    expect(e.hint).toContain('100');
-    expect(e.message).toContain('100');
-  });
-});
 
 describe('MeshSsboCeilingReachedError', () => {
   it('surfaces requested / capacity / ceiling across all four fields', () => {

@@ -162,6 +162,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'shadowAngularRadius'
       | 'maxPenumbraTexels'
       | 'staggerCascades'
+      | 'staticShadowCache'
       | 'contactShadowLength'
       | 'shadowMapAspect'
       | 'shadowCasterChannels'
@@ -181,6 +182,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     // bool column narrows to boolean, not number.
     expectTypeOf<Data['castShadow']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['staggerCascades']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Data['staticShadowCache']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['shadowFilter']>().toEqualTypeOf<number>();
     expectTypeOf<Data['shadowAngularRadius']>().toEqualTypeOf<number>();
     expectTypeOf<Data['contactShadowLength']>().toEqualTypeOf<number>();

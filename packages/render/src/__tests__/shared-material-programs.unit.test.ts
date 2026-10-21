@@ -7,6 +7,7 @@ import { expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
   collectGpuDrivenMaterialArtifacts,
+  GpuDrivenMaterialExecutionRetention,
   GpuDrivenMaterialProgramProjection,
 } from '../gpu-driven/material-artifacts';
 import { prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
@@ -645,4 +646,104 @@ it('keeps a direct ShadowCaster on its declared route when no scene program pair
   expect(result.batchExecutions.values().next().value?.shadow.route).toBe('direct');
   expect(result.shadowMaterialArtifacts.size).toBe(0);
   expect(f.input.resolve.mock.calls.map(([id]) => id)).toEqual(['game::surface-scene']);
+});
+
+it('retains executions across frames while programs, geometry and artifacts are unchanged', () => {
+  const f = fixture(4);
+  const artifacts = new Map<string, typeof f.artifact>();
+  let generation = 0;
+  const resolve = vi.fn((id: string) => {
+    const key = `${generation}/${id}`;
+    let artifact = artifacts.get(key);
+    if (artifact === undefined) {
+      artifact = { ...f.artifact, material: id };
+      artifacts.set(key, artifact);
+    }
+    return artifact;
+  });
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const collect = () => collectGpuDrivenMaterialArtifacts({ ...f.input, resolve, retention });
+  const first = collect();
+  const binding = first.batchExecutions.keys().next().value;
+  if (binding === undefined) throw new Error('Expected one shared binding');
+  const prepared = retention.prepared;
+  expect(prepared).toBeGreaterThan(0);
+  const pose = collect();
+  expect(retention.prepared).toBe(prepared);
+  expect(pose.batchExecutions.get(binding)).toEqual(first.batchExecutions.get(binding));
+  expect(pose.batchExecutions.get(binding)?.forward).toBe(
+    first.batchExecutions.get(binding)?.forward,
+  );
+  expect(pose.batchExecutions.get(binding)?.shadow).toBe(
+    first.batchExecutions.get(binding)?.shadow,
+  );
+  expect([...pose.materialArtifacts.values()]).toEqual([...first.materialArtifacts.values()]);
+
+  // Scene projections re-wrap accepted materials each frame; equal facts still reuse.
+  const programs = f.input.programs;
+  const rewrapped = collectGpuDrivenMaterialArtifacts({
+    ...f.input,
+    resolve,
+    retention,
+    programs: {
+      dispatch: programs.dispatch,
+      materials: programs.materials,
+      get overlays() {
+        return programs.overlays;
+      },
+      get(material) {
+        const selected = programs.get(material);
+        return (
+          selected && { ...selected, forward: [...selected.forward], shadow: [...selected.shadow] }
+        );
+      },
+    },
+  });
+  expect(retention.prepared).toBe(prepared);
+  expect(rewrapped.batchExecutions.get(binding)?.forward).toBe(
+    first.batchExecutions.get(binding)?.forward,
+  );
+
+  // A recompiled artifact is a new resolver result; the dependent join is rebuilt.
+  generation = 1;
+  const recompiled = collect();
+  expect(retention.prepared).toBe(prepared * 2);
+  const forward = recompiled.batchExecutions.get(binding)?.forward;
+  expect(forward).not.toBe(first.batchExecutions.get(binding)?.forward);
+  expect(forward?.route === 'gpu' && forward.artifact.specializationKey).toBe(
+    'game::surface-scene',
+  );
+
+  // A new accepted material version selects new programs and is never served stale.
+  f.material.adopt({ ...f.snapshot, roughness: 0.25 });
+  f.owner.adopt(f.material);
+  const adopted = collectGpuDrivenMaterialArtifacts({
+    ...f.input,
+    resolve,
+    retention,
+    programs: f.projection.project(f.guarded, f.owner.materials()),
+  });
+  const execution = adopted.batchExecutions.values().next().value?.forward;
+  expect(retention.prepared).toBe(prepared * 3);
+  expect(execution?.route !== 'none' && execution?.material.roughness).toBe(0.25);
+});
+
+it('keeps the collected frame identity when every retained execution is unchanged', () => {
+  const f = fixture(4);
+  const artifacts = new Map<string, typeof f.artifact>();
+  const resolve = vi.fn((id: string) => {
+    let artifact = artifacts.get(id);
+    if (artifact === undefined) {
+      artifact = { ...f.artifact, material: id };
+      artifacts.set(id, artifact);
+    }
+    return artifact;
+  });
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  f.input = { ...f.input, resolve };
+  const first = collectGpuDrivenMaterialArtifacts({ ...f.input, retention });
+  expect(collectGpuDrivenMaterialArtifacts({ ...f.input, retention })).toBe(first);
+  const noShadow = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, shadowViews: false });
+  expect(noShadow).not.toBe(first);
+  expect(noShadow.shadowMaterialArtifacts.size).toBe(0);
 });

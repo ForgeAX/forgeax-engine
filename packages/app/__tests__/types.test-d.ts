@@ -13,7 +13,6 @@ import {
   type AppDetailExecutionDeadlineExceeded,
   type AppDetailExecutionKernelFailed,
   type AppDetailExecutionRebuildFailed,
-  type AppDetailExecutionStaleWorld,
   type AppDetailExecutionWorkerUnavailable,
   type AppDetailEmpty,
   type AppDetailFrameStepInvalid,
@@ -61,7 +60,6 @@ describe('AppErrorCode is the current closed union (AC-07)', () => {
       | 'app-execution-bootstrap-failed'
       | 'app-execution-deadline-exceeded'
       | 'app-execution-kernel-failed'
-      | 'app-execution-stale-world'
       | 'app-execution-rebuild-failed'
       | 'app-plugin-activation-failed'
       | 'app-renderer-inspection-unavailable'
@@ -79,7 +77,6 @@ describe('AppErrorCode is the current closed union (AC-07)', () => {
     expectTypeOf<'app-execution-bootstrap-failed'>().toMatchTypeOf<AppErrorCode>();
     expectTypeOf<'app-execution-deadline-exceeded'>().toMatchTypeOf<AppErrorCode>();
     expectTypeOf<'app-execution-kernel-failed'>().toMatchTypeOf<AppErrorCode>();
-    expectTypeOf<'app-execution-stale-world'>().toMatchTypeOf<AppErrorCode>();
     expectTypeOf<'app-execution-rebuild-failed'>().toMatchTypeOf<AppErrorCode>();
     expectTypeOf<'app-renderer-inspection-unavailable'>().toMatchTypeOf<AppErrorCode>();
   });
@@ -176,15 +173,7 @@ describe('AppError.detail is discriminated per code (AC-07)', () => {
         kernelName: 'sum',
         worldIdentity: 'world-1',
         cause: new Error('partial'),
-        partialWrite: true,
-        retryable: false,
       },
-    });
-    const stale = new AppError({
-      code: 'app-execution-stale-world',
-      expected: '',
-      hint: '',
-      detail: { expectedIdentity: 'world-2', receivedIdentity: 'world-1', messageKind: 'ready' },
     });
     const rebuild = new AppError({
       code: 'app-execution-rebuild-failed',
@@ -208,10 +197,6 @@ describe('AppError.detail is discriminated per code (AC-07)', () => {
       expectTypeOf(kernel.detail).toMatchTypeOf<AppDetailExecutionKernelFailed>();
       expectTypeOf<AppDetailExecutionKernelFailed>().toMatchTypeOf<typeof kernel.detail>();
     }
-    if (stale.code === 'app-execution-stale-world') {
-      expectTypeOf(stale.detail).toMatchTypeOf<AppDetailExecutionStaleWorld>();
-      expectTypeOf<AppDetailExecutionStaleWorld>().toMatchTypeOf<typeof stale.detail>();
-    }
     if (rebuild.code === 'app-execution-rebuild-failed') {
       expectTypeOf(rebuild.detail).toMatchTypeOf<AppDetailExecutionRebuildFailed>();
       expectTypeOf<AppDetailExecutionRebuildFailed>().toMatchTypeOf<typeof rebuild.detail>();
@@ -232,7 +217,6 @@ describe('error detail unions derive from their code resolvers', () => {
       | AppDetailExecutionBootstrapFailed
       | AppDetailExecutionDeadlineExceeded
       | AppDetailExecutionKernelFailed
-      | AppDetailExecutionStaleWorld
       | AppDetailExecutionRebuildFailed
       | AppDetailRendererInspectionUnavailable
     >();
@@ -352,7 +336,6 @@ describe('exhaustive switch over (AppError | RhiError) compiles with no default 
         case 'app-execution-bootstrap-failed':
         case 'app-execution-deadline-exceeded':
         case 'app-execution-kernel-failed':
-        case 'app-execution-stale-world':
         case 'app-renderer-inspection-unavailable':
         case 'app-execution-rebuild-failed':
         case 'app-plugin-activation-failed':
@@ -416,7 +399,6 @@ describe('dual-layer instanceof EngineEnvironmentError + switch pattern (D-6)', 
         case 'app-execution-bootstrap-failed':
         case 'app-execution-deadline-exceeded':
         case 'app-execution-kernel-failed':
-        case 'app-execution-stale-world':
         case 'app-renderer-inspection-unavailable':
         case 'app-execution-rebuild-failed':
         case 'app-plugin-activation-failed':

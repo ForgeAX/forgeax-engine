@@ -1,5 +1,5 @@
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createDynamicGeometryLifecycle,
   type DynamicGeometryCandidate,
@@ -66,32 +66,25 @@ const prepareCandidateResult = (
 
 describe('DynamicGeometryLifecycle CPU batch acceptance', () => {
   it('validates and accepts scalar credentials without retaining or copying mesh payloads', () => {
-    let copies = 0;
-    class CountedPositions extends Float32Array {
-      constructor(values: ArrayLike<number>) {
-        super(values);
-        copies++;
-      }
-    }
     const lifecycle = createDynamicGeometryLifecycle();
     const world = {};
     const source = mesh();
-    source.attributes.position = new CountedPositions(source.vertices);
-    copies = 0;
+    const copies = vi.spyOn(Uint8Array.prototype, 'slice');
     const candidates = lifecycle
       .prepareCandidates(
         [1, 2].map((entity) => ({ world, entity, mesh: source, revision: 1 })),
         1,
       )
       .unwrap();
-    expect(copies).toBe(0);
+    expect(copies).not.toHaveBeenCalled();
     expect(candidates.every((candidate) => !('mesh' in candidate))).toBe(true);
     const before = lifecycle.inspect();
     const ordering = { world, fixedStep: 1 };
     expect(lifecycle.validateCandidates(candidates, ordering).ok).toBe(true);
     expect(lifecycle.inspect()).toEqual(before);
     const accepted = lifecycle.acceptCandidates(candidates, ordering).unwrap();
-    expect(copies).toBe(0);
+    expect(copies).not.toHaveBeenCalled();
+    copies.mockRestore();
     expect(accepted.every((candidate) => !('mesh' in candidate))).toBe(true);
     expect(lifecycle.inspect().meshBytes).toBe(before.meshBytes);
     for (const candidate of accepted) lifecycle.cancel(candidate).unwrap();
@@ -517,7 +510,8 @@ describe('DynamicGeometryLifecycle CPU batch acceptance', () => {
     });
     for (const candidate of countAccepted) countLifecycle.cancel(candidate).unwrap();
 
-    const byteLimit = 204;
+    // Two complete owned triangle payloads, including metadata.
+    const byteLimit = 1392;
     const byteLifecycle = createDynamicGeometryLifecycle(4, byteLimit);
     const byteWorld = {};
     const byteFirst = prepareCandidate(byteLifecycle, byteWorld, 1, 1, 1);
@@ -537,7 +531,7 @@ describe('DynamicGeometryLifecycle CPU batch acceptance', () => {
   });
 
   it('C05 keeps the original budget reserved until the cancellation fence settles and releases it only once after rejection', async () => {
-    const lifecycle = createDynamicGeometryLifecycle(1, 102);
+    const lifecycle = createDynamicGeometryLifecycle(1, 696);
     const world = {};
     const candidate = prepareCandidate(lifecycle, world, 1, 1, 1);
     let rejectFence: ((reason?: unknown) => void) | undefined;

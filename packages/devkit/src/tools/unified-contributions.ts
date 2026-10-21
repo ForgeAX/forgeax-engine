@@ -49,6 +49,7 @@ type LiveOperation =
   | 'reload'
   | 'stop'
   | 'capture'
+  | 'verify'
   | 'rhi/capture'
   | 'profile/capture'
   | 'eval'
@@ -201,6 +202,17 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     rhiCapture: boolean,
   }),
   'dev.status': schema({ ...root }),
+  'dev.verify': schema(
+    {
+      ...root,
+      ...liveIdentity,
+      output: string,
+      checkpoint: string,
+      requireUi: boolean,
+      timeoutMs: { type: 'integer', minimum: 1 },
+    },
+    ['revision'],
+  ),
   'dev.pipelines.export': schema({ ...root, ...liveIdentity, output: string }, ['revision']),
   'dev.reload': schema({ ...root }),
   'dev.stop': schema({ ...root }),
@@ -905,6 +917,12 @@ export function createUnifiedCommandContributions(
       'Focus observation camera',
       'Focuses an exact name or revision-bound reference; ambiguous names fail without moving.',
       'focus',
+    ),
+    live(
+      'dev.verify',
+      'Verify live runtime',
+      'Validates the exact live execution and publishes strict runtime evidence; blocked checks fail.',
+      'verify',
     ),
     live(
       'dev.capture',

@@ -1,21 +1,3 @@
-import type { ToolRealm } from '@forgeax/engine-tool-runtime';
-import {
-  createRealmCapabilityMatrix as createRuntimeRealmCapabilityMatrix,
-  type RealmCapability,
-  type RealmCapabilityInput,
-  type RealmCapabilityMatrix,
-} from '@forgeax/engine-tool-runtime';
-
-export type { RealmCapability, RealmCapabilityInput, RealmCapabilityMatrix };
-export { createRuntimeRealmCapabilityMatrix as createRealmCapabilityMatrix };
-
-export function resolveRealmCapability(
-  matrix: RealmCapabilityMatrix,
-  realm: ToolRealm,
-): RealmCapability {
-  return matrix.realms[realm];
-}
-
 const RESOURCE_KINDS = ['process', 'port', 'page', 'canvas', 'fiber'] as const;
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 
@@ -82,11 +64,3 @@ export function createResourceProbe(): ResourceProbe {
     },
   };
 }
-
-export {
-  createResourceBootstrapPlan,
-  createResourceBootstrapTrace,
-  type ResourceBootstrapPlan,
-  type ResourceBootstrapTrace,
-  type ResourceBootstrapTraceInput,
-} from '../host/resource-bootstrap.js';

@@ -10,7 +10,7 @@ import {
   ParticleEffectPlayer,
   prepareVfxGpuEffect,
   type VfxGpuAssetError,
-  type VfxGpuEffectAssetAny,
+  type VfxGpuEffectAsset,
 } from '@forgeax/engine/vfx';
 import {
   createVfxRuntimeHost,
@@ -124,7 +124,7 @@ function labRenderAssets(): Map<string, MaterialAsset | MeshAsset> {
 /** Runs the cooked fixture through the owner Pack loader, exactly as a catalog record would arrive. */
 export function loadLabEffect(
   patch: (payload: Record<string, unknown>) => Record<string, unknown> = (payload) => payload,
-): Promise<{ ok: true; value: VfxGpuEffectAssetAny } | { ok: false; error: VfxGpuAssetError }> {
+): Promise<{ ok: true; value: VfxGpuEffectAsset } | { ok: false; error: VfxGpuAssetError }> {
   const input: LoaderInput = {
     guid: LAB_EFFECT_GUID,
     kind: 'particle-effect',

@@ -87,18 +87,20 @@ describe('native build root process', () => {
       ...DEFAULT_STANDARD_PROFILE,
       volumetricFog: { quality: 'low', depth: 48, tileSize: 16 },
     };
+    const time = { fixedDeltaSeconds: 0.05, maxStepsPerUpdate: 2, maxDeltaSeconds: 0.15 };
     const facts = await fixture(
       `export default { provide: ['devkitAppOptions'], apply(ctx, config) {
       ctx.provide('devkitAppOptions', config);
     } };`,
       false,
-      { dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024, standardProfile },
+      { dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024, standardProfile, time },
     );
     const session = await loadProjectCookers(facts, []);
     sessions.push(session);
     expect(session.appOptions).toEqual({
       dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
       standardProfile,
+      time,
     });
     const absent = await loadProjectCookers({ ...facts, roots: {} }, []);
     sessions.push(absent);
@@ -117,6 +119,15 @@ describe('native build root process', () => {
     '{ get dynamicGeometryMeshBudgetBytes() { return 256; } }',
     '{ [Symbol("extra")]: 1 }',
     '{ standardProfile: null }',
+    '{ time: null }',
+    '{ time: [] }',
+    '{ time: { unknown: 1 } }',
+    '{ time: { fixedDeltaSeconds: 0 } }',
+    '{ time: { fixedDeltaSeconds: NaN } }',
+    '{ time: { maxStepsPerUpdate: 1.5 } }',
+    '{ time: { maxStepsPerUpdate: 0 } }',
+    '{ time: { maxDeltaSeconds: -1 } }',
+    '{ time: { maxDeltaSeconds: "0.1" } }',
     '{ get standardProfile() { throw new Error("accessor must not run"); } }',
     `{ standardProfile: { ...${JSON.stringify(DEFAULT_STANDARD_PROFILE)},
       volumetricFog: { quality: 'low', depth: 48, tileSize: 8 } } }`,

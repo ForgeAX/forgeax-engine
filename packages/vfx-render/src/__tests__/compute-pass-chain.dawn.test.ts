@@ -5,7 +5,7 @@ import { World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiComputePassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
-import type { VfxGpuEffectAssetAny, VfxGpuTickIntent } from '@forgeax/engine-vfx';
+import type { VfxGpuEffectAsset, VfxGpuTickIntent } from '@forgeax/engine-vfx';
 import { particleEffectContribution } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
@@ -95,9 +95,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     programFingerprint: cooked.fingerprint,
     emitters: cooked.program.emitters.map(({ id, capacity }) => ({ id, capacity })),
     program: { ...cooked.program, fingerprint: cooked.fingerprint },
-  } satisfies VfxGpuEffectAssetAny;
+  } satisfies VfxGpuEffectAsset;
   const effectHandle = assets.create(runtimeEffectFixture(world, effect)).unwrap();
-  const fixed = runtimeAssets(assets).pin<VfxGpuEffectAssetAny>(effectHandle).unwrap();
+  const fixed = runtimeAssets(assets).pin<VfxGpuEffectAsset>(effectHandle).unwrap();
   const reference = (emitter: VfxGpuTickIntent['emitter']) => ({
     effect: effectHandle,
     revision: fixed.revision,

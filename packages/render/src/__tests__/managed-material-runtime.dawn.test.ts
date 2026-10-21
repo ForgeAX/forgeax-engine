@@ -1,6 +1,9 @@
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, beforeAll, it } from 'vitest';
-import { verifyRuntimeMaterial } from './managed-material-runtime.gpu-fixture';
+import {
+  RUNTIME_MATERIAL_CASE_TIMEOUT_MS,
+  verifyRuntimeMaterial,
+} from './managed-material-runtime.gpu-fixture';
 
 let manifestUrl: string;
 beforeAll(async () => {
@@ -10,10 +13,10 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(() => URL.revokeObjectURL(manifestUrl));
 
-it.each([
-  'mesh',
-  'sprite',
-  'mesh-structure',
-] as const)('updates shared material values through the complete Renderer without changing its entities (%s)', async (kind) => {
-  await verifyRuntimeMaterial(kind, manifestUrl);
-}, 120_000);
+it.each(['mesh', 'sprite', 'mesh-structure'] as const)(
+  'updates shared material values through the complete Renderer without changing its entities (%s)',
+  async (kind) => {
+    await verifyRuntimeMaterial(kind, manifestUrl);
+  },
+  RUNTIME_MATERIAL_CASE_TIMEOUT_MS,
+);

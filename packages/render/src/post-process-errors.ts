@@ -20,8 +20,8 @@
 //   - 'ssao-bias-negative' (runtime path, feat-20260612-hdrp-ssao M2 / w10) ->
 //     SSAO bias parameter < 0; fires when config.ssao.bias value is negative.
 //
-// D-1: a NEW independent union rather than folding into RuntimeErrorCode /
-// RuntimeErrorCode's members are render / skin / shadow domain; a separate union
+// D-1: a NEW independent union rather than folding into the render / skin /
+// shadow domain unions; a separate union
 // keeps the post-process error surface cohesive and additively evolvable.
 //
 // Also per D-4: the fullscreen effect channel is parallel to installMaterialArtifact;

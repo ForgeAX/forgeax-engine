@@ -304,6 +304,20 @@ game-provided ready marker; it is not an image label and is unnecessary for
 ordinary screenshots. The frame number confirms a submission before capture,
 not the exact frame represented by the PNG.
 
+`dev verify --revision <revision> --json` is the runtime verification gate over
+that same owner. `engine.run.verify` exposes it through the ordinary ToolApi.
+It requires the current execution report, a healthy World and running Engine,
+at least one completed Engine frame, a subsequent submitted frame, and strict
+browser capture without a visible fatal, flat canvas or console/page errors.
+`--require-ui`, `--checkpoint`, `--output`, and positive `--timeout-ms` select
+the existing capture conditions. A blocked observer, unfinished evaluation,
+stale revision or execution replacement returns failure, never a successful
+verification. The PNG and report use the existing artifact/history route;
+success returns `verified: "runtime"` bound to that revision, not a persistent
+approval. Reverify after reload; start a new independent run to adopt changed source.
+This gate qualifies runtime health;
+task-specific interaction and visual acceptance remain separate evidence.
+
 `dev camera set` accepts `--lens` and `--exposure` as JSON objects. These are
 temporary observation values; `camera release` restores the authored game
 camera. The same values can be passed through `--input` from a script when a
@@ -593,12 +607,15 @@ A build root is a native Plugin installed in an isolated Node process. It regist
 
 Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
 object projected into generated dev/build hosts before `createApp`. It accepts
-the public `dynamicGeometryMeshBudgetBytes` and `standardProfile` options. DevKit rejects
-unknown fields, accessors and non-data values; Render's shared validators
-reject invalid byte counts and profiles before host preparation. Missing configuration keeps
-App's 64 MiB default. An explicit `forgeax-dynamic-mesh-budget-bytes` URL value
-still takes precedence. The same accepted value reaches main-thread and Worker
-App placements and participates in the existing generated build identity.
+the public `dynamicGeometryMeshBudgetBytes`, `standardProfile`, `pipelineLibrary`,
+and `time` options. DevKit rejects unknown fields, accessors and non-data values;
+Render's shared validators reject invalid byte counts and profiles before host
+preparation, while Engine World owns time-policy validation. Missing configuration
+keeps App's 64 MiB mesh-budget default. An explicit
+`forgeax-dynamic-mesh-budget-bytes` URL value still takes precedence. The same
+accepted time policy reaches browser main-thread and Worker Worlds; the WeChat
+host supplies it when constructing its World. Accepted options participate in the
+existing generated build identity.
 Configuration stays in the build plugin's Pack payload, with `roots.build`
 selecting that plugin; `forge.json` gains no configuration namespace.
 `standardProfile` initializes the actual Renderer through the generated
@@ -614,8 +631,17 @@ export default {
   provide: ['devkitAppOptions'],
   apply(ctx, config) { ctx.provide('devkitAppOptions', config); },
 } satisfies Plugin.Object<DevKitAppOptions>;
-// Pack payload.config: { dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024 }
+// Pack payload.config: {
+//   dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
+//   time: { fixedDeltaSeconds: 1 / 20, maxStepsPerUpdate: 2, maxDeltaSeconds: 3 * (1 / 20) },
+// }
 ```
+
+A build root may likewise provide `ctx.devkitDelivery` (`DevKitDeliveryOptions`), the only
+input to [player Asset Bundles](#player-asset-bundles). It accepts only `bundles`: Bundle
+names mapped to non-empty lists of project-relative source path prefixes. Browser builds
+record the accepted value as `forgeax-delivery.json` in `dist/`; packaging consumes it and
+never ships it.
 
 Native external program identity hashes every package file and its declared
 runtime dependency and peer graph. Its ordered byte traversal uses synchronous
@@ -902,6 +928,38 @@ ZIP paths. Both documents are required, so an incomplete game archive fails befo
 It does not contain other author source, `node_modules`, or a local development server. Use
 `forgeax project preview` for local HTTP acceptance. Opening the archived `index.html` through `file://` is
 unsupported.
+
+> [!NOTE]
+> Both package formats omit standalone cook-receipt files referenced by the Catalog and
+> remove their diagnostic links from the player Catalog. DevKit regenerates the delivery
+> manifest and its hashes. The verified build `dist/` retains these records for offline
+> inspection; embedded publication receipts and runtime material ABI evidence stay intact.
+
+#### Player Asset Bundles
+
+Both package formats also replace per-artifact files with Asset Bundles. A Pack is the
+smallest delivery unit: all of its verified, non-streaming artifacts land in exactly one
+Bundle, and a Bundle carries one or more complete Packs. Bytes used by Packs in different
+Bundles are stored once in a shared Bundle. Streaming artifacts (`delivery: 'stream'`)
+keep their own files and URLs. The build `dist/` keeps one file per artifact.
+
+| Rule | Behavior |
+|:--|:--|
+| Named Bundle | A build root provides `ctx.devkitDelivery = { bundles: { dust2: ['assets/maps/dust2/'] } }`; every Pack whose source path starts with a listed prefix ships in that Bundle. |
+| Automatic Bundle | Unmatched Packs are grouped by stable `packageId`-path hash bits until each Bundle holds at most 8 MiB; a larger Pack ships alone and is never split. |
+| Conflict | A Pack matched by two Bundles, or a prefix matching no published Pack, fails packaging. |
+| Entry encoding | Each entry is zstd-compressed when that saves at least 10%; descriptor integrity still covers the decoded bytes. |
+
+The Bundle file is `FXBUNDL1`, a u32 entry count, u32 entry lengths, then the entries
+(`@forgeax/engine-pack/bundle`). Rewritten descriptors keep their GUID, integrity and
+`byteLength` and add `byteRange { offset, length, bundleDigest }`. At runtime the first read
+fetches and verifies the whole Bundle, which then stays resident as separate entries. An
+extracted entry leaves the Bundle, so each byte has one owner; a later reader of the same
+window receives a verified private copy instead of a refetch. Once its extracted value is
+gone, a later read requests only that entry with HTTP `Range`; a host that answers with the
+whole file repopulates the Bundle. Resident Bundles share a 256 MiB budget and are evicted
+least recently used first. The package JSON reports the file
+count and `bundles: { bundles, entries, storedBytes, sourceBytes }`.
 
 | Web ZIP path | Owner | Purpose |
 |:--|:--|:--|
@@ -1770,7 +1828,7 @@ session handle retain offline Pack inspection, including source identity and
 revision. ScriptablePack inspection does not re-evaluate `build`. Rebuild tools
 are advertised only when the provider supplies a build owner.
 
-`engine.run.start/status/observe/reload/stop/capture/eval/find/focus` and
+`engine.run.start/status/observe/reload/stop/capture/verify/eval/find/focus` and
 `engine.run.camera.*` reuse the live-dev lifecycle with independent resources.
 They are available through the same ToolApi and `forgeax engine run ...` CLI.
 

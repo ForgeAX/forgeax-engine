@@ -7092,3 +7092,24 @@ index 1b46e7c..9a31c91 100644
  #[inline(always)]
  pub fn body_handle(id: FlatHandle) -> RigidBodyHandle {
      RigidBodyHandle::from_raw_parts(id.to_bits() as u32, (id.to_bits() >> 32) as u32)
+diff --git a/src/dynamics/ccd/ccd_solver.rs b/src/dynamics/ccd/ccd_solver.rs
+--- a/src/dynamics/ccd/ccd_solver.rs
++++ b/src/dynamics/ccd/ccd_solver.rs
+@@ -128,7 +128,7 @@
+         let linear_slop = params.allowed_linear_error();
+         let fast_bodies: Vec<_> = islands
+             .active_bodies()
+-            .filter(|h| bodies[*h].ccd.ccd_active)
++            .filter(|h| bodies[*h].is_dynamic() && bodies[*h].ccd.ccd_active)
+             .collect();
+ 
+         let fractions = map_bodies_parallel(&fast_bodies, hooks, |handle, hooks| {
+@@ -188,7 +188,7 @@
+         // the tree leak into the next step's broad phase (pair explosion, ~2x narrow-phase cost).
+         let (non_bullets, bullets): (Vec<_>, Vec<_>) = islands
+             .active_bodies()
+-            .filter(|h| bodies[*h].ccd.ccd_active)
++            .filter(|h| bodies[*h].is_dynamic() && bodies[*h].ccd.ccd_active)
+             .partition(|h| !is_bullet(&bodies[*h]));
+ 
+         let mut all_results = Vec::new();

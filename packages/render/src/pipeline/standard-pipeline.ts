@@ -59,6 +59,7 @@ import {
   addTypedScenePass,
   addTypedSkyboxPass,
   addTypedSsaoPasses,
+  type TemporalSecondaryReactivity,
 } from '../typed-render-graph-primitives';
 import { addTypedShadowPasses } from '../typed-shadow-passes';
 import { addOpaqueFogPasses, addTranslucencyVolumetricFogPasses } from './analytic-fog-pass';
@@ -704,7 +705,7 @@ function buildStandardDeferredLane(
   }
 
   let sceneOutput: RenderPipelineTarget = scene.value;
-  let secondaryReactivity: GraphTextureView | undefined;
+  let secondaryReactivity: TemporalSecondaryReactivity | undefined;
   if (topology.ssr !== undefined) {
     const ssrView = topology.ssr.status === 'admitted' ? importSceneView() : ok(undefined);
     if (!ssrView.ok) return ssrView;
@@ -742,7 +743,12 @@ function buildStandardDeferredLane(
       ssrView.value !== undefined &&
       specularResponse.value !== undefined
     ) {
-      secondaryReactivity = spatial.value.reactivity;
+      const reactivity = spatial.value.reactivity;
+      const surface = spatial.value.reactivitySurface;
+      secondaryReactivity =
+        reactivity === undefined || surface === undefined
+          ? undefined
+          : { view: reactivity, ...surface };
       const radiance =
         spatial.value.resources.radiancePyramid ?? spatial.value.resources.trace.view;
       const composed = addSsrCompositionPass(graph, {

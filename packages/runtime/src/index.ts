@@ -32,11 +32,10 @@ export { createRenderer } from './createRenderer';
 // error cluster's closed *ErrorCode + *Error union is re-exported so external
 // consumers `import type` the cluster union and write exhaustive `switch
 // (err.code)` (AC-07 a/b). Every re-export sources directly from
-// ./errors/<cluster> (NOT the transitional errors.ts barrel, deleted in w15;
-// NOT the @forgeax/engine-types zombie RuntimeErrorCode -- D-9).
+// ./errors/<cluster> (NOT the transitional errors.ts barrel, deleted in w15).
 
 // feat-20260705-runtime-tier2-decomposition M1 / w14: the asset cluster error
-// re-exports (AssetRuntimeError / *Detail types + MaterialResolvedEmptyPasses /
+// re-exports (AssetRuntimeError / *Detail types + MeshSsboCeilingReached /
 // SceneCollect* classes) moved to @forgeax/engine-assets-runtime. Consumers
 // import them from that package directly (AC-105: runtime barrel exports zero
 // asset-cluster symbols).

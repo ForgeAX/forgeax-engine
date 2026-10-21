@@ -2,16 +2,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  decodeCatalogWire,
-  serializeCookedMaterialRecord,
-  validateCookedMaterialRecord,
-} from '@forgeax/engine-pack';
+import { decodeCatalogWire, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
-import type { RuntimeAssetBinding } from '@forgeax/engine-types';
+import type { MaterialAsset, RuntimeAssetBinding } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
 import { AssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
+import { runtimeAssets } from '../../../assets-runtime/src/internal/runtime-assets.js';
 import { materialContribution } from '../../../render/src/assets/asset-decoders.js';
 import type { DispatcherHandler } from '../dev/dispatcher.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
@@ -159,10 +156,23 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     expect(loaded, JSON.stringify(loaded)).toMatchObject({ ok: true });
     if (!loaded.ok) throw loaded.error;
     const payload = registry.read(loaded.value).unwrap();
-    expect(validateCookedMaterialRecord(Reflect.get(payload, 'cooked'))).toEqual({
-      ok: true,
-      value: record,
+    expect(payload).not.toHaveProperty('cooked');
+    expect(
+      registry.getMaterialProjectionForPayload(
+        runtimeAssets(registry).borrow<MaterialAsset>(loaded.value).unwrap(),
+      ),
+    ).toMatchObject({
+      materialGuid: record.guid,
+      specializationKey: record.specializationKey,
+      artifactHash: record.artifactDigest,
     });
+    for (const program of record.programs)
+      expect(registry.shaderRegistry.findMaterialArtifact(program.specializationKey)).toMatchObject(
+        {
+          ok: true,
+          value: { source: new TextDecoder().decode(program.artifact.bytes) },
+        },
+      );
   } finally {
     decoder?.dispose();
     registry?.dispose();

@@ -1124,6 +1124,46 @@ export function applyParamSchemaDefaultsToUbo(
 }
 
 /**
+ * Prepared materials supply a fresh linear-value record. With an owner-admitted
+ * schema, seed defaults and apply that record in one layout walk. Keep the raw
+ * schema's two observations: its accessors may change the layout between them.
+ * Defaults still precede each override, including short vectors and integer bits.
+ */
+export function writePreparedMaterialUbo(
+  payload: MaterialUboPayload,
+  paramSchema: readonly ParamSchemaEntry[],
+  values: Parameters<typeof applyParamSnapshotToUbo>[2],
+): void {
+  const admitted = getAdmittedParamSchemaInterface(paramSchema);
+  if (admitted === undefined) {
+    applyParamSchemaDefaultsToUbo(payload, paramSchema);
+    applyParamSnapshotToUbo(payload, paramSchema, values);
+    return;
+  }
+  const view = materialUboDataView(payload);
+  const parameters = materialTextureProjection(paramSchema)?.parametersByName;
+  for (const entry of admitted.uboLayout.entries) {
+    const value = values?.[entry.name];
+    // A scalar override replaces the whole numeric field, so its default need
+    // not be looked up or uploaded first. Vectors keep their prefix overlays.
+    if (
+      typeof value === 'number' &&
+      (entry.type === 'f32' || entry.type === 'i32' || entry.type === 'u32')
+    ) {
+      writeNumericParamValue(view, entry, value);
+      continue;
+    }
+    const parameter = parameters?.get(entry.name);
+    const fallback =
+      parameter !== undefined && 'default' in parameter ? parameter.default : undefined;
+    if (typeof fallback === 'number' || Array.isArray(fallback))
+      writeNumericParamValue(view, entry, fallback as number | readonly number[]);
+    if (typeof value === 'number' || Array.isArray(value))
+      writeNumericParamValue(view, entry, value as number | readonly number[]);
+  }
+}
+
+/**
  * feat-20260704 M3/w19: shared per-submesh material bind-group assembly, hoisted
  * from the `buildPerSubmeshMaterialBg` closure inside encodeMainPass so both the
  * geometry pass and the LDR blend sub-pass (extracted to separate functions)

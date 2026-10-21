@@ -75,6 +75,4 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
       }
     });
   });
-
-  // ── RuntimeErrorCode union member count (12 -> 15) ───────────────────────────
 }

@@ -9586,6 +9586,8 @@ A normal Catalog replacement isolates incoherent terrain source extraction until
 
 例如，默认额度允许 33 个已接纳候选与 32 个独立准备候选并存；第 33 个独立准备事务会以 `dynamic-geometry-budget-exceeded` 拒绝，且不改变现有记录。`maxRetainedCandidates: 65` 允许 65 个暂存事务，独立候选的一次接纳仍不得超过 32 项。所有常驻项与暂存项共用 mesh 字节上限，接纳不会释放字节额度。容量配置必须为正安全整数，上限为 4096；完整声明组成员数上限同为 4096，mesh 字节上限为 512 MiB。公开 `validateDynamicGeometryMeshBudget(bytes)` 与生命周期、Renderer 构造共享此字节校验；构建工具可在分配 GPU 资源前验证项目配置。计数或字节拒绝的 `detail.reason` 分别为 `batch-count`、`retained-count` 或 `mesh-bytes`，并携带本次请求、已用额度、上限及等待 fence 的候选数。
 
+候选几何的独占上传副本由上述 mesh 字节预算约束。Source Host 只额外保留资产及依赖的版本凭据，直到候选退休或取消；它不会为每个常驻地形体长期保留整份资产内容快照，也不占用普通 `assets.snapshot` 的 128 个默认槽位。网格写入、依赖替换与释放仍会让旧凭据失效，上传只移动独占副本，原始资产存储不会被转移。
+
 `createRenderer(canvas, { dynamicGeometryMeshBudgetBytes })` 将显式字节额度透传到同一生命周期；省略仍为 64 MiB。`renderer.inspect().dynamicGeometry.maxMeshBytes` 给出实际额度，`meshBytes` 给出包含等待 fence 退休记录在内的已用额度。提高字节额度不改变独立准备的 32 项批次/暂存事务限制、拒绝条件、退休或设备恢复语义，也不保证帧率。完整声明组通过已有 4096 项硬上限约束其成员数。
 
 这些是 CPU 生命周期额度，不表示 GPU 驻留、FrameReceipt 或物理提交已完成。跨 owner 的替换、恢复与资源释放仍由调用方通过实际组合路径验证。

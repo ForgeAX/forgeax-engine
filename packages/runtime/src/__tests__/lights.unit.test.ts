@@ -360,7 +360,7 @@ function spawnValidatedLight(
         // 1 castShadow + 10 closed shadow-quality fields + staggerCascades + contactShadowLength + lightingChannels = 17 fields (feat-20260709 M2 collapsed
         // direction/color from 6 per-axis scalars to 2 array<f32,3> columns;
         // nearPlane removed — derived from camera near; farPlane -> shadowDistance)
-        expect(Object.keys(componentSchema(dl)).length).toBe(27);
+        expect(Object.keys(componentSchema(dl)).length).toBe(28);
         expect('lightingChannels' in componentSchema(dl)).toBe(true);
         expect(componentSchema(dl).staggerCascades).toBe('bool');
         expect('contactShadowLength' in componentSchema(dl)).toBe(true);
@@ -1931,7 +1931,7 @@ function spawnValidatedLight(
       });
 
       it('schema includes lightingChannels alongside the existing light and shadow fields', () => {
-        expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(27);
+        expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(28);
         expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
         expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
         expect('direction' in componentSchema(DirectionalLight)).toBe(true);

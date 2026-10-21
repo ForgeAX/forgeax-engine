@@ -8,9 +8,8 @@
 // normal miss channel (undefined) lets AI users branch with `if (hit)` for the common
 // case and inspect `.code` for the precondition failure (charter P3).
 //
-// D-1: a NEW closed union rather than reusing RuntimeErrorCode. RuntimeErrorCode's 8
-// members are all render / skin / shadow domain; folding a picking precondition into it
-// would dilute its semantic focus. A dedicated single-member union keeps the picking
+// D-1: a NEW closed union rather than reusing a render / skin / shadow domain union;
+// folding a picking precondition into one would dilute its semantic focus. A dedicated single-member union keeps the picking
 // error surface cohesive and additively evolvable (AGENTS.md Error model minor add-only).
 //
 // Related: requirements AC-11 (structured error signal) + AC-13 (closed-union SSOT);

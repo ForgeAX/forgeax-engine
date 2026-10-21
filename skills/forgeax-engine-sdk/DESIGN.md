@@ -73,10 +73,8 @@ The collision smoke writes its report through an absolute workspace path because
 step and artifact upload must consume that same path.
 
 The Candidate artifact is the handoff authority; a changed source commit requires a
-new Candidate. Same-commit CI means the successful `ci.yml` `push` run for the
-exact source SHA, not a PR result or a run for another SHA. The CI path SSOT must
-include tracked SDK `skills/**`, so catalog and skill changes cannot merge into
-main without producing the baseline Candidate needs. The reproducibility lane
+new Candidate. Release sources are not gated on branch push CI; the Candidate
+gates are the release proof. The reproducibility lane
 uses a full-history checkout because `sdk:build` validates catalog-baseline
 ancestry; shallow history would turn a valid baseline into a false failure.
 Promotion is retryable for

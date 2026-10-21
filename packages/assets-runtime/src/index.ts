@@ -58,13 +58,10 @@ export {
 export type {
   AssetRuntimeError,
   AssetRuntimeErrorCode,
-  MaterialResolvedEmptyPassesDetail,
   SceneCollectAssetGuidUnresolvedDetail,
   SceneCollectEntityRefOutOfClosureDetail,
 } from './errors/asset.js';
 export {
-  MaterialResolvedEmptyPassesError,
-  MeshSsboCapacityExceededError,
   MeshSsboCeilingReachedError,
   SceneCollectAssetGuidUnresolvedError,
   SceneCollectEntityRefOutOfClosureError,

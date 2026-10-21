@@ -8,6 +8,7 @@ import { verifyDist } from './dist.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { buildProject, startDevProjectWithHost, startPreviewProjectWithHost } from './host.js';
 import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from './package-documents.js';
+import { preparePlayerDist } from './player-dist.js';
 import { commandError, readProjectFacts } from './project.js';
 import {
   bundleSingleHtmlEntry,
@@ -144,35 +145,38 @@ export async function packageCommand(
   if (!built.ok) return built;
   const verified = await verifyDist(distRoot);
   if (!verified.ok) return verified;
-  if (format === 'single-html') {
-    const indexHtml = await readFile(resolve(distRoot, 'index.html'), 'utf8');
-    const bundle = await bundleSingleHtmlEntry(distRoot, indexHtml, facts.value.root);
-    if (!bundle.ok) return bundle;
-    return writeSingleHtml({
-      distRoot,
-      output,
-      manifest: verified.value,
-      bundle: bundle.value,
-    });
-  }
   const archive = output;
   const temporaryArchive = `${archive}.partial-${process.pid}`;
   const checksumPath = `${archive}.sha256`;
   const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
+  let playerRoot: string | undefined;
   try {
+    const player = await preparePlayerDist(distRoot, verified.value);
+    playerRoot = player.root;
+    if (format === 'single-html') {
+      const indexHtml = await readFile(resolve(player.root, 'index.html'), 'utf8');
+      const bundle = await bundleSingleHtmlEntry(player.root, indexHtml, facts.value.root);
+      if (!bundle.ok) return bundle;
+      return await writeSingleHtml({
+        distRoot: player.root,
+        output,
+        manifest: player.manifest,
+        bundle: bundle.value,
+      });
+    }
     const paths = [
-      ...verified.value.artifacts.map((artifact) => artifact.path),
+      ...player.manifest.artifacts.map((artifact) => artifact.path),
       'forgeax-dist.json',
     ];
     const entries = await Promise.all(
-      paths.map(async (path) => ({ path, bytes: await readFile(resolve(distRoot, path)) })),
+      paths.map(async (path) => ({ path, bytes: await readFile(resolve(player.root, path)) })),
     );
     const bytes = createZip([
       ...entries,
       ...(packageDocuments?.ok === true ? packageDocuments.value : []),
     ]);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
-    const manifestBytes = await readFile(resolve(distRoot, 'forgeax-dist.json'));
+    const manifestBytes = await readFile(resolve(player.root, 'forgeax-dist.json'));
     await mkdir(dirname(archive), { recursive: true });
     await writeFile(temporaryArchive, bytes);
     await writeFile(temporaryChecksum, `${sha256}  ${basename(archive)}\n`);
@@ -191,6 +195,8 @@ export async function packageCommand(
           wasm: verified.value.artifacts.some((artifact) => artifact.path.endsWith('.wasm')),
         },
         archive: { path: archive, bytes: bytes.byteLength, sha256 },
+        files: player.manifest.artifacts.length,
+        bundles: player.bundles,
         documents: [...GAME_PACKAGE_DOCUMENT_PATHS],
         checksumPath,
         distManifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
@@ -206,6 +212,7 @@ export async function packageCommand(
     await Promise.all([
       rm(temporaryArchive, { force: true }),
       rm(temporaryChecksum, { force: true }),
+      ...(playerRoot === undefined ? [] : [rm(playerRoot, { recursive: true, force: true })]),
     ]);
   }
 }

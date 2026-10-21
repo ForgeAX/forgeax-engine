@@ -1,4 +1,4 @@
-import type { VfxGpuEmitterProgramV3, VfxGpuInstanceComputeProgram } from '@forgeax/engine-vfx';
+import type { VfxGpuEmitterProgram, VfxGpuInstanceComputeProgram } from '@forgeax/engine-vfx';
 
 const assert: (condition: unknown, message?: string) => asserts condition = (
   condition,
@@ -6,7 +6,7 @@ const assert: (condition: unknown, message?: string) => asserts condition = (
 ) => {
   if (!condition) throw new Error(message ?? 'Unsupported batch ABI');
 };
-type Emitter = VfxGpuEmitterProgramV3;
+type Emitter = VfxGpuEmitterProgram;
 /** Managed hooks cannot access the storage namespace. Each workgroup can then
  * execute the same authored hook over one independent arena range. */
 function createBatchProgram(emitter: Emitter) {
@@ -136,7 +136,7 @@ var<private> forgeax_vfx_batch_bases1: vec4<u32>;
 /** Only the managed compiler calls this after reserved-surface and source checks.
  * No runtime inference of arbitrary cooked WGSL authorizes this ABI. */
 export function createVfxInstanceComputeProgram(
-  emitter: VfxGpuEmitterProgramV3,
+  emitter: VfxGpuEmitterProgram,
 ): VfxGpuInstanceComputeProgram | undefined {
   try {
     const batch = createBatchProgram(emitter);

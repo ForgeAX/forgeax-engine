@@ -2,7 +2,6 @@
 
 import type { AssetRuntimeError, AssetRuntimeErrorCode } from '@forgeax/engine-assets-runtime';
 import {
-  MeshSsboCapacityExceededError,
   MeshSsboCeilingReachedError,
   SceneCollectAssetGuidUnresolvedError,
   SceneCollectEntityRefOutOfClosureError,
@@ -28,7 +27,7 @@ import { requireRenderer } from './renderer-test-utils';
 // below stay byte-identical (AC-09). These are test scaffolding, not a
 // production cross-cluster SSOT -- w13's per-cluster *.test-d.ts files are the
 // real regression guard. Equal to the fanned-out render + asset + skin
-// clusters (27 codes / 27 classes); recover + environment excluded, as the
+// clusters; recover + environment excluded, as the
 // original unions were.
 type RuntimeLayerErrorCode = RenderErrorCode | AssetRuntimeErrorCode | SkinErrorCode;
 type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
@@ -321,7 +320,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
 {
   // ─── from errors.test.ts ───
   describe('errors.test.ts', () => {
-    describe('AC-11 RuntimeErrorCode exhaustive switch (no default)', () => {
+    describe('AC-11 RuntimeLayerErrorCode exhaustive switch (no default)', () => {
       it('exhaustive switch covers all members without a default branch', () => {
         function exhaustive(code: RuntimeLayerErrorCode): string {
           switch (code) {
@@ -434,10 +433,6 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'atmosphere invalid parameter';
             case 'owner-stage-failed':
               return 'owner stage failed';
-            case 'skin-joint-count-exceeded':
-              return 'skin joint count exceeded';
-            case 'skin-joint-despawned':
-              return 'skin joint despawned';
             case 'skin-joint-path-unresolved':
               return 'skin joint path unresolved';
             case 'skin-instances-coexist-forbidden':
@@ -448,12 +443,8 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'vertex color variant conflict';
             case 'skin-palette-overflow':
               return 'skin palette overflow';
-            case 'material-resolved-empty-passes':
-              return 'material resolved empty passes';
             case 'equirect-projection-failed':
               return 'equirect projection failed';
-            case 'mesh-ssbo-capacity-exceeded':
-              return 'mesh ssbo capacity exceeded';
             case 'mesh-ssbo-ceiling-reached':
               return 'mesh ssbo ceiling reached';
             case 'render-target-descriptor-invalid':
@@ -549,9 +540,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
           }
         }
         expect(exhaustive('equirect-projection-failed')).toBe('equirect projection failed');
-        expect(exhaustive('material-resolved-empty-passes')).toBe('material resolved empty passes');
         expect(exhaustive('shadow-invalid-config')).toBe('shadow invalid config');
-        expect(exhaustive('mesh-ssbo-capacity-exceeded')).toBe('mesh ssbo capacity exceeded');
         expect(exhaustive('mesh-ssbo-ceiling-reached')).toBe('mesh ssbo ceiling reached');
       });
     });
@@ -676,10 +665,6 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'ok';
             case 'owner-stage-failed':
               return 'ok';
-            case 'skin-joint-count-exceeded':
-              return 'ok';
-            case 'skin-joint-despawned':
-              return 'ok';
             case 'skin-joint-path-unresolved':
               return 'ok';
             case 'skin-instances-coexist-forbidden':
@@ -690,11 +675,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'ok';
             case 'skin-palette-overflow':
               return 'ok';
-            case 'material-resolved-empty-passes':
-              return 'ok';
             case 'equirect-projection-failed':
-              return 'ok';
-            case 'mesh-ssbo-capacity-exceeded':
               return 'ok';
             case 'mesh-ssbo-ceiling-reached':
               return 'ok';
@@ -786,7 +767,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
     });
 
     describe('AC-03 mesh-ssbo error narrowing in onError callback shape (no `as`)', () => {
-      it('switch (err.code) narrows the detail variants for the two new codes', () => {
+      it('switch (err.code) narrows the mesh-ssbo-ceiling-reached detail', () => {
         // Build a fake onError handler closing over a mutable record we can
         // assert against. Critical: the body must compile without any `as`
         // narrowing — TS must derive `err.detail.requested|capacity|ceiling` as
@@ -800,19 +781,6 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
 
         const onError = (err: RuntimeLayerError): void => {
           switch (err.code) {
-            case 'mesh-ssbo-capacity-exceeded': {
-              // err narrows to MeshSsboCapacityExceededError; detail is the
-              // discriminated-union variant carrying { requested, capacity,
-              // ceiling: number }.
-              const r: number = err.detail.requested;
-              const c: number = err.detail.capacity;
-              const ce: number = err.detail.ceiling;
-              captured.requested = r;
-              captured.capacity = c;
-              captured.ceiling = ce;
-              captured.handled = true;
-              return;
-            }
             case 'mesh-ssbo-ceiling-reached': {
               const r: number = err.detail.requested;
               const c: number = err.detail.capacity;
@@ -829,15 +797,8 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
           }
         };
 
-        // Construct the two new error classes via the published surface and
-        // pump them through onError to confirm runtime + compile time agree.
-        onError(new MeshSsboCapacityExceededError(2048, 1024, 524288));
-        expect(captured.handled).toBe(true);
-        expect(captured.requested).toBe(2048);
-        expect(captured.capacity).toBe(1024);
-        expect(captured.ceiling).toBe(524288);
-
-        captured.handled = false;
+        // Construct the error class via the published surface and pump it
+        // through onError to confirm runtime + compile time agree.
         onError(new MeshSsboCeilingReachedError(600000, 524288, 524288));
         expect(captured.handled).toBe(true);
         expect(captured.requested).toBe(600000);
@@ -1339,7 +1300,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
         expect(err.detail).toEqual({ entity: 42, field: 'parent', target: 99 });
       });
 
-      it('code is a valid RuntimeErrorCode literal', () => {
+      it('code is a valid RuntimeLayerErrorCode literal', () => {
         const code: RuntimeLayerErrorCode = 'scene-collect-entity-ref-out-of-closure';
         expect(code).toBe('scene-collect-entity-ref-out-of-closure');
       });
@@ -1359,7 +1320,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
         expect(err.detail).toEqual({ field: 'skeleton', handle: 7 });
       });
 
-      it('code is a valid RuntimeErrorCode literal', () => {
+      it('code is a valid RuntimeLayerErrorCode literal', () => {
         const code: RuntimeLayerErrorCode = 'scene-collect-asset-guid-unresolved';
         expect(code).toBe('scene-collect-asset-guid-unresolved');
       });

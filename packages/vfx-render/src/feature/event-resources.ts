@@ -1,10 +1,9 @@
-import type { VfxGpuEmitterProgramAny, VfxGpuTickIntent } from '@forgeax/engine-vfx';
+import type { VfxGpuEmitterProgram, VfxGpuTickIntent } from '@forgeax/engine-vfx';
 
 export const VFX_EVENT_INPUT_BYTES = 32;
 export const VFX_EVENT_BYTES = 32;
-export const VFX_EVENT_COUNTER_BYTES = 16;
 
-function channelFanOut(emitter: VfxGpuEmitterProgramAny, channel: string): number {
+function channelFanOut(emitter: VfxGpuEmitterProgram, channel: string): number {
   return Math.max(
     1,
     ...(emitter.events ?? [])
@@ -13,14 +12,14 @@ function channelFanOut(emitter: VfxGpuEmitterProgramAny, channel: string): numbe
   );
 }
 
-export function eventInputCapacity(emitter: VfxGpuEmitterProgramAny): number {
+export function eventInputCapacity(emitter: VfxGpuEmitterProgram): number {
   return Math.max(
     1,
     (emitter.channels ?? []).reduce((total, channel) => total + channel.capacity, 0),
   );
 }
 
-export function eventCapacity(emitter: VfxGpuEmitterProgramAny): number {
+export function eventCapacity(emitter: VfxGpuEmitterProgram): number {
   const capacity = (emitter.channels ?? []).reduce(
     (total, channel) => total + channel.capacity * channelFanOut(emitter, channel.id),
     0,
@@ -73,8 +72,4 @@ export function encodeEventBuffer(
   const data = new Uint8Array(inputBytes.byteLength + outputBytes);
   data.set(inputBytes);
   return data;
-}
-
-export function eventCounterData(): Uint8Array {
-  return new Uint8Array(VFX_EVENT_COUNTER_BYTES);
 }

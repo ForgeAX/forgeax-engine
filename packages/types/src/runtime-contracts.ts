@@ -2,33 +2,6 @@
 // catalog/loader bridges, and the EngineMetrics protocol.  Kept as one leaf so
 // the public index remains a small, explicit barrel without duplicate values.
 
-// Closed union of runtime-layer error code literals. Defined here as the
-// single source of truth for code-string discovery (charter F1: AI users
-// grep '@forgeax/engine-types' for all error code families). The error
-// classes that carry these codes live in @forgeax/engine-runtime.
-//
-// Decision anchors:
-//   - requirements AC-29 (RuntimeErrorCode +6: skin-joint-count-exceeded /
-//     skin-joint-despawned / skin-joint-path-unresolved /
-//     skin-instances-coexist-forbidden / vertex-storage-buffer-unavailable /
-//     skin-palette-overflow)
-//   - plan-strategy D-12 (kebab-case + closed union)
-//   - charter P3 (explicit failure: exhaustive switch without default)
-
-/** Closed union of runtime-layer error codes. */
-export type RuntimeErrorCode =
-  | 'shadow-invalid-config'
-  | 'skin-joint-count-exceeded'
-  | 'skin-joint-despawned'
-  | 'skin-joint-path-unresolved'
-  | 'skin-instances-coexist-forbidden'
-  | 'vertex-storage-buffer-unavailable'
-  | 'skin-palette-overflow'
-  | 'material-resolved-empty-passes'
-  | 'equirect-projection-failed'
-  | 'mesh-ssbo-capacity-exceeded'
-  | 'mesh-ssbo-ceiling-reached';
-
 // === GPUFlagsConstant namespace numeric aliases (5 *Flags + 8 Size/Index/Offset/SampleMask) ===
 //
 // One-to-one with the W3C CR §3.6 `unsigned long` definitions; runtime values are
@@ -679,27 +652,8 @@ export interface RemoteError extends Error {
  * structured payload AI users need to act on the error without grepping
  * prose. Variants without payload are intentionally absent — the
  * `RemoteError.detail` slot is `undefined` for those codes.
- *
- * The `server-startup-failed` variant carries bounded startup provenance.
  */
-export type RemoteErrorDetail = ServerStartupFailedDetail | EvalResultNotSerializableDetail;
-
-/**
- * `server-startup-failed` discriminator variant with bounded provenance.
- */
-export interface ServerStartupFailedDetail {
-  readonly code: 'server-startup-failed';
-  readonly removedAt: string;
-  readonly docAnchor: string;
-}
-
-/**
- * SSOT for the legacy-inspect routing hint template. Keep the recovery copy
- * executable and byte-stable for CLI and remote consumers.
- */
-export function legacyInspectHint(legacyInspectTarget: string): string {
-  return `use 'forgeax dev eval --root <project> --code "return ${legacyInspectTarget}"' to inspect the live realm`;
-}
+export type RemoteErrorDetail = EvalResultNotSerializableDetail;
 
 /**
  * `eval-result-not-serializable` discriminator variant. The shape is a

@@ -13,7 +13,7 @@
     "smoke": "node scripts/smoke-dawn.mjs",
     "smoke:odd-dawn": "node scripts/smoke-odd-dawn.mjs",
     "smoke:browser": "node scripts/smoke-browser.mjs",
-    "smoke:browser-device-loss": "node scripts/smoke-browser-device-loss.mjs",
+    "smoke:browser-device-loss": "node --test src/__tests__/wait-for-ready-frames.test.mjs && node scripts/smoke-browser-device-loss.mjs",
     "smoke:falsify": "node scripts/smoke-falsify.mjs",
     "smoke:quality-dawn": "node scripts/bloom-quality-dawn.mjs",
     "smoke:performance": "FORGEAX_BLOOM_CAPTURE_TIMINGS=1 node scripts/smoke-dawn.mjs",

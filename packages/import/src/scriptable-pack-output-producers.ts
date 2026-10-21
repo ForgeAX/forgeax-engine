@@ -632,6 +632,7 @@ export function createAssetOutputProducerRegistry(
   registry.register(meshAssetOutputProducer);
   registry.register(textureAssetOutputProducer);
   registry.register(createSceneAssetOutputProducer(sceneComponents));
+  registry.register(particleEffectProducer());
   for (const kind of [
     'equirect',
     'sampler',
@@ -644,7 +645,6 @@ export function createAssetOutputProducerRegistry(
     'animation-clip',
     'animation-graph',
     'audio',
-    'particle-effect',
     'ies-profile',
     'terrain',
     'navigation-mesh',
@@ -652,16 +652,48 @@ export function createAssetOutputProducerRegistry(
     registry.register(
       createSafeProducer(
         kind,
-        kind === 'particle-effect'
-          ? 'particle-effect/4'
-          : kind === 'animation-clip'
-            ? 'animation-clip/2'
-            : 'ordinary-pod/1',
+        kind === 'animation-clip' ? 'animation-clip/2' : 'ordinary-pod/1',
         ordinaryPodProduct,
       ),
     );
   }
   return registry;
+}
+
+function particleEffectProducer(): AssetOutputProducer {
+  const produced = createSafeProducer('particle-effect', 'particle-effect/4', ordinaryPodProduct);
+  return {
+    ...produced,
+    produce(input) {
+      if (input.asset.kind !== 'particle-effect' || !('source' in input.asset))
+        return produced.produce(input);
+      const source = input.asset.source;
+      return (async () => {
+        try {
+          if (Object.keys(input.asset).some((key) => key !== 'kind' && key !== 'source'))
+            throw new TypeError('Particle authoring output requires only kind and source');
+          if (input.cookers === undefined)
+            throw new TypeError('Particle authoring output requires the native build host');
+          const cooked = await input.cookers.runDraft('particle-effect', {
+            guid: input.guid,
+            source,
+          });
+          if (!cooked.ok) throw new TypeError(cooked.error.hint);
+          if (cooked.value.guid.toLowerCase() !== input.guid.toLowerCase())
+            throw new TypeError('Particle Native Cook must preserve the derived AssetGuid');
+          const effect = cooked.value.payload as ParticleEffectAsset;
+          if (effect?.kind !== 'particle-effect')
+            throw new TypeError('Particle Native Cook must return a particle-effect payload');
+          const product = await produced.produce({ ...input, asset: effect });
+          return product.ok
+            ? ok({ ...product.value, inputFingerprint: cooked.value.inputFingerprint })
+            : product;
+        } catch (error) {
+          return err(producerError(input, error));
+        }
+      })();
+    },
+  };
 }
 
 /** The complete Mesh product, unlike the geometry-only binary encoder, carries derived data. */

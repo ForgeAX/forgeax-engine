@@ -119,7 +119,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'ordinary-1',
     'surface-pipelines',
     'gi-1',
-    'gi-3',
+    'direct-light',
     'gi-6',
     'heavy-1',
     'renderer',
@@ -128,23 +128,14 @@ export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-2',
     'gi-2',
-    'gi-5',
     'compact-2',
     'vfx-depth',
     'feature-depth',
     'heavy-3',
     'timing-lifecycle',
   ]),
-  Object.freeze([
-    'ordinary-3',
-    'transmission',
-    'direct-light',
-    'gi-4',
-    'compact-3',
-    'heavy-2',
-    'heavy-4',
-  ]),
-  Object.freeze(['ordinary-4', 'shadow-fields', 'compact-1', 'specular-aa', 'gpu-timing']),
+  Object.freeze(['ordinary-3', 'transmission', 'gi-3', 'gi-4', 'compact-3', 'heavy-2', 'heavy-4']),
+  Object.freeze(['ordinary-4', 'shadow-fields', 'compact-1', 'specular-aa', 'gpu-timing', 'gi-5']),
 ]);
 
 export const DAWN_GATE_GROUPS = [

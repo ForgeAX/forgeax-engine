@@ -48,10 +48,9 @@ export function packEnvelopeIssue(value: unknown): string | undefined {
           !Number.isSafeInteger(range.length) ||
           range.length <= 0 ||
           !Number.isSafeInteger(range.offset + range.length) ||
-          typeof range.containerDigest !== 'string' ||
-          !/^sha256:[a-f0-9]{64}$/.test(range.containerDigest) ||
+          typeof range.bundleDigest !== 'string' ||
+          !/^sha256:[a-f0-9]{64}$/.test(range.bundleDigest) ||
           descriptor.delivery !== undefined ||
-          (descriptor.contentEncoding ?? 'identity') !== 'identity' ||
           descriptor.integrity === undefined
         )
           return `artifacts.${key}.byteRange`;

@@ -58,6 +58,9 @@ type ResolveParams = {
 type ResolveCase = {
   readonly name: string;
   readonly internalSize?: number;
+  readonly secondarySourceSize?: { readonly width: number; readonly height: number };
+  readonly secondaryRowsSize?: { readonly width: number; readonly height: number };
+  readonly secondaryFormat?: 'r32float' | 'rgba8unorm';
   readonly currentCoverage?: Uint16Array;
   readonly currentColor: Uint16Array;
   readonly historyColor: Uint16Array;
@@ -101,8 +104,17 @@ function byteGrid(value: number): Uint8Array {
   return new Uint8Array(WIDTH * HEIGHT).fill(value);
 }
 
-function secondaryGrid(): Float32Array {
-  return new Float32Array(SECONDARY_SIZE * SECONDARY_SIZE);
+function secondaryGrid(width = SECONDARY_SIZE, height = SECONDARY_SIZE): Float32Array {
+  return new Float32Array(width * height);
+}
+
+function rgba8Reactivity(values: Float32Array): Uint8Array {
+  const rgba = new Uint8Array(values.length * 4);
+  values.forEach((value, index) => {
+    rgba[index * 4] = Math.round(Math.max(0, Math.min(1, value)) * 255);
+    rgba[index * 4 + 3] = 255;
+  });
+  return rgba;
 }
 
 function constantColor(value: readonly [number, number, number, number]): Uint16Array {
@@ -240,6 +252,17 @@ function makeCases(): readonly ResolveCase[] {
     H.half,
     H.one,
   ]);
+  // Keep the fragment safely above the exact half-UV boundary: interpolation
+  // can otherwise center a 16-row source at row 7 instead of 8. Row 11 is
+  // the source +3 edge; a 32-row copy still maps its window to rows 6..9.
+  const resizeUpSource = secondaryGrid(SECONDARY_SIZE, 16);
+  resizeUpSource[11 * SECONDARY_SIZE + 3] = 1;
+  // A 32-row source centers at row 16. The old footprint includes row 14,
+  // while the 16-row copy maps its center window to odd source rows only.
+  const resizeDownSource = secondaryGrid(SECONDARY_SIZE, 32);
+  resizeDownSource[14 * SECONDARY_SIZE + 3] = 1;
+  const rgba8SameExtentSource = secondaryGrid();
+  rgba8SameExtentSource[3 * SECONDARY_SIZE + 3] = 0.5;
 
   return [
     {
@@ -340,6 +363,61 @@ function makeCases(): readonly ResolveCase[] {
         hasSecondary: false,
       },
     },
+    {
+      name: 'secondary-reactivity-rgba8-to-r8-same-extent',
+      secondaryFormat: 'rgba8unorm',
+      currentColor: constantColor([H.zero, H.zero, H.zero, H.one]),
+      historyColor: stationaryHistory,
+      currentTemporal: stationaryTemporal,
+      historyTemporal: stationaryTemporal,
+      historyStability: byteGrid(255),
+      secondaryReactivity: rgba8SameExtentSource,
+      params: {
+        jitterX: 0,
+        jitterY: 0,
+        historyValid: true,
+        frameIndex: 200,
+        hasSecondary: true,
+      },
+    },
+    {
+      name: 'secondary-reactivity-source-16-rows-32-edge-tap',
+      secondarySourceSize: { width: SECONDARY_SIZE, height: 16 },
+      secondaryRowsSize: { width: SECONDARY_SIZE, height: 32 },
+      secondaryFormat: 'rgba8unorm',
+      currentColor: constantColor([H.zero, H.zero, H.zero, H.one]),
+      historyColor: stationaryHistory,
+      currentTemporal: stationaryTemporal,
+      historyTemporal: stationaryTemporal,
+      historyStability: byteGrid(255),
+      secondaryReactivity: resizeUpSource,
+      params: {
+        jitterX: 0,
+        jitterY: 0.0001,
+        historyValid: true,
+        frameIndex: 200,
+        hasSecondary: true,
+      },
+    },
+    {
+      name: 'secondary-reactivity-source-32-rows-16-edge-tap',
+      secondarySourceSize: { width: SECONDARY_SIZE, height: 32 },
+      secondaryRowsSize: { width: SECONDARY_SIZE, height: 16 },
+      currentColor: constantColor([H.zero, H.zero, H.zero, H.one]),
+      historyColor: stationaryHistory,
+      currentTemporal: stationaryTemporal,
+      historyTemporal: stationaryTemporal,
+      historyStability: byteGrid(255),
+      secondaryReactivity: resizeDownSource,
+      params: {
+        jitterX: 0,
+        // Keep the 7x7 edge tap inside one producer texel, away from interpolation rounding.
+        jitterY: 0.25 / 32,
+        historyValid: true,
+        frameIndex: 200,
+        hasSecondary: true,
+      },
+    },
   ];
 }
 
@@ -350,6 +428,13 @@ async function runPair(
   testCase: ResolveCase,
 ): Promise<Pair> {
   const internalSize = testCase.internalSize ?? WIDTH;
+  const secondarySourceSize = testCase.secondarySourceSize ?? {
+    width: SECONDARY_SIZE,
+    height: SECONDARY_SIZE,
+  };
+  const secondaryRowsSize = testCase.secondaryRowsSize ?? secondarySourceSize;
+  const secondaryFormat = testCase.secondaryFormat ?? 'r32float';
+  const secondaryRowsFormat = secondaryFormat === 'rgba8unorm' ? 'r8unorm' : 'r32float';
   const sourceUsage = GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING;
   const outputUsage = GPU_TEXTURE_USAGE_COPY_SRC | GPU_TEXTURE_USAGE_RENDER_ATTACHMENT;
   const colorSampler = device
@@ -420,9 +505,9 @@ async function runPair(
   const secondaryReactivity = createSurface(
     device,
     'taa-equivalence-secondary-reactivity',
-    SECONDARY_SIZE,
-    SECONDARY_SIZE,
-    'r32float',
+    secondarySourceSize.width,
+    secondarySourceSize.height,
+    secondaryFormat,
     sourceUsage,
   );
   const baselineOutputs = [
@@ -477,7 +562,17 @@ async function runPair(
       outputUsage,
     ),
   ] as const;
+  // Sources that declare the row entry consume their Renderer row copy.
+  const secondaryRows = createSurface(
+    device,
+    'taa-equivalence-secondary-rows',
+    secondaryRowsSize.width,
+    secondaryRowsSize.height,
+    secondaryRowsFormat,
+    outputUsage | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+  );
   const surfaces: readonly Surface[] = [
+    secondaryRows,
     currentColor,
     historyColor,
     historyTemporal,
@@ -534,10 +629,12 @@ async function runPair(
     upload(
       device,
       secondaryReactivity,
-      SECONDARY_SIZE,
-      SECONDARY_SIZE,
-      testCase.secondaryReactivity,
-      SECONDARY_SIZE * 4,
+      secondarySourceSize.width,
+      secondarySourceSize.height,
+      secondaryFormat === 'rgba8unorm'
+        ? rgba8Reactivity(testCase.secondaryReactivity)
+        : testCase.secondaryReactivity,
+      secondarySourceSize.width * 4,
     );
     const payload = new ArrayBuffer(32);
     new Float32Array(payload).set([testCase.params.jitterX, testCase.params.jitterY]);
@@ -546,6 +643,7 @@ async function runPair(
     words[3] = testCase.params.frameIndex;
     words[4] = Number(testCase.params.hasSecondary);
     words[5] = Number(testCase.currentCoverage !== undefined);
+    words[6] = 1;
     device.queue.writeBuffer(params, 0, new Uint8Array(payload)).unwrap();
 
     const inputLayout = device
@@ -557,7 +655,7 @@ async function runPair(
             visibility: GPU_SHADER_STAGE_FRAGMENT,
             texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
           })),
-          ...[4, 6, 10, 11].map((binding) => ({
+          ...[4, 6, 10, 11, 12].map((binding) => ({
             binding,
             visibility: GPU_SHADER_STAGE_FRAGMENT,
             texture: { sampleType: 'unfilterable-float' as const, viewDimension: '2d' as const },
@@ -584,13 +682,46 @@ async function runPair(
     const pipelineLayout = device
       .createPipelineLayout({ bindGroupLayouts: [emptyLayout, inputLayout] })
       .unwrap();
-    const makePipeline = (source: string, label: string) => {
+    const rowsLayout = device
+      .createBindGroupLayout({
+        label: 'taa-equivalence-rows-layout',
+        entries: [
+          {
+            binding: 10,
+            visibility: GPU_SHADER_STAGE_FRAGMENT,
+            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+          },
+        ],
+      })
+      .unwrap();
+    const rowsPipelineLayout = device
+      .createPipelineLayout({ bindGroupLayouts: [emptyLayout, rowsLayout] })
+      .unwrap();
+    const createPipeline = device.createRenderPipelineAsync?.bind(device);
+    if (createPipeline === undefined)
+      throw new Error('Dawn requires validated async render pipelines');
+    const makePipeline = async (source: string, label: string) => {
       const module = createShaderModuleImmediate(device, {
         label,
         code: sourceWithoutImportPath(source),
       }).unwrap();
-      return device
-        .createRenderPipeline({
+      const rows = source.includes('fn fs_secondary_reactivity_rows')
+        ? (
+            await createPipeline({
+              label: `${label}-rows-pipeline`,
+              layout: rowsPipelineLayout,
+              vertex: { module, entryPoint: 'vs_main', buffers: [] },
+              fragment: {
+                module,
+                entryPoint: 'fs_secondary_reactivity_rows',
+                targets: [{ format: secondaryRowsFormat }],
+              },
+              primitive: { topology: 'triangle-list' },
+            })
+          ).unwrap()
+        : undefined;
+      const resolve = (
+        await createPipeline({
           label: `${label}-pipeline`,
           layout: pipelineLayout,
           vertex: { module, entryPoint: 'vs_main', buffers: [] },
@@ -601,45 +732,62 @@ async function runPair(
           },
           primitive: { topology: 'triangle-list' },
         })
-        .unwrap();
+      ).unwrap();
+      return { rows, resolve };
     };
-    const baselinePipeline = makePipeline(baselineSource, 'taa-equivalence-baseline');
-    const productionPipeline = makePipeline(productionSource, 'taa-equivalence-production');
-    const inputGroup = device
-      .createBindGroup({
-        label: 'taa-equivalence-input-group',
-        layout: inputLayout,
-        entries: [
-          { binding: 0, resource: { kind: 'textureView', value: currentColor.view } },
-          { binding: 1, resource: { kind: 'sampler', value: colorSampler } },
-          { binding: 2, resource: { kind: 'textureView', value: historyColor.view } },
-          { binding: 3, resource: { kind: 'sampler', value: colorSampler } },
-          { binding: 4, resource: { kind: 'textureView', value: historyTemporal.view } },
-          { binding: 5, resource: { kind: 'sampler', value: temporalSampler } },
-          { binding: 6, resource: { kind: 'textureView', value: currentTemporal.view } },
-          { binding: 7, resource: { kind: 'sampler', value: temporalSampler } },
-          { binding: 8, resource: { kind: 'buffer', value: { buffer: params } } },
-          { binding: 9, resource: { kind: 'textureView', value: historyStability.view } },
-          { binding: 10, resource: { kind: 'textureView', value: secondaryReactivity.view } },
-          // Ordinary TAA does not allocate an output-domain coverage target.
-          // The production resolve still declares the stable binding and uses
-          // this current-temporal fallback while hasCurrentCoverage is zero.
-          {
-            binding: 11,
-            resource: {
-              kind: 'textureView',
-              value:
-                testCase.currentCoverage === undefined
-                  ? currentTemporal.view
-                  : currentCoverage.view,
+    const baselinePipeline = await makePipeline(baselineSource, 'taa-equivalence-baseline');
+    const productionPipeline = await makePipeline(productionSource, 'taa-equivalence-production');
+    const makeInputGroup = (secondary: TextureView, source: TextureView) =>
+      device
+        .createBindGroup({
+          label: 'taa-equivalence-input-group',
+          layout: inputLayout,
+          entries: [
+            { binding: 0, resource: { kind: 'textureView', value: currentColor.view } },
+            { binding: 1, resource: { kind: 'sampler', value: colorSampler } },
+            { binding: 2, resource: { kind: 'textureView', value: historyColor.view } },
+            { binding: 3, resource: { kind: 'sampler', value: colorSampler } },
+            { binding: 4, resource: { kind: 'textureView', value: historyTemporal.view } },
+            { binding: 5, resource: { kind: 'sampler', value: temporalSampler } },
+            { binding: 6, resource: { kind: 'textureView', value: currentTemporal.view } },
+            { binding: 7, resource: { kind: 'sampler', value: temporalSampler } },
+            { binding: 8, resource: { kind: 'buffer', value: { buffer: params } } },
+            { binding: 9, resource: { kind: 'textureView', value: historyStability.view } },
+            { binding: 10, resource: { kind: 'textureView', value: secondary } },
+            // Ordinary TAA does not allocate an output-domain coverage target.
+            // The production resolve still declares the stable binding and uses
+            // this current-temporal fallback while hasCurrentCoverage is zero.
+            {
+              binding: 11,
+              resource: {
+                kind: 'textureView',
+                value:
+                  testCase.currentCoverage === undefined
+                    ? currentTemporal.view
+                    : currentCoverage.view,
+              },
             },
-          },
+            { binding: 12, resource: { kind: 'textureView', value: source } },
+          ],
+        })
+        .unwrap();
+    const rawInputGroup = makeInputGroup(secondaryReactivity.view, secondaryReactivity.view);
+    const rowsInputGroup = makeInputGroup(secondaryRows.view, secondaryReactivity.view);
+    const emptyGroup = device.createBindGroup({ layout: emptyLayout, entries: [] }).unwrap();
+    const rowsGroup = device
+      .createBindGroup({
+        layout: rowsLayout,
+        entries: [
+          { binding: 10, resource: { kind: 'textureView', value: secondaryReactivity.view } },
         ],
       })
       .unwrap();
-    const emptyGroup = device.createBindGroup({ layout: emptyLayout, entries: [] }).unwrap();
     const encoder = device.createCommandEncoder({ label: 'taa-equivalence-pair' }).unwrap();
-    const draw = (pipeline: typeof baselinePipeline, outputs: readonly Surface[]) => {
+    const fullscreen = (
+      pipeline: typeof baselinePipeline.resolve,
+      group: typeof rowsGroup,
+      outputs: readonly Surface[],
+    ) => {
       const pass = encoder.beginRenderPass({
         colorAttachments: outputs.map(({ view }) => ({
           view,
@@ -650,9 +798,17 @@ async function runPair(
       });
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, emptyGroup);
-      pass.setBindGroup(1, inputGroup);
+      pass.setBindGroup(1, group);
       pass.draw(3, 1, 0, 0);
       pass.end();
+    };
+    const draw = (pipeline: typeof baselinePipeline, outputs: readonly Surface[]) => {
+      if (pipeline.rows === undefined) {
+        fullscreen(pipeline.resolve, rawInputGroup, outputs);
+        return;
+      }
+      fullscreen(pipeline.rows, rowsGroup, [secondaryRows]);
+      fullscreen(pipeline.resolve, rowsInputGroup, outputs);
     };
     draw(baselinePipeline, baselineOutputs);
     draw(productionPipeline, productionOutputs);
@@ -1053,6 +1209,49 @@ describe('TAA neighborhood equivalence on Dawn', () => {
             H.one,
           ]);
         }
+        if (
+          testCase.name === 'secondary-reactivity-source-16-rows-32-edge-tap' ||
+          testCase.name === 'secondary-reactivity-source-32-rows-16-edge-tap'
+        ) {
+          expect(pixelHalfQuad(pair.production.color, 4, 4)).toEqual([
+            H.zero,
+            H.zero,
+            H.zero,
+            H.one,
+          ]);
+        }
+      }
+    },
+  );
+
+  it.skipIf(!dawnReady)(
+    'falsifies resized row copies evaluated on a different physical texel lattice',
+    async () => {
+      const source = readFileSync(
+        resolve(import.meta.dirname, '../../../shader/src/taa-resolve.wgsl'),
+        'utf8',
+      );
+      const wrongLattice = replaceRequired(
+        source,
+        'params.hasSecondaryRows != 0u && all(size == sourceSize)',
+        'params.hasSecondaryRows != 0u',
+        'physical row lattice guard',
+      );
+      const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+      for (const name of [
+        'secondary-reactivity-source-16-rows-32-edge-tap',
+        'secondary-reactivity-source-32-rows-16-edge-tap',
+      ]) {
+        const testCase = makeCases().find((candidate) => candidate.name === name);
+        if (testCase === undefined) throw new Error(`Missing resize case: ${name}`);
+        const pair = await runPair(device, source, wrongLattice, testCase);
+        expect(pixelHalfQuad(pair.baseline.color, 4, 4), name).toEqual([
+          H.zero,
+          H.zero,
+          H.zero,
+          H.one,
+        ]);
+        expect(differs(pair.baseline.color, pair.production.color), name).toBe(true);
       }
     },
   );

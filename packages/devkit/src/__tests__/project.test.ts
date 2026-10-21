@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readProjectFacts, readProjectStartupTimeoutMs } from '../project.js';
+import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from '../project.js';
 
 const temporary: string[] = [];
 const guid = '01900000-0000-7000-8000-000000000100';
@@ -133,5 +133,33 @@ describe('readProjectFacts', () => {
       expect(result.value).not.toHaveProperty('plugins');
       expect(result.value).not.toHaveProperty('defaultScene');
     }
+  });
+});
+
+describe('commandError', () => {
+  it('retains the original message after build-process Error serialization', () => {
+    const cause = {
+      name: 'TypeError',
+      message: 'devkitAppOptions must contain only public project App options',
+      stack: 'remote build stack',
+    };
+    expect(commandError(cause, 'game-build-failed')).toMatchObject({
+      code: 'game-build-failed',
+      detail: { reason: cause.message },
+    });
+    expect(commandError(new TypeError(cause.message), 'game-build-failed').detail).toEqual({
+      reason: cause.message,
+    });
+  });
+  it('preserves structured owner diagnostics and primitive fallback reasons', () => {
+    const cause = {
+      code: 'pack-parameter-invalid',
+      expected: 'an authored module',
+      hint: 'repair the source module',
+      detail: { phase: 'module-load' },
+    };
+    expect(commandError(cause, 'game-build-failed')).toBe(cause);
+    for (const value of [null, undefined, 0, 'build stopped', { message: 42 }])
+      expect(commandError(value, 'game-build-failed').detail).toEqual({ reason: String(value) });
   });
 });

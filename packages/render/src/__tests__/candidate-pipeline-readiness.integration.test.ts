@@ -32,7 +32,7 @@ import {
   Visibility,
   VisibilityStateValue,
 } from '../components';
-import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import { ANTIALIAS_FXAA, ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import { Materials } from '../materials';
 import { renderPublicationTransfers } from '../publication/contract';
@@ -40,7 +40,7 @@ import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-pre
 import { createRenderPublisher } from '../publication/publisher';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
-type HeldPass = 'color' | 'shadow';
+type HeldPass = 'color' | 'shadow' | 'transmission';
 
 function newLayout(descriptor: RenderPipelineDescriptor): boolean {
   return Array.from(descriptor.vertex.buffers ?? []).some((buffer) => buffer?.arrayStride === 64);
@@ -87,7 +87,9 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     const selected =
       pass === 'color'
         ? descriptor.fragment?.entryPoint === 'fs_gbuffer'
-        : descriptor.label?.includes('default-shadow-caster');
+        : pass === 'transmission'
+          ? ['fs_main', 'fs_opaque'].includes(descriptor.fragment?.entryPoint ?? '')
+          : descriptor.label?.includes('default-shadow-caster');
     const result = compile(descriptor);
     if (hold && newLayout(descriptor) && selected) {
       held.push(descriptor);
@@ -298,6 +300,7 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     material,
     previous,
     next,
+    candidateMesh,
     lease,
     draw,
     held,
@@ -309,16 +312,20 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     },
     asyncHost: createAsyncDynamicGeometryHost(renderer),
     input: { world, entity, meshHandle: next, revision: 1 },
-    publishedInput: (candidateEntity = entity) => ({
+    publishedInput: (
+      candidateEntity = entity,
+      candidateHandle = next,
+      candidateAsset = candidateMesh,
+    ) => ({
       ...identity,
-      meshHandle: next,
-      revision: runtimeAssets(assets).version(next).unwrap(),
-      mesh: candidateMesh,
+      meshHandle: candidateHandle,
+      revision: runtimeAssets(assets).version(candidateHandle).unwrap(),
+      mesh: candidateAsset,
       pipelinePreparation: captureMeshPipelinePreparation({
         world,
         entity: candidateEntity,
-        meshHandle: next,
-        mesh: candidateMesh,
+        meshHandle: candidateHandle,
+        mesh: candidateAsset,
         assets: host.assetRegistry,
         capabilities: device.caps,
       }).unwrap(),
@@ -868,6 +875,153 @@ it.each([
     } else {
       expect(f.renderer.dynamicGeometryReceipt(candidate)).toBeUndefined();
     }
+  } finally {
+    await f.dispose();
+  }
+});
+
+function hiddenTransmissionCandidate(f: Awaited<ReturnType<typeof fixture>>) {
+  const material = f.assets
+    .create(
+      Materials.standard({
+        baseColor: [0.2, 0.6, 0.8, 1],
+        transmission: 0.25,
+        roughness: 0.6,
+      }),
+    )
+    .unwrap();
+  const mesh = {
+    ...f.candidateMesh,
+    materialSlots: f.candidateMesh.materialSlots.map((slot) => ({
+      ...slot,
+      defaultMaterial: material,
+    })),
+  };
+  const handle = f.assets.create(mesh).unwrap();
+  const entity = f.world
+    .spawn(
+      { component: Transform, data: { pos: [2, 0, 0] } },
+      { component: MeshFilter, data: { assetHandle: handle } },
+      { component: MeshRenderer, data: {} },
+      { component: Visibility, data: { state: VisibilityStateValue.hidden } },
+    )
+    .unwrap();
+  return { entity, input: () => structuredClone(f.publishedInput(entity, handle, mesh)) };
+}
+
+it('prepares a hidden first transmission candidate before its scene publication creates backdrop demand', async () => {
+  const f = await fixture('transmission', true);
+  try {
+    const material = f.assets
+      .create(
+        Materials.standard({
+          baseColor: [0.2, 0.6, 0.8, 1],
+          transmission: 0.25,
+          roughness: 0.6,
+        }),
+      )
+      .unwrap();
+    const chunk = f.world
+      .spawn(
+        { component: Transform, data: { pos: [2, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: f.next } },
+        { component: MeshRenderer, data: { materials: [material] } },
+        { component: Visibility, data: { state: VisibilityStateValue.hidden } },
+      )
+      .unwrap();
+    expect((await f.draw()).presentation).toBe('ready');
+    expect(f.renderer.inspect().perFramePassNames).not.toContain('transmission-forward');
+    let settled: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>> | undefined;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(structuredClone(f.publishedInput(chunk)), 'received')
+      .then((result) => {
+        settled = result;
+        return result;
+      });
+    for (let frame = 0; frame < 60 && f.held.length === 0 && settled === undefined; frame++)
+      await f.draw();
+    if (settled !== undefined && !settled.ok) throw settled.error;
+    expect(f.held.length).toBeGreaterThan(0);
+    expect(settled).toBeUndefined();
+    expect(f.world.get(chunk, Visibility).unwrap().state).toBe(VisibilityStateValue.hidden);
+    f.release();
+    for (let frame = 0; frame < 60 && settled === undefined; frame++) await f.draw();
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+    expect(prepared.recordStageLane(await f.draw(), chunk).unwrap()).toBeUndefined();
+    f.world.removeComponent(chunk, Visibility).unwrap();
+    let visible = await f.draw();
+    for (let frame = 0; frame < 60 && visible.presentation !== 'ready'; frame++)
+      visible = await f.draw();
+    expect(visible.presentation).toBe('ready');
+    expect(f.renderer.inspect().perFramePassNames).toContain('transmission-forward');
+    expect(prepared.recordStageLane(visible, chunk).unwrap()).toBeDefined();
+    await prepared.release();
+  } finally {
+    await f.dispose();
+  }
+});
+
+it('retains only live candidate topology demand across cancellation, preparation and release', async () => {
+  const f = await fixture('transmission', true);
+  try {
+    const first = hiddenTransmissionCandidate(f),
+      second = hiddenTransmissionCandidate(f);
+    expect((await f.draw()).presentation).toBe('ready');
+    const controller = new AbortController();
+    const cancelled = f.renderer.preparePublishedMeshResidency(first.input(), 'received', {
+      signal: controller.signal,
+    });
+    let settled: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>> | undefined;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(second.input(), 'received')
+      .then((result) => {
+        settled = result;
+        return result;
+      });
+    for (let frame = 0; frame < 60 && f.held.length === 0 && settled === undefined; frame++)
+      await f.draw();
+    expect(f.held.length).toBeGreaterThan(0);
+    controller.abort();
+    expect((await cancelled).ok).toBe(false);
+    f.release();
+    for (let frame = 0; frame < 60 && settled === undefined; frame++) await f.draw();
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+    for (let frame = 0; frame < 3; frame++) await f.draw();
+    expect(f.renderer.inspect().perFramePassNames).toContain('transmission-forward');
+    expect(prepared.isCurrent()).toBe(true);
+    expect(prepared.recordStageLane(await f.draw(), second.entity).unwrap()).toBeUndefined();
+    await prepared.release();
+    expect(prepared.isCurrent()).toBe(false);
+    await f.draw();
+    expect(f.renderer.inspect().perFramePassNames).not.toContain('transmission-forward');
+  } finally {
+    await f.dispose();
+  }
+});
+
+it('invalidates prepared candidate raster credentials when the actual graph is replaced', async () => {
+  const f = await fixture('transmission', true);
+  try {
+    const candidate = hiddenTransmissionCandidate(f);
+    await f.draw();
+    f.release();
+    let settled = false;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(candidate.input(), 'received')
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    for (let frame = 0; frame < 60 && !settled; frame++) await f.draw();
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+    f.world.set(f.camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
+    for (let frame = 0; frame < 30 && prepared.isCurrent(); frame++) await f.draw();
+    expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
+    expect(prepared.isCurrent()).toBe(false);
+    await prepared.release();
   } finally {
     await f.dispose();
   }

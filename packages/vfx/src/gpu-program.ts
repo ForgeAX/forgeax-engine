@@ -30,7 +30,7 @@ export interface VfxGpuStageReflection extends ParticleStageSource {
 }
 
 /** Reflection of one executable renderer projection. */
-export interface VfxGpuRendererReflectionV3
+export interface VfxGpuRendererReflection
   extends Required<
     Pick<
       ParticleRendererSourceV3Base,
@@ -53,7 +53,7 @@ export interface VfxGpuRendererReflectionV3
   readonly receiveShadows: boolean;
 }
 
-export interface VfxGpuProgramReflectionV3 {
+export interface VfxGpuProgramReflection {
   readonly hooks: readonly ['vfx_spawn', 'vfx_update'];
   readonly imports: readonly string[];
   readonly resources: readonly string[];
@@ -65,7 +65,7 @@ export interface VfxGpuProgramReflectionV3 {
   readonly events: readonly ParticleEventSource[];
   readonly eventEntryPoint: 'forgeax_vfx_event_main';
   readonly stages: readonly VfxGpuStageReflection[];
-  readonly renderers: readonly VfxGpuRendererReflectionV3[];
+  readonly renderers: readonly VfxGpuRendererReflection[];
 }
 
 /** Explicit compiler-authored multi-instance compute contract. The original
@@ -77,7 +77,7 @@ export interface VfxGpuInstanceComputeProgram {
   readonly bindings: readonly BindGroupLayoutDescriptor[];
 }
 
-export interface VfxGpuEmitterProgramV3
+export interface VfxGpuEmitterProgram
   extends Omit<ParticleEffectProgramEmitter, 'renderers' | 'reflection'> {
   readonly schedule: ParticleEmitterSourceV3['schedule'];
   readonly bounds: ParticleEmitterSourceV3['bounds'];
@@ -86,23 +86,14 @@ export interface VfxGpuEmitterProgramV3
   readonly events?: readonly ParticleEventSource[];
   readonly simulationWhenCulled: NonNullable<ParticleEmitterSourceV3['simulationWhenCulled']>;
   readonly instanceCompute?: VfxGpuInstanceComputeProgram;
-  readonly reflection: VfxGpuProgramReflectionV3;
+  readonly reflection: VfxGpuProgramReflection;
 }
 
-export interface VfxGpuProgramV3 extends Omit<ParticleEffectProgramV3, 'emitters'> {
-  readonly emitters: readonly VfxGpuEmitterProgramV3[];
+export interface VfxGpuProgram extends Omit<ParticleEffectProgramV3, 'emitters'> {
+  readonly emitters: readonly VfxGpuEmitterProgram[];
 }
 
-export interface VfxGpuEffectAssetV3 extends Omit<ParticleEffectAssetV3, 'program'> {
+export interface VfxGpuEffectAsset extends Omit<ParticleEffectAssetV3, 'program'> {
   readonly guid: string;
-  readonly program: VfxGpuProgramV3;
+  readonly program: VfxGpuProgram;
 }
-
-/** Public names point at the same one-cut Program v3 shapes. */
-export type VfxGpuRendererReflection = VfxGpuRendererReflectionV3;
-export type VfxGpuProgramReflection = VfxGpuProgramReflectionV3;
-export type VfxGpuEmitterProgram = VfxGpuEmitterProgramV3;
-export type VfxGpuProgram = VfxGpuProgramV3;
-export type VfxGpuEffectAsset = VfxGpuEffectAssetV3;
-export type VfxGpuEmitterProgramAny = VfxGpuEmitterProgramV3;
-export type VfxGpuEffectAssetAny = VfxGpuEffectAssetV3;

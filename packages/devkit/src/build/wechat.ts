@@ -428,7 +428,7 @@ async function boot(identity, reload) {
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
   }, { ...forgeaxBundlerAdapter(), shaderManifestUrl: 'https://forgeax.package/shaders/manifest.json', readShaderManifest: async url => (await fetcher(url)).text() }));
   releases.push(() => graphics.renderer.dispose());
-  const world = new World();
+  const world = new World(${appOptions.time === undefined ? '' : JSON.stringify({ time: appOptions.time })});
   let game;
   let gameLoading;
   const catalog = createCatalogSource({ url: 'https://forgeax.package/pack-index.json', fetch: fetcher });

@@ -645,7 +645,16 @@ it('routes capture results once, cancels the remote request, and settles it on r
     expect((await source.captureFrame()).ok).toBe(false);
     const request = worker.controls.at(-1);
     if (request?.kind !== 'capture') throw new Error('Capture was not sent');
-    const artifact = { kind: 'rhi-tape', bytes: new Uint8Array([1, 2, 3]) };
+    const submittedFrame = {
+      status: 'remote-complete' as const,
+      captureGeneration: 4,
+      receipt: { frameId: 17, deviceGeneration: 7, graphGeneration: 2 },
+    };
+    const artifact = {
+      kind: 'rhi-tape' as const,
+      bytes: new Uint8Array([1, 2, 3]),
+      submittedFrame,
+    };
     worker.emit({
       kind: 'capture-result',
       requestId: request.requestId + 1,
@@ -658,7 +667,12 @@ it('routes capture results once, cancels the remote request, and settles it on r
       result: { ok: true, value: artifact },
     });
     const received = (await first).unwrap();
-    expect(received).toMatchObject({ kind: 'rhi-tape', byteLength: 3, bytes: artifact.bytes });
+    expect(received).toMatchObject({
+      kind: 'rhi-tape',
+      byteLength: 3,
+      bytes: artifact.bytes,
+      submittedFrame,
+    });
     expect([...received.chunks(2)].map((chunk) => [...chunk.bytes])).toEqual([[1, 2], [3]]);
     const controller = new AbortController();
     const cancelled = source.captureFrame({ signal: controller.signal });

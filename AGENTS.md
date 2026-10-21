@@ -50,6 +50,10 @@ path; missing evidence is never a rendering pass.
 - If reproduction is blocked by an external dependency or environment, preserve the evidence,
   state the blocker, and add the strongest deterministic unit/contract test for the invariant.
 - Ship the regression test with the fix in the same change.
+- A blocked required check stays unverified. Diagnose its owner and attempt supported
+  recovery or an available equivalent observation path. If it remains blocked, report
+  the exact failure, attempted remedies, passed checks and missing evidence to the user;
+  never report completion or an all-clear from a weaker green aggregate.
 
 ### Dependency vulnerability remediation
 
@@ -378,8 +382,10 @@ Use the shared words `subject`, `execution`, `lifecycle`, `lastKnownGood`, and `
 > independent gates, and seal `sdk-candidate.json`; dispatch
 > `sdk-release-promote.yml` with that run ID to consume the exact sealed bytes.
 > Promotion never rebuilds. It finalizes the GitHub Release idempotently and
-> completes enabled stable source mirroring before npm uploads and public
-> metadata/dist-tag/tarball verification. Never pre-create or push
+> completes enabled source mirroring (development to public `main`, stable to
+> public `stable`; the internal `rc` test line is not mirrored) before npm uploads
+> and public metadata/dist-tag/tarball verification. Channels, the weekly rc cut and
+> hotfix flow live in `packages/engine/RELEASING.md`. Never pre-create or push
 > `sdk-v{version}`; a same-version different-integrity result is terminal.
 > Operator commands and recovery semantics live in
 > `skills/forgeax-engine-sdk/SKILL.md` and the maintained release design spec.

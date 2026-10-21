@@ -220,6 +220,49 @@ function createGenericPostProbeFeature(): RenderFeature<undefined> {
 }
 
 describe('factory contract', () => {
+  it.each([
+    'webgpu',
+    'wgpu-webgl2',
+  ] as const)('keeps the %s backend and ordinary compilation when a pipeline library is unavailable', async (backendKind) => {
+    const adapter = new RhiNullAdapter();
+    const device = (await adapter.requestDevice()).unwrap();
+    Object.defineProperty(device, 'caps', { value: { ...device.caps, backendKind } });
+    const compile = vi.spyOn(device, 'createRenderPipeline');
+    const backend = {
+      ...rhi,
+      requestAdapter: async () =>
+        ok({
+          features: adapter.features,
+          limits: adapter.limits,
+          requestDevice: async () => ok(device),
+        }),
+    };
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      {
+        rhi: backend,
+        pipelineLibrary: {
+          version: 1,
+          backend: 'webgpu',
+          shaders: [],
+          bindGroupLayouts: [],
+          pipelineLayouts: [],
+          renderPipelines: [],
+          computePipelines: [],
+        },
+      },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
+    );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect(renderer.inspect().capabilities.backendKind).toBe(backendKind);
+      expect(renderer.inspect().state).toBe('alive');
+      expect(compile).toHaveBeenCalled();
+    } finally {
+      await renderer.dispose();
+    }
+  });
+
   it('includes a feature installed during library preparation in initialization prewarm', async () => {
     const libraryFence = deferred<void>();
     const inspection: PipelineLibraryInspection = {

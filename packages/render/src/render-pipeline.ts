@@ -287,6 +287,11 @@ export interface RenderPipelineTopology {
       | {
           readonly mapSize: number;
           readonly cascadeCount: 1 | 2 | 3 | 4;
+          /**
+           * `false` omits the GPU-driven static cascade layer, its passes and
+           * its copy; each cascade rasters every caster. Absent keeps it.
+           */
+          readonly staticLayer?: false;
           readonly terrainReceivers?: readonly import('./terrain/shadow-family').TerrainShadowReceiver[];
         };
     readonly variance?: { readonly directional: boolean; readonly spots: readonly number[] };

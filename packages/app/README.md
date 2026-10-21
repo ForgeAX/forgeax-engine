@@ -420,6 +420,13 @@ self-contained `rhi-tape` artifact; pass that same artifact to DevKit's
 `rhi.summary` and `rhi.inspect` operations, using the summary's
 `FrameModel.works[].workIndex` for selection.
 
+In an Engine Worker, `artifact.submittedFrame` contains clone-safe receipt facts
+only when the recorder's capture generation was observed at exactly one real
+draw boundary and that same receipt completed. Captures without a matching draw,
+with multiple submissions, cancellation or receipt failure carry an explicit
+unavailable reason. Worker metadata copies the receipt identity and optional
+timing observation; it never transports the live `FrameReceipt` promise.
+
 The browser publishes `globalThis.__forgeax.captureFrame` only after App
 assembly has bound that same capture to its frame driver. Initialization never
 exposes a bare recorder; failed assembly leaves no public capture entry.

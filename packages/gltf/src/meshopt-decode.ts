@@ -11,17 +11,14 @@ import {
   type Result,
 } from './errors.js';
 
-export type MeshoptMode = GltfMeshoptMode;
-export type MeshoptFilter = GltfMeshoptFilter;
-
 export interface MeshoptCompressionJson {
   readonly buffer: number;
   readonly byteOffset?: number;
   readonly byteLength: number;
   readonly byteStride: number;
   readonly count: number;
-  readonly mode: MeshoptMode;
-  readonly filter?: MeshoptFilter;
+  readonly mode: GltfMeshoptMode;
+  readonly filter?: GltfMeshoptFilter;
 }
 
 export interface MeshoptBufferViewJson extends BufferViewJson {
@@ -35,8 +32,8 @@ export interface GltfBufferViewDecodeCapability {
     readonly source: Uint8Array;
     readonly count: number;
     readonly stride: number;
-    readonly mode: MeshoptMode;
-    readonly filter: MeshoptFilter;
+    readonly mode: GltfMeshoptMode;
+    readonly filter: GltfMeshoptFilter;
   }) => Uint8Array | Promise<Uint8Array>;
 }
 
@@ -63,15 +60,15 @@ function viewBytes(
   return buffer.subarray(offset, offset + view.byteLength);
 }
 
-function validMode(mode: string): mode is MeshoptMode {
+function validMode(mode: string): mode is GltfMeshoptMode {
   return GLTF_MESHOPT_MODES.some((candidate) => candidate === mode);
 }
 
-function validFilter(filter: string): filter is MeshoptFilter {
+function validFilter(filter: string): filter is GltfMeshoptFilter {
   return GLTF_MESHOPT_FILTERS.some((candidate) => candidate === filter);
 }
 
-function filterAllowed(mode: MeshoptMode, filter: MeshoptFilter): boolean {
+function filterAllowed(mode: GltfMeshoptMode, filter: GltfMeshoptFilter): boolean {
   return mode === 'ATTRIBUTES' || filter === 'NONE';
 }
 

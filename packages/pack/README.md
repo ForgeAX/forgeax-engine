@@ -2,10 +2,12 @@
 
 ## Shared material program transport
 
-Published packages with repeated cooked material programs use the
-`pack-material-programs/1` envelope: one complete Pack plus a package-local
-program table. The transport replaces only `material-cook/4` program records
-with bounded integer references. Decode restores readonly sharing before normal
+Published packages with repeated cooked material programs or selection ABIs use
+the `pack-material-programs/2` envelope: one complete Pack plus package-local
+`programs` and `abis` tables. The transport replaces `material-cook/4` program
+records with bounded integer references, and each table program's
+`selections[].abi` with a reference into `abis`, since many specializations share
+one reflected ABI. Decode restores readonly sharing before normal
 Pack, publication, artifact and material validation. Material parameters, GUIDs,
 receipts, references and specialization facts remain in their original records.
 Plain packages without repeated programs keep their existing envelope.
@@ -18,6 +20,11 @@ is a delivery representation. Browser/native resource reads, current publication
 reads and CLI Pack parsing restore it through this same codec. Fresh platform
 JSON is decoded before the existing immutable material-fact retention, which
 visits each shared program once; custom response readers retain clone semantics.
+
+`encodeAnimationClipSamples` / `decodeAnimationClipSamples` (also on
+`@forgeax/engine-pack/runtime`) move an animation clip's numeric sampler arrays
+into the f32 `animation-clip/samples.bin` artifact and resolve its
+`{ offset, count }` windows; a window outside the artifact fails decode.
 
 Catalog row operations live only in `projection.operations`. Successful producer
 rows retain the three public projection axes but no longer duplicate the entire

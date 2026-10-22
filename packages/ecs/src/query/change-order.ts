@@ -15,18 +15,58 @@ export class ChangedEntityOrder {
     private readonly sparse: boolean,
   ) {}
 
+  // World storage borrowed for one sort call only.
+  private records: ReturnType<WorldInternal['getRecords']> | undefined;
+  private archetypes: ReturnType<WorldInternal['getGraph']>['archetypes'] | undefined;
+  // Largest keys of the current batch; bytes above them are zero for every key.
+  private maxStorage = 0;
+  private maxRow = 0;
+
   sort(entities: EntityHandle[]): void {
-    if (entities.length <= SMALL) {
-      this.insertion(entities, 0, entities.length);
-      return;
+    this.records = this.owner.getRecords();
+    this.archetypes = this.owner.getGraph().archetypes;
+    try {
+      // Producers commonly write in physical order; one linear pass proves it.
+      if (this.ordered(entities)) return;
+      if (entities.length <= SMALL) {
+        this.insertion(entities, 0, entities.length);
+        return;
+      }
+      this.scratch ??= new Uint32Array(LEVELS * BUCKETS * 3);
+      this.partition(entities, 0, entities.length, 0, this.scratch);
+    } finally {
+      this.records = undefined;
+      this.archetypes = undefined;
     }
-    this.scratch ??= new Uint32Array(LEVELS * BUCKETS * 3);
-    this.partition(entities, 0, entities.length, 0, this.scratch);
+  }
+
+  private ordered(entities: readonly EntityHandle[]): boolean {
+    let storage = -1,
+      row = -1,
+      ordered = true,
+      maxStorage = 0,
+      maxRow = 0;
+    for (const entity of entities) {
+      const nextStorage = this.key(entity, false);
+      const nextRow = this.key(entity, true);
+      if (nextStorage < storage || (nextStorage === storage && nextRow < row)) ordered = false;
+      storage = nextStorage;
+      row = nextRow;
+      if (nextStorage > maxStorage) maxStorage = nextStorage;
+      if (nextRow > maxRow) maxRow = nextRow;
+    }
+    this.maxStorage = maxStorage;
+    this.maxRow = maxRow;
+    return ordered;
+  }
+
+  private constantLevel(level: number): boolean {
+    return (level >= 4 ? this.maxRow : this.maxStorage) >>> (24 - (level & 3) * 8) === 0;
   }
 
   private key(entity: EntityHandle, row: boolean): number {
-    const record = this.owner.getRecords()[entityIndex(entity)];
-    const archetype = this.owner.getGraph().archetypes[record?.archetypeId ?? -1];
+    const record = (this.records as ReturnType<WorldInternal['getRecords']>)[entityIndex(entity)];
+    const archetype = this.archetypes?.[record?.archetypeId ?? -1];
     if (row)
       return this.sparse
         ? (record?.archetypeRow ?? 0)
@@ -59,13 +99,16 @@ export class ChangedEntityOrder {
     entities: EntityHandle[],
     start: number,
     end: number,
-    level: number,
+    first: number,
     scratch: Uint32Array,
   ): void {
     if (end - start <= SMALL) {
       this.insertion(entities, start, end);
       return;
     }
+    let level = first;
+    while (level < LEVELS && this.constantLevel(level)) level++;
+    if (level === LEVELS) return;
     const counts = level * BUCKETS * 3;
     const next = counts + BUCKETS;
     const ends = next + BUCKETS;

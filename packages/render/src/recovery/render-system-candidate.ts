@@ -1,5 +1,4 @@
 import type { MipmapEncoderWork } from '@forgeax/engine-assets-runtime';
-
 import {
   type CommandBuffer,
   err,
@@ -18,6 +17,7 @@ import type {
   TerrainAsset,
   TextureAsset,
 } from '@forgeax/engine-types';
+import { materialProgramUsesSkin } from '@forgeax/engine-types';
 import { createFeatureSceneInputs } from '../assembly/feature-scene-inputs';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
 import { standardBloomAdmitted } from '../bloom-admission';
@@ -90,7 +90,6 @@ import { materialSamplerHandles, materialTextureHandles } from '../render-system
 import type { PersistentGpuDrivenCandidate, PersistentRenderScene } from '../scene/render-scene';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import { ReadonlyDynamicInputPage, type SurfaceDynamicInputFrame } from '../surface/dynamic-input';
-import { prepareSkinPalette } from '../systems/skin-palette-allocator';
 import { createTemporalFrameTransaction } from '../temporal/frame';
 import {
   getTemporalBindGroupResources,
@@ -546,7 +545,6 @@ export function createRenderSystemRecovery(
       if (!output.ok) return failed('candidate Standard output preparation failed', output.error);
       const gpuScene = persistentRenderScene.prepareRecoveryGpuDrivenCandidate(
         runtime.internals.device,
-        runtime.pipelineState.skinPaletteAllocator,
       );
       if (!gpuScene.ok) return failed('candidate GPU scene preparation failed', gpuScene.error);
       candidateGpuDrivenScene = gpuScene.value;
@@ -556,10 +554,7 @@ export function createRenderSystemRecovery(
           ...seed.frame,
           renderables: seed.frame.renderables.map((row) => {
             const { temporal: _temporal, ...source } = row;
-            if (source.skinPose === undefined) return source;
-            const palette = runtime.pipelineState.skinPaletteAllocator;
-            if (palette === null) throw new Error('Skin recovery requires a palette owner.');
-            return { ...source, skin: prepareSkinPalette(source.skinPose, palette) };
+            return source;
           }),
         },
       };
@@ -687,8 +682,8 @@ export function createRenderSystemRecovery(
         const firstMaterialArtifact = materialArtifacts.values().next().value as
           | MaterialShaderArtifact
           | undefined;
-        const firstSkinArtifact = [...materialArtifacts.values()].find(
-          (artifact) => artifact.receipt?.skinPaletteAddress !== undefined,
+        const firstSkinArtifact = [...materialArtifacts.values()].find((artifact) =>
+          materialProgramUsesSkin(artifact.receipt),
         );
         const firstArtifact = firstMaterialArtifact ?? standardPbrArtifact;
         const materialSkinArtifact = firstSkinArtifact ?? standardPbrSkinArtifact;

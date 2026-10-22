@@ -89,8 +89,6 @@ it('retains receiver-owned inputs through native publication, scene ownership an
       );
     const prepared = preparePublicationGeometry(
       received,
-      scene,
-      undefined,
       assets,
       new InstanceProjectionStore(),
       resolve,
@@ -157,8 +155,6 @@ it('retains receiver-owned inputs through native publication, scene ownership an
       frame = scene.consumePublication(
         preparePublicationGeometry(
           receiver.accept(wire, assets).unwrap(),
-          scene,
-          undefined,
           assets,
           new InstanceProjectionStore(),
           resolve,

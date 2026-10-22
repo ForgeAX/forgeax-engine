@@ -90,7 +90,7 @@ export function preparedPbrSnapshot(
         uvSets: receipt.uvSets,
         vertexInputs: receipt.vertexInputs,
         alphaMask: receipt.alphaMask,
-        skinPaletteAddress: receipt.skinPaletteAddress,
+
         topology: draw.topology,
         indexed: draw.kind === 'indexed',
         first: draw.first,

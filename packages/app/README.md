@@ -1520,6 +1520,8 @@ Inspection is neither a hardware-completion nor a pixel/presentation proof.
 
 `createApp(canvas, { dynamicGeometryMeshBudgetBytes })` forwards the explicit retained dynamic mesh byte budget to Render. It remains POD through Engine and Render Worker startup; omission retains 64 MiB. Render validates positive safe integers up to 512 MiB and owns admission, fence retirement, and recovery.
 
+`createApp(canvas, { assetBudgetBytes })` sets the content byte budget of every Engine-created AssetRegistry serving the App World: the main-thread Renderer, the Engine Worker source realm, and the Render Worker Renderer. Omission keeps the 4 GiB default (`DEFAULT_ASSET_BUDGET_BYTES`); `createApp` rejects anything other than a positive safe integer before any realm starts. The budget guards against runaway growth; exceeding it fails adoption with `asset-budget-exceeded` / `available content bytes`.
+
 The browser-local debug bridge accepts `window.__forgeax.captureFrame(options, onSubmitted)`.
 Use its submission callback to start a canvas snapshot before GPU completion can yield to
 presentation and expire the surface; the capture still waits for the issued receipt.

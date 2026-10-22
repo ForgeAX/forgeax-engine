@@ -432,8 +432,9 @@ function stable(value: unknown): string {
  * bind-group layout on every warm frame.  This is intentionally a structural
  * comparison: callers may reuse and mutate their declaration objects, so an
  * object-identity fast path would make a stale pipeline appear valid.
+ * @internal Publication admission uses it to prove a received copy equals owned content.
  */
-function equalDescriptorValue(left: unknown, right: unknown): boolean {
+export function equalDescriptorValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (typeof left !== typeof right || left === null || right === null) return false;
   if (ArrayBuffer.isView(left) || ArrayBuffer.isView(right)) {
@@ -501,33 +502,91 @@ const ownedProgramKeys = new WeakMap<object, string>();
 
 /** Detach cooked program data once; mutable declarations still use exact checks. */
 export function ownRenderFeatureProgramData<T>(value: T): T {
+  return ownRenderFeatureProgramDataWith(value);
+}
+
+/**
+ * @internal Detach program data, substituting nodes for which `reuse` returns an
+ * already owned, content-equal value. The caller proves that equality; every other
+ * node is copied and frozen in one pass that also checks it is plain JSON data.
+ */
+export function ownRenderFeatureProgramDataWith<T>(
+  value: T,
+  reuse?: (node: object) => object | undefined,
+): T {
   if (isOwnedRenderFeatureProgramData(value)) return value;
-  const owned = cloneDescriptorValue(value) as T;
-  const plainJson = (input: unknown): boolean => {
-    if (input === null || input === undefined) return true;
-    if (typeof input !== 'object') return ['string', 'number', 'boolean'].includes(typeof input);
-    const array = Array.isArray(input),
-      prototype = Object.getPrototypeOf(input);
-    if (!array && prototype !== Object.prototype && prototype !== null) return false;
-    return Reflect.ownKeys(input).every((key) => {
-      if (array && key === 'length') return true;
-      const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      return (
-        typeof key === 'string' &&
-        descriptor?.enumerable === true &&
-        'value' in descriptor &&
-        plainJson(descriptor.value)
-      );
-    });
-  };
-  const immutableJson = (value: unknown): boolean => {
-    if (value === null || value === undefined) return true;
-    if (typeof value !== 'object') return ['string', 'number', 'boolean'].includes(typeof value);
-    return Object.isFrozen(value) && Object.values(value).every(immutableJson);
-  };
-  if (owned !== null && typeof owned === 'object' && plainJson(value) && immutableJson(owned))
-    ownedProgramData.add(owned);
+  const state = { plain: true };
+  const owned = ownProgramNode(value, state, reuse) as T;
+  if (state.plain && owned !== null && typeof owned === 'object') ownedProgramData.add(owned);
   return owned;
+}
+
+/**
+ * One walk replaces the former clone + source plain-JSON walk + frozen-copy walk.
+ * The copy keeps the former clone semantics exactly (enumerable string keys,
+ * accessor values read once, views copied as bytes); any non-JSON trait only
+ * clears `state.plain`, so such a copy is detached but never marked owned.
+ * Owned subtrees are already deeply frozen plain JSON and are shared, not copied.
+ */
+function ownProgramNode(
+  value: unknown,
+  state: { plain: boolean },
+  reuse: ((node: object) => object | undefined) | undefined,
+): unknown {
+  if (value === null || value === undefined) return value;
+  const type = typeof value;
+  if (type !== 'object') {
+    if (type !== 'string' && type !== 'number' && type !== 'boolean') state.plain = false;
+    return value;
+  }
+  const node = value as object;
+  if (ownedProgramData.has(node)) return node;
+  if (reuse !== undefined) {
+    const substitute = reuse(node);
+    if (substitute !== undefined && ownedProgramData.has(substitute)) return substitute;
+  }
+  if (ArrayBuffer.isView(node)) {
+    state.plain = false;
+    return new Uint8Array(new Uint8Array(node.buffer, node.byteOffset, node.byteLength));
+  }
+  const array = Array.isArray(node);
+  if (!array) {
+    const prototype = Object.getPrototypeOf(node);
+    if (prototype !== Object.prototype && prototype !== null) state.plain = false;
+  }
+  const keys = Reflect.ownKeys(node);
+  const out: Record<string, unknown> = array
+    ? (new Array((node as unknown[]).length) as unknown as Record<string, unknown>)
+    : {};
+  for (const key of keys) {
+    if (typeof key !== 'string') {
+      state.plain = false;
+      continue;
+    }
+    if (array && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(node, key);
+    if (descriptor === undefined) continue;
+    if (descriptor.enumerable !== true) {
+      state.plain = false;
+      continue;
+    }
+    let child: unknown;
+    if ('value' in descriptor) child = descriptor.value;
+    else {
+      state.plain = false;
+      child = (node as Record<string, unknown>)[key];
+    }
+    const copied = ownProgramNode(child, state, reuse);
+    if (key === '__proto__')
+      Object.defineProperty(out, key, {
+        value: copied,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    else out[key] = copied;
+  }
+  return Object.freeze(out);
 }
 
 export function isOwnedRenderFeatureProgramData(value: unknown): boolean {

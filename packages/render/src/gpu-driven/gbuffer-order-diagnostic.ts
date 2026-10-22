@@ -152,11 +152,11 @@ export function gbufferBatchDepth(
     if (candidate.primitiveIndex === previous) continue;
     previous = candidate.primitiveIndex;
     const source = slotAt(candidate.primitiveIndex)?.snapshot;
-    if (source === undefined || source.skin !== undefined || source.morph !== undefined) {
+    if (source === undefined || source.skinBinding !== undefined || source.morph !== undefined) {
       reject?.('source-or-deformation', {
         primitiveIndex: candidate.primitiveIndex,
         sourcePresent: source !== undefined,
-        skinPresent: source?.skin !== undefined,
+        skinPresent: source?.skinBinding !== undefined,
         morphPresent: source?.morph !== undefined,
       });
       return undefined;

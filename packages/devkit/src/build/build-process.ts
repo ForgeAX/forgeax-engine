@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { ImporterRegistry } from '@forgeax/engine-import';
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import { copyPackData } from '@forgeax/engine-pack/runtime';
@@ -126,13 +127,18 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     Reflect.ownKeys(value).some(
       (key) =>
         key !== 'dynamicGeometryMeshBudgetBytes' &&
+        key !== 'assetBudgetBytes' &&
         key !== 'standardProfile' &&
         key !== 'pipelineLibrary' &&
-        key !== 'time',
+        key !== 'time' &&
+        key !== 'renderPipelineCapacity',
     )
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
+  const capacity = options.renderPipelineCapacity;
+  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
+    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
   if (options.time !== undefined) {
     const time = options.time;
     if (
@@ -152,6 +158,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   }
   if (options.dynamicGeometryMeshBudgetBytes !== undefined)
     validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
+  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
   if (options.standardProfile !== undefined) {
     const invalid = validateRenderProfile(options.standardProfile);
     if (invalid !== undefined) throw new TypeError(invalid);

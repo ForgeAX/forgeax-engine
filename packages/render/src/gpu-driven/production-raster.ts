@@ -56,6 +56,7 @@ import type {
 import { reflectedRenderState } from '../material-render-state';
 import {
   isCanonicalStandardPbrMaterialShader,
+  pbrSkinMeshDynamicOffsets,
   SKIN_UNCOVERED_GBUFFER_ENTRY,
 } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
@@ -89,7 +90,6 @@ import {
   type SurfaceGpuSubmissionAdmission,
 } from '../surface/gpu-driven';
 import type { SurfaceSubmissionCandidate } from '../surface/submission-observation';
-import type { BatchExecution } from './batch-execution';
 import { capturedGpuDrivenBatchKey } from './batch-key';
 import {
   batchLevelStride,
@@ -145,6 +145,7 @@ import {
 } from './production-raster-material';
 import {
   assemblePreparedPlan,
+  BatchPreparation,
   type FilteredProductionPlan,
   type PreparedBatch,
   type PreparedBatchRows,
@@ -159,6 +160,11 @@ import { RasterGraphIdentity } from './raster-graph-identity';
 import { type RasterMeshBinding, RasterMeshBindings } from './raster-mesh-bindings';
 import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
 import { combineGpuResourceAllocationInspections } from './resource-allocation';
+import {
+  batchExecutionKey,
+  preparedAssemblyInputs,
+  samePreparedAssemblyInputs,
+} from './retained-batch-inputs';
 import { restrictShadowCasterClasses, ShadowCasterClassifier } from './shadow-caster-classes';
 import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-projection-publication';
 import {
@@ -178,6 +184,17 @@ import {
   GpuDrivenView,
   selectGpuLodLane,
 } from './view-gpu';
+
+function requireViewSkinTask(view: GpuDrivenView) {
+  const task = view.skinTaskBinding();
+  if (task === undefined)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'actual GPU view Skin task output',
+      hint: 'prepare the fixed Skin frame before recording this selected view',
+    });
+  return task;
+}
 
 export interface GpuDrivenShadowBatchProjection {
   /** Batch-owned command closure; retained projection edits validate its physical inputs. */
@@ -209,7 +226,7 @@ export interface GpuDrivenShadowBatchProjection {
  */
 export type ShadowViewRequest = Omit<
   ShadowViewUpdateInput,
-  'sourcePlan' | 'scene' | 'cameraCull' | 'inputReads'
+  'sourcePlan' | 'scene' | 'cameraCull' | 'inputReads' | 'skin' | 'capsuleDirectional'
 > & {
   readonly cameraCull?: ShadowCameraCullDilation;
   /**
@@ -347,104 +364,6 @@ interface LiveRasterBatch {
   /** Complete LOD windows, retained independently for the two visible regions. */
   visibleBindGroups: { early?: readonly BindGroup[]; late?: readonly BindGroup[] } | undefined;
   readonly bundles: PreparedRasterBundleCache;
-}
-
-function batchExecutionKey(
-  sourceBatch: GpuDrivenBatch,
-  execution: Extract<BatchExecution, { readonly route: 'gpu' }>,
-) {
-  return {
-    preparedIdentity: capturedPreparedMaterialArtifactKey(execution.prepared) ?? '',
-    pipelineClass: execution.prepared.identity.material,
-    resourceIdentity: sourceBatch.key.materialResourceClass,
-    admission:
-      Number(execution.material.paramSnapshot?.alphaCutoff ?? 0) > 0 ||
-      Number(execution.material.paramSnapshot?.alphaHash ?? 0) > 0.5
-        ? ('alpha-mask' as const)
-        : ('opaque' as const),
-    materialPass:
-      execution.material.deferredPass === true ? ('deferred' as const) : ('forward-only' as const),
-  };
-}
-
-class BatchPreparation {
-  readonly batches = new Map<
-    number,
-    {
-      readonly source: GpuDrivenBatch;
-      readonly signature: string;
-      readonly artifact: MaterialShaderArtifact | undefined;
-      readonly value: PreparedBatchRows;
-      /** Identity facts that let a retained execution skip signature derivation. */
-      readonly execution?: BatchExecution;
-      readonly materialAddress?: number | undefined;
-      readonly geometryAddress?: number | undefined;
-      /** Render state is author-mutable in place; its serialization stays observed. */
-      readonly renderState?: string | undefined;
-    }
-  >();
-  cached:
-    | {
-        readonly plan: SubmissionPlan;
-        /** Current immutable frame lookup for attribution, independent of prepared geometry. */
-        readonly slotAt: PersistentGpuDrivenState['slotAt'];
-        readonly worldKeys: readonly number[] | undefined;
-        readonly scene: PersistentGpuDrivenState['scene'];
-        readonly batchRows: readonly PreparedBatchRows[];
-        readonly value: PreparedProductionPlan;
-        /** Exact inputs of an unchanged assembly; equal inputs skip the row walk. */
-        readonly inputs?: PreparedAssemblyInputs;
-      }
-    | undefined;
-}
-
-interface PreparedAssemblyInputs {
-  readonly batchExecutions: object;
-  readonly materials: object | undefined;
-  readonly meshes: readonly [object, unknown];
-  /** Distinct resident meshes and the content epoch each row captured. */
-  readonly meshEpochs: readonly (readonly [MeshGpuHandles, unknown])[];
-  /** Distinct author-mutable Pass states and their observed serialization. */
-  readonly states: readonly (readonly [object, string])[];
-}
-
-function preparedAssemblyInputs(
-  batchExecutions: object,
-  materials: object | undefined,
-  meshes: readonly [object, unknown],
-  batchRows: readonly PreparedBatchRows[],
-  serializedStates: ReadonlyMap<object, string>,
-): PreparedAssemblyInputs {
-  const resident = new Map<MeshGpuHandles, unknown>();
-  for (const rows of batchRows)
-    if (rows.mesh !== undefined) resident.set(rows.mesh, rows.meshContentEpoch);
-  return {
-    batchExecutions,
-    materials,
-    meshes,
-    meshEpochs: [...resident],
-    states: [...serializedStates],
-  };
-}
-
-function samePreparedAssemblyInputs(
-  inputs: PreparedAssemblyInputs | undefined,
-  batchExecutions: object,
-  materials: object | undefined,
-  meshes: readonly [object, unknown],
-): boolean {
-  if (
-    inputs === undefined ||
-    inputs.batchExecutions !== batchExecutions ||
-    inputs.materials !== materials ||
-    inputs.meshes[0] !== meshes[0] ||
-    inputs.meshes[1] !== meshes[1]
-  )
-    return false;
-  for (const [mesh, epoch] of inputs.meshEpochs) if (mesh.contentEpoch !== epoch) return false;
-  for (const [state, serialized] of inputs.states)
-    if (JSON.stringify(state) !== serialized) return false;
-  return true;
 }
 
 export interface GpuDrivenPrepareInput {
@@ -698,8 +617,6 @@ export class GpuDrivenProduction {
   private readonly shadowCasterClasses = new ShadowCasterClassifier();
   private surfaceSubmission: SurfaceGpuSubmissionAdmission | undefined;
   private surfaceArtifactInspection: GpuDrivenProductionInspection['surfaceArtifact'];
-  private skinPaletteBuffer: Buffer | undefined;
-  private committedPaletteContentRevision: number | undefined;
   private committedViewClipping = '';
   /** Observed publication fields; raw artifact wrappers and receipts may mutate in place. */
   private observedShadowArtifacts: ShadowArtifactObservations = new Map();
@@ -708,7 +625,6 @@ export class GpuDrivenProduction {
   private structureMetrics: GpuDrivenStructureMetrics = {
     worldEntitiesScanned: 0,
     sceneTableUploadBytes: 0,
-    paletteUploadBytes: 0,
   };
   private readonly rasterGraphIdentity = new RasterGraphIdentity();
 
@@ -817,7 +733,6 @@ export class GpuDrivenProduction {
     this.structureMetrics = input.structureMetrics ?? {
       worldEntitiesScanned: 0,
       sceneTableUploadBytes: 0,
-      paletteUploadBytes: 0,
     };
     this.lane = 'cpu-semantic';
     this.laneReason = 'capability';
@@ -1231,6 +1146,8 @@ export class GpuDrivenProduction {
       undefined,
       occlusionCamera(input.camera),
       surfaceRows,
+      undefined,
+      scene.skin,
     );
     if (!updated.ok) return updated;
     this.view.setTelemetrySubmit(input.telemetrySubmit);
@@ -1306,18 +1223,7 @@ export class GpuDrivenProduction {
       filtered.batches.find(({ batch }) => batch.prepared?.identity.deformation === 'skin') ??
       shadowFiltered?.batches.find(({ batch }) => batch.prepared?.identity.deformation === 'skin');
     if (skinBatch !== undefined) {
-      const skinAllocator = materialPipelineState.skinPaletteAllocator;
-      const paletteBuffer = skinAllocator?.storageBuffer;
       const selectedSkinArtifact = skinBatch.artifact;
-      if (paletteBuffer == null || skinAllocator == null) {
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'skinned material artifact and persistent palette owner',
-            hint: 'keep missing skin producer resources on the CPU deformation path',
-          }),
-        );
-      }
       if (this.skinRaster === undefined) {
         const created = MaterialAbiRasterAdapter.create({
           device: this.device,
@@ -1325,8 +1231,6 @@ export class GpuDrivenProduction {
           artifact: selectedSkinArtifact,
           visibleBuffer,
           deformation: 'skin',
-          paletteBuffer: paletteBuffer,
-          paletteBindingWindowBytes: skinAllocator.bindingWindowBytes,
           sharedSurfaceFrame: materialRaster.surfaceDynamicSharedFrameState,
           ...(input.probeBlendRecordBuffer === undefined
             ? {}
@@ -1342,16 +1246,6 @@ export class GpuDrivenProduction {
         if (!probe.ok) return probe;
         const rebound = this.skinRaster.ensureVisibleBuffer(visibleBuffer);
         if (!rebound.ok) return rebound;
-        const palette = this.skinRaster.ensurePaletteBuffer(
-          paletteBuffer,
-          skinAllocator.bindingWindowBytes,
-        );
-        if (!palette.ok) return palette;
-      }
-      if (this.skinPaletteBuffer !== paletteBuffer) {
-        this.skinPaletteBuffer = paletteBuffer;
-        this.shadowBatchProjections = publishReadonlyMap(new Map());
-        this.shadowViews?.invalidateSkinned();
       }
     }
     const skinRaster = this.skinRaster;
@@ -1424,11 +1318,6 @@ export class GpuDrivenProduction {
         }),
       );
     }
-    // A pose can change while conservative bounds, allocation and scene rows
-    // remain unchanged. Read the palette owner, never optional telemetry.
-    const paletteContentRevision = materialPipelineState.skinPaletteAllocator?.contentRevision;
-    if (paletteContentRevision !== this.committedPaletteContentRevision)
-      shadowViewPool.invalidateSkinned();
     // Shadow depth bakes the camera clipping casters opt into. A retained
     // layer, including one that survives a graph recompile, must not keep it.
     const viewClipping = shadowViewClipping(input.camera);
@@ -1571,7 +1460,6 @@ export class GpuDrivenProduction {
         if (!finishMaterials()) return;
         view._commitResourceReplacement();
         shadowViewPool._commitResourceReplacement(submittedGraphGeneration);
-        this.committedPaletteContentRevision = paletteContentRevision;
         this.committedViewClipping = viewClipping;
         this.submissionState = 'submitted';
         this.lastKnownGoodGeneration = view.inspect().resourceGeneration;
@@ -1772,6 +1660,7 @@ export class GpuDrivenProduction {
           const meshBindGroup = raster.sceneMeshBindGroup(
             sceneTransformBuffer,
             sceneTransformBytes,
+            view.skinTaskBinding(),
           );
           if (!meshBindGroup.ok) return meshBindGroup;
           let buffers = meshBuffers?.get(prepared.mesh);
@@ -2445,7 +2334,7 @@ export class GpuDrivenProduction {
                   sceneTransformBuffer,
                   sceneTransformBytes,
                   frameResources,
-                  skinPaletteBinding: batch.raster.skinPaletteBinding(),
+                  skinTaskBinding: view.skinTaskBinding(),
                 });
               }
               if (group2 === undefined) {
@@ -2457,7 +2346,13 @@ export class GpuDrivenProduction {
               }
               if (currentMesh !== group2 || currentDeformation !== batch.deformation) {
                 if (descriptor === undefined)
-                  pass.setBindGroup(2, group2, batch.deformation === 'skin' ? [0, 0, 0] : [0]);
+                  pass.setBindGroup(
+                    2,
+                    group2,
+                    batch.deformation === 'skin'
+                      ? pbrSkinMeshDynamicOffsets(0, requireViewSkinTask(view), true)
+                      : [0],
+                  );
                 currentMesh = group2;
                 currentDeformation = batch.deformation;
               }
@@ -2674,7 +2569,10 @@ export class GpuDrivenProduction {
                 observedBindings.material = materialBindGroup;
                 observedBindings.materialOffset = materialOffset;
                 observedBindings.mesh = group2;
-                observedBindings.skin = batch.deformation === 'skin';
+                observedBindings.meshOffsets =
+                  batch.deformation === 'skin'
+                    ? pbrSkinMeshDynamicOffsets(0, requireViewSkinTask(view), true)
+                    : [0];
                 observedBindings.vertex = physicalVertex;
                 observedBindings.index = indexKey === undefined ? undefined : physicalIndex;
                 observedBindings.indexFormat = indexFormat;
@@ -3217,11 +3115,6 @@ export class GpuDrivenProduction {
       sceneTransformBytes,
     );
     if (!meshBinding.ok) return meshBinding;
-    const skinMeshBinding = this.skinRaster?.sceneMeshBindGroup(
-      sceneTransformBuffer,
-      sceneTransformBytes,
-    );
-    if (skinMeshBinding !== undefined && !skinMeshBinding.ok) return skinMeshBinding;
     const visibleBindingIdentity = materialRaster.visibleBindingIdentity;
     const skinVisibleBindingIdentity = this.skinRaster?.visibleBindingIdentity;
     const shadowViews = this.shadowViews;
@@ -3230,7 +3123,7 @@ export class GpuDrivenProduction {
     const classes = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/shadow-views/caster-classes',
-      () => this.shadowCasterClasses.update(scene, shadowScene, capsuleShadowDirectional),
+      () => this.shadowCasterClasses.update(scene, shadowScene),
     );
     const projectView = ({
       cameraCull,
@@ -3309,6 +3202,9 @@ export class GpuDrivenProduction {
                   sourcePlan: shadowSourcePlan,
                   scene: shadowScene,
                   inputReads,
+                  skin: scene.skin,
+                  capsuleDirectional:
+                    capsuleShadowDirectional && input.identity.kind === 'directional',
                   ...(directMaterials === undefined || input.identity.layer === 'static'
                     ? {}
                     : { directMaterials }),
@@ -3333,6 +3229,15 @@ export class GpuDrivenProduction {
               }),
             );
           }
+          const skinMeshBinding =
+            submission.view.skinTaskBinding() === undefined
+              ? undefined
+              : this.skinRaster?.sceneMeshBindGroup(
+                  sceneTransformBuffer,
+                  sceneTransformBytes,
+                  submission.view.skinTaskBinding(),
+                );
+          if (skinMeshBinding !== undefined && !skinMeshBinding.ok) return skinMeshBinding;
           const sameBindings =
             previousSource !== undefined &&
             previousSource.visibleBuffer === visibleBuffer &&
@@ -3601,13 +3506,11 @@ export class GpuDrivenProduction {
         shadowViews.invalidate('configuration-changed', staticIdentity);
       }
       if (singleLayer) {
-        // Settled casters draw with the rest every time the view rasters.
+        // Settled casters draw with the rest every time the view rasters;
+        // capsule casters leave directional views on the GPU as in two layers.
         const projected = projectView({
           ...input,
-          candidatePrimitiveIndices:
-            input.identity.kind === 'directional'
-              ? viewClasses.directionalCasterSlots
-              : viewClasses.casterSlots,
+          candidatePrimitiveIndices: viewClasses.casterSlots,
         });
         if (!projected.ok) return projected;
         continue;
@@ -3627,10 +3530,7 @@ export class GpuDrivenProduction {
       }
       const finalProjected = projectView({
         ...input,
-        candidatePrimitiveIndices:
-          input.identity.kind === 'directional'
-            ? viewClasses.directionalDynamicSlots
-            : viewClasses.dynamicSlots,
+        candidatePrimitiveIndices: viewClasses.dynamicSlots,
       });
       if (!finalProjected.ok) return finalProjected;
     }
@@ -3674,8 +3574,6 @@ export class GpuDrivenProduction {
     this.shadowSource = undefined;
     this.shadowScene = undefined;
     this.shadowBatchProjections = publishReadonlyMap(new Map());
-    this.skinPaletteBuffer = undefined;
-    this.committedPaletteContentRevision = undefined;
     this.committedViewClipping = '';
     this.preparationFailure = undefined;
     this.surfaceArtifactInspection = undefined;
@@ -3686,7 +3584,8 @@ export class GpuDrivenProduction {
     return this.view?.currentResourceGeneration;
   }
 
-  inspect(): GpuDrivenProductionInspection {
+  /** Skin task upload bytes belong to the recording's CPU task owner. */
+  inspect(paletteUploadBytes = 0): GpuDrivenProductionInspection {
     const view = this.view?.inspect();
     const filtered = this.filteredCache?.value;
     const resourceAllocation = combineGpuResourceAllocationInspections([
@@ -3814,6 +3713,7 @@ export class GpuDrivenProduction {
       cpuValidationScans: this.cpuValidationScans,
       cpuValidationCacheHits: this.cpuValidationCacheHits,
       ...this.structureMetrics,
+      paletteUploadBytes,
       ...(this.gbufferOrderInspection === undefined
         ? {}
         : { gbufferBatchOrderDiagnostic: this.gbufferOrderInspection }),

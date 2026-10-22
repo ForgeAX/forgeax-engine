@@ -17,7 +17,7 @@ import { testAssets } from './helpers/runtime-assets';
 //       `MaterialSkinAttrMissingError` (.code === 'material-skin-attr-missing')
 //       and the entity is skipped.
 //
-//   (c) Valid Skin without a GPU allocator -> publish a serializable pose;
+//   (c) Valid Skin without a GPU allocator -> publish static serializable membership;
 //       the receiving Renderer owns palette allocation (positive control).
 //
 // Plan-strategy D-5: extract uses `_routeError` + `continue` (one entity's
@@ -214,7 +214,6 @@ const CUSTOM_MESH_ABI = {
 } as unknown as MaterialProgramAbi;
 
 const CUSTOM_SKIN_ABI = {
-  skinPaletteAddress: { group: 2, binding: 1, stride: 64 },
   vertexInputs: [{ semantic: 'position' }, { semantic: 'skinIndex' }, { semantic: 'skinWeight' }],
 } as unknown as MaterialProgramAbi;
 
@@ -356,7 +355,7 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
     expect(frame.renderables).toHaveLength(0);
   });
 
-  it('(c) Skin + pbr-skin material without a GPU allocator publishes a source pose', () => {
+  it('(c) Skin + pbr-skin material without a GPU allocator publishes static membership', () => {
     const world = new World();
     const assets = makeAssetRegistry();
     installDefaultAssetDecoders(assets);
@@ -375,11 +374,8 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
     expect(errorSpy).not.toHaveBeenCalled();
     expect(frame.renderables).toHaveLength(1);
     const row = frame.renderables[0];
-    expect(row?.skin).toBeUndefined();
-    expect(row?.skinPose?.jointCount).toBe(1);
-    expect(row?.skinPose?.inverseBindMatrices).toEqual([IDENTITY_MATRIX]);
-    expect(row?.skinPose?.jointWorlds).toEqual([IDENTITY_MATRIX]);
-    expect(structuredClone(row?.skinPose)).toEqual(row?.skinPose);
+    expect(row?.skinBinding?.joints).toHaveLength(1);
+    expect(structuredClone(row?.skinBinding)).toEqual(row?.skinBinding);
     expect(frame.dispatch.some((entry) => entry.materialShaderId === 'forgeax::pbr-skin')).toBe(
       true,
     );
@@ -414,7 +410,7 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
     expect(frame.renderables.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('uses the selected custom skin ABI to publish a source pose without a GPU allocator', () => {
+  it('uses the selected custom skin ABI to publish static membership without pose reads', () => {
     const world = new World();
     const assets = makeAssetRegistry();
     installDefaultAssetDecoders(assets);
@@ -435,8 +431,7 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
 
     expect(errorSpy).not.toHaveBeenCalled();
     expect(frame.renderables).toHaveLength(1);
-    expect(frame.renderables[0]?.skin).toBeUndefined();
-    expect(frame.renderables[0]?.skinPose?.jointWorlds).toEqual([IDENTITY_MATRIX]);
+    expect(frame.renderables[0]?.skinBinding?.joints).toHaveLength(1);
     expect(frame.dispatch.some((entry) => entry.materialShaderId === 'sha256:custom-skin')).toBe(
       true,
     );
@@ -445,7 +440,7 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
   it.each([
     false,
     true,
-  ])('rejects a dangling joint before publishing skin dispatch (custom=%s)', (custom) => {
+  ])('retains static membership without reading dangling joint poses during extraction (custom=%s)', (custom) => {
     const world = new World();
     const assets = makeAssetRegistry();
     installDefaultAssetDecoders(assets);
@@ -470,10 +465,10 @@ describe('render-system-extract Skin / pbr-skin mismatch (AC-07 / w19)', () => {
       }),
     );
 
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ code: 'joint-entity-dangling' });
-    expect(frame.renderables).toHaveLength(0);
-    expect(frame.dispatch).toHaveLength(0);
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(frame.renderables).toHaveLength(1);
+    expect(frame.renderables[0]?.skinBinding?.joints).toEqual([Number(joint)]);
+    expect(frame.dispatch.length).toBeGreaterThan(0);
   });
 
   it('keeps an exact mesh-context publication miss instead of fabricating skin-attribute failure', () => {

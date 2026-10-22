@@ -91,6 +91,11 @@ export interface MaterialSurfaceProgramAbi {
 
 /** Complete immutable ABI projection for one material program family. */
 export interface MaterialProgramAbi {
+  /** Certified template position = input + bounded Standard displacement,
+   * followed by the stock linear Skin transform when Skin inputs are present.
+   * Omission makes position bounds unknown; vertex inputs alone grant no proof.
+   */
+  readonly positionBounds?: 'standard-input';
   readonly entryPoints?: readonly ShaderEntryPointReads[];
   /** Omitted selects the ordinary Render material interface. Never inferred from WGSL text. */
   readonly bindings?: MaterialProgramBindingContract;
@@ -110,11 +115,6 @@ export interface MaterialProgramAbi {
   readonly uvSets: readonly { readonly parameter: string; readonly set: number }[];
   readonly vertexInputs: readonly MaterialProgramVertexInput[];
   readonly alphaMask: { readonly cutoff: string; readonly source: string };
-  readonly skinPaletteAddress?: {
-    readonly group: number;
-    readonly binding: number;
-    readonly stride: number;
-  };
   readonly reflection: {
     readonly layoutIdentity: string;
     readonly resourceSlots: readonly MaterialProgramResourceSlot[];
@@ -338,16 +338,9 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
         return `${candidate.group}:${candidate.binding}`;
       }),
     ).size === resources.length;
-  const validSkin =
-    abi.skinPaletteAddress === undefined ||
-    (abi.skinPaletteAddress !== null &&
-      typeof abi.skinPaletteAddress === 'object' &&
-      validIndex((abi.skinPaletteAddress as { group?: unknown }).group) &&
-      validIndex((abi.skinPaletteAddress as { binding?: unknown }).binding) &&
-      Number.isSafeInteger((abi.skinPaletteAddress as { stride?: unknown }).stride) &&
-      ((abi.skinPaletteAddress as { stride: number }).stride ?? 0) > 0);
   const validSurface = abi.surface === undefined || isMaterialSurfaceProgramAbi(abi.surface);
   const validShape =
+    (abi.positionBounds === undefined || abi.positionBounds === 'standard-input') &&
     (abi.entryPoints === undefined || isShaderEntryPointReads(abi.entryPoints)) &&
     (abi.bindings === undefined || isMaterialProgramBindingContract(abi.bindings)) &&
     (abi.sceneDepth === undefined ||
@@ -384,7 +377,6 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
     Number.isSafeInteger(generation) &&
     typeof generation === 'number' &&
     generation >= 1 &&
-    validSkin &&
     validSurface;
   if (!validShape) return false;
   const topResources = JSON.stringify(abi.resourceSlots);
@@ -394,4 +386,14 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
   const topInputs = JSON.stringify(abi.vertexInputs);
   const reflectionInputs = JSON.stringify((reflection as { vertexInputs: unknown }).vertexInputs);
   return topResources === reflectionResources && topInputs === reflectionInputs;
+}
+
+/** Skin capability derives from the admitted vertex contract, not a second flag. */
+export function materialProgramUsesSkin(
+  abi: Pick<MaterialProgramAbi, 'vertexInputs'> | undefined,
+): boolean {
+  return (
+    abi?.vertexInputs.some((input) => input.semantic === 'skinIndex') === true &&
+    abi.vertexInputs.some((input) => input.semantic === 'skinWeight')
+  );
 }

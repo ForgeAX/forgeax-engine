@@ -168,6 +168,7 @@ export function addStandardDeferredLighting(
               light.coneHalfAngle,
               input.size.width,
               input.size.height,
+              internal.runtime.demandCapsuleShadow ?? (() => undefined),
             );
       if (capsuleFrame !== undefined) {
         // Auxiliary capture views shade their own tiles; inspection reports the display view.

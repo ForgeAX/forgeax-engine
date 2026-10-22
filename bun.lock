@@ -5635,6 +5635,7 @@
         "@forgeax/engine-assets-runtime": "workspace:*",
         "@forgeax/engine-ecs": "workspace:*",
         "@forgeax/engine-math": "workspace:*",
+        "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-path": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
         "@forgeax/engine-plugin": "workspace:*",

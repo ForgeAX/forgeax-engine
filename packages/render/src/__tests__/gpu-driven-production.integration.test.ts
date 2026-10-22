@@ -120,6 +120,16 @@ describe('GPU-driven scene-index mesh address selection', () => {
     const clusteredSkinGroup = {} as BindGroup;
     const transformBuffer = {} as Buffer;
     const paletteBuffer = {} as Buffer;
+    const task = {
+      data: paletteBuffer,
+      auxiliary: {} as Buffer,
+      dataOffset: 0,
+      auxiliaryOffset: 768,
+      dataSize: 1024,
+      auxiliarySize: 16,
+      jointCount: 0,
+      flags: 0,
+    };
     const clusterBindGroupForSkin = vi.fn(() => clusteredSkinGroup);
 
     expect(
@@ -129,16 +139,11 @@ describe('GPU-driven scene-index mesh address selection', () => {
         meshBindGroup: directSkinGroup,
         sceneTransformBuffer: transformBuffer,
         sceneTransformBytes: 768,
-        skinPaletteBinding: { buffer: paletteBuffer, bindingWindowBytes: 16_320 },
+        skinTaskBinding: task,
         frameResources: { clusterBindGroupForSkin },
       }),
     ).toBe(clusteredSkinGroup);
-    expect(clusterBindGroupForSkin).toHaveBeenCalledExactlyOnceWith(
-      transformBuffer,
-      768,
-      paletteBuffer,
-      16_320,
-    );
+    expect(clusterBindGroupForSkin).toHaveBeenCalledExactlyOnceWith(transformBuffer, 768, task);
   });
 });
 
@@ -2390,7 +2395,7 @@ describe('GPU-driven production projection', () => {
       filteredPlanBuilds: 0,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
-      viewConstantsUploadBytes: 528,
+      viewConstantsUploadBytes: 784,
       viewBindGroupCreates: 0,
       batchBindGroupCreates: 0,
       indirectDrawCount: 3,

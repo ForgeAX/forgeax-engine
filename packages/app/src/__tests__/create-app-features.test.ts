@@ -53,15 +53,31 @@ describe('createApp features passthrough', () => {
 
     const canvas = { tagName: 'canvas', isConnected: true } as HTMLCanvasElement;
     const dynamicGeometryMeshBudgetBytes = 512 * 1024 * 1024;
-    const result = await createApp(canvas, { features, dynamicGeometryMeshBudgetBytes });
+    const assetBudgetBytes = 6 * 1024 * 1024 * 1024;
+    const result = await createApp(canvas, {
+      features,
+      dynamicGeometryMeshBudgetBytes,
+      assetBudgetBytes,
+    });
 
     expect(result.ok).toBe(true);
     expect(constructRuntimeRendererHost).toHaveBeenCalledTimes(1);
     expect(constructRuntimeRendererHost.mock.calls[0]?.[1]).toMatchObject({
       features,
       dynamicGeometryMeshBudgetBytes,
+      assetBudgetBytes,
     });
     expect(constructRuntimeRendererHost.mock.calls[0]?.[1].features).toBe(features);
+  });
+
+  it('rejects an invalid asset budget before any renderer realm is constructed', async () => {
+    constructRuntimeRendererHost.mockClear();
+    const canvas = { tagName: 'canvas', isConnected: true } as HTMLCanvasElement;
+    for (const assetBudgetBytes of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN])
+      await expect(createApp(canvas, { assetBudgetBytes })).rejects.toThrow(
+        'assetBudgetBytes must be a positive safe integer',
+      );
+    expect(constructRuntimeRendererHost).not.toHaveBeenCalled();
   });
 });
 

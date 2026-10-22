@@ -1,4 +1,7 @@
-import { createMaterialLoader } from '@forgeax/engine-assets-runtime/internal';
+import {
+  createMaterialLoader,
+  shareVerifiedArtifactBytes,
+} from '@forgeax/engine-assets-runtime/internal';
 import {
   type AddressMode,
   type AssetDecoderContribution,
@@ -312,7 +315,28 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
             hint: ready.error.hint,
             detail: { guid: envelope.guid, kind: 'material', cause: ready.error },
           });
-        payload = { ...payload, cooked: ready.record };
+        // The loader verified each program digest. Materials that select the same
+        // program then retain one realm-shared view instead of one copy each.
+        payload = {
+          ...payload,
+          cooked: {
+            ...ready.record,
+            programs: Object.freeze(
+              ready.record.programs.map((program) =>
+                Object.freeze({
+                  ...program,
+                  artifact: Object.freeze({
+                    ...program.artifact,
+                    bytes: shareVerifiedArtifactBytes(
+                      program.artifact.digest,
+                      program.artifact.bytes,
+                    ),
+                  }),
+                }),
+              ),
+            ),
+          },
+        };
       }
       return resolveMaterialWireRefs(payload as MaterialAsset, envelope.refs, envelope.guid);
     },

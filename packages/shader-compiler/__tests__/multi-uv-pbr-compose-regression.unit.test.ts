@@ -81,6 +81,7 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_pbr::lighting_spot_projector': read('lighting-spot-projector.wgsl'),
     'forgeax_standard::cluster': read('standard-cluster.wgsl'),
     'forgeax_pbr::shadow_pcf': read('shadow-pcf.wgsl'),
+    'forgeax_skin::task': read('skin-task.wgsl'),
     'forgeax_pbr::clearcoat': read('material/physical/clearcoat.wgsl'),
     'forgeax_pbr::anisotropy': read('material/physical/anisotropy.wgsl'),
     'forgeax_pbr::sheen': read('material/physical/sheen.wgsl'),

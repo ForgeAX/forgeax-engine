@@ -2,6 +2,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { box3 } from '@forgeax/engine-math';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
@@ -63,7 +64,7 @@ it.each([
         if (request === 'full') work += 1000;
         else if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) work += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
@@ -91,8 +92,8 @@ it.each([
     expect(before?.renderables.at(0)).toBe(original);
     expect(original.localAabb?.[0]).toBeGreaterThan(-1);
     expect(scene.shadowCasterProjection()?.renderables.at(0)?.localAabb?.[0]).toBe(-100);
-    expect(original && before?.worldBoundsOf(original)?.min[0]).toBeGreaterThan(99);
-    expect(original && scene.shadowCasterProjection()?.worldBoundsOf(original)?.min[0]).toBe(0);
+    expect(original && readBounds(before, original)?.min[0]).toBeGreaterThan(99);
+    expect(original && readBounds(scene.shadowCasterProjection(), original)?.min[0]).toBe(0);
   } finally {
     publisher.dispose();
     receiver.dispose();
@@ -101,3 +102,13 @@ it.each([
     assets.dispose();
   }
 });
+
+function readBounds(
+  projection: ReturnType<PersistentRenderScene['shadowCasterProjection']>,
+  source: import('../render-system-extract').RenderableSnapshot,
+) {
+  const out = box3.create();
+  return projection?.worldBoundsOf(source, out)
+    ? { min: [out[0], out[1], out[2]], max: [out[3], out[4], out[5]] }
+    : undefined;
+}

@@ -56,9 +56,9 @@ export function retainMeshMaterialBindings(previous: MeshGeometry, next: MeshGeo
 }
 
 export function meshMaterialGeometry(
-  source: Pick<RenderableSnapshot, 'skin' | 'skinPose' | 'spriteInstances'>,
+  source: Pick<RenderableSnapshot, 'skinBinding' | 'spriteInstances'>,
 ): MeshMaterialGeometry {
-  return source.skin !== undefined || source.skinPose !== undefined
+  return source.skinBinding !== undefined
     ? 'skinned'
     : source.spriteInstances !== undefined
       ? 'sprite-instances'

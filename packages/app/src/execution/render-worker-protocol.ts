@@ -85,6 +85,7 @@ export type RenderWorkerInput =
       | 'outputColorSpace'
       | 'pipelineLibrary'
       | 'dynamicGeometryMeshBudgetBytes'
+      | 'assetBudgetBytes'
     > & {
       readonly kind: 'init';
       readonly identity: RenderPublicationIdentity;

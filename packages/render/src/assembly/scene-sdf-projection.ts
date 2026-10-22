@@ -52,8 +52,7 @@ export function projectCollisionScene(
     if (source.glyph !== undefined) continue;
     if (source.assetHandle === undefined) fail('missing-source', slot.entityKey);
     if (
-      source.skin !== undefined ||
-      source.skinPose !== undefined ||
+      source.skinBinding !== undefined ||
       source.morph !== undefined ||
       source.spriteInstances !== undefined ||
       source.pointsLines !== undefined

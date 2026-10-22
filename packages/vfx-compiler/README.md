@@ -164,6 +164,7 @@ source rather than emitter ID, and distinct source is compiled independently.
 | MIME | `application/vnd.forgeax.vfx-program+json` |
 | Fingerprint | SHA-256 of canonical program bytes |
 | Reflection | hooks, composed imports, resources, entry points, bind-group layouts |
+| Ownership | the only published program copy; Pack projection drops `payload.program`, and the loader validates `programFingerprint` against these bytes |
 
 `reflectVfxRendererV3` returns topology, capacity, semantic mappings, material
 inputs, Standard Mesh lighting/shadow intent, and resource identity that the

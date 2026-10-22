@@ -165,8 +165,16 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
   const oracleMaterialGroup = device
     .createBindGroup({ layout: shadowMaterialLayout, entries: oracleMaterialEntries })
     .unwrap();
+  const colorPipelineEntry = f.c.runtime.getMaterialShaderPipelineEntry;
   Object.assign(f.c.runtime, {
-    getMaterialShaderPipeline: () => shadowPipeline,
+    // Shadow casters share the unified lookup; only their depth-only request
+    // resolves to the oracle pipeline.
+    getMaterialShaderPipelineEntry: (
+      ...args: Parameters<NonNullable<typeof colorPipelineEntry>>
+    ) =>
+      args[6] === 'shadow-caster'
+        ? { pipeline: shadowPipeline, group2Contract: 'mesh' as const }
+        : (colorPipelineEntry?.(...args) ?? null),
     getMaterialBindGroupLayout: () => shadowMaterialLayout,
     getParamSchema: () => [],
   });

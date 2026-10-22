@@ -130,6 +130,12 @@ premultiplied alpha uses `TC+alpha*L`, and additive uses `TC`. Transmission keep
 its already-fogged backdrop separate: `T*C_local + k*B + (1-k)*L`, where `k` is
 the final RGB transmission weight. No second fog pass follows translucency.
 
+Skin capability derives from the admitted pair of `skinIndex` and `skinWeight`
+vertex semantics. Cook rejects an incomplete pair; receipts and prepared draws
+carry no duplicate palette-address flag. Physical buffers remain part of the
+actual reflected binding contract. Receipt generation 4 separates this shape
+from the old redundant metadata and requires re-cooking consumers.
+
 ## LOD coverage ABI
 
 Scene-index vertex stages use `@builtin(instance_index)` only to address the

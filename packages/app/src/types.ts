@@ -229,6 +229,12 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  /**
+   * Content byte budget of each Engine-created AssetRegistry serving the App World
+   * (meshes, textures and other runtime records). Positive safe integer; default 4 GiB.
+   * It guards against runaway growth; raise it for scenes with more resident content.
+   */
+  readonly assetBudgetBytes?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
   /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */

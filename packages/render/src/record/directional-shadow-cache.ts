@@ -112,12 +112,7 @@ const deformingCasterMemo = new WeakMap<FrameList<RenderableSnapshot>, boolean>(
 function hasDeformingCaster(renderables: FrameList<RenderableSnapshot>): boolean {
   let deforming = deformingCasterMemo.get(renderables);
   if (deforming === undefined) {
-    deforming = renderables.some(
-      (source) =>
-        source.skin !== undefined ||
-        source.skinPose !== undefined ||
-        source.skinJointEntities !== undefined,
-    );
+    deforming = renderables.some((source) => source.skinBinding !== undefined);
     deformingCasterMemo.set(renderables, deforming);
   }
   return deforming;

@@ -38,7 +38,7 @@ function fixture() {
     index: {},
     indirect: {},
     materialOffset: 256,
-    skin: false,
+    meshOffsets: [0],
     indexFormat: 'uint16',
     indirectOffset: 60,
     indexed: true,
@@ -88,7 +88,7 @@ describe('private streaming prepared raster recording', () => {
     'materialOffset',
     'indirectOffset',
     'indexFormat',
-    'skin',
+    'meshOffsets',
     'indexed',
     'windows',
   ] as const)('observes a changed %s before accepting a retained bundle', (field) => {
@@ -97,13 +97,15 @@ describe('private streaming prepared raster recording', () => {
     const replacement =
       field === 'windows'
         ? [{}, {}]
-        : field === 'skin' || field === 'indexed'
-          ? !f.bindings[field]
-          : field === 'indexFormat'
-            ? 'uint32'
-            : field.endsWith('Offset')
-              ? 512
-              : {};
+        : field === 'meshOffsets'
+          ? [0, 768]
+          : field === 'indexed'
+            ? !f.bindings[field]
+            : field === 'indexFormat'
+              ? 'uint32'
+              : field.endsWith('Offset')
+                ? 512
+                : {};
     const recording = f.cache.begin(f.pass('main', f.descriptor), f.device, f.counters);
     recording.push({ ...f.bindings, [field]: replacement });
     expect(recording.finish()).not.toBe(previous);
@@ -315,7 +317,7 @@ describe('prepared raster batch physical closure', () => {
     'materialOffset',
     'indirectOffset',
     'indexFormat',
-    'skin',
+    'meshOffsets',
     'indexed',
     'windows',
   ] as const)('invalidates on a changed %s dependency', (field) => {
@@ -324,8 +326,8 @@ describe('prepared raster batch physical closure', () => {
     const replacement =
       field === 'windows'
         ? [{}, {}]
-        : field === 'skin'
-          ? true
+        : field === 'meshOffsets'
+          ? [0, 768]
           : field === 'indexed'
             ? false
             : field === 'indexFormat'

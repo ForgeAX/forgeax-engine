@@ -104,7 +104,7 @@ export class GpuSceneChangeLog {
           rowBoxesOf !== undefined &&
           retained !== undefined &&
           rowUpdateSlots.has(record.slot) &&
-          snapshot.skin === undefined
+          snapshot.skinBinding === undefined
         ) {
           const bounds = boundsOf?.(record);
           const rows = bounds === undefined ? undefined : rowBoxesOf(record);
@@ -120,7 +120,7 @@ export class GpuSceneChangeLog {
         pushOld(record.slot);
         // Skinned and sprite casters deform beyond their bind-pose box.
         const bounds =
-          snapshot.skin !== undefined || snapshot.spriteInstances !== undefined
+          snapshot.skinBinding !== undefined || snapshot.spriteInstances !== undefined
             ? undefined
             : boundsOf?.(record);
         if (bounds === undefined) {

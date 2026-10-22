@@ -169,6 +169,7 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
       removed: new Uint32Array(0),
       transformEntities: new Uint32Array(0),
       transforms: new Float32Array(0),
+      retiredJoints: new Uint32Array(0),
     },
   };
 }
@@ -1307,6 +1308,7 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
         removed: new Uint32Array(0),
         transformEntities: new Uint32Array(0),
         transforms: new Float32Array(0),
+        retiredJoints: new Uint32Array(0),
       },
     },
   });
@@ -1349,6 +1351,7 @@ it('reports publication overflow as deterministic protocol failure and drains ow
       removed: new Uint32Array(0),
       transformEntities: new Uint32Array(0),
       transforms: new Float32Array(0),
+      retiredJoints: new Uint32Array(0),
     },
   });
   try {

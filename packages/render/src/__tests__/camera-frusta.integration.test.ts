@@ -59,7 +59,7 @@ describe('CameraSnapshot frustum consumers', () => {
     world.update(0).unwrap();
 
     const direct = extractFrames([world], 0, assets);
-    const uncull = extractFrames([world], 0, assets, undefined, undefined, {
+    const uncull = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -99,7 +99,7 @@ describe('CameraSnapshot frustum consumers', () => {
     // stands behind it and the CPU cull must still reject it off screen.
     const outsideResidual = spawnCube(world, -100);
     world.update(0).unwrap();
-    const uncull = extractFrames([world], 0, assets, undefined, undefined, {
+    const uncull = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -206,7 +206,7 @@ describe('CameraSnapshot frustum consumers', () => {
     const outside = spawnCube(world, 4);
     world.update(0).unwrap();
 
-    const uncull = extractFrames([world], 0, assets, undefined, undefined, {
+    const uncull = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });

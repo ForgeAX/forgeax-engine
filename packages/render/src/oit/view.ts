@@ -48,7 +48,9 @@ export interface TransparencyViewResolution {
 export function resolveTransparencyView(input: {
   readonly requested: Transparency;
   readonly rgba16floatRenderable: boolean;
-  readonly renderables: FrameList<Pick<RenderableSnapshot, 'skin' | 'materials' | 'material'>>;
+  readonly renderables: FrameList<
+    Pick<RenderableSnapshot, 'skinBinding' | 'materials' | 'material'>
+  >;
   readonly materialFrame: MaterialFrame;
   readonly dispatch: DispatchList;
 }): TransparencyViewResolution {
@@ -81,7 +83,7 @@ export function resolveTransparencyView(input: {
       }
       const eligibility = classifyOitDraw({
         materialShaderId: entry.materialShaderId,
-        skinned: row.skin !== undefined,
+        skinned: row.skinBinding !== undefined,
         renderState: entry.renderState,
         fragmentEntry: entry.fragmentEntry,
       });

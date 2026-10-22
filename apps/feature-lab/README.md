@@ -63,6 +63,19 @@ They remain part of the complete `pnpm test:browser` roster.
 | Quantized layered music | `packages/audio-webaudio/src/__tests__/music-transport.browser.test.ts` | Native sample alignment, cancellation, late boundaries and Context lifetime. |
 | Managed scene SDF collision | `packages/render/src/__tests__/scene-sdf.browser.test.ts`, `scene-sdf.dawn.test.ts` | Fresh-device field sharing, swept collision work bounds and captured-contact replay. |
 | Cached asset thumbnails | `packages/devkit/__tests__/workspace-thumbnails.test.ts` | Ordinary Preview leases, real PNG alpha/color, progressive queue and persistent DDC reuse without a browser. |
+| Player Asset Bundles | `packages/devkit/src/__tests__/player-dist.test.ts`, `packages/assets-runtime/src/__tests__/asset-bundle-window.unit.test.ts` | Actual player packaging, shared-entry deduplication, streaming exclusions, compression, verified resident windows and Range rereads; a codec-only page would not prove this delivery feature. |
+
+Runtime asset editing has an independent visual page:
+`?f=import-loading/runtime-asset-editing`. Two quads share one mutable material;
+a third uses an independent copy. Its checks retain a fixed snapshot and verify
+that rejected writes preserve current content.
+
+`src/node-features/cli-preview/pack-live-parameters-and-drafts.ts` runs real
+filesystem draft edit/undo/redo/Save/reopen and conflict refresh without executing
+the author's module. The actual preview and Worker generation boundaries remain
+covered by `packages/devkit/src/__tests__/workspace-pack-authoring.integration.test.ts`,
+`host-authoring-publication.integration.test.ts` and
+`packages/pack/src/__tests__/pack-live-worker.integration.test.ts`.
 
 - Area directories are fixed in `src/lab/areas.ts` and mirror catalog subsections. The
   file name is the slug; the registry discovers files through `import.meta.glob`, so

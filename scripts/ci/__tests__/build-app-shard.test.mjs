@@ -1064,7 +1064,7 @@ test('shared material transport retains the declared artifact closure and reject
     if (scenario === 'missing-guid') pack.assets[0].guid = 'not-the-roster-guid';
     writeFileSync(
       path,
-      JSON.stringify({ schemaVersion: 'pack-material-programs/1', pack, programs: [{}] }),
+      JSON.stringify({ schemaVersion: 'pack-material-programs/2', pack, programs: [{}], abis: [] }),
     );
     try {
       const result = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);

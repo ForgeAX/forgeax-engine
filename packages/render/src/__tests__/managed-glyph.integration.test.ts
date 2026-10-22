@@ -104,18 +104,11 @@ it.each([
         if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
         else if (request === 'full') extractions += labels.length;
-        return extractFrames(
-          [world],
-          owner,
-          assets,
-          undefined,
-          scene.materialSnapshotCacheStore(),
-          {
-            cull: 'none',
-            retainHidden: true,
-            renderables: request,
-          },
-        );
+        return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
       },
       [lease],
     );

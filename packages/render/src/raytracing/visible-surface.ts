@@ -70,7 +70,11 @@ export function projectVisibleSurfaces(
     // Deformed and LOD draws publish no rows until their producers publish matching
     // raster addresses: their pixels read as uncovered (row 0) instead of failing
     // every frame of a scene that also holds a skinned character.
-    if (source.skin !== undefined || source.morph !== undefined || (source.lods?.length ?? 0) > 0)
+    if (
+      source.skinBinding !== undefined ||
+      source.morph !== undefined ||
+      (source.lods?.length ?? 0) > 0
+    )
       continue;
     const instances = source.instances;
     const instanceCount = instances?.instanceCount ?? 1;

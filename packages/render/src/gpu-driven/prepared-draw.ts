@@ -4,6 +4,7 @@ import type {
   MaterialProgramVertexInput,
   PrimitiveTopology,
 } from '@forgeax/engine-types';
+import { materialProgramUsesSkin } from '@forgeax/engine-types';
 import {
   GpuDrivenPreparationError,
   type GpuDrivenPreparationErrorDetail,
@@ -33,7 +34,6 @@ export interface PreparedGpuDrivenDraw {
   readonly uvSets: MaterialProgramAbi['uvSets'];
   readonly vertexInputs: MaterialProgramAbi['vertexInputs'];
   readonly alphaMask: MaterialProgramAbi['alphaMask'];
-  readonly skinPaletteAddress: MaterialProgramAbi['skinPaletteAddress'];
   readonly topology: PrimitiveTopology;
   readonly indexed: boolean;
   readonly first: number;
@@ -330,11 +330,11 @@ export function prepareGpuDrivenDraw(
     });
   }
   const deformation = input.deformation;
-  if (deformation === 'skin' && receipt.skinPaletteAddress === undefined) {
+  if (deformation === 'skin' && !materialProgramUsesSkin(receipt)) {
     return failure('skin-receipt-mismatch', {
-      reason: 'skin-address-missing',
+      reason: 'skin-inputs-missing',
       owner: 'skin',
-      expected: 'a material ABI with a storage palette address',
+      expected: 'a material ABI with paired Skin vertex inputs',
     });
   }
   return {
@@ -354,7 +354,6 @@ export function prepareGpuDrivenDraw(
       uvSets: receipt.uvSets,
       vertexInputs: receipt.vertexInputs,
       alphaMask: receipt.alphaMask,
-      skinPaletteAddress: receipt.skinPaletteAddress,
       topology: input.draw.topology,
       indexed: input.draw.kind === 'indexed',
       first: input.draw.first,

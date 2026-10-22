@@ -460,7 +460,7 @@ describe('GPU-driven production shadow projection', () => {
     ];
     const sourceForRecord: RenderableSnapshot = {
       ...source,
-      ...(skinned ? { skin: { buffer: {} as never, byteOffset: 0 } as never } : {}),
+      ...(skinned ? { skinBinding: { skeleton: 7, joints: [19] } } : {}),
       material: required(materials[0]),
       materials,
       gpuDrivenDraws: draws,
@@ -499,15 +499,25 @@ describe('GPU-driven production shadow projection', () => {
     const context = {
       runtime: {
         device,
-        getMaterialShaderPipeline: (...args: unknown[]) => {
+        getMaterialShaderPipelineEntry: (...args: unknown[]) => {
           pipelineRequests.push(args);
-          return {} as never;
+          return { pipeline: {} as never, group2Contract: skinned ? 'skin' : 'mesh' };
         },
+        demandSkinTask: () => ({
+          data: {},
+          auxiliary: {},
+          dataOffset: 0,
+          auxiliaryOffset: 0,
+          dataSize: 160,
+          auxiliarySize: 16,
+          jointCount: 1,
+          flags: 1,
+        }),
       },
       pipelineState: {
         identityInstanceBuffer,
         pbrSkinMeshBindGroupLayout: {} as never,
-        skinPaletteAllocator: { bindingWindowBytes: 256 },
+
         instancesBindGroupLayout,
         materialBindGroupLayout: {} as never,
         materialUniformBuffer: { buffer: {} as never, sizeInBytes: 256 },
@@ -551,13 +561,11 @@ describe('GPU-driven production shadow projection', () => {
       bindGroupCounts: { createBindGroup: 0, keys: [] },
       dispatch: [],
       // Stands in for the persistent scene owner, the only bounds source.
-      shadowCasterBounds: (source: RenderableSnapshot) => {
-        if (source.localAabb === undefined) return undefined;
-        const bounds = box3.transformBox3(box3.create(), source.localAabb, source.transform.world);
-        return {
-          min: [bounds[0], bounds[1], bounds[2]],
-          max: [bounds[3], bounds[4], bounds[5]],
-        };
+      shadowCasterBounds: (source: RenderableSnapshot, out: box3.Box3) => {
+        if (source.skinBinding !== undefined) return false;
+        if (source.localAabb === undefined) return false;
+        box3.transformBox3(out, source.localAabb, source.transform.world);
+        return true;
       },
     } as never;
     const selection = receiptSelection(
@@ -566,11 +574,11 @@ describe('GPU-driven production shadow projection', () => {
     );
     Object.assign(context, { shadowSlotForEntity: () => ({ slot: 0, generation: 0 }) });
     recordShadowCasterDraws(context, pass, {} as never, {} as never, [selection]);
-    expect(indexedDraws.map((args) => args[2])).toEqual(skinned ? [0, 3, 6, 6] : [3, 6, 6]);
+    expect(indexedDraws.map((args) => args[2])).toEqual([3, 6, 6]);
     const authored = pipelineRequests.find((args) => args[0] === 'custom-shadow-caster');
     expect(authored).toBeDefined();
     expect(authored?.[2]).toEqual({ cullMode: 'none', frontFace: mirrored ? 'ccw' : 'cw' });
-    expect(authored?.[15]).toBe(skinned ? 'pbr-skin' : 'pbr');
+    expect(authored?.[15]).toBeUndefined();
     if (skinned) expect(authored?.[5]).toContain('SKINNING_DISABLED=false');
 
     sourceForRecord.transform.world[12] = 100;
@@ -584,7 +592,7 @@ describe('GPU-driven production shadow projection', () => {
       false,
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     );
-    expect(indexedDraws).toHaveLength(skinned ? 4 : 0);
+    expect(indexedDraws).toHaveLength(skinned ? 3 : 0);
   });
 
   it.each([
@@ -652,10 +660,17 @@ describe('GPU-driven production shadow projection', () => {
         },
       ],
       materialFrame: new MaterialFrame(undefined).with(source.material, 1),
-      shadowCasterBounds: () => ({
-        min: [source.transform.world[12], -1, -1],
-        max: [(source.transform.world[12] ?? 0) + 2, 1, 1],
-      }),
+      shadowCasterBounds: (_source: RenderableSnapshot, out: box3.Box3) => {
+        out.set([
+          source.transform.world[12] ?? 0,
+          -1,
+          -1,
+          (source.transform.world[12] ?? 0) + 2,
+          1,
+          1,
+        ]);
+        return true;
+      },
       shadowViewPlanesByView: new Map([
         [key, frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()))],
       ]),

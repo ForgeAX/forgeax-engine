@@ -291,7 +291,7 @@ describe('GpuDrivenView graph projection', () => {
       bufferRebuilds: 1,
 
       batchUploadBytes: GPU_DRIVEN_BATCH_STRIDE,
-      viewConstantsUploadBytes: 528,
+      viewConstantsUploadBytes: 784,
       bindGroupCreates: 1,
     });
     expect(view.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
@@ -307,7 +307,7 @@ describe('GpuDrivenView graph projection', () => {
       bufferRebuilds: 1,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
-      viewConstantsUploadBytes: 528,
+      viewConstantsUploadBytes: 784,
       bindGroupCreates: 0,
     });
 

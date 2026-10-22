@@ -32,7 +32,7 @@ import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
+import { SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   admitGpuFixture,
   snapshot as gpuSnapshot,
@@ -1078,18 +1078,16 @@ describe('selected GPU material graph dependencies', () => {
 
   it('builds the skin adapter from its selected receipt instead of an unused fallback', async () => {
     const f = await fixture();
-    const allocator = createSkinPaletteAllocator(f.device, 1 << 20);
+    const skinInputs = new SkinSceneInputs(f.input.scene.scene.inputs.arena, () => ({
+      kind: 'skeleton',
+      jointCount: 1,
+      inverseBindMatrices: mat4.identity(mat4.create()),
+    }));
     try {
       const main = defined(f.input.materialArtifact);
       const receipt = createStandardPbrArtifactReceipt(true);
       const skinArtifact = { ...main, material: 'forgeax::pbr-skin', receipt };
       const source = defined(f.input.scene.slots.at(1)).snapshot;
-      const skin = allocator.allocatePersistentSlice({
-        identity: 'fixture-skin',
-        generation: 1,
-        jointCount: 1,
-        bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-      });
       const material = new MaterialResource({
         ...source.material.snapshot,
         materialShaderId: skinArtifact.material,
@@ -1099,7 +1097,7 @@ describe('selected GPU material graph dependencies', () => {
         ...source,
         material,
         materials: [material],
-        skin,
+        skinBinding: { skeleton: 7, joints: [19] },
         gpuDrivenDraws: defined(source.gpuDrivenDraws).map((draw) => ({
           ...draw,
           geometry: {
@@ -1111,13 +1109,16 @@ describe('selected GPU material graph dependencies', () => {
             ...defined(draw.prepared),
             identity: { ...defined(draw.prepared).identity, deformation: 'skin' },
             vertexInputs: receipt.vertexInputs,
-            skinPaletteAddress: receipt.skinPaletteAddress,
           },
         })),
       };
+      const before = f.projection.slotsSnapshot();
       const delta = f.projection.apply([
         { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot },
       ]);
+      skinInputs.apply(before, delta);
+      skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+      Object.assign(f.input.scene, { skin: skinInputs.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
       f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
@@ -1132,14 +1133,18 @@ describe('selected GPU material graph dependencies', () => {
       const skinLayout = f.device
         .createBindGroupLayout({
           entries: [
-            { binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } },
+            {
+              binding: 0,
+              visibility: 1,
+              buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+            },
             { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+            { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
           ],
         })
         .unwrap();
       const materialPipelineState = {
         ...state,
-        skinPaletteAllocator: allocator,
         gpuDrivenPbrPrograms: new Map([
           ...defined(state.gpuDrivenPbrPrograms),
           [
@@ -1175,8 +1180,8 @@ describe('selected GPU material graph dependencies', () => {
       expect(next.topologySignature).toBe(signature);
       sameProjection(facts, projectFacts(next));
     } finally {
+      skinInputs.dispose();
       f.close();
-      allocator.dispose();
     }
   });
 

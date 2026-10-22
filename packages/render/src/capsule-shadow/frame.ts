@@ -81,6 +81,9 @@ export function buildCapsuleShadowFrame(
   coneHalfAngle: number,
   width: number,
   height: number,
+  demand: NonNullable<
+    import('../record/render-context').RenderSystemRuntime['demandCapsuleShadow']
+  >,
 ): CapsuleShadowFrame {
   const lx = -(lightDirection[0] ?? 0);
   const ly = -(lightDirection[1] ?? -1);
@@ -92,7 +95,7 @@ export function buildCapsuleShadowFrame(
   const cz = camera.position[2] ?? 0;
   const candidates: Candidate[] = [];
   for (const source of renderables) {
-    const state = source.capsuleShadow;
+    const state = demand(source);
     if (state?.status !== 'ready' || !capsuleShadowParticipates(source, materials)) continue;
     for (let offset = 0; offset < state.capsules.length; offset += WORLD_CAPSULE_STRIDE) {
       const c = state.capsules;

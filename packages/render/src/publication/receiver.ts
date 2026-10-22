@@ -1,4 +1,4 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
 import type { AssetChange, AssetReader } from '@forgeax/engine-assets-runtime/internal';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
@@ -9,7 +9,6 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import { WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
 import { LIGHTING_CHANNELS_DEFAULT, validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import {
@@ -42,13 +41,16 @@ import { retainPublicationDispatchGroups } from './dispatch-groups';
 import { copyPublishedMesh, ownReceivedPublishedMesh, samePublishedMesh } from './mesh';
 import {
   installPublicationPrograms,
+  PublicationMaterialProjectionAdmission,
   rebindPublicationMaterialSchemas,
-  validPublicationMaterialProjection,
 } from './programs';
 import type { RenderResourceScope } from './resource-scope';
+import { SkinJointReferences } from './skin-joints';
 import { RenderPublicationTargetReceiver, type RenderTargetAuthoring } from './targets';
 
 export interface PreparedRenderPublication {
+  /** Fixed row indices into this packet, not a callback into later receiver state. */
+  readonly skinJoints?: { readonly rows: readonly number[]; readonly retired: ReadonlySet<number> };
   readonly assetChanges: readonly AssetChange[];
   readonly materialUpdates: readonly MaterialResource[];
   readonly resources: RenderResourceScope;
@@ -65,24 +67,20 @@ function finiteFloats(values: Float32Array): boolean {
   return true;
 }
 
-function validPoseMatrices(matrices: readonly Float32Array[]): boolean {
-  for (let index = 0; index < matrices.length; index++) {
-    const matrix = matrices[index];
-    if (!(matrix instanceof Float32Array) || matrix.length !== 16 || !finiteFloats(matrix))
-      return false;
-  }
-  return true;
-}
-
 /** Assets live for this source session; the Renderer owns all retained scene/GPU state. */
 export class RenderPublicationReceiver {
   private revision = 0;
+  private readonly skinJoints = new SkinJointReferences();
+  // Receiver source facts, once per referenced joint. Per-view SkinInputs derive
+  // their numeric roots from these facts; no Binding owns another pose copy.
+  private readonly jointMatrices = new Map<number, Float32Array>();
   private readonly materials = new Map<
     number,
     { readonly resource: MaterialResource; readonly holds: number }
   >();
   private readonly materialIds = new WeakMap<MaterialResource, number>();
   private disposed = false;
+  private failed = false;
   private accepting = false;
   private readonly preparedMeshes = new Map<
     number,
@@ -105,6 +103,8 @@ export class RenderPublicationReceiver {
   private readonly assetVersions = new Map<string, Asset>();
   private readonly assets = new Map<number, RenderPublication['assets'][number]>();
   private readonly acceptedPrograms = new Set<string>();
+  /** Validated, owned projections shared by every material row with equal content. */
+  private readonly projections = new PublicationMaterialProjectionAdmission();
   private readonly resources: RenderResourceScope;
   private guidHandles = new Map<string, number>();
 
@@ -131,7 +131,7 @@ export class RenderPublicationReceiver {
           )
         : ok(value as T);
     };
-    const acceptedRevision = () => this.revision;
+    const acceptedRevision = () => (this.disposed || this.failed ? -1 : this.revision);
     this.resources = {
       get revision() {
         return acceptedRevision();
@@ -177,7 +177,8 @@ export class RenderPublicationReceiver {
   > {
     const reject = (reason: RenderPublicationError['detail']['reason'], subject: string) =>
       err(new RenderPublicationError({ reason, subject }));
-    if (this.disposed) return reject('disposed', 'receiver');
+    if (this.disposed || this.failed)
+      return reject('disposed', 'receiver retired or failed; start a new source epoch');
     if (input.source !== this.identity.source || input.epoch !== this.identity.epoch)
       return reject('identity', 'prepared mesh source/epoch');
     if (
@@ -217,7 +218,10 @@ export class RenderPublicationReceiver {
       resources: this.resources,
       mesh: entry.mesh,
       isCurrent: () =>
-        !released && !this.disposed && this.preparedMeshes.get(input.meshHandle) === entry,
+        !released &&
+        !this.disposed &&
+        !this.failed &&
+        this.preparedMeshes.get(input.meshHandle) === entry,
       release: () => {
         if (released) return;
         released = true;
@@ -251,9 +255,10 @@ export class RenderPublicationReceiver {
   ): Result<PreparedRenderPublication, RenderPublicationError> {
     const reject = (reason: RenderPublicationError['detail']['reason'], subject: string) =>
       err(new RenderPublicationError({ reason, subject }));
-    if (this.disposed) return reject('disposed', 'receiver');
+    if (this.disposed || this.failed)
+      return reject('disposed', 'receiver retired or failed; start a new source epoch');
     if (
-      packet.protocol !== 2 ||
+      packet.protocol !== 3 ||
       !Array.isArray(packet.materials) ||
       !Array.isArray(packet.retiredMaterials)
     )
@@ -268,6 +273,7 @@ export class RenderPublicationReceiver {
       !(packet.upserts instanceof Uint32Array) ||
       packet.upserts.length % 2 !== 0 ||
       !(packet.removed instanceof Uint32Array) ||
+      !(packet.retiredJoints instanceof Uint32Array) ||
       !(packet.transformEntities instanceof Uint32Array) ||
       !(packet.transforms instanceof Float32Array) ||
       packet.transforms.length !== packet.transformEntities.length * 16 ||
@@ -477,11 +483,11 @@ export class RenderPublicationReceiver {
         return reject('shape', 'feature identity');
       featureIdentities.add(row.identity);
     }
-    const matrices = new Map<number, Float32Array>();
+    const matrices = new Map<number, number>();
     for (let i = 0; i < packet.transformEntities.length; i++) {
       const entity = packet.transformEntities[i] as number;
       if (matrices.has(entity)) return reject('shape', 'duplicate transform identity');
-      matrices.set(entity, packet.transforms.slice(i * 16, i * 16 + 16));
+      matrices.set(entity, i);
     }
     const stagedMaterials = new Map<number, MaterialResource>();
     for (const row of packet.materials) {
@@ -539,7 +545,11 @@ export class RenderPublicationReceiver {
     for (let i = 0; i < packet.upserts.length; i += 2) {
       const entityKey = packet.upserts[i] as number;
       const template = packet.templates[packet.upserts[i + 1] as number];
-      const world = matrices.get(entityKey);
+      const matrixIndex = matrices.get(entityKey);
+      const world =
+        matrixIndex === undefined
+          ? undefined
+          : packet.transforms.slice(matrixIndex * 16, matrixIndex * 16 + 16);
       if (template === undefined || world === undefined || updated.has(entityKey))
         return reject('shape', 'upsert template/transform');
       if (!Array.isArray(template.snapshot?.materials) || !Array.isArray(template.dispatch))
@@ -638,26 +648,39 @@ export class RenderPublicationReceiver {
               : !sourceTokens.has(renderTextureSourceKey(source)))
           )
             return reject('shape', 'missing material texture source');
-      if (template.snapshot.skin !== undefined) return reject('shape', 'source GPU skin receipt');
-      const pose = template.snapshot.skinPose;
+      if ('skin' in template.snapshot && template.snapshot.skin !== undefined)
+        return reject('shape', 'source GPU skin receipt');
+      const binding = template.snapshot.skinBinding;
       if (
-        pose !== undefined &&
-        (!Number.isInteger(pose.jointCount) ||
-          pose.jointCount <= 0 ||
-          pose.inverseBindMatrices.length !== pose.jointCount ||
-          pose.jointWorlds.length !== pose.jointCount ||
-          !validPoseMatrices(pose.inverseBindMatrices) ||
-          !validPoseMatrices(pose.jointWorlds))
+        binding !== undefined &&
+        (binding === null ||
+          typeof binding !== 'object' ||
+          !Number.isSafeInteger(binding.skeleton) ||
+          binding.skeleton <= 0 ||
+          binding.skeleton > 0xffffffff ||
+          !Array.isArray(binding.joints) ||
+          binding.joints.length === 0 ||
+          binding.joints.some(
+            (joint: unknown) =>
+              !Number.isSafeInteger(joint) ||
+              typeof joint !== 'number' ||
+              joint < 0 ||
+              joint > 0xffffffff,
+          ))
       )
-        return reject('shape', 'skin pose');
-      const capsuleShadow = template.snapshot.capsuleShadow;
+        return reject('shape', 'static Skin binding');
+      const ownedBinding =
+        binding === undefined
+          ? undefined
+          : Object.freeze({
+              skeleton: binding.skeleton,
+              joints: Object.freeze([...binding.joints]),
+            });
       if (
-        capsuleShadow?.status === 'ready' &&
-        (!(capsuleShadow.capsules instanceof Float32Array) ||
-          capsuleShadow.capsules.length % WORLD_CAPSULE_STRIDE !== 0 ||
-          !finiteFloats(capsuleShadow.capsules))
+        template.snapshot.capsuleShadowRequested !== undefined &&
+        template.snapshot.capsuleShadowRequested !== true
       )
-        return reject('shape', 'capsule shadow');
+        return reject('shape', 'capsule shadow author request');
       updated.add(entityKey);
       releaseEntityMaterials(entityKey);
       for (const id of template.snapshot.materials) hold(id, 1);
@@ -665,6 +688,7 @@ export class RenderPublicationReceiver {
       const { materialOverrides: _overrides, ...templateContent } = template.snapshot;
       const snapshot: RenderableSnapshot = {
         ...templateContent,
+        ...(ownedBinding === undefined ? {} : { skinBinding: ownedBinding }),
         ...(overrides === undefined
           ? {}
           : { materialOverrides: captureMaterialOverrides(overrides) }),
@@ -687,12 +711,38 @@ export class RenderPublicationReceiver {
       releaseEntityMaterials(entityKey);
       operations.push({ kind: 'remove', worldId: 0, entityKey });
     }
-    for (const [entityKey, world] of matrices) {
-      if (removed.has(entityKey)) return reject('shape', 'removed transform');
-      if (!updated.has(entityKey) && !this.entities.has(entityKey))
-        return reject('shape', 'unknown transform identity');
-      if (!updated.has(entityKey))
+    let referenceEdits: Map<number, readonly number[] | undefined> | undefined;
+    for (const entity of removed)
+      if (this.skinJoints.hasBinding(entity)) {
+        referenceEdits ??= new Map();
+        referenceEdits.set(entity, undefined);
+      }
+    for (const row of renderables)
+      if (row.skinBinding !== undefined || this.skinJoints.hasBinding(row.entityKey)) {
+        referenceEdits ??= new Map();
+        referenceEdits.set(row.entityKey, row.skinBinding?.joints);
+      }
+    const references =
+      referenceEdits === undefined ? undefined : this.skinJoints.prepare(referenceEdits);
+    const retiredJoints = new Set(packet.retiredJoints);
+    if (retiredJoints.size !== packet.retiredJoints.length)
+      return reject('shape', 'duplicate joint retirement');
+    for (const joint of retiredJoints)
+      if (!this.skinJoints.has(joint) && !(references?.has(joint) ?? false))
+        return reject('shape', 'unknown joint retirement');
+    for (const joint of references?.retired ?? []) retiredJoints.add(joint);
+    const jointRows: number[] = [];
+    for (const [entityKey, index] of matrices) {
+      const renderable =
+        !removed.has(entityKey) && (updated.has(entityKey) || this.entities.has(entityKey));
+      const joint = references?.has(entityKey) ?? this.skinJoints.has(entityKey);
+      if (!renderable && !joint) return reject('shape', 'unknown transform identity');
+      if (joint && !retiredJoints.has(entityKey)) jointRows.push(index);
+      else if (!renderable) return reject('shape', 'retired joint also has a positive row');
+      if (renderable && !updated.has(entityKey)) {
+        const world = packet.transforms.slice(index * 16, index * 16 + 16);
         operations.push({ kind: 'update', worldId: 0, entityKey, world });
+      }
     }
     const retiredMaterials = new Set(packet.retiredMaterials);
     if (retiredMaterials.size !== packet.retiredMaterials.length)
@@ -714,6 +764,13 @@ export class RenderPublicationReceiver {
     const patchedAssets: { row: RenderPublication['assets'][number]; commit(): void }[] = [];
     const packetPrograms = new Set(packet.programs.map((program) => program.key));
     const stalePreparations = new Set<number>();
+    // Structured clone keeps one shared projection object per packet; content
+    // repeated across packets reuses its validated owned copy by digest+equality.
+    const projectionAliases = new Map<object, MaterialRenderProjection>();
+    const admittedProjections = new Map<
+      RenderPublication['assets'][number],
+      MaterialRenderProjection
+    >();
     for (const row of packet.assets) {
       if (
         row.value === null ||
@@ -739,20 +796,22 @@ export class RenderPublicationReceiver {
       assetHandles.add(row.handle);
       if (row.materialProjection !== undefined && row.value.kind !== 'material')
         return reject('shape', 'material projection on another asset kind');
-      if (
-        row.materialProjection !== undefined &&
-        row.materialProjection !== null &&
-        (row.value.kind !== 'material' ||
-          !validPublicationMaterialProjection(
-            row.materialProjection,
-            row.value,
-            (key) =>
-              packetPrograms.has(key) ||
-              this.acceptedPrograms.has(key) ||
-              materialAssets?.shaderRegistry.findMaterialArtifact(key).ok === true,
-          ))
-      )
-        return reject('shape', 'material source projection');
+      if (row.materialProjection !== undefined && row.materialProjection !== null) {
+        const projection =
+          row.value.kind === 'material'
+            ? this.projections.admit(
+                row.materialProjection,
+                row.value,
+                (key) =>
+                  packetPrograms.has(key) ||
+                  this.acceptedPrograms.has(key) ||
+                  materialAssets?.shaderRegistry.findMaterialArtifact(key).ok === true,
+                projectionAliases,
+              )
+            : undefined;
+        if (projection === undefined) return reject('shape', 'material source projection');
+        admittedProjections.set(row, projection);
+      }
       const prepared = this.preparedMeshes.get(row.handle);
       if (prepared !== undefined) {
         if (prepared.revision < row.revision) stalePreparations.add(row.handle);
@@ -870,7 +929,7 @@ export class RenderPublicationReceiver {
           ? this.assets.get(row.handle)?.materialProjection
           : row.materialProjection === null
             ? undefined
-            : ownRenderFeatureProgramData(row.materialProjection);
+            : admittedProjections.get(row);
       return {
         ...row,
         materialProjection: projection ?? null,
@@ -881,7 +940,27 @@ export class RenderPublicationReceiver {
             : undefined) ?? (isOwnedRenderFeatureProgramData(program) ? program : row.value),
       };
     });
+    for (const row of renderables) {
+      const binding = row.skinBinding;
+      if (binding === undefined) continue;
+      const skeleton =
+        patchedAssets.find((item) => item.row.handle === binding.skeleton)?.row.value ??
+        packet.assets.find((item) => item.handle === binding.skeleton)?.value ??
+        this.assets.get(binding.skeleton)?.value;
+      if (
+        skeleton?.kind !== 'skeleton' ||
+        !(skeleton.inverseBindMatrices instanceof Float32Array) ||
+        skeleton.inverseBindMatrices.length !== skeleton.jointCount * 16 ||
+        !finiteFloats(skeleton.inverseBindMatrices)
+      )
+        return reject('shape', 'Skin Skeleton definition');
+    }
     let prepared: PreparedRenderPublication = {
+      ...(jointRows.length === 0 && retiredJoints.size === 0
+        ? {}
+        : {
+            skinJoints: { rows: jointRows, retired: retiredJoints },
+          }),
       assetChanges,
       materialUpdates: [...stagedMaterials.values()],
       resources: this.resources,
@@ -904,138 +983,203 @@ export class RenderPublicationReceiver {
     if (this.disposed) return reject('disposed', 'receiver retired during admission');
     // Program/target admission can throw. Keep the accepted resource namespace
     // and revision unchanged until it succeeds so the same packet can retry.
-    const stagedMaterialIds = [...stagedMaterials.keys()];
-    const canonical = new Map<MaterialResource, MaterialResource>();
-    const materialUpdates = prepared.materialUpdates.map((resource, index) => {
-      const id = stagedMaterialIds[index] as number;
-      const previous = this.materials.get(id);
-      const current = previous?.resource ?? resource;
-      if (previous !== undefined) current.adopt(resource.snapshot);
-      this.materials.set(id, {
-        resource: current,
-        holds: materialHolds.get(id) ?? previous?.holds ?? 0,
-      });
-      this.materialIds.set(current, id);
-      canonical.set(resource, current);
-      return current;
-    });
-    for (const [id, holds] of materialHolds) {
-      const current = this.materials.get(id);
-      if (current !== undefined) this.materials.set(id, { ...current, holds });
-    }
-    for (const id of retiredMaterials) this.materials.delete(id);
-    const acceptedRows = new Map<RenderableSnapshot, RenderableSnapshot>();
-    for (const row of prepared.frame.renderables)
-      acceptedRows.set(row, {
-        ...row,
-        material: canonical.get(row.material) ?? row.material,
-        materials: row.materials.map((resource) => canonical.get(resource) ?? resource),
-        ...(row.materialOverrides === undefined
-          ? {}
-          : {
-              materialOverrides: captureMaterialOverrides(
-                row.materialOverrides.map((resource) =>
-                  resource === undefined ? undefined : (canonical.get(resource) ?? resource),
-                ),
-              ),
-            }),
-      });
-    prepared = {
-      ...prepared,
-      materialUpdates,
-      frame: { ...prepared.frame, renderables: [...acceptedRows.values()] },
-      operations: prepared.operations.map((operation) =>
-        operation.kind === 'update' && operation.snapshot !== undefined
-          ? { ...operation, snapshot: acceptedRows.get(operation.snapshot) ?? operation.snapshot }
-          : operation,
-      ),
-    };
-    if (packet.baseline) {
-      this.assets.clear();
-      this.acceptedPrograms.clear();
-      this.assetVersions.clear();
-    }
-    for (const key of retiredVersions) this.assetVersions.delete(key);
-    for (const [key, value] of admittedVersions) this.assetVersions.set(key, value);
-    for (const [guid, handle] of guidChanges) {
-      if (handle === undefined) this.guidHandles.delete(guid);
-      else this.guidHandles.set(guid, handle);
-    }
-    for (const handle of packet.retiredAssets) {
-      this.assets.delete(handle);
-      for (const lease of this.preparedMeshes.get(handle)?.leases ?? []) lease.retire();
-      this.preparedMeshes.delete(handle);
-    }
-    for (const row of admittedAssets) {
-      this.assets.set(row.handle, row);
-      if (row.materialProjection !== null && materialAssets !== undefined)
-        materialAssets.materialPayloadProjections.set(row.value, row.materialProjection);
-    }
-    for (const program of packet.programs) this.acceptedPrograms.add(program.key);
-    for (const patch of patchedAssets) {
-      patch.commit();
-      this.assets.set(patch.row.handle, patch.row);
-      if (patch.row.materialProjection != null && materialAssets !== undefined)
-        materialAssets.materialPayloadProjections.set(
-          patch.row.value,
-          patch.row.materialProjection,
-        );
-    }
-    for (const handle of stalePreparations) {
-      const entry = this.preparedMeshes.get(handle);
-      this.preparedMeshes.delete(handle);
-      for (const lease of entry?.leases ?? []) lease.retire();
-    }
-    Object.assign(this.resources, { time: packet.time, transparentSort: packet.transparentSort });
-    this.releaseVideoFrames();
-    this.videoFrames = new Map(
-      packet.videoFrames.map((row) => [`${row.entity}:${row.clip}`, row.frame]),
-    );
-    this.canvases.accept(packet.canvasFrames ?? []);
-    this.revision = packet.revision;
-    for (const entity of removed) this.entities.delete(entity);
-    const dispatchByEntity = new Map<number, DispatchEntry[]>();
-    for (const item of prepared.frame.dispatch) {
-      const entity = prepared.frame.renderables.at(item.renderableIndex)?.entityKey;
-      if (entity === undefined) continue;
-      const entries = dispatchByEntity.get(entity) ?? [];
-      entries.push(item);
-      dispatchByEntity.set(entity, entries);
-    }
-    const dispatchGroups: DispatchList[] = [];
-    for (const snapshot of prepared.frame.renderables) {
-      const dispatch = dispatchByEntity.get(snapshot.entityKey) ?? [];
-      this.entities.set(snapshot.entityKey, {
-        snapshot,
-        dispatch,
-      });
-      dispatchGroups.push(dispatch);
-    }
-    retainPublicationDispatchGroups(prepared.frame.dispatch, dispatchGroups);
-    for (const [entity, world] of matrices) {
-      const row = this.entities.get(entity);
-      if (!updated.has(entity) && row !== undefined)
-        this.entities.set(entity, {
-          ...row,
-          snapshot: {
-            ...row.snapshot,
-            transform: { ...row.snapshot.transform, world },
-          },
+    try {
+      const stagedMaterialIds = [...stagedMaterials.keys()];
+      const canonical = new Map<MaterialResource, MaterialResource>();
+      const materialUpdates = prepared.materialUpdates.map((resource, index) => {
+        const id = stagedMaterialIds[index] as number;
+        const previous = this.materials.get(id);
+        const current = previous?.resource ?? resource;
+        if (previous !== undefined) current.adopt(resource.snapshot);
+        this.materials.set(id, {
+          resource: current,
+          holds: materialHolds.get(id) ?? previous?.holds ?? 0,
         });
+        this.materialIds.set(current, id);
+        canonical.set(resource, current);
+        return current;
+      });
+      for (const [id, holds] of materialHolds) {
+        const current = this.materials.get(id);
+        if (current !== undefined) this.materials.set(id, { ...current, holds });
+      }
+      for (const id of retiredMaterials) this.materials.delete(id);
+      const acceptedRows = new Map<RenderableSnapshot, RenderableSnapshot>();
+      for (const row of prepared.frame.renderables)
+        acceptedRows.set(row, {
+          ...row,
+          material: canonical.get(row.material) ?? row.material,
+          materials: row.materials.map((resource) => canonical.get(resource) ?? resource),
+          ...(row.materialOverrides === undefined
+            ? {}
+            : {
+                materialOverrides: captureMaterialOverrides(
+                  row.materialOverrides.map((resource) =>
+                    resource === undefined ? undefined : (canonical.get(resource) ?? resource),
+                  ),
+                ),
+              }),
+        });
+      prepared = {
+        ...prepared,
+        materialUpdates,
+        frame: { ...prepared.frame, renderables: [...acceptedRows.values()] },
+        operations: prepared.operations.map((operation) =>
+          operation.kind === 'update' && operation.snapshot !== undefined
+            ? { ...operation, snapshot: acceptedRows.get(operation.snapshot) ?? operation.snapshot }
+            : operation,
+        ),
+      };
+      if (packet.baseline) {
+        this.assets.clear();
+        this.acceptedPrograms.clear();
+        this.assetVersions.clear();
+      }
+      for (const key of retiredVersions) this.assetVersions.delete(key);
+      for (const [key, value] of admittedVersions) this.assetVersions.set(key, value);
+      for (const [guid, handle] of guidChanges) {
+        if (handle === undefined) this.guidHandles.delete(guid);
+        else this.guidHandles.set(guid, handle);
+      }
+      for (const handle of packet.retiredAssets) {
+        this.assets.delete(handle);
+        for (const lease of this.preparedMeshes.get(handle)?.leases ?? []) lease.retire();
+        this.preparedMeshes.delete(handle);
+      }
+      for (const row of admittedAssets) {
+        this.assets.set(row.handle, row);
+        if (row.materialProjection !== null && materialAssets !== undefined)
+          materialAssets.materialPayloadProjections.set(row.value, row.materialProjection);
+      }
+      for (const program of packet.programs) this.acceptedPrograms.add(program.key);
+      for (const patch of patchedAssets) {
+        patch.commit();
+        this.assets.set(patch.row.handle, patch.row);
+        if (patch.row.materialProjection != null && materialAssets !== undefined)
+          materialAssets.materialPayloadProjections.set(
+            patch.row.value,
+            patch.row.materialProjection,
+          );
+      }
+      for (const handle of stalePreparations) {
+        const entry = this.preparedMeshes.get(handle);
+        this.preparedMeshes.delete(handle);
+        for (const lease of entry?.leases ?? []) lease.retire();
+      }
+      Object.assign(this.resources, { time: packet.time, transparentSort: packet.transparentSort });
+      this.releaseVideoFrames();
+      this.videoFrames = new Map(
+        packet.videoFrames.map((row) => [`${row.entity}:${row.clip}`, row.frame]),
+      );
+      this.canvases.accept(packet.canvasFrames ?? []);
+      references?.commit();
+      for (const joint of retiredJoints) this.jointMatrices.delete(joint);
+      for (const index of jointRows) {
+        const joint = packet.transformEntities[index] as number;
+        let matrix = this.jointMatrices.get(joint);
+        if (matrix === undefined) {
+          matrix = new Float32Array(16);
+          this.jointMatrices.set(joint, matrix);
+        }
+        for (let lane = 0; lane < 16; lane++)
+          matrix[lane] = packet.transforms[index * 16 + lane] as number;
+      }
+      this.revision = packet.revision;
+      for (const entity of removed) this.entities.delete(entity);
+      const dispatchByEntity = new Map<number, DispatchEntry[]>();
+      for (const item of prepared.frame.dispatch) {
+        const entity = prepared.frame.renderables.at(item.renderableIndex)?.entityKey;
+        if (entity === undefined) continue;
+        const entries = dispatchByEntity.get(entity) ?? [];
+        entries.push(item);
+        dispatchByEntity.set(entity, entries);
+      }
+      const dispatchGroups: DispatchList[] = [];
+      for (const snapshot of prepared.frame.renderables) {
+        const dispatch = dispatchByEntity.get(snapshot.entityKey) ?? [];
+        this.entities.set(snapshot.entityKey, {
+          snapshot,
+          dispatch,
+        });
+        dispatchGroups.push(dispatch);
+      }
+      retainPublicationDispatchGroups(prepared.frame.dispatch, dispatchGroups);
+      for (const operation of operations) {
+        if (operation.kind !== 'update' || operation.world === undefined) continue;
+        const row = this.entities.get(operation.entityKey);
+        if (row !== undefined && !updated.has(operation.entityKey))
+          this.entities.set(operation.entityKey, {
+            ...row,
+            snapshot: {
+              ...row.snapshot,
+              transform: { ...row.snapshot.transform, world: operation.world },
+            },
+          });
+      }
+      for (const row of [...packet.assets, ...packet.assetPatches]) {
+        const candidate = this.preparedMeshes.get(row.handle);
+        if (candidate !== undefined && candidate.revision === row.revision)
+          for (const lease of candidate.leases) lease.published();
+      }
+      return ok(prepared);
+    } catch (cause) {
+      this.failed = true;
+      throw new AggregateError(
+        [cause],
+        'Render publication adoption failed; start a new source epoch',
+        { cause },
+      );
     }
-    for (const row of [...packet.assets, ...packet.assetPatches]) {
-      const candidate = this.preparedMeshes.get(row.handle);
-      if (candidate !== undefined && candidate.revision === row.revision)
-        for (const lease of candidate.leases) lease.published();
-    }
-    return ok(prepared);
   }
 
   /** A new view starts at the accepted scene, including changes made while no view rendered. */
   snapshot(input: PreparedRenderPublication): PreparedRenderPublication {
+    if (this.disposed || this.failed)
+      throw new RenderPublicationError({
+        reason: 'disposed',
+        subject: 'receiver retired or failed; start a new source epoch',
+      });
+    if (
+      this.accepting ||
+      input.resources !== this.resources ||
+      input.packet.source !== this.identity.source ||
+      input.packet.epoch !== this.identity.epoch ||
+      input.packet.revision !== this.revision ||
+      input.resources.revision !== this.revision
+    )
+      throw new RenderPublicationError({
+        reason: 'base',
+        subject: 'current accepted source snapshot outside admission',
+      });
     const renderables: RenderableSnapshot[] = [];
     const dispatch: DispatchEntry[] = [];
     const dispatchGroups: DispatchEntry[][] = [];
+    // Cold initialization/recovery only. Normal accept updates known rows above
+    // and never walks this population to discover changes.
+    const matrixRows = new Map<number, number>();
+    for (const entity of this.entities.keys()) matrixRows.set(entity, matrixRows.size);
+    const jointRows: number[] = [];
+    for (const joint of this.jointMatrices.keys()) {
+      let index = matrixRows.get(joint);
+      if (index === undefined) {
+        index = matrixRows.size;
+        matrixRows.set(joint, index);
+      }
+      jointRows.push(index);
+    }
+    const transformEntities = new Uint32Array(matrixRows.size);
+    const transforms = new Float32Array(matrixRows.size * 16);
+    for (const [entity, index] of matrixRows) {
+      transformEntities[index] = entity;
+      const matrix =
+        this.jointMatrices.get(entity) ?? this.entities.get(entity)?.snapshot.transform.world;
+      if (matrix === undefined)
+        throw new RenderPublicationError({
+          reason: 'shape',
+          subject: 'owned current transform row',
+        });
+      for (let lane = 0; lane < 16; lane++) transforms[index * 16 + lane] = matrix[lane] as number;
+    }
     for (const row of this.entities.values()) {
       const group: DispatchEntry[] = [];
       for (const item of row.dispatch) {
@@ -1049,7 +1193,15 @@ export class RenderPublicationReceiver {
     retainPublicationDispatchGroups(dispatch, dispatchGroups);
     return {
       ...input,
-      packet: { ...input.packet, baseline: true },
+      skinJoints: { rows: jointRows, retired: new Set() },
+      packet: {
+        ...input.packet,
+        baseline: true,
+        transformEntities,
+        transforms,
+        retiredJoints: new Uint32Array(0),
+        removed: new Uint32Array(0),
+      },
       // A baseline seeds the accepted material contexts as well as entity rows;
       // the most recent delta may contain no material changes at all.
       materialUpdates: [...this.materials.values()].map(({ resource }) => resource),
@@ -1079,13 +1231,16 @@ export class RenderPublicationReceiver {
     this.releaseVideoFrames();
     this.assets.clear();
     this.acceptedPrograms.clear();
+    this.projections.clear();
     this.assetVersions.clear();
     this.materials.clear();
     this.guidHandles = new Map();
     this.entities.clear();
+    this.skinJoints.clear();
+    this.jointMatrices.clear();
   }
 
   get acceptedRevision(): number {
-    return this.revision;
+    return this.disposed || this.failed ? -1 : this.revision;
   }
 }

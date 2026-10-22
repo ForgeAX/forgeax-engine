@@ -37,6 +37,7 @@ import { type CompileResult, compileShader } from '../compile.js';
 import { ShaderError } from '../errors.js';
 import { compareDerivedMaterialInterface, validateSceneIndexStorage } from '../reflection.js';
 import { composeSurfaceSource, digestMaterialSourceClosure } from './compose.js';
+import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
 import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
 import { validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
@@ -48,6 +49,25 @@ import {
   lowerMaterialVariantContext,
   type MaterialVariantContext,
 } from './variant-context.js';
+
+// Compiler-owned template contracts. Runtime never infers this fact from names
+// or vertex inputs. Unknown entry points and project vertex templates get no proof.
+// Legacy aliases publish the same Engine source and therefore the same proof.
+const CANONICAL_POSITION_ENTRIES: Readonly<Record<string, readonly string[]>> = {
+  'forgeax_material::standard': ['vs_main', 'vs_temporal'],
+  'forgeax_material::pbr-skin': ['vs_main', 'vs_temporal'],
+  'forgeax_material::unlit': ['vs_main', 'vs_shadow', 'vs_temporal'],
+  'forgeax::default-shadow-caster': ['vs_main'],
+};
+const STANDARD_POSITION_ENTRIES: Readonly<Record<string, readonly string[]>> = {
+  ...CANONICAL_POSITION_ENTRIES,
+  ...Object.fromEntries(
+    Object.entries(ENGINE_MODULE_ALIASES).flatMap(([canonical, alias]) => {
+      const entries = CANONICAL_POSITION_ENTRIES[canonical];
+      return entries === undefined ? [] : [[alias, entries]];
+    }),
+  ),
+};
 
 export interface MaterialCookRequest {
   readonly material: string;
@@ -847,6 +867,7 @@ export async function cookMaterialAsset(
     let sourceClosureDigest: string;
     let composedSurfaceModule: string | undefined;
     let readsVertexColor: boolean | undefined;
+    let engineTemplateInputs = false;
     if (usesSurfaceSlot) {
       const selectedSurfaceModule =
         pass.program.moduleSlots?.surface ?? resolved.value.asset.surface?.module;
@@ -872,6 +893,7 @@ export async function cookMaterialAsset(
       sourceClosureDigest = surface.value.sourceClosureDigest;
       composedSurfaceModule = surface.value.surfaceModule;
       readsVertexColor = surface.value.readsVertexColor;
+      engineTemplateInputs = surface.value.engineTemplateInputs;
     } else {
       composedSource = applyModuleSlots(
         source,
@@ -886,6 +908,11 @@ export async function cookMaterialAsset(
       sourceClosureDigest = digestMaterialSourceClosure({
         [sourceRecord.value.moduleId]: source,
         ...imports.value,
+      });
+      engineTemplateInputs = sourceClosure.every((module) => {
+        if (module === 'forgeax_material::parameters') return true;
+        const dependency = request.sources.get(module);
+        return dependency.ok && dependency.value.provenance === 'engine';
       });
     }
     // A shared surface can own the material interface behind an import. The
@@ -1258,35 +1285,53 @@ export async function cookMaterialAsset(
         abiKind === 'direct' ? undefined : surfaceProgramAbi(resolved.value.asset);
       if (abiKind === 'medium' && publishedSurface === undefined)
         throw new Error('single-layer medium material must publish a Surface ABI');
-      let skinPaletteAddress: MaterialProgramAbi['skinPaletteAddress'];
-      if (abiKind === 'direct') {
-        const palette = compiled.value.reflection.boundGlobals.find(
+      const skinIndex = vertexInputs.some((input) => input.semantic === 'skinIndex');
+      const skinWeight = vertexInputs.some((input) => input.semantic === 'skinWeight');
+      if (skinIndex !== skinWeight)
+        return err(
+          new ShaderError({
+            code: 'shader-compile-failed',
+            expected: 'paired skinIndex and skinWeight vertex semantics',
+            message: 'incomplete reflected Skin vertex inputs',
+            hint: 'declare both Skin inputs on the actual vertex entry or neither',
+          }),
+        );
+      if (skinIndex) {
+        const current = compiled.value.reflection.boundGlobals.find(
           (global) => global.group === 2 && global.binding === 1,
         );
-        const usesSkin = vertexInputs.some((input) => input.semantic === 'skinIndex');
-        if (usesSkin && palette?.elementStride !== 64)
+        const auxiliary = compiled.value.reflection.boundGlobals.find(
+          (global) => global.group === 2 && global.binding === 2,
+        );
+        const uniform = context.capability === 'uniform-fallback';
+        const valid =
+          auxiliary?.addressSpace === 'uniform' &&
+          (uniform
+            ? current?.addressSpace === 'uniform' &&
+              current.span === 16336 &&
+              auxiliary.span === 16320
+            : current?.addressSpace === 'storage' &&
+              current.elementStride === 16 &&
+              auxiliary.span === 16);
+        if (!valid)
           return err(
             new ShaderError({
               code: 'shader-compile-failed',
-              expected: 'the reflected material joint palette with a 64-byte matrix stride',
-              message: `invalid reflected palette stride: ${palette?.elementStride}`,
-              hint: 'repair the producer vertex and palette declarations before publication',
+              expected:
+                'the reflected Skin task output/address or bounded current/previous uniform pair',
+              message: `invalid reflected Skin task resources (${context.capability}): current=${current?.addressSpace}/${current?.span}/${current?.elementStride}, auxiliary=${auxiliary?.addressSpace}/${auxiliary?.span}/${auxiliary?.elementStride}`,
+              hint: 'use the shared Skin task ABI before publishing a skinned vertex program',
             }),
           );
-        if (usesSkin && palette?.elementStride !== undefined)
-          skinPaletteAddress = {
-            group: palette.group,
-            binding: palette.binding,
-            stride: palette.elementStride,
-          };
-      } else if (
-        (abiKind === 'standard' && vertexInputs.some((input) => input.semantic === 'skinIndex')) ||
-        (abiKind === 'custom-scene' &&
-          context.geometry === 'skinned' &&
-          /\bpalette\b/.test(compiled.value.wgsl))
-      )
-        skinPaletteAddress = { group: 2, binding: 1, stride: 64 };
+      }
       abi = createMaterialProgramArtifactReceipt({
+        ...(engineTemplateInputs &&
+        sourceRecord.value.provenance === 'engine' &&
+        sourceRecord.value.slots.every((slot) => slot === 'surface') &&
+        (context.geometry === 'mesh' || context.geometry === 'skinned') &&
+        STANDARD_POSITION_ENTRIES[sourceRecord.value.moduleId]?.includes(directEntry) === true
+          ? { positionBounds: 'standard-input' as const }
+          : {}),
         schema: schema.value,
         directEntry,
         vertexInputs,
@@ -1298,7 +1343,6 @@ export async function cookMaterialAsset(
         composedSurfaceModule !== 'forgeax_material::opaque_surface'
           ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
           : {}),
-        ...(skinPaletteAddress === undefined ? {} : { skinPaletteAddress }),
         ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
       });
     } catch (error) {

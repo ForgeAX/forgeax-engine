@@ -25,6 +25,7 @@ import {
 } from './publication/resource-scope';
 import { computeProjectionMatrix, computeViewMatrix } from './record/helpers';
 import { MaterialBgAssemblyCache } from './record/material-bg-assembly-cache';
+import { RecordingSkinTasks } from './record/recording-skin-tasks';
 import {
   disposeTargetCaptureLighting,
   disposeTargetCaptures,
@@ -422,6 +423,8 @@ export interface RenderSystem {
     publication?: PreparedRenderPublication,
     isCurrent?: () => boolean,
   ): FramePreparation;
+  /** Current source needs cold admission after initialization or owner retirement. */
+  publicationBaselineRequired(input: PreparedRenderPublication): boolean;
   record(
     worlds: readonly World[],
     opts: DrawOwnerOptions,
@@ -779,6 +782,17 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       internals.gpuStore.adoptCubemapChange(change, scope);
     },
     instanceCollections,
+  });
+  const skinTasks = new RecordingSkinTasks({
+    device: () => internals.device,
+    roots: persistentRenderScene,
+    reportError: (error) => internals.errorRegistry.fire(error),
+  });
+  Object.assign(internals, {
+    demandSkinTask: (source: Parameters<RecordingSkinTasks['demand']>[0]) =>
+      skinTasks.demand(source),
+    demandCapsuleShadow: (source: Parameters<RecordingSkinTasks['capsules']>[0]) =>
+      skinTasks.capsules(source),
   });
   let environmentLifecycle = new EnvironmentLifecycle(internals.deviceScope);
   const transmissionAdmission = new TransmissionCandidateAdmission();
@@ -1747,7 +1761,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       const submission = surfaceSubmissionObservation.inspect();
       return {
         ...persistentRenderScene.inspect(),
-        gpuDriven: gpuDrivenProduction.inspect(),
+        gpuDriven: gpuDrivenProduction.inspect(skinTasks.paletteUploadBytes),
         frameCaches: {
           materialUniforms: {
             ...(frameState.materialUboCounters ?? {
@@ -1770,7 +1784,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       };
     },
     get gpuDrivenInspection(): GpuDrivenProductionInspection {
-      return gpuDrivenProduction.inspect();
+      return gpuDrivenProduction.inspect(skinTasks.paletteUploadBytes);
     },
     get reflectionProbes(): ReflectionProbeInspection {
       return reflectionProbeOwner.inspect();
@@ -1977,7 +1991,10 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       return lastTransmissionInspection;
     },
     captureShadowWorkload: (frameId) =>
-      frameState.shadowRaster.captureWorkload(frameId, gpuDrivenProduction.inspect().shadowViews),
+      frameState.shadowRaster.captureWorkload(
+        frameId,
+        gpuDrivenProduction.inspect(skinTasks.paletteUploadBytes).shadowViews,
+      ),
     get shadowRaster(): ShadowRasterInspection {
       return frameState.shadowRaster.inspect();
     },
@@ -2035,14 +2052,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     },
     detachScene(world: World): void {
       frameState.dynamicResolution?.reset();
-      const worldId = preparedWorlds.indexOf(worldRenderResources(world));
-      const allocator = internals.getPipelineState()?.skinPaletteAllocator;
-      if (allocator !== undefined && allocator !== null) {
-        for (const slot of persistentRenderScene.compositionSlots()) {
-          if (slot.worldId === worldId && slot.snapshot.skin !== undefined)
-            allocator.releasePersistentSlice(slot.snapshot.skin.identity);
-        }
-      }
       persistentRenderScene.detach(world);
       internals.featureSceneInputs?.detach(worldRenderResources(world));
     },
@@ -2062,6 +2071,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     draw(...args) {
       return drainFramePreparation(this.prepareSubmission(...args));
     },
+    publicationBaselineRequired(input) {
+      return persistentRenderScene.publicationBaselineRequired(input.resources);
+    },
     *prepareSubmission(worlds, opts, leases, timing, publication, isCurrent) {
       return yield* prepareFrameSubmission(
         [this.record(worlds, opts, leases, timing, publication)],
@@ -2079,6 +2091,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       encoder?: RhiCommandEncoder,
       mode: boolean | 'capture' = true,
     ): FrameRecording {
+      skinTasks.beginRecording();
       const render = mode === true;
       const captureOnly = mode === 'capture';
       const composition = canonicalizeWorldComposition(worlds, opts, renderReadLeases);
@@ -2118,6 +2131,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       const profileSession = internals.profiler?.activeSession();
       let ownsProfileFrame = false;
       let submitted = false;
+      let sceneSubmitted = false;
+      let recordFailure: unknown;
       // A failed draw cannot publish a startup completion fact. Reset the
       // projection before extraction so a later receipt never reuses an old
       // scene's readiness.
@@ -2180,8 +2195,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                           cubeCameras: publication.frame.cubeCameras,
                         },
                       },
-                  persistentRenderScene,
-                  internals.getPipelineState()?.skinPaletteAllocator,
                   internals.assets,
                   instanceCollections,
                   internals.device.caps.storageBuffer
@@ -2211,7 +2224,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                     ...(cameraEntityKey === undefined ? {} : { cameraEntityKey }),
                   },
                   internals.assets,
-                  internals.getPipelineState(),
                   materialCaches,
                   {
                     ...materialContext,
@@ -3099,6 +3111,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             recordProfilePhase,
             {
               owner: gpuDrivenProduction,
+              onSubmittedWork: (completed) => skinTasks.trackSubmittedWork(completed),
               scene: gpuDrivenScene,
               onRasterLane: (owned) => {
                 persistentRenderScene.setGpuDrivenRasterLane(owned);
@@ -3170,7 +3183,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           ),
           (action) => runProfiledRenderPhase(profileSession, 'record', action),
         );
-        const sceneSubmitted = submitted && frameState.frameOutputs.sceneSubmitted;
+        sceneSubmitted = submitted && frameState.frameOutputs.sceneSubmitted;
         dynamicGeometryFrames.commit(submitted);
         if (!submitted) surfaceSubmissionCandidate.abort();
         frameState.surfaceSubmissionObservation = undefined;
@@ -3439,6 +3452,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         updateTransmissionInspection(transmissionAntialias, sceneSubmitted);
         persistentRenderScene.setPointsLinesInspections(pointsLinesOwner.inspections());
       } catch (err) {
+        recordFailure = err;
         discardStandardOutputStates(frameState);
         if (!submitted) {
           internals.getPipelineState()?.perPassResources.discardBloomResources?.();
@@ -3477,7 +3491,33 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           }),
         );
       } finally {
-        if (!submitted) persistentRenderScene.discardTemporalFrame();
+        const failures = skinTasks.complete(sceneSubmitted);
+        try {
+          if (!submitted) persistentRenderScene.discardTemporalFrame();
+        } catch (cause) {
+          failures.push(cause);
+        }
+        if (failures.length > 0) {
+          if (recordFailure !== undefined) failures.unshift(recordFailure);
+          internals.errorRegistry.fire(
+            new RhiError({
+              code: 'internal-error',
+              expected: 'independent retirement of task, temporal and Skin roots',
+              hint: 'inspect all retained recording and cleanup causes',
+              detail: {
+                error: {
+                  code: 'render-retirement-failed',
+                  message: 'Render recording retirement failed',
+                  detail: {
+                    error: new AggregateError(failures, 'Render recording retirement failed', {
+                      cause: failures[0],
+                    }),
+                  },
+                },
+              },
+            }),
+          );
+        }
         if (ownsProfileFrame) {
           try {
             profileSession?.endFrame();
@@ -3744,122 +3784,141 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     publishRecoveryGraphCandidate: recoveryOwner.publishRecoveryGraphCandidate,
     discardRecoveryGraphCandidate: recoveryOwner.discardRecoveryGraphCandidate,
     disposeFrameState(): void {
-      lastMeshMaterialBindingRenderables = undefined;
-      lastMeshMaterialBindingWorlds = [];
-      lastMeshMaterialBindingMaterials = undefined;
-      frameState.candidatePipelinePreparations?.dispose();
-      if (ownsSceneInputs) internals.featureSceneInputs?.dispose();
-      disposeTargetCaptures(cubeCaptureState);
-      frameState.dynamicResolution?.reset();
-      internals.getPipelineState()?.skinPaletteAllocator?.dispose();
-      pointsLinesOwner.dispose();
-      persistentRenderScene.dispose();
-      terrainLayers.dispose();
-      instanceCollections.dispose();
-      gpuDrivenProduction.dispose();
-      disposeFeatureGpuWork();
-      reflectionProbeOwner.dispose();
-      frameState.ssrHistoryOwner?.dispose();
-      frameState.probePlacement?.dispose();
-      frameState.probePlacement = undefined;
-      frameState.probePlacementFrame = undefined;
-      frameState.rayDiffuse?.dispose();
-      frameState.rayDiffuse = undefined;
-      frameState.irradianceField?.dispose();
-      frameState.irradianceField = undefined;
-      frameState.screenProbe?.dispose();
-      frameState.screenProbe = undefined;
-      frameState.bakedField?.dispose();
-      frameState.bakedField = undefined;
-      frameState.ssrHistoryOwner = undefined;
-      frameState.ssrSpatialAdmission = undefined;
-      // Bloom generations are renderer-owned rather than graph-owned. Drain
-      // candidate, active, and fence-retiring bundles before the rest of the
-      // frame state is torn down; the owner callback is idempotent so the
-      // outer Renderer.dispose cascade can safely call this once only.
-      internals.getPipelineState()?.perPassResources.drainBloomResources?.();
-      internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve');
-      invalidatePostProcessModule('forgeax.taa-resolve');
-      // Post-process parameter UBOs are renderer-owned persistent resources,
-      // rather than graph-owned transient state. Clear the active table before
-      // the feature host is retired so the renderer remains the sole owner.
-      postProcessOwner.dispose();
-      resetSsaoResources(internals);
-      resetHdrpBuffers(internals);
-      // Retire graph-owned resources and dispose instance-buffer caches.
-      frameState.renderBundleCaches?.passes.clear();
-      // Both calls are idempotent + tolerate per-handle errors silently;
-      // the Renderer.dispose() cascade owns the surrounding try/catch
-      // (D-3 method A: void signature, sub-errors fan out via
-      // errorRegistry.fire at the cascade layer, dispose still walks all
-      // 6 steps).
-      frameState.directionalShadowCache?.meshReads.release();
-      frameState.directionalShadowCache = null;
-      frameState.directionalShadowLod = undefined;
-      frameState.directionalShadowCacheRecorded = false;
-      resetFrameRecordingOutputs(frameState.frameOutputs);
-      frameState.lastSuccessfulCameraAntialias = undefined;
-      frameState.lastSuccessfulBarrelDistortion = undefined;
-      frameState.cloudHistoryActive = false;
-      delete frameState.pendingCloudHistoryActive;
-      disposeStandardOutput(frameState);
-      releaseTemporalGpuStates(frameState);
-      for (const buffer of frameState.volumetricFogParams.buffers) {
-        if (buffer === null) continue;
-        const destroyed = internals.device.destroyBuffer(buffer);
-        if (!destroyed.ok) internals.errorRegistry.fire(destroyed.error);
-      }
-      frameState.volumetricFogParams = emptyVolumetricFogParams();
-      frameState.volumetricFogAccepted = undefined;
-      frameState.volumetricFogAcceptedContext = undefined;
-      frameState.volumetricFogHistoryGraph = null;
-      frameState.volumetricFogHistorySlot = null;
-      frameState.volumetricFogHistorySignature = null;
-      frameState.hdrpClusterMembership = null;
-      discardCompiledFrameGraphs(frameState);
-      frameState.standardLightingGraphSignature = '';
-      frameState.submittedInspection = undefined;
-      submittedTerrain = [];
-      frameState.depthOfFieldAccepted = undefined;
-      frameState.depthOfFieldLastSubmitFailed = false;
-      // feat-20260619 M4 (D-6): pass errorRegistry to disposeInstanceBuffers
-      // so destroy failures fire structured errors (unified per-frame +
-      // dispose error strategy).
-      disposeInstanceBuffers(frameState.instanceBuffers, internals.errorRegistry);
-      if (frameState.instanceBufferChunks !== undefined) {
-        disposeInstanceBufferChunks(frameState.instanceBufferChunks, internals.errorRegistry);
-      }
-      disposeTransientInstanceBuffers(frameState.transientInstanceBuffers, internals.errorRegistry);
-      if (frameState.probeBlendRecordBuffer !== undefined) {
-        if (!frameState.probeBlendRecordBuffer.isDestroyed) {
-          const result = frameState.probeBlendRecordBuffer.destroy();
-          if (!result.ok) internals.errorRegistry.fire(result.error);
+      let failure: unknown;
+      try {
+        lastMeshMaterialBindingRenderables = undefined;
+        lastMeshMaterialBindingWorlds = [];
+        lastMeshMaterialBindingMaterials = undefined;
+        frameState.candidatePipelinePreparations?.dispose();
+        if (ownsSceneInputs) internals.featureSceneInputs?.dispose();
+        disposeTargetCaptures(cubeCaptureState);
+        frameState.dynamicResolution?.reset();
+        pointsLinesOwner.dispose();
+        persistentRenderScene.dispose();
+        terrainLayers.dispose();
+        instanceCollections.dispose();
+        gpuDrivenProduction.dispose();
+        disposeFeatureGpuWork();
+        reflectionProbeOwner.dispose();
+        frameState.ssrHistoryOwner?.dispose();
+        frameState.probePlacement?.dispose();
+        frameState.probePlacement = undefined;
+        frameState.probePlacementFrame = undefined;
+        frameState.rayDiffuse?.dispose();
+        frameState.rayDiffuse = undefined;
+        frameState.irradianceField?.dispose();
+        frameState.irradianceField = undefined;
+        frameState.screenProbe?.dispose();
+        frameState.screenProbe = undefined;
+        frameState.bakedField?.dispose();
+        frameState.bakedField = undefined;
+        frameState.ssrHistoryOwner = undefined;
+        frameState.ssrSpatialAdmission = undefined;
+        // Bloom generations are renderer-owned rather than graph-owned. Drain
+        // candidate, active, and fence-retiring bundles before the rest of the
+        // frame state is torn down; the owner callback is idempotent so the
+        // outer Renderer.dispose cascade can safely call this once only.
+        internals.getPipelineState()?.perPassResources.drainBloomResources?.();
+        internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve');
+        invalidatePostProcessModule('forgeax.taa-resolve');
+        // Post-process parameter UBOs are renderer-owned persistent resources,
+        // rather than graph-owned transient state. Clear the active table before
+        // the feature host is retired so the renderer remains the sole owner.
+        postProcessOwner.dispose();
+        resetSsaoResources(internals);
+        resetHdrpBuffers(internals);
+        // Retire graph-owned resources and dispose instance-buffer caches.
+        frameState.renderBundleCaches?.passes.clear();
+        // Both calls are idempotent + tolerate per-handle errors silently;
+        // the Renderer.dispose() cascade owns the surrounding try/catch
+        // (D-3 method A: void signature, sub-errors fan out via
+        // errorRegistry.fire at the cascade layer, dispose still walks all
+        // 6 steps).
+        frameState.directionalShadowCache?.meshReads.release();
+        frameState.directionalShadowCache = null;
+        frameState.directionalShadowLod = undefined;
+        frameState.directionalShadowCacheRecorded = false;
+        resetFrameRecordingOutputs(frameState.frameOutputs);
+        frameState.lastSuccessfulCameraAntialias = undefined;
+        frameState.lastSuccessfulBarrelDistortion = undefined;
+        frameState.cloudHistoryActive = false;
+        delete frameState.pendingCloudHistoryActive;
+        disposeStandardOutput(frameState);
+        releaseTemporalGpuStates(frameState);
+        for (const buffer of frameState.volumetricFogParams.buffers) {
+          if (buffer === null) continue;
+          const destroyed = internals.device.destroyBuffer(buffer);
+          if (!destroyed.ok) internals.errorRegistry.fire(destroyed.error);
         }
-        delete frameState.probeBlendRecordBuffer;
-      }
-      frameState.probeBlendRecordBufferCapacity = 0;
-      frameState.probeBlendBuffers.clear();
-      delete frameState.probeBlendRecordProjection;
-      if (frameState.morphBuffers !== undefined) {
-        for (const entry of frameState.morphBuffers.values()) {
-          if (!entry.buffer.isDestroyed) {
-            const result = entry.buffer.destroy();
+        frameState.volumetricFogParams = emptyVolumetricFogParams();
+        frameState.volumetricFogAccepted = undefined;
+        frameState.volumetricFogAcceptedContext = undefined;
+        frameState.volumetricFogHistoryGraph = null;
+        frameState.volumetricFogHistorySlot = null;
+        frameState.volumetricFogHistorySignature = null;
+        frameState.hdrpClusterMembership = null;
+        discardCompiledFrameGraphs(frameState);
+        frameState.standardLightingGraphSignature = '';
+        frameState.submittedInspection = undefined;
+        submittedTerrain = [];
+        frameState.depthOfFieldAccepted = undefined;
+        frameState.depthOfFieldLastSubmitFailed = false;
+        // feat-20260619 M4 (D-6): pass errorRegistry to disposeInstanceBuffers
+        // so destroy failures fire structured errors (unified per-frame +
+        // dispose error strategy).
+        disposeInstanceBuffers(frameState.instanceBuffers, internals.errorRegistry);
+        if (frameState.instanceBufferChunks !== undefined) {
+          disposeInstanceBufferChunks(frameState.instanceBufferChunks, internals.errorRegistry);
+        }
+        disposeTransientInstanceBuffers(
+          frameState.transientInstanceBuffers,
+          internals.errorRegistry,
+        );
+        if (frameState.probeBlendRecordBuffer !== undefined) {
+          if (!frameState.probeBlendRecordBuffer.isDestroyed) {
+            const result = frameState.probeBlendRecordBuffer.destroy();
             if (!result.ok) internals.errorRegistry.fire(result.error);
           }
+          delete frameState.probeBlendRecordBuffer;
         }
-        frameState.morphBuffers.clear();
+        frameState.probeBlendRecordBufferCapacity = 0;
+        frameState.probeBlendBuffers.clear();
+        delete frameState.probeBlendRecordProjection;
+        if (frameState.morphBuffers !== undefined) {
+          for (const entry of frameState.morphBuffers.values()) {
+            if (!entry.buffer.isDestroyed) {
+              const result = entry.buffer.destroy();
+              if (!result.ok) internals.errorRegistry.fire(result.error);
+            }
+          }
+          frameState.morphBuffers.clear();
+        }
+        // feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-2: dispose the
+        // cube_array shadow atlas owned by the RenderSystem closure. The atlas
+        // is per-RenderSystem (= per Renderer) and is shared transparently
+        // between URP and HDRP pipelines.
+        // Idempotent: dispose() on a null / already-disposed atlas is a no-op.
+        frameState.shadowDepthLayers?.dispose();
+        frameState.shadowDepthLayers = undefined;
+        if (frameState.pointShadowAtlas !== null) {
+          frameState.pointShadowAtlas.dispose();
+          frameState.pointShadowAtlas = null;
+        }
+      } catch (cause) {
+        failure = cause;
       }
-      // feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-2: dispose the
-      // cube_array shadow atlas owned by the RenderSystem closure. The atlas
-      // is per-RenderSystem (= per Renderer) and is shared transparently
-      // between URP and HDRP pipelines.
-      // Idempotent: dispose() on a null / already-disposed atlas is a no-op.
-      frameState.shadowDepthLayers?.dispose();
-      frameState.shadowDepthLayers = undefined;
-      if (frameState.pointShadowAtlas !== null) {
-        frameState.pointShadowAtlas.dispose();
-        frameState.pointShadowAtlas = null;
+      try {
+        skinTasks.dispose();
+      } catch (cause) {
+        if (failure === undefined) failure = cause;
+        else
+          failure = new AggregateError(
+            [failure, cause],
+            'Render state and Skin task disposal failed',
+            { cause: failure },
+          );
       }
+      if (failure !== undefined) throw failure;
     },
     resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {
       frameState.shadowDepthLayers?.dispose();

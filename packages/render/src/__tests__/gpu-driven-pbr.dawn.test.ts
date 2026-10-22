@@ -269,7 +269,7 @@ function alphaMaskSnapshot(
           uvSets: receipt.uvSets,
           vertexInputs: receipt.vertexInputs,
           alphaMask: receipt.alphaMask,
-          skinPaletteAddress: receipt.skinPaletteAddress,
+
           topology: 'triangle-list',
           indexed: true,
           first: 0,
@@ -755,7 +755,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
     expect(structureMetrics).toEqual({
       worldEntitiesScanned: 1,
       sceneTableUploadBytes: expect.any(Number),
-      paletteUploadBytes: 0,
     });
     const iblStart = 1 + BUILTIN_USER_REGION_TEXTURE_FIELDS.length * 2;
     const omitted = omittedStandardMaterialBindings(
@@ -1383,7 +1382,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
       expect(stableMetrics).toEqual({
         worldEntitiesScanned: 0,
         sceneTableUploadBytes: 0,
-        paletteUploadBytes: 0,
       });
       const stablePrepared = production.prepare(
         admitPbrDawnFixture({
@@ -1473,7 +1471,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
         expect(metrics).toEqual({
           worldEntitiesScanned: 0,
           sceneTableUploadBytes: 0,
-          paletteUploadBytes: 0,
         });
       }
       for (const inspection of stableFrameInspections) {

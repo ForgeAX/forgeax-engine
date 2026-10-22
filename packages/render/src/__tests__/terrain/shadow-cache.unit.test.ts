@@ -65,7 +65,7 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
       },
       renderables: sections,
       dispatch: [],
-      worldBoundsOf: () => undefined,
+      worldBoundsOf: () => false,
     }) satisfies PersistentShadowCasterProjection;
   const internals = {
     assets: { catalogEpoch: 1 },

@@ -96,6 +96,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       bootstrapUrl: 'https://example.test/bootstrap.js',
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
+      assetBudgetBytes: 6 * 1024 * 1024 * 1024,
       pipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
@@ -115,6 +116,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       startupTimeoutMs: 100,
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
+      assetBudgetBytes: 6 * 1024 * 1024 * 1024,
       pipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {

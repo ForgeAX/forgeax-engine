@@ -16,6 +16,15 @@ export interface PreparedAssetContent<T = unknown> {
   readonly dependencies?: readonly number[];
 }
 
+/** Default content byte budget of one AssetRegistry: a runaway-growth guard, not a scene cap. */
+export const DEFAULT_ASSET_BUDGET_BYTES = 4 * 1024 * 1024 * 1024;
+
+/** Shared admission check for public content byte budgets, before any registry is created. */
+export function validateAssetBudgetBytes(bytes: unknown): asserts bytes is number {
+  if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0)
+    throw new RangeError('assetBudgetBytes must be a positive safe integer');
+}
+
 export interface AssetLimits {
   readonly maxAssets?: number;
   readonly maxBytes?: number;
@@ -222,7 +231,7 @@ export class AssetRecords implements AssetReferenceOwner {
   constructor(limits: AssetLimits = {}) {
     this.limits = {
       maxAssets: 65_536,
-      maxBytes: 1024 * 1024 * 1024,
+      maxBytes: DEFAULT_ASSET_BUDGET_BYTES,
       maxSnapshots: 128,
       maxRanges: 64,
       maxObservers: 32,

@@ -13,6 +13,7 @@ import {
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   ChildOf,
+  Children,
   GlobalTransform,
   readPresentationWorldMatrix,
   Transform,
@@ -1277,7 +1278,7 @@ it('publishes frame-owned environment and post parameters without geometry churn
   f.publisher.dispose();
 });
 
-it('publishes detached skin poses and follows joint changes across skipped source frames', () => {
+it('publishes static Skin membership and unique joint columns across skipped source frames', () => {
   const f = fixture();
   const identity = new Float32Array(32);
   for (const base of [0, 16]) for (const lane of [0, 5, 10, 15]) identity[base + lane] = 1;
@@ -1323,30 +1324,35 @@ it('publishes detached skin poses and follows joint changes across skipped sourc
     .unwrap();
   f.world.update(0).unwrap();
   const initial = f.publish();
-  const pose = initial.packet.templates.find((t) => t.snapshot.skinPose !== undefined)?.snapshot
-    .skinPose;
-  expect(pose?.jointCount).toBe(2);
-  expect(pose?.jointWorlds[0]?.buffer).toBe(pose?.jointWorlds[1]?.buffer);
-  expect(pose?.jointWorlds[1]?.byteOffset).toBe((pose?.jointWorlds[0]?.byteOffset ?? 0) + 64);
-  expect(pose?.jointWorlds[1]?.[12]).toBe(2);
-  expect(initial.packet.templates.every((t) => t.snapshot.skin === undefined)).toBe(true);
+  const binding = initial.packet.templates.find((t) => t.snapshot.skinBinding !== undefined)
+    ?.snapshot.skinBinding;
+  expect(binding?.joints).toEqual([Number(joint), Number(other)]);
+  const jointX = (packet: typeof initial.packet, entity: number) => {
+    const index = packet.transformEntities.indexOf(entity);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return packet.transforms[index * 16 + 12];
+  };
+  expect(jointX(initial.packet, joint)).toBe(0);
+  expect(jointX(initial.packet, other)).toBe(2);
+  expect(
+    initial.packet.templates.every((t) => !('skinPose' in t.snapshot) && !('skin' in t.snapshot)),
+  ).toBe(true);
   f.world.set(joint, Transform, { pos: [0.5, 0, 0] }).unwrap();
   f.world.update(1 / 60).unwrap();
   f.world.set(joint, Transform, { pos: [1, 0, 0] }).unwrap();
   f.world.update(1 / 60).unwrap();
   const next = f.publish();
-  const nextPose = next.packet.templates.find((t) => t.snapshot.skinPose !== undefined)?.snapshot
-    .skinPose;
-  expect(nextPose?.jointWorlds[0]?.[12]).toBe(1);
-  expect(nextPose?.jointWorlds[1]?.[12]).toBe(2);
-  expect(nextPose?.jointWorlds[0]?.buffer).toBe(nextPose?.jointWorlds[1]?.buffer);
-  expect(nextPose?.jointWorlds[0]?.buffer).not.toBe(pose?.jointWorlds[0]?.buffer);
-  expect(pose?.jointWorlds[0]?.[12]).toBe(0);
-  expect(f.publish().packet.upserts).toHaveLength(0);
+  expect(next.packet.upserts).toHaveLength(0);
+  expect(next.packet.templates).toHaveLength(0);
+  expect([...next.packet.transformEntities]).toEqual([Number(joint)]);
+  expect(jointX(next.packet, joint)).toBe(1);
+  expect(jointX(initial.packet, joint)).toBe(0);
+  expect(jointX(initial.packet, other)).toBe(2);
+  expect(f.publish().packet.transformEntities).toHaveLength(0);
   f.world.removeComponent(f.first, Skin).unwrap();
   f.world.set(f.first, MeshRenderer, { materials: [f.defaultMaterial] }).unwrap();
   expect(
-    f.publish().frame.renderables.find((row) => row.entityKey === f.first)?.skinPose,
+    f.publish().frame.renderables.find((row) => row.entityKey === f.first)?.skinBinding,
   ).toBeUndefined();
   f.publisher.dispose();
 });
@@ -1426,7 +1432,7 @@ it('keeps three transferred publications detached, ordered and bounded while reu
       [2, 1],
       [3, 2],
     ]);
-    expect(new Set(packets.flatMap(renderPublicationTransfers)).size).toBe(12);
+    expect(new Set(packets.flatMap(renderPublicationTransfers)).size).toBe(15);
     expect(f.publisher.inspect().inFlightCount).toBe(3);
     expect(f.publisher.prepare(0)).toMatchObject({
       ok: false,
@@ -1657,16 +1663,53 @@ it('publishes the same interpolated root, camera and animated skin across half-f
       const root = published.frame.renderables.find((row) => row.entityKey === f.first);
       const expected = f.world.getResource(Time).elapsed * 60 - 1;
       expect(root?.transform.world[12]).toBeCloseTo(expected, 5);
-      expect(root?.skinPose?.jointWorlds[0]?.[12]).toBeCloseTo(
+      const jointIndex = published.packet.transformEntities.indexOf(Number(joint));
+      expect(jointIndex).toBeGreaterThanOrEqual(0);
+      expect(published.packet.transforms[jointIndex * 16 + 12]).toBeCloseTo(
         expected + f.world.getResource(Time).elapsed,
         5,
       );
       expect(published.frame.cameras[0]?.position[0]).toBeCloseTo(expected, 5);
-      expect(published.packet.upserts.length).toBeGreaterThan(0);
+      if (frame === 0) expect(published.packet.upserts.length).toBeGreaterThan(0);
+      else expect(published.packet.upserts).toHaveLength(0);
       if (previous !== undefined) expect(root?.transform.world[12]).toBeCloseTo(previous + 0.5, 5);
       previous = root?.transform.world[12];
     }
   } finally {
     f.publisher.dispose();
+  }
+});
+
+it('does not walk or republish descendants when an unrelated parent component is added or removed', () => {
+  const f = fixture();
+  const parent = f.world.spawn({ component: Transform, data: {} }).unwrap();
+  f.world.addComponent(f.first, { component: ChildOf, data: { parent } }).unwrap();
+  f.world.addComponent(f.second, { component: ChildOf, data: { parent } }).unwrap();
+  f.world.update(0).unwrap();
+  f.publish();
+  try {
+    for (const add of [true, false]) {
+      if (add)
+        f.world
+          .addComponent(parent, { component: MeshFilter, data: { assetHandle: f.cube } })
+          .unwrap();
+      else f.world.removeComponent(parent, MeshFilter).unwrap();
+      f.world.update(0).unwrap();
+      const read = vi.spyOn(f.world, 'get');
+      const candidate = f.publisher.prepare(0).unwrap();
+      try {
+        expect(candidate.packet.upserts.length).toBe(0);
+        expect(candidate.packet.templates.length).toBe(0);
+        expect(read.mock.calls.some(([, component]) => component === Children)).toBe(false);
+      } finally {
+        candidate.discard();
+        read.mockRestore();
+      }
+      f.publish();
+    }
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
   }
 });

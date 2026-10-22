@@ -23,7 +23,7 @@ export function cpuLodLevel(
     lods === undefined ||
     lods.length === 0 ||
     source.instances !== undefined ||
-    source.skin !== undefined ||
+    source.skinBinding !== undefined ||
     source.morph !== undefined
   )
     return 0;

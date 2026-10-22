@@ -238,6 +238,9 @@ export async function startEngineWorker(
     ...(options.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: options.dynamicGeometryMeshBudgetBytes }),
+    ...(options.assetBudgetBytes === undefined
+      ? {}
+      : { assetBudgetBytes: options.assetBudgetBytes }),
     workers: options.workers,
   };
   worker.postMessage(init, [

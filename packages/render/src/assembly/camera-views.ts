@@ -405,7 +405,8 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
             opts,
             leases,
             timing,
-            wasActive && source !== undefined
+            source !== undefined &&
+              (wasActive || primary.publicationBaselineRequired(source.publication))
               ? source.receiver.snapshot(source.publication)
               : publication,
             isCurrent,
@@ -681,7 +682,8 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
                 { ...opts, cameraEntityKey: entity },
                 leases,
                 undefined,
-                created && source !== undefined
+                source !== undefined &&
+                  (created || view.system.publicationBaselineRequired(source.publication))
                   ? source.receiver.snapshot(source.publication)
                   : publication,
                 encoder,
@@ -716,7 +718,9 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
                 { ...opts, cameraEntityKey: captureCamera.entity },
                 leases,
                 undefined,
-                !capturePublicationSeeded && source !== undefined
+                source !== undefined &&
+                  (!capturePublicationSeeded ||
+                    primary.publicationBaselineRequired(source.publication))
                   ? source.receiver.snapshot(source.publication)
                   : publication,
                 encoder,

@@ -194,7 +194,7 @@ export class CandidatePipelinePreparationOwner {
               mesh: input.asset,
               materials: base.materials.map((resource) => resource.snapshot),
               fallbackMaterial: base.material.snapshot,
-              deformation: base.skin === undefined ? 'rigid' : 'skin',
+              deformation: base.skinBinding === undefined ? 'rigid' : 'skin',
               ...(context.runtime.getMaterialShaderArtifact === undefined
                 ? {}
                 : { getMaterialShaderArtifact: context.runtime.getMaterialShaderArtifact }),

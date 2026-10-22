@@ -22,7 +22,7 @@ const prepared: PreparedGpuDrivenDraw = {
   uvSets: receipt.uvSets,
   vertexInputs: receipt.vertexInputs,
   alphaMask: receipt.alphaMask,
-  skinPaletteAddress: receipt.skinPaletteAddress,
+
   topology: 'triangle-list',
   indexed: true,
   first: 0,

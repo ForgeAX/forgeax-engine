@@ -298,8 +298,7 @@ it('admits a complete source without backend draws and rejects contradictory pre
 });
 
 it.each([
-  'skin',
-  'skinPose',
+  'skinBinding',
   'morph',
 ] as const)('excludes deforming %s sources from the field and reports them', async (key) => {
   const f = await fixture();
@@ -307,7 +306,7 @@ it.each([
     ...f.source,
     entityKey: 32,
     transform: { world: matrix(100) },
-    [key]: {},
+    [key]: key === 'skinBinding' ? { skeleton: 7, joints: [19] } : {},
   } as RenderableSnapshot);
   const projected = f.project().unwrap();
   expect(projected.instances).toHaveLength(1);

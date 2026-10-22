@@ -22,6 +22,7 @@ export type GpuDrivenPreparationReason =
   | 'material-resource-missing'
   | 'generation-stale'
   | 'skin-address-missing'
+  | 'skin-inputs-missing'
   | 'shadow-ownership-missing';
 
 /** Closed next action; AI callers never need to parse an error message. */

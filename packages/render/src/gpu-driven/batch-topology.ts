@@ -1,5 +1,4 @@
 import type { MeshLodLevel, PrimitiveTopology } from '@forgeax/engine-types';
-import { isFiniteBounds3 } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { BatchTopologyInspection } from '../inspection-types';
 import { isReflectedTransform } from '../material-render-state';
@@ -344,20 +343,12 @@ function eligibleDraws(slot: RenderSceneSlot): readonly EligibleGpuDrivenDraw[] 
 export function gpuDrivenGeometryEligible(snapshot: RenderableSnapshot): boolean {
   if (
     snapshot.instances?.instanceCount === 0 ||
-    snapshot.localAabb === undefined ||
+    (snapshot.localAabb === undefined && snapshot.skinBinding === undefined) ||
     snapshot.morph !== undefined ||
     snapshot.spriteInstances !== undefined
   )
     return false;
-  const skin = snapshot.skin;
-  return (
-    skin === undefined ||
-    (skin.storageOrUniform === 'storage' &&
-      Number.isInteger(skin.customDataStart) &&
-      skin.customDataStart >= 0 &&
-      skin.buffer !== undefined &&
-      isFiniteBounds3(skin.bounds))
-  );
+  return true;
 }
 
 /** Binding admission reads geometry and instance facts, never material content. */

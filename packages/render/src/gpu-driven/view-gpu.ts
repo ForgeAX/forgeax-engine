@@ -16,6 +16,7 @@ import type {
   Result,
   RhiDevice,
   RhiRenderPassEncoder,
+  ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
@@ -25,7 +26,7 @@ import {
   GEOMETRY_OBSERVATION_MAX_BYTES,
   type GeometryCommandCapture,
 } from '../geometry-observation';
-import type { GpuScene } from '../gpu-scene';
+import { GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW, type GpuScene } from '../gpu-scene';
 import {
   GPU_MATERIAL_DESCRIPTOR,
   GPU_MESH_DESCRIPTOR,
@@ -42,7 +43,10 @@ import {
 } from '../gpu-usage';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { FrameList } from '../scene/frame-list';
+import { SKIN_INPUT_WGSL } from '../scene/skin-inputs.wgsl';
+import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
 import { writeGpuLodRow } from '../scene/visibility/gpu-lod';
 import type {
   SurfaceGpuIndirectParameters,
@@ -77,6 +81,9 @@ import {
   GpuResourceAllocationLedger,
   type GpuResourceAllocationToken,
 } from './resource-allocation';
+import { SKIN_BOUNDS_WGSL } from './skin-bounds.wgsl';
+import { type SkinDemandLayout, skinDemandLayout, writeSkinDemandConstants } from './skin-demand';
+import { SKIN_DEMAND_WGSL } from './skin-demand.wgsl';
 
 const COMPUTE_STAGE = 0x4;
 const WORKGROUP_SIZE = 64;
@@ -129,7 +136,15 @@ export function invertLightViewProjection(
 }
 // Pyramid camera, light view-projection and inverse, dilation and enable.
 const SHADOW_CAMERA_CULL_BYTES = 80 + 64 + 64 + 16;
-const VIEW_BYTES = SHADOW_CAMERA_CULL_OFFSET + SHADOW_CAMERA_CULL_BYTES;
+const SKIN_CONSTANTS_OFFSET = SHADOW_CAMERA_CULL_OFFSET + SHADOW_CAMERA_CULL_BYTES;
+const SKIN_RASTER_OFFSET = Math.ceil((SKIN_CONSTANTS_OFFSET + 48) / 256) * 256;
+const VIEW_BYTES = SKIN_RASTER_OFFSET + 16;
+const SKIN_VIEW_WGSL = `${SKIN_INPUT_WGSL}\n${SKIN_DEMAND_WGSL}\n${SKIN_BOUNDS_WGSL}`
+  .replaceAll(/\bskinInputs\b/g, 'sceneInputs')
+  .replaceAll(/\bskinCounters\b/g, 'counters')
+  .replaceAll(/\bskinOutput\b/g, 'visibleIndices')
+  .replaceAll(/\bskinIndirect\b/g, 'indirectArgs')
+  .replaceAll(/\bskinDemand\b/g, 'view.skin');
 // visible + overflow + one selector bucket per LOD level + selected/root index
 // work + texel-culled + one compaction counter per LOD level. The work
 // counters let inspection report geometry reduction from the actual indirect
@@ -163,6 +178,7 @@ export function selectGpuLodLane(caps: {
 }
 
 export const GPU_DRIVEN_VIEW_WGSL = /* wgsl */ `
+${SKIN_VIEW_WGSL}
 struct PrimitiveRecord {
   generation: u32,
   flags: u32,
@@ -254,11 +270,15 @@ struct ViewConstants {
   minCasterDiameter: f32,
   suppressionBase: u32,
   resourceRoot: u32,
+  capsuleDirectional: u32,
   lod: LodViewConstants,
   // Reference camera a shadow view stays within SHADOW_LOD_MAX_COARSER levels of.
   lodClamp: LodViewConstants,
   occlusion: OcclusionConstants,
   shadowCamera: ShadowCameraCull,
+  skin: SkinDemandConstants,
+  ${SKIN_RASTER_OFFSET > SKIN_CONSTANTS_OFFSET + 48 ? `skinPadding: array<vec4<u32>, ${(SKIN_RASTER_OFFSET - SKIN_CONSTANTS_OFFSET - 48) / 16}>,` : ''}
+  skinRaster: vec4<u32>,
 };
 
 @group(0) @binding(0) var<storage, read> primitives: array<PrimitiveRecord>;
@@ -334,7 +354,19 @@ fn candidateAt(work: u32) -> CandidateRecord {
 
 // Bounds and displacement are shared resource records. Actual culling dereferences
 // them without rewriting any primitive, instance, or candidate on asset edits.
-fn candidatePrimitive(candidate: CandidateRecord) -> PrimitiveRecord {
+fn candidateSkinBinding(candidate: CandidateRecord) -> u32 {
+  if (view.skin.jointCapacity == 0u) { return 0xffffffffu; }
+  return skinRowAddress(view.skin.currentRoot, 1u, candidate.sourceSlot);
+}
+
+fn skinDemandCandidateSlot(index: u32) -> u32 {
+  let candidate = candidateAt(index);
+  if (primitives[candidate.primitiveIndex].generation != candidate.generation ||
+      batchWord(candidate.batchIndex, 1u) == 0u || isSuppressed(candidate.sourceSlot)) { return 0xffffffffu; }
+  return candidate.sourceSlot;
+}
+
+fn candidatePrimitive(candidate: CandidateRecord, candidateIndex: u32) -> PrimitiveRecord {
   var primitive = primitives[candidate.primitiveIndex];
   if ((primitive.flags & 64u) != 0u) {
     let geometryAddress = resourceDescriptor(candidate.batchIndex, 11u);
@@ -362,7 +394,41 @@ fn candidatePrimitive(candidate: CandidateRecord) -> PrimitiveRecord {
     primitive.localBoundsMin = boundsMin - vec3<f32>(radius);
     primitive.localBoundsMax = vec4<f32>(boundsMax + vec3<f32>(radius), 0.0);
   }
+  if (candidateSkinBinding(candidate) != 0xffffffffu) {
+    primitive.flags &= ~2u;
+    let descriptor = skinDemandDescriptor(candidateIndex);
+    if ((descriptor.w & 1u) == 0u) { primitive.instanceCount = 0u; return primitive; }
+    if (view.capsuleDirectional != 0u && (primitive.flags & ${GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW}u) != 0u) {
+      let binding = candidateSkinBinding(candidate);
+      let skeleton = skinRowAddress(view.skin.currentRoot, 0u, sceneInputs[binding + 2u]);
+      let capsuleCount = sceneInputs[skeleton + 1u + descriptor.y * 16u];
+      if (capsuleCount != 0xffffffffu && capsuleCount > 0u) {
+        primitive.instanceCount = 0u;
+        return primitive;
+      }
+    }
+    let geometry = resourceDescriptor(candidate.batchIndex, 11u);
+    let material = resourceDescriptor(candidate.batchIndex, 10u);
+    if (geometry == 0u || geometry == 0xffffffffu || material == 0u || material == 0xffffffffu ||
+        sceneInputs[material + ${GPU_MATERIAL_DESCRIPTOR.positionBounds}u] != 1u) { return primitive; }
+    let envelope = sceneInputs[geometry + ${GPU_MESH_DESCRIPTOR.skinEnvelopes}u];
+    let bounds = skinEnvelopeBounds(envelope, descriptor.z, descriptor.y,
+      bitcast<f32>(sceneInputs[material + ${GPU_MATERIAL_DESCRIPTOR.radius}u]));
+    if (bounds.valid != 0u) {
+      primitive.flags |= 2u;
+      primitive.localBoundsMin = bounds.minimum;
+      primitive.localBoundsMax = vec4<f32>(bounds.maximum, 0.0);
+    }
+  }
   return primitive;
+}
+
+fn candidateRootWorld(candidate: CandidateRecord, primitive: PrimitiveRecord) -> mat4x4<f32> {
+  if (candidateSkinBinding(candidate) != 0xffffffffu) {
+    return mat4x4<f32>(vec4<f32>(1.0,0.0,0.0,0.0), vec4<f32>(0.0,1.0,0.0,0.0),
+      vec4<f32>(0.0,0.0,1.0,0.0), vec4<f32>(0.0,0.0,0.0,1.0));
+  }
+  return transforms[primitive.transformIndex].currentWorld;
 }
 
 // Shared execution bytes; no material or LOD edit rewrites a candidate record.
@@ -493,6 +559,12 @@ fn resetView(@builtin(global_invocation_id) id: vec3<u32>) {
   for (var word = 0u; word < ${COUNTER_WORDS}u; word += 1u) {
     atomicStore(&counters[counterIndex(batchIndex) + word], 0u);
   }
+  // Reuse the established submission overflow authority. A bounded claim or
+  // palette admission failure must reject work explicitly, never hide Skin.
+  if (view.skin.jointCapacity != 0u &&
+      atomicLoad(&counters[view.skin.counterBase + 2u]) != 0u) {
+    atomicStore(&counters[overflowIndex(batchIndex)], 1u);
+  }
 }
 
 fn candidateLod(
@@ -598,12 +670,12 @@ fn admitEarly(candidateIndex: u32, out: ptr<function, EarlyCandidate>) -> bool {
   if (candidateIndex >= view.candidateCount) { return false; }
   let candidate = candidateAt(candidateIndex);
   if (batchWord(candidate.batchIndex, 1u) == 0u) { return false; }
-  let primitive = candidatePrimitive(candidate);
+  let primitive = candidatePrimitive(candidate, candidateIndex);
   if (primitive.generation != candidate.generation) { return false; }
   if (candidate.instanceOrdinal >= primitive.instanceCount) { return false; }
   let instanceIndex = primitive.instanceStart + candidate.instanceOrdinal;
   let instance = instances[instanceIndex];
-  let rootWorld = transforms[primitive.transformIndex].currentWorld;
+  let rootWorld = candidateRootWorld(candidate, primitive);
   let world = rootWorld * transforms[instance.transformIndex].currentWorld;
   let lod = candidateLod(candidate, primitive, rootWorld);
   // Selector counters describe the complete LOD population, including
@@ -743,12 +815,12 @@ fn cullViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
   if (candidateIndex >= view.candidateCount) { return; }
   let candidate = candidateAt(candidateIndex);
   if (batchWord(candidate.batchIndex, 1u) == 0u) { return; }
-  let primitive = candidatePrimitive(candidate);
+  let primitive = candidatePrimitive(candidate, candidateIndex);
   if (primitive.generation != candidate.generation) { return; }
   if (candidate.instanceOrdinal >= primitive.instanceCount) { return; }
   let instanceIndex = primitive.instanceStart + candidate.instanceOrdinal;
   let instance = instances[instanceIndex];
-  let rootWorld = transforms[primitive.transformIndex].currentWorld;
+  let rootWorld = candidateRootWorld(candidate, primitive);
   let world = rootWorld * transforms[instance.transformIndex].currentWorld;
   var visible =
     !isSuppressed(candidate.sourceSlot) &&
@@ -1364,6 +1436,17 @@ export class GpuDrivenView {
   private surfaceRows: Uint32Array | undefined;
   private supersededBuffers: Partial<ViewBuffers>[] = [];
   private bindGroup: BindGroup | undefined;
+  private skinBindGroup: BindGroup | undefined;
+  private skinPipelines: readonly ComputePipeline[] | undefined;
+  private skinLayout: SkinDemandLayout | undefined;
+  private skinJointCapacity = 0;
+  private skinActive = false;
+  private skinRasterBinding: SkinTaskBinding | undefined;
+  private readonly viewBytes = new ArrayBuffer(VIEW_BYTES);
+  private readonly viewFloats = new Float32Array(this.viewBytes);
+  private readonly viewWords = new Uint32Array(this.viewBytes);
+  private readonly viewData = new DataView(this.viewBytes);
+  private readonly viewUpload = new Uint8Array(this.viewBytes);
   private candidateCapacity = 0;
   private sceneRef: GpuScene | undefined;
   private visibleBufferCapacity = 0;
@@ -1438,6 +1521,7 @@ export class GpuDrivenView {
     private readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory,
     private readonly latePipelineLayout: PipelineLayout,
     private readonly shadowCameraCullEligible: boolean,
+    private readonly viewModule: ShaderModule,
   ) {}
 
   /**
@@ -1459,6 +1543,58 @@ export class GpuDrivenView {
     if (!created.ok) return created;
     this.shadowCameraCullPipeline = created.value;
     return created;
+  }
+
+  private prepareSkinPipelines(): Result<void, RhiError> {
+    if (this.skinPipelines !== undefined) return ok(undefined);
+    // Resolve reads dispatch arguments indirectly; its bind group must omit the
+    // writable alias of that buffer, even though finalize writes it earlier.
+    const layout = this.device.createBindGroupLayout({
+      label: `${this.labelPrefix}-skin-bgl`,
+      entries: [
+        ...[0, 1, 2, 3, 4].map((binding) => ({
+          binding,
+          visibility: COMPUTE_STAGE,
+          buffer: { type: 'read-only-storage' as const },
+        })),
+        { binding: 5, visibility: COMPUTE_STAGE, buffer: { type: 'uniform' } },
+        { binding: 6, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+        { binding: 7, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+      ],
+    });
+    if (!layout.ok) return layout;
+    const pipelineLayout = this.device.createPipelineLayout({
+      label: `${this.labelPrefix}-skin-pl`,
+      bindGroupLayouts: [layout.value],
+    });
+    if (!pipelineLayout.ok) return pipelineLayout;
+    // The kernels share the view module created with this view; another label
+    // would compile identical WGSL asynchronously and fail the first Skin frame.
+    const pipelines: ComputePipeline[] = [];
+    for (const entryPoint of [
+      'clearSkinDemand',
+      'resetSkinDemand',
+      'claimSkinDemand',
+      'finalizeSkinDemand',
+      'resolveSkinDemand',
+    ]) {
+      const pipeline = this.device.createComputePipeline({
+        label: `${this.labelPrefix}.${entryPoint}`,
+        layout: entryPoint === 'finalizeSkinDemand' ? this.pipelineLayout : pipelineLayout.value,
+        compute: { module: this.viewModule, entryPoint },
+      });
+      if (!pipeline.ok) return pipeline;
+      pipelines.push(pipeline.value);
+    }
+    this.skinPipelineLayout = layout.value;
+    this.skinPipelines = pipelines;
+    return ok(undefined);
+  }
+  private skinPipelineLayout: BindGroupLayout | undefined;
+
+  /** Physical task output, captured by raster bindings until GPU completion. */
+  skinTaskBinding(): SkinTaskBinding | undefined {
+    return this.skinActive ? this.skinRasterBinding : undefined;
   }
 
   setTelemetrySubmit(identity: GpuDrivenLodSubmitIdentity | undefined): void {
@@ -1595,6 +1731,7 @@ export class GpuDrivenView {
         shaderModuleFactory,
         latePipelineLayout.value,
         input.shadowCameraCull === true,
+        module.value,
       ),
     );
   }
@@ -1611,6 +1748,8 @@ export class GpuDrivenView {
     occlusionCamera?: GpuDrivenOcclusionCamera,
     visibleSurfaceRows?: Uint32Array,
     shadowCameraCull?: GpuDrivenShadowCameraCull,
+    skin?: SkinSceneFrame,
+    capsuleDirectional = false,
   ): Result<void, RhiError> {
     if (visibleSurfaceRows !== undefined && visibleSurfaceRows.length !== plan.candidateCount) {
       return err(
@@ -1635,6 +1774,20 @@ export class GpuDrivenView {
       // skipped while the previous mapAsync is pending.  The encode callback
       // records only a copy that really reached the command encoder.
       this.lodSelection = undefined;
+      this.skinActive = (skin?.current.jointCapacity ?? 0) > 0;
+      const skinJointCapacity = Math.max(this.skinJointCapacity, skin?.current.jointCapacity ?? 0);
+      // A shared membership may execute in several Passes. Task references
+      // address actual candidate work, independently of unique member storage.
+      const skinCandidateCapacity = Math.max(
+        plan.candidateCount,
+        this.skinLayout?.rosterCapacity ?? 0,
+      );
+      const skinDemandGrows =
+        skinJointCapacity > 0 && skinCandidateCapacity > (this.skinLayout?.rosterCapacity ?? 0);
+      if (this.skinActive) {
+        const prepared = this.prepareSkinPipelines();
+        if (!prepared.ok) return prepared;
+      }
       const topologyChanged = this.plan !== plan;
       const inputUploadStart = scene.inputs.uploadBytes;
       const template = encodedViewTopology(plan, scene);
@@ -1671,6 +1824,8 @@ export class GpuDrivenView {
       let buffersRebuilt = false;
       if (
         topologyChanged ||
+        skinDemandGrows ||
+        skinJointCapacity > this.skinJointCapacity ||
         surfaceModeChanged ||
         this.buffers === undefined ||
         suppressionWords > this.suppressionWordCapacity
@@ -1682,6 +1837,8 @@ export class GpuDrivenView {
         const capacities = deriveGpuDrivenViewBufferCapacities(plan);
         if (
           this.buffers === undefined ||
+          skinDemandGrows ||
+          skinJointCapacity > this.skinJointCapacity ||
           surfaceModeChanged ||
           capacities.candidate > this.candidateCapacity ||
           capacities.visible > this.visibleBufferCapacity ||
@@ -1696,6 +1853,8 @@ export class GpuDrivenView {
             capacities.indirect,
             suppressionWords,
             visibleSurfaceRows !== undefined,
+            skinJointCapacity,
+            skinCandidateCapacity,
           );
           if (!rebuilt.ok) return rebuilt;
           buffersRebuilt = true;
@@ -1759,28 +1918,25 @@ export class GpuDrivenView {
       } else {
         this.surfaceRows = undefined;
       }
-      const viewBytes = new ArrayBuffer(VIEW_BYTES);
-      const viewFloats = new Float32Array(viewBytes);
+      const viewBytes = this.viewBytes;
+      this.viewUpload.fill(0);
+      const viewFloats = this.viewFloats;
       viewFloats.set(planes.subarray(0, 24));
-      const viewU32 = new Uint32Array(viewBytes);
+      const viewU32 = this.viewWords;
       viewU32[24] = plan.candidateCount;
       viewU32[25] = plan.batches.length;
       viewU32[26] = this.batchCapacity;
       viewFloats[27] = minCasterDiameter;
       viewU32[28] = this.suppressionBase() / 4;
       viewU32[29] = sharedInput.value.resourceRoot;
+      viewU32[30] = capsuleDirectional ? 1 : 0;
       // Without a LOD camera the zero height scale reports an invalid height,
       // so every chain resolves to its root.
       if (lodCamera !== undefined) {
-        writeLodViewConstants(new DataView(viewBytes), LOD_CONSTANTS_OFFSET, lodCamera);
+        writeLodViewConstants(this.viewData, LOD_CONSTANTS_OFFSET, lodCamera);
       }
       if (lodClampCamera !== undefined) {
-        writeLodViewConstants(
-          new DataView(viewBytes),
-          LOD_CLAMP_CONSTANTS_OFFSET,
-          lodClampCamera,
-          true,
-        );
+        writeLodViewConstants(this.viewData, LOD_CLAMP_CONSTANTS_OFFSET, lodClampCamera, true);
       }
       // The per-frame history words (enabled, parity bases) stay zero here; the
       // early cull encode fills them only when its graph also records the late
@@ -1822,7 +1978,22 @@ export class GpuDrivenView {
         viewFloats[base + 53] = shadowCameraCull.worldDilation;
         viewU32[base + 54] = 1;
       }
-      const viewWrite = this.device.queue.writeBuffer(buffers.view, 0, new Uint8Array(viewBytes));
+      if (this.skinActive && skin !== undefined && this.skinLayout !== undefined) {
+        writeSkinDemandConstants(
+          this.viewData,
+          SKIN_CONSTANTS_OFFSET,
+          this.skinLayout,
+          skin.current.root,
+          skin.previous?.root ?? 0xffffffff,
+          plan.candidateCount,
+          this.skinCounterBase(),
+          this.skinDispatchBase(),
+          Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535,
+        );
+        viewU32[SKIN_RASTER_OFFSET / 4] = this.skinLayout.candidateBase;
+        viewU32[SKIN_RASTER_OFFSET / 4 + 1] = this.skinLayout.descriptorBase;
+      }
+      const viewWrite = this.device.queue.writeBuffer(buffers.view, 0, this.viewUpload);
       if (!viewWrite.ok) return viewWrite;
       this.viewConstantsUploadBytes = viewBytes.byteLength;
       this.uploadBytes += viewBytes.byteLength;
@@ -1837,25 +2008,44 @@ export class GpuDrivenView {
         this.sceneInstance !== scene.instanceBuffer ||
         this.sceneTransform !== scene.transformBuffer ||
         this.sceneInputs !== sharedInput.value.buffer;
-      if (this.bindGroup === undefined || sceneChanged || buffersRebuilt) {
+      if (
+        this.bindGroup === undefined ||
+        sceneChanged ||
+        buffersRebuilt ||
+        (this.skinActive && this.skinBindGroup === undefined)
+      ) {
+        const entries = [
+          { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
+          { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
+          { binding: 2, resource: bufferBinding(scene.transformBuffer) },
+          { binding: 3, resource: bufferBinding(sharedInput.value.buffer) },
+          { binding: 4, resource: bufferBinding(buffers.batches) },
+          { binding: 5, resource: bufferBinding(buffers.view) },
+          { binding: 6, resource: bufferBinding(buffers.counters) },
+          { binding: 7, resource: bufferBinding(buffers.visible) },
+          { binding: 8, resource: bufferBinding(buffers.indirect) },
+        ];
         const binding = this.device.createBindGroup({
           label: `${this.labelPrefix}-bg`,
           layout: this.bindGroupLayout,
-          entries: [
-            { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
-            { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
-            { binding: 2, resource: bufferBinding(scene.transformBuffer) },
-            { binding: 3, resource: bufferBinding(sharedInput.value.buffer) },
-            { binding: 4, resource: bufferBinding(buffers.batches) },
-            { binding: 5, resource: bufferBinding(buffers.view) },
-            { binding: 6, resource: bufferBinding(buffers.counters) },
-            { binding: 7, resource: bufferBinding(buffers.visible) },
-            { binding: 8, resource: bufferBinding(buffers.indirect) },
-          ],
+          entries,
         });
         if (!binding.ok) return binding;
         this.bindGroup = binding.value;
-        this.bindGroupCreates = 1;
+        this.skinBindGroup = undefined;
+        if (this.skinPipelineLayout !== undefined) {
+          const taskBinding = this.device.createBindGroup({
+            label: `${this.labelPrefix}-skin-bg`,
+            layout: this.skinPipelineLayout,
+            entries: entries.slice(0, 8),
+          });
+          if (!taskBinding.ok) {
+            this.bindGroup = undefined;
+            return taskBinding;
+          }
+          this.skinBindGroup = taskBinding.value;
+        }
+        this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 2;
         this.resourceGeneration += 1;
       }
       this.plan = plan;
@@ -2465,14 +2655,14 @@ export class GpuDrivenView {
     const visible = importBuffer(
       `${labelPrefix}.visible`,
       buffers.visible,
-      this.visibleBufferCapacity * 16 * 2,
+      this.visibleBytes(),
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!visible.ok) return visible;
     const indirect = importBuffer(
       `${labelPrefix}.indirect`,
       buffers.indirect,
-      this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2,
+      this.indirectBytes(),
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_INDIRECT | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!indirect.ok) return indirect;
@@ -2492,6 +2682,57 @@ export class GpuDrivenView {
     // follow the plan uploaded for the submitted frame; the shaders bound
     // every invocation by the counts in the view constants.
     const submitted = (): Pick<SubmissionPlan, 'batches' | 'candidateCount'> => this.plan ?? plan;
+    if (this.skinLayout !== undefined) {
+      const pipelines = this.skinPipelines;
+      const taskBinding = this.skinBindGroup;
+      if (pipelines === undefined || taskBinding === undefined) {
+        return err(
+          new RenderGraphError({
+            code: 'resource-descriptor-invalid',
+            expected: 'prepared Skin task pipelines and physical buffer bindings',
+            hint: 'update the view with its fixed Skin frame before building task passes',
+          }),
+        );
+      }
+      const taskEnabled = (frame: FrameCtx) => this.skinActive && (executeIf?.(frame) ?? true);
+      const stages = ['clear', 'reset', 'claim', 'finalize', 'resolve'] as const;
+      for (let stage = 0; stage < stages.length; stage++) {
+        const pipeline = pipelines[stage] as ComputePipeline;
+        const result = builder.addComputePass(`${labelPrefix}.skin-${stages[stage]}`, {
+          accesses: [
+            { resource: primitive.value, usage: 'storage-read' },
+            { resource: instance.value, usage: 'storage-read' },
+            { resource: transform.value, usage: 'storage-read' },
+            { resource: candidates.value, usage: 'storage-read' },
+            { resource: batches.value, usage: 'storage-read' },
+            { resource: view.value, usage: 'uniform-read' },
+            { resource: counters.value, usage: 'storage-read-write' },
+            { resource: visible.value, usage: 'storage-read-write' },
+            ...(stage === 3
+              ? [{ resource: indirect.value, usage: 'storage-read-write' as const }]
+              : []),
+            ...(stage === 4 ? [{ resource: indirect.value, usage: 'indirect-read' as const }] : []),
+          ],
+          executeIf: taskEnabled,
+          encode: ({ pass }) => {
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, stage === 3 ? bindGroup : taskBinding);
+            if (stage === 4) {
+              pass.dispatchWorkgroupsIndirect(buffers.indirect, this.skinDispatchBase() * 4);
+            } else if (stage === 1 || stage === 3) {
+              pass.dispatchWorkgroups(1);
+            } else {
+              const count =
+                stage === 0 ? (this.skinLayout?.rosterCapacity ?? 0) : submitted().candidateCount;
+              const groups = Math.max(1, Math.ceil(count / WORKGROUP_SIZE));
+              const limit = Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535;
+              pass.dispatchWorkgroups(Math.min(groups, limit), Math.ceil(groups / limit));
+            }
+          },
+        });
+        if (!result.ok) return result;
+      }
+    }
     const reset = builder.addComputePass(`${labelPrefix}.view-reset`, {
       accesses: [
         { resource: view.value, usage: 'uniform-read' },
@@ -2758,9 +2999,21 @@ export class GpuDrivenView {
     return created;
   }
 
-  /** Batch counters followed by the two instance-visibility bit regions. */
+  /** Skin scratch follows the original counters and visibility history. */
+  private skinCounterBase(): number {
+    return (this.batchCapacity * COUNTER_STRIDE) / 4 + this.suppressionWordCapacity * 2;
+  }
+  private skinDispatchBase(): number {
+    return (this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2) / 4;
+  }
   private countersBytes(): number {
-    return this.batchCapacity * COUNTER_STRIDE + this.suppressionWordCapacity * 2 * 4;
+    return (this.skinCounterBase() + (this.skinLayout?.counterWords ?? 0)) * 4;
+  }
+  private visibleBytes(): number {
+    return this.skinLayout?.outputBytes ?? this.visibleBufferCapacity * 16 * 2;
+  }
+  private indirectBytes(): number {
+    return (this.skinDispatchBase() + (this.skinLayout === undefined ? 0 : 3)) * 4;
   }
 
   dispose(): void {
@@ -2772,6 +3025,11 @@ export class GpuDrivenView {
     this.supersededBuffers = [];
     this.buffers = undefined;
     this.surfaceRows = undefined;
+    this.skinBindGroup = undefined;
+    this.skinRasterBinding = undefined;
+    this.skinLayout = undefined;
+    this.skinJointCapacity = 0;
+    this.skinActive = false;
     this.bindGroup = undefined;
     this.plan = undefined;
     this.encodedTopology = undefined;
@@ -2823,6 +3081,9 @@ export class GpuDrivenView {
       this.batchCapacity * 2,
       this.indirectCapacity * 2,
       this.suppressionWordCapacity,
+      this.buffers.visibleSurfaceRows !== undefined,
+      this.skinJointCapacity,
+      (this.skinLayout?.rosterCapacity ?? 0) * 2,
     );
   }
 
@@ -2887,6 +3148,8 @@ export class GpuDrivenView {
     indirectCapacity: number,
     suppressionWords: number,
     surfaceRows = this.buffers?.visibleSurfaceRows !== undefined,
+    skinJointCapacity = this.skinJointCapacity,
+    skinCandidateCapacity = this.skinLayout?.rosterCapacity ?? candidateCapacity,
   ): Result<void, RhiError> {
     const nextCandidate = nextCapacity(candidateCapacity);
     const nextSuppression = Math.max(nextCapacity(suppressionWords), this.suppressionWordCapacity);
@@ -2896,6 +3159,10 @@ export class GpuDrivenView {
     const nextVisible = nextCapacity(Math.max(64, visibleCapacity));
     const nextBatch = nextCapacity(batchCapacity);
     const nextIndirect = nextCapacity(indirectCapacity);
+    const skinLayout =
+      skinJointCapacity > 0
+        ? skinDemandLayout(skinCandidateCapacity, skinJointCapacity, nextVisible * 16 * 2)
+        : undefined;
     const previous = this.buffers;
     const created: Partial<MutableViewBuffers> = {};
     const allocatedBuffers: Buffer[] = [];
@@ -2940,16 +3207,24 @@ export class GpuDrivenView {
       },
       {
         name: 'counters',
-        size: nextBatch * COUNTER_STRIDE + nextSuppression * 2 * 4,
+        size:
+          nextBatch * COUNTER_STRIDE +
+          nextSuppression * 2 * 4 +
+          (skinLayout?.counterWords ?? 0) * 4,
         usage: storage | GPU_BUFFER_USAGE_COPY_DST,
         storage: true,
       },
       // Union region plus the late-phase mirror of two-phase occlusion.
-      { name: 'visible', size: nextVisible * 16 * 2, usage: storage, storage: true },
+      {
+        name: 'visible',
+        size: skinLayout?.outputBytes ?? nextVisible * 16 * 2,
+        usage: storage,
+        storage: true,
+      },
       {
         name: 'indirect',
         // Main region plus the late-phase region of two-phase occlusion.
-        size: nextIndirect * INDIRECT_COMMAND_BYTES * 2,
+        size: nextIndirect * INDIRECT_COMMAND_BYTES * 2 + (skinLayout === undefined ? 0 : 12),
         usage: storage | GPU_BUFFER_USAGE_INDIRECT,
         storage: true,
       },
@@ -3009,6 +3284,20 @@ export class GpuDrivenView {
       this.retireGeneration(previous);
     }
     this.buffers = next;
+    this.skinLayout = skinLayout;
+    this.skinJointCapacity = skinJointCapacity;
+    this.skinBindGroup = undefined;
+    this.skinRasterBinding =
+      skinLayout === undefined
+        ? undefined
+        : {
+            data: next.visible,
+            auxiliary: next.view,
+            dataOffset: 0,
+            auxiliaryOffset: SKIN_RASTER_OFFSET,
+            dataSize: skinLayout.outputBytes,
+            auxiliarySize: 16,
+          };
     // Replacement storage has no submitted topology or receiver addresses.
     this.plan = undefined;
     this.encodedTopology = undefined;

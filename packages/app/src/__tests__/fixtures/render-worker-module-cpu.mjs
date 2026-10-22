@@ -53,7 +53,13 @@ parentPort.on('message', async (message) => {
     const p = picture.publication;
     const buffers = submitted
       ? []
-      : [p.upserts.buffer, p.removed.buffer, p.transformEntities.buffer, p.transforms.buffer];
+      : [
+          p.upserts.buffer,
+          p.removed.buffer,
+          p.transformEntities.buffer,
+          p.transforms.buffer,
+          p.retiredJoints.buffer,
+        ];
     parentPort.postMessage(
       {
         fixture: 'product',

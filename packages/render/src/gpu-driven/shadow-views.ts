@@ -49,6 +49,8 @@ export type { ShadowViewIdentity, ShadowViewKind } from '../inspection-types';
 export type ShadowViewCacheState = 'hit' | 'invalidated';
 
 export interface ShadowViewUpdateInput {
+  readonly capsuleDirectional?: boolean | undefined;
+  readonly skin?: import('../scene/skin-scene-inputs').SkinSceneFrame | undefined;
   /** Final depth includes direct casters; fixed shared root covers even non-GPU geometry. */
   readonly directMaterials?: import('../scene/material-dispatch').MaterialFrame;
   readonly shadowMaterials?: ShadowMaterialContent;
@@ -204,8 +206,6 @@ interface ShadowViewRecord {
   readonly memberships: WeakMap<FrameList<GpuDrivenCandidate>, FrameList<GpuDrivenCandidate>>;
   lodSelection: string | undefined;
   lodProjectedHeights: ReadonlyMap<number, number> | undefined;
-  /** The plan draws skinned casters, so a skin palette change reaches it. */
-  skinned: boolean;
   generation: number;
   cache: ShadowViewCacheState;
   invalidationReason: ShadowViewInvalidationReason | undefined;
@@ -1234,6 +1234,11 @@ export class ShadowViewStatePool {
       changedPrimitives(previous.plan, selectedPlan, changed, previous.preparation);
       if (changed.size === 0) selectedPlan = previous.plan;
     }
+    // Only this selected task inspects its caster execution. Joint edits do
+    // not broadcast invalidation to retained or staggered light views.
+    if (input.skin !== undefined && planDrawsSkin(selectedPlan)) {
+      invalidationReason ??= 'skin-task-demand';
+    }
     if (invalidationReason === undefined && previous !== undefined) {
       invalidationReason = this.retainedContentReason(
         previous,
@@ -1312,6 +1317,8 @@ export class ShadowViewStatePool {
       undefined,
       undefined,
       cameraCull,
+      input.skin,
+      input.capsuleDirectional,
     );
     if (!updated.ok) return updated;
     const generation = (previous?.generation ?? 0) + 1;
@@ -1349,7 +1356,6 @@ export class ShadowViewStatePool {
       memberships,
       lodSelection: input.lodSelection,
       lodProjectedHeights: input.lodProjectedHeights,
-      skinned: planDrawsSkin(selectedPlan),
       generation,
       cache: 'invalidated',
       invalidationReason,
@@ -1521,6 +1527,11 @@ export class ShadowViewStatePool {
       previous.minCasterDiameter,
       undefined,
       input.lodClampCamera,
+      undefined,
+      undefined,
+      undefined,
+      input.skin,
+      input.capsuleDirectional,
     );
     if (!updated.ok || previous.view.computeResourceGeneration !== resourceGeneration) {
       return 'source-changed';
@@ -1530,7 +1541,6 @@ export class ShadowViewStatePool {
     // Kept finer levels stay the retained reference until a re-raster.
     if (!keepsFinerLod(input)) previous.lodProjectedHeights = input.lodProjectedHeights;
     previous.lodSelection = input.lodSelection;
-    previous.skinned = planDrawsSkin(adopted);
     return undefined;
   }
 
@@ -1557,6 +1567,11 @@ export class ShadowViewStatePool {
           record.minCasterDiameter,
           undefined,
           input.lodClampCamera,
+          undefined,
+          undefined,
+          undefined,
+          input.skin,
+          input.capsuleDirectional,
         );
         if (!refreshed.ok)
           return err(
@@ -1629,13 +1644,6 @@ export class ShadowViewStatePool {
     }
     const record = this.records.get(identityKey(identity));
     if (record !== undefined) invalidateRecord(record, reason);
-  }
-
-  /** A skin palette change reaches only views whose plan draws skinned casters. */
-  invalidateSkinned(): void {
-    for (const record of this.records.values()) {
-      if (record.skinned) invalidateRecord(record, 'skin-palette-changed');
-    }
   }
 
   /** Camera clipping reaches every shadow raster through the view uniforms. */
@@ -1740,10 +1748,10 @@ export class ShadowViewStatePool {
       const record = this.records.get(key);
       if (record === undefined) continue;
       record.published = true;
-      // A palette-only re-cull keeps the same candidates and view, so its
+      // A Skin-task-only re-cull keeps the same candidates and view, so its
       // texel count cannot change and does not deserve a readback.
       const recount =
-        record.texelCulled === undefined || record.invalidationReason !== 'skin-palette-changed';
+        record.texelCulled === undefined || record.invalidationReason !== 'skin-task-demand';
       if ((record.minCasterDiameter > 0 && recount) || record.cameraCull) {
         void this.observeCulling(key, record);
       }

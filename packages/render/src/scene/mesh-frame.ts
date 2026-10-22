@@ -2,6 +2,7 @@ import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import type { MaterialResource } from '../material-resource';
 import { changes, type Node, put, remove } from './frame-tree';
+import { skinGeometryEnvelopes } from './skin-geometry';
 
 const EMPTY_MATERIALS: readonly MaterialResource[] = Object.freeze([]);
 
@@ -10,6 +11,10 @@ export interface MeshGeometry {
   readonly worldId: number;
   readonly handle: number;
   readonly bounds: Float32Array | undefined;
+  /** Shared base-position enclosure, derived only on admitted Mesh changes.
+   * Absence forbids Skin culling; never substitute the rigid/bind-pose box.
+   */
+  readonly skinEnvelopes: Float32Array | undefined;
   readonly layout: ReturnType<typeof deriveVertexLayoutProjection>;
   readonly indexed: boolean;
   readonly materialSlots: MeshAsset['materialSlots'];
@@ -58,6 +63,7 @@ export class MeshFrame {
       worldId,
       handle,
       bounds,
+      skinEnvelopes: skinGeometryEnvelopes(mesh),
       layout: deriveVertexLayoutProjection(mesh.attributes),
       indexed: mesh.indices !== undefined,
       materialSlots: mesh.materialSlots,

@@ -1447,6 +1447,8 @@ export interface RendererOptions {
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  /** Renderer AssetRegistry content bytes: positive safe integer; default 4 GiB. */
+  readonly assetBudgetBytes?: number;
   /** Construction-time graph composition; resources and submission remain renderer-owned. */
   readonly pipeline?: import('./render-pipeline.js').RenderPipeline;
   /** Bind a source session before receiving any publication. */

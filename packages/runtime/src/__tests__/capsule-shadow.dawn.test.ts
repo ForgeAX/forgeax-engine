@@ -32,13 +32,45 @@ const TILE_COUNT_MASK = (1 << 6) - 1;
 const TILE_SIZE = 16;
 
 /** Depth-only raster works: the directional cascade (and any depth prepass) draws. */
-function depthOnlyDraws(model: FrameModel): number {
+function depthOnlyWorks(model: FrameModel) {
   return model.works.filter(
     (work) =>
       work.attachments !== null &&
       work.attachments.colorViewHandleIds.length === 0 &&
       work.attachments.depthStencilViewHandleId !== null,
-  ).length;
+  );
+}
+
+/** GPU-written instance counts of every depth-only indirect draw, replayed at that draw. */
+async function cascadeInstances(tape: EncodedTape, model: FrameModel): Promise<number[]> {
+  const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+  const device = (await adapter.requestDevice(deviceOptionsForAdapter(adapter))).unwrap();
+  const replay = (
+    await openReplay(decodeTape(tape.bytes).unwrap(), {
+      device,
+      createShaderModule: webgpu.createShaderModule,
+    })
+  ).unwrap();
+  try {
+    const counts: number[] = [];
+    for (const work of depthOnlyWorks(model)) {
+      const call = work.drawCall as { indirectBufferHandleId?: string; indirectOffset?: number };
+      if (call.indirectBufferHandleId === undefined || call.indirectOffset === undefined) {
+        counts.push(1);
+        continue;
+      }
+      const args = (
+        await replay.readResourceAtWork(call.indirectBufferHandleId, work.workIndex)
+      ).unwrap().bytes;
+      // drawIndexedIndirect: indexCount, instanceCount, firstIndex, baseVertex, firstInstance.
+      counts.push(
+        new DataView(args.buffer, args.byteOffset).getUint32(call.indirectOffset + 4, true),
+      );
+    }
+    return counts;
+  } finally {
+    (await replay.dispose()).unwrap();
+  }
 }
 
 it('capsule shadows replace the skinned cascade shadow and bin every shadowed tile', {
@@ -145,10 +177,18 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
         `${directory}/deferred-${variant}-summary.json`,
         JSON.stringify(summarizeFrame(model), null, 2),
       );
-    // The character leaves the cascades: exactly one fewer depth-only draw per cascade view.
-    const rasterDepth = depthOnlyDraws(rasterModel);
-    const capsuleDepth = depthOnlyDraws(capsuleModel);
-    expect(capsuleDepth).toBeLessThan(rasterDepth);
+    // The character leaves the cascades: GPU culling removes its instance from
+    // every cascade draw, so the cascades rasterize strictly fewer instances.
+    const rasterInstances = await cascadeInstances(tapes.get('raster') as EncodedTape, rasterModel);
+    const capsuleInstances = await cascadeInstances(
+      tapes.get('capsule') as EncodedTape,
+      capsuleModel,
+    );
+    const total = (counts: readonly number[]) => counts.reduce((sum, count) => sum + count, 0);
+    expect(total(capsuleInstances)).toBeGreaterThan(0);
+    expect(total(capsuleInstances)).toBeLessThan(total(rasterInstances));
+    const rasterDepth = depthOnlyWorks(rasterModel).length;
+    const capsuleDepth = depthOnlyWorks(capsuleModel).length;
 
     const lighting = capsuleModel.works.filter((work) =>
       work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_standard_deferred'),
@@ -226,6 +266,7 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
           ...summary,
           rhiDebug: {
             depthOnlyDraws: { raster: rasterDepth, capsule: capsuleDepth },
+            cascadeInstances: { raster: rasterInstances, capsule: capsuleInstances },
             occupiedTiles: occupied,
             tileCounts: Array.from(headers, (header) => header & TILE_COUNT_MASK),
             totalTiles: headers.length,
@@ -238,6 +279,44 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
       ),
     );
     expect(maxReplayDelta).toBeLessThan(0.05);
+  } finally {
+    host.value.renderer.dispose();
+    target.destroy();
+    (await recorder.dispose()).unwrap();
+  }
+});
+
+it('capsule casters also leave single-layer cascades without a static shadow cache', {
+  timeout: 240_000,
+}, async () => {
+  const target = offscreenCanvas(CAPSULE_SHADOW_SIZE);
+  const recorder = attachRecorder(webgpu).unwrap();
+  const host = await constructRuntimeRendererHost(
+    target.canvas,
+    { rhi: recorder.backend.rhi },
+    { shaderManifestUrl: manifestUrl },
+  );
+  if (!host.ok) throw new Error(JSON.stringify(host.error));
+  const tapes = new Map<CapsuleShadowVariant, EncodedTape>();
+  try {
+    const evidence = await verifyCapsuleShadow(host.value.renderer, host.value.assets, {
+      recorder,
+      staticShadowCache: false,
+      capture(tape, variant) {
+        tapes.set(variant, tape);
+      },
+    });
+    assertCapsuleShadowEvidence(evidence);
+    const instances = async (variant: CapsuleShadowVariant) => {
+      const tape = tapes.get(variant);
+      if (tape === undefined) throw new Error(`missing ${variant} tape`);
+      const counts = await cascadeInstances(tape, buildFrameModel(decodeTape(tape.bytes).unwrap()));
+      return counts.reduce((sum, count) => sum + count, 0);
+    };
+    const raster = await instances('raster');
+    const capsule = await instances('capsule');
+    expect(capsule).toBeGreaterThan(0);
+    expect(capsule).toBeLessThan(raster);
   } finally {
     host.value.renderer.dispose();
     target.destroy();

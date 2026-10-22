@@ -89,7 +89,6 @@ import {
   type PipelineState,
   selectSwapChainFormat,
 } from '../render-system';
-import type { SkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import { createExtendedLightingFallbackResources } from './extended-lighting-fallback';
 import { createLayeredTextureFallbackViews } from './layered-texture-fallback';
 import {
@@ -116,7 +115,6 @@ import {
   type VariantPrewarmAdmission,
 } from './shader-prewarm-policy';
 import { createShadowArrayFallbackView } from './shadow-array-fallback';
-import { createSkinPaletteOwner } from './skin-palette-owner';
 import { createTemporalShaderPrewarmer } from './temporal-post-process-prewarm';
 import { buildGpuDrivenPbrReadyLayouts, buildGpuDrivenPbrReadyModules } from './webgpu-pbr-ready';
 import {
@@ -1684,15 +1682,6 @@ export async function buildReadyWebGPU(
     });
     if (skinResult.ok) gpuDrivenClusterPbrSkinPipelineLayoutHandle = skinResult.value;
   }
-
-  // The allocator owns one palette buffer, grown lazily by frame preparation.
-  // Its capacity follows the device's full binding-size limit: the 16320-byte
-  // per-draw window is only one entity's range within the shared buffer.
-  // Storage and uniform devices therefore use their respective binding limits.
-  const skinPaletteAllocatorHandle: SkinPaletteAllocator = createSkinPaletteOwner(
-    rhiDevice,
-    storageBufferCapable,
-  );
 
   const queue = rhiDevice.queue;
 
@@ -3716,12 +3705,6 @@ export async function buildReadyWebGPU(
     hdrpSkinProbePipelineLayout: hdrpSkinProbePipelineLayoutHandle,
     hdrpSkinMeshBindGroupLayout:
       unlitModule !== null && pbrModule !== null ? hdrpSkinMeshBindGroupLayoutHandle : null,
-    // feat-20260612-skin-palette-per-frame-upload M1 / m1-2: animator-ready
-    // skin-palette allocator (replaces the prior identity-buffer stub).
-    // Same gating as `pbrSkinPipelineLayout` -- `null` when the skin
-    // pipeline-layout build itself failed.
-    skinPaletteAllocator:
-      unlitModule !== null && pbrModule !== null ? skinPaletteAllocatorHandle : null,
     format: swapChainFormats.storage,
     colorAttachmentFormat: swapChainFormats.view,
     surfaceProfile: surfaceViewFormats ? 'dual-view' : 'raw-only',

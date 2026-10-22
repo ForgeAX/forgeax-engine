@@ -43,7 +43,6 @@ import {
 } from '../material-render-state';
 import {
   buildPbrMaterialUserRegionEntries,
-  createPbrSkinMeshBindGroupEntries,
   omittedStandardMaterialBindings,
   pbrSkinMeshDynamicOffsets,
   SHADOW_CASTER_SHADER_ID,
@@ -60,9 +59,10 @@ import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { MaterialDispatchPass } from '../scene/material-dispatch';
 import { matchPass } from '../systems/pass-selector';
 import { FirstEntryMap } from './first-entry-map';
-import { meshSlotBindGroup } from './frame-lighting';
+import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
 import type { MaterialBgAssemblyCacheEntry, ValidatedRenderable } from './frame-snapshot';
 import {
+  geometrySkinBindGroup,
   resolveGeometryInstanceBuffer,
   resolveGeometryInstancesBindGroup,
 } from './main-pass-geometry';
@@ -78,12 +78,10 @@ import {
   getOrCreateFromChain,
   getOrCreateFromChainResult,
   MESH_PER_ENTITY_STRIDE,
-  MESH_SSBO_BYTES,
-  MESH_UBO_FULL_ARRAY_BYTES,
   meshDrawSlot,
   prepareMeshDraw,
 } from './mesh-ssbo';
-import type { _InternalRenderPipelineContext } from './render-context';
+import type { _InternalRenderPipelineContext, MaterialShaderPipelineEntry } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { shadowViewContains } from './shadow-culling';
 import { capturesShadowBundleWorkload, recordShadowBundleWorkload } from './shadow-raster-ledger';
@@ -439,36 +437,15 @@ function shadowPipeline(
   );
 }
 
-function skinnedShadowMeshBindGroup(
-  c: _InternalRenderPipelineContext,
-  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
-  meshOffset: number,
-): BindGroup | null {
-  const meshBuffer = meshSsboBufferBinding(c.pipelineState.meshStorageBuffer, meshOffset).buffer;
-  const skin = entry.source.skin;
-  const layout = c.pipelineState.pbrSkinMeshBindGroupLayout;
-  const allocator = c.pipelineState.skinPaletteAllocator;
-  if (skin === undefined || layout === null || allocator === null) return null;
-  return getOrCreateFromChain(
-    c.frameState.meshBindGroupCache,
-    [meshBuffer, skin.buffer],
-    'shadow-pbr-skin-mesh',
-    () => {
-      const created = c.runtime.device.createBindGroup({
-        label: 'shadow-pbr-skin-mesh-bg',
-        layout,
-        entries: createPbrSkinMeshBindGroupEntries(
-          meshBuffer,
-          c.runtime.device.caps.storageBuffer ? MESH_SSBO_BYTES : MESH_UBO_FULL_ARRAY_BYTES,
-          skin.buffer,
-          allocator.bindingWindowBytes,
-        ),
-      });
-      if (!created.ok) throw created.error;
-      return created.value;
-    },
-    c.bindGroupCounts,
-  );
+function gpuShadowSkinOffsets(view: import('../gpu-driven/view-gpu').GpuDrivenView) {
+  const task = view.skinTaskBinding();
+  if (task === undefined)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'the selected shadow view Skin task output',
+      hint: 'prepare the fixed Skin root pair before recording shadow consumers',
+    });
+  return pbrSkinMeshDynamicOffsets(0, task, true);
 }
 
 /**
@@ -533,7 +510,11 @@ export function recordGpuDrivenShadowIndirect(
       }
     }
     if (currentMesh !== raster.meshBindGroup || currentDeformation !== raster.deformation) {
-      pass.setBindGroup(2, raster.meshBindGroup, raster.deformation === 'skin' ? [0, 0, 0] : [0]);
+      pass.setBindGroup(
+        2,
+        raster.meshBindGroup,
+        raster.deformation === 'skin' ? gpuShadowSkinOffsets(submission.view) : [0],
+      );
       currentMesh = raster.meshBindGroup;
       currentDeformation = raster.deformation;
     }
@@ -904,7 +885,8 @@ function prepareGpuDrivenShadowIfPublished(
     observed.pipeline = pipeline;
     observed.material = materialGroup;
     observed.mesh = projection.meshBindGroup;
-    observed.skin = projection.deformation === 'skin';
+    observed.meshOffsets =
+      projection.deformation === 'skin' ? gpuShadowSkinOffsets(viewSubmission.view) : [0];
     observed.vertex = projection.mesh.vertexBuffer.handle;
     if (batch.key.drawKind === 'indexed') {
       const index = projection.mesh.indexBuffer?.handle;
@@ -1433,17 +1415,17 @@ function resolveShadowMaterialPipeline(
   reflected: boolean,
   receiver: boolean,
   preparation = false,
-): RenderPipeline | null {
+): MaterialShaderPipelineEntry | null {
   const entryShadowShaderId = shadowDispatch.materialShaderId;
   const entryShadowRenderState = reflectedRenderState(
     receiver ? { ...shadowDispatch.renderState, cullMode: 'front' } : shadowDispatch.renderState,
     reflected !== isReflectedTransform(entry.source.transform.world),
   );
-  const skinned = entry.source.skin !== undefined;
+  const skinned = entry.source.skinBinding !== undefined;
   return (
     (preparation
-      ? (c.runtime.prepareMaterialShaderPipeline ?? c.runtime.getMaterialShaderPipeline)
-      : c.runtime.getMaterialShaderPipeline)?.(
+      ? (c.runtime.prepareMaterialShaderPipelineEntry ?? c.runtime.getMaterialShaderPipelineEntry)
+      : c.runtime.getMaterialShaderPipelineEntry)?.(
       entryShadowShaderId,
       false,
       entryShadowRenderState,
@@ -1469,7 +1451,7 @@ function resolveShadowMaterialPipeline(
       // adapters with no synchronous shader factory. Authored residual
       // programs use their synchronous manifest producer at first draw.
       preparation || entryShadowShaderId === SHADOW_CASTER_SHADER_ID ? 'validated' : 'immediate',
-      skinned ? 'pbr-skin' : 'pbr',
+      entryShadowShaderId === SHADOW_CASTER_SHADER_ID ? (skinned ? 'pbr-skin' : 'pbr') : undefined,
       undefined, // vertexEntryPoint
       undefined, // additionalColorFormats
       shadowDispatch.vertexEntry,
@@ -1721,7 +1703,8 @@ export function recordShadowCasterDraws(
     if (entry === undefined) continue;
     if (entry.source.shadowCaster === false || entry.source.authorVisible === false) continue;
     if (((entry.source.shadowChannels ?? 0xffffffff) & casterChannels) === 0) continue;
-    if (skipCapsuleReady && entry.source.capsuleShadow?.status === 'ready') continue;
+    if (skipCapsuleReady && c.runtime.demandCapsuleShadow?.(entry.source)?.status === 'ready')
+      continue;
     if (!shadowViewContains(entry.source, viewPlanes, c.shadowCasterBounds)) continue;
 
     const submeshes = entry.mesh.submeshes;
@@ -1773,47 +1756,6 @@ export function recordShadowCasterDraws(
         }
 
         prepareMeshDraw(c, entry);
-        if (entry.source.skin !== undefined) {
-          const skinMeshBindGroup = skinnedShadowMeshBindGroup(
-            c,
-            entry,
-            meshDrawSlot(entry) * MESH_PER_ENTITY_STRIDE,
-          );
-          if (skinMeshBindGroup === null) {
-            throw new RhiError({
-              code: 'rhi-not-available',
-              expected: 'CPU skinned ShadowCaster mesh binding',
-              hint: 'publish the skin mesh/palette bind group before recording the residual',
-            });
-          }
-          shadowPass.setBindGroup(
-            2,
-            skinMeshBindGroup,
-            pbrSkinMeshDynamicOffsets(
-              meshSsboBufferBinding(
-                pipelineState.meshStorageBuffer,
-                meshDrawSlot(entry) * MESH_PER_ENTITY_STRIDE,
-              ).byteOffset,
-              entry.source.skin.byteOffset,
-            ),
-          );
-        } else {
-          const meshOffset = meshDrawSlot(entry) * MESH_PER_ENTITY_STRIDE;
-          const group =
-            pipelineState.meshStorageBuffer.pages === undefined
-              ? shadowMeshBindGroup
-              : meshSlotBindGroup(
-                  runtime.device,
-                  c.frameState,
-                  pipelineState,
-                  c.bindGroupCounts,
-                  meshOffset,
-                );
-          shadowPass.setBindGroup(2, group, [
-            meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshOffset).byteOffset,
-          ]);
-        }
-
         // Shadow and Forward consume the same resident projection, dirty ranges,
         // temporal history and binding limits. A new revision uploads in place.
         shadowInstanceDraws = identityInstanceDraws;
@@ -1863,9 +1805,58 @@ export function recordShadowCasterDraws(
             hint: 'publish the exact residual ShadowCaster pipeline; do not substitute the default shader',
           });
         }
-        if (entryShadowPipeline !== shadowLastPipeline) {
-          shadowPass.setPipeline(entryShadowPipeline);
-          shadowLastPipeline = entryShadowPipeline;
+        if (entryShadowPipeline.pipeline !== shadowLastPipeline) {
+          shadowPass.setPipeline(entryShadowPipeline.pipeline);
+          shadowLastPipeline = entryShadowPipeline.pipeline;
+        }
+        const meshOffset = meshDrawSlot(entry) * MESH_PER_ENTITY_STRIDE;
+        const meshBinding = meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshOffset);
+        const contract = entryShadowPipeline.group2Contract;
+        if (contract === 'skin' || contract === 'skin-cluster') {
+          if (entry.source.skinBinding === undefined)
+            throw new RhiError({
+              code: 'rhi-descriptor-invalid',
+              expected: 'a Skin Binding for the selected ShadowCaster contract',
+              hint: 'bind a complete Skin source before recording a Skin-input material',
+            });
+          const task = runtime.demandSkinTask?.(entry.source);
+          if (task === undefined) continue;
+          const group = geometrySkinBindGroup(c, task, meshBinding, contract);
+          if (group === null)
+            throw new RhiError({
+              code: 'rhi-not-available',
+              expected: 'the selected ShadowCaster Skin task binding',
+              hint: 'prepare the exact material group2 contract before recording',
+            });
+          shadowPass.setBindGroup(
+            2,
+            group,
+            pbrSkinMeshDynamicOffsets(
+              meshBinding.byteOffset,
+              task,
+              runtime.device.caps.storageBuffer,
+            ),
+          );
+        } else {
+          const group =
+            contract === 'cluster'
+              ? clusteredMeshSlotBindGroup(c, meshOffset)
+              : pipelineState.meshStorageBuffer.pages === undefined
+                ? shadowMeshBindGroup
+                : meshSlotBindGroup(
+                    runtime.device,
+                    c.frameState,
+                    pipelineState,
+                    c.bindGroupCounts,
+                    meshOffset,
+                  );
+          if (group === null)
+            throw new RhiError({
+              code: 'rhi-not-available',
+              expected: 'the selected ShadowCaster mesh binding',
+              hint: 'prepare the exact material group2 contract before recording',
+            });
+          shadowPass.setBindGroup(2, group, [meshBinding.byteOffset]);
         }
         materialDeps ??= {
           runtime,

@@ -546,8 +546,8 @@ describe('GPU-driven filtered-plan cache', () => {
       });
       expect(observations.slice(1, 4), JSON.stringify(observations)).toEqual([
         stable('stable'),
-        // Four radix pages plus the new 8-byte descriptor; GPU task headers stay fixed.
-        { ...stable('cpu-material-swap'), sharedInputUploadBytes: 4 * 1024 + 8 },
+        // Four radix pages plus the new 12-byte descriptor; GPU task headers stay fixed.
+        { ...stable('cpu-material-swap'), sharedInputUploadBytes: 4 * 1024 + 12 },
         { ...stable('map-order-only'), filteredPlanBuilds: 1 },
       ]);
       expect(observations[4]).toMatchObject({

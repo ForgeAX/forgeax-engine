@@ -236,8 +236,10 @@ export async function declaredPackExternalOutputs(
         },
       });
       if (!prepared.ok) throw prepared.error;
+      // Content reads receive the producer payload; the finalized transport payload
+      // omits data that its artifacts carry.
       const cookedByGuid = new Map(
-        prepared.value.finalized.pack.assets.map((asset) => [asset.guid.toLowerCase(), asset]),
+        prepared.value.product.product.assets.map((asset) => [asset.guid.toLowerCase(), asset]),
       );
       for (const asset of projected.assets) {
         if (!required.has(asset.guid.toLowerCase())) continue;
@@ -255,7 +257,7 @@ export async function declaredPackExternalOutputs(
         outputs.push({
           guid: parsedGuid.value,
           sourceKey: asset.sourceKey,
-          asset: { kind: cooked.kind, ...cooked.payload } as Asset,
+          asset: { kind: cooked.kind, ...(cooked.payload as Record<string, unknown>) } as Asset,
         });
       }
       continue;

@@ -129,7 +129,7 @@ export function spawnSkinnedCharacter(
  * -x/-z, so its ground shadow falls toward +x/+z (screen right and down).
  * One capsule on its single joint approximates the body.
  */
-function buildCapsuleScene(world: World, assets: AssetRegistry) {
+function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCache: boolean) {
   const ground = Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 });
   world
     .spawn(
@@ -194,6 +194,7 @@ function buildCapsuleScene(world: World, assets: AssetRegistry) {
         shadowFilter: DirectionalShadowFilterValue.pcssHigh,
         shadowAngularRadius: 0.02,
         maxPenumbraTexels: 32,
+        staticShadowCache,
       },
     })
     .unwrap();
@@ -274,11 +275,12 @@ export async function verifyCapsuleShadow(
     readonly recorder?: RecorderAttachment;
     readonly capture?: (tape: EncodedTape, variant: CapsuleShadowVariant) => void | Promise<void>;
     readonly image?: (name: string, observation: LinearHdrImage) => void;
+    readonly staticShadowCache?: boolean;
   } = {},
 ): Promise<CapsuleShadowEvidence> {
   const size = CAPSULE_SHADOW_SIZE;
   const world = new World({ assets });
-  const scene = buildCapsuleScene(world, assets);
+  const scene = buildCapsuleScene(world, assets, options.staticShadowCache ?? true);
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {

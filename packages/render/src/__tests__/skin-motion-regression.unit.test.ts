@@ -1,119 +1,12 @@
-import type { Mat4 } from '@forgeax/engine-math';
-import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-rhi';
-import { rhi } from '@forgeax/engine-rhi-null';
 import { createMaterialShaderProgram } from '@forgeax/engine-shader';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   selectHdrpPbrPrewarmVariants,
   selectPipelineLayoutForVariant,
   selectSkinPrewarmVariants,
 } from '../assembly/factory';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
 
 describe('custom skinned mesh motion consumer contract', () => {
-  it('keeps two animated palette payloads observable at the skin consumer', () => {
-    const writes: Array<{ buffer: Buffer; offset: number; data: Float32Array }> = [];
-    const device = {
-      limits: { maxStorageBufferBindingSize: 65536 },
-      createBuffer: () => ok({} as Buffer),
-      queue: {
-        writeBuffer(buffer: Buffer, offset: number, data: Float32Array) {
-          writes.push({ buffer, offset, data: new Float32Array(data) });
-          return ok(undefined);
-        },
-      },
-    } as unknown as RhiDevice;
-    const allocator = createSkinPaletteAllocator(device, 65536, true);
-    const ibm = new Float32Array(16);
-    ibm[0] = 1;
-    ibm[5] = 1;
-    ibm[10] = 1;
-    ibm[15] = 1;
-    const poseA = new Float32Array(ibm) as unknown as Mat4;
-    const poseB = new Float32Array(ibm) as unknown as Mat4;
-    poseB[12] = 0.5;
-    const first = allocator.allocateSlice(1);
-    allocator.writeJointPalette(first, [ibm], [poseA]);
-    allocator.resetForFrame();
-    const second = allocator.allocateSlice(1);
-    allocator.writeJointPalette(second, [ibm], [poseB]);
-
-    expect(writes).toHaveLength(2);
-    expect(writes[0]?.buffer).toBe(writes[1]?.buffer);
-    expect(writes[0]?.offset).toBe(writes[1]?.offset);
-    expect(writes[0]?.data).not.toEqual(writes[1]?.data);
-    expect(writes[1]?.data[12]).toBe(0.5);
-  });
-
-  it('keeps persistent uniform palettes isolated across frame-pool resets', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const allocator = createSkinPaletteAllocator(device, 65536, false);
-    try {
-      const first = allocator.allocatePersistentSlice({
-        identity: 'world:1',
-        generation: 1,
-        jointCount: 1,
-      });
-      allocator.resetForFrame();
-      const second = allocator.allocatePersistentSlice({
-        identity: 'world:2',
-        generation: 1,
-        jointCount: 1,
-      });
-      expect(second.buffer).not.toBe(first.buffer);
-      expect(
-        allocator.allocatePersistentSlice({ identity: 'world:1', generation: 1, jointCount: 1 })
-          .buffer,
-      ).toBe(first.buffer);
-    } finally {
-      allocator.dispose();
-    }
-  });
-
-  it('keeps recycled storage slices inside their dynamic binding windows', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const sizes = new Map<Buffer, number>();
-    const createBuffer = device.createBuffer.bind(device);
-    vi.spyOn(device, 'createBuffer').mockImplementation((descriptor) => {
-      const result = createBuffer(descriptor);
-      if (result.ok && descriptor.size !== undefined) sizes.set(result.value, descriptor.size);
-      return result;
-    });
-    const allocator = createSkinPaletteAllocator(device, 65536, true);
-    try {
-      const full = allocator.allocatePersistentSlice({
-        identity: 'world:full',
-        generation: 1,
-        jointCount: 255,
-      });
-      allocator.releasePersistentSlice('world:full');
-      await device.queue.onSubmittedWorkDone();
-      const first = allocator.allocatePersistentSlice({
-        identity: 'world:first',
-        generation: 1,
-        jointCount: 1,
-      });
-      const second = allocator.allocatePersistentSlice({
-        identity: 'world:second',
-        generation: 1,
-        jointCount: 1,
-      });
-      expect(first.byteOffset).toBe(full.byteOffset);
-      expect(second.byteOffset).not.toBe(first.byteOffset);
-      for (const slice of [first, second]) {
-        const bufferSize = sizes.get(slice.buffer);
-        if (bufferSize === undefined) throw new Error('palette buffer has no allocation size');
-        expect(slice.byteOffset % 256).toBe(0);
-        expect(slice.byteOffset + allocator.bindingWindowBytes).toBeLessThanOrEqual(bufferSize);
-      }
-    } finally {
-      allocator.dispose();
-    }
-  });
-
   it('prepares both URP and HDRP pbr-skin consumers with the skin-cluster contract', () => {
     const variants = selectSkinPrewarmVariants(
       {

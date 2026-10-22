@@ -31,7 +31,7 @@ export function meshDrawSnapshot(
           gpuDrivenDraws: meshGeometryDraws(
             mesh,
             materials.materials,
-            source.skin === undefined ? 'rigid' : 'skin',
+            source.skinBinding === undefined ? 'rigid' : 'skin',
           ),
         }
       : {}),

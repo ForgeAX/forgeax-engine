@@ -70,7 +70,7 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
         createBindGroup: (descriptor: unknown) => ({ ok: true, value: descriptor }),
         queue: { writeBuffer: () => ({ ok: true, value: undefined }) },
       },
-      getMaterialShaderPipeline: () => ({}),
+      getMaterialShaderPipelineEntry: () => ({ pipeline: {}, group2Contract: 'mesh' }),
       getParamSchema: () => [],
       errorRegistry: {
         fire: () => {

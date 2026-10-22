@@ -253,7 +253,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
   });
 
   describe('pbr-skin-mesh-array', () => {
-    it('storageBuffer=true: 3 entries, all dynamic offset', () => {
+    it('storageBuffer=true: dynamic meshes, shared Skin task output and dynamic task address', () => {
       const spec = makeSpec();
       const out = buildBindGroupLayoutDescriptor(spec, {
         kind: 'pbr-skin-mesh-array',
@@ -270,15 +270,27 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
           {
             binding: 1,
             visibility: 0x1,
-            buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+            buffer: { type: 'read-only-storage', hasDynamicOffset: false },
           },
           {
             binding: 2,
             visibility: 0x1,
-            buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+            buffer: { type: 'uniform', hasDynamicOffset: true },
           },
         ],
       });
+    });
+
+    it('storageBuffer=false: dynamic meshes and current/previous Skin task windows', () => {
+      const out = buildBindGroupLayoutDescriptor(makeSpec(), {
+        kind: 'pbr-skin-mesh-array',
+        caps: { storageBuffer: false },
+      });
+      expect(out.entries.map((entry) => entry.buffer)).toEqual([
+        { type: 'uniform', hasDynamicOffset: true },
+        { type: 'uniform', hasDynamicOffset: true },
+        { type: 'uniform', hasDynamicOffset: true },
+      ]);
     });
   });
 

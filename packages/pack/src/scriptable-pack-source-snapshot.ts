@@ -317,9 +317,23 @@ function sourceImports(bytes: Uint8Array, digest: string): readonly string[] {
     importsByDigest.set(digest, cached);
     return cached.imports;
   }
-  const imports = ts
-    .preProcessFile(new TextDecoder().decode(bytes), true, true)
-    .importedFiles.map((entry) => entry.fileName);
+  const text = new TextDecoder().decode(bytes);
+  const imports = ts.preProcessFile(text, true, true).importedFiles.map((entry) => entry.fileName);
+  // `import type` / `export type ... from` declarations are always erased, so
+  // their targets can never execute or change a Pack product. Omitting them
+  // keeps unrelated runtime modules (and their edits) out of the source closure
+  // and its product DDC key. Mixed or inline `type` specifiers stay conservative.
+  if (/\b(?:import|export)\s+type\b/.test(text))
+    for (const statement of ts.createSourceFile('pack-source.ts', text, ts.ScriptTarget.Latest)
+      .statements) {
+      const typeOnly =
+        (ts.isImportDeclaration(statement) && statement.importClause?.isTypeOnly === true) ||
+        (ts.isExportDeclaration(statement) && statement.isTypeOnly);
+      if (!typeOnly || statement.moduleSpecifier === undefined) continue;
+      if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const index = imports.indexOf(statement.moduleSpecifier.text);
+      if (index >= 0) imports.splice(index, 1);
+    }
   // The cache retains the digest and import strings, never the source body.
   // Budget UTF-16 text and 64-bit array slots; entry overhead is capped below.
   const size =

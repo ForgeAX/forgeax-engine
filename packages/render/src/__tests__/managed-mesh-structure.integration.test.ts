@@ -63,7 +63,7 @@ it.each([
         if (request === 'full') upserts += 1000;
         else if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) upserts += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           cull: 'none',
           renderables: request,
         });

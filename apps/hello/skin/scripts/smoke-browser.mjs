@@ -194,18 +194,12 @@ await page.addInitScript(() => {
   globalThis.__forgeaxDeviceErrors = [];
   globalThis.__forgeaxVertexBuffers = [];
   globalThis.__forgeaxVertexBufferWrites = [];
-  // feat-20260612-skin-palette-per-frame-upload M4 / m4-1 + m4-2: capture
-  // every queue.writeBuffer payload targeting a buffer with label
-  // `skin-palette` (the per-frame palette storage buffer the new
-  // SkinPaletteAllocator from M1 m1-2 owns). For each write we record an
-  // FNV-1a-32 hash of the full payload bytes (AC-01 full-mat4-region
-  // distinctness) plus one hash per complete joint mat4 for AC-02 pose-
-  // GlobalTransform.world distinctness. The root joint is intentionally static in
-  // the Khronos clips, so hashing only M_0 would be a false negative. Cursor rewinds
-  // per frame so byteOffset=0 entries should appear once per frame per
-  // skinned entity; across ~8s of rendering (= hundreds of frames) we
-  // expect >>10 entries with ≥2 distinct hash values once advanceAnimation
-  // -> GlobalTransform.world -> writeJointPalette is alive.
+  // Capture every queue.writeBuffer range targeting the shared Skin inputs:
+  // `gpu-scene-shared-inputs` carries each referenced joint's presentation
+  // matrix (uploaded only when it changes) and CPU-recorded draws write
+  // `skin-task-data`. For each write we hash exactly the written bytes and
+  // keep its buffer offset: AC-01 requires distinct payloads, AC-02 requires
+  // one address to take >=2 values (a joint world matrix is animating).
   globalThis.__forgeaxSkinPaletteBuffers = [];
   globalThis.__forgeaxSkinPaletteWrites = [];
   // M4 / m4-3: capture every setBindGroup(2, bg, dynamicOffsets) call so
@@ -245,7 +239,7 @@ await page.addInitScript(() => {
       // Map: buffer -> entry index in __forgeaxVertexBuffers, so the
       // queue.writeBuffer hook can look up the buffer's recorded label/size.
       const bufferIndex = new WeakMap();
-      // M4 / m4-1: parallel WeakMap for skin-palette buffers so the
+      // M4 / m4-1: parallel WeakMap for shared Skin input buffers so the
       // writeBuffer hook below can hash + record only those payloads,
       // independent of the VERTEX-usage path.
       const paletteIndex = new WeakMap();
@@ -261,10 +255,7 @@ await page.addInitScript(() => {
             });
             bufferIndex.set(buf, idx);
           }
-          // M4 / m4-1 + m4-2: track skin-palette buffer reallocations. The
-          // SkinPaletteAllocator labels its GPUBuffer 'skin-palette' (see
-          // packages/runtime/src/systems/skin-palette-allocator.ts grow()).
-          if ((desc.label ?? '') === 'skin-palette') {
+          if (desc.label === 'gpu-scene-shared-inputs' || desc.label === 'skin-task-data') {
             const pIdx = globalThis.__forgeaxSkinPaletteBuffers.length;
             globalThis.__forgeaxSkinPaletteBuffers.push({
               size: desc.size,
@@ -307,38 +298,23 @@ await page.addInitScript(() => {
           }
           const pIdx = paletteIndex.get(buffer);
           if (pIdx !== undefined) {
-            // Capture the payload bytes for hash (AC-01 full + AC-02
-            // animated child-joint slice). data may be a TypedArray or a
-            // plain ArrayBuffer; normalise to Uint8Array view.
-            const u8 =
-              data instanceof Uint8Array
-                ? data
+            // dataOffset/size count elements of a typed array, bytes otherwise.
+            const element = data?.BYTES_PER_ELEMENT ?? 1;
+            const whole =
+              data instanceof ArrayBuffer
+                ? new Uint8Array(data)
                 : data?.buffer != null
                   ? new Uint8Array(data.buffer, data.byteOffset ?? 0, data.byteLength)
-                  : data instanceof ArrayBuffer
-                    ? new Uint8Array(data)
-                    : null;
-            if (u8 !== null) {
-              const totalLen = u8.byteLength;
-              const fullHash = fnv1a32(u8, 0, totalLen);
-              // Fox's root joint is static, and the animated child is not a
-              // contractually fixed joint index across imported assets. Keep
-              // one hash per complete mat4 so AC-02 can select the first
-              // non-root matrix that actually changes while retaining a
-              // stable diagnostic for the common Fox payload.
-              const matrixCount = Math.floor(totalLen / 64);
-              const poseMat4Hashes = [];
-              for (let matrixIndex = 0; matrixIndex < matrixCount; matrixIndex++) {
-                const matrixStart = matrixIndex * 64;
-                poseMat4Hashes.push(fnv1a32(u8, matrixStart, matrixStart + 64));
-              }
-              const poseMat4Hash = poseMat4Hashes[1] ?? poseMat4Hashes[0] ?? fnv1a32(u8, 0, totalLen);
+                  : null;
+            if (whole !== null) {
+              const start = (dataOffset ?? 0) * element;
+              const end = size === undefined ? whole.byteLength : start + size * element;
+              const fullHash = fnv1a32(whole, start, end);
               globalThis.__forgeaxSkinPaletteWrites.push({
                 offset,
-                byteLength: totalLen,
+                byteLength: end - start,
                 fullHash,
-                poseMat4Hash,
-                poseMat4Hashes,
+                poseMat4Hash: `${offset}:${fullHash}`,
               });
             }
           }
@@ -703,98 +679,72 @@ if (!M22_RECOVERY && !ac03Evidence) {
   process.exit(1);
 }
 
-// feat-20260612-skin-palette-per-frame-upload M4 / m4-1: AC-01 palette
-// buffer hash distinctness probe. The new SkinPaletteAllocator (M1 m1-2)
-// owns one GPUBuffer labeled `skin-palette` and rewrites it every frame
-// via queue.writeBuffer (record stage M3). The advanceAnimationPlayer +
-// GlobalTransform.world propagation drives joint world matrices each frame, so
-// the pre-multiplied M_i = joint_world * IBM payload bytes must change
-// across frames whenever any clip is playing. Three Fox.glb instances are
-// playing Survey/Walk/Run clips so within any few frames the recorded
-// payload hashes should span ≥2 distinct values. A frozen palette (the
-// failure mode plan-strategy §5.4 calls "writeJointPalette short-circuited
-// to identity") collapses every recorded hash to a single value and trips
-// this gate. Lower-bound on hits stays loose (≥3) to tolerate slow CI
-// runners that only render a handful of frames before the 8s wait
-// expires; the distinctness gate (≥2 unique fullHash entries) is the
-// load-bearing assertion. FALSIFY anchor (documented, not in CI):
-// short-circuit writeJointPalette in skin-palette-allocator.ts to write a
-// constant identity payload, then re-run smoke:browser -> this probe must
-// turn red.
+// AC-01 shared Skin input distinctness probe. advanceAnimationPlayer +
+// GlobalTransform.world propagation moves joint presentation matrices each
+// frame; renderers upload each changed joint row into the shared inputs.
+// Three Fox.glb instances play Survey/Walk/Run clips, so the recorded payload
+// hashes must span >=2 distinct values. Frozen joints upload nothing and trip
+// this gate. FALSIFY anchor (documented, not in CI): skip joint publication in
+// the render source, then re-run smoke:browser -> this probe must turn red.
 const skinPaletteWrites = captured.skinPaletteWrites;
 const skinPaletteHits = skinPaletteWrites.length;
 const skinPaletteFullHashes = skinPaletteWrites.map((w) => w.fullHash);
 const skinPaletteFullHashSet = new Set(skinPaletteFullHashes);
-console.log('\n=== AC-01 skin-palette buffer writes ===');
+console.log('\n=== AC-01 shared Skin input writes ===');
 skinPaletteWrites.slice(0, 12).forEach((w, i) =>
   console.log(
-    `[#${i}] offset=${w.offset} byteLength=${w.byteLength} fullHash=${w.fullHash} poseMat4Hash=${w.poseMat4Hash}`,
+    `[#${i}] offset=${w.offset} byteLength=${w.byteLength} fullHash=${w.fullHash}`,
   ),
 );
 if (skinPaletteWrites.length > 12) {
   console.log(`(...${skinPaletteWrites.length - 12} more entries elided)`);
 }
 console.log(
-  `=== AC-01 summary: hits=${skinPaletteHits} distinctFullHash=${skinPaletteFullHashSet.size} distinctPoseMat4Hash=${new Set(skinPaletteWrites.map((w) => w.poseMat4Hash)).size} ===`,
+  `=== AC-01 summary: hits=${skinPaletteHits} distinctFullHash=${skinPaletteFullHashSet.size} ===`,
 );
 if (skinPaletteHits < 3) {
   console.error(
-    `\n[smoke-browser] AC-01 RED -- only ${skinPaletteHits} skin-palette writeBuffer call(s) observed; ` +
-      'expected >=3 frames worth of palette uploads (one per skinned entity per frame, 3 Fox instances). ' +
-      'Suspect: SkinPaletteAllocator never created the buffer, extract stage error short-circuited before record, ' +
+    `\n[smoke-browser] AC-01 RED -- only ${skinPaletteHits} shared Skin input writeBuffer call(s) observed; ` +
+      'expected >=3 changed joint uploads (3 animated Fox instances). ' +
+      'Suspect: joint publication never reached the renderer, frames never submitted, ' +
       'or device.queue.writeBuffer hook never engaged.',
   );
   process.exit(1);
 }
 if (skinPaletteFullHashSet.size < 2) {
   console.error(
-    `\n[smoke-browser] AC-01 RED -- ${skinPaletteHits} palette writes recorded but only ` +
-      `${skinPaletteFullHashSet.size} distinct fullHash value(s); palette payload is frozen across frames. ` +
-      'Suspect: writeJointPalette short-circuited to identity, advanceAnimationPlayer not driving GlobalTransform.world, ' +
-      'or the per-frame allocator cursor reset is eating into the same identical payload every frame.',
+    `\n[smoke-browser] AC-01 RED -- ${skinPaletteHits} Skin input writes recorded but only ` +
+      `${skinPaletteFullHashSet.size} distinct fullHash value(s); joint payload is frozen across frames. ` +
+      'Suspect: advanceAnimationPlayer not driving GlobalTransform.world or joint publication repeating stale rows.',
   );
   process.exit(1);
 }
 console.log(
-  `\n[smoke-browser] AC-01 GREEN -- ${skinPaletteHits} palette writes, ` +
-    `${skinPaletteFullHashSet.size} distinct fullHash values (palette is alive across frames).`,
+  `\n[smoke-browser] AC-01 GREEN -- ${skinPaletteHits} Skin input writes, ` +
+    `${skinPaletteFullHashSet.size} distinct fullHash values (joints are alive across frames).`,
 );
 
-// feat-20260612-skin-palette-per-frame-upload M4 / m4-2: AC-02 animated-pose
-// GlobalTransform.world distinctness probe. Reuses skinPaletteWrites from the
-// same queue.writeBuffer hook and looks for any complete joint mat4 after the
-// root that changes across the sample window. Imported assets may order their
-// animated joints differently, so hard-coding one child index would make this
-// positive gate a false negative.
-// Distinctness across ≥10 sample writes proves advanceAnimationPlayer is
-// mutating the joint hierarchy each frame and propagateTransforms is rewriting
-// GlobalTransform.world before the record stage's writeJointPalette pulls the view.
-// FALSIFY anchor: short-circuit advanceAnimationPlayer to skip its world.set
-// emissions -> the animated child-joint mat4 stays at the bind pose ->
-// poseMat4Hash collapses to a single value -> probe red. The 10-sample
-// minimum is the plan-strategy §5.3 sample-window for AC-02 (vs AC-01's
-// 3 samples) and is the load-bearing falsify divergence between the two
-// probes when only one half of the chain breaks; on a fully-broken upstream
-// (M1 m1-2 regression making smoke 0-frames) both probes red identically.
-const matrixDistinctCounts = [];
+// AC-02 animated-pose GlobalTransform.world probe. A shared joint row keeps its
+// address while it is referenced, so one buffer offset written with >=2
+// distinct payloads proves advanceAnimationPlayer mutates the hierarchy and
+// propagateTransforms rewrites GlobalTransform.world before publication.
+// FALSIFY anchor: short-circuit advanceAnimationPlayer's world.set emissions
+// -> joints stay at the bind pose and upload nothing -> probe red.
+const addressHashes = new Map();
 for (const write of skinPaletteWrites) {
-  for (let matrixIndex = 0; matrixIndex < write.poseMat4Hashes.length; matrixIndex++) {
-    const hash = write.poseMat4Hashes[matrixIndex];
-    if (matrixDistinctCounts[matrixIndex] == null) matrixDistinctCounts[matrixIndex] = new Set();
-    matrixDistinctCounts[matrixIndex].add(hash);
-  }
+  const hashes = addressHashes.get(write.offset) ?? new Set();
+  hashes.add(write.fullHash);
+  addressHashes.set(write.offset, hashes);
 }
-const skinPalettePoseMat4Set = new Set(skinPaletteWrites.map((w) => w.poseMat4Hash));
-const animatedJointIndex = matrixDistinctCounts.findIndex(
-  (hashes, matrixIndex) => matrixIndex > 0 && hashes.size >= 2,
-);
-const animatedJointDistinct = animatedJointIndex >= 0 ? matrixDistinctCounts[animatedJointIndex].size : 0;
+const animatedAddress = [...addressHashes].find(([, hashes]) => hashes.size >= 2);
+const animatedJointIndex = animatedAddress?.[0] ?? -1;
+const animatedJointDistinct = animatedAddress?.[1].size ?? 0;
 console.log(
-  `=== AC-02 summary: hits=${skinPaletteHits} animatedJointIndex=${animatedJointIndex} distinctPoseMat4=${animatedJointDistinct} (sample window >=10 writes) ===`,
+  `=== AC-02 summary: hits=${skinPaletteHits} animatedOffset=${animatedJointIndex} distinctPayloads=${animatedJointDistinct} (sample window >=10 writes) ===`,
 );
 if (skinPaletteHits < 10) {
   console.error(
-    `\n[smoke-browser] AC-02 RED -- only ${skinPaletteHits} palette writes recorded (need >=10 for ` +
+    `\n[smoke-browser] AC-02 RED -- only ${skinPaletteHits} Skin input writes recorded (need >=10 for ` +
       'AC-02 sample window). The 8-second wait should have produced hundreds of frames worth of ' +
       'skinned-entity uploads. Suspect: smoke is exiting before steady-state, dev server cold-start ' +
       'is eating the budget, or the upstream extract path is rejecting Fox skin entities.',
@@ -803,16 +753,16 @@ if (skinPaletteHits < 10) {
 }
 if (animatedJointIndex < 0) {
   console.error(
-    `\n[smoke-browser] AC-02 RED -- ${skinPaletteHits} palette writes recorded but no non-root joint ` +
-      `mat4 changed across the sample window. Suspect: advanceAnimationPlayer ` +
+    `\n[smoke-browser] AC-02 RED -- ${skinPaletteHits} Skin input writes recorded but no joint ` +
+      `row changed across the sample window. Suspect: advanceAnimationPlayer ` +
       'short-circuited (no world.set), propagateTransforms not rewriting GlobalTransform.world, or the ' +
       'joint hierarchy is sourced from a stale view that never refreshes.',
   );
   process.exit(1);
 }
 console.log(
-  `\n[smoke-browser] AC-02 GREEN -- ${skinPaletteHits} palette writes, ` +
-    `joint ${animatedJointIndex} has ${animatedJointDistinct} distinct animated-pose mat4 hashes (joint world matrix is alive).`,
+  `\n[smoke-browser] AC-02 GREEN -- ${skinPaletteHits} Skin input writes, ` +
+    `offset ${animatedJointIndex} has ${animatedJointDistinct} distinct animated payloads (joint world matrix is alive).`,
 );
 
 // feat-20260612-skin-palette-per-frame-upload M4 / m4-3: AC-03 dyn-offset
@@ -865,7 +815,7 @@ console.log(
     `${skinDynSecondSet.size} distinct, all non-negative 256-byte-aligned skin slice offsets.`,
 );
 
-// feat-20260612-skin-palette-per-frame-upload M6 / AC-04: skin-palette
+// feat-20260612-skin-palette-per-frame-upload M6 / AC-04: Skin input
 // dynamic-offset bounds gate. The bug this fix repairs surfaces ONLY in
 // the browser path's WebGPU validator -- dawn-node accepted the same
 // command stream and produced a green pixel readback (verify-stage 1st
@@ -884,14 +834,14 @@ console.log(
 const skinPaletteBoundsHits = captured.deviceErrors.filter((line) => {
   const s = String(line);
   return (
-    /skin-palette/.test(s) &&
+    /skin-task|gpu-scene-shared-inputs/.test(s) &&
     (/Dynamic\s+Offset/.test(s) || /out\s+of\s+bounds/i.test(s) ||
       /queue-write-buffer-out-of-bounds/.test(s))
   );
 });
 if (skinPaletteBoundsHits.length > 0) {
   console.error(
-    `\n[smoke-browser] M6 AC-04 RED -- ${skinPaletteBoundsHits.length} skin-palette ` +
+    `\n[smoke-browser] M6 AC-04 RED -- ${skinPaletteBoundsHits.length} Skin input ` +
       'dynamic-offset bounds error(s) detected. The allocator buffer is sized for a single ' +
       'binding window but the 2nd+ skin entity binds dynOffset > 0; allocator.allocateSlice ' +
       'must guarantee buffer.size >= byteOffset + bindingWindowBytes for every slice it returns.',
@@ -902,7 +852,7 @@ if (skinPaletteBoundsHits.length > 0) {
   process.exit(1);
 }
 console.log(
-  `\n[smoke-browser] M6 AC-04 GREEN -- 0 skin-palette dynamic-offset bounds errors ` +
+  `\n[smoke-browser] M6 AC-04 GREEN -- 0 Skin input dynamic-offset bounds errors ` +
     '(allocator buffer extends a full binding window past the last slice).',
 );
 
@@ -959,14 +909,14 @@ console.log(
 
 const finalGateSummary = M22_RECOVERY
   ? 'M22 same-page invalid-binding recovery + packed skin rendering all green.'
-  : 'pack-body typed-array contract + 18F MeshAsset stride + skin pipeline vertex layout + dev import chain + skin palette per-frame upload all green.';
+  : 'pack-body typed-array contract + 18F MeshAsset stride + skin pipeline vertex layout + dev import chain + change-driven Skin joint upload all green.';
 console.log(
-  `\n[smoke-browser] GREEN (${M22_RECOVERY ? 'M22 recovery + ' : ''}layer-1 + layer-2 + layer-3 + AC-01 deviceErrors empty + AC-03 import probe + M4 AC-01 palette hash + M4 AC-02 animated-pose hash + M4 AC-03 dyn-offset + M6 AC-04 palette-bounds + AC-09 HUD weights snapshot) -- ` +
+  `\n[smoke-browser] GREEN (${M22_RECOVERY ? 'M22 recovery + ' : ''}layer-1 + layer-2 + layer-3 + AC-01 deviceErrors empty + AC-03 import probe + M4 AC-01 Skin input hash + M4 AC-02 animated joint row + M4 AC-03 dyn-offset + M6 AC-04 Skin input bounds + AC-09 HUD weights snapshot) -- ` +
     `${captured.pipelines.length} pipelines created, ` +
     `${captured.pipelines.filter((p) => /pbr-skin/.test(p.label ?? '')).length} skin variants, ` +
     `${captured.deviceErrors.length} device errors, ` +
     `${importProbeHitCount} legacy imports + ${scopedPackProbeHits.length} scoped pack responses (kinds=[${[...ac03KindUnion].join(',')}]), ` +
-    `${skinPaletteHits} palette writes (${skinPaletteFullHashSet.size} distinct full, ${skinPalettePoseMat4Set.size} distinct animated-pose mat4), ` +
+    `${skinPaletteHits} Skin input writes (${skinPaletteFullHashSet.size} distinct full, ${animatedJointDistinct} distinct at one animated row), ` +
     `${skinDynSecondValues.length} dyn-offset captures (${skinDynSecondSet.size} distinct second-offset values). ${finalGateSummary}`,
 );
 process.exit(0);

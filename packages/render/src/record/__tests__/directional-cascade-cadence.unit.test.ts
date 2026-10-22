@@ -78,7 +78,7 @@ describe('authored CPU directional cascade cadence', () => {
         prepareDrawDispatch: () => [],
         renderables: [],
         dispatch: [],
-        worldBoundsOf: () => undefined,
+        worldBoundsOf: () => false,
       }) satisfies PersistentShadowCasterProjection;
     const decide = (dispatchRevision: number, proven = true) =>
       prepareDirectionalShadowCache(

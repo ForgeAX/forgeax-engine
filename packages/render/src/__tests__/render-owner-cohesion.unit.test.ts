@@ -11,7 +11,6 @@ const rendererFactory = read('../assembly/factory.ts');
 const webgpuReady = read('../assembly/webgpu-ready.ts');
 const webgpuPbrReady = read('../assembly/webgpu-pbr-ready.ts');
 const gpuDrivenOwner = read('../assembly/gpu-driven-owner.ts');
-const skinPaletteOwner = read('../assembly/skin-palette-owner.ts');
 const productionRaster = read('../gpu-driven/production-raster.ts');
 
 describe('render owner cohesion', () => {
@@ -25,7 +24,8 @@ describe('render owner cohesion', () => {
     expect(count(gpuDrivenOwner, /new GpuDrivenProduction\(/g)).toBe(1);
     expect(rendererSystem).not.toContain('new GpuDrivenProduction(');
     expect(rendererSystem).toContain('createGpuDrivenOwner(');
-    expect(count(skinPaletteOwner, /createSkinPaletteAllocator\(/g)).toBe(1);
+    expect(count(rendererSystem, /new RecordingSkinTasks\(/g)).toBe(1);
+    expect(count(read('../record/recording-skin-tasks.ts'), /new SkinTasks\(/g)).toBe(1);
     expect(rendererFactory).not.toContain('createSkinPaletteAllocator(');
   });
 

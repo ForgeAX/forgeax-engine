@@ -139,7 +139,7 @@ async function withPackRecords(
   const body =
     transport === 'shared' ? encodeMaterialProgramWire(publication.pack) : publication.pack;
   if (transport === 'shared')
-    expect(body).toMatchObject({ schemaVersion: 'pack-material-programs/1' });
+    expect(body).toMatchObject({ schemaVersion: 'pack-material-programs/2' });
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith('/pack-index.json'))

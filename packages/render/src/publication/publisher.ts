@@ -6,12 +6,15 @@ import {
 } from '@forgeax/engine-assets-runtime/internal';
 import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
-import { ChildOf, Children, readPresentationWorldMatrix } from '@forgeax/engine-scene';
+import { Children, GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
-import { Visibility } from '../components';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { renderMaterialContext } from '../extract/material-context';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
+import {
+  isOwnedRenderFeatureProgramData,
+  ownRenderFeatureProgramData,
+} from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 import { renderFeatureCameraView } from '../features/view';
 import { MaterialResource } from '../material-resource';
@@ -24,9 +27,12 @@ import {
 } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import {
+  acceptRenderSourceEntities,
+  captureRenderSourceEntities,
   createGlobalTransformChangeQuery,
   createRenderSourceState,
   isRenderableMember,
+  renderSourceHierarchyChanged,
 } from '../scene/render-source';
 import { registerRenderSourceSystems } from '../scene/source-systems';
 import { getTransparentSortConfig } from '../systems/transparent-sort-config';
@@ -46,6 +52,7 @@ import { publicationFrameDependencies, renderableAssetRoots } from './dependenci
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
 import { publicationMaterialProgramKeys } from './programs';
 import { worldRenderResources } from './resource-scope';
+import { SkinJointReferences } from './skin-joints';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
 import {
   materialCanvasSources,
@@ -135,6 +142,21 @@ export function createRenderPublisher(
     number,
     ReturnType<AssetRegistry['getMaterialProjectionForPayload']>
   >();
+  // An accepted projection is an immutable program contract: a reload installs
+  // a new object, which is also what the omission check above compares. One
+  // frozen detached copy serves every row and packet, so copied materials do
+  // not clone shared program rows and ABIs again, and a Worker structured clone
+  // carries each shared projection once per packet.
+  const detachedMaterialProjections = new WeakMap<object, object>();
+  const detachMaterialProjection = <T extends object>(projection: T | undefined): T | null => {
+    if (projection === undefined) return null;
+    const known = detachedMaterialProjections.get(projection) as T | undefined;
+    if (known !== undefined) return known;
+    const owned = ownRenderFeatureProgramData(projection);
+    if (!isOwnedRenderFeatureProgramData(owned)) return structuredClone(projection);
+    detachedMaterialProjections.set(projection, owned);
+    return owned;
+  };
   let assetVersions = new Map<
     string,
     { readonly handle: number; readonly revision: number; readonly value: Asset }
@@ -152,42 +174,15 @@ export function createRenderPublisher(
       submitted: boolean;
     }
   >();
-  const jointsByEntity = new Map<number, readonly number[]>();
-  const skinConsumers = new Map<number, Set<number>>();
-  const updateSkinConsumers = (entity: number, joints: readonly number[] | undefined): void => {
-    const previous = jointsByEntity.get(entity);
-    if (
-      previous === joints ||
-      (previous !== undefined &&
-        joints !== undefined &&
-        previous.length === joints.length &&
-        previous.every((joint, index) => joint === joints[index]))
-    )
-      return;
-    for (const joint of previous ?? []) {
-      const users = skinConsumers.get(joint);
-      users?.delete(entity);
-      if (users?.size === 0) skinConsumers.delete(joint);
-    }
-    jointsByEntity.delete(entity);
-    if (joints === undefined) return;
-    jointsByEntity.set(entity, [...joints]);
-    for (const joint of joints) {
-      let users = skinConsumers.get(joint);
-      if (users === undefined) {
-        users = new Set();
-        skinConsumers.set(joint, users);
-      }
-      users.add(entity);
-    }
-  };
+  const skinJoints = new SkinJointReferences();
   let frameDependencies = new Set<number>();
   let revision = 0,
     disposed = false,
+    failed = false,
     active = false;
   let lastScannedRows = 0,
     allocations = 0;
-  let storage = [new ArrayBuffer(0), new ArrayBuffer(0), new ArrayBuffer(0), new ArrayBuffer(0)];
+  let storage = Array.from({ length: 5 }, () => new ArrayBuffer(0));
   const spareStorage: ArrayBuffer[][] = [];
   const buffer = (index: number, bytes: number): ArrayBuffer => {
     let value = storage[index] as ArrayBuffer;
@@ -204,7 +199,7 @@ export function createRenderPublisher(
   const fail = (reason: RenderPublicationError['detail']['reason'], subject: string) =>
     err(new RenderPublicationError({ reason, subject }));
   const acknowledgePrograms = (programs: RenderPublication['programs']): void => {
-    if (disposed) return;
+    if (disposed || failed) return;
     for (const program of programs) publishedPrograms.add(program.key);
   };
 
@@ -216,6 +211,7 @@ export function createRenderPublisher(
       programs.filter((program) => !publishedPrograms.has(program.key)),
     inspect: () => ({
       revision,
+      failed,
       members: members.size,
       assetCount: assetClosure.size,
       scannedRows: lastScannedRows,
@@ -228,7 +224,8 @@ export function createRenderPublisher(
       temporalReset = false,
       execution?: { readonly frameId: number },
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
-      if (disposed) return fail('disposed', 'publisher');
+      if (disposed || failed)
+        return fail('disposed', 'publisher retired or failed; start a new source epoch');
       if (active || flights.size >= maxInFlight)
         return fail('in-flight', 'publication slots are occupied');
       materialRows.clear();
@@ -247,6 +244,7 @@ export function createRenderPublisher(
       activeObservation = observation;
       const featureSources = [...features];
       const batch = source.projection.read();
+      const sourceRows = captureRenderSourceEntities(world, source, batch);
       lastScannedRows = batch.scannedRows;
       observation?.fact('scannedRows', batch.scannedRows);
       observation?.fact('batchIndices', batch.indices.length);
@@ -260,25 +258,28 @@ export function createRenderPublisher(
       observation?.fact('assetChanges', assetBatch.changes.length);
       for (const change of assetBatch.changes)
         if (!change.removed) invalidated.add(change.handle as unknown as number);
+      let sourceCursor = 0;
       for (const index of batch.indices) {
-        const previous = source.entities.get(index),
-          current = source.projection.entity(index);
+        const currentSource = sourceRows[sourceCursor++];
+        const previous = source.entities.get(index)?.entity,
+          current = currentSource?.entity;
         if (
           previous !== undefined &&
           members.has(previous) &&
           (current !== previous || !isRenderableMember(world, previous))
         )
           removed.add(previous);
-        if (previous !== undefined)
-          for (const consumer of skinConsumers.get(previous) ?? []) {
-            const size = observation === undefined ? 0 : changed.size;
-            changed.add(consumer);
-            observation?.count('skin-component', changed.size !== size);
-          }
+        if (
+          previous !== undefined &&
+          skinJoints.has(previous) &&
+          (current !== previous || !world.hasComponent(previous as EntityHandle, GlobalTransform))
+        )
+          skinJoints.mark(previous);
         if (current === undefined) continue;
         if (
           isRenderableMember(world, current) &&
           (baseline ||
+            batch.hasStructuralChange(index) ||
             !members.has(current) ||
             source.renderableComponents.some((component) => {
               const dirty = source.projection.changed(current, component);
@@ -292,9 +293,8 @@ export function createRenderPublisher(
           observation?.count('renderable-component-or-new', changed.size !== size);
         }
         if (
-          batch.membershipChanged ||
-          source.projection.changed(current, ChildOf) ||
-          source.projection.changed(current, Visibility)
+          currentSource !== undefined &&
+          renderSourceHierarchyChanged(source, index, currentSource)
         ) {
           const queue = [current],
             visited = new Set<number>();
@@ -319,7 +319,7 @@ export function createRenderPublisher(
       }
       if (baseline) {
         for (const entity of members) changed.add(entity);
-        for (const entity of source.entities.values())
+        for (const { entity } of source.entities.values())
           if (isRenderableMember(world, entity)) {
             const size = observation === undefined ? 0 : changed.size;
             changed.add(entity);
@@ -330,11 +330,7 @@ export function createRenderPublisher(
       for (const span of transforms.spans().unwrap()) {
         for (let row = 0; row < span.entities.length; row++) {
           const entity = span.entities[row] as EntityHandle;
-          for (const consumer of skinConsumers.get(entity) ?? []) {
-            const size = observation === undefined ? 0 : changed.size;
-            changed.add(consumer);
-            observation?.count('skin-transform', changed.size !== size);
-          }
+          skinJoints.mark(entity);
           if (members.has(entity) && !removed.has(entity)) {
             const matrix = readPresentationWorldMatrix(world, entity);
             if (matrix !== undefined) matrixRows.set(entity, matrix);
@@ -351,19 +347,12 @@ export function createRenderPublisher(
       let videoFrames: RenderPublication['videoFrames'] = [];
       try {
         observation?.phase('extract');
-        const frame = extractFrames(
-          [world],
-          { cameraOwner: 0, resourceOwner: 0 },
-          assets,
-          undefined,
-          caches,
-          {
-            ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
-            cull: 'none',
-            retainHidden: true,
-            renderables: changed.size ? { kind: 'partial', entitiesByWorld: [changed] } : 'none',
-          },
-        );
+        const frame = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets, caches, {
+          ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
+          cull: 'none',
+          retainHidden: true,
+          renderables: changed.size ? { kind: 'partial', entitiesByWorld: [changed] } : 'none',
+        });
         observation?.phase('templates');
         observation?.fact('renderables', frame.renderables.length);
         const meshCounts = new Map<number, number>();
@@ -472,7 +461,8 @@ export function createRenderPublisher(
         }
         for (let i = 0; i < frame.renderables.length; i++) {
           const row = frame.renderables.at(i) as RenderableSnapshot;
-          if (row.skin) return fail('unsupported', 'source GPU skin receipt');
+          if ('skin' in row && row.skin !== undefined)
+            return fail('unsupported', 'source GPU skin receipt');
           if (
             [...row.materials, ...(row.materialOverrides ?? [])].some((material) =>
               [...(material?.snapshot.textureSources?.values() ?? [])].some(
@@ -510,7 +500,7 @@ export function createRenderPublisher(
           const entityOwned =
             snapshot.instances !== undefined ||
             snapshot.spriteInstances !== undefined ||
-            snapshot.skinPose !== undefined ||
+            snapshot.skinBinding !== undefined ||
             snapshot.pointsLines !== undefined;
           const key =
             entityOwned ||
@@ -626,6 +616,38 @@ export function createRenderPublisher(
         for (const entity of changed)
           if (members.has(entity) && !emitted.has(entity)) removed.add(entity);
         for (const entity of removed) matrixRows.delete(entity);
+        // Reference changes are static Binding edits, never a joint-to-consumer fanout.
+        let referenceEdits: Map<number, readonly number[] | undefined> | undefined;
+        for (const entity of removed)
+          if (skinJoints.hasBinding(entity)) {
+            referenceEdits ??= new Map();
+            referenceEdits.set(entity, undefined);
+          }
+        for (const row of frame.renderables)
+          if (row.skinBinding !== undefined || skinJoints.hasBinding(row.entityKey)) {
+            referenceEdits ??= new Map();
+            referenceEdits.set(row.entityKey, row.skinBinding?.joints);
+          }
+        const references =
+          referenceEdits === undefined ? undefined : skinJoints.prepare(referenceEdits);
+        const jointChanges =
+          skinJoints.changes.size > 0 || (references?.first.size ?? 0) > 0
+            ? new Set(skinJoints.changes)
+            : undefined;
+        for (const joint of references?.first ?? EMPTY_IDENTITIES) jointChanges?.add(joint);
+        let retiredJoints =
+          (references?.retired.size ?? 0) > 0 ? new Set(references?.retired) : undefined;
+        for (const joint of jointChanges ?? EMPTY_IDENTITIES) {
+          if (!(references?.has(joint) ?? skinJoints.has(joint))) continue;
+          const matrix =
+            matrixRows.get(joint) ?? readPresentationWorldMatrix(world, joint as EntityHandle);
+          if (matrix === undefined) {
+            retiredJoints ??= new Set();
+            retiredJoints.add(joint);
+          } else matrixRows.set(joint, matrix);
+        }
+        observation?.fact('jointUpdates', jointChanges?.size ?? 0);
+        observation?.fact('retiredJoints', retiredJoints?.size ?? 0);
         const nextVideoConsumers = projectTextureConsumers(
           videoConsumers,
           removed,
@@ -730,9 +752,18 @@ export function createRenderPublisher(
         const removedColumn = new Uint32Array(buffer(1, removed.size * 4), 0, removed.size);
         removedColumn.set([...removed]);
         observation?.phase('packet');
+        const retiredJointCount = retiredJoints?.size ?? 0;
+        const retiredJointColumn = new Uint32Array(
+          buffer(4, retiredJointCount * 4),
+          0,
+          retiredJointCount,
+        );
+        let jointIndex = 0;
+        for (const joint of retiredJoints ?? EMPTY_IDENTITIES)
+          retiredJointColumn[jointIndex++] = joint;
         const packet: RenderPublication = {
           ...identity,
-          protocol: 2,
+          protocol: 3,
           materials: publishedMaterials,
           retiredMaterials,
           revision: revision + 1,
@@ -760,6 +791,7 @@ export function createRenderPublisher(
           removed: removedColumn,
           transformEntities,
           transforms: matrices,
+          retiredJoints: retiredJointColumn,
           assets: [...assetRows].map(([handle, value, revision]) => {
             // Runtime content is a projection, so GUID identity stays with the
             // underlying catalogued payload rather than the projected object.
@@ -783,7 +815,9 @@ export function createRenderPublisher(
               (publishedMaterialProjections.has(handle) &&
                 publishedMaterialProjections.get(handle) === materialProjections.get(handle))
                 ? {}
-                : { materialProjection: structuredClone(materialProjections.get(handle) ?? null) }),
+                : {
+                    materialProjection: detachMaterialProjection(materialProjections.get(handle)),
+                  }),
               ...(guid === undefined ? {} : { guid }),
               ...(sourceKey === undefined ? {} : { sourceKey }),
             };
@@ -802,74 +836,90 @@ export function createRenderPublisher(
           packet,
           ...(observation === undefined ? {} : { observation }),
           accept: () => {
-            if (closed)
+            if (closed || disposed || failed)
               throw new RenderPublicationError({ reason: 'revision', subject: 'closed candidate' });
-            observation?.phase('accept');
-            batch.accept();
-            assetBatch.accept();
-            assetVersions = nextAssetVersions;
-            for (const handle of retired) publishedMaterialProjections.delete(handle);
-            for (const [handle, projection] of materialProjections)
-              publishedMaterialProjections.set(handle, projection);
-            closure?.commit();
-            for (const [id, holds] of materialHolds) {
-              const resource = materialSources.get(id) ?? materialRecords.get(id)?.resource;
-              if (holds === 0) materialRecords.delete(id);
-              else if (resource !== undefined)
-                materialRecords.set(id, { resource, holds, snapshot: resource.snapshot });
-            }
-            for (const { id, value } of publishedMaterials) {
-              const previous = materialRecords.get(id);
-              if (previous !== undefined) materialRecords.set(id, { ...previous, snapshot: value });
-            }
-            for (const entity of removed) materialsByEntity.delete(entity);
-            for (const [entity, ids] of nextMaterialDependencies)
-              materialsByEntity.set(entity, ids);
-            for (const row of featureRows) {
-              if (row.fullscreen !== undefined)
-                publishedFullscreenFeatures.set(row.identity, row.fullscreen);
-            }
-            for (const key of programs.keys()) publishedPrograms.add(key);
-            closed = true;
-            active = false;
-            revision++;
-            flights.set(revision, {
-              features: featureRows,
-              owners: featureSources,
-              submitted: false,
-            });
-            storage = spareStorage.pop() ?? [
-              new ArrayBuffer(0),
-              new ArrayBuffer(0),
-              new ArrayBuffer(0),
-              new ArrayBuffer(0),
-            ];
-            for (const row of videoFrames) row.frame.close();
-            for (const row of canvasFrames) row.frame?.close();
-            videoConsumers = nextVideoConsumers;
-            canvasConsumers = nextCanvasConsumers;
-            frameDependencies = nextFrameDependencies;
-            for (const entity of removedConsumers) dependencies.delete(entity);
-            for (const entity of removed) updateSkinConsumers(entity, undefined);
-            for (const row of frame.renderables)
-              updateSkinConsumers(row.entityKey, row.skinJointEntities);
-            for (const entity of removed) members.delete(entity);
-            for (const [entity, handles] of nextDependencies) {
-              members.add(entity);
-              dependencies.set(entity, handles);
-            }
-            for (const entity of matrixRows.keys()) pending.delete(entity);
-            for (const entity of removed) pending.delete(entity);
-            for (const sourceIndex of batch.indices) {
-              const entity = source.projection.entity(sourceIndex);
-              if (entity === undefined) {
-                source.entities.delete(sourceIndex);
-              } else {
-                source.entities.set(sourceIndex, entity);
+            try {
+              observation?.phase('accept');
+              batch.accept();
+              assetBatch.accept();
+              assetVersions = nextAssetVersions;
+              for (const handle of retired) publishedMaterialProjections.delete(handle);
+              for (const [handle, projection] of materialProjections)
+                publishedMaterialProjections.set(handle, projection);
+              closure?.commit();
+              for (const [id, holds] of materialHolds) {
+                const resource = materialSources.get(id) ?? materialRecords.get(id)?.resource;
+                if (holds === 0) materialRecords.delete(id);
+                else if (resource !== undefined)
+                  materialRecords.set(id, { resource, holds, snapshot: resource.snapshot });
               }
+              for (const { id, value } of publishedMaterials) {
+                const previous = materialRecords.get(id);
+                if (previous !== undefined)
+                  materialRecords.set(id, { ...previous, snapshot: value });
+              }
+              for (const entity of removed) materialsByEntity.delete(entity);
+              for (const [entity, ids] of nextMaterialDependencies)
+                materialsByEntity.set(entity, ids);
+              for (const row of featureRows) {
+                if (row.fullscreen !== undefined)
+                  publishedFullscreenFeatures.set(row.identity, row.fullscreen);
+              }
+              for (const key of programs.keys()) publishedPrograms.add(key);
+              closed = true;
+              active = false;
+              revision++;
+              flights.set(revision, {
+                features: featureRows,
+                owners: featureSources,
+                submitted: false,
+              });
+              storage = spareStorage.pop() ?? Array.from({ length: 5 }, () => new ArrayBuffer(0));
+              for (const row of videoFrames) row.frame.close();
+              for (const row of canvasFrames) row.frame?.close();
+              videoConsumers = nextVideoConsumers;
+              canvasConsumers = nextCanvasConsumers;
+              frameDependencies = nextFrameDependencies;
+              for (const entity of removedConsumers) dependencies.delete(entity);
+              references?.commit();
+              if (jointChanges !== undefined) skinJoints.acknowledged(jointChanges);
+              for (const entity of removed) members.delete(entity);
+              for (const [entity, handles] of nextDependencies) {
+                members.add(entity);
+                dependencies.set(entity, handles);
+              }
+              for (const entity of matrixRows.keys()) pending.delete(entity);
+              for (const entity of removed) pending.delete(entity);
+              acceptRenderSourceEntities(source, batch.indices, sourceRows);
+              observation?.finish('accepted');
+              activeObservation = undefined;
+            } catch (cause) {
+              failed = true;
+              closed = true;
+              active = false;
+              const errors = [cause];
+              for (const row of videoFrames) {
+                try {
+                  row.frame.close();
+                } catch (cleanup) {
+                  errors.push(cleanup);
+                }
+              }
+              for (const row of canvasFrames) {
+                try {
+                  row.frame?.close();
+                } catch (cleanup) {
+                  errors.push(cleanup);
+                }
+              }
+              observation?.finish('prepare-error');
+              activeObservation = undefined;
+              throw new AggregateError(
+                errors,
+                'Render publication acceptance failed; start a new source epoch',
+                { cause },
+              );
             }
-            observation?.finish('accepted');
-            activeObservation = undefined;
           },
           discard: () => {
             if (!closed) {
@@ -894,7 +944,8 @@ export function createRenderPublisher(
       acceptedRevision: number,
       receipts: readonly { readonly identity: string; readonly feedback: unknown }[],
     ): Result<void, RenderPublicationError> {
-      if (disposed) return fail('disposed', 'publisher');
+      if (disposed || failed)
+        return fail('disposed', 'publisher retired or failed; start a new source epoch');
       const flight = flights.get(acceptedRevision);
       if (flight === undefined || flight.submitted)
         return fail('revision', 'feature acknowledgment');
@@ -920,10 +971,11 @@ export function createRenderPublisher(
       acceptedRevision: number,
       buffers: readonly ArrayBuffer[],
     ): Result<void, RenderPublicationError> {
-      if (disposed) return fail('disposed', 'publisher');
+      if (disposed || failed)
+        return fail('disposed', 'publisher retired or failed; start a new source epoch');
       if (flights.keys().next().value !== acceptedRevision)
         return fail('revision', 'returned storage revision');
-      if (buffers.length !== 4 || buffers.some((value) => !(value instanceof ArrayBuffer)))
+      if (buffers.length !== 5 || buffers.some((value) => !(value instanceof ArrayBuffer)))
         return fail('shape', 'returned storage');
       if (active || storage.some((buffer) => buffer.byteLength > 0))
         spareStorage.push([...buffers]);
@@ -951,8 +1003,7 @@ export function createRenderPublisher(
       flights.clear();
       spareStorage.length = 0;
       frameDependencies.clear();
-      jointsByEntity.clear();
-      skinConsumers.clear();
+      skinJoints.clear();
     },
   };
 }

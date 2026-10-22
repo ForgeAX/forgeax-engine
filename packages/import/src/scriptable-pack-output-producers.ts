@@ -1,4 +1,8 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
 import type { ScriptablePackSceneComponent } from '@forgeax/engine-pack/source';
 import { externalizeSceneAsset } from '@forgeax/engine-scene';
 import type {
@@ -484,7 +488,21 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
         if (!guid.ok) throw guid.error;
         refs.push(ref(guid.value, 'events', index));
       }
-      return { payload: clip, refs, artifacts: { body: jsonArtifact(clip) } };
+      const samples = encodeAnimationClipSamples(clip as unknown as Record<string, unknown>);
+      // Pack projection replaces the inline arrays with windows into this artifact.
+      return {
+        payload: clip,
+        refs,
+        artifacts:
+          samples === undefined
+            ? {}
+            : {
+                [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+                  mediaType: 'application/octet-stream',
+                  bytes: samples.bytes,
+                },
+              },
+      };
     }
     case 'animation-graph': {
       const graph = asset as AnimationGraph;
@@ -652,7 +670,7 @@ export function createAssetOutputProducerRegistry(
     registry.register(
       createSafeProducer(
         kind,
-        kind === 'animation-clip' ? 'animation-clip/2' : 'ordinary-pod/1',
+        kind === 'animation-clip' ? 'animation-clip/3' : 'ordinary-pod/1',
         ordinaryPodProduct,
       ),
     );

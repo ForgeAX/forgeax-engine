@@ -607,11 +607,11 @@ A build root is a native Plugin installed in an isolated Node process. It regist
 
 Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
 object projected into generated dev/build hosts before `createApp`. It accepts
-the public `dynamicGeometryMeshBudgetBytes`, `standardProfile`, `pipelineLibrary`,
-and `time` options. DevKit rejects unknown fields, accessors and non-data values;
+the public `dynamicGeometryMeshBudgetBytes`, `assetBudgetBytes`, `standardProfile`,
+`pipelineLibrary`, and `time` options. DevKit rejects unknown fields, accessors and non-data values;
 Render's shared validators reject invalid byte counts and profiles before host
 preparation, while Engine World owns time-policy validation. Missing configuration
-keeps App's 64 MiB mesh-budget default. An explicit
+keeps App's 64 MiB mesh-budget and 4 GiB asset-content-budget defaults. An explicit
 `forgeax-dynamic-mesh-budget-bytes` URL value still takes precedence. The same
 accepted time policy reaches browser main-thread and Worker Worlds; the WeChat
 host supplies it when constructing its World. Accepted options participate in the

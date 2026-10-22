@@ -111,7 +111,6 @@ function measureStateProjection() {
           [world],
           owner,
           assets,
-          undefined,
           mode === 'persistent' ? scene.materialSnapshotCacheStore() : undefined,
           { cull: 'none', retainHidden: true, renderables: request },
         );

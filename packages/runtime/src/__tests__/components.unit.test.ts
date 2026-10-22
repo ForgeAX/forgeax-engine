@@ -179,12 +179,11 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(MeshFilter).assetHandle).toBe('asset<mesh>');
     });
 
-    it('MeshRenderer has materials, lighting channels, skin bounds and pipeline preparation', () => {
+    it('MeshRenderer has materials, lighting channels and pipeline preparation', () => {
       expect(MeshRenderer.name).toBe('MeshRenderer');
       expect(componentSchema(MeshRenderer)).toEqual({
         materials: 'array<asset<material>>',
         lightingChannels: 'f64',
-        conservativeSkinBounds: 'bool',
         preparePipelines: 'bool',
       });
     });
@@ -1920,7 +1919,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // array added.
   //
   //   (a) `componentDefinition(MeshRenderer).defaults` is a frozen map asserting
-  //       `{ materials: [], lightingChannels: 0xffffffff, conservativeSkinBounds: false, preparePipelines: false }` (empty array routes to D-Q7 case B default
+  //       `{ materials: [], lightingChannels: 0xffffffff, preparePipelines: false }` (empty array routes to D-Q7 case B default
   //       material path).
   //
   //   (b) `world.spawn({ component: MeshRenderer, data: {} })` produces a row
@@ -1933,11 +1932,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //       compile-time error (verified via test-d.ts).
 
   describe('componentDefinition(MeshRenderer).defaults — frozen map assertion (w8)', () => {
-    it('componentDefinition(MeshRenderer).defaults retains material, lighting, bounds and preparation defaults', () => {
+    it('componentDefinition(MeshRenderer).defaults retains material, lighting and preparation defaults', () => {
       expect(componentDefinition(MeshRenderer).defaults).toEqual({
         materials: [],
         lightingChannels: 0xffffffff,
-        conservativeSkinBounds: false,
         preparePipelines: false,
       });
     });

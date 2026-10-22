@@ -173,7 +173,7 @@ cut only after it is ported to `main`.
 git fetch origin main rc
 cut=$(git commit-tree "origin/main^{tree}" -p origin/rc -p origin/main \
   -m "chore(release): cut rc from main")
-git push origin "$cut:refs/heads/rc"
+git push origin "${cut}:refs/heads/rc"  # braces: zsh reads "$cut:r" as a modifier
 gh workflow run sdk-release-candidate.yml --ref main -f version=0.4.18-rc.1
 
 # Promotion: stable fast-forwards to the tested commit.

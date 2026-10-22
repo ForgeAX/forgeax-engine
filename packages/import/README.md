@@ -44,6 +44,8 @@ The output is the same Pack v2 durable payload used by ordinary importers. The
 `skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`, and
 `particle-effect`, and `ies-profile`; all are loadable by GUID, while `refs`,
 `artifacts`, `mediaType`, and `programFingerprint` remain producer facts.
+A published particle payload keeps `programFingerprint` and emitter summaries
+only; the `particle-effect/program.json` artifact is the single program copy.
 Particle mesh renderers retain either a static Mesh GUID or the closed
 `{ source: 'player' }` selector in their immutable program artifact. Only static
 Mesh GUIDs become Pack references; the Player's ordinary MeshFilter resolves

@@ -58,13 +58,16 @@ export function inspectCapsuleShadow(
   materials: MaterialFrame | undefined,
   deferred: boolean,
   directionalShadow: boolean,
-  submission: CapsuleShadowSubmission = NO_SUBMISSION,
+  submission: CapsuleShadowSubmission | undefined,
+  demand: NonNullable<
+    import('../record/render-context').RenderSystemRuntime['demandCapsuleShadow']
+  >,
 ): CapsuleShadowInspection | undefined {
   let requested = 0;
   let admitted = 0;
   const fallbacks: Partial<Record<CapsuleShadowFallbackReason, number>> = {};
   for (const source of renderables) {
-    const state = source.capsuleShadow;
+    const state = demand(source);
     if (state === undefined) continue;
     requested += 1;
     let reason: CapsuleShadowFallbackReason | undefined;
@@ -76,5 +79,10 @@ export function inspectCapsuleShadow(
     else fallbacks[reason] = (fallbacks[reason] ?? 0) + 1;
   }
   if (requested === 0) return undefined;
-  return Object.freeze({ requested, admitted, ...submission, fallbacks: Object.freeze(fallbacks) });
+  return Object.freeze({
+    requested,
+    admitted,
+    ...(submission ?? NO_SUBMISSION),
+    fallbacks: Object.freeze(fallbacks),
+  });
 }

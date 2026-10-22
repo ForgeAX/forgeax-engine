@@ -2,19 +2,20 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease, type RenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { mat4 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { createSkinPaletteOwner } from '../assembly/skin-palette-owner';
 import { MeshFilter, MeshRenderer } from '../components';
 import { InstanceProjectionStore } from '../instances';
 import { renderPublicationTransfers } from '../publication/contract';
 import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { SkinTasks } from '../record/skin-tasks';
 import type { ExtractedFrame } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import {
@@ -67,119 +68,110 @@ function makeSkinWorld(skinComponent: typeof Skin = Skin, registerSkin = false):
   return { world, joint, renderable };
 }
 
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('Missing accepted Skin lifecycle fact');
+  return value;
+}
 function skinFor(frame: ExtractedFrame, worldId: number, entity: EntityHandle) {
   return frame.renderables.find(
     (snapshot) => snapshot.worldId === worldId && snapshot.entityKey === entity,
-  )?.skin;
+  )?.skinBinding;
+}
+function position(scene: PersistentRenderScene, worldId: number, entity: EntityHandle): number {
+  const frame = required(scene.skinRecordingFrame()),
+    slot = required(scene.compositionSlot(worldId, entity));
+  const matrix = mat4.create();
+  expect(frame.current.matrix(slot.slot, 0, matrix, mat4.create())).toBe(true);
+  return matrix[12] as number;
 }
 
-describe('PersistentRenderScene skin palette lifecycle', () => {
-  it('reads the World-owned Skin token supplied by a separately bundled Worker plugin', async () => {
+describe('PersistentRenderScene shared Skin lifecycle', () => {
+  it('reads the World-owned Skin token supplied by a separately bundled Worker plugin', () => {
     const workerSkin = defineComponent('Skin', {
       skeleton: { type: 'asset<skeleton>' },
       joints: { type: 'array<entity>' },
     }) as typeof Skin;
     const subject = makeSkinWorld(workerSkin, true);
     expect(subject.world.components.resolve('Skin')).toBe(workerSkin);
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const allocator = createSkinPaletteOwner(device, true);
-    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
-    const worlds = [subject.world] as const;
-    const leases = worlds.map((world) => createRenderReadLease(world));
-    const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
-    const scene = new PersistentRenderScene();
+    const assets = testAssets(subject.world),
+      lease = createRenderReadLease(subject.world);
+    const owner = { cameraOwner: 0, resourceOwner: 0 } as const,
+      scene = new PersistentRenderScene();
     try {
       const frame = scene.extractComposition(
-        worlds,
+        [subject.world],
         owner,
         assets,
-        (request) =>
-          extractFrames(
-            worlds,
-            owner,
-            assets,
-            { skinPaletteAllocator: allocator },
-            scene.materialSnapshotCacheStore(),
-            { cull: 'none', retainHidden: true, renderables: request },
-          ),
-        leases,
+        (renderables) =>
+          extractFrames([subject.world], owner, assets, scene.materialSnapshotCacheStore(), {
+            cull: 'none',
+            retainHidden: true,
+            renderables,
+          }),
+        [lease],
       );
-      expect(skinFor(frame, 0, subject.renderable)).toBeDefined();
+      expect(skinFor(frame, 0, subject.renderable)?.joints).toEqual([Number(subject.joint)]);
+      expect(position(scene, 0, subject.renderable)).toBe(0);
     } finally {
-      for (const lease of leases) lease.dispose();
+      lease.dispose();
       scene.dispose();
-      allocator.dispose();
     }
   });
 
-  it('retains published CPU Skin facts after receiver palette assignment for device recovery', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const replacement = (await adapter.requestDevice()).unwrap();
-    const allocator = createSkinPaletteOwner(device, true);
-    const replacementAllocator = createSkinPaletteOwner(replacement, true);
-    const fixture = makeSkinWorld();
-    fixture.world.set(fixture.joint, Transform, { pos: [2, 0, 0] }).unwrap();
-    fixture.world.update(0).unwrap();
-    const assets = testAssets(fixture.world);
-    const identity = { source: 'skin-recovery-publication', epoch: 1 };
-    const publisher = createRenderPublisher(fixture.world, assets, identity);
-    const receiver = new RenderPublicationReceiver(identity);
-    const scene = new PersistentRenderScene();
-    const instances = new InstanceProjectionStore();
-    try {
-      const publication = publisher.prepare(0).unwrap();
-      const packet = structuredClone(publication.packet, {
-        transfer: renderPublicationTransfers(publication.packet),
+  it('retains published static membership and shared pose through replacement-device recovery', async () => {
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const f = makeSkinWorld();
+    f.world.set(f.joint, Transform, { pos: [2, 0, 0] }).unwrap();
+    f.world.update(0).unwrap();
+    const assets = testAssets(f.world),
+      identity = { source: 'skin-recovery-publication', epoch: 1 };
+    const publisher = createRenderPublisher(f.world, assets, identity),
+      receiver = new RenderPublicationReceiver(identity);
+    const scene = new PersistentRenderScene(),
+      instances = new InstanceProjectionStore();
+    const publish = () => {
+      const candidate = publisher.prepare(0).unwrap();
+      const packet = structuredClone(candidate.packet, {
+        transfer: renderPublicationTransfers(candidate.packet),
       });
-      publication.accept();
-      const prepared = preparePublicationGeometry(
-        receiver.accept(packet).unwrap(),
-        scene,
-        allocator,
-        assets,
-        instances,
+      candidate.accept();
+      return scene.consumePublication(
+        preparePublicationGeometry(receiver.accept(packet).unwrap(), assets, instances),
       );
-      const frame = scene.consumePublication(prepared);
-      const prior = skinFor(frame, 0, fixture.renderable);
-      expect(prior).toBeDefined();
-      expect(frame.renderables.at(0)?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
-      const candidate = scene
-        .prepareRecoveryGpuDrivenCandidate(replacement, replacementAllocator)
-        .unwrap();
+    };
+    try {
+      const before = publish(),
+        binding = required(skinFor(before, 0, f.renderable));
+      expect(position(scene, 0, f.renderable)).toBe(2);
+      const candidate = scene.prepareRecoveryGpuDrivenCandidate(device).unwrap();
       try {
         for (const slot of candidate.state?.slots ?? []) {
           expect(
             candidate.state?.slotForEntity?.(slot.snapshot.worldId, slot.snapshot.entityKey),
           ).toBe(slot);
+          expect(slot.snapshot.skinBinding).toEqual(binding);
         }
-        const restored = candidate.state?.slots.at(0)?.snapshot;
-        expect(restored?.skin?.buffer).toBeDefined();
-        expect(restored?.skin?.buffer).not.toBe(prior?.buffer);
-        expect(restored?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
         candidate.publish();
-        expect(scene.compositionSlot(0, fixture.renderable)?.snapshot.skin?.buffer).toBe(
-          restored?.skin?.buffer,
-        );
+        const next = publish();
+        expect(skinFor(next, 0, f.renderable)).toEqual(binding);
+        expect(position(scene, 0, f.renderable)).toBe(2);
       } finally {
         candidate.release();
       }
     } finally {
       scene.dispose();
+      instances.dispose();
       receiver.dispose();
       publisher.dispose();
-      allocator.dispose();
-      replacementAllocator.dispose();
     }
   });
 
   it.each([
     true,
     false,
-  ])('rebuilds retained Skin before publication (storage: %s)', async (storage) => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
+  ])('rebinds actual task buffers after recovery without changing source membership (storage=%s)', async (storage) => {
+    const adapter = (await rhi.requestAdapter()).unwrap(),
+      device = (await adapter.requestDevice()).unwrap();
     const nativeReplacement = (await adapter.requestDevice()).unwrap();
     const replacement = new Proxy(nativeReplacement, {
       get(target, key) {
@@ -188,216 +180,145 @@ describe('PersistentRenderScene skin palette lifecycle', () => {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    const writes = vi.spyOn(replacement.queue, 'writeBuffer');
-    const buffers = vi.spyOn(nativeReplacement, 'createBuffer');
-    const replacementAllocator = createSkinPaletteOwner(replacement, storage);
-    let allocator = createSkinPaletteOwner(device, storage);
-    const oldAllocator = allocator;
-    const fixture = makeSkinWorld();
-    fixture.world.set(fixture.joint, Transform, { pos: [3, 0, 0] }).unwrap();
-    fixture.world.update(0).unwrap();
-    const worlds = [fixture.world];
-    const lease = createRenderReadLease(fixture.world);
-    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
-    const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
-    const scene = new PersistentRenderScene({ getTemporalConsumerDemand: () => true });
+    const f = makeSkinWorld(),
+      assets = testAssets(f.world),
+      lease = createRenderReadLease(f.world);
+    f.world.set(f.joint, Transform, { pos: [3, 0, 0] }).unwrap();
+    f.world.update(0).unwrap();
+    const owner = { cameraOwner: 0, resourceOwner: 0 } as const,
+      scene = new PersistentRenderScene();
+    const oldTasks = new SkinTasks(device, storage),
+      newTasks = new SkinTasks(replacement, storage);
     const requests: PersistentRenderCandidateRequest[] = [];
-    const build = (request: PersistentRenderCandidateRequest) => {
-      requests.push(request);
-      return extractFrames(
-        worlds,
+    const draw = () =>
+      scene.extractComposition(
+        [f.world],
         owner,
         assets,
-        { skinPaletteAllocator: allocator },
-        scene.materialSnapshotCacheStore(),
-        { cull: 'none', retainHidden: true, renderables: request },
+        (request) => {
+          requests.push(request);
+          return extractFrames([f.world], owner, assets, scene.materialSnapshotCacheStore(), {
+            cull: 'none',
+            retainHidden: true,
+            renderables: request,
+          });
+        },
+        [lease],
       );
-    };
     try {
-      const before = scene.extractComposition(worlds, owner, assets, build, [lease]);
-      scene.prepareTemporalFrame(before.renderables);
-      scene.commitTemporalFrame().unwrap();
-      const prior = skinFor(before, 0, fixture.renderable);
-      const identity = scene.compositionSlot(0, fixture.renderable);
-      expect(prior).toBeDefined();
-      expect(identity?.snapshot.skinPose?.jointWorlds[0]?.[12]).toBe(3);
-      const discarded = scene
-        .prepareRecoveryGpuDrivenCandidate(replacement, replacementAllocator)
-        .unwrap();
-      if (storage) {
-        const slot = discarded.state?.slots.find((row) => row.entityKey === fixture.renderable);
-        expect(slot?.snapshot.skin?.buffer).toBeDefined();
-        if (slot !== undefined) {
-          expect(
-            discarded.state?.slotForEntity?.(slot.snapshot.worldId, slot.snapshot.entityKey),
-          ).toBe(slot);
-        }
-        expect(slot?.snapshot.skin?.buffer).not.toBe(prior?.buffer);
-        expect(discarded.state?.slotAt(slot?.slot ?? -1)?.snapshot.skin?.buffer).toBe(
-          slot?.snapshot.skin?.buffer,
-        );
-      } else expect(discarded.state).toBeUndefined();
+      const before = draw(),
+        binding = required(skinFor(before, 0, f.renderable));
+      const identity = required(scene.compositionSlot(0, f.renderable));
+      oldTasks.begin(required(scene.skinRecordingFrame()));
+      const prior = required(oldTasks.demand(identity));
+      await oldTasks.complete();
+      const discarded = scene.prepareRecoveryGpuDrivenCandidate(replacement).unwrap();
+      if (storage)
+        expect(discarded.state?.slotAt(identity.slot)?.snapshot.skinBinding).toEqual(binding);
+      else expect(discarded.state).toBeUndefined();
       discarded.discard();
       discarded.publish();
-      expect(scene.compositionSlot(0, fixture.renderable)?.snapshot.skin?.buffer).toBe(
-        prior?.buffer,
-      );
-      const candidate = scene
-        .prepareRecoveryGpuDrivenCandidate(replacement, replacementAllocator)
-        .unwrap();
+      expect(scene.compositionSlot(0, f.renderable)).toBe(identity);
+      const candidate = scene.prepareRecoveryGpuDrivenCandidate(replacement).unwrap();
       scene.resetGpuForRecover();
       candidate.publish();
       candidate.publish();
-      const accepted = scene.compositionSlot(0, fixture.renderable);
-      const receipt = accepted?.snapshot.skin;
-      expect(receipt?.buffer).not.toBe(prior?.buffer);
-      expect([accepted?.slot, accepted?.generation]).toEqual([
-        identity?.slot,
-        identity?.generation,
-      ]);
-      expect([receipt?.identity, receipt?.generation]).toEqual([
-        prior?.identity,
-        prior?.generation,
-      ]);
-      expect(
-        buffers.mock.results.some(
-          (result) =>
-            result.type === 'return' && result.value.ok && result.value.value === receipt?.buffer,
-        ),
-      ).toBe(true);
-      const upload = writes.mock.calls.find(([buffer]) => buffer === receipt?.buffer);
-      expect(upload?.[1]).toBe(receipt?.byteOffset);
-      expect(Array.from(upload?.[2] as Float32Array)).toEqual([
-        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1,
-      ]);
-      allocator = replacementAllocator;
-      requests.length = 0;
-      const unchanged = scene.extractComposition(worlds, owner, assets, build, [lease]);
-      expect(requests.every((request) => request === 'none')).toBe(true);
-      expect(skinFor(unchanged, 0, fixture.renderable)?.buffer).toBe(receipt?.buffer);
-      expect(unchanged.renderables.at(0)?.temporal?.previousSkin?.buffer).not.toBe(prior?.buffer);
-      expect(fixture.world.get(fixture.joint, Transform).unwrap().pos[0]).toBe(3);
+      try {
+        requests.length = 0;
+        const unchanged = draw();
+        expect(requests.every((request) => request === 'none')).toBe(true);
+        expect(skinFor(unchanged, 0, f.renderable)).toEqual(binding);
+        expect(position(scene, 0, f.renderable)).toBe(3);
+        const accepted = required(scene.compositionSlot(0, f.renderable));
+        expect([accepted.slot, accepted.generation]).toEqual([identity.slot, identity.generation]);
+        const writes = vi.spyOn(replacement.queue, 'writeBuffer');
+        newTasks.begin(required(scene.skinRecordingFrame()));
+        const task = required(newTasks.demand(accepted));
+        expect(task.data).not.toBe(prior.data);
+        expect(task.auxiliary).not.toBe(prior.auxiliary);
+        expect(newTasks.paletteUploadBytes).toBe(128);
+        const upload = required(
+          writes.mock.calls.find(
+            ([buffer, offset]) =>
+              buffer === task.data && offset === (storage ? 32 : task.dataOffset),
+          ),
+        );
+        expect(new Float32Array(upload[2] as ArrayBuffer, upload[3] ?? 0, 16)[12]).toBe(3);
+        await newTasks.complete();
+        writes.mockRestore();
+      } finally {
+        candidate.release();
+      }
     } finally {
-      writes.mockRestore();
-      buffers.mockRestore();
+      await oldTasks.dispose();
+      await newTasks.dispose();
       lease.dispose();
       scene.dispose();
-      oldAllocator.dispose();
-      replacementAllocator.dispose();
     }
   });
 
-  it('preserves untouched partial palettes, none scope, reorder identity, and retires removed Skin', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const allocator = createSkinPaletteOwner(device, true);
-    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
-    const first = makeSkinWorld();
-    const second = makeSkinWorld();
+  it('updates only shared joint facts through quiet/none scopes and world reorder, then removes static membership', () => {
+    const first = makeSkinWorld(),
+      second = makeSkinWorld();
     let worlds: readonly World[] = [first.world, second.world];
     let leases: readonly RenderReadLease[] = worlds.map((world) => createRenderReadLease(world));
-    const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
-    const scene = new PersistentRenderScene();
+    const assets = new AssetRegistry({ shaderRegistry: {} as unknown as ShaderRegistry });
+    const owner = { cameraOwner: 0, resourceOwner: 0 } as const,
+      scene = new PersistentRenderScene();
     const requests: PersistentRenderCandidateRequest[] = [];
-    const build = (request: PersistentRenderCandidateRequest): ExtractedFrame => {
-      requests.push(request);
-      return extractFrames(
+    const draw = () =>
+      scene.extractComposition(
         worlds,
         owner,
         assets,
-        { skinPaletteAllocator: allocator },
-        scene.materialSnapshotCacheStore(),
-        { cull: 'none', retainHidden: true, renderables: request },
+        (request) => {
+          requests.push(request);
+          return extractFrames(worlds, owner, assets, scene.materialSnapshotCacheStore(), {
+            cull: 'none',
+            retainHidden: true,
+            renderables: request,
+          });
+        },
+        leases,
       );
-    };
-    const draw = (): ExtractedFrame =>
-      scene.extractComposition(worlds, owner, assets, build, leases);
-
     try {
-      const initial = draw();
-      const firstInitial = skinFor(initial, 0, first.renderable);
-      const secondInitial = skinFor(initial, 1, second.renderable);
-      expect(firstInitial).toBeDefined();
-      expect(secondInitial).toBeDefined();
-      expect(firstInitial?.identity).not.toBe(secondInitial?.identity);
-      const firstBuffer = firstInitial?.buffer;
-      const firstOffset = firstInitial?.byteOffset;
-      const secondBuffer = secondInitial?.buffer;
-      const secondOffset = secondInitial?.byteOffset;
-      expect(firstBuffer).toBeDefined();
-      expect(secondBuffer).toBeDefined();
-      expect(firstOffset).toBe(0);
-      expect(secondOffset).toBe(256);
-
+      const initial = draw(),
+        firstBinding = required(skinFor(initial, 0, first.renderable)),
+        secondBinding = required(skinFor(initial, 1, second.renderable));
       requests.length = 0;
       first.world.set(first.joint, Transform, { pos: [1, 0, 0] }).unwrap();
       first.world.update(0).unwrap();
-      const firstPartial = draw();
-      const firstPartialRequest = requests.find(
-        (request): request is Extract<PersistentRenderCandidateRequest, { kind: 'partial' }> =>
-          typeof request === 'object',
-      );
-      expect(firstPartialRequest).toBeDefined();
-      expect(firstPartialRequest?.entitiesByWorld[0]?.has(first.renderable as number)).toBe(true);
+      const moved = draw();
+      expect(requests.every((request) => request === 'none')).toBe(true);
+      expect(skinFor(moved, 0, first.renderable)).toBe(firstBinding);
+      expect(skinFor(moved, 1, second.renderable)).toBe(secondBinding);
+      expect(position(scene, 0, first.renderable)).toBe(1);
+      expect(position(scene, 1, second.renderable)).toBe(0);
       expect(
-        firstPartialRequest?.entitiesByWorld[1]?.has(second.renderable as number) ?? false,
-      ).toBe(false);
-      expect(skinFor(firstPartial, 1, second.renderable)?.buffer).toBe(secondBuffer);
-      expect(skinFor(firstPartial, 1, second.renderable)?.byteOffset).toBe(secondOffset);
-
-      // Resource-only publication must not reconcile the identity set or
-      // release either persistent palette.
-      const none = extractFrames(
-        worlds,
-        owner,
-        assets,
-        { skinPaletteAllocator: allocator },
-        scene.materialSnapshotCacheStore(),
-        { cull: 'none', retainHidden: true, renderables: 'none' },
-      );
-      expect(none.renderables).toHaveLength(0);
-
-      // Visit the previously untouched entity after the partial and none
-      // scopes. Reusing its exact receipt proves its allocation survived both.
+        extractFrames(worlds, owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: 'none',
+        }).renderables,
+      ).toHaveLength(0);
       second.world.set(second.joint, Transform, { pos: [2, 0, 0] }).unwrap();
       second.world.update(0).unwrap();
-      const secondPartial = draw();
-      expect(skinFor(secondPartial, 0, first.renderable)?.buffer).toBe(firstBuffer);
-      expect(skinFor(secondPartial, 0, first.renderable)?.byteOffset).toBe(firstOffset);
-      expect(skinFor(secondPartial, 1, second.renderable)?.buffer).toBe(secondBuffer);
-      expect(skinFor(secondPartial, 1, second.renderable)?.byteOffset).toBe(secondOffset);
-
-      // A full rebuild after worlds[] reorder must retain each World's palette
-      // identity. Entity keys intentionally start at the same value in both
-      // independent Worlds, so an index-derived key would alias or move them.
+      draw();
+      expect(position(scene, 0, first.renderable)).toBe(1);
+      expect(position(scene, 1, second.renderable)).toBe(2);
       worlds = [second.world, first.world];
-      leases = [leases[1] as RenderReadLease, leases[0] as RenderReadLease];
-      const reordered = draw();
-      expect(skinFor(reordered, 0, second.renderable)?.buffer).toBe(secondBuffer);
-      expect(skinFor(reordered, 0, second.renderable)?.byteOffset).toBe(secondOffset);
-      expect(skinFor(reordered, 1, first.renderable)?.buffer).toBe(firstBuffer);
-      expect(skinFor(reordered, 1, first.renderable)?.byteOffset).toBe(firstOffset);
-
-      // Removing Skin leaves the renderable slot alive, but the producer must
-      // retire its palette during the selected partial extraction.
+      leases = [required(leases[1]), required(leases[0])];
+      draw();
+      expect(position(scene, 0, second.renderable)).toBe(2);
+      expect(position(scene, 1, first.renderable)).toBe(1);
       first.world.removeComponent(first.renderable, Skin).unwrap();
       first.world.update(0).unwrap();
-      const afterSkinRemoval = draw();
-      expect(skinFor(afterSkinRemoval, 1, first.renderable)).toBeUndefined();
-      expect(skinFor(afterSkinRemoval, 0, second.renderable)?.buffer).toBe(secondBuffer);
-      expect(skinFor(afterSkinRemoval, 0, second.renderable)?.byteOffset).toBe(secondOffset);
-
-      await device.queue.onSubmittedWorkDone();
-      const replacement = allocator.allocatePersistentSlice({
-        identity: 'test-replacement',
-        generation: 1,
-        jointCount: 1,
-      });
-      expect(replacement.byteOffset).toBe(firstOffset);
+      const removed = draw();
+      expect(skinFor(removed, 1, first.renderable)).toBeUndefined();
+      expect(position(scene, 0, second.renderable)).toBe(2);
     } finally {
       for (const lease of leases) lease.dispose();
       scene.dispose();
-      allocator.dispose();
     }
   });
 });

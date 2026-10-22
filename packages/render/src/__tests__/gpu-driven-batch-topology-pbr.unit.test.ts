@@ -79,7 +79,7 @@ function prepared(overrides: Partial<PreparedGpuDrivenDraw> = {}): PreparedGpuDr
     uvSets: receipt.uvSets,
     vertexInputs: receipt.vertexInputs,
     alphaMask: receipt.alphaMask,
-    skinPaletteAddress: receipt.skinPaletteAddress,
+
     topology: 'triangle-list',
     indexed: true,
     first: 0,
@@ -638,33 +638,14 @@ describe('PBR prepared GPU-driven batch topology', () => {
     ).toMatchObject(material);
     expect(before.binding?.material.snapshot).not.toMatchObject(material);
   });
-  it('reprepares skin admission when its palette buffer becomes available', () => {
-    const draw = prepared({
-      identity: { ...prepared().identity, deformation: 'skin' },
-      skinPaletteAddress: { group: 2, binding: 1, stride: 64 },
-    });
-    const source = snapshot(1, draw);
-    const skin = {
-      storageOrUniform: 'storage',
-      customDataStart: 0,
-      bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-    } as NonNullable<RenderableSnapshot['skin']>;
+  it('admits static Skin membership without a palette address or bind-pose bound', () => {
+    const draw = prepared({ identity: { ...prepared().identity, deformation: 'skin' } });
+    const { localAabb: _bounds, ...base } = snapshot(1, draw);
+    const source = { ...base, skinBinding: { skeleton: 1, joints: [2] } };
     const projection = new RenderScene();
-    projection.apply([updateSnapshot({ ...source, skin })]);
+    projection.apply([updateSnapshot(source)]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(0);
-    expect(topology.inspect().ineligible).toBe(1);
-    expect(
-      topology.apply(
-        projection.apply([
-          updateSnapshot({
-            ...source,
-            skin: { ...skin, buffer: {} as never },
-          }),
-        ]),
-      ),
-    ).toBe(true);
     expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(1);
     expect(topology.inspect().ineligible).toBe(0);
   });

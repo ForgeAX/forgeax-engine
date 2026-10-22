@@ -2,20 +2,26 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { mat4 } from '@forgeax/engine-math';
 import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { Skin } from '@forgeax/engine-skinning';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
-import { Camera, MeshFilter, MeshRenderer } from '../components';
+import { Camera, CapsuleShadow, MeshFilter, MeshRenderer } from '../components';
 import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import { CameraView } from '../components/camera-view';
 import type { RenderFeature } from '../features/types';
 import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { SkinTasks } from '../record/skin-tasks';
+import { PersistentRenderScene } from '../scene/render-scene';
+import { SkinSceneInputs } from '../scene/skin-scene-inputs';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
-async function fixture() {
+async function fixture(view = false, skin = false) {
   const identity = { source: 'scheduled-publication', epoch: 1 };
   const featureSubmitted = vi.fn();
   const sourceAcknowledged = vi.fn();
@@ -61,7 +67,7 @@ async function fixture() {
   });
   const world = new World({ assets });
   const publisher = createRenderPublisher(world, assets, identity, undefined, [feature]);
-  world
+  const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 8] } },
       {
@@ -77,15 +83,30 @@ async function fixture() {
       },
     )
     .unwrap();
+  if (view) world.addComponent(camera, { component: CameraView, data: {} }).unwrap();
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
   const meshHandle = assets.create(mesh).unwrap();
-  world
+  const renderable = world
     .spawn(
       { component: Transform, data: {} },
       { component: MeshFilter, data: { assetHandle: meshHandle } },
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
+  if (skin) {
+    const skeleton = assets
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices: mat4.identity(mat4.create()),
+      })
+      .unwrap();
+    const joint = world.spawn({ component: Transform, data: {} }).unwrap();
+    world
+      .addComponent(renderable, { component: Skin, data: { skeleton, joints: [joint] } })
+      .unwrap();
+    world.addComponent(renderable, { component: CapsuleShadow, data: {} }).unwrap();
+  }
   world.update(1 / 60).unwrap();
   propagateTransforms(world).unwrap();
   const nextRequest = () => {
@@ -120,6 +141,49 @@ async function fixture() {
     },
   };
 }
+
+it.each([
+  false,
+  true,
+])('cold recovers an existing published view through the actual Renderer entry (CameraView=%s)', async (view) => {
+  const f = await fixture(view),
+    scenes = new Set<PersistentRenderScene>();
+  const actual = PersistentRenderScene.prototype.consumePublication;
+  const consume = vi
+    .spyOn(PersistentRenderScene.prototype, 'consumePublication')
+    .mockImplementation(function (this: PersistentRenderScene, input) {
+      scenes.add(this);
+      return actual.call(this, input);
+    });
+  try {
+    const firstResult = f.renderer.draw(f.request);
+    if (!firstResult.ok) throw firstResult.error;
+    const first = firstResult.value;
+    expect((await first.completed).ok).toBe(true);
+    expect(scenes.size).toBeGreaterThan(0);
+    for (const scene of scenes) {
+      expect(scene.compositionSlots().length).toBe(1);
+      scene.invalidate();
+    }
+    scenes.clear();
+    consume.mockClear();
+    const delta = f.nextRequest();
+    expect(delta.publication.baseline).toBe(false);
+    expect(delta.publication.upserts.length).toBe(0);
+    const nextResult = f.renderer.draw(delta);
+    if (!nextResult.ok) throw nextResult.error;
+    const next = nextResult.value;
+    expect((await next.completed).ok).toBe(true);
+    expect(scenes.size).toBeGreaterThan(0);
+    for (const scene of scenes) expect(scene.compositionSlots().length).toBe(1);
+    expect(consume.mock.calls.every(([input]) => input.packet.baseline)).toBe(true);
+  } finally {
+    consume.mockRestore();
+    expect((await f.renderer.dispose()).ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
+  }
+});
 
 it('resumes a real published Renderer frame through the shared Feature checkpoint exactly once', async () => {
   const f = await fixture();
@@ -234,5 +298,46 @@ it('rechecks the current preparation owner before preparing or releasing a real 
     f.publisher.dispose();
     f.submit.mockRestore();
     prepare.mockRestore();
+  }
+});
+
+it('retires the actual submitted Skin roots even when task completion throws synchronously', async () => {
+  const f = await fixture(false, true),
+    cause = new Error('injected synchronous task cleanup failure');
+  const actualComplete = SkinTasks.prototype.complete,
+    actualSubmit = SkinSceneInputs.prototype.submitFrame;
+  let owner: SkinSceneInputs | undefined, retired: Promise<void> | undefined;
+  const complete = vi.spyOn(SkinTasks.prototype, 'complete').mockImplementationOnce(function (
+    this: SkinTasks,
+  ) {
+    const completion = actualComplete.call(this);
+    if (completion !== undefined) void completion.catch(() => {});
+    throw cause;
+  });
+  const submit = vi.spyOn(SkinSceneInputs.prototype, 'submitFrame').mockImplementation(function (
+    this: SkinSceneInputs,
+    ...args
+  ) {
+    owner = this;
+    retired = actualSubmit.apply(this, args);
+    return retired;
+  });
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const result = f.renderer.draw(f.request);
+    if (result.ok) await result.value.completed;
+    expect(complete).toHaveBeenCalledOnce();
+    expect(f.submit).toHaveBeenCalledOnce();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(retired).toBeDefined();
+    await retired;
+    expect(owner?.recordingFrame()).toBeUndefined();
+  } finally {
+    complete.mockRestore();
+    submit.mockRestore();
+    errors.mockRestore();
+    expect((await f.renderer.dispose()).ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
   }
 });

@@ -159,6 +159,7 @@ export interface ExecutionInitMessage {
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  readonly assetBudgetBytes?: number;
   readonly workers: import('./types').ExecutionSelection;
 }
 

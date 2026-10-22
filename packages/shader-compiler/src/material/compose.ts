@@ -89,6 +89,10 @@ export interface SurfaceCompositionRequest {
 }
 
 export interface SurfaceComposition {
+  /** Template-side imports are Engine owned; Surface-side project helpers
+   * passed the complete Surface interface/mutation validation below.
+   */
+  readonly engineTemplateInputs: boolean;
   readonly source: string;
   readonly templateModule: string;
   readonly surfaceModule: string;
@@ -992,6 +996,7 @@ export function composeSurfaceSource(
 ): Result<SurfaceComposition, MaterialError> {
   const template = request.sources.get(request.templateModule);
   if (!template.ok) return err(template.error);
+  let engineTemplateInputs = template.value.provenance === 'engine';
   const selected = request.sources.resolveSurfaceSlot(
     request.material,
     request.pass,
@@ -1088,11 +1093,13 @@ export function composeSurfaceSource(
       }
       continue;
     }
+    const record = request.sources.get(module);
+    if (!record.ok) return err(record.error);
+    if (!next.surfaceDependency && record.value.provenance !== 'engine')
+      engineTemplateInputs = false;
     const needsSurfaceValidation =
       next.surfaceDependency && !validatedSurfaceDependencies.has(module);
     if (visited.has(module) && !needsSurfaceValidation) continue;
-    const record = request.sources.get(module);
-    if (!record.ok) return err(record.error);
     if (needsSurfaceValidation && surfaceSourceReadsVertexColor(record.value.source)) {
       readsVertexColor = true;
     }
@@ -1144,6 +1151,7 @@ export function composeSurfaceSource(
   const sourceClosure = Object.keys(closureSources).sort();
   return ok({
     source,
+    engineTemplateInputs,
     templateModule: request.templateModule,
     surfaceModule: selected.value.moduleId,
     imports,

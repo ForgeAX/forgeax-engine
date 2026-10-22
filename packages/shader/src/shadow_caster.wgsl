@@ -94,11 +94,7 @@ struct VsOut {
 #endif
 
 #if SKINNING_DISABLED == false
-#if STORAGE_BUFFER_AVAILABLE == true
-@group(2) @binding(1) var<storage, read> palette : array<mat4x4<f32>>;
-#else
-@group(2) @binding(1) var<uniform> palette : array<mat4x4<f32>, 255>;
-#endif
+#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate}
 #endif
 
 fn _cascadeLightViewProj(layer : u32) -> mat4x4<f32> {
@@ -135,19 +131,19 @@ fn shadowVertex(in : VsInput, idx : u32) -> VsOut {
   let sceneDraw = sceneIndexDraw(visible.x);
   material = sceneMaterials[materialIndex];
 #if SKINNING_DISABLED == false
-  let paletteBase = sceneInstances[visible.x].customDataStart;
+  let paletteBase = visible.z;
   // The palette already carries world space; keep the shared scene rows bound.
   _ = sceneDraw.world;
 #endif
 #else
-  let paletteBase = 0u;
+#if SKINNING_DISABLED == false
+  let paletteBase = skinTaskDirectCandidate();
+#endif
 #endif
   let localPosition = standardVertexPosition(in);
 #if SKINNING_DISABLED == false
-  let skinMatrix = palette[paletteBase + in.skinIndex.x] * in.skinWeight.x +
-    palette[paletteBase + in.skinIndex.y] * in.skinWeight.y +
-    palette[paletteBase + in.skinIndex.z] * in.skinWeight.z +
-    palette[paletteBase + in.skinIndex.w] * in.skinWeight.w;
+  let descriptor = skinTaskDescriptor(paletteBase);
+  let skinMatrix = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
   let worldPos = skinMatrix * vec4<f32>(localPosition, 1.0);
 #ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
   let worldNormal = normalize((skinMatrix * vec4<f32>(in.normal, 0.0)).xyz);

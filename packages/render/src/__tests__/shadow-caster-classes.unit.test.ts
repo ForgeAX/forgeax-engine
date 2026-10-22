@@ -92,7 +92,11 @@ describe('ShadowCasterClassifier', () => {
 
   it('starts the first population static and promotes later casters after one window', () => {
     const fake = fakeScene();
-    const slots = [rigid(0), rigid(1), { slot: 2, snapshot: { skin: {} } }];
+    const slots = [
+      rigid(0),
+      rigid(1),
+      { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
+    ];
     const classifier = new ShadowCasterClassifier();
     const first = classify(classifier, slots, fake.scene);
     expect([...first.staticSlots]).toEqual([0, 1]);
@@ -159,7 +163,11 @@ describe('ShadowCasterClassifier', () => {
   it('treats every caster as changed when the change history cannot prove otherwise', () => {
     const fake = fakeScene();
     const classifier = new ShadowCasterClassifier();
-    const slots = [rigid(0), rigid(1), { slot: 2, snapshot: { skin: {} } }];
+    const slots = [
+      rigid(0),
+      rigid(1),
+      { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
+    ];
     framesUntilStatic(classifier, slots, fake.scene, 1);
     rest(classifier, slots, fake.scene);
     // A history gap or resync: a moved caster must never stay in the static layer.
@@ -208,7 +216,10 @@ describe('ShadowCasterClassifier', () => {
   it('places Mobility static casters in the static layer from their first update', () => {
     const fake = fakeScene();
     const declared = (slot: number) => ({ slot, snapshot: { mobility: 'static' as const } });
-    const skinned = { slot: 2, snapshot: { skin: {}, mobility: 'static' as const } };
+    const skinned = {
+      slot: 2,
+      snapshot: { skinBinding: { skeleton: 1, joints: [2] }, mobility: 'static' as const },
+    };
     const slots = [declared(0), skinned];
     const classifier = new ShadowCasterClassifier();
     const first = classify(classifier, slots, fake.scene);
@@ -274,7 +285,11 @@ describe('ShadowCasterClassifier', () => {
 it('counts classification attempts, transitions and population without exposing mutable state', () => {
   const fake = fakeScene();
   const classifier = new ShadowCasterClassifier();
-  const slots = [rigid(0), rigid(1), { slot: 2, snapshot: { skin: {} } }];
+  const slots = [
+    rigid(0),
+    rigid(1),
+    { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
+  ];
   classify(classifier, slots, fake.scene);
   const first = classifier.inspect();
   expect(first).toMatchObject({

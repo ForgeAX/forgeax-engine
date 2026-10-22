@@ -23,6 +23,12 @@ export type {
   TilesetAsset,
   VideoAsset,
 } from '@forgeax/engine-types';
+export {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  type AnimationClipSampleWindow,
+  decodeAnimationClipSamples,
+  encodeAnimationClipSamples,
+} from './animation-clip-samples.js';
 export type { ArtifactPathContext } from './artifact-path.js';
 export { validateArtifactPath } from './artifact-path.js';
 export {

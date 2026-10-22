@@ -298,3 +298,29 @@ test('changed span reads do not consult clean block summaries', () => {
     for (const current of span.entities) found.push(current);
   expect(found).toEqual([entity]);
 });
+
+test('distinguishes structural identities from value-only rows in one borrowed candidate', () => {
+  const world = new World();
+  const changed = world.spawn({ component: Position, data: { x: 1 } }).unwrap();
+  const removed = world
+    .spawn({ component: Position, data: { x: 2 } }, { component: Extra, data: {} })
+    .unwrap();
+  const projection = createStateProjection(world, [Position, Extra]);
+  const baseline = projection.read();
+  expect(baseline.hasStructuralChange(entityIndex(changed))).toBe(true);
+  baseline.accept();
+  expect(() => baseline.hasStructuralChange(entityIndex(changed))).toThrow();
+  world.set(changed, Position, { x: 3 }).unwrap();
+  world.removeComponent(removed, Extra).unwrap();
+  const candidate = projection.read();
+  expect(candidate.hasStructuralChange(entityIndex(changed))).toBe(false);
+  expect(candidate.hasStructuralChange(entityIndex(removed))).toBe(true);
+  expect(projection.changed(removed, Extra)).toBe(false); // Removal has no live component tick.
+  const retry = projection.read();
+  expect(() => candidate.hasStructuralChange(entityIndex(removed))).toThrow();
+  expect(retry.hasStructuralChange(entityIndex(removed))).toBe(true);
+  retry.accept();
+  const empty = projection.read();
+  expect(empty.indices).toEqual([]);
+  expect(empty.hasStructuralChange(entityIndex(removed))).toBe(false);
+});

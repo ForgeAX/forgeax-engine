@@ -178,13 +178,18 @@ export async function verifySkinnedPicking(
               (s.entryPoint === 'fs_main' || s.entryPoint === 'fs_opaque') &&
               (deformation.startsWith('morph')
                 ? w.vertexBuffers.length > 0
-                : s.source?.includes('skinMatrix')),
+                : s.source?.includes('skinTaskDescriptor')),
           ),
         ),
       );
+      // Skin task ABI: binding 1 holds candidate/descriptor/joint rows and
+      // binding 2 addresses them for this draw.
       const palette = deformation.startsWith('morph')
         ? undefined
         : required(work.bindings.find((b) => b.groupIndex === 2 && b.binding === 1));
+      const address = deformation.startsWith('morph')
+        ? undefined
+        : required(work.bindings.find((b) => b.groupIndex === 2 && b.binding === 2));
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const device = (
         await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
@@ -206,28 +211,33 @@ export async function verifySkinnedPicking(
         replayDelta = delta(live, rgba(attachment.bytes, SKIN_PICK_SIZE * 8));
         expect(replayDelta).toBeLessThanOrEqual(0.05);
         await save(`${name}-replay.rgba16f`, attachment.bytes);
-        if (palette) {
+        if (palette && address) {
+          expect(work.kind).toBe('drawIndexed');
           const resource = required(palette.resourceId);
-          const bytes = (await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes;
-          const binding = required(
-            tape.events
-              .slice(0, work.eventIndex)
-              .filter(
-                (e) => e.kind === 'setBindGroup' && e.bindGroupHandleId === palette.bindGroupId,
-              )
-              .at(-1),
-          );
-          if (binding.kind !== 'setBindGroup') throw new Error('Missing skin palette binding');
-          const offset = (palette.bufferOffset ?? 0) + (palette.dynamicOffset ?? 0);
-          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          const read = async (binding: typeof palette) => {
+            const bytes = (
+              await replay.readResourceAtWork(required(binding.resourceId), work.workIndex)
+            ).unwrap().bytes;
+            const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0);
+            return new Uint32Array(
+              bytes.buffer.slice(bytes.byteOffset + offset, bytes.byteOffset + bytes.byteLength),
+            );
+          };
+          const output = await read(palette);
+          const [candidateBase, descriptorBase, directCandidate] = await read(address);
+          const row = (index: number) => output.subarray(index * 4, index * 4 + 4);
+          const hashSlot = required(row(required(candidateBase) + required(directCandidate))[0]);
+          const [, count, base, flags] = row(required(descriptorBase) + hashSlot);
+          expect(count).toBe(2);
+          expect((required(flags) & 1) === 1).toBe(true);
+          const floats = new Float32Array(output.buffer, output.byteOffset, output.length);
           for (const [index, joint] of [scene.root, scene.upper].entries()) {
             const jointWorld = world.get(joint, GlobalTransform).unwrap().world;
             const ibm = mat4.identity(mat4.create());
             if (index === 1) ibm[13] = -0.5;
             const expected = mat4.multiply(mat4.create(), jointWorld, ibm);
-            const values = Array.from({ length: 16 }, (_, j) =>
-              view.getFloat32(offset + index * 64 + j * 4, true),
-            );
+            const first = (required(base) + index * 4) * 4;
+            const values = Array.from(floats.subarray(first, first + 16));
             expect(delta(values, Array.from(expected))).toBeLessThan(1e-6);
             matrices.push(values);
           }

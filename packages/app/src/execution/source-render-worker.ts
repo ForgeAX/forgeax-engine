@@ -484,6 +484,9 @@ export class SourceRenderWorker {
           ...(this.init.dynamicGeometryMeshBudgetBytes === undefined
             ? {}
             : { dynamicGeometryMeshBudgetBytes: this.init.dynamicGeometryMeshBudgetBytes }),
+          ...(this.init.assetBudgetBytes === undefined
+            ? {}
+            : { assetBudgetBytes: this.init.assetBudgetBytes }),
           bootstrapUrl: this.init.bootstrapUrl,
           ...(this.init.bootstrapData === undefined
             ? {}

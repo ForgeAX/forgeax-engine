@@ -67,6 +67,15 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
+    const bounded = record.programs
+      .flatMap((program) => program.selections)
+      .filter(
+        (selection) =>
+          selection.context.pipeline !== 'ray' &&
+          (selection.context.geometry === 'mesh' || selection.context.geometry === 'skinned'),
+      );
+    expect(bounded.length).toBeGreaterThan(0);
+    for (const selection of bounded) expect(selection.abi?.positionBounds).toBe('standard-input');
     for (const pass of ['forward', 'deferred', 'shadow-caster']) {
       for (const address of ['direct', 'scene-index']) {
         const programs = record.programs.filter((program) =>

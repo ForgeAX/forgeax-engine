@@ -87,7 +87,6 @@ import {
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { filesystemPathRelative, isFilesystemPathWithin } from './filesystem-path.js';
 import { gameVfxSource } from './game-vfx-source.js';
-import type { BootstrapRoot } from './host/base-host.js';
 import { gameProjectionSource } from './host/game-projection-source.js';
 import { previewBatchEntrySource } from './host/preview-batch-entry-source.js';
 import {
@@ -101,6 +100,7 @@ import {
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
+import { PLAYER_DELIVERY_FILE } from './player-dist.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
@@ -111,6 +111,7 @@ import {
 } from './startup-budget.js';
 import { projectToolProjection } from './tools/project-tools.js';
 import type {
+  BootstrapRoot,
   BuildOptions,
   CommandResult,
   ProjectCommandOptions,
@@ -1346,7 +1347,7 @@ const gbufferBatchOrderDiagnostic = (() => {
   return { order, programDigests };
 })();
 const renderTaskYield = query.get('forgeax-render-task-yield') === 'features' ? 'features' : query.get('forgeax-render-task-yield') === 'completion' ? 'completion' : 'none';
-const renderPipelineCapacity = query.get('forgeax-render-pipeline-capacity') === '4' ? 4 : query.get('forgeax-render-pipeline-capacity') === '2' ? 2 : 3;
+const renderPipelineCapacity = query.get('forgeax-render-pipeline-capacity') === '4' ? 4 : query.get('forgeax-render-pipeline-capacity') === '3' ? 3 : query.get('forgeax-render-pipeline-capacity') === '2' ? 2 : ${JSON.stringify(appOptions.renderPipelineCapacity ?? 3)};
 const dynamicGeometryMeshBudgetBytes = query.has('forgeax-dynamic-mesh-budget-bytes')
   ? Number(query.get('forgeax-dynamic-mesh-budget-bytes')) : ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)};
 const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
@@ -1469,6 +1470,7 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
             ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
             execution: {
               createHostAudio: () => {
@@ -1511,6 +1513,7 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
             ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
             standardProfile: ${JSON.stringify(appOptions.standardProfile)},
             context: ctx.root,
@@ -2791,6 +2794,20 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
                   !isFilesystemPathWithin(realGeneratedRoot, path),
               )
               .sort(),
+        },
+        generateBundle() {
+          if (
+            command !== 'build' ||
+            (options.target ?? 'browser') !== 'browser' ||
+            this.environment.name !== 'client' ||
+            cookerSession.delivery.bundles === undefined
+          )
+            return;
+          this.emitFile({
+            type: 'asset',
+            fileName: PLAYER_DELIVERY_FILE,
+            source: JSON.stringify(cookerSession.delivery),
+          });
         },
         async closeBundle() {
           sessionClosed = true;

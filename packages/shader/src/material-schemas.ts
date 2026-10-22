@@ -20,6 +20,17 @@ export const DEFAULT_STANDARD_PBR_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
 /** Numeric WGSL override ID, stable across Naga symbol mangling. */
 export const STANDARD_TEXTURE_MASK_OVERRIDE = '64000';
 
+/**
+ * Numeric WGSL override ID of the Standard template's surface discard gates.
+ * Each set bit keeps one fragment discard; the default keeps both. A static
+ * discard defeats hidden-surface removal on tile GPUs even when it never fires.
+ */
+export const STANDARD_SURFACE_DISCARDS_OVERRIDE = '64001';
+/** The visible item may carry a nonzero dithered LOD crossfade. */
+export const STANDARD_SURFACE_DISCARD_LOD_COVERAGE = 1;
+/** The view may carry world-space camera clipping planes. */
+export const STANDARD_SURFACE_DISCARD_VIEW_CLIPPING = 2;
+
 /** Physical maps follow the fixed scene-material (46) and global-prefilter (47) slots. */
 export const STANDARD_PHYSICAL_BINDING_START = 48;
 

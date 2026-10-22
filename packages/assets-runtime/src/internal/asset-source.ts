@@ -23,10 +23,12 @@ import {
   type ArtifactReadRequest,
   readArtifact,
   readStoredArtifact,
+  verifyArtifactBytes,
 } from '../registry/artifact-io.js';
 import { CatalogReplica } from '../registry/catalog-state.js';
 import { ArtifactCache } from './artifact-cache.js';
 import { AssetGraph, type AssetGraphSnapshot } from './asset-graph.js';
+import { BundleStore } from './bundle-store.js';
 import type { DecoderRegistry } from './decoder-registry.js';
 import { freezeRuntimePayload } from './immutable-payload.js';
 import { PackReader, type VerifiedPack } from './pack-reader.js';
@@ -179,7 +181,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
   };
   const reader = new PackReader(options.fetcher === undefined ? {} : { fetcher: options.fetcher });
   const cache = new ArtifactCache();
-  const chunks = new ArtifactCache(4 * 1024 * 1024, 256);
+  const bundles = new BundleStore<AssetLoadError>();
   const lifetime = new AbortController();
   const sourceFetcher = (url: string) =>
     options.catalog.openPackage?.(url) ?? options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -200,49 +202,70 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     // export share them, while each decode validates its own descriptor.
     const url = resolveArtifactUrl(request.packageUrl, path.value);
     const range = descriptor.byteRange;
-    const storage = range === undefined ? cache : chunks;
-    const key =
-      range === undefined
-        ? JSON.stringify([
+    const decodeError = (error: { readonly expected: string; readonly hint: string }) => ({
+      ...artifactError(request.guid, request.artifactKey),
+      expected: error.expected,
+      hint: error.hint,
+    });
+    if (range !== undefined) {
+      const reading = bundles.read({
+        url,
+        range,
+        fetch: async (entry) => {
+          const read = await readStoredArtifact(
+            request,
+            fetcher,
             url,
-            descriptor.mediaType,
-            descriptor.contentEncoding ?? 'identity',
-            descriptor.byteLength,
-            descriptor.integrity?.algorithm,
-            descriptor.integrity?.digest,
-          ])
-        : JSON.stringify([url, range.containerDigest]);
-    const reading = storage.read(
-      key,
-      async () => {
-        const read =
-          range === undefined
-            ? await readPackage(fetcher, url, bytesOf, { signal: lifetime.signal })
-            : await readStoredArtifact(request, fetcher, url, range, { signal: lifetime.signal });
-        if (read.ok) return read;
-        const error = artifactError(request.guid, descriptor.path);
-        return err(
-          'code' in read.error
-            ? { ...error, expected: read.error.expected, hint: read.error.hint }
-            : error,
-        );
-      },
-      range,
-    );
+            range,
+            { signal: lifetime.signal },
+            entry,
+          );
+          if (read.ok) return read;
+          const error = artifactError(request.guid, descriptor.path);
+          return err(
+            'code' in read.error
+              ? { ...error, expected: read.error.expected, hint: read.error.hint }
+              : error,
+          );
+        },
+        finish: async (stored) => {
+          const decoded = await readArtifact(request, fetcher, async () => ok(stored));
+          return decoded.ok ? decoded : err(decodeError(decoded.error));
+        },
+        reuse: async (copy) => {
+          const verified = await verifyArtifactBytes(copy, request);
+          return verified.ok ? verified : err(decodeError(verified.error));
+        },
+        invalid: (reason) => artifactError(request.guid, reason),
+      });
+      const decoded = await waitForAsset(reading, signal, request.guid);
+      if (!decoded.ok)
+        return decoded.error.code === 'asset-integrity-failed'
+          ? err({ ...decoded.error, detail: { ...decoded.error.detail, guid: request.guid } })
+          : decoded;
+      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(request.guid));
+      // Bundle entries move into their extracted value; there is no second stored copy.
+      return ok({ stored: decoded.value, decoded: decoded.value });
+    }
+    const key = JSON.stringify([
+      url,
+      descriptor.mediaType,
+      descriptor.contentEncoding ?? 'identity',
+      descriptor.byteLength,
+      descriptor.integrity?.algorithm,
+      descriptor.integrity?.digest,
+    ]);
+    const reading = cache.read(key, async () => {
+      const read = await readPackage(fetcher, url, bytesOf, { signal: lifetime.signal });
+      return read.ok ? read : err(artifactError(request.guid, descriptor.path));
+    });
     const stored = await waitForAsset(reading, signal, request.guid);
-    if (!stored.ok)
-      return range === undefined || stored.error.code !== 'asset-integrity-failed'
-        ? stored
-        : err({ ...stored.error, detail: { ...stored.error.detail, guid: request.guid } });
+    if (!stored.ok) return stored;
     if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(request.guid));
     const decoded = await readArtifact(request, fetcher, async () => ok(stored.value));
     if (!decoded.ok) {
-      storage.clear(key);
-      return err({
-        ...artifactError(request.guid, request.artifactKey),
-        expected: decoded.error.expected,
-        hint: decoded.error.hint,
-      });
+      cache.clear(key);
+      return err(decodeError(decoded.error));
     }
     return ok({ stored: stored.value, decoded: decoded.value });
   };
@@ -351,7 +374,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     readArtifact: storedArtifact,
     trimReadCache: () => {
       cache.trim();
-      chunks.trim();
+      bundles.trim();
     },
     invalidate: (guid) => {
       graph.invalidate(guid);
@@ -458,7 +481,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       reader.dispose();
       unsubscribeCatalog();
       cache.clear();
-      chunks.clear();
+      bundles.clear();
       session.dispose();
     },
   };

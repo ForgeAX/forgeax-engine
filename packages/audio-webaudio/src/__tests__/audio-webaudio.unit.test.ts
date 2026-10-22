@@ -1,7 +1,7 @@
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
 //
-// Source files (N=15):
+// Source files (N=13):
 //   - packages/audio-webaudio/src/__tests__/app-injection.test.ts
 //   - packages/audio-webaudio/src/__tests__/audio-importer.test.ts
 //   - packages/audio-webaudio/src/__tests__/bus-control.test.ts
@@ -9,25 +9,18 @@
 //   - packages/audio-webaudio/src/__tests__/clip-load.test.ts
 //   - packages/audio-webaudio/src/__tests__/clip-resolver.test.ts
 //   - packages/audio-webaudio/src/__tests__/declarative-play-tick.test.ts
-//   - packages/audio-webaudio/src/__tests__/despawn-cleanup.test.ts
 //   - packages/audio-webaudio/src/__tests__/health-check.test.ts
 //   - packages/audio-webaudio/src/__tests__/lazy-creation.test.ts
 //   - packages/audio-webaudio/src/__tests__/listener-accessor.test.ts
 //   - packages/audio-webaudio/src/__tests__/listener-sync.test.ts
 //   - packages/audio-webaudio/src/__tests__/property-sync.test.ts
 //   - packages/audio-webaudio/src/__tests__/resume-gesture.test.ts
-//   - packages/audio-webaudio/src/__tests__/tick-edge-detect.test.ts
 //   - packages/audio-webaudio/src/__tests__/root-surface.unit.test.ts
 //
 // Paradigm: each block-scoped describe('<source-filename>.test.ts', ...) preserves
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
-import {
-  AUDIO_ENGINE_RESOURCE_KEY,
-  type AudioBackend,
-  detectEdge,
-  detectRemovedEntities,
-} from '@forgeax/engine-audio';
+import { AUDIO_ENGINE_RESOURCE_KEY, type AudioBackend } from '@forgeax/engine-audio';
 import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import type { ImportContext, ImportSubAsset } from '@forgeax/engine-types';
@@ -727,226 +720,6 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       engine.play(1, buf, { loop: false, volume: 1, spatialBlend: 0, bus: 'sfx' });
 
       expect(engine.getActiveSourceCount()).toBe(1);
-    });
-  });
-}
-
-{
-  // --- from despawn-cleanup.test.ts ---
-  describe('Entity despawn cleanup (AC-12)', () => {
-    describe('detectRemovedEntities', () => {
-      it('returns empty when entity list unchanged', () => {
-        expect(detectRemovedEntities([1, 2, 3], [1, 2, 3])).toEqual([]);
-      });
-
-      it('returns removed entity when one entity despawned', () => {
-        expect(detectRemovedEntities([1, 2, 3], [1, 2])).toEqual([3]);
-      });
-
-      it('returns all entities when everything despawned', () => {
-        expect(detectRemovedEntities([1, 2, 3], [])).toEqual([1, 2, 3]);
-      });
-
-      it('returns empty when entities were added (not removed)', () => {
-        expect(detectRemovedEntities([1, 2], [1, 2, 3, 4])).toEqual([]);
-      });
-
-      it('handles empty previous frame (first tick)', () => {
-        expect(detectRemovedEntities([], [1, 2, 3])).toEqual([]);
-      });
-    });
-
-    describe('despawn cleanup contract (via mock AudioBackend)', () => {
-      it('entity with active source -> despawn triggers backend.stop()', () => {
-        const stopSpy = vi.fn();
-        const backend = {
-          music: vi.fn(),
-          setAcousticRoutes: vi.fn(),
-          setAcousticEnvironment: vi.fn(),
-          reportError: vi.fn(),
-          setBusWet: vi.fn(),
-          setBusSendGain: vi.fn(),
-          configureBuses: vi.fn(),
-          setBus: vi.fn(),
-          play: vi.fn(),
-          stop: stopSpy,
-          setVolume: vi.fn(),
-          setPlaybackRate: vi.fn(),
-          setPaused: vi.fn(),
-          seek: vi.fn(),
-          setBusVolume: vi.fn(),
-          setBusMute: vi.fn(),
-          getState: vi.fn().mockReturnValue({
-            contextState: 'running',
-            activeSourceCount: 0,
-          }),
-          getActiveSourceCount: vi.fn().mockReturnValue(0),
-          destroy: vi.fn(),
-        };
-
-        // Simulate: frame N had entity 42 playing, frame N+1 has nothing
-        const removedIds = detectRemovedEntities([42], []);
-        for (const id of removedIds) {
-          backend.stop(id);
-        }
-
-        expect(stopSpy).toHaveBeenCalledTimes(1);
-        expect(stopSpy).toHaveBeenCalledWith(42);
-      });
-
-      it('multiple despawned entities each get one stop call', () => {
-        const stopSpy = vi.fn();
-        const backend = {
-          music: vi.fn(),
-          setAcousticRoutes: vi.fn(),
-          setAcousticEnvironment: vi.fn(),
-          reportError: vi.fn(),
-          setBusWet: vi.fn(),
-          setBusSendGain: vi.fn(),
-          configureBuses: vi.fn(),
-          setBus: vi.fn(),
-          play: vi.fn(),
-          stop: stopSpy,
-          setVolume: vi.fn(),
-          setPlaybackRate: vi.fn(),
-          setPaused: vi.fn(),
-          seek: vi.fn(),
-          setBusVolume: vi.fn(),
-          setBusMute: vi.fn(),
-          getState: vi.fn().mockReturnValue({
-            contextState: 'running',
-            activeSourceCount: 0,
-          }),
-          getActiveSourceCount: vi.fn().mockReturnValue(0),
-          destroy: vi.fn(),
-        };
-
-        const removedIds = detectRemovedEntities([1, 2, 3], [1]);
-        for (const id of removedIds) {
-          backend.stop(id);
-        }
-
-        expect(stopSpy).toHaveBeenCalledTimes(2);
-        expect(stopSpy).toHaveBeenCalledWith(2);
-        expect(stopSpy).toHaveBeenCalledWith(3);
-      });
-
-      it('after despawn stop, activeSourceCount decrements', () => {
-        // Simulate the bookkeeping: backend starts with 3 active sources,
-        // despawn removes 1, stop decrements internal count.
-        const state = { activeSourceCount: 3 };
-
-        const stopSpy = vi.fn().mockImplementation(() => {
-          state.activeSourceCount -= 1;
-        });
-        const getActiveSourceCountSpy = vi.fn(() => state.activeSourceCount);
-
-        const backend = {
-          music: vi.fn(),
-          setAcousticRoutes: vi.fn(),
-          setAcousticEnvironment: vi.fn(),
-          reportError: vi.fn(),
-          setBusWet: vi.fn(),
-          setBusSendGain: vi.fn(),
-          configureBuses: vi.fn(),
-          setBus: vi.fn(),
-          play: vi.fn(),
-          stop: stopSpy,
-          setVolume: vi.fn(),
-          setPlaybackRate: vi.fn(),
-          setPaused: vi.fn(),
-          seek: vi.fn(),
-          setBusVolume: vi.fn(),
-          setBusMute: vi.fn(),
-          getState: vi.fn().mockReturnValue({
-            contextState: 'running',
-            activeSourceCount: state.activeSourceCount,
-          }),
-          getActiveSourceCount: getActiveSourceCountSpy,
-          destroy: vi.fn(),
-        };
-
-        const removedIds = detectRemovedEntities([10, 20, 30], [10, 20]);
-        for (const id of removedIds) {
-          backend.stop(id);
-        }
-
-        expect(stopSpy).toHaveBeenCalledTimes(1);
-        expect(getActiveSourceCountSpy()).toBe(2);
-      });
-
-      it('entity despawned while ctx is suspended (no active nodes) -> backend.stop not called (no entry in sources)', () => {
-        // When the entity was never playing (ctx suspended, no node created),
-        // the backend's internal source map has no entry for it, so
-        // backend.stop() would be a no-op. The tick system should still
-        // call stop() for safety (defensive idempotency), but the
-        // important contract is that a suspended-ctx entity with no
-        // AudioBufferSourceNode does not crash the cleanup path.
-
-        const stopSpy = vi.fn();
-        const backend = {
-          music: vi.fn(),
-          setAcousticRoutes: vi.fn(),
-          setAcousticEnvironment: vi.fn(),
-          reportError: vi.fn(),
-          setBusWet: vi.fn(),
-          setBusSendGain: vi.fn(),
-          configureBuses: vi.fn(),
-          setBus: vi.fn(),
-          play: vi.fn(),
-          stop: stopSpy,
-          setVolume: vi.fn(),
-          setPlaybackRate: vi.fn(),
-          setPaused: vi.fn(),
-          seek: vi.fn(),
-          setBusVolume: vi.fn(),
-          setBusMute: vi.fn(),
-          getState: vi.fn().mockReturnValue({
-            contextState: 'suspended',
-            activeSourceCount: 0,
-          }),
-          getActiveSourceCount: vi.fn().mockReturnValue(0),
-          destroy: vi.fn(),
-        };
-
-        // The tick system still calls stop() for all removed entities
-        // regardless of context state. The backend handles the no-op
-        // internally if the entity was never registered (no node created).
-        const removedIds = detectRemovedEntities([99], []);
-        for (const id of removedIds) {
-          backend.stop(id);
-        }
-
-        expect(stopSpy).toHaveBeenCalledWith(99);
-        // Even though the backend didn't have an active source for entity 99,
-        // the stop call is safe (idempotent -- the engine handles it as a
-        // no-op when the entity is not in its internal map).
-      });
-    });
-
-    describe('internal state cleanup after despawn', () => {
-      it('removed entities are purged from per-entity tick state', () => {
-        // The tick system's internal Map<Entity, TickStateEntry> must
-        // clean up entries for despawned entities to prevent unbounded
-        // memory growth from entities that come and go.
-
-        // Simulate the cleanup: after computing removed entities,
-        // their tick state entries are deleted.
-        const tickState = new Map<number, { prevPlaying: boolean }>();
-        tickState.set(1, { prevPlaying: true });
-        tickState.set(2, { prevPlaying: false });
-        tickState.set(3, { prevPlaying: true });
-
-        const removedIds = detectRemovedEntities([1, 2, 3], [1]);
-        for (const id of removedIds) {
-          tickState.delete(id);
-        }
-
-        expect(tickState.has(1)).toBe(true); // survived
-        expect(tickState.has(2)).toBe(false); // removed
-        expect(tickState.has(3)).toBe(false); // removed
-        expect(tickState.size).toBe(1);
-      });
     });
   });
 }
@@ -1987,29 +1760,6 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       expect(engine.getActiveSourceCount()).toBe(0);
       engine.destroy();
       engine.destroy();
-    });
-  });
-}
-
-{
-  // --- from tick-edge-detect.test.ts ---
-  describe('audioTickSystem edge detection (AC-05)', () => {
-    describe('detectEdge (pure edge-detection helper)', () => {
-      it('returns none when state unchanged from false to false', () => {
-        expect(detectEdge(false, false)).toBe('none');
-      });
-
-      it('returns none when state unchanged from true to true', () => {
-        expect(detectEdge(true, true)).toBe('none');
-      });
-
-      it('returns play-start on false->true transition', () => {
-        expect(detectEdge(false, true)).toBe('play-start');
-      });
-
-      it('returns play-stop on true->false transition', () => {
-        expect(detectEdge(true, false)).toBe('play-stop');
-      });
     });
   });
 }

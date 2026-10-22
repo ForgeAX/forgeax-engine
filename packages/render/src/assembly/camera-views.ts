@@ -117,9 +117,16 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         captured.map((system) => system.prepareCandidatePipelines(...args)),
       );
       const failed = results.find((result) => !result.ok);
-      if (failed !== undefined && !failed.ok) return failed;
+      const release = () => {
+        for (const result of results) if (result.ok) result.value.release();
+      };
+      if (failed !== undefined && !failed.ok) {
+        release();
+        return failed;
+      }
       return ok({
         isCurrent: () => results.every((result) => result.ok && result.value.isCurrent()),
+        release,
       });
     },
     terrainSections() {

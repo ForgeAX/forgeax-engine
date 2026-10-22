@@ -6,10 +6,16 @@ import {
   RenderGraphError,
   type ResolveContext,
 } from '@forgeax/engine-render-graph';
-import { type BindGroup, RhiError, type TextureView } from '@forgeax/engine-rhi';
+import {
+  type BindGroup,
+  type BindGroupLayout,
+  RhiError,
+  type TextureView,
+} from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
 import { atmosphereTextures } from './environment/luts';
+import type { PostProcessShaderEntry } from './fullscreen-post-process-pass';
 import { prepareHiddenGpuDrivenPipelines } from './gpu-driven/material-artifacts';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
@@ -337,6 +343,8 @@ export function addTypedScenePass(
         }),
         coverageOnly: options.coverageOnly ?? false,
         visibleSurface: context.visibleSurface !== undefined,
+        // Prewarm the common no-clipping Standard variant; GPU-driven raster
+        // prepares a clipping view's own variant from its camera.
         onSelected: (entry, index) => {
           let draws = gpuDraws.get(entry);
           if (draws === undefined) {
@@ -916,6 +924,118 @@ export interface TypedFullscreenPassOptions {
     | undefined;
 }
 
+/** Producer reactivity lattice; the declared extent sizes TAA's row copy. */
+export interface TemporalSecondaryReactivity {
+  readonly view: GraphTextureView;
+  readonly width: number;
+  readonly height: number;
+  readonly format: 'rgba8unorm' | 'r32float';
+}
+
+const TAA_REACTIVITY_ROWS_ENTRY = 'fs_secondary_reactivity_rows';
+const reactivityRowsEntries = new WeakMap<PostProcessShaderEntry, PostProcessShaderEntry>();
+const reactivityRowsLayouts = new WeakMap<object, BindGroupLayout>();
+
+/**
+ * Reduce the producer's 7x7 reactivity footprint along rows. When the physical
+ * producer and declared copy extents agree, the resolve reads one column of
+ * this copy per pixel instead of 49 producer texels. An 8-bit producer keeps
+ * its exact 8-bit values.
+ */
+function addTemporalSecondaryReactivityRows(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  source: TemporalSecondaryReactivity,
+): Result<GraphTextureView, RenderGraphError> {
+  const format = source.format === 'rgba8unorm' ? 'r8unorm' : 'r32float';
+  const texture = graph.createTexture('taa-secondary-reactivity-rows', {
+    format,
+    size: { width: source.width, height: source.height },
+  });
+  if (!texture.ok) return texture;
+  const rows = graph.view(texture.value, {
+    label: 'taa-secondary-reactivity-rows.view',
+    dimension: '2d',
+  });
+  if (!rows.ok) return rows;
+  let binding: { layout: BindGroupLayout; source: TextureView; group: BindGroup } | undefined;
+  const added = graph.addRasterPass('taa-secondary-reactivity-rows', {
+    accesses: [
+      { resource: source.view, usage: 'sampled-read' },
+      { resource: rows.value, usage: 'color-attachment' },
+    ],
+    colorAttachments: [
+      {
+        view: rows.value,
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      },
+    ],
+    encode: ({ pass, frame, resources }) => {
+      const internal = frame as _InternalRenderPipelineContext;
+      const state = getTemporalGpuState(
+        internal.frameState,
+        frame.runtime.device,
+        (frame.runtime as import('./record/render-context').RenderSystemRuntime).deviceScope,
+        frame.targetW,
+        frame.targetH,
+      );
+      let layout = reactivityRowsLayouts.get(state);
+      if (layout === undefined) {
+        const created = frame.runtime.device.createBindGroupLayout({
+          label: 'taa-secondary-reactivity-rows-bind-group',
+          entries: [
+            {
+              binding: 10,
+              visibility: 2,
+              texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+            },
+          ],
+        });
+        if (!created.ok) {
+          throwTemporalEncodeFailure('TAA reactivity rows layout creation succeeds', created.error);
+        }
+        state.childScope._adopt('binding', created.value, () => undefined);
+        reactivityRowsLayouts.set(state, created.value);
+        layout = created.value;
+      }
+      const producer = resolvedView(resources, source.view);
+      if (binding?.layout !== layout || binding.source !== producer) {
+        const group = frame.runtime.device.createBindGroup({
+          label: 'taa-secondary-reactivity-rows-bind-group',
+          layout,
+          entries: [{ binding: 10, resource: { kind: 'textureView', value: producer } }],
+        });
+        if (!group.ok) {
+          throwTemporalEncodeFailure(
+            'TAA reactivity rows bind group creation succeeds',
+            group.error,
+          );
+        }
+        binding = { layout, source: producer, group: group.value };
+      }
+      const resolve = frame.runtime.lookupPostProcess?.('forgeax.taa-resolve');
+      let entry = resolve === undefined ? undefined : reactivityRowsEntries.get(resolve);
+      if (resolve !== undefined && entry === undefined) {
+        entry = { ...resolve, fragmentEntryPoint: TAA_REACTIVITY_ROWS_ENTRY };
+        reactivityRowsEntries.set(resolve, entry);
+      }
+      const pipeline =
+        entry === undefined
+          ? undefined
+          : frame.runtime.getPostProcessPipeline?.('forgeax.taa-resolve', layout, [format], entry);
+      if (pipeline === null || pipeline === undefined) {
+        throwTemporalEncodeFailure('TAA reactivity rows pipeline is ready before frame encoding');
+      }
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(1, binding.group);
+      pass.draw(3, 1, 0, 0);
+    },
+  });
+  if (!added.ok) return added;
+  return ok(rows.value);
+}
+
 export interface TypedTemporalResolveTargets {
   readonly scene: RenderPipelineTarget;
   /** Output-domain coverage produced by the Standard raster witness. */
@@ -923,7 +1043,7 @@ export interface TypedTemporalResolveTargets {
   /** Paired output-domain depth used to keep the producer observable. */
   readonly coverageDepth?: RenderPipelineTarget | undefined;
   /** Optional producer-owned R-channel reactivity in current screen space. */
-  readonly secondaryReactivity?: GraphTextureView;
+  readonly secondaryReactivity?: TemporalSecondaryReactivity | undefined;
   readonly currentTemporal: RenderPipelineTarget;
   readonly depth: RenderPipelineTarget;
   readonly historyColor: RenderPipelineTarget;
@@ -941,6 +1061,12 @@ export function addTypedTemporalResolvePass(
   // This graph has two alternating history inputs. Retain only those exact
   // physical bindings; a changed state, view or resource replaces the oldest.
   const bindings: { sources: readonly unknown[]; group: BindGroup }[] = [];
+  let secondaryReactivity: GraphTextureView | undefined;
+  if (targets.secondaryReactivity !== undefined) {
+    const rows = addTemporalSecondaryReactivityRows(graph, targets.secondaryReactivity);
+    if (!rows.ok) return rows;
+    secondaryReactivity = rows.value;
+  }
   const added = graph.addRasterPass('taa-resolve', {
     accesses: [
       { resource: targets.scene.view, usage: 'sampled-read' },
@@ -956,7 +1082,10 @@ export function addTypedTemporalResolvePass(
       { resource: targets.historyStability.view, usage: 'sampled-read' },
       ...(targets.secondaryReactivity === undefined
         ? []
-        : [{ resource: targets.secondaryReactivity, usage: 'sampled-read' as const }]),
+        : [{ resource: targets.secondaryReactivity.view, usage: 'sampled-read' as const }]),
+      ...(secondaryReactivity === undefined
+        ? []
+        : [{ resource: secondaryReactivity, usage: 'sampled-read' as const }]),
       { resource: targets.writeColor.view, usage: 'color-attachment' },
       { resource: targets.writeTemporal.view, usage: 'color-attachment' },
       { resource: targets.writeStability.view, usage: 'color-attachment' },
@@ -996,6 +1125,10 @@ export function addTypedTemporalResolvePass(
       const historyColor = resolvedView(resources, targets.historyColor.view);
       const historyTemporal = resolvedView(resources, targets.historyTemporal.view);
       const historyStability = resolvedView(resources, targets.historyStability.view);
+      const secondarySource =
+        targets.secondaryReactivity === undefined
+          ? currentTemporal
+          : resolvedView(resources, targets.secondaryReactivity.view);
       const params = getTemporalParamsBuffer(state);
       if (params === undefined || built.sampler === null || built.temporalSampler === null) {
         throwTemporalEncodeFailure('TAA resolve has an admitted params buffer and sampler');
@@ -1008,15 +1141,16 @@ export function addTypedTemporalResolvePass(
       const words = new Uint32Array(payload);
       words[2] = state.valid && (frame.camera.temporal?.historyValid ?? true) ? 1 : 0;
       words[3] = frame.camera.temporal?.temporalFrameIndex ?? 0;
-      words[4] = Number(targets.secondaryReactivity !== undefined);
+      words[4] = Number(secondaryReactivity !== undefined);
       words[5] = Number(targets.coverage !== undefined);
+      words[6] = Number(secondaryReactivity !== undefined);
       const written = frame.runtime.device.queue.writeBuffer(params, 0, new Uint8Array(payload));
       if (!written.ok)
         throwTemporalEncodeFailure('TAA resolve params upload succeeds', written.error);
       const secondary =
-        targets.secondaryReactivity === undefined
+        secondaryReactivity === undefined
           ? currentTemporal
-          : resolvedView(resources, targets.secondaryReactivity);
+          : resolvedView(resources, secondaryReactivity);
       const coverage =
         targets.coverage === undefined
           ? currentTemporal
@@ -1034,6 +1168,7 @@ export function addTypedTemporalResolvePass(
         historyTemporal,
         historyStability,
         secondary,
+        secondarySource,
         coverage,
       ];
       let binding = bindings.find((candidate) =>
@@ -1066,6 +1201,13 @@ export function addTypedTemporalResolvePass(
               resource: {
                 kind: 'textureView',
                 value: coverage,
+              },
+            },
+            {
+              binding: 12,
+              resource: {
+                kind: 'textureView',
+                value: secondarySource,
               },
             },
           ] as never,

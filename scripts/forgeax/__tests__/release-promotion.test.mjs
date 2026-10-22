@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { promoteRelease } from '../release-promotion.mjs';
+import { promoteRelease, publishRelease } from '../release-promotion.mjs';
+
+// The workflow runs the two stages as separate jobs; the full order is their sequence.
+const release = async (options) => {
+  const publication = await publishRelease(options);
+  return { ...publication, ...(await promoteRelease(options)) };
+};
 
 const items = [
   { name: '@forgeax/engine', version: '1.2.3' },
@@ -32,7 +38,7 @@ function operations(fail) {
 }
 test('all products upload before their joint visibility gate; pending bytes preserve channels', async () => {
   const options = operations('visibility');
-  await assert.rejects(promoteRelease(options), /pending validation/);
+  await assert.rejects(release(options), /pending validation/);
   assert.deepEqual(options.calls, [
     'upload:@forgeax/engine:candidate',
     'upload:@forgeax/view:candidate',
@@ -42,13 +48,13 @@ test('all products upload before their joint visibility gate; pending bytes pres
 });
 test('a failing clean consumer preserves latest', async () => {
   const options = operations('consumer');
-  await assert.rejects(promoteRelease(options), /install failed/);
+  await assert.rejects(release(options), /install failed/);
   assert(!options.calls.some((call) => call.startsWith('tag:')));
 });
 test('development promotion updates next only after consumer proof', async () => {
   const options = operations();
   options.version = '1.3.0-dev.8.abcdef123456';
-  const result = await promoteRelease(options);
+  const result = await release(options);
   assert.equal(result.tag, 'next');
   const tags = options.calls.filter((call) => call.startsWith('tag:'));
   assert.deepEqual(tags, [
@@ -82,7 +88,7 @@ test('slow uploads run together and all bytes gate consumer verification and lat
     options.calls.push(`wait:${tag ?? 'bytes'}`);
     if (!tag) await visibility.promise;
   };
-  const promotion = promoteRelease(options);
+  const promotion = release(options);
   assert.deepEqual(
     started,
     items.map((item) => item.name),
@@ -113,7 +119,7 @@ test('a failed upload drains other active uploads before failing without channel
   let settled = false;
   const failure = new Error('registry rejected upload');
   options.upload = (item) => (item === items[0] ? Promise.reject(failure) : slow.promise);
-  const promotion = promoteRelease(options);
+  const promotion = release(options);
   const rejection = assert
     .rejects(promotion, (error) => error === failure)
     .then(() => {
@@ -126,9 +132,21 @@ test('a failed upload drains other active uploads before failing without channel
   await rejection;
   assert.deepEqual(options.calls, []);
 });
+test('channel promotion alone moves tags in order and then verifies them', async () => {
+  const options = operations();
+  options.version = '1.2.4-rc.2';
+  const result = await promoteRelease(options);
+  assert.equal(result.tag, 'rc');
+  assert.deepEqual(options.calls, [
+    'tag:@forgeax/engine:rc',
+    'tag:@forgeax/view:rc',
+    'tag:@forgeax/engine-sdk:rc',
+    'wait:@forgeax/engine:rc',
+  ]);
+});
 test('focused-package publication is rejected before any upload', async () => {
   const options = operations();
   options.items = [{ name: '@forgeax/engine-remote' }];
-  await assert.rejects(promoteRelease(options), /release-focused-package-forbidden/);
+  await assert.rejects(release(options), /release-focused-package-forbidden/);
   assert.deepEqual(options.calls, []);
 });

@@ -56,6 +56,7 @@ const UNKNOWN_EXTERNAL = 'externalTexture:unknown' as HandleId;
 
 export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): RhiDevice {
   const proxiedQueue = createQueueProxy(s, realDevice.queue);
+  const pipelineLibrary = realDevice.pipelineLibrary;
 
   const captureRenderPipeline = (
     desc: RenderPipelineDescriptor,
@@ -159,6 +160,7 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
   // returns undefined and createShaderModule returns shader-compile-failed.
   // The _realDevice property lets callers pass the real RhiDevice directly.
   const d: RecorderDevice = {
+    ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
     _realDevice: realDevice,
 
     get caps() {

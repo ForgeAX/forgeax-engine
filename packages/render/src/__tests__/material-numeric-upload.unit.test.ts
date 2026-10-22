@@ -1,11 +1,46 @@
-import type { ParamSchemaEntry } from '@forgeax/engine-types';
+import { type ParamSchemaEntry, ParamSchemaProjectionOwner } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   applyParamSchemaDefaultsToUbo,
   applyParamSnapshotToUbo,
+  writePreparedMaterialUbo,
 } from '../record/main-pass-material';
 
 describe('material numeric upload', () => {
+  it.each([false, true])('matches two-pass upload bytes with admitted=%s', (admitted) => {
+    const raw: readonly ParamSchemaEntry[] = [
+      { name: 'signed', type: 'i32', default: 3 },
+      { name: 'unsigned', type: 'u32', default: 4 },
+      { name: 'gain', type: 'f32', default: 0.5 },
+      { name: 'tint', type: 'vec4', default: [1, 0.5, 0.25, 1] },
+      { name: 'omitted', type: 'vec3', default: [3, 2, 1] },
+      { name: 'uninitialized', type: 'f32' },
+      { name: 'ignoredTexture', type: 'texture2d' },
+    ];
+    const schema = admitted
+      ? new ParamSchemaProjectionOwner().admit({
+          ownerId: 'numeric-upload',
+          revision: 1,
+          schema: raw,
+        }).schema
+      : raw;
+    for (const snapshot of [
+      undefined,
+      {},
+      { signed: -7, unsigned: 0xfedcba98, gain: -0, tint: [0.75, 0.125] },
+      { gain: Number.POSITIVE_INFINITY, tint: [1 / 3, -0, Number.MIN_VALUE, 0] },
+    ]) {
+      const expected = new Uint8Array(129).subarray(1);
+      const actual = new Uint8Array(129).subarray(1);
+      expected.fill(0xcd);
+      actual.fill(0xcd);
+      applyParamSchemaDefaultsToUbo(expected, schema);
+      applyParamSnapshotToUbo(expected, schema, snapshot);
+      writePreparedMaterialUbo(actual, schema, snapshot);
+      expect(actual).toEqual(expected);
+    }
+  });
+
   it.each([
     'buffer',
     'bytes',

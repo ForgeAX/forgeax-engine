@@ -91,6 +91,7 @@ export function createPublishedMeshResidencyHost(options: {
     )
       physical.commit();
     let released = false;
+    let preparedPipelines: PreparedCandidatePipelines | undefined;
     const pipelineAbort = new AbortController();
     const signal = preparationOptions?.signal;
     const abortPipelines = () => pipelineAbort.abort();
@@ -109,7 +110,6 @@ export function createPublishedMeshResidencyHost(options: {
     const release = (evict = true) => {
       if (physicalReleased) return completion;
       released = true;
-      pipelineAbort.abort();
       const accepted = source.resources.resolveAsset(meshHandle);
       const published = accepted.ok && accepted.value === source.mesh;
       // A source World binding can precede its packet. Keep the prepared
@@ -120,6 +120,8 @@ export function createPublishedMeshResidencyHost(options: {
         });
         return completion;
       }
+      pipelineAbort.abort();
+      preparedPipelines?.release();
       physicalReleased = true;
       const fence = lease.release(!published);
       // Keep the handle's payload identity reserved while an old allocation
@@ -177,6 +179,7 @@ export function createPublishedMeshResidencyHost(options: {
       await completed;
       if (pipelines !== undefined) {
         const result = await pipelines;
+        if (result.ok) preparedPipelines = result.value;
         if (!result.ok || !result.value.isCurrent()) {
           signal?.removeEventListener('abort', abortPipelines);
           await release();
@@ -215,7 +218,7 @@ export function createPublishedMeshResidencyHost(options: {
     }
     return ok({
       deviceGeneration: generation,
-      isCurrent,
+      isCurrent: () => isCurrent() && preparedPipelines?.isCurrent() !== false,
       release,
       recordStageLane: (frame, entity) => {
         if (!isCurrent() || frame.deviceGeneration !== generation || !options.isCurrentFrame(frame))

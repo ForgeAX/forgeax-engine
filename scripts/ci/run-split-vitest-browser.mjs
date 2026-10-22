@@ -50,8 +50,9 @@ const threeShadowBrowserFiles = new Set(
     (kind) => `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`,
   ),
 );
-const threeMaterialOutputBrowserFile =
-  'packages/three/src/__tests__/material-output.browser.test.ts';
+const threeMaterialOutputBrowserFiles = [0, 1].map(
+  (partition) => `packages/three/src/__tests__/material-output-${partition}.browser.test.ts`,
+);
 const topologyBrowserFile = 'apps/hello/topology/src/__tests__/topology.browser.test.ts';
 const directLightBrowserFile =
   'apps/parity/color-lighting/cases/direct-light/__tests__/direct-light.browser.test.ts';
@@ -101,8 +102,9 @@ const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
   // Run 39457755532 exceeded 300 s beside a 237 s GPU neighbor. The complete
-  // 24-case owner passed in 208.516 s in run 39450499871; keep its deadlines.
-  threeMaterialOutputBrowserFile,
+  // 24-case owner later took 280.693 s alone (run 39554721730), so its cases are
+  // partitioned across two processes that keep the original deadlines.
+  ...threeMaterialOutputBrowserFiles,
   'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
   'packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts',
   ...solarAtmosphereBrowserFiles,
@@ -123,7 +125,7 @@ const exclusiveRunnerBrowserFiles = new Set([
 ]);
 const browserProcessIsolatedFiles = new Set([
   ...threeShadowBrowserFiles,
-  threeMaterialOutputBrowserFile,
+  ...threeMaterialOutputBrowserFiles,
   'packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts',
   ...advancedLightingBrowserFiles,
   iblIrradianceBrowserFile,

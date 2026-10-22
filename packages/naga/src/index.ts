@@ -28,7 +28,7 @@ import {
   initFailed,
   ok,
   type Result,
-  ShaderError,
+  type ShaderError,
   type ShaderError as ShaderErrorType,
   wrapShaderError,
 } from './errors.js';
@@ -284,26 +284,6 @@ export function parseReflectionWire(json: string): ShaderReflection {
       ? {}
       : { entryPoints: entryPoints as unknown as readonly ShaderEntryPointReads[] }),
   };
-}
-
-/** Result-form reader for callers that need an explicit unavailable/malformed branch. */
-export function readReflectionWire(
-  json: string | undefined,
-): Result<ShaderReflection, ShaderErrorType> {
-  if (json === undefined) {
-    return err(
-      initFailed({
-        message: 'shader-reflection/2 is unavailable before the Naga producer emits a wire',
-        hint: 'run the validated compose -> reflect path and retain its raw reflection bytes',
-        reason: 'reflection wire unavailable',
-      }),
-    );
-  }
-  try {
-    return ok(parseReflectionWire(json));
-  } catch (error) {
-    return err(error instanceof ShaderError ? error : reflectionMalformed(String(error)));
-  }
 }
 
 // === Phase 1: parse =================================================================

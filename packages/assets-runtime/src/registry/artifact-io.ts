@@ -3,7 +3,7 @@ import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@forgeax/engine-types';
 import { encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
-import { ArtifactCache } from '../internal/artifact-cache.js';
+import { BundleStore } from '../internal/bundle-store.js';
 import {
   bytesOf,
   type PackageFetcher,
@@ -109,7 +109,7 @@ async function decodeOuter(
   return ok(decoded.value);
 }
 
-async function verifyBytes(
+export async function verifyArtifactBytes(
   bytes: Uint8Array,
   request: ArtifactReadRequest,
 ): Promise<Result<Uint8Array, AssetArtifactError>> {
@@ -155,15 +155,22 @@ export async function readStoredArtifact(
   url: string,
   range?: ArtifactDescriptor['byteRange'],
   init?: PackageRequest,
+  entry = false,
 ): Promise<Result<Uint8Array, PackageReadFailure | AssetArtifactError>> {
-  const read = await readPackage(fetcher, url, bytesOf, init);
+  const window =
+    entry && range !== undefined
+      ? { ...init, headers: { range: `bytes=${range.offset}-${range.offset + range.length - 1}` } }
+      : init;
+  const read = await readPackage(fetcher, url, bytesOf, window);
   if (!read.ok || range === undefined) return read;
-  return verifyBytes(read.value, {
+  // A whole Bundle is always longer than one entry; the entry's owner verifies it.
+  if (entry && read.value.byteLength === range.length) return read;
+  return verifyArtifactBytes(read.value, {
     ...request,
     descriptor: {
       path: request.descriptor.path,
       mediaType: request.descriptor.mediaType,
-      integrity: { algorithm: 'sha256', digest: range.containerDigest },
+      integrity: { algorithm: 'sha256', digest: range.bundleDigest },
     },
   });
 }
@@ -220,15 +227,14 @@ export async function readArtifact(
     range !== undefined &&
     (range === null ||
       typeof range !== 'object' ||
-      typeof range.containerDigest !== 'string' ||
-      !/^sha256:[a-f0-9]{64}$/.test(range.containerDigest) ||
+      typeof range.bundleDigest !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/.test(range.bundleDigest) ||
       !Number.isSafeInteger(range.offset) ||
       range.offset < 0 ||
       !Number.isSafeInteger(range.length) ||
       range.length <= 0 ||
       !Number.isSafeInteger(range.offset + range.length) ||
       request.descriptor.delivery !== undefined ||
-      (request.descriptor.contentEncoding ?? 'identity') !== 'identity' ||
       request.descriptor.integrity === undefined)
   )
     return err(
@@ -295,7 +301,7 @@ export async function readArtifact(
     artifactKey: request.artifactKey,
     detail: { byteLength: decoded.value.byteLength },
   });
-  const verified = await verifyBytes(decoded.value, request);
+  const verified = await verifyArtifactBytes(decoded.value, request);
   traceAssetLoadPhase('artifact.verify.complete', {
     guid: request.guid,
     packageUrl: request.packageUrl,
@@ -306,10 +312,7 @@ export async function readArtifact(
 }
 
 export class ArtifactReadCache {
-  private readonly chunks = new ArtifactCache<PackageReadFailure | AssetArtifactError>(
-    4 * 1024 * 1024,
-    256,
-  );
+  private readonly bundles = new BundleStore<AssetArtifactError>();
   private readonly cache = new Map<
     string,
     Promise<Result<Uint8Array, AssetArtifactError>> | WeakRef<Uint8Array>
@@ -327,14 +330,55 @@ export class ArtifactReadCache {
     return this.read(key, async () => {
       const { descriptor } = request;
       const { integrity } = descriptor;
-      if (descriptor.byteRange !== undefined) {
-        return readArtifact(request, fetcher, (url, range) =>
-          this.chunks.read(
-            `${url}\0${range?.containerDigest}`,
-            () => readStoredArtifact(request, fetcher, url, range),
-            range,
-          ),
-        );
+      const range = descriptor.byteRange;
+      if (range !== undefined) {
+        // Envelope admission rejects unsafe paths; readArtifact repeats the check per read.
+        const path = validateArtifactPath(descriptor.path, {
+          packageRoot: request.packageUrl,
+          guid: request.guid,
+          artifactKey: request.artifactKey,
+        });
+        if (!path.ok) return path;
+        const url = artifactUrl(request.packageUrl, path.value);
+        const read = await this.bundles.read({
+          url,
+          range,
+          fetch: async (entry) => {
+            const read = await readStoredArtifact(request, fetcher, url, range, undefined, entry);
+            if (read.ok || 'code' in read.error)
+              return read as Result<Uint8Array, AssetArtifactError>;
+            return err(
+              failure(
+                'asset-artifact-missing',
+                request,
+                `readable Bundle at ${path.value}`,
+                `${read.error.observed} at ${url}; publish the Bundle at the declared package-relative path and retry the load (${read.error.attempts} request(s))`,
+                read.error.observed,
+              ),
+            );
+          },
+          finish: (stored) => readArtifact(request, fetcher, async () => ok(stored)),
+          reuse: (copy) => verifyArtifactBytes(copy, request),
+          invalid: (reason) =>
+            failure(
+              'asset-artifact-integrity-mismatch',
+              request,
+              'a stored window matching one complete Bundle entry',
+              'rebuild the player package and retry the same GUID',
+              reason,
+            ),
+        });
+        // One Bundle read can fail several owners; each reports its own request.
+        return read.ok
+          ? read
+          : err({
+              ...read.error,
+              detail: {
+                ...read.error.detail,
+                guid: request.guid,
+                artifactKey: request.artifactKey,
+              },
+            } as AssetArtifactError);
       }
       // A mutable URL alone cannot attest shared content. Unverified artifacts
       // retain their original GUID-local transport and invalidation behavior.
@@ -415,8 +459,7 @@ export class ArtifactReadCache {
 
   /** Drop only settled copies; active readers retain their shared request identity. */
   releaseCompleted(): number {
-    let released = this.chunks.snapshot().entries;
-    this.chunks.trim();
+    let released = this.bundles.trim();
     for (const cache of [this.cache, this.transfers]) {
       for (const [key, entry] of cache) {
         if (!('deref' in entry)) continue;
@@ -429,7 +472,7 @@ export class ArtifactReadCache {
 
   clear(key?: string): void {
     this.transfers.clear();
-    this.chunks.clear();
+    this.bundles.clear();
     if (key === undefined) this.cache.clear();
     else this.cache.delete(key);
   }
@@ -438,7 +481,7 @@ export class ArtifactReadCache {
     // Existing GUID generation fences reject old callers. Clearing physical
     // reads also forces fresh bytes after invalidation, without another lease table.
     this.transfers.clear();
-    this.chunks.clear();
+    this.bundles.clear();
     for (const key of this.cache.keys()) if (key.startsWith(prefix)) this.cache.delete(key);
   }
 }

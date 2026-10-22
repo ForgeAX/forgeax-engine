@@ -26,11 +26,14 @@ export interface CandidatePipelineInput {
 
 export interface PreparedCandidatePipelines {
   isCurrent(): boolean;
+  release(): void;
 }
 
 type Prepared = Result<PreparedCandidatePipelines, DynamicGeometryError>;
 type Request = {
   readonly input: CandidatePipelineInput;
+  readonly resources: ReadonlyMap<number, MaterialResource>;
+  readonly materials: MaterialFrame;
   projection?: {
     readonly graph: InstalledFrameGraph;
     readonly worldId: number;
@@ -38,10 +41,10 @@ type Request = {
     readonly reflectionFallback: boolean;
     readonly shadowViews: boolean;
     readonly entry: ValidatedRenderable;
-    readonly materials: MaterialFrame;
     readonly artifacts: ReturnType<typeof collectGpuDrivenMaterialArtifacts>;
   };
   finish(result: Prepared): void;
+  release(): void;
 };
 
 function unavailable(actual: unknown): DynamicGeometryError {
@@ -56,7 +59,14 @@ function unavailable(actual: unknown): DynamicGeometryError {
 /** Pending candidates own no scene rows, draw calls, histories, or second PSO cache. */
 export class CandidatePipelinePreparationOwner {
   private readonly requests = new Set<Request>();
+  private readonly releases = new Set<() => void>();
   private disposed = false;
+  private demandMaterials = new MaterialFrame(undefined);
+
+  /** Preparation demand builds real graph lanes without accepting any scene draw. */
+  get materials(): MaterialFrame {
+    return this.demandMaterials;
+  }
 
   constructor(private readonly currentGraph: () => InstalledFrameGraph | null | undefined) {}
 
@@ -65,21 +75,51 @@ export class CandidatePipelinePreparationOwner {
       return Promise.resolve(err(unavailable('cancelled or retired candidate')));
     if (this.currentGraph() == null)
       return Promise.resolve(err(unavailable('no current view graph')));
+    const resources = new Map<number, MaterialResource>();
+    let materials = new MaterialFrame(undefined);
+    const demand = new Set<MaterialResource>();
+    try {
+      for (const row of input.preparation.materials) {
+        const resource = new MaterialResource(row.value);
+        resources.set(row.id, resource);
+        materials = materials.with(resource);
+      }
+      const snapshot = input.preparation.template.snapshot;
+      for (const submesh of input.mesh.submeshes) {
+        const resource = resources.get(
+          snapshot.materials[submesh.materialSlot] ?? snapshot.material,
+        );
+        if (resource !== undefined) demand.add(resource);
+      }
+    } catch (cause) {
+      return Promise.resolve(err(unavailable(cause)));
+    }
     return new Promise((resolve) => {
-      const finish = (result: Prepared) => {
-        if (!this.requests.delete(request)) return;
+      const release = () => {
+        if (!this.releases.delete(release)) return;
+        const pending = this.requests.delete(request);
         signal?.removeEventListener('abort', cancel);
         clearTimeout(timeout);
+        for (const resource of demand)
+          this.demandMaterials = this.demandMaterials.without(resource);
+        if (pending) resolve(err(unavailable('candidate preparation cancelled')));
+      };
+      const finish = (result: Prepared) => {
+        if (!this.requests.delete(request)) return;
+        clearTimeout(timeout);
+        if (!result.ok) release();
         resolve(result);
       };
-      const request: Request = { input, finish };
-      const cancel = () => finish(err(unavailable('candidate preparation cancelled')));
+      const request: Request = { input, resources, materials, finish, release };
+      const cancel = release;
       // A missing draw/camera or failed native compilation cannot hold source admission forever.
       const timeout = setTimeout(
         () => finish(err(unavailable('candidate raster preparation timed out'))),
         30_000,
       );
       this.requests.add(request);
+      this.releases.add(release);
+      for (const resource of demand) this.demandMaterials = this.demandMaterials.with(resource);
       signal?.addEventListener('abort', cancel, { once: true });
     });
   }
@@ -119,13 +159,7 @@ export class CandidatePipelinePreparationOwner {
           projection.shadowViews !== shadowViews
         ) {
           const { preparation } = input;
-          const resources = new Map<number, MaterialResource>();
-          let materials = new MaterialFrame(undefined);
-          for (const row of preparation.materials) {
-            const resource = new MaterialResource(row.value);
-            resources.set(row.id, resource);
-            materials = materials.with(resource);
-          }
+          const { resources, materials } = request;
           const resourceFor = (id: number): MaterialResource => {
             const resource = resources.get(id);
             if (resource === undefined) throw new Error(`candidate material ${id} is absent`);
@@ -195,11 +229,11 @@ export class CandidatePipelinePreparationOwner {
             reflectionFallback,
             shadowViews,
             entry,
-            materials,
             artifacts,
           };
         }
-        const { entry, artifacts, materials } = projection;
+        const { entry, artifacts } = projection;
+        const { materials } = request;
         const state = { ...context.frameState, pipelinePreparationPending: false };
         delete state.pipelinePreparationPendingReason;
         const candidateContext: _InternalRenderPipelineContext = {
@@ -225,7 +259,12 @@ export class CandidatePipelinePreparationOwner {
         if (!state.pipelinePreparationPending)
           request.finish(
             ok({
-              isCurrent: () => !this.disposed && input.isCurrent(),
+              isCurrent: () =>
+                !this.disposed &&
+                this.releases.has(request.release) &&
+                request.projection?.graph === this.currentGraph() &&
+                input.isCurrent(),
+              release: request.release,
             }),
           );
       } catch (cause) {
@@ -236,6 +275,6 @@ export class CandidatePipelinePreparationOwner {
 
   dispose(): void {
     this.disposed = true;
-    for (const request of this.requests) request.finish(err(unavailable('view retired')));
+    for (const release of this.releases) release();
   }
 }

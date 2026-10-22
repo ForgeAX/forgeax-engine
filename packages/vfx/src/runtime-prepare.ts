@@ -13,8 +13,8 @@ import { validateVfxEffectReflection } from './effect-contract.js';
 import { validateVfxForceFields } from './force-fields.js';
 import {
   VFX_GPU_PROGRAM_FORMAT,
-  type VfxGpuEffectAssetAny,
-  type VfxGpuEmitterProgramV3,
+  type VfxGpuEffectAsset,
+  type VfxGpuEmitterProgram,
 } from './gpu-program.js';
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -113,7 +113,7 @@ function validInstanceCompute(value: unknown): boolean {
 export function prepareRuntimeParticleEffect(
   input: unknown,
   context?: AssetPreparationContext,
-): Result<VfxGpuEffectAssetAny, AssetError> {
+): Result<VfxGpuEffectAsset, AssetError> {
   if (
     !record(input) ||
     input.kind !== 'particle-effect' ||
@@ -125,7 +125,7 @@ export function prepareRuntimeParticleEffect(
   )
     return invalid('program');
   const sourceEmitters: Record<string, unknown>[] = [];
-  const emitters: VfxGpuEmitterProgramV3[] = [];
+  const emitters: VfxGpuEmitterProgram[] = [];
   const identities: unknown[] = [];
   let layoutIdentity: string | undefined;
   const reference = (
@@ -259,7 +259,7 @@ export function prepareRuntimeParticleEffect(
       });
     }
     const linkedFields = [];
-    for (const field of (fields ?? []) as NonNullable<VfxGpuEmitterProgramV3['forceFields']>) {
+    for (const field of (fields ?? []) as NonNullable<VfxGpuEmitterProgram['forceFields']>) {
       if (field.kind !== 'vector') {
         linkedFields.push(field);
         continue;
@@ -295,7 +295,7 @@ export function prepareRuntimeParticleEffect(
       renderers,
       ...(fields === undefined ? {} : { forceFields: linkedFields }),
     });
-    emitters.push(normalized as unknown as VfxGpuEmitterProgramV3);
+    emitters.push(normalized as unknown as VfxGpuEmitterProgram);
     identities.push({
       ...normalized,
       wgsl: executable.digest,
@@ -319,5 +319,5 @@ export function prepareRuntimeParticleEffect(
     emitters: emitters.map((emitter) => ({ id: emitter.id, capacity: emitter.capacity })),
     programFingerprint: fingerprint,
     program: { format: VFX_GPU_PROGRAM_FORMAT, fingerprint, emitters },
-  } as unknown as VfxGpuEffectAssetAny);
+  } as unknown as VfxGpuEffectAsset);
 }

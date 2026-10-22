@@ -4,7 +4,7 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import type { TextureAsset } from '@forgeax/engine-types';
-import type { VfxGpuProgramV3 } from '@forgeax/engine-vfx';
+import type { VfxGpuProgram } from '@forgeax/engine-vfx';
 import {
   ParticleEffectPlayer,
   particleEffectContribution,
@@ -31,7 +31,7 @@ function required<T>(value: T | undefined): T {
 
 export async function verifyFixedFieldTicks(cooked: {
   readonly fingerprint: string;
-  readonly program: Omit<VfxGpuProgramV3, 'fingerprint'>;
+  readonly program: Omit<VfxGpuProgram, 'fingerprint'>;
 }): Promise<void> {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const native = device.nativeDevice().unwrap();

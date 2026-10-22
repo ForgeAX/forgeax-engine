@@ -2794,6 +2794,8 @@ export interface DirectionalCsmConfig {
   readonly shadowBlurSamples?: number;
   /** Authored CPU cascade cadence; absent means disabled. */
   readonly staggerCascades?: boolean;
+  /** `false` drops the GPU-driven static cascade layer; absent means enabled. */
+  readonly staticShadowCache?: false;
   readonly cascadeCount: number;
   readonly splitLambda: number;
   readonly cascadeBlend: number;

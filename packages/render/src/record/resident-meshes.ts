@@ -43,8 +43,23 @@ export function gpuDrivenMeshesForFrame(
     const gpu = resolved.get(key);
     if (gpu !== undefined) meshes.set(binding, gpu);
   }
+  // Downstream preparation keys on this table's identity; keep it while every
+  // binding still resolves to the same resident handles.
+  const previous = residentTables.get(internals);
+  if (previous !== undefined && previous.size === meshes.size) {
+    let same = true;
+    for (const [binding, gpu] of meshes)
+      if (previous.get(binding) !== gpu) {
+        same = false;
+        break;
+      }
+    if (same) return previous;
+  }
+  residentTables.set(internals, meshes);
   return meshes;
 }
+
+const residentTables = new WeakMap<object, ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>>();
 
 /** Called by a recording that will consume real geometry queries/commands. */
 export function querySceneExecution(scene: PersistentGpuDrivenState): PersistentGpuDrivenState {

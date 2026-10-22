@@ -2,6 +2,12 @@ import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  createExecutionReport,
+  EXECUTION_CAPABILITY_NAMES,
+  type ExecutionCapabilities,
+  selectExecutionWorkers,
+} from '@forgeax/engine-app';
 import { createRhiDebugError } from '@forgeax/engine-rhi-debug';
 import type { BrowserCaptureError } from '@forgeax/engine-rhi-debug/browser';
 import { err, ok } from '@forgeax/engine-types';
@@ -73,6 +79,7 @@ const fixtures = vi.hoisted(() => {
   };
   const session = {
     page,
+    capture: vi.fn(),
     execution: undefined as unknown,
     close: vi.fn(async () => undefined),
     report: vi.fn(() => ({
@@ -81,6 +88,7 @@ const fixtures = vi.hoisted(() => {
       carrierTarget: target as typeof target | undefined,
       carrierFallbackReason: undefined as string | undefined,
       pageErrors: [],
+      consoleErrors: [] as string[],
     })),
   };
   const browser = {
@@ -152,10 +160,16 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function request(port: number, path: string, method: 'GET' | 'POST'): Promise<unknown> {
+async function request(
+  port: number,
+  path: string,
+  method: 'GET' | 'POST',
+  value?: unknown,
+): Promise<unknown> {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method,
     headers: { connection: 'close' },
+    ...(value === undefined ? {} : { body: JSON.stringify(value) }),
   });
   return response.json();
 }
@@ -173,10 +187,149 @@ beforeEach(() => {
     carrierTarget: fixtures.target,
     carrierFallbackReason: undefined,
     pageErrors: [],
+    consoleErrors: [],
   }));
 });
 
 describe('live DevKit borrowed carrier boundary', () => {
+  it('fails runtime verification for faults, blocked observation and replaced executions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-verify-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'));
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax/session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    let worldIdentity = 'verified-world';
+    const capabilities = Object.fromEntries(
+      EXECUTION_CAPABILITY_NAMES.map((name) => [name, { available: true, reason: 'observed' }]),
+    ) as unknown as ExecutionCapabilities;
+    const initial = createExecutionReport(
+      capabilities,
+      selectExecutionWorkers({ capabilities }).unwrap(),
+    );
+    const healthyExecution = {
+      ...initial,
+      engine: { ...initial.engine, health: 'running' },
+      world: { ...initial.world, identity: worldIdentity },
+      frame: { ...initial.frame, submitted: 2, completed: 2 },
+    };
+    const fault = {
+      source: 'runtime',
+      code: 'plugin-startup-failed',
+      expected: 'healthy execution',
+      hint: 'repair startup',
+      detail: {},
+      partialWrite: false,
+      retryable: true,
+    };
+    let execution: unknown = healthyExecution;
+    await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
+    const bridge = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    bridge.on('message', (raw) => {
+      const message = JSON.parse(String(raw));
+      bridge.send(
+        JSON.stringify({
+          type: 'result',
+          id: message.id,
+          payload: {
+            ok: true,
+            value: message.type === 'status' ? { worldIdentity, execution } : {},
+          },
+        }),
+      );
+    });
+    const record = {
+      ok: true,
+      output: join(root, 'gate.png'),
+      digest: 'sha256:fixture',
+      runtime: { engineFrameId: 3 },
+      pixels: { width: 2, height: 2, rendered: true },
+    };
+    fixtures.page.evaluate.mockResolvedValue('2');
+    fixtures.session.capture.mockResolvedValue(record);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        bridge.once('open', resolve);
+        bridge.once('error', reject);
+      });
+      let revision = '';
+      await vi.waitFor(async () => {
+        const status = (await request(port, '/status', 'GET')) as {
+          value: { revision: string; phase: string };
+        };
+        expect(status.value.phase).toBe('ready');
+        revision = status.value.revision;
+      });
+      const verify = (args: object = { revision }) => request(port, '/verify', 'POST', args);
+      expect(await verify({})).toMatchObject({
+        ok: false,
+        error: { code: 'live-revision-required' },
+      });
+      expect(await verify({ revision, timeoutMs: -1 })).toMatchObject({
+        ok: false,
+        error: { code: 'live-invalid-timeout' },
+      });
+      expect(await verify()).toMatchObject({ ok: true, value: { revision, verified: 'runtime' } });
+      expect(fixtures.session.capture).toHaveBeenLastCalledWith(undefined, {
+        purpose: 'validate',
+        afterFrameId: 2,
+      });
+      for (const failure of [
+        { fault },
+        { engine: { ...initial.engine, health: 'starting' } },
+        { world: { ...healthyExecution.world, partialWrite: true } },
+        { render: { epoch: 1, state: 'rebuilding', submittedFrame: 0, completedFrame: 0 } },
+      ]) {
+        execution = { ...healthyExecution, ...failure };
+        expect(await verify()).toMatchObject({ ok: false, error: { code: 'live-runtime-failed' } });
+      }
+      execution = { ...healthyExecution, frame: initial.frame };
+      expect(await verify()).toMatchObject({
+        ok: false,
+        error: { code: 'live-verification-unavailable' },
+      });
+      execution = undefined;
+      expect(await verify()).toMatchObject({
+        ok: false,
+        error: { code: 'live-verification-unavailable' },
+      });
+      execution = healthyExecution;
+      fixtures.session.capture.mockRejectedValueOnce(
+        Object.assign(new Error('observer unavailable'), {
+          code: 'browser-capture-timeout',
+        }),
+      );
+      expect(await verify()).toMatchObject({
+        ok: false,
+        error: { code: 'browser-capture-timeout' },
+      });
+      fixtures.session.capture.mockResolvedValueOnce({ ...record, ok: false });
+      expect(await verify()).toMatchObject({ ok: false, error: { code: 'live-runtime-failed' } });
+      fixtures.session.capture.mockImplementationOnce(async () => {
+        execution = { ...healthyExecution, fault: { ...fault, code: 'late-fault' } };
+        return record;
+      });
+      expect(await verify()).toMatchObject({ ok: false, error: { code: 'live-runtime-failed' } });
+      execution = healthyExecution;
+      fixtures.session.report.mockReturnValueOnce({
+        ...fixtures.session.report(),
+        consoleErrors: ['late error'],
+      });
+      expect(await verify()).toMatchObject({ ok: false, error: { code: 'live-runtime-failed' } });
+      fixtures.session.capture.mockImplementationOnce(async () => {
+        worldIdentity = 'replacement-world';
+        return record;
+      });
+      expect(await verify()).toMatchObject({ ok: false, error: { code: 'live-instance-changed' } });
+      expect(await verify()).toMatchObject({ ok: false, error: { code: 'live-revision-stale' } });
+    } finally {
+      bridge.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     false,
     true,
@@ -473,6 +626,7 @@ describe('live DevKit borrowed carrier boundary', () => {
       carrierTarget: undefined,
       carrierFallbackReason: 'display host did not admit the run',
       pageErrors: [],
+      consoleErrors: [],
     });
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-private-browser-'));
     const port = await freePort();

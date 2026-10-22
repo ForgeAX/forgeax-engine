@@ -66,11 +66,11 @@ afterEach(() => vi.restoreAllMocks());
     });
   });
 
-  describe('RuntimeErrorCode union carries equirect-projection-failed', () => {
-    it('equirect-projection-failed is a valid RuntimeErrorCode literal', async () => {
+  describe('RenderErrorCode union carries equirect-projection-failed', () => {
+    it('equirect-projection-failed is a valid RenderErrorCode literal', async () => {
       // The actual TS union membership is verified by typecheck: if
-      // 'equirect-projection-failed' is not in RuntimeErrorCode, no expression
-      // can assign err.code to a RuntimeErrorCode-typed variable.
+      // 'equirect-projection-failed' is not in RenderErrorCode, no expression
+      // can assign err.code to a RenderErrorCode-typed variable.
       const { EquirectProjectionFailedError } = await import('../../../render/src/errors/render');
       const err = new EquirectProjectionFailedError(42, {
         code: 'invalid-source-format',

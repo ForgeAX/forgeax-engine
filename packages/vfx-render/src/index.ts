@@ -5,10 +5,8 @@ export {
   encodeEventBuffer,
   encodeEventInputs,
   eventCapacity,
-  eventCounterData,
   eventInputCapacity,
   VFX_EVENT_BYTES,
-  VFX_EVENT_COUNTER_BYTES,
   VFX_EVENT_INPUT_BYTES,
 } from './feature/event-resources.js';
 export type { VfxRenderObservation } from './feature/gpu-particle-feature.js';
@@ -33,13 +31,11 @@ export type {
   VfxStagePlanError,
   VfxStagePlanObservation,
   VfxStageReadiness,
-  VfxStageRecovery,
   VfxValidatedStagePlan,
 } from './feature/stage-plan.js';
 export {
   observeStagePlan,
   stageDispatches,
-  stageRecoveryReadiness,
   validatedStagePlan,
 } from './feature/stage-plan.js';
 export type {
@@ -49,7 +45,6 @@ export type {
 } from './host/data-interface-providers.js';
 export {
   createCameraProvider,
-  createNoiseProvider,
   createSceneDepthProvider,
   createVfxDataInterfaceRegistry,
 } from './host/data-interface-providers.js';
@@ -61,4 +56,4 @@ export type {
   VfxRuntimeHostInspectSnapshot,
   VfxRuntimeHostOptions,
 } from './host/vfx-runtime-host.js';
-export { createVfxRuntimeHost, installVfxRuntimeDecoder } from './host/vfx-runtime-host.js';
+export { createVfxRuntimeHost } from './host/vfx-runtime-host.js';

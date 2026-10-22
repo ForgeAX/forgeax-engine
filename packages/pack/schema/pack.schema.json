@@ -360,7 +360,7 @@
           "required": [
             "offset",
             "length",
-            "containerDigest"
+            "bundleDigest"
           ],
           "properties": {
             "offset": {
@@ -373,7 +373,7 @@
               "minimum": 1,
               "maximum": 9007199254740991
             },
-            "containerDigest": {
+            "bundleDigest": {
               "type": "string",
               "pattern": "^sha256:[a-f0-9]{64}$"
             }
@@ -395,9 +395,6 @@
               "integrity"
             ],
             "properties": {
-              "contentEncoding": {
-                "const": "identity"
-              },
               "delivery": false,
               "integrity": {}
             }

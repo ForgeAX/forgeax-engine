@@ -52,7 +52,6 @@ export type {
   AppDetailExecutionDeadlineExceeded,
   AppDetailExecutionKernelFailed,
   AppDetailExecutionRebuildFailed,
-  AppDetailExecutionStaleWorld,
   AppDetailExecutionWorkerUnavailable,
   AppDetailPluginActivationFailed,
   AppDetailRendererInspectionUnavailable,

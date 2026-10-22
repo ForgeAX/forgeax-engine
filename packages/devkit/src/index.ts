@@ -100,9 +100,6 @@ export { type PluginMigrationOptions, pluginMigrateCommand } from './plugin/migr
 export {
   type BootstrapRoot,
   createInitPlan,
-  type ProjectBootstrapPlan,
-  type ResourceBootstrapPlan,
-  type ResourceBootstrapTrace,
   readProjectFacts,
 } from './project/index.js';
 export type {

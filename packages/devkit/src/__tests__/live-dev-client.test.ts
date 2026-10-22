@@ -1,22 +1,33 @@
+import type { ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const daemonFixture = vi.hoisted(() => ({ entry: undefined as string | undefined }));
+const daemonFixture = vi.hoisted(() => ({
+  entry: undefined as string | undefined,
+  children: [] as ChildProcess[],
+}));
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>();
   return {
     ...original,
-    spawn: (command: string, args: string[], options: import('node:child_process').SpawnOptions) =>
-      original.spawn(
+    spawn: (
+      command: string,
+      args: string[],
+      options: import('node:child_process').SpawnOptions,
+    ) => {
+      const entry = args[1] === '--__forgeax-live-daemon' ? daemonFixture.entry : undefined;
+      const child = original.spawn(
         command,
-        daemonFixture.entry && args[1] === '--__forgeax-live-daemon'
-          ? [daemonFixture.entry, ...args.slice(1)]
-          : args,
+        entry === undefined ? args : [entry, ...args.slice(1)],
         options,
-      ),
+      );
+      if (entry !== undefined) daemonFixture.children.push(child);
+      return child;
+    },
   };
 });
 
@@ -25,6 +36,12 @@ import { runUnifiedCli } from '../unified-cli.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
+  for (const child of daemonFixture.children.splice(0)) {
+    if (child.exitCode !== null || child.signalCode !== null) continue;
+    const closed = once(child, 'close');
+    child.kill('SIGTERM');
+    await closed;
+  }
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
 
@@ -95,10 +112,6 @@ describe('live command transport', () => {
       setTimeout(() => process.exit(1), 12000).unref();
     `,
     );
-    cleanup.push(async () => {
-      const session = JSON.parse(await readFile(join(root, '.forgeax/dev-session.json'), 'utf8'));
-      await fetch(`${session.endpoint}/stop`, { method: 'POST' });
-    });
     daemonFixture.entry = entry;
     try {
       const startedAt = Date.now();
@@ -143,6 +156,7 @@ describe('live command transport', () => {
       import { createServer } from 'node:http';
       import { mkdir, writeFile } from 'node:fs/promises';
       const root = process.argv[3], port = Number(process.argv[4]);
+      await new Promise(resolve => setTimeout(resolve, 5000));
       const server = createServer((req, res) => {
         res.setHeader('content-type', 'application/json');
         if (req.url === '/stop') { res.end('{}'); server.close(() => process.exit(0)); return; }
@@ -153,16 +167,20 @@ describe('live command transport', () => {
       await writeFile(root + '/.forgeax/dev-session.json', JSON.stringify({ root, endpoint: 'http://127.0.0.1:' + port, pid: process.pid }));
     `,
     );
-    cleanup.push(async () => {
-      const session = JSON.parse(await readFile(join(root, '.forgeax/dev-session.json'), 'utf8'));
-      await fetch(`${session.endpoint}/stop`, { method: 'POST' });
-    });
     daemonFixture.entry = entry;
     try {
       expect(await startLiveDev(root)).toMatchObject({
         ok: false,
         error: { code: 'live-start-timeout' },
       });
+      const pid = daemonFixture.children.at(-1)?.pid;
+      if (pid === undefined) throw new Error('Missing detached fixture owner');
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      await expect(readFile(join(root, '.forgeax/dev-session.json'), 'utf8')).rejects.toMatchObject(
+        {
+          code: 'ENOENT',
+        },
+      );
     } finally {
       daemonFixture.entry = undefined;
     }
@@ -195,10 +213,6 @@ describe('live command transport', () => {
       setTimeout(() => process.exit(1), 10000).unref();
     `,
     );
-    cleanup.push(async () => {
-      const session = JSON.parse(await readFile(join(root, '.forgeax/dev-session.json'), 'utf8'));
-      await fetch(`${session.endpoint}/stop`, { method: 'POST' });
-    });
     daemonFixture.entry = entry;
     try {
       expect(await startLiveDev(root)).toMatchObject({

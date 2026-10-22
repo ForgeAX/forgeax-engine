@@ -111,7 +111,7 @@ rootsToSceneAsset and serializeSceneAssetToPack share one schema dispatcher:
 
 ### Structured collection errors
 
-Handle these RuntimeErrorCode members exhaustively without default:
+Scene collection returns these AssetRuntimeErrorCode members:
 
 | Code | Trigger | Detail | Hint |
 |:--|:--|:--|:--|

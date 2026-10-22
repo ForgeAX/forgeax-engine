@@ -11,6 +11,9 @@ import type {
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
   type MaterialShaderArtifact,
+  STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
+  STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
+  STANDARD_SURFACE_DISCARDS_OVERRIDE,
   STANDARD_TEXTURE_MASK_OVERRIDE,
 } from '@forgeax/engine-shader';
 import type { MaterialDynamicInputLayout, MaterialRenderState } from '@forgeax/engine-types';
@@ -245,7 +248,47 @@ interface MaterialAbiRasterPipelineInput {
   readonly renderState: MaterialRenderState | undefined;
   readonly additionalColorFormats: readonly TextureFormat[];
   readonly standardTextureMask?: number | undefined;
+  /** Standard surface discard bits; applied only to modules declaring the override. */
+  readonly standardSurfaceDiscards?: number | undefined;
   readonly forwardColorPass: boolean;
+}
+
+/** Surface discard bits a GPU-driven Standard draw can actually reach. */
+export function standardSurfaceDiscardMask(lodCoverage: boolean, viewClipping: boolean): number {
+  return (
+    (lodCoverage ? STANDARD_SURFACE_DISCARD_LOD_COVERAGE : 0) |
+    (viewClipping ? STANDARD_SURFACE_DISCARD_VIEW_CLIPPING : 0)
+  );
+}
+
+/**
+ * The discard bits a selected program can consume. A module without the
+ * override (authored roots, stale cooked programs) keeps its static discards,
+ * and WebGPU rejects constants that name no override of the module.
+ */
+export function effectiveStandardSurfaceDiscards(
+  artifact: MaterialShaderArtifact,
+  standardSurfaceDiscards: number | undefined,
+): number | undefined {
+  return standardSurfaceDiscards !== undefined &&
+    artifact.program.overrideIds.includes(STANDARD_SURFACE_DISCARDS_OVERRIDE)
+    ? standardSurfaceDiscards
+    : undefined;
+}
+
+function materialAbiRasterConstants(
+  standardTextureMask: number | undefined,
+  standardSurfaceDiscards: number | undefined,
+): Record<string, number> | undefined {
+  if (standardTextureMask === undefined && standardSurfaceDiscards === undefined) return undefined;
+  return {
+    ...(standardTextureMask === undefined
+      ? {}
+      : { [STANDARD_TEXTURE_MASK_OVERRIDE]: standardTextureMask }),
+    ...(standardSurfaceDiscards === undefined
+      ? {}
+      : { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscards }),
+  };
 }
 
 /** One request specification for real raster and hidden preparation. */
@@ -297,9 +340,10 @@ export function requestMaterialAbiRasterPipeline(
     artifact.vertexEntry,
     artifact.fragmentEntry,
     undefined,
-    input.standardTextureMask === undefined
-      ? undefined
-      : { [STANDARD_TEXTURE_MASK_OVERRIDE]: input.standardTextureMask },
+    materialAbiRasterConstants(
+      input.standardTextureMask,
+      effectiveStandardSurfaceDiscards(artifact, input.standardSurfaceDiscards),
+    ),
   );
 }
 
@@ -1537,6 +1581,7 @@ export class MaterialAbiRasterAdapter {
     standardTextureMask?: number,
     forwardColorPass = false,
     preparationFactory?: MaterialPipelineFactory,
+    standardSurfaceDiscards?: number,
   ): Result<RenderPipeline, RhiError> {
     const pipelineRenderState = gpuDrivenReflectionFallbackRenderState({
       renderState,
@@ -1546,10 +1591,6 @@ export class MaterialAbiRasterAdapter {
       reflectionFallbackOutputAvailable:
         selectedArtifact.reflectionFallbackOutputAvailable === true,
     });
-    const constants =
-      standardTextureMask === undefined
-        ? undefined
-        : { [STANDARD_TEXTURE_MASK_OVERRIDE]: standardTextureMask };
     const pipelineUvSetCount = isCanonicalStandardPbrMaterialShader(selectedArtifact.material)
       ? shaderUvSetCount
       : (selectedArtifact.uvSetCount ?? shaderUvSetCount);
@@ -1589,9 +1630,18 @@ export class MaterialAbiRasterAdapter {
         }),
       );
     }
+    // The factory compiles the selected program; the fixed legacy module was
+    // compiled from its own producer artifact. Each declares its own overrides.
+    const discardArtifact =
+      this.pipelineFactory === undefined ? program?.artifact : selectedArtifact;
+    const surfaceDiscards =
+      discardArtifact === undefined
+        ? undefined
+        : effectiveStandardSurfaceDiscards(discardArtifact, standardSurfaceDiscards);
+    const constants = materialAbiRasterConstants(standardTextureMask, surfaceDiscards);
     // Projection identity and shader UV count already determine the aliased
     // layout. Do not build a temporary GPU descriptor just to look up its PSO.
-    const key = `${format}:${additionalColorFormats.join(',')}|${sampleCount}|${layoutProjection.arrayStride}|${topology}|${stripIndexFormat ?? ''}|${JSON.stringify(pipelineRenderState ?? null)}|${selectedArtifact.material}|${selectedArtifact.layoutIdentity}|${receipt.receiptIdentity}|${receipt.generation}|${selectedArtifact.variantSet ?? ''}|${materialArtifactProgramIdentity(selectedArtifact)}|${selectedArtifact.vertexEntry ?? receipt.sceneIndexEntry}|${selectedArtifact.fragmentEntry ?? ''}|${layoutProjection.digest}|uv${pipelineUvSetCount}|textures=${standardTextureMask ?? ''}`;
+    const key = `${format}:${additionalColorFormats.join(',')}|${sampleCount}|${layoutProjection.arrayStride}|${topology}|${stripIndexFormat ?? ''}|${JSON.stringify(pipelineRenderState ?? null)}|${selectedArtifact.material}|${selectedArtifact.layoutIdentity}|${receipt.receiptIdentity}|${receipt.generation}|${selectedArtifact.variantSet ?? ''}|${materialArtifactProgramIdentity(selectedArtifact)}|${selectedArtifact.vertexEntry ?? receipt.sceneIndexEntry}|${selectedArtifact.fragmentEntry ?? ''}|${layoutProjection.digest}|uv${pipelineUvSetCount}|textures=${standardTextureMask ?? ''}|discards=${surfaceDiscards ?? ''}`;
     const sceneEntry =
       selectedArtifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : receipt.sceneIndexEntry;
     if (sceneEntry === undefined)
@@ -1622,6 +1672,7 @@ export class MaterialAbiRasterAdapter {
           renderState,
           additionalColorFormats,
           standardTextureMask,
+          ...(surfaceDiscards === undefined ? {} : { standardSurfaceDiscards: surfaceDiscards }),
           forwardColorPass,
         },
       );

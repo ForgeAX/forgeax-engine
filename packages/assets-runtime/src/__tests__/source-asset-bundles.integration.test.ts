@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { expect, it, vi } from 'vitest';
 import { defineAssetKind } from '../asset-kind';
@@ -7,15 +8,16 @@ import { captureAssetPublication } from '../capture-publication';
 import { createCatalogSource } from '../catalog-source';
 import { defined } from './assert-defined';
 
-it('loads independent windows through the production source and captures the complete stored container', async () => {
+it('loads independent Bundle entries through the production source and captures the complete Bundle', async () => {
   const hash = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  const stored = Uint8Array.of(99, 1, 2, 3, 4, 5, 88);
-  const kind = defineAssetKind<Uint8Array>('chunk-binary');
+  const bodies = [Uint8Array.of(1, 2, 3), Uint8Array.of(4, 5)];
+  const { bytes: stored, windows } = encodeAssetBundle(bodies);
+  const kind = defineAssetKind<Uint8Array>('bundle-binary');
   const ids = ['00000000-0000-7000-8000-000000000971', '00000000-0000-7000-8000-000000000972'];
   const packageUrl = 'https://source.invalid/map.pack.json';
   const produced = createRuntimePackPublication({
     scopeId: 'asset-runtime',
-    sourcePath: 'chunk.pack',
+    sourcePath: 'bundle.pack',
     sourceRevision: '1',
     packageUrl,
     pack: {
@@ -26,19 +28,12 @@ it('loads independent windows through the production source and captures the com
         refs: [],
         artifacts: {
           body: {
-            path: 'chunk.bin',
+            path: 'bundle.bin',
             contentEncoding: 'identity',
             mediaType: 'application/octet-stream',
-            byteLength: index === 0 ? 3 : 2,
-            integrity: {
-              algorithm: 'sha256',
-              digest: hash(stored.slice(index === 0 ? 1 : 4, index === 0 ? 4 : 6)),
-            },
-            byteRange: {
-              offset: index === 0 ? 1 : 4,
-              length: index === 0 ? 3 : 2,
-              containerDigest: hash(stored),
-            },
+            byteLength: defined(bodies[index]).byteLength,
+            integrity: { algorithm: 'sha256', digest: hash(defined(bodies[index])) },
+            byteRange: { ...defined(windows[index]), bundleDigest: hash(stored) },
           },
         },
       })),
@@ -48,7 +43,7 @@ it('loads independent windows through the production source and captures the com
     guid,
     kind: kind.kind,
     packageUrl,
-    sourcePath: 'chunk.pack',
+    sourcePath: 'bundle.pack',
     publication: produced.publication,
   }));
   const fetcher = vi.fn(async (url: RequestInfo | URL) =>
@@ -65,13 +60,17 @@ it('loads independent windows through the production source and captures the com
     );
     expect(assets.read(defined(handles[0])).unwrap()).toEqual(Uint8Array.of(1, 2, 3));
     expect(assets.read(defined(handles[1])).unwrap()).toEqual(Uint8Array.of(4, 5));
-    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('chunk.bin'))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('bundle.bin'))).toHaveLength(
+      1,
+    );
     assets.read(defined(handles[0])).unwrap()[0] = 77;
     const captured = (
       await captureAssetPublication(defined(rows[0]), rows, source, fetcher, { registry: assets })
     ).unwrap();
-    expect(captured.blobs['chunk.bin']).toEqual(stored);
-    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('chunk.bin'))).toHaveLength(2);
+    expect(captured.blobs['bundle.bin']).toEqual(stored);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('bundle.bin'))).toHaveLength(
+      2,
+    );
   } finally {
     assets.dispose();
   }

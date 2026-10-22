@@ -401,9 +401,17 @@ export class AssetRegistry implements AssetReferenceOwner {
       );
     let projection: MaterialRenderProjection | undefined;
     let textures: ReadonlySet<string> | undefined;
+    let content = input;
+    if (kind.value === 'material' && Object.hasOwn(input, 'cooked')) {
+      // Cook records belong to the source/program owners, not mutable asset versions.
+      // Preserve descriptors so ordinary data admission still rejects accessors.
+      const descriptors = Object.getOwnPropertyDescriptors(input);
+      delete descriptors.cooked;
+      content = Object.create(Object.getPrototypeOf(input), descriptors);
+    }
     const created = this.#runtime.adopt<T['kind'], T, AssetError | MaterialError>(
       kind.value as T['kind'],
-      input,
+      content,
       dependencies,
       (owned) => {
         if (requiresOwnerPreparation(owned.kind))

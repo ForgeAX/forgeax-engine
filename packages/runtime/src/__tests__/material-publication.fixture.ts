@@ -2,7 +2,6 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import { Transform } from '@forgeax/engine-scene';
@@ -193,6 +192,11 @@ export async function verifyMaterialPublication(options: {
       row.payload as {
         cooked: {
           programs: readonly {
+            specializationKey: string;
+            selections: readonly {
+              pass: string;
+              context: { backend: string; capability: string };
+            }[];
             artifact: { path: string; digest: string; bytes?: unknown };
           }[];
         };
@@ -213,9 +217,9 @@ export async function verifyMaterialPublication(options: {
     };
     const first = await load(firstGuid);
     const firstContent = materialContent(first);
-    const cooked = validateCookedMaterialRecord(
-      (firstContent as MaterialAsset & { cooked?: unknown }).cooked,
-    ).unwrap();
+    // Cook records stay with the publication and shader owners, not mutable content.
+    expect(firstContent).not.toHaveProperty('cooked');
+    const cooked = wire;
     // Every native and downlevel View layout selects three independent passes;
     // identical WGSL bytes retain one content-addressed transport artifact.
     const contexts = [
@@ -257,10 +261,8 @@ export async function verifyMaterialPublication(options: {
       expect(response.status).toBe(200);
       const bytes = new Uint8Array(await response.arrayBuffer());
       expect(bytes.byteLength).toBe(descriptor.byteLength);
-      for (const program of programs) {
-        expect(program.artifact.bytes).toEqual(bytes);
+      for (const program of programs)
         publishedSources.set(program.specializationKey, new TextDecoder().decode(bytes));
-      }
     }
     const inherited = await load(childGuid);
     const other = await load(otherGuid);

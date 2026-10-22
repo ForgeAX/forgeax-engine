@@ -27,15 +27,29 @@ export interface RhiTapeArtifactRef extends TapeArtifact {
         readonly receipt: FrameReceipt;
         readonly captureGeneration: number;
       }
-    | {
-        readonly status: 'unavailable';
-        readonly reason:
-          | 'frame-unavailable'
-          | 'multiple-submits'
-          | 'capture-invalidated'
-          | 'submit-failed';
-      };
+    | RhiRemoteCaptureCompletion;
 }
+
+/** Clone-safe facts for a receipt observed inside the Render Worker. */
+export type RhiRemoteCaptureCompletion =
+  | {
+      readonly status: 'remote-complete';
+      readonly receipt: {
+        readonly frameId: number;
+        readonly deviceGeneration: number;
+        readonly graphGeneration?: number;
+      };
+      readonly captureGeneration: number;
+      readonly gpuPassTiming?: import('@forgeax/engine-render').GpuPassTimingObservation;
+    }
+  | {
+      readonly status: 'unavailable';
+      readonly reason:
+        | 'frame-unavailable'
+        | 'multiple-submits'
+        | 'capture-invalidated'
+        | 'submit-failed';
+    };
 
 export interface RhiCapture {
   captureFrame(options?: CaptureFrameOptions): Promise<Result<RhiTapeArtifactRef, RhiDebugError>>;

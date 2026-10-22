@@ -6,7 +6,6 @@ const EXECUTION_CODES = [
   'app-execution-bootstrap-failed',
   'app-execution-deadline-exceeded',
   'app-execution-kernel-failed',
-  'app-execution-stale-world',
   'app-execution-rebuild-failed',
 ] as const satisfies readonly AppErrorCode[];
 

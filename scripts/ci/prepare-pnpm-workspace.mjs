@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, lstatSync, realpathSync, rmSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pnpmCommand } from '../lib/pnpm-command.mjs';
 import { hasExpandedSource } from '../lib/source-repository.mjs';
@@ -24,7 +24,8 @@ export function cleanRetiredModelingSubmoduleCheckout(root = process.cwd(), env 
     return false;
 
   const repository = git(root, ['rev-parse', '--show-toplevel']);
-  if (repository.status !== 0 || resolve(repository.stdout.trim()) !== resolve(root)) return false;
+  if (repository.status !== 0 || realpathSync(repository.stdout.trim()) !== realpathSync(root))
+    return false;
 
   const tracked = git(root, ['ls-files', '--error-unmatch', retiredModelingSubmodulePath]);
   if (tracked.status === 0) return false;
@@ -49,6 +50,82 @@ export function cleanRetiredModelingSubmoduleCheckout(root = process.cwd(), env 
   return true;
 }
 
+function inside(parent, path) {
+  const child = relative(parent, path);
+  return child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
+
+function pruneRetiredWorkspaceSubmodules(root) {
+  if (
+    process.env.GITHUB_ACTIONS !== 'true' ||
+    !process.env.GITHUB_WORKSPACE ||
+    realpathSync(process.env.GITHUB_WORKSPACE) !== realpathSync(root)
+  )
+    return;
+  const top = git(root, ['rev-parse', '--show-toplevel']);
+  if (top.status !== 0 || realpathSync(top.stdout.trim()) !== realpathSync(root)) return;
+  const modules = git(root, ['rev-parse', '--git-path', 'modules']);
+  if (modules.status !== 0) return;
+  const directory = resolve(root, modules.stdout.trim());
+  const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z']);
+  if (untracked.status !== 0) return;
+  const candidates = untracked.stdout
+    .split('\0')
+    .filter(
+      (path) =>
+        path.endsWith('/') &&
+        existsSync(resolve(root, path, 'package.json')) &&
+        existsSync(resolve(root, path, '.git')),
+    );
+  if (candidates.length === 0) return;
+  const history = git(root, ['reflog', '--format=%H', 'HEAD']);
+  if (history.status !== 0) return;
+  const revisions = [...new Set(history.stdout.trim().split('\n').filter(Boolean))];
+  const realRoot = realpathSync(root);
+  const realModules = existsSync(directory) ? realpathSync(directory) : undefined;
+  for (const candidate of candidates) {
+    const checkout = resolve(root, candidate);
+    if (
+      !inside(root, checkout) ||
+      lstatSync(checkout).isSymbolicLink() ||
+      !inside(realRoot, realpathSync(checkout))
+    )
+      continue;
+    const path = relative(root, checkout);
+    const tracked = git(root, ['ls-tree', 'HEAD', '--', path]);
+    if (tracked.status !== 0 || tracked.stdout.trim()) continue;
+    const actual = git(checkout, ['rev-parse', '--absolute-git-dir']);
+    const checkoutTop = git(checkout, ['rev-parse', '--show-toplevel']);
+    const checkoutHead = git(checkout, ['rev-parse', 'HEAD']);
+    if (
+      actual.status !== 0 ||
+      checkoutTop.status !== 0 ||
+      checkoutHead.status !== 0 ||
+      realpathSync(checkoutTop.stdout.trim()) !== realpathSync(checkout)
+    )
+      continue;
+    const metadata = realpathSync(actual.stdout.trim());
+    const embedded = resolve(checkout, '.git');
+    const ownedMetadata =
+      (realModules !== undefined && inside(realModules, metadata)) ||
+      (lstatSync(embedded).isDirectory() &&
+        !lstatSync(embedded).isSymbolicLink() &&
+        metadata === realpathSync(embedded));
+    if (!ownedMetadata) continue;
+    const retiredPin = revisions.some((revision) => {
+      const previous = git(root, ['ls-tree', revision, '--', path]);
+      return (
+        previous.status === 0 &&
+        previous.stdout.startsWith(`160000 commit ${checkoutHead.stdout.trim()}\t`)
+      );
+    });
+    if (!retiredPin) continue;
+    // Checkout cleans before switching commits, leaving formerly tracked submodules behind.
+    rmSync(checkout, { recursive: true, force: true });
+    console.error(`[pnpm-workspace] removed retired workspace submodule path=${path}`);
+  }
+}
+
 export function preparePnpmWorkspace(root = process.cwd()) {
   if (cleanRetiredModelingSubmoduleCheckout(root))
     console.error('[pnpm-workspace] removed stale retired submodule path=packages/modeling');
@@ -61,6 +138,7 @@ export function preparePnpmWorkspace(root = process.cwd()) {
     );
   }
   const expected = pin.stdout.trim();
+  pruneRetiredWorkspaceSubmodules(root);
   const absoluteViewPath = resolve(root, viewPath);
   if (!existsSync(absoluteViewPath)) return { path: viewPath, status: 'absent', expected };
 

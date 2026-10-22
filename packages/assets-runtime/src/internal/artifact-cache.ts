@@ -1,9 +1,4 @@
-import {
-  type ArtifactDescriptor,
-  type AssetLoadError,
-  ok,
-  type Result,
-} from '@forgeax/engine-types';
+import { type AssetLoadError, ok, type Result } from '@forgeax/engine-types';
 
 interface ArtifactCacheSnapshot {
   readonly entries: number;
@@ -36,17 +31,8 @@ export class ArtifactCache<Failure = AssetLoadError> {
   read(
     contentAddress: string,
     reader: () => Promise<Result<Uint8Array, Failure>>,
-    range?: NonNullable<ArtifactDescriptor['byteRange']>,
   ): Promise<Result<Uint8Array, Failure>> {
-    const copy = (bytes: Uint8Array): Uint8Array => {
-      if (range === undefined) return new Uint8Array(bytes);
-      const offset = Math.min(range.offset, bytes.byteLength);
-      return new Uint8Array(
-        bytes.buffer,
-        bytes.byteOffset + offset,
-        Math.min(range.length, bytes.byteLength - offset),
-      ).slice();
-    };
+    const copy = (bytes: Uint8Array): Uint8Array => new Uint8Array(bytes);
     const value = this.values.get(contentAddress);
     if (value !== undefined) {
       this.hits += 1;

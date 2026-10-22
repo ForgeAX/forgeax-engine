@@ -59,10 +59,13 @@ function shadowViewCacheMiss(
   const gpuShadowViews = context.gpuDrivenShadowViews;
   if (identity.terrainReceiver !== undefined) {
     const logical = { kind: 'directional' as const, index: identity.index };
+    const final = gpuShadowViews?.invalidationReason(logical);
+    if (final !== undefined) return final;
+    // An active final view without a static view belongs to a light that
+    // disabled its static cache; the final view alone decides.
+    const staticReason = gpuShadowViews?.invalidationReason({ ...logical, layer: 'static' });
     return (
-      gpuShadowViews?.invalidationReason(logical) ??
-      gpuShadowViews?.invalidationReason({ ...logical, layer: 'static' }) ??
-      context.directionalShadowCacheMiss
+      (staticReason === 'uncached' ? undefined : staticReason) ?? context.directionalShadowCacheMiss
     );
   }
   if (gpuShadowViews !== undefined) return gpuShadowViews.invalidationReason(identity);
@@ -519,7 +522,12 @@ export function addTypedShadowPasses(
   const variance: VarianceShadowView[] = [];
   let directional: RenderPipelineTarget | undefined;
   if (topology.shadow.directional !== 'disabled') {
-    const { mapSize, cascadeCount, terrainReceivers = [] } = topology.shadow.directional;
+    const {
+      mapSize,
+      cascadeCount,
+      staticLayer = true,
+      terrainReceivers = [],
+    } = topology.shadow.directional;
     const target = createRetainedShadowArrayTarget(
       graph,
       depthLayers,
@@ -531,7 +539,7 @@ export function addTypedShadowPasses(
     const directionalTarget = target.value;
     directional = directionalTarget;
     let directionalStatic: RenderPipelineTarget | undefined;
-    if (projectGpuDrivenShadow !== undefined) {
+    if (projectGpuDrivenShadow !== undefined && staticLayer) {
       const staticTarget = createRetainedShadowArrayTarget(
         graph,
         staticLayers,

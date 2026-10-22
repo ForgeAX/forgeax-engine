@@ -861,7 +861,7 @@ export interface RenderFrameState {
    * once-per-frame fire dedup set for Standard per-frame fail-soft errors
    * (`standard-light-budget-exceeded`, `standard-cluster-index-overflow`). Cleared
    * at the end of each frame so the next frame re-fires if the condition
-   * persists. Set<string> keyed by RuntimeErrorCode literal.
+   * persists. Set<string> keyed by RenderErrorCode literal.
    */
   standardOncePerFrameFired: Set<string>;
   /**

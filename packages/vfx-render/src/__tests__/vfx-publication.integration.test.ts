@@ -1580,8 +1580,10 @@ it('omits duplicated cooked records while keeping mutable authored VFX material 
     expect(
       required(first.data.worlds[0]?.materials.get(f.materialHandle)).asset,
     ).not.toHaveProperty('cooked');
+    // Registry-admitted content never carries Cook records into the receiver.
     const resident = first.resources.lookupAsset<MaterialAsset>(f.materialGuid);
-    expect(resident).toHaveProperty('cooked', material.cooked);
+    expect(resident).toBeDefined();
+    expect(resident).not.toHaveProperty('cooked');
     expect(materialColor(first.planned)).toEqual([0.25, 0.5, 0.75, 1]);
     color[0] = 0.75;
     f.assets
@@ -1597,10 +1599,7 @@ it('omits duplicated cooked records while keeping mutable authored VFX material 
     f.publisher.prepare(0).unwrap().discard();
     const third = f.publish();
     expect(third.packet.assets.filter((row) => row.value.kind === 'material')).toHaveLength(1);
-    expect(third.resources.lookupAsset(f.materialGuid)).toHaveProperty(
-      'cooked',
-      replacement.cooked,
-    );
+    expect(third.resources.lookupAsset(f.materialGuid)).not.toHaveProperty('cooked');
     expect(materialColor(third.planned)).toEqual([0.5, 0.25, 0.75, 1]);
     f.assets.replace(f.materialHandle, material).unwrap();
     expect(materialColor(f.publish().planned)).toEqual([0.75, 0.5, 0.75, 1]);
@@ -1610,13 +1609,13 @@ it('omits duplicated cooked records while keeping mutable authored VFX material 
   }
 });
 
-it('keeps cooked data inline without an exact publication resource witness', async () => {
+it('extracts admitted material content without cooked data with or without a resource witness', async () => {
   const f = await meshPublicationFixture();
   const material = { ...Materials.unlit([1, 1, 1, 1]), cooked: { program: 'custom or direct' } };
   try {
     f.assets.replace(f.materialHandle, material).unwrap();
     const admitted = f.assets.read(f.materialHandle).unwrap();
-    expect(admitted).toHaveProperty('cooked', material.cooked);
+    expect(admitted).not.toHaveProperty('cooked');
     for (const referenceAsset of [undefined, () => undefined]) {
       const frame = f.source
         .extract({

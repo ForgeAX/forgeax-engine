@@ -240,10 +240,11 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // feat-20260709 M2: direction/color collapsed from 6 per-axis scalars to
       // two array<f32,3> columns (3 light fields: direction + color + intensity).
       expect(DirectionalLight.name).toBe('DirectionalLight');
-      expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(27);
+      expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(28);
       expect(componentSchema(DirectionalLight).lightingChannels).toBe('f64');
       expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
       expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
+      expect(componentDefinition(DirectionalLight).defaults?.staticShadowCache).toBe(true);
       expect(componentSchema(DirectionalLight).contactShadowLength).toBe('f32');
       // 3 light fields
       expect(componentSchema(DirectionalLight).direction).toBe('array<f32, 3>');

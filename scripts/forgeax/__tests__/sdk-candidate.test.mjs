@@ -23,7 +23,7 @@ async function createArchive(root, name, version) {
   return archive;
 }
 
-async function createFixture() {
+async function createFixture(version = '1.2.3') {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-candidate-'));
   temporaryRoots.push(root);
   await mkdir(join(root, 'npm', 'packages'), { recursive: true });
@@ -31,7 +31,7 @@ async function createFixture() {
     join(root, 'sdk-build-result.json'),
     `${JSON.stringify({
       ok: true,
-      sdkVersion: '1.2.3',
+      sdkVersion: version,
       engineCommit: 'a'.repeat(40),
       viewCommit: 'b'.repeat(40),
     })}\n`,
@@ -39,10 +39,10 @@ async function createFixture() {
   const engineArchive = await createArchive(
     join(root, 'npm', 'packages'),
     '@forgeax/engine',
-    '1.2.3',
+    version,
   );
-  await createArchive(join(root, 'npm'), '@forgeax/engine-sdk', '1.2.3');
-  await createArchive(join(root, 'npm', 'packages'), '@forgeax/view', '1.2.3');
+  await createArchive(join(root, 'npm'), '@forgeax/engine-sdk', version);
+  await createArchive(join(root, 'npm', 'packages'), '@forgeax/view', version);
   const gates = [];
   for (const name of ['npm-consumer', 'archive-browser', 'reproducibility', 'collision']) {
     const path = join(root, `${name}.json`);
@@ -90,6 +90,14 @@ describe('sealed SDK candidates', () => {
     ).rejects.toMatchObject({
       stderr: expect.stringContaining('mirror-preflight-proof-required'),
     });
+  });
+
+  it('seals and revalidates an rc candidate without branch access', async () => {
+    const { root, gates } = await createFixture('1.2.4-rc.1');
+    await sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates });
+    await expect(
+      validateCandidate({ candidateRoot: root, expectedVersion: '1.2.4-rc.1' }),
+    ).resolves.toMatchObject({ sdkVersion: '1.2.4-rc.1' });
   });
 
   it('seals and revalidates one immutable artifact set', async () => {

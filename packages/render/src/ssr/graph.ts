@@ -72,6 +72,14 @@ interface SsrSpatialGraphProjection {
   readonly trace: SsrTracePlan | undefined;
   /** SSR source reactivity reconstructed onto the presentation lattice. */
   readonly reactivity: GraphTextureView | undefined;
+  /** Lattice and storage of `reactivity`; consumers size derived copies from it. */
+  readonly reactivitySurface:
+    | {
+        readonly width: number;
+        readonly height: number;
+        readonly format: 'rgba8unorm' | 'r32float';
+      }
+    | undefined;
 }
 
 function missingInput(field: string): Result<never, RenderGraphError> {
@@ -124,6 +132,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       resources: undefined,
       trace: undefined,
       reactivity: undefined,
+      reactivitySurface: undefined,
     });
   }
   const depth = input.depth;
@@ -590,5 +599,11 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
     },
     trace: buildSsrTracePlan(),
     reactivity,
+    reactivitySurface: {
+      width: Math.max(1, Math.floor(input.width / 2)),
+      height: Math.max(1, Math.floor(input.height / 2)),
+      // History surfaces are 8-bit; the trace-only path keeps its r32float hits.
+      format: temporal === undefined ? 'r32float' : 'rgba8unorm',
+    },
   });
 }

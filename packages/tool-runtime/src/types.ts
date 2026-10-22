@@ -344,16 +344,6 @@ export type ToolRuntimeError =
       };
     }
   | {
-      readonly code: 'tool-catalog-stale';
-      readonly expected: string;
-      readonly hint: string;
-      readonly detail: {
-        readonly id: string;
-        readonly expectedDigest: string;
-        readonly actualDigest?: string;
-      };
-    }
-  | {
       readonly code: 'tool-cleanup-failed';
       readonly expected: string;
       readonly hint: string;

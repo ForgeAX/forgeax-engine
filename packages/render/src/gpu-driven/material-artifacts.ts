@@ -20,7 +20,11 @@ import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
-import { requestMaterialAbiRasterPipeline } from './production-raster-material';
+import { lodCoverageMayFade } from './production-raster-lod';
+import {
+  requestMaterialAbiRasterPipeline,
+  standardSurfaceDiscardMask,
+} from './production-raster-material';
 
 type MaterialPrograms = {
   readonly materialHandle: number;
@@ -39,6 +43,8 @@ import {
   type GpuDrivenBatch,
   type GpuDrivenBatchBinding,
 } from './batch-topology';
+
+const NO_EXECUTION: BatchExecution = Object.freeze({ route: 'none' });
 
 export interface BatchExecutions {
   readonly forward: BatchExecution;
@@ -152,6 +158,67 @@ export class GpuDrivenMaterialProgramProjection {
   }
 }
 
+interface MaterialArtifactRead {
+  readonly shader: string;
+  readonly request: Parameters<BatchArtifactResolver>[1];
+  readonly artifact: MaterialShaderArtifact | undefined;
+}
+
+interface RetainedBatchExecution {
+  readonly snapshot: MaterialSnapshot;
+  readonly passes: readonly MaterialDispatchPass[];
+  readonly geometry: GpuDrivenBatchBinding['geometry'];
+  readonly reads: readonly MaterialArtifactRead[];
+  readonly execution: BatchExecution;
+}
+
+/**
+ * Renderer-lifetime execution joins. An execution is a pure function of its
+ * accepted snapshot, selected Pass entries, geometry and resolved artifacts, so
+ * pose-only frames reuse it while every artifact it read still resolves
+ * identically. Accepted wrappers are re-projected per frame; their snapshot and
+ * Pass entries keep identity across parameter-free frames.
+ */
+export class GpuDrivenMaterialExecutionRetention {
+  private readonly entries = {
+    forward: new WeakMap<GpuDrivenBatchBinding, RetainedBatchExecution>(),
+    shadow: new WeakMap<GpuDrivenBatchBinding, RetainedBatchExecution>(),
+  };
+  reused = 0;
+  prepared = 0;
+  /** Last collected frame; an identical join keeps its identity for downstream caches. */
+  last: CollectedMaterialArtifacts | undefined;
+  get(
+    kind: 'forward' | 'shadow',
+    binding: GpuDrivenBatchBinding,
+    programs: MaterialPrograms & { readonly snapshot: MaterialSnapshot },
+    resolve: BatchArtifactResolver,
+  ): BatchExecution | undefined {
+    const entry = this.entries[kind].get(binding);
+    const passes = programs[kind];
+    if (
+      entry === undefined ||
+      entry.snapshot !== programs.snapshot ||
+      entry.geometry !== binding.geometry ||
+      entry.passes.length !== passes.length
+    )
+      return undefined;
+    for (let index = 0; index < passes.length; index++)
+      if (entry.passes[index] !== passes[index]) return undefined;
+    for (const read of entry.reads)
+      if (resolve(read.shader, read.request) !== read.artifact) return undefined;
+    this.reused++;
+    return entry.execution;
+  }
+  set(kind: 'forward' | 'shadow', binding: GpuDrivenBatchBinding, entry: RetainedBatchExecution) {
+    this.prepared++;
+    this.entries[kind].set(binding, entry);
+  }
+}
+
+/** Each renderer's artifact resolver owns one retention; recovery installs a new resolver. */
+const resolverRetention = new WeakMap<object, GpuDrivenMaterialExecutionRetention>();
+
 /** Resolve shared geometry/material/Pass executions without inspecting batch members. */
 export function collectGpuDrivenMaterialArtifacts({
   batches,
@@ -161,6 +228,7 @@ export function collectGpuDrivenMaterialArtifacts({
   probeBlend,
   shadowViews,
   programs,
+  retention = resolve === undefined ? undefined : resolverRetention.get(resolve),
 }: {
   readonly batches: Iterable<Pick<GpuDrivenBatch, 'binding'>>;
   readonly resolve: RenderSystemInternals['getMaterialShaderArtifact'];
@@ -169,7 +237,12 @@ export function collectGpuDrivenMaterialArtifacts({
   readonly probeBlend: boolean;
   readonly shadowViews: boolean;
   readonly programs: GpuDrivenMaterialProgramIndex | undefined;
+  readonly retention?: GpuDrivenMaterialExecutionRetention;
 }) {
+  if (retention === undefined && resolve !== undefined) {
+    retention = new GpuDrivenMaterialExecutionRetention();
+    resolverRetention.set(resolve, retention);
+  }
   const materialArtifacts = new Map<string, MaterialShaderArtifact>();
   const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>();
   const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
@@ -233,7 +306,29 @@ export function collectGpuDrivenMaterialArtifacts({
       });
     const prepare = (kind: 'forward' | 'shadow'): BatchExecution => {
       if (kind === 'shadow' && !isTriangleTopology(binding.geometry.draw.topology))
-        return { route: 'none' };
+        return NO_EXECUTION;
+      const reused = retention?.get(kind, binding, accepted, selectArtifact);
+      if (reused !== undefined) return reused;
+      if (retention === undefined) return join(kind, selectArtifact);
+      const reads: MaterialArtifactRead[] = [];
+      const execution = join(kind, (shader, request) => {
+        const artifact = selectArtifact(shader, request);
+        reads.push({ shader, request, artifact });
+        return artifact;
+      });
+      retention.set(kind, binding, {
+        snapshot: accepted.snapshot,
+        passes: accepted[kind],
+        geometry: binding.geometry,
+        reads,
+        execution,
+      });
+      return execution;
+    };
+    const join = (
+      kind: 'forward' | 'shadow',
+      selectArtifact: BatchArtifactResolver,
+    ): BatchExecution => {
       const passes = accepted[kind];
       const pass = select(accepted.snapshot, passes[0], kind);
       if (passes.length > 1 && pass !== undefined)
@@ -258,7 +353,7 @@ export function collectGpuDrivenMaterialArtifacts({
       return execution.value;
     };
     const forward = prepare('forward');
-    const shadow: BatchExecution = shadowViews ? prepare('shadow') : { route: 'none' };
+    const shadow: BatchExecution = shadowViews ? prepare('shadow') : NO_EXECUTION;
     batchExecutions.set(binding, { forward, shadow });
     const forwardKey =
       forward.route === 'gpu' ? capturedPreparedMaterialArtifactKey(forward.prepared) : undefined;
@@ -277,13 +372,50 @@ export function collectGpuDrivenMaterialArtifacts({
       break;
     }
   }
-  return {
+  const collected = {
     materialArtifacts,
     shadowMaterialArtifacts,
     firstArtifact,
     firstSkinArtifact,
     batchExecutions,
   };
+  if (retention === undefined) return collected;
+  const last = retention.last;
+  if (
+    last !== undefined &&
+    sameOrderedEntries(last.batchExecutions, batchExecutions, sameBatchExecutions) &&
+    sameOrderedEntries(last.materialArtifacts, materialArtifacts, Object.is) &&
+    sameOrderedEntries(last.shadowMaterialArtifacts, shadowMaterialArtifacts, Object.is)
+  )
+    return last;
+  retention.last = collected;
+  return collected;
+}
+
+export interface CollectedMaterialArtifacts {
+  readonly materialArtifacts: ReadonlyMap<string, MaterialShaderArtifact>;
+  readonly shadowMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact>;
+  readonly firstArtifact: MaterialShaderArtifact | undefined;
+  readonly firstSkinArtifact: MaterialShaderArtifact | undefined;
+  readonly batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>;
+}
+
+function sameBatchExecutions(left: BatchExecutions, right: BatchExecutions): boolean {
+  return left.forward === right.forward && left.shadow === right.shadow;
+}
+
+function sameOrderedEntries<K, V>(
+  left: ReadonlyMap<K, V>,
+  right: ReadonlyMap<K, V>,
+  same: (left: V, right: V) => boolean,
+): boolean {
+  if (left.size !== right.size) return false;
+  const other = right.entries();
+  for (const [key, value] of left) {
+    const next = other.next();
+    if (next.done === true || next.value[0] !== key || !same(value, next.value[1])) return false;
+  }
+  return true;
 }
 
 /** Explicit candidate rows use the same geometry/material join as retained scene batches. */
@@ -329,6 +461,8 @@ export function prepareHiddenGpuDrivenPipelines(input: {
   readonly fragmentEntry: string | undefined;
   readonly coverageOnly: boolean;
   readonly visibleSurface: boolean;
+  /** The recording view carries camera clipping planes; absent keeps them off. */
+  readonly viewClipping?: boolean;
   /** The same admitted source draw belongs to this pass's indirect lane. */
   readonly onSelected?: (entry: ValidatedRenderable, sourceDrawIndex: number) => void;
   readonly onPending?: (reason: FramePresentationPendingReason) => void;
@@ -395,6 +529,11 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         ),
         additionalColorFormats: input.formats.slice(1),
         standardTextureMask: material.standardTextureMask,
+        // Same facts as the raster class: source LOD capability and view clipping.
+        standardSurfaceDiscards: standardSurfaceDiscardMask(
+          lodCoverageMayFade({ prepared, ...(draw.lod === undefined ? {} : { lod: draw.lod }) }),
+          input.viewClipping === true,
+        ),
         forwardColorPass: fragment === undefined || fragment === STANDARD_OPAQUE_FRAGMENT_ENTRY,
       });
       if (request === null) {

@@ -377,7 +377,3 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
   };
   return backend;
 }
-
-export function audioIntentErrorState(error: AudioError): AudioState {
-  return { contextState: 'suspended', activeSourceCount: 0, lastError: error };
-}

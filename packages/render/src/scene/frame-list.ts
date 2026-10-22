@@ -126,3 +126,40 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
     for (const value of this.source) yield this.project(value, index++);
   }
 }
+
+/**
+ * A projection whose per-index result is fixed for this object's lifetime.
+ * Several frame consumers read the same rows; each row is projected once,
+ * lazily, so construction still does no work proportional to input size.
+ */
+export class RetainedFrameProjection<T, U> extends FrameProjection<T, U> {
+  private readonly values: (U | undefined)[] = [];
+  constructor(
+    source: FrameList<T>,
+    private readonly retainedProject: (value: T, index: number) => U,
+  ) {
+    super(source, retainedProject);
+  }
+  override at(index: number): U | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.length;
+    if (index < 0 || index >= this.length) return undefined;
+    const retained = this.values[index];
+    if (retained !== undefined) return retained;
+    const value = this.retainedProject(this.source.at(index) as T, index);
+    this.values[index] = value;
+    return value;
+  }
+  override *[Symbol.iterator](): Generator<U> {
+    let index = 0;
+    for (const value of this.source) {
+      let projected = this.values[index];
+      if (projected === undefined) {
+        projected = this.retainedProject(value, index);
+        this.values[index] = projected;
+      }
+      yield projected;
+      index++;
+    }
+  }
+}

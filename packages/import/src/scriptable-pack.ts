@@ -1,7 +1,9 @@
 import type { MeshDistanceFieldDescriptor } from '@forgeax/engine-geometry';
 import type { ScriptablePackAssetKind } from '@forgeax/engine-pack';
+import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type {
   PackOutput,
+  ParticleEffectAssetSource,
   PluginAssetSource,
   ScriptablePackReadError,
 } from '@forgeax/engine-pack/source';
@@ -44,7 +46,9 @@ export interface ScriptablePackAssetSnapshotSource {
 export interface AssetOutputInput {
   readonly guid: string;
   readonly sourceKey: string;
-  readonly asset: Asset | PluginAssetSource;
+  readonly asset: Asset | PluginAssetSource | ParticleEffectAssetSource;
+  /** Build-host domain cookers; absent for already-produced payload projections. */
+  readonly cookers?: Pick<NativeCookerRegistry, 'runDraft'>;
   /** Filesystem-backed authoring host; absent for pure payload projections. */
   readonly sourcePath?: string;
   readonly projectRoot?: string;

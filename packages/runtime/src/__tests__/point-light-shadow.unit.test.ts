@@ -228,7 +228,7 @@ function spawnValidatedPointShadow(
 
       it('error.code is the literal "shadow-invalid-config" for AI users to switch on', () => {
         // Discrimination check: the validate path returns ShadowInvalidConfigError
-        // whose .code is the closed RuntimeErrorCode literal. Read .code via the
+        // whose .code is the closed RenderErrorCode literal. Read .code via the
         // runtime-error cast (world.spawn types err as EcsError, but the
         // instance is the RuntimeError class returned by validate).
         const world = new World();

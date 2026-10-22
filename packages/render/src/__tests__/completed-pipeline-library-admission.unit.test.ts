@@ -1,3 +1,4 @@
+import { err, RhiError } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import { createMockGpu } from '../../../rhi-webgpu/src/__tests__/__mocks__/gpu-device';
 import { makeRhiDevice } from '../../../rhi-webgpu/src/device';
@@ -22,6 +23,24 @@ async function fixture() {
 }
 
 describe('physical-device completion is consumed in the first preparation frame', () => {
+  it('preserves preparation errors from an available pipeline library', async () => {
+    const target = await fixture();
+    const library = target.device.pipelineLibrary;
+    if (library === undefined) throw new Error('fixture pipeline library is required');
+    const manifest = library.export().unwrap();
+    const failure = new RhiError({
+      code: 'internal-error',
+      expected: 'native pipeline compilation succeeds',
+      hint: 'repair the rejected pipeline',
+    });
+    const prepare = vi.spyOn(library, 'prepare').mockResolvedValue(err(failure));
+    const registry = new ShaderRegistry({ manifestUrl: undefined });
+    await expect(prepareDevicePipelineLibrary(target.device, manifest, registry)).rejects.toBe(
+      failure,
+    );
+    expect(prepare).toHaveBeenCalledWith(manifest);
+  });
+
   it('prepares material source facts for the captured graphics roster before the first draw', async () => {
     const source = await fixture();
     const codes = [

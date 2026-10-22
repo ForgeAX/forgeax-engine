@@ -711,6 +711,95 @@ describe('GPU preparation pass dependencies before partitioning', () => {
     }
   });
 
+  it('projects a directional view once when its light disables the static shadow cache', async () => {
+    const f = await fixture();
+    try {
+      const main = defined(f.input.materialArtifact);
+      const shadow = { ...main, pass: 'shadow', program: createMaterialShaderProgram('shadow-a') };
+      const key = artifactKey(defined(f.input.scene.plan.batches.at(0)));
+      const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>([[key, shadow]]);
+      const final = { kind: 'directional', index: 0 } as const;
+      const staticLayer = { ...final, layer: 'static' } as const;
+      const view = (staticShadowCache: boolean) => [
+        {
+          identity: final,
+          planes: new Float32Array(24),
+          candidatePrimitiveIndices: [0, 1],
+          ...(staticShadowCache ? {} : { staticLayer: false as const }),
+        },
+      ];
+      const candidates = (
+        frame: PreparedGpuDrivenFrame,
+        identity: typeof final | typeof staticLayer,
+      ) =>
+        (frame.shadowViewPool?.submission(identity)?.plan.batches ?? []).reduce(
+          (sum, batch) => sum + batch.candidates.length,
+          0,
+        );
+      const update = (staticShadowCache: boolean) => {
+        const frame = defined(
+          f.production
+            .prepare(admitGpuFixture({ ...f.input, shadowMaterialArtifacts, shadowViews: true }))
+            .unwrap(),
+        );
+        frame.updateShadowViews?.(view(staticShadowCache)).unwrap();
+        return frame;
+      };
+
+      // Default: initial casters are settled, so they live in the static layer.
+      const cached = update(true);
+      expect(cached.shadowViewPool?.isActive(staticLayer)).toBe(true);
+      const settled = candidates(cached, staticLayer);
+      expect(settled).toBeGreaterThan(0);
+      expect(candidates(cached, final)).toBe(0);
+      cached._commitResourceReplacement();
+      const cachedHit = update(true);
+      expect(cachedHit.shadowViewPool?.cacheState(final)).toBe('hit');
+      expect(cachedHit.shadowViewPool?.cacheState(staticLayer)).toBe('hit');
+      cachedHit._commitResourceReplacement();
+
+      // Disabled: one view draws every caster and no static view stays active.
+      const single = update(false);
+      expect(single.shadowViewPool?.isActive(staticLayer)).toBe(false);
+      expect(single.shadowViewPool?.submission(staticLayer)).toBeUndefined();
+      expect(candidates(single, final)).toBe(settled);
+      expect(single.shadowViewPool?.invalidationReason(final)).toBe('configuration-changed');
+      expect(
+        single.shadowViewPool?.inspect().filter((entry) => entry.identity.layer === 'static'),
+      ).toEqual([]);
+      single._commitResourceReplacement();
+      const singleHit = update(false);
+      expect(singleHit.shadowViewPool?.cacheState(final)).toBe('hit');
+      singleHit._commitResourceReplacement();
+
+      // Re-enabled: a static view retired by the submitted single-layer frame
+      // starts fresh; one still retained is invalidated, never reused stale.
+      const restored = update(true);
+      expect(restored.shadowViewPool?.isActive(staticLayer)).toBe(true);
+      expect(['configuration-changed', 'first-publication']).toContain(
+        restored.shadowViewPool?.invalidationReason(staticLayer),
+      );
+      expect(restored.shadowViewPool?.cacheState(final)).toBe('invalidated');
+      expect(candidates(restored, staticLayer)).toBe(settled);
+      expect(candidates(restored, final)).toBe(0);
+      restored._commitResourceReplacement();
+      const restoredHit = update(true);
+      expect(restoredHit.shadowViewPool?.cacheState(staticLayer)).toBe('hit');
+      restoredHit._commitResourceReplacement();
+
+      // A toggle whose frame never submits keeps the retired static record;
+      // switching back must not adopt it as a hit.
+      const off = update(false);
+      off._abortResourceReplacement?.();
+      const on = update(true);
+      expect(on.shadowViewPool?.invalidationReason(staticLayer)).toBe('configuration-changed');
+      expect(on.shadowViewPool?.cacheState(final)).toBe('invalidated');
+      on._commitResourceReplacement();
+    } finally {
+      f.close();
+    }
+  });
+
   it('observes selected program entry changes without rebuilding unchanged geometry', async () => {
     const f = await fixture();
     try {

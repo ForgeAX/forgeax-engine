@@ -1,8 +1,8 @@
 // @forgeax/engine-assets-runtime -- asset cluster error classes.
 //
 // feat-20260704-runtime-tier1-decomposition M2 / w8 (D-3): asset-resolution
-// cluster -- material parent-chain resolve, mesh-SSBO grow ceiling, and
-// scene-collect GUID / forest-closure fail-fast errors. Class names, .code
+// cluster -- mesh-SSBO grow ceiling and scene-collect GUID / forest-closure
+// fail-fast errors. Class names, .code
 // literals, and .detail shapes preserved byte-for-byte (OOS-4).
 //
 // The cluster union type is named AssetRuntimeError / AssetRuntimeErrorCode
@@ -10,143 +10,14 @@
 // the AssetError class + AssetErrorCode union (asset-system-v1); D-8 grep
 // uniqueness forbids the collision.
 
-// ── MaterialResolvedEmptyPassesError ──────────────────────────────────────
-
-/**
- * Detail for `RuntimeErrorCode 'material-resolved-empty-passes'`.
- *
- * Emitted at material parent chain walk time when the resolved passes list
- * is empty. Two reasons: `'missing-parent'` (a parent handle is not
- * registered) and `'no-pass-in-chain'` (the entire parent chain has no
- * pass declarations). AI users switch on `.detail.reason` to surface the
- * right recovery guidance.
- *
- * plan-strategy D-2/D-3: empty-passes is a runtime-layer error
- * (RuntimeErrorCode, not AssetErrorCode).
- */
-export interface MaterialResolvedEmptyPassesDetail {
-  /** GUID of the material whose resolve produced empty passes. */
-  readonly materialGuid: string;
-  /** Root cause of the empty passes: missing parent vs entire chain has no passes. */
-  readonly reason: 'missing-parent' | 'no-pass-in-chain';
-  /** The raw numeric handle id of the unregistered parent. Only populated when reason='missing-parent'. */
-  readonly missingParentHandle?: number;
-}
-
-/**
- * Structured error for material parent chain resolve yielding zero passes.
- *
- * Emitted by `AssetRegistry.passesOf` when the parent chain walk produces
- * an empty passes list (AC-09, D-3 two-reason). Four-field surface:
- *   - `.code = 'material-resolved-empty-passes'` (closed RuntimeErrorCode)
- *   - `.expected` — expected-state description
- *   - `.hint` — actionable recovery guidance (differs per reason)
- *   - `.detail = { materialGuid, reason, missingParentHandle? }`
- */
-export class MaterialResolvedEmptyPassesError extends Error {
-  readonly code = 'material-resolved-empty-passes' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: MaterialResolvedEmptyPassesDetail;
-
-  constructor(
-    materialGuid: string,
-    reason: 'missing-parent' | 'no-pass-in-chain',
-    missingParentHandle?: number,
-  ) {
-    const expected =
-      reason === 'missing-parent'
-        ? `parent handle ${missingParentHandle} present in AssetRegistry`
-        : 'at least one material in the parent chain declares passes';
-    const hint =
-      reason === 'missing-parent'
-        ? `material ${materialGuid} references parent handle ${missingParentHandle} which is not registered; inspect AssetRegistry, register the parent first, or rebuild the material chain`
-        : `material ${materialGuid} has no passes and its entire parent chain also has no pass declarations; inspect the chain, add pass declarations to one member, then rebuild`;
-    const message =
-      reason === 'missing-parent'
-        ? `material ${materialGuid} parent handle ${missingParentHandle} not registered`
-        : `material ${materialGuid} parent chain resolves to zero passes`;
-
-    super(message);
-    this.name = 'MaterialResolvedEmptyPassesError';
-    this.expected = expected;
-    this.hint = hint;
-    this.detail = {
-      materialGuid,
-      reason,
-      ...(reason === 'missing-parent' && missingParentHandle !== undefined
-        ? { missingParentHandle }
-        : {}),
-    };
-  }
-}
-
-// ── MeshSsboCapacityExceededError ────────────────────────────────────────────
-
-/**
- * Detail for `RuntimeErrorCode 'mesh-ssbo-capacity-exceeded'`.
- *
- * Fired by `growMeshSsbo` (createRenderer.ts grow factory) when, after
- * attempting pow2 doubling, the resulting `slotCount` still cannot
- * accommodate the requested `requested` slot count under the device's
- * `maxStorageBufferBindingSize` ceiling. This is a defensive fallback —
- * the primary path for "request past device limit" is
- * `mesh-ssbo-ceiling-reached`. The two codes share the same detail shape so
- * AI users handle both arms identically; the discriminant identifies which
- * branch fired so diagnostics can distinguish the primary vs defensive
- * surface (research §F6.c).
- *
- *   - `requested` — slot count requested by the caller (entity count for the frame)
- *   - `capacity`  — current `slotCount` in the grow controller's state
- *   - `ceiling`   — `device.limits.maxStorageBufferBindingSize` in BYTES (not slots)
- */
-export interface MeshSsboCapacityExceededDetail {
-  readonly requested: number;
-  readonly capacity: number;
-  readonly ceiling: number;
-}
-
-/**
- * Structured error for the post-grow defensive fallback when mesh-SSBO
- * capacity cannot accommodate the requested slot count.
- *
- * Emitted by `growMeshSsbo` in `createRenderer.ts` (D-5: fire, never
- * throw). Four-field surface aligned with `SkinPaletteOverflowError`:
- *   - `.code = 'mesh-ssbo-capacity-exceeded'`
- *   - `.expected` — capacity >= requested
- *   - `.hint` — reduce per-frame entity count or split work across frames
- *   - `.detail = { requested, capacity, ceiling }`
- */
-export class MeshSsboCapacityExceededError extends Error {
-  readonly code = 'mesh-ssbo-capacity-exceeded' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: MeshSsboCapacityExceededDetail;
-
-  constructor(requested: number, capacity: number, ceiling: number) {
-    const expected = `mesh SSBO slotCount >= ${requested} (currently ${capacity}; device ceiling ${ceiling} B)`;
-    const hint =
-      `mesh SSBO grow could not satisfy needed=${requested} slots (capacity=${capacity}, ceiling=${ceiling} B); ` +
-      'reduce per-frame entity count or split work across frames (defensive fallback path)';
-    super(
-      `mesh SSBO capacity exceeded: needed ${requested} slots, capacity ${capacity}, ceiling ${ceiling} B`,
-    );
-    this.name = 'MeshSsboCapacityExceededError';
-    this.expected = expected;
-    this.hint = hint;
-    this.detail = { requested, capacity, ceiling };
-  }
-}
-
 // ── MeshSsboCeilingReachedError ──────────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'mesh-ssbo-ceiling-reached'`.
+ * Detail for `AssetRuntimeErrorCode 'mesh-ssbo-ceiling-reached'`.
  *
  * Fired by `growMeshSsbo` when the requested slot count would exceed the
  * device's `maxStorageBufferBindingSize` (the only ceiling per D-1; engine
- * carries no private capacity constant). Same detail shape as
- * `MeshSsboCapacityExceededDetail`.
+ * carries no private capacity constant).
  *
  *   - `requested` — slot count requested by the caller
  *   - `capacity`  — current `slotCount` in the grow controller's state
@@ -194,7 +65,7 @@ export class MeshSsboCeilingReachedError extends Error {
 // ── SceneCollectEntityRefOutOfClosureError ──────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'scene-collect-entity-ref-out-of-closure'`.
+ * Detail for `AssetRuntimeErrorCode 'scene-collect-entity-ref-out-of-closure'`.
  *
  * Emitted during rootsToSceneAsset when an entity field references a target
  * outside the collected forest closure.
@@ -234,7 +105,7 @@ export class SceneCollectEntityRefOutOfClosureError extends Error {
 // ── SceneCollectAssetGuidUnresolvedError ────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'scene-collect-asset-guid-unresolved'`.
+ * Detail for `AssetRuntimeErrorCode 'scene-collect-asset-guid-unresolved'`.
  *
  * Emitted at two points with different context on hand:
  *   - collect (handle→GUID): the shared handle is known → `.handle` is set.
@@ -291,8 +162,6 @@ export type AssetRuntimeErrorCode = AssetRuntimeError['code'];
  * an `AssetRuntimeErrorCode` discriminant on `.code`.
  */
 export type AssetRuntimeError =
-  | MaterialResolvedEmptyPassesError
-  | MeshSsboCapacityExceededError
   | MeshSsboCeilingReachedError
   | SceneCollectEntityRefOutOfClosureError
   | SceneCollectAssetGuidUnresolvedError;

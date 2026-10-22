@@ -14,7 +14,7 @@ import { validateDynamicGeometryMeshBudget, validateRenderProfile } from '@forge
 import type { ToolRun, ToolRunOptions } from '@forgeax/engine-tool-runtime';
 import type { ImportContext, ImportProduct } from '@forgeax/engine-types';
 import { err, ok, type PluginAssetDefinition } from '@forgeax/engine-types';
-import type { DevKitAppOptions } from '../plugin-build.js';
+import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 
 /** Only serializable requests and producer outputs cross this process boundary. */
 export type BuildProcessRequest =
@@ -116,7 +116,7 @@ let tail = Promise.resolve();
 let started = false;
 const runs = new Map<number, ToolRun<unknown>>();
 
-/** Admit a closed data-only projection; Render owns budget and profile policy. */
+/** Admit a closed data-only projection; World and Render retain their policies. */
 function projectAppOptions(value: unknown): DevKitAppOptions {
   if (value === undefined) return {};
   if (
@@ -127,11 +127,33 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
       (key) =>
         key !== 'dynamicGeometryMeshBudgetBytes' &&
         key !== 'standardProfile' &&
-        key !== 'pipelineLibrary',
+        key !== 'pipelineLibrary' &&
+        key !== 'time' &&
+        key !== 'renderPipelineCapacity',
     )
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
+  const capacity = options.renderPipelineCapacity;
+  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
+    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
+  if (options.time !== undefined) {
+    const time = options.time;
+    if (
+      typeof time !== 'object' ||
+      time === null ||
+      Array.isArray(time) ||
+      Object.entries(time).some(
+        ([key, value]) =>
+          !['fixedDeltaSeconds', 'maxStepsPerUpdate', 'maxDeltaSeconds'].includes(key) ||
+          typeof value !== 'number' ||
+          !Number.isFinite(value) ||
+          value <= 0 ||
+          (key === 'maxStepsPerUpdate' && !Number.isSafeInteger(value)),
+      )
+    )
+      throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
+  }
   if (options.dynamicGeometryMeshBudgetBytes !== undefined)
     validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
   if (options.standardProfile !== undefined) {
@@ -139,6 +161,44 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     if (invalid !== undefined) throw new TypeError(invalid);
   }
   return options;
+}
+
+/** Admit named Bundles as normalized, non-overlapping project-relative prefixes. */
+function projectDelivery(value: unknown): DevKitDeliveryOptions {
+  if (value === undefined) return {};
+  const fail = (reason: string) => new TypeError(`devkitDelivery ${reason}`);
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
+    Reflect.ownKeys(value).some((key) => key !== 'bundles')
+  )
+    throw fail('must contain only bundles');
+  const bundles = (copyPackData(value) as DevKitDeliveryOptions).bundles;
+  if (bundles === undefined) return {};
+  if (typeof bundles !== 'object' || bundles === null || Array.isArray(bundles))
+    throw fail('bundles must map Bundle names to source path prefixes');
+  const owners = new Map<string, string>();
+  for (const [name, prefixes] of Object.entries(bundles as Record<string, unknown>)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
+      throw fail(`Bundle name ${JSON.stringify(name)}`);
+    if (!Array.isArray(prefixes) || prefixes.length === 0)
+      throw fail(`${name} must list source path prefixes`);
+    for (const prefix of prefixes as unknown[]) {
+      if (
+        typeof prefix !== 'string' ||
+        prefix.length === 0 ||
+        prefix.startsWith('/') ||
+        prefix.includes('\\') ||
+        prefix.split('/').some((part) => part === '..' || part === '.')
+      )
+        throw fail(`${name} prefix ${JSON.stringify(prefix)} must be a project-relative path`);
+      const owner = owners.get(prefix);
+      if (owner !== undefined) throw fail(`prefix ${prefix} belongs to both ${owner} and ${name}`);
+      owners.set(prefix, name);
+    }
+  }
+  return { bundles: bundles as NonNullable<DevKitDeliveryOptions['bundles']> };
 }
 
 async function execute(request: BuildProcessRequest): Promise<unknown> {
@@ -187,6 +247,7 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
       root = result.value;
       return {
         appOptions: projectAppOptions(context.get('devkitAppOptions')),
+        delivery: projectDelivery(context.get('devkitDelivery')),
         cookers: cookers.registeredCookers(),
         importers: importers.registeredImporters().map((key): BuildImporterDescriptor => {
           const value = importers.get(key);

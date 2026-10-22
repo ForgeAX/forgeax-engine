@@ -42,6 +42,7 @@ import {
   addTypedFullscreenPass,
   addTypedOutputTransformPass,
   addTypedTemporalResolvePass,
+  type TemporalSecondaryReactivity,
   TYPED_BLOOM_PASS_NAMES,
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
@@ -422,7 +423,7 @@ export function addStandardPost(
   depth: RenderPipelineTarget,
   surface: StandardPostSurface,
   sceneTemporal?: RenderPipelineTarget,
-  secondaryReactivity?: GraphTextureView,
+  secondaryReactivity?: TemporalSecondaryReactivity,
   coverage?: RenderPipelineTarget,
   coverageDepth?: RenderPipelineTarget,
 ): Result<void, RenderPipelineBuildError> {

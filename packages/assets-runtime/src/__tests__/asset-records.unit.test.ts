@@ -5,6 +5,37 @@ import { AssetRecords } from '../internal/asset-records';
 const material = (roughness = 1): MaterialAsset => ({ kind: 'material', values: { roughness } });
 
 describe('owned runtime asset content', () => {
+  test('guards an exact dependency closure without retaining fixed content copies', () => {
+    const records = new AssetRecords({ maxSnapshots: 1 });
+    const dependency = records.create('material', material(0.2)).unwrap();
+    const root = records.create('mesh', { kind: 'mesh' }, [dependency]).unwrap();
+    const unrelated = records.create('material', material()).unwrap();
+    const fixed = records.snapshot(root).unwrap();
+    const before = records.inspect();
+    const guard = records.captureRevision(root).unwrap();
+    const revision = guard.version(root).unwrap();
+    expect(records.inspect()).toMatchObject({
+      snapshots: before.snapshots,
+      snapshotBytes: before.snapshotBytes,
+    });
+    expect(records.snapshot(root)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-budget-exceeded' },
+    });
+    records.update(unrelated, { values: { roughness: 0.4 } }).unwrap();
+    expect(guard.matchesCurrent()).toBe(true);
+    records.update(dependency, { values: { roughness: 0.8 } }).unwrap();
+    expect(records.version(root).unwrap()).toBe(revision);
+    expect(guard.matchesCurrent()).toBe(false);
+    expect(guard.version(root).unwrap()).toBe(revision);
+    guard.dispose();
+    guard.dispose();
+    expect(guard.matchesCurrent()).toBe(false);
+    expect(guard.version(root).ok).toBe(false);
+    fixed.dispose();
+    expect(records.inspect()).toMatchObject({ snapshots: 0, snapshotBytes: 0 });
+  });
+
   test('stages complete updates with decoder replacements before publishing one revision', () => {
     const records = new AssetRecords();
     const sampler = records.create('sampler', 'linear').unwrap();

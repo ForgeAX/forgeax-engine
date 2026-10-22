@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   assertChannelAdvance,
+  assertRcAboveStable,
   assertReleaseSource,
   assertSuccessfulCandidateRun,
   developmentVersion,
@@ -40,16 +41,31 @@ test('retained failed or active Candidate artifacts never authorize Promotion', 
   );
 });
 
-test('stable and development identities select disjoint branch and tag policies', () => {
-  assert.deepEqual(releasePolicy('0.4.1'), { channel: 'stable', branch: 'stable', tag: 'latest' });
+test('stable, rc and development identities select disjoint branch, tag and mirror policies', () => {
+  assert.deepEqual(releasePolicy('0.4.1'), {
+    channel: 'stable',
+    branch: 'stable',
+    tag: 'latest',
+    mirror: 'stable',
+  });
+  assert.deepEqual(releasePolicy('0.4.2-rc.3'), {
+    channel: 'rc',
+    branch: 'rc',
+    tag: 'rc',
+    mirror: null,
+  });
   assert.deepEqual(releasePolicy('0.5.0-dev.123.abcdef123456'), {
     channel: 'next',
     branch: 'main',
     tag: 'next',
+    mirror: 'main',
   });
   for (const invalid of [
     '01.2.3',
     '1.2.3-dev.01.abcdef123456',
+    '1.2.3-rc.01',
+    '1.2.3-rc',
+    '1.2.3-rc.1.abcdef123456',
     '1.2.3-beta',
     'latest',
     '1.2.3+dev',
@@ -73,6 +89,29 @@ test('source membership and development SHA are checked before release', () => {
   );
 });
 
+test('an rc source must contain the current stable so promotion fast-forwards', () => {
+  const source = 'a'.repeat(40);
+  const stable = 'b'.repeat(40);
+  const contains = (sha, head) => sha === head || (sha === stable && head === source);
+  assert.equal(assertReleaseSource('1.2.4-rc.1', source, source, contains, stable).tag, 'rc');
+  assert.throws(
+    () => assertReleaseSource('1.2.4-rc.1', source, source, (sha, head) => sha === head, stable),
+    /release-rc-missing-stable/,
+  );
+  assert.throws(
+    () => assertReleaseSource('1.2.4-rc.1', source, source, contains),
+    /release-rc-missing-stable/,
+  );
+});
+
+test('an rc line stays above the published stable; a hotfix taking its number moves it up', () => {
+  assertRcAboveStable('1.2.4-rc.1', '1.2.3');
+  assertRcAboveStable('1.2.4-rc.1', undefined);
+  assertRcAboveStable('1.2.4', '1.2.4');
+  assert.throws(() => assertRcAboveStable('1.2.4-rc.3', '1.2.4'), /release-rc-not-above-stable/);
+  assertRcAboveStable('1.2.5-rc.3', '1.2.4');
+});
+
 test('channel retries are idempotent and older versions cannot move a channel backwards', () => {
   assertChannelAdvance('1.2.4', '1.2.3');
   assertChannelAdvance('1.2.4', '1.2.4');
@@ -82,16 +121,30 @@ test('channel retries are idempotent and older versions cannot move a channel ba
     /release-channel-regression/,
   );
   assertChannelAdvance('1.3.0-dev.10.abcdef123456', '1.3.0-dev.9.abcdef654321');
+  assertChannelAdvance('1.2.4-rc.2', '1.2.4-rc.1');
+  assertChannelAdvance('1.2.5-rc.3', '1.2.4-rc.2');
+  assert.throws(() => assertChannelAdvance('1.2.4-rc.1', '1.2.4-rc.2'), /regression/);
+  assert.throws(() => assertChannelAdvance('1.2.4-rc.3', '1.2.4'), /regression/);
+  // A public mirror branch moves from its previous stable manifest to development.
+  assertChannelAdvance('1.3.0-dev.1.abcdef123456', '1.2.3');
 });
 
-test('automatic development identity derives from the stable line and completed source run', () => {
+test('development identity continues the next sequence on the minor after stable', () => {
   const source = `abcdef123456${'a'.repeat(28)}`;
-  assert.equal(developmentVersion('0.3.11', '123', source), '0.4.0-dev.123.abcdef123456');
+  assert.equal(
+    developmentVersion('0.3.11', '0.4.0-dev.15099.140c393b90db', source),
+    '0.4.0-dev.15100.abcdef123456',
+  );
+  // A new stable minor restarts the sequence; an absent next starts it.
+  assert.equal(
+    developmentVersion('0.4.0', '0.4.0-dev.15099.140c393b90db', source),
+    '0.5.0-dev.1.abcdef123456',
+  );
+  assert.equal(developmentVersion('0.3.11', undefined, source), '0.4.0-dev.1.abcdef123456');
   assert.throws(
-    () => developmentVersion('0.4.0-dev.1.abcdef123456', '123', source),
+    () => developmentVersion('0.4.0-dev.1.abcdef123456', undefined, source),
     /baseline-invalid/,
   );
-  assert.throws(() => developmentVersion('0.3.11', '01', source), /version-invalid/);
 });
 
 test('release CLI proves older source ancestry from a shallow checkout without admitting outsiders', () => {
@@ -110,6 +163,9 @@ test('release CLI proves older source ancestry from a shallow checkout without a
     const qualified = git(source, 'rev-parse', 'HEAD');
     git(source, 'commit', '--allow-empty', '-m', 'later source');
     git(source, 'branch', 'stable');
+    git(source, 'checkout', '-b', 'rc');
+    git(source, 'commit', '--allow-empty', '-m', 'weekly rc cut');
+    const cut = git(source, 'rev-parse', 'HEAD');
     git(source, 'checkout', '-b', 'outsider', base);
     git(source, 'commit', '--allow-empty', '-m', 'outside release history');
     const outsider = git(source, 'rev-parse', 'HEAD');
@@ -136,6 +192,19 @@ test('release CLI proves older source ancestry from a shallow checkout without a
       );
       assert.match(run(qualified), new RegExp(`source_sha=${qualified}\\n`));
     }
+    const client = join(root, 'rc');
+    git(root, 'clone', '--depth=1', '--branch', 'rc', pathToFileURL(origin).href, client);
+    const runRc = (sha) =>
+      execFileSync(process.execPath, [script, '0.4.2-rc.1', sha], {
+        cwd: client,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    assert.match(runRc(cut), new RegExp(`source_sha=${cut}\\nsource_branch=rc\\nchannel=rc\\n`));
+    assert.throws(
+      () => runRc(qualified),
+      (error) => error.stderr.includes('release-rc-missing-stable'),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

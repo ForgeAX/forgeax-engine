@@ -5,6 +5,7 @@ import {
   RendererOperationError,
   type RenderFrameInput,
 } from '@forgeax/engine-render';
+import { tapeArtifact } from '@forgeax/engine-rhi-debug';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { RenderWorkerInput } from '../execution/render-worker-protocol';
 
@@ -24,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   installFeature: vi.fn(),
   uninstallFeature: vi.fn(),
   prepareMesh: vi.fn(),
+  attachment: undefined as unknown,
+  onFrameBoundary: undefined as (() => void) | undefined,
   state: vi.fn(),
   turn: vi.fn(),
   listener: undefined as ((event: RendererEvent) => void) | undefined,
@@ -31,6 +34,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
   constructRuntimeRendererHost: (...args: unknown[]) => {
     mocks.construct(...args);
+    mocks.onFrameBoundary = (
+      args[1] as { readonly rhiInstrumentation?: { readonly onFrameBoundary?: () => void } }
+    ).rhiInstrumentation?.onFrameBoundary;
     return Promise.resolve({
       ok: true,
       value: {
@@ -55,6 +61,9 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
     });
   },
 }));
+vi.mock('../internal/worker-rhi-capture', () => ({
+  attachWorkerRhiRecorder: () => mocks.attachment,
+}));
 vi.mock('../execution/bootstrap-entry', () => ({
   prepareBootstrapEntry: async () => ({ ok: true, value: { configureRenderer: mocks.configure } }),
 }));
@@ -67,6 +76,8 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   mocks.listener = undefined;
+  mocks.attachment = undefined;
+  mocks.onFrameBoundary = undefined;
   mocks.subscribe.mockImplementation((listener: (event: RendererEvent) => void) => {
     mocks.listener = listener;
     return mocks.unsubscribe;
@@ -92,6 +103,7 @@ beforeEach(() => {
 
 async function start(
   options: {
+    readonly rhiCapture?: boolean;
     readonly gpuPassTiming?: object;
     readonly shadowWorkload?: boolean;
     readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
@@ -168,6 +180,496 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+function workerCaptureRecorder() {
+  let generation = 0;
+  let phase: 'idle' | 'armed' | 'recording' = 'idle';
+  let resolveCapture!: (result: { readonly ok: true; readonly value: unknown }) => void;
+  let captureResolved = false;
+  const bytes = new Uint8Array([7, 8, 9]);
+  const encoded = tapeArtifact([bytes]);
+  const attachment = {
+    backend: { rhi: {} },
+    get captureGeneration() {
+      return generation;
+    },
+    isRecordingCapture(expected: number) {
+      return phase === 'recording' && expected === generation;
+    },
+    readPipelineReference: () => undefined,
+    captureFrame: vi.fn(() => {
+      generation += 1;
+      phase = 'armed';
+      return new Promise((resolve) => {
+        resolveCapture = resolve as typeof resolveCapture;
+      });
+    }),
+    frameBoundary: vi.fn(async () => {
+      if (phase === 'armed') {
+        phase = 'recording';
+      } else if (phase === 'recording') {
+        phase = 'idle';
+        captureResolved = true;
+        resolveCapture({ ok: true, value: encoded });
+      }
+      return { ok: true as const, value: undefined };
+    }),
+    deviceLost: vi.fn(),
+    dispose: vi.fn(async () => ({ ok: true as const, value: undefined })),
+  };
+  mocks.attachment = attachment;
+  return {
+    attachment,
+    bytes,
+    get captureResolved() {
+      return captureResolved;
+    },
+  };
+}
+
+function timingFor(frameId: number) {
+  return {
+    status: 'complete' as const,
+    frame: {
+      schemaVersion: '1.0' as const,
+      frameId,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      backendKind: 'webgpu' as const,
+      timestampPeriodNanoseconds: 1,
+      passCapacity: 16,
+      executedPassCount: 1,
+      measuredPassCount: 1,
+      droppedPassCount: 0,
+      passes: [],
+      measuredPassNanoseconds: 0,
+    },
+  };
+}
+
+it('binds a Worker RHI capture only to its recording draw receipt and that receipt timing', async () => {
+  const { attachment, bytes } = workerCaptureRecorder();
+  const receipts: { readonly frameId: number }[] = [];
+  mocks.draw.mockImplementation(() => {
+    const receipt = {
+      frameId: 40 + receipts.length,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    receipts.push(receipt);
+    mocks.onFrameBoundary?.();
+    return { ok: true, value: receipt };
+  });
+  mocks.observe.mockImplementation(async (receipt: { readonly frameId: number }) => ({
+    ok: true as const,
+    value: { timings: timingFor(receipt.frameId) },
+  }));
+  const { post, receive } = await start({ rhiCapture: true, gpuPassTiming: {} });
+
+  receive({ data: { kind: 'capture', requestId: 91, options: {} } });
+  expect(attachment.captureFrame).toHaveBeenCalledOnce();
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'completed', revision: 1 }),
+      expect.any(Array),
+    ),
+  );
+  expect(post.mock.calls.some(([message]) => message.kind === 'capture-result')).toBe(false);
+
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'capture-result',
+        requestId: 91,
+        result: expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            kind: 'rhi-tape',
+            bytes,
+            submittedFrame: {
+              status: 'remote-complete',
+              captureGeneration: 1,
+              receipt: { frameId: 41, deviceGeneration: 7, graphGeneration: 3 },
+              gpuPassTiming: timingFor(41),
+            },
+          }),
+        }),
+      }),
+      [bytes.buffer],
+    ),
+  );
+  expect(mocks.observe.mock.calls[1]?.[0]).toBe(receipts[1]);
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('waits for the captured receipt when a later draw completes first', async () => {
+  const recorder = workerCaptureRecorder();
+  const { bytes } = recorder;
+  const capturedCompletion = deferred<{ readonly ok: true; readonly value: undefined }>();
+  const laterCompletion = deferred<{ readonly ok: true; readonly value: undefined }>();
+  const capturedTiming = deferred<{
+    readonly ok: true;
+    readonly value: { readonly timings: ReturnType<typeof timingFor> };
+  }>();
+  const receipts: { readonly frameId: number }[] = [];
+  mocks.draw.mockImplementation(() => {
+    const drawIndex = receipts.length;
+    const receipt = {
+      frameId: 100 + drawIndex,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed:
+        drawIndex === 1
+          ? capturedCompletion.promise
+          : drawIndex === 2
+            ? laterCompletion.promise
+            : Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    receipts.push(receipt);
+    mocks.onFrameBoundary?.();
+    return { ok: true, value: receipt };
+  });
+  mocks.observe.mockImplementation((receipt: { readonly frameId: number }) =>
+    receipt.frameId === 101
+      ? capturedTiming.promise
+      : Promise.resolve({ ok: true as const, value: { timings: timingFor(receipt.frameId) } }),
+  );
+  const { post, receive } = await start({ rhiCapture: true, gpuPassTiming: {} });
+
+  receive({ data: { kind: 'capture', requestId: 94, options: {} } });
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'completed', revision: 1 }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ kind: 'submitted', revision: 2 })),
+  );
+  expect(recorder.captureResolved).toBe(true);
+  receive({ data: drawMessage(3) });
+  await vi.waitFor(() => expect(mocks.observe).toHaveBeenCalledTimes(3));
+  laterCompletion.resolve({ ok: true, value: undefined });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(post.mock.calls.some(([message]) => message.kind === 'capture-result')).toBe(false);
+
+  capturedCompletion.resolve({ ok: true, value: undefined });
+  capturedTiming.resolve({ ok: true, value: { timings: timingFor(101) } });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'capture-result',
+        requestId: 94,
+        result: expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            kind: 'rhi-tape',
+            bytes,
+            submittedFrame: {
+              status: 'remote-complete',
+              captureGeneration: 1,
+              receipt: { frameId: 101, deviceGeneration: 7, graphGeneration: 3 },
+              gpuPassTiming: timingFor(101),
+            },
+          }),
+        }),
+      }),
+      [bytes.buffer],
+    ),
+  );
+  expect(mocks.observe.mock.calls[1]?.[0]).toBe(receipts[1]);
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('keeps a capture unavailable when cancelled after tape resolution and before receipt completion', async () => {
+  const recorder = workerCaptureRecorder();
+  const capturedCompletion = deferred<{ readonly ok: true; readonly value: undefined }>();
+  const capturedTiming = deferred<{
+    readonly ok: true;
+    readonly value: { readonly timings: ReturnType<typeof timingFor> };
+  }>();
+  let drawIndex = 0;
+  mocks.draw.mockImplementation(() => {
+    const frameId = 120 + drawIndex++;
+    const receipt = {
+      frameId,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed:
+        frameId === 121
+          ? capturedCompletion.promise
+          : Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    mocks.onFrameBoundary?.();
+    return { ok: true, value: receipt };
+  });
+  mocks.observe.mockImplementation((receipt: { readonly frameId: number }) =>
+    receipt.frameId === 121
+      ? capturedTiming.promise
+      : Promise.resolve({ ok: true as const, value: { timings: timingFor(receipt.frameId) } }),
+  );
+  const { post, receive } = await start({ rhiCapture: true, gpuPassTiming: {} });
+
+  receive({ data: { kind: 'capture', requestId: 95, options: {} } });
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'completed', revision: 1 }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ kind: 'submitted', revision: 2 })),
+  );
+  expect(recorder.captureResolved).toBe(true);
+  receive({ data: { kind: 'capture-cancel', requestId: 95 } });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'capture-result',
+        requestId: 95,
+        result: expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            submittedFrame: { status: 'unavailable', reason: 'capture-invalidated' },
+          }),
+        }),
+      }),
+      expect.any(Array),
+    ),
+  );
+
+  capturedCompletion.resolve({ ok: true, value: undefined });
+  capturedTiming.resolve({ ok: true, value: { timings: timingFor(121) } });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(
+    post.mock.calls.filter(
+      ([message]) => message.kind === 'capture-result' && message.requestId === 95,
+    ),
+  ).toHaveLength(1);
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('reports a failed captured receipt completion as submit-failed', async () => {
+  workerCaptureRecorder();
+  const submitError = new RendererOperationError('device-operation-failed', {
+    operation: 'complete-frame',
+    cause: {
+      code: 'device-lost',
+      expected: 'live receipt generation',
+      hint: 'discard the receipt',
+    },
+  });
+  let drawIndex = 0;
+  mocks.draw.mockImplementation(() => {
+    const frameId = 140 + drawIndex++;
+    const receipt = {
+      frameId,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed: Promise.resolve(
+        frameId === 141
+          ? { ok: false as const, error: submitError }
+          : { ok: true as const, value: undefined },
+      ),
+    };
+    mocks.onFrameBoundary?.();
+    return { ok: true, value: receipt };
+  });
+  mocks.observe.mockImplementation(async (receipt: { readonly frameId: number }) => ({
+    ok: true as const,
+    value: { timings: timingFor(receipt.frameId) },
+  }));
+  const { post, receive } = await start({ rhiCapture: true, gpuPassTiming: {} });
+
+  receive({ data: { kind: 'capture', requestId: 96, options: {} } });
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'completed', revision: 1 }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'capture-result',
+        requestId: 96,
+        result: expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            submittedFrame: { status: 'unavailable', reason: 'submit-failed' },
+          }),
+        }),
+      }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it.each([
+  {
+    label: 'failed timing with an older latest-known-good value',
+    observation: {
+      status: 'failed',
+      error: {
+        code: 'gpu-pass-timing-read-failed',
+        expected: 'the captured receipt timing query resolves',
+        hint: 'retain the failure reason',
+      },
+      latestKnownGood: { frameId: 2, deviceGeneration: 7, graphGeneration: 3 },
+    },
+    forwarded: {
+      status: 'failed',
+      error: {
+        code: 'gpu-pass-timing-read-failed',
+        expected: 'the captured receipt timing query resolves',
+        hint: 'retain the failure reason',
+      },
+    },
+  },
+  {
+    label: 'unavailable timing with its original reason and capability',
+    observation: {
+      status: 'unavailable',
+      reason: {
+        code: 'timestamp-query-unavailable',
+        expected: 'timestamp queries are supported',
+        hint: 'report the unavailable capability',
+      },
+      capability: { timestampQuery: false, timestampPeriodNanoseconds: null },
+    },
+    forwarded: {
+      status: 'unavailable',
+      reason: {
+        code: 'timestamp-query-unavailable',
+        expected: 'timestamp queries are supported',
+        hint: 'report the unavailable capability',
+      },
+      capability: { timestampQuery: false, timestampPeriodNanoseconds: null },
+    },
+  },
+] as const)('preserves $label without stale timing facts', async ({ observation, forwarded }) => {
+  workerCaptureRecorder();
+  let drawIndex = 0;
+  mocks.draw.mockImplementation(() => {
+    const receipt = {
+      frameId: 70 + drawIndex++,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    mocks.onFrameBoundary?.();
+    return { ok: true, value: receipt };
+  });
+  mocks.observe.mockResolvedValue({ ok: true, value: { timings: observation } });
+  const { post, receive } = await start({ rhiCapture: true, gpuPassTiming: {} });
+
+  receive({ data: { kind: 'capture', requestId: 92, options: {} } });
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'completed', revision: 1 }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'capture-result',
+        requestId: 92,
+        result: expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            submittedFrame: expect.objectContaining({
+              status: 'remote-complete',
+              gpuPassTiming: forwarded,
+            }),
+          }),
+        }),
+      }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('does not substitute an older timing observation when receipt observe returns an error', async () => {
+  workerCaptureRecorder();
+  let drawIndex = 0;
+  mocks.draw.mockImplementation(() => {
+    const receipt = {
+      frameId: 80 + drawIndex++,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    mocks.onFrameBoundary?.();
+    return { ok: true, value: receipt };
+  });
+  mocks.observe.mockResolvedValue({
+    ok: false,
+    error: {
+      code: 'frame-receipt-stale',
+      expected: 'the same live receipt generation',
+      hint: 'do not substitute another frame timing',
+    },
+  });
+  const { post, receive } = await start({ rhiCapture: true, gpuPassTiming: {} });
+
+  receive({ data: { kind: 'capture', requestId: 93, options: {} } });
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'completed', revision: 1 }),
+      expect.any(Array),
+    ),
+  );
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'capture-result',
+        requestId: 93,
+        result: expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            submittedFrame: expect.objectContaining({ status: 'remote-complete' }),
+          }),
+        }),
+      }),
+      expect.any(Array),
+    ),
+  );
+  const response = post.mock.calls.find(
+    ([message]) => message.kind === 'capture-result' && message.requestId === 93,
+  )?.[0];
+  expect(response?.result.ok && response.result.value.submittedFrame).not.toHaveProperty(
+    'gpuPassTiming',
+  );
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
 
 it('forwards the pending cause captured on the completed receipt, without inspecting a later frame', async () => {
   const completion = deferred<{ ok: true; value: undefined }>();

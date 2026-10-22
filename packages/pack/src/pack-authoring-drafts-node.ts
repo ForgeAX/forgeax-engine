@@ -37,13 +37,17 @@ function conflict(sourcePath: string, reason: string): PackAuthoringError {
 
 // All document managers in this host serialize the same physical source.
 const sourceSaves = new Map<string, Promise<unknown>>();
+const MAX_REFRESH_ROUNDS = 3;
 
 /** Project/connection owner retains this manager; disposing it retires only its documents. */
 export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackDraftOptions<T>) {
-  const documents = new Map<
-    string,
-    { source: PackDraftSource; absolute: string; draft: PackAuthoringDraft<T> }
-  >();
+  type Entry = {
+    source: PackDraftSource;
+    absolute: string;
+    draft: PackAuthoringDraft<T>;
+    refreshing?: Promise<unknown>;
+  };
+  const documents = new Map<string, Entry>();
   const paths = new Map<string, string>();
   const saves = sourceSaves;
   const openings = new Map<string, Promise<PackDraftSnapshot>>();
@@ -78,6 +82,35 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
       }
     }
     return readPackDraftSource(path, source, sourceOptions);
+  };
+  const refreshEntry = async (
+    entry: Entry,
+    onPrepared?: (snapshot: PackDraftSnapshot) => void,
+  ): Promise<PackDraftSnapshot | undefined> => {
+    const read = () => readFile(entry.absolute, 'utf8').catch((cause: unknown) => ({ cause }));
+    let text = await read();
+    for (let round = 0; ; round++) {
+      let result: PackDraftSnapshot;
+      try {
+        if (typeof text !== 'string') throw text.cause;
+        const next = await parse(entry.source.document.sourcePath, text);
+        if (disposed || !documents.has(entry.draft.id)) return undefined;
+        result = await entry.draft.refresh(next.document, (snapshot) => {
+          entry.source = next;
+          onPrepared?.(snapshot);
+        });
+        entry.source = next;
+      } catch (cause) {
+        if (disposed || !documents.has(entry.draft.id)) return undefined;
+        result = entry.draft.reportFailure(cause);
+      }
+      // A watcher may report a write mid-flight (after truncation) and coalesce
+      // its completion event, so the settled state must match the current file.
+      const current = await read();
+      if (typeof current !== 'string' || current === text || round >= MAX_REFRESH_ROUNDS)
+        return result;
+      text = current;
+    }
   };
 
   const save = async (
@@ -261,23 +294,11 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
         );
       const entry = id ? documents.get(id) : undefined;
       if (!entry) return undefined;
-      try {
-        const next = await parse(
-          entry.source.document.sourcePath,
-          await readFile(entry.absolute, 'utf8'),
-        );
-        if (disposed || !documents.has(entry.draft.id)) return undefined;
-        const result = await entry.draft.refresh(next.document, (snapshot) => {
-          entry.source = next;
-          onPrepared?.(snapshot);
-        });
-        entry.source = next;
-        return result;
-      } catch (cause) {
-        return disposed || !documents.has(entry.draft.id)
-          ? undefined
-          : entry.draft.reportFailure(cause);
-      }
+      const refresh = (entry.refreshing ?? Promise.resolve()).then(() =>
+        refreshEntry(entry, onPrepared),
+      );
+      entry.refreshing = refresh.catch(() => undefined);
+      return refresh;
     },
     dispose(): void {
       disposed = true;

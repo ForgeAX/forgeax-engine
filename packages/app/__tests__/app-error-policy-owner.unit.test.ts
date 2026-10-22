@@ -23,7 +23,6 @@ const CODES_IN_POLICY_ORDER = [
   'app-execution-bootstrap-failed',
   'app-execution-deadline-exceeded',
   'app-execution-kernel-failed',
-  'app-execution-stale-world',
   'app-execution-rebuild-failed',
   'app-renderer-inspection-unavailable',
 ] as const satisfies readonly AppErrorCode[];
@@ -40,7 +39,6 @@ const EXPECTED_IN_POLICY_ORDER = [
   'the bootstrap URL imports a module whose default export completes as an ExecutionBootstrapEntry in the selected Engine Realm',
   'the execution startup, handshake or frame completes within its configured bounded deadline',
   'a shared kernel completes every dispatched shard without leaving a possibly partial World write',
-  'every execution message targets the currently active World identity before it can write',
   'explicit rebuild disposes the poisoned World and bootstraps a fresh World identity in the surviving Engine Realm',
   'a read-only inspection returns the complete actual Renderer snapshot from the current ready session within the caller deadline',
 ] as const;
@@ -57,15 +55,14 @@ const HINTS_IN_POLICY_ORDER = [
   'inspect detail.phase, moduleUrl and cause; export one default ExecutionBootstrapEntry that creates only realm-local engine state',
   'inspect detail.phase and timeoutMs; the timed-out Worker has been terminated, so fix startup or frame work before creating a new App',
   'do not retry or draw the poisoned World; inspect detail.kernelName and cause, then call app.execution.rebuild()',
-  'discard the late message and keep the current World; inspect expectedIdentity, receivedIdentity and messageKind',
   'inspect detail.cause; this App remains stopped, so fix the bootstrap failure or create a new App explicitly',
   'inspect detail.reason and cause; preserve unavailable or stale results and do not synthesize Renderer fields or extend the caller deadline',
 ] as const;
 
 describe('AppError policy owner', () => {
-  it('projects the exact fourteen-code policy surface with stable own-key order', () => {
-    expect(CODES_IN_POLICY_ORDER).toHaveLength(14);
-    expect(new Set(CODES_IN_POLICY_ORDER).size).toBe(14);
+  it('projects the exact thirteen-code policy surface with stable own-key order', () => {
+    expect(CODES_IN_POLICY_ORDER).toHaveLength(13);
+    expect(new Set(CODES_IN_POLICY_ORDER).size).toBe(13);
 
     for (const policy of [APP_EXPECTED, APP_ERROR_HINTS]) {
       expect(Object.keys(policy)).toEqual(CODES_IN_POLICY_ORDER);
@@ -117,8 +114,6 @@ describe('AppError policy owner', () => {
         kernelName: 'shared-query',
         worldIdentity: 'world-1',
         cause: new Error('partial write'),
-        partialWrite: true,
-        retryable: false,
       },
     });
     expect(readDetail(canvasError)).toBe('main');
@@ -151,8 +146,6 @@ describe('AppError policy owner', () => {
         kernelName: 'shared-query',
         worldIdentity: 'world-1',
         cause,
-        partialWrite: true,
-        retryable: false,
       },
     });
     expectTypeOf(kernelError).toEqualTypeOf<

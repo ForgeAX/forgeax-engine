@@ -284,7 +284,12 @@ export class SourceRenderWorker {
           if (this.captureRequest?.id === message.requestId)
             this.captureRequest.finish(
               message.result.ok
-                ? ok(toArtifact(tapeArtifact([message.result.value.bytes])))
+                ? ok(
+                    toArtifact(
+                      tapeArtifact([message.result.value.bytes]),
+                      message.result.value.submittedFrame,
+                    ),
+                  )
                 : err(message.result.error),
             );
           return;

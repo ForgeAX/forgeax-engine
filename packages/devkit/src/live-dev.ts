@@ -13,10 +13,11 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
-import type {
-  ExecutionReport,
-  ExecutionSelection,
-  ExecutionWorkersOptions,
+import {
+  type ExecutionReport,
+  type ExecutionSelection,
+  type ExecutionWorkersOptions,
+  isExecutionReport,
 } from '@forgeax/engine-app';
 import type { JSHandle } from 'playwright';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -101,6 +102,7 @@ type LiveOperation =
   | 'reload'
   | 'stop'
   | 'capture'
+  | 'verify'
   | 'rhi/capture'
   | 'profile/capture'
   | 'eval'
@@ -362,6 +364,41 @@ function assertLiveIdentity(
         'This entity reference belongs to an older runtime; use dev find again.',
       );
     args.entity = entity;
+  }
+  return undefined;
+}
+
+function assertRuntimeHealth(status: LiveDevStatus): ReturnType<typeof commandError> | undefined {
+  const execution = status.execution;
+  if (!isExecutionReport(execution) || execution.world.identity !== status.worldIdentity) {
+    return commandError(
+      'live-verification-unavailable',
+      'The current execution report is unavailable.',
+      {
+        revision: status.revision,
+      },
+    );
+  }
+  if (
+    execution.fault !== null ||
+    execution.engine.health !== 'running' ||
+    execution.world.health !== 'healthy' ||
+    execution.world.partialWrite ||
+    (execution.render !== undefined && execution.render.state !== 'alive')
+  ) {
+    return commandError(
+      'live-runtime-failed',
+      'Repair the execution fault before verifying again.',
+      {
+        execution,
+      },
+    );
+  }
+  if (execution.frame.completed < 1) {
+    return commandError(
+      'live-verification-unavailable',
+      'No completed Engine frame has been observed.',
+    );
   }
   return undefined;
 }
@@ -1350,7 +1387,8 @@ async function handleRequest(
         await clearEvalState();
       }
     }
-    if (url.pathname === '/capture') {
+    if (url.pathname === '/capture' || url.pathname === '/verify') {
+      const verifying = url.pathname === '/verify';
       if (state.captureRunning) {
         jsonResponse(response, 409, {
           ok: false,
@@ -1376,7 +1414,32 @@ async function handleRequest(
           readonly checkpoint?: unknown;
           readonly requireUi?: boolean;
           readonly revision?: unknown;
+          readonly timeoutMs?: number;
         };
+        if (verifying && typeof args.revision !== 'string') {
+          jsonResponse(response, 400, {
+            ok: false,
+            error: commandError(
+              'live-revision-required',
+              'Pass the revision of the execution to verify.',
+            ),
+          });
+          return;
+        }
+        if (
+          verifying &&
+          args.timeoutMs !== undefined &&
+          (!Number.isSafeInteger(args.timeoutMs) || args.timeoutMs < 1)
+        ) {
+          jsonResponse(response, 400, {
+            ok: false,
+            error: commandError(
+              'live-invalid-timeout',
+              'Verification timeoutMs must be a positive integer.',
+            ),
+          });
+          return;
+        }
         if (!(await requireCurrentBridge(state, response))) return;
         await refreshFrameStatus(state);
         const before = state.status;
@@ -1393,6 +1456,11 @@ async function handleRequest(
               'Wait for the live instance to reach a submitted frame.',
             ),
           });
+          return;
+        }
+        const healthError = verifying ? assertRuntimeHealth(before) : undefined;
+        if (healthError !== undefined) {
+          jsonResponse(response, 409, { ok: false, error: healthError });
           return;
         }
         // Fail before entering the 120s compositor wait when the project has no
@@ -1417,7 +1485,9 @@ async function handleRequest(
         const record = await state.session.capture(
           typeof args.checkpoint === 'string' ? args.checkpoint : undefined,
           {
-            purpose: 'observe',
+            purpose: verifying ? 'validate' : 'observe',
+            ...(verifying && before.frameId !== undefined ? { afterFrameId: before.frameId } : {}),
+            ...(verifying && args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
             ...(args.requireUi === undefined ? {} : { requireUi: args.requireUi }),
             ...(typeof args.output === 'string' ? { output: args.output } : {}),
           },
@@ -1439,10 +1509,32 @@ async function handleRequest(
           });
           return;
         }
+        const finalHealthError = verifying ? assertRuntimeHealth(after) : undefined;
+        if (finalHealthError !== undefined) {
+          jsonResponse(response, 409, { ok: false, error: finalHealthError });
+          return;
+        }
         const report = state.session.report();
         const reportPath = `${record.output}.json`;
-        const reportBytes = `${JSON.stringify({ revision: after.revision, record, consoleErrors: report.consoleErrors, pageErrors: report.pageErrors }, null, 2)}\n`;
+        const reportBytes = `${JSON.stringify({ revision: after.revision, ...(verifying ? { execution: after.execution } : {}), record, consoleErrors: report.consoleErrors, pageErrors: report.pageErrors }, null, 2)}\n`;
         await writeFile(reportPath, reportBytes, 'utf8');
+        if (
+          verifying &&
+          (!record.ok || report.consoleErrors.length > 0 || report.pageErrors.length > 0)
+        ) {
+          jsonResponse(response, 409, {
+            ok: false,
+            error: commandError(
+              'live-runtime-failed',
+              'Runtime errors were observed during verification.',
+              {
+                output: record.output,
+                report: reportPath,
+              },
+            ),
+          });
+          return;
+        }
         jsonResponse(response, 200, {
           ok: true,
           artifacts: [
@@ -1456,6 +1548,7 @@ async function handleRequest(
           ],
           value: {
             revision: after.revision,
+            ...(verifying ? { verified: 'runtime' as const } : {}),
             ...(state.snapshot ? { runId: after.runId, inputVersion: after.inputVersion } : {}),
             frameId: record.runtime.engineFrameId,
             screenshot: {

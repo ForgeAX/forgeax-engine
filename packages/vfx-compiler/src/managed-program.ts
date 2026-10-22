@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
+  PARTICLE_MANAGED_STAGE_IDS,
   PARTICLE_STAGE_RESOURCE_NAMES,
   type ParticleStageResourceAccess,
   type ParticleStageSource,
@@ -33,7 +34,7 @@ export interface ParticleStagePlanError {
   };
 }
 
-const BUILT_IN_STAGES = new Set(['spawn', 'update', 'scan', 'compact']);
+const BUILT_IN_STAGES = new Set<string>(PARTICLE_MANAGED_STAGE_IDS);
 const MAX_STAGE_BUDGET = 64;
 
 function stageFailure(

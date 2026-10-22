@@ -949,8 +949,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   // --- from mesh-ssbo-grow.test.ts ---
   // feat-20260608-mesh-ssbo-dynamic-grow-l1-lift-1024-entity-cap M2 / T-M2-02 +
   // T-M2-03: unit tests for the mesh-SSBO grow controller — pow2 doubling +
-  // sync rebuild + usage parity (T-M2-02) + ceiling + idempotent guard +
-  // capacity-exceeded fallback (T-M2-03).
+  // sync rebuild + usage parity (T-M2-02) + ceiling + idempotent guard
+  // (T-M2-03).
   //
   // Anchors:
   //   - requirements §AC-05 (nextPow2 one-shot grow + createBuffer ordered
@@ -1195,9 +1195,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
   });
 
-  // ── T-M2-03: ceiling + idempotent guard + capacity-exceeded fallback ─────
+  // ── T-M2-03: ceiling + idempotent guard ─────────────────────────────────
 
-  describe('T-M2-03 growMeshSsbo ceiling + idempotent guard + capacity-exceeded', () => {
+  describe('T-M2-03 growMeshSsbo ceiling + idempotent guard', () => {
     beforeEach(() => {
       vi.restoreAllMocks();
     });
@@ -1271,13 +1271,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       expect(fire).not.toHaveBeenCalled();
     });
 
-    it('(c) defensive capacity-exceeded — needed past ceiling fires either ceiling-reached or capacity-exceeded with full detail', () => {
-      // Plan §2.D-5 picks ceiling-reached as the primary path when the
+    it('(c) needed far past ceiling fires ceiling-reached with full detail', () => {
       // device.limits.maxStorageBufferBindingSize cannot accommodate the
-      // requested slot count; capacity-exceeded is a defensive fallback.
-      // We assert that ONE of the two structured errors fires with all 3
-      // detail fields populated (requested / capacity / ceiling), per AC-08
-      // narrowing contract — not which one.
+      // requested slot count; the structured error fires with all 3 detail
+      // fields populated (requested / capacity / ceiling), per AC-08.
       const TIGHT_LIMIT = INITIAL_SLOT_COUNT * PER_ENTITY_STRIDE; // 1024 slots ceiling
       const { device, createBufferSpy } = makeFakeDevice({
         maxStorageBufferBindingSize: TIGHT_LIMIT,
@@ -1298,18 +1295,15 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const result = ctrl.growMeshSsbo(99999, 99999);
       expect(result.ok).toBe(false);
       if (result.ok === false) {
-        expect(['mesh-ssbo-ceiling-reached', 'mesh-ssbo-capacity-exceeded']).toContain(result.code);
+        expect(result.code).toBe('mesh-ssbo-ceiling-reached');
       }
       expect(createBufferSpy).not.toHaveBeenCalled();
       expect(fire).toHaveBeenCalledTimes(1);
       const fired = fire.mock.calls[0]?.[0] as RuntimeLayerError;
-      expect(['mesh-ssbo-ceiling-reached', 'mesh-ssbo-capacity-exceeded']).toContain(fired.code);
-      // Whichever code was fired, the 4-field error shape must include the
-      // structured detail with all three numeric fields populated.
-      if (
-        fired.code === 'mesh-ssbo-ceiling-reached' ||
-        fired.code === 'mesh-ssbo-capacity-exceeded'
-      ) {
+      expect(fired.code).toBe('mesh-ssbo-ceiling-reached');
+      // The 4-field error shape must include the structured detail with all
+      // three numeric fields populated.
+      if (fired.code === 'mesh-ssbo-ceiling-reached') {
         expect(typeof fired.detail.requested).toBe('number');
         expect(typeof fired.detail.capacity).toBe('number');
         expect(typeof fired.detail.ceiling).toBe('number');
@@ -1514,7 +1508,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const capRes = ensureMeshSsboCapacity(internals, 2048, 2048);
       expect(capRes.ok).toBe(false);
       if (capRes.ok === false) {
-        expect(['mesh-ssbo-ceiling-reached', 'mesh-ssbo-capacity-exceeded']).toContain(capRes.code);
+        expect(capRes.code).toBe('mesh-ssbo-ceiling-reached');
       }
       // Caller (record stage) MUST early-return on ok:false: emulate the
       // contract in the test so spy state matches the real frame skip.
@@ -1527,7 +1521,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Ceiling fired exactly once (by the controller; ensure does not double-fire).
       expect(fireSpy).toHaveBeenCalledTimes(1);
       const fired = fireSpy.mock.calls[0]?.[0] as RuntimeLayerError;
-      expect(['mesh-ssbo-ceiling-reached', 'mesh-ssbo-capacity-exceeded']).toContain(fired.code);
+      expect(fired.code).toBe('mesh-ssbo-ceiling-reached');
       // No new createBuffer on ceiling (mesh+material reset path skipped).
       expect(createBufferSpy).not.toHaveBeenCalled();
     });

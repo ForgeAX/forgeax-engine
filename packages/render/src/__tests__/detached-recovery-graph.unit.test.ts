@@ -106,6 +106,14 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
     setCascadeCount(cascadeCount: 1 | 2 | 3 | 4) {
       lights = { ...lights, cascadeCount };
     },
+    setStaticShadowCache(enabled: boolean) {
+      lights = {
+        ...lights,
+        directionalCsmConfig: enabled
+          ? undefined
+          : ({ staticShadowCache: false } as ExtractedLights['directionalCsmConfig']),
+      };
+    },
     setDevice(nextDevice: RhiDevice) {
       device = nextDevice;
     },
@@ -318,6 +326,39 @@ describe('detached recovery graph execution boundary', () => {
     const topology = JSON.parse(installed.topologyKey).topology;
     expect(topology.shadow.directional.terrainReceivers).toEqual(replacementRoots);
     await retry.retire();
+  });
+
+  it('recompiles when a directional light toggles its static shadow cache', async () => {
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const harness = createRecoveryGraphHarness();
+    harness.setDevice(device);
+    harness.setCascadeCount(3);
+    const directional = () => {
+      const installed = harness.frameState.compiledFrameGraph;
+      if (installed === null) throw new Error('no installed graph');
+      return JSON.parse(installed.topologyKey).topology.shadow.directional;
+    };
+    const cached = harness.compile();
+    if (cached === null) throw new Error('cached graph failed');
+    harness.accept();
+    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3 });
+    expect(harness.compile()).toBe(cached);
+
+    harness.setStaticShadowCache(false);
+    const single = harness.compile();
+    if (single === null) throw new Error('single-layer graph failed');
+    expect(single).not.toBe(cached);
+    harness.accept();
+    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3, staticLayer: false });
+    expect(harness.compile()).toBe(single);
+
+    harness.setStaticShadowCache(true);
+    const restored = harness.compile();
+    if (restored === null) throw new Error('restored graph failed');
+    expect(restored).not.toBe(single);
+    harness.accept();
+    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3 });
+    await restored.retire();
   });
 
   it('rejects an exhausted Terrain layer carrier instead of falling back to an accepted graph', async () => {

@@ -3,17 +3,47 @@ import { constants } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
+import { compressZstd } from '@forgeax/engine-codec/encode';
 import type { DistArtifact, DistManifest } from './dist.js';
-import { type PlayerBundleResult, planPlayerBundles } from './player-bundles.js';
+import { catalogRows, type PlayerBundleResult, planPlayerBundles } from './player-bundles.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
 
 /** Build-root delivery declaration, consumed by player packaging and never shipped. */
 export const PLAYER_DELIVERY_FILE = 'forgeax-delivery.json';
 
+/**
+ * Catalog row facts that serve authoring tools (conflict checks, graph navigation,
+ * provider identity, source overrides) and are never read by the player runtime.
+ * The build's dist catalog keeps them for `forgeax asset` queries.
+ */
+const AUTHORING_ROW_FIELDS = [
+  'authoring',
+  'diagnostics',
+  'provenance',
+  'relations',
+  'revision',
+  'sourceIndex',
+  'sourceOverrideDescriptors',
+  'sourceOverrides',
+] as const;
+
+/** Generated pipeline libraries carry one bundler-hashed JSON file per build. */
+const PIPELINE_LIBRARY = /(^|\/)pipeline-library[^/]*\.json$/;
+
+export interface PlayerDistOptions {
+  /**
+   * Store the catalog, shader manifest, pipeline library and Pack documents as
+   * zstd frames that the runtime decodes itself, so any static host serves them
+   * small. Defaults to true.
+   */
+  readonly compressDocuments?: boolean;
+}
+
 /** Prepare delivery bytes without changing the verified build's diagnostic evidence. */
 export async function preparePlayerDist(
   sourceRoot: string,
   manifest: DistManifest,
+  options: PlayerDistOptions = {},
 ): Promise<{
   readonly root: string;
   readonly manifest: DistManifest;
@@ -27,7 +57,7 @@ export async function preparePlayerDist(
   const receipts = new Set<string>();
   let changed = false;
   const source = await readFile(resolve(sourceRoot, manifest.runtime.packIndexUrl), 'utf8');
-  const catalog = JSON.stringify(JSON.parse(source), (key, value: unknown) => {
+  const parsed: unknown = JSON.parse(source, (key, value: unknown) => {
     if ((key === 'cookReceiptUrl' || key === 'receiptUrl') && typeof value === 'string') {
       const path = paths.get(new URL(value, catalogUrl).href);
       if (key === 'cookReceiptUrl' || path?.endsWith('.receipt.json')) {
@@ -38,7 +68,13 @@ export async function preparePlayerDist(
     }
     return value;
   });
-  const catalogBytes = Buffer.from(changed ? catalog : source);
+  for (const row of catalogRows(parsed))
+    for (const field of AUTHORING_ROW_FIELDS)
+      if (field in row) {
+        delete row[field];
+        changed = true;
+      }
+  const catalogBytes = Buffer.from(changed ? JSON.stringify(parsed) : source);
   const delivery: DevKitDeliveryOptions = manifest.artifacts.some(
     (artifact) => artifact.path === PLAYER_DELIVERY_FILE,
   )
@@ -90,12 +126,28 @@ export async function preparePlayerDist(
           ),
       );
     }
-    const artifacts = [
+    let artifacts = [
       ...[...candidates.values()]
         .filter((artifact) => !bundled.removed.has(artifact.path))
         .map((artifact) => written.get(artifact.path) ?? artifact),
       ...[...written.values()].filter((artifact) => !candidates.has(artifact.path)),
     ];
+    if (options.compressDocuments !== false) {
+      const documents = new Set([
+        manifest.runtime.packIndexUrl,
+        manifest.runtime.shaderManifestUrl,
+      ]);
+      for (const row of catalogRows(parsed))
+        if (typeof row.packageUrl === 'string') {
+          const path = paths.get(new URL(row.packageUrl, catalogUrl).href);
+          if (path !== undefined) documents.add(path);
+        }
+      artifacts = await compressPlayerDocuments(
+        root,
+        artifacts,
+        (path) => documents.has(path) || PIPELINE_LIBRARY.test(path),
+      );
+    }
     const playerManifest: DistManifest = { ...manifest, artifacts };
     await writeFile(
       resolve(root, 'forgeax-dist.json'),
@@ -106,4 +158,26 @@ export async function preparePlayerDist(
     await rm(root, { recursive: true, force: true });
     throw cause;
   }
+}
+
+async function compressPlayerDocuments(
+  root: string,
+  artifacts: readonly DistArtifact[],
+  selected: (path: string) => boolean,
+): Promise<DistArtifact[]> {
+  return Promise.all(
+    artifacts.map(async (artifact) => {
+      if (!selected(artifact.path)) return artifact;
+      const path = resolve(root, artifact.path);
+      const compressed = await compressZstd(await readFile(path));
+      if (!compressed.ok)
+        throw new Error(`${artifact.path}: zstd compression failed: ${compressed.error.code}`);
+      await writeFile(path, compressed.value);
+      return {
+        ...artifact,
+        bytes: compressed.value.byteLength,
+        sha256: createHash('sha256').update(compressed.value).digest('hex'),
+      };
+    }),
+  );
 }

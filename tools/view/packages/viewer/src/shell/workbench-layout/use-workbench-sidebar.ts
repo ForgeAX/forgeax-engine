@@ -41,6 +41,8 @@ export function useWorkbenchSidebar({
   layoutReady,
   presentationReady,
   edgeDrawerRef,
+  primaryPanelIds,
+  panelTopologyRevision,
   responsiveAutoTuck = true,
 }: {
   workbenchRef: RefObject<HTMLElement | null>;
@@ -50,6 +52,8 @@ export function useWorkbenchSidebar({
   /** Bumped after the first reconcile + layout pass with a real host extent. */
   presentationReady: number;
   edgeDrawerRef: RefObject<EdgeDrawerController | null>;
+  primaryPanelIds: ReadonlySet<string>;
+  panelTopologyRevision: number;
   responsiveAutoTuck?: boolean;
 }) {
   const [state, setState] = useState<WorkbenchSidebarState>(() => asState(createWorkbenchSidebarState()));
@@ -60,6 +64,7 @@ export function useWorkbenchSidebar({
   presentationReadyRef.current = presentationReady;
   /** Grid tuck was deferred (unsettled); retry always re-measures the host. */
   const migrationRetryPendingRef = useRef(false);
+  const appliedTopologyRevisionRef = useRef(0);
 
   const dispatch = useCallback((event: WorkbenchSidebarEvent) => {
     setState((current) => {
@@ -88,11 +93,43 @@ export function useWorkbenchSidebar({
     }
 
     const resolved = resolveWorkbenchStage(width, height, current);
-    if (resolved.ignored) return;
 
     const api = apiRef.current;
     const host = dockHostRef.current ?? workbenchRef.current;
     if (!api || !host) return;
+
+    const topologyChanged = appliedTopologyRevisionRef.current !== panelTopologyRevision;
+    if (resolved.ignored && !topologyChanged) return;
+
+    if (topologyChanged) {
+      const targetStage = resolved.ignored ? current.stage : resolved.stage;
+      const targetSides = resolved.ignored ? current.targetSides : resolved.targetSides;
+      const outcome = applyStageMigration(
+        api as never,
+        host,
+        [],
+        targetSides,
+        null,
+        {},
+        primaryPanelIds,
+      );
+      if (!outcome.applied) {
+        migrationRetryPendingRef.current = true;
+        return;
+      }
+      appliedTopologyRevisionRef.current = panelTopologyRevision;
+      migrationRetryPendingRef.current = false;
+      dispatch({
+        type: 'profile',
+        stage: targetStage,
+        targetSides,
+        baselineSnapshot: outcome.baseline,
+        autoTucked: outcome.autoTucked,
+      });
+      return;
+    }
+
+    if (resolved.ignored) return;
 
     const outcome = applyStageMigration(
       api as never,
@@ -101,6 +138,7 @@ export function useWorkbenchSidebar({
       resolved.targetSides,
       current.baselineSnapshot,
       current.autoTucked,
+      primaryPanelIds,
     );
 
     if (!outcome.applied) {
@@ -118,7 +156,7 @@ export function useWorkbenchSidebar({
       baselineSnapshot: outcome.baseline,
       autoTucked: outcome.autoTucked,
     });
-  }, [apiRef, responsiveAutoTuck, dispatch, dockHostRef, edgeDrawerRef, workbenchRef]);
+  }, [apiRef, responsiveAutoTuck, dispatch, dockHostRef, edgeDrawerRef, panelTopologyRevision, primaryPanelIds, workbenchRef]);
 
   const runStageMigrationAtLatestSize = useCallback(() => {
     const rect = measureHost();

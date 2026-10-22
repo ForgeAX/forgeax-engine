@@ -644,11 +644,6 @@ export interface PackBuildContextWithParameters<
   readonly values: PackBuildParameterValues<TParameters>;
 }
 
-export type PackBuildContext<TParameters extends readonly PackParameterDefinition[] | undefined> =
-  TParameters extends readonly PackParameterDefinition[]
-    ? PackBuildContextWithParameters<TParameters>
-    : PackBuildContextWithoutParameters;
-
 /** Build-only custom source. The host derives identity and invokes the kind's NativeCooker. */
 export interface PackCookSource {
   readonly kind: string;

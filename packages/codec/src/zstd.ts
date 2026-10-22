@@ -69,3 +69,25 @@ export async function decompressZstd(bytes: Uint8Array): Promise<CodecResult<Uin
     });
   }
 }
+
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * Text of a delivered document stored as UTF-8 or as one zstd frame.
+ *
+ * Player packages may store large JSON documents compressed so any static host
+ * serves them small. JSON text never begins with the zstd magic byte 0x28.
+ */
+export async function decodeDocumentText(bytes: Uint8Array): Promise<CodecResult<string>> {
+  let text = bytes;
+  if (bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd) {
+    const decoded = await decompressZstd(bytes);
+    if (!decoded.ok) return decoded;
+    text = decoded.value;
+  }
+  try {
+    return { ok: true, value: utf8.decode(text) };
+  } catch {
+    return codecError('decompression-failed', { reason: 'document is not UTF-8 text' });
+  }
+}

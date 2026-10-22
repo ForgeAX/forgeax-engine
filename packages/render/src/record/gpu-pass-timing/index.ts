@@ -23,8 +23,6 @@ export type {
   GpuPassTimingError,
   GpuPassTimingErrorCode,
   GpuPassTimingJson,
-  GpuPassTimingReason,
-  GpuPassTimingReasonCode,
 } from './errors.js';
 export type { GpuPassTimingTickInput, GpuPassTimingTickResult } from './parser.js';
 export { parseGpuPassTimingTicks } from './parser.js';

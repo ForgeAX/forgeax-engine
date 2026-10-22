@@ -184,9 +184,9 @@ export {
 export {
   admitProbeContributors,
   blendLightProbes,
-  PROBE_MAX_CONTRIBUTORS,
   scaledProbeWeight,
 } from './scene/probe-blend';
+export { PROBE_BLEND_RECORD_CAPACITY } from './scene/probe-blend-record';
 export {
   createSsrHistoryOwner,
   SSR_HISTORY_FORMAT,

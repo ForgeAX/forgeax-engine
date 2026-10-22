@@ -7,8 +7,8 @@ export type PageResourceOpenRequest = WorkspaceOpenRequest | ViewFileOpenRequest
 
 export type Dispose = () => void | Promise<void>;
 export type PanelLayout = {
-  dock: 'fill' | 'top' | 'bottom' | 'left' | 'right';
-  size?: { value: number; unit: 'px' | 'fraction' };
+  dock: 'fill' | 'top' | 'bottom' | 'left' | 'right' | 'right-bottom';
+  size?: { value: number; unit: 'px' | 'fraction'; additionalPx?: number };
   stack: 'tabs' | 'split'; order: number;
 };
 export type PanelClaim = {
@@ -16,6 +16,7 @@ export type PanelClaim = {
   activity?: { labelKey?: string; icon?: string }; layout: PanelLayout;
 };
 export type PanelMount = PanelClaim & { panel: string; props?: Record<string, unknown> };
+export type AssetPanelMount = Omit<PanelMount, 'pageType' | 'id' | 'slot'> & { id: string; kinds: readonly string[] };
 export type PageController = {
   beforeClose?: (signal: AbortSignal) => void | Promise<void>;
   getStatus?: () => { phase: 'opening' | 'failed'; message?: string } | undefined;
@@ -40,6 +41,12 @@ export type PageHost = {
   subscribeResourceOpen(listener: (request: PageResourceOpenRequest) => void): () => void;
   getAssetPresentation?(asset: Pick<WorkspaceAsset, 'kind'>): 'preview' | 'details' | undefined;
 };
+export type PageTypeRegistry = {
+  getTypes(): readonly PageType[];
+  subscribe(listener: (types: readonly PageType[]) => void): () => void;
+  onBeforeClose(typeId: string, listener: (signal: AbortSignal) => void | Promise<void>): Dispose;
+  beforeClose(typeId: string, signal: AbortSignal): Promise<void>;
+};
 export type SlotRegistry = {
   subscribe(listener: (claims: readonly PanelClaim[]) => void): () => void;
   getClaims(): readonly PanelClaim[];
@@ -54,8 +61,22 @@ export type PanelHost = {
   mount(slot: string, node: HTMLElement): () => void;
   claim(claim: PanelClaim): () => void;
   mountPanel(options: PanelMount): Promise<Dispose>;
+  mountAssetPanel(options: AssetPanelMount): Dispose;
   mountPanelInto(options: { element: HTMLElement; panel: string; props?: Record<string, unknown> }): Promise<Dispose>;
   reveal?(slot: string, options?: { signal?: AbortSignal }): Promise<boolean>;
+  dismissUnpinnedEdge?(slot: string): boolean;
+};
+
+export type ContentBrowserDetailContext = { client: import('./client.ts').ViewWorkspaceClient; sourcePath: string; addConversationReference?: (reference: { title: string; text: string }) => Promise<void> };
+export type ContentBrowserDetailContribution = {
+  id: string; titleKey: string;
+  matches(input: { kind: 'file' | 'asset'; path: string; assetKind?: string }): boolean;
+  mount(element: HTMLElement, context: ContentBrowserDetailContext): Dispose | Promise<Dispose>;
+};
+export type ContentBrowserDetailTabs = {
+  register(contribution: ContentBrowserDetailContribution): Dispose;
+  getSnapshot(): readonly ContentBrowserDetailContribution[];
+  subscribe(listener: () => void): () => void;
 };
 export type AssetBrowserReveal = { projectId: string; guid: string; targetId: string; targetGeneration?: number };
 export type AssetBrowserService = {
@@ -78,5 +99,6 @@ declare module '@forgeax/engine-plugin' {
     viewSlotRegistry: SlotRegistry;
     viewAssetBrowser?: AssetBrowserService;
     viewAssetReferences?: AssetReferenceService;
+    contentBrowserDetailTabs: ContentBrowserDetailTabs;
   }
 }

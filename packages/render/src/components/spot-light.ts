@@ -38,17 +38,6 @@
 import { defineComponent } from '@forgeax/engine-ecs';
 import { LIGHTING_CHANNELS_DEFAULT } from './lighting-channels';
 
-export interface SpotLightProjector {
-  readonly guid: string;
-  readonly generation: number;
-  readonly revision: number;
-}
-
-export interface SpotLightAuthoring {
-  /** Optional GUID-backed TextureAsset projector; absent keeps the normal spot path. */
-  readonly projector?: SpotLightProjector;
-}
-
 /**
  * Cone-restricted spot light (KHR_lights_punctual `spot` type).  Shadow maps
  * are opt-in (castShadow defaults to false); enabled lights project PCF
@@ -157,7 +146,7 @@ export const SpotLight = defineComponent('SpotLight', {
   // extract/record transport this one fact to surface and volume consumers.
   shadowIntensity: { type: 'f32', default: 1 },
   shadowBlurSamples: { type: 'f32', default: 8 },
-  // Shared TextureAsset identity; publication and residency remain owned by
-  // the existing asset and GPU resource owners.
+  // Optional shared TextureAsset identity; absent keeps the normal spot path.
+  // Publication and residency remain owned by the asset and GPU resource owners.
   projector: { type: 'asset<texture>', simulationTransient: true },
 });

@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from 'react';
+import { BarChart3 } from 'lucide-react';
 import { EmptyState, PanelHeader, PropertyRow, usePanelVisible } from '@forgeax/view-components';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import { materialPassStateRows, materialPreviewFacts, previewFactValue } from '@forgeax/view-workspace-core/preview-facts';
@@ -19,8 +20,8 @@ export function MaterialStatsPanel({ client }: { client?: ViewWorkspaceClient })
   const facts = materialPreviewFacts(preview?.assetBinding);
   const unavailable = t('material.valueUnavailable');
   const value = (input: string | number | boolean | null | undefined) => previewFactValue(input ?? null, unavailable, t('material.yes'), t('material.no'));
-  return <div className="fx-asset-editor fx-material-stats fx-ui" data-testid="panel-material-stats">
-    {!subject ? <EmptyState title={t('material.empty')} description={null} /> : <>
+  return <div className="fx-asset-viewer fx-material-stats fx-ui" data-testid="panel-material-stats">
+    {!subject ? <EmptyState icon={<BarChart3 />} title={t('material.empty')} description={t('material.statsEmptyDescription')} /> : <>
       <PanelHeader start={<strong>{String(subject.name ?? subject.guid)}</strong>} />
       <PropertyRow label={t('material.stats.passCount')}>{value(facts?.passCount)}</PropertyRow>
       <PropertyRow label={t('material.stats.parameterCount')}>{value(facts?.parameterCount)}</PropertyRow>

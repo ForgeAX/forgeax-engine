@@ -1,3 +1,4 @@
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import {
   isMaterialProgramAbi,
   isShaderEntryPointReads,
@@ -136,8 +137,6 @@ export const SSR_SHADER_MODULES = Object.freeze({
   trace: 'forgeax_ssr::trace',
   temporal: 'forgeax_ssr::temporal',
 } as const);
-
-export type SsrShaderModule = (typeof SSR_SHADER_MODULES)[keyof typeof SSR_SHADER_MODULES];
 
 /**
  * Material shader admission input accepted by
@@ -343,7 +342,9 @@ export class ShaderRegistry {
             }),
           );
         }
-        raw = await response.text();
+        const text = await decodeDocumentText(new Uint8Array(await response.arrayBuffer()));
+        if (!text.ok) throw new Error(`shader manifest decode failed: ${text.error.code}`);
+        raw = text.value;
       }
     } catch (e) {
       markShaderManifestStage('shader-manifest-fetch-failed', {
@@ -687,7 +688,9 @@ export class ShaderRegistry {
       Object.freeze(
         ok(
           Object.freeze({
-            source,
+            // Retained copies publish one composed program under many keys. Keep
+            // the program's first-admitted source, not each Worker-cloned copy.
+            source: program.source,
             program,
             paramSchema: paramSchemaProjection.schema,
             paramSchemaProjection,
@@ -739,6 +742,7 @@ export class ShaderRegistry {
           ok(
             Object.freeze({
               ...entry,
+              source: program.source,
               program,
               paramSchema: projection.schema,
               paramSchemaProjection: projection,

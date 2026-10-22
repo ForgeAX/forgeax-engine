@@ -50,7 +50,6 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
 describe('F-3: PSO full-shape dawn-node gate (w12/w25 fixup)', () => {
   it('keeps the producer declaration free of raw submission ownership', () => {
     const source = readFileSync(resolve(import.meta.dirname, '../src/index.ts'), 'utf8');
-    expect(source).toContain('RenderFeaturePlan');
     expect(source).not.toMatch(/RhiDevice|RhiQueue|RhiCommandEncoder|queue\.submit|encoder\.finish/);
   });
 

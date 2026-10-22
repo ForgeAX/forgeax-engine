@@ -359,6 +359,7 @@ export class ArtifactReadCache {
           },
           finish: (stored) => readArtifact(request, fetcher, async () => ok(stored)),
           reuse: (copy) => verifyArtifactBytes(copy, request),
+          ...(integrity === undefined ? {} : { digest: integrity.digest }),
           invalid: (reason) =>
             failure(
               'asset-artifact-integrity-mismatch',

@@ -341,6 +341,7 @@ test('archive project owns independent runs and installed View while source keep
     'verifySdkViewRuntime',
     'resolve',
     'sdkRoot',
+    'sourceRoot',
     'offlineEnv',
     'archive',
     'dirname',
@@ -348,6 +349,7 @@ test('archive project owns independent runs and installed View while source keep
   );
   const observed = {};
   const independentCommands = [];
+  const viewSourceRoots = [];
   for (const group of ['project', 'source', 'all']) {
     const stages = [];
     await execute(
@@ -362,6 +364,8 @@ test('archive project owns independent runs and installed View while source keep
         await run();
       },
       async (executable, args, options) => {
+        if (args[0]?.endsWith('verify-diagnostic-pages-integration.mjs'))
+          viewSourceRoots.push({ group, root: options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT });
         if (args[0].endsWith('verify-independent-run.mjs'))
           independentCommands.push({
             group,
@@ -373,6 +377,7 @@ test('archive project owns independent runs and installed View while source keep
       async () => {},
       resolve,
       '/sdk',
+      '/source',
       {},
       '/sdk.zip',
       dirname,
@@ -384,6 +389,7 @@ test('archive project owns independent runs and installed View while source keep
     source: [],
     all: ['verifyIndependentRun', 'verifyPairedViewTool', 'verifyInstalledViewRuntime'],
   });
+  assert.deepEqual(viewSourceRoots, [{ group: 'all', root: '/source' }]);
   assert.deepEqual(
     independentCommands,
     ['project', 'all'].map((group) => ({
@@ -445,10 +451,10 @@ test('the real installed View and npm schedulers conserve complete chains and fu
            assert.ok(readFileSync(resolve(process.cwd(), 'scripts/test', name)).length > 0);
          appendFileSync(process.env.FORGEAX_TEST_RECEIPT, 'game3d-installed\\n');`,
       );
-      const diagnostic = resolve(root, 'tools/view-plugins/integration');
+      const diagnostic = resolve(root, 'tools/view/scripts');
       mkdirSync(diagnostic, { recursive: true });
       writeFileSync(
-        resolve(diagnostic, 'verify-diagnostic-pages.mjs'),
+        resolve(diagnostic, 'verify-diagnostic-pages-integration.mjs'),
         `import {appendFileSync} from 'node:fs'; appendFileSync(process.env.FORGEAX_TEST_RECEIPT,'diagnostics\\n');`,
       );
       const options = {
@@ -787,7 +793,7 @@ test('ZIP Project packaging retains the authored lighting and has no retired red
     assert.deepEqual(
       commands.map(([, args]) => args.slice(0, 2)),
       [
-        ['/immutable-sdk/bin/forgeax.mjs', 'project'],
+        [resolve('/immutable-sdk', 'bin', 'forgeax.mjs'), 'project'],
         ['exec', 'forgeax'],
         ['run', 'doctor'],
         ['run', 'test'],

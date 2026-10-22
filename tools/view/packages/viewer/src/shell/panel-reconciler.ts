@@ -14,6 +14,7 @@ const DOCK_DIRECTION = Object.freeze({
   bottom: 'below',
   left: 'left',
   right: 'right',
+  'right-bottom': 'below',
 } as const);
 const DOCK_ORDER = Object.freeze({
   fill: 0,
@@ -21,6 +22,7 @@ const DOCK_ORDER = Object.freeze({
   bottom: 2,
   left: 3,
   right: 4,
+  'right-bottom': 5,
 });
 const layoutSignatures = new WeakMap<DockviewApi, string>();
 
@@ -57,7 +59,7 @@ function orderedClaims(claims: readonly PanelClaim[]) {
   );
 }
 
-function layoutSignature(claims: readonly PanelClaim[]) {
+export function panelLayoutSignature(claims: readonly PanelClaim[]) {
   return JSON.stringify(
     orderedClaims(claims).map((claim) => [
       panelId(claim),
@@ -73,7 +75,7 @@ function initialSize(size: PanelLayout['size'], available: number | undefined) {
   if (!size) return undefined;
   if (size.unit === 'px') return size.value;
   if (available === undefined || !Number.isFinite(available) || available <= 0) return undefined;
-  return Math.round(available * size.value);
+  return Math.round(available * size.value) + (size.additionalPx ?? 0);
 }
 
 function isGridPanel(api: DockviewApi, id: string) {
@@ -98,10 +100,16 @@ function placementFor(
       referencePanel: sameDock,
     };
   }
+  if (dock === 'right-bottom') {
+    const rightAnchor = anchors.get('right');
+    if (rightAnchor && isGridPanel(api, rightAnchor)) {
+      return { direction: 'below', referencePanel: rightAnchor };
+    }
+  }
   // An omitted position targets Dockview's active group, which may be an edge drawer.
   if (!centerAnchor || !isGridPanel(api, centerAnchor)) return { direction: 'right' };
   return {
-    direction: dock === 'fill' ? 'within' : DOCK_DIRECTION[dock],
+    direction: dock === 'fill' ? 'within' : dock === 'right-bottom' ? 'right' : DOCK_DIRECTION[dock],
     referencePanel: centerAnchor,
   };
 }
@@ -140,7 +148,7 @@ export function reconcileDockPanels(
   }
   // Retirement is immediate, but initial fractions need a visible extent.
   if ((availableWidth !== undefined && availableWidth <= 0) || (availableHeight !== undefined && availableHeight <= 0)) return;
-  const signature = layoutSignature(claims);
+  const signature = panelLayoutSignature(claims);
   if (layoutSignatures.get(api) !== signature && api.panels.length > 0) {
     for (const panel of [...api.panels]) panel.api.close();
   }
@@ -174,23 +182,31 @@ export function reconcileDockPanels(
           });
         }
       }
+      attach(id);
       continue;
     }
     const position = placementFor(api, claim, anchors, centerAnchor);
     const horizontalSize = initialSize(claim.layout.size, availableWidth);
     const verticalSize = initialSize(claim.layout.size, availableHeight);
+    const referenceHeight = claim.layout.dock === 'right-bottom' && position?.direction === 'below' && 'referencePanel' in position && typeof position.referencePanel === 'string'
+      ? api.getPanel(position.referencePanel)?.group?.api.height
+      : undefined;
+    const splitHeight = claim.layout.dock === 'right-bottom' && position?.direction === 'below'
+      ? initialSize({ value: 0.5, unit: 'fraction' }, referenceHeight && referenceHeight > 0 ? referenceHeight : availableHeight)
+      : undefined;
     api.addPanel({
       id,
       component: 'slot',
       title: titleFor(claim),
       params: dockPanelParams(claim, attach),
       position,
-      ...(horizontalSize === undefined || !['left', 'right'].includes(claim.layout.dock)
+      ...(position?.direction === 'within' ? { inactive: true } : {}),
+      ...(horizontalSize === undefined || !['left', 'right', 'right-bottom'].includes(claim.layout.dock) || position?.direction === 'below'
         ? {}
         : { initialWidth: horizontalSize }),
-      ...(verticalSize === undefined || !['top', 'bottom'].includes(claim.layout.dock)
+      ...((verticalSize === undefined && splitHeight === undefined) || !['top', 'bottom', 'right-bottom'].includes(claim.layout.dock) || position?.direction === 'right'
         ? {}
-        : { initialHeight: verticalSize }),
+        : { initialHeight: verticalSize ?? splitHeight }),
     });
     if (!centerAnchor) centerAnchor = id;
     if (!anchors.has(claim.layout.dock)) anchors.set(claim.layout.dock, id);

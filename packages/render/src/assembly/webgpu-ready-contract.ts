@@ -1,7 +1,4 @@
-import { VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
-
 /** Generation-scoped buffer and attachment constants used by the ready builder. */
-export const VIEW_UBO_BYTES = VIEW_UNIFORM_BUFFER_SIZE;
 export const MIPMAP_PREWARM_FORMATS: readonly GPUTextureFormat[] = [
   'rgba8unorm-srgb',
   'rgba8unorm',

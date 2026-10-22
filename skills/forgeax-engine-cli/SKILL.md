@@ -128,7 +128,7 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Install the SDK from npm | `forgeax sdk install <dir> [--version VERSION]` |
 | Create from the SDK or initialize an existing project | `forgeax project new [dir] --template empty\|game-3d` / `forgeax project init` / `forgeax project check` |
 | Install/verify project-local Engine skills | `forgeax project skill install` / `forgeax project skill verify` |
-| Package a hosted Web ZIP including Engine runtime | `forgeax project package --format web-zip [--output release/game-web.zip]` |
+| Package a hosted Web ZIP including Engine runtime (large JSON documents zstd-stored; `--compress=false` keeps plain JSON) | `forgeax project package --format web-zip [--output release/game-web.zip] [--compress=false]` |
 | Create a single-HTML offline candidate | `forgeax project package --format single-html --output release/game-offline.html --json` |
 | Browser compositor screenshot including Canvas and HTML/Shadow DOM | `forgeax project capture --backend auto --require-ui --output <png> --json` |
 | Headless software compositor capture | `forgeax project capture --headless true --backend software --require-ui --output <png> --json` |

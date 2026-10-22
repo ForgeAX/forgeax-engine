@@ -2,8 +2,8 @@ import { err, ok } from '@forgeax/engine-types';
 import type { RenderError } from './errors/render.js';
 import { FrameReceiptStaleError } from './errors/render.js';
 import type {
+  GpuPassTimingError,
   GpuPassTimingObservation,
-  GpuPassTimingReason,
   GpuPassTimingRef,
 } from './record/gpu-pass-timing/index.js';
 import type {
@@ -90,7 +90,7 @@ const notEnabled: GpuPassTimingObservation = {
 };
 
 function failedObservation(
-  error: GpuPassTimingReason,
+  error: GpuPassTimingError,
   latestKnownGood?: GpuPassTimingRef,
 ): GpuPassTimingObservation {
   return {

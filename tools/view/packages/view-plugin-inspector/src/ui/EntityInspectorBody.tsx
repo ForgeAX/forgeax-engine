@@ -1,6 +1,6 @@
 import {
   CollapsibleSection, EmptyState, FloatingMenu, IconButton, Menu,
-  PanelHeader, PropertyRow, SearchField, Text, Toolbar, useClipboardAction, type AnchorRect,
+  MaterialSlot, PanelHeader, PropertyRow, SearchField, Text, Toolbar, useClipboardAction, type AnchorRect,
 } from '@forgeax/view-components';
 import { Box, Copy, Crosshair, Layers, Maximize2, Minimize2, Move3d, SlidersHorizontal } from 'lucide-react';
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
@@ -26,13 +26,11 @@ function InspectorMaterials({ references, truncated, openAsset, browseAsset, que
   return <div className="insp-material-list">
     {references?.map((reference, index) => ({ reference, index }))
       .filter(({ reference, index }) => !query || `${index} ${JSON.stringify(reference)}`.toLowerCase().includes(query))
-      .map(({ reference, index }) => <div className="insp-material-slot" key={index} data-testid={`insp-material-slot-${index}`}>
-      {reference.slotName ? <div className="insp-material-heading"><span title={reference.slotName}>{index} · {reference.slotName}</span>
-        {reference.bindingSource ? <Text as="span" variant="caption" tone="muted">{t(`inspector.materialSource.${reference.bindingSource}`)}</Text> : null}</div> : null}
-      <div className="insp-material-item">
-      <span className="insp-material-index" title={reference.slotName}>{index}</span>
+      .map(({ reference, index }) => <MaterialSlot key={index} index={index} name={reference.slotName}
+        source={reference.bindingSource ? t(`inspector.materialSource.${reference.bindingSource}`) : undefined}
+        testId={`insp-material-slot-${index}`}>
       <InspectorAssetReference reference={reference} openAsset={openAsset} browseAsset={browseAsset} inline />
-      </div></div>)}
+      </MaterialSlot>)}
     {references?.length === 0 ? <Text as="div" tone="muted" className="insp-section-status">{t('inspector.noMaterials')}</Text> : null}
     {references === null ? <Text as="div" tone="muted" className="insp-section-status" role="status">{t('inspector.materialsUnavailable')}</Text> : null}
     {truncated ? <Text as="div" tone="muted" className="insp-section-status" role="status">{t('inspector.collectionTruncated', { count: references?.length ?? 0 })}</Text> : null}

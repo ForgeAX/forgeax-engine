@@ -75,20 +75,6 @@ export function vfxParticleCoreField(name: VfxParticleCoreAttribute): VfxParticl
   return field;
 }
 
-/** WGSL declaration generated from the core schema. */
-export function vfxParticleCoreWgsl(): string {
-  return [
-    'struct VfxParticle {',
-    ...CORE_FIELDS.map((field) => `  ${field.name}: ${field.type},`),
-    '}',
-  ].join('\n');
-}
-
-/** Effect-level data is intentionally separate from per-particle custom data. */
-export interface VfxParametersLayout extends VfxReflectedStruct {
-  readonly name: 'VfxParameters';
-}
-
 export interface VfxCustomLayout extends VfxReflectedStruct {
   readonly name: 'VfxCustom';
   /** Array stride for `array<VfxCustom>` in the persistent GPU storage buffer. */
@@ -132,73 +118,4 @@ export function deriveVfxCustomLayout(struct: VfxReflectedStruct, maxLanes = 4):
     stride,
     lanes,
   });
-}
-
-export type VfxParticleCoreValue =
-  | readonly [number, number, number]
-  | readonly [number, number, number, number]
-  | readonly [number, number]
-  | number;
-
-export interface VfxParticleCoreValues {
-  readonly position: readonly [number, number, number];
-  readonly age: number;
-  readonly velocity: readonly [number, number, number];
-  readonly lifetime: number;
-  readonly color: readonly [number, number, number, number];
-  readonly sprite_size: readonly [number, number];
-  readonly sprite_rotation: number;
-  readonly sub_image: number;
-  readonly mesh_orientation: readonly [number, number, number, number];
-  readonly mesh_scale: readonly [number, number, number];
-  readonly material_random: number;
-  readonly id: number;
-  readonly alive: number;
-}
-
-function finite(value: number): boolean {
-  return Number.isFinite(value);
-}
-
-/** Pack a core record using schema offsets. This is for inspection/replay fixtures, not a particle mirror. */
-export function encodeVfxParticleCore(value: VfxParticleCoreValues): Uint8Array {
-  const bytes = new Uint8Array(VFX_PARTICLE_CORE_STRIDE);
-  const view = new DataView(bytes.buffer);
-  const write = (name: VfxParticleCoreAttribute, values: readonly number[]): void => {
-    const field = vfxParticleCoreField(name);
-    for (const component of values) {
-      if (!finite(component)) throw new TypeError(`non-finite VFX particle field ${name}`);
-      if (
-        field.type === 'u32' &&
-        (!Number.isInteger(component) || component < 0 || component > 0xffffffff)
-      ) {
-        throw new RangeError(`u32 VFX particle field ${name} is outside its valid range`);
-      }
-    }
-    for (let index = 0; index < values.length; index += 1) {
-      const component = values[index] ?? 0;
-      if (field.type === 'u32') view.setUint32(field.offset + index * 4, component, true);
-      else view.setFloat32(field.offset + index * 4, component, true);
-    }
-  };
-  write('position', value.position);
-  write('age', [value.age]);
-  write('velocity', value.velocity);
-  write('lifetime', [value.lifetime]);
-  write('color', value.color);
-  write('sprite_size', value.sprite_size);
-  write('sprite_rotation', [value.sprite_rotation]);
-  write('sub_image', [value.sub_image]);
-  write('mesh_orientation', value.mesh_orientation);
-  write('mesh_scale', value.mesh_scale);
-  write('material_random', [value.material_random]);
-  write('id', [value.id]);
-  write('alive', [value.alive]);
-  return bytes;
-}
-
-/** Return the normalized age used by all renderer semantic projections. */
-export function normalizedVfxParticleAge(age: number, lifetime: number): number {
-  if (!finite(age) || !finite(lifetime) || lifetime <= 0) return 0;
-  return Math.min(1, Math.max(0, age / lifetime));
 }

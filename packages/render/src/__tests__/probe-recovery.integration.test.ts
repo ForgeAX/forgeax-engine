@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PROBE_MAX_CONTRIBUTORS, ProbeBlendSceneProjection } from '../scene/probe-blend';
+import { ProbeBlendSceneProjection } from '../scene/probe-blend';
+import { PROBE_BLEND_RECORD_CAPACITY } from '../scene/probe-blend-record';
 
 function probe(identity: string) {
   return {
@@ -17,12 +18,16 @@ describe('probe recovery carrier', () => {
     const object = { objectKey: 4, generation: 0, position: [0, 0, 0] as const };
     const overflow = projection.apply({
       objects: [object],
-      probes: Array.from({ length: PROBE_MAX_CONTRIBUTORS + 1 }, (_, index) => probe(`p-${index}`)),
+      probes: Array.from({ length: PROBE_BLEND_RECORD_CAPACITY + 1 }, (_, index) =>
+        probe(`p-${index}`),
+      ),
       skyIrradiance: [0.1, 0.2, 0.3],
     });
     const recovered = projection.apply({
       objects: [{ ...object, generation: 1 }],
-      probes: Array.from({ length: PROBE_MAX_CONTRIBUTORS }, (_, index) => probe(`p-${index}`)),
+      probes: Array.from({ length: PROBE_BLEND_RECORD_CAPACITY }, (_, index) =>
+        probe(`p-${index}`),
+      ),
       skyIrradiance: [0.1, 0.2, 0.3],
     });
 

@@ -1,6 +1,7 @@
 import type { PackageFetcher, PackageRequest, PackageResponse } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { traceAssetLoadPhase } from '../registry/load-trace.js';
+import { readDocumentJson } from './retained-pack-json.js';
 
 // Public gateways drop idempotent package GETs, including HTTP/2 streams reset
 // mid-body. Every catalog, Pack, artifact, and loader-binary read shares this
@@ -144,4 +145,4 @@ async function readPackageTransfer<T>(
 
 export const bytesOf = async (response: PackageResponse): Promise<Uint8Array> =>
   new Uint8Array(await response.arrayBuffer());
-export const jsonOf = (response: PackageResponse): Promise<unknown> => response.json();
+export const jsonOf = (response: PackageResponse): Promise<unknown> => readDocumentJson(response);

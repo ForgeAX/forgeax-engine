@@ -1,5 +1,5 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
-import type { TemporalFrame, TemporalResetReason } from './temporal/frame';
+import type { TemporalResetReason } from './temporal/frame';
 
 export type TemporalInspectionStatus =
   | 'authored-off'
@@ -21,14 +21,4 @@ export interface TemporalInspection {
   }>;
   readonly compute: 'available' | 'unavailable';
   readonly storage: 'available' | 'unavailable';
-}
-
-export interface TemporalInspectionInput {
-  readonly authored: boolean;
-  readonly capability: 'available' | 'unavailable';
-  readonly degraded?: boolean;
-  readonly frame?: TemporalFrame;
-  readonly backend?: string;
-  readonly format?: TextureFormat;
-  readonly limits?: Readonly<Record<string, number>>;
 }

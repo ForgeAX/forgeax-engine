@@ -81,11 +81,17 @@ it.each([
     const originalSlot = scene.compositionSlot(0, original.entityKey);
     assert(originalSlot);
     work = 0;
+    const topologyBefore = scene.inspect().topology;
     assets
       .writeRange(mesh, { attribute: 'position', first: 0, values: new Float32Array([-100, 0, 0]) })
       .unwrap();
     expect(draw().renderables).toHaveLength(1000);
     expect(work).toBe(0);
+    // A same-handle content patch keeps draw facts: no topology revision or patch.
+    const topologyAfter = scene.inspect().topology;
+    expect(topologyAfter.revision).toBe(topologyBefore.revision);
+    expect(topologyAfter.patches).toBe(topologyBefore.patches);
+    expect(topologyAfter.contentPatches).toBe(topologyBefore.contentPatches + 1);
     // Draw facts capture a new Mesh root; author records keep their physical address.
     expect(scene.shadowCasterProjection()?.renderables).not.toBe(before?.renderables);
     expect(scene.compositionSlot(0, original.entityKey)).toBe(originalSlot);

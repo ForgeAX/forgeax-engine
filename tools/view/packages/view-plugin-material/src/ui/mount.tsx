@@ -23,14 +23,14 @@ function mount(node: Parameters<ReturnType<typeof createRoot>['render']>[0], pro
 
 export async function mountMaterialPanel(props: MountProps) {
   return mount(
-    <MaterialPanel client={props.client} assetActions={props.assetActions} />,
+    <PanelVisibilityProvider element={props.mountElement}><MaterialPanel client={props.client} assetActions={props.assetActions} /></PanelVisibilityProvider>,
     props,
   );
 }
 
 export async function mountMaterialPropertiesPanel(props: MountProps) {
   return mount(
-    <MaterialPropertiesPanel client={props.client} assetActions={props.assetActions} />,
+    <PanelVisibilityProvider element={props.mountElement}><MaterialPropertiesPanel client={props.client} assetActions={props.assetActions} /></PanelVisibilityProvider>,
     props,
   );
 }

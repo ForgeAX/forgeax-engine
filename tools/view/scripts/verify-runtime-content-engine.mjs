@@ -552,7 +552,7 @@ try {
     assert.notEqual(previewTarget.targetId, target.targetId);
     assert.notEqual(previewTarget.worldId, target.worldId);
     await page.getByTestId('panel-mesh-preview').locator('canvas').waitFor({ state: 'visible' });
-    await page.getByTestId('panel-mesh-properties').getByText('Default', { exact: true }).waitFor();
+    await page.getByTestId('mesh-material-slot-0').getByText('0 · Default', { exact: true }).waitFor();
     const capture = await captureTarget(previewTarget, 'initial-mesh');
     const initialBinding = await readBinding(previewTarget);
     assert.deepEqual(initialBinding.meta.aabb, [-1, -1, -1, 1, 1, 1]);

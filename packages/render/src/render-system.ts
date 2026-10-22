@@ -224,7 +224,7 @@ import {
   worldEntityKey,
 } from './record/frame-snapshot';
 import type { RenderableDrawReceipt } from './record/gpu-draw-receipts';
-import type { GpuPassTimingReason } from './record/gpu-pass-timing/errors';
+import type { GpuPassTimingError } from './record/gpu-pass-timing/errors';
 import type {
   GpuPassTimingCapture,
   GpuPassTimingFrameIdentity,
@@ -315,7 +315,7 @@ type TimingSessionHost = RenderSystemInternals & {
   gpuPassTimingSession?: GpuPassTimingSession | undefined;
   gpuPassTimingCapture?: GpuPassTimingCapture | undefined;
   gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
-  gpuPassTimingBeginReason?: GpuPassTimingReason | undefined;
+  gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
 };
 
 /** Attach the Render-owned timing session without widening the public renderer surface. */
@@ -1402,7 +1402,19 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     keys: [],
   };
   const activePreparedResolverCaches = createPreparedResolverCaches();
-  const lastFrustumStats: { culled: number; total: number } = { culled: 0, total: 0 };
+  // Frustum statistics are lazy inspection facts of the last accepted frame.
+  let lastFrustumSource: { readonly culled: number; readonly total: number } = {
+    culled: 0,
+    total: 0,
+  };
+  const lastFrustumStats = {
+    get culled() {
+      return lastFrustumSource.culled;
+    },
+    get total() {
+      return lastFrustumSource.total;
+    },
+  };
   const lastVisibilityStats: { explicitlyHidden: number } = { explicitlyHidden: 0 };
   let lastMaterialTextureSources: MaterialTextureSourceInspection = {
     sourceFieldsVisited: 0,
@@ -2668,8 +2680,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             ),
           );
         }
-        lastFrustumStats.culled = frustumStats.culled;
-        lastFrustumStats.total = frustumStats.total;
+        lastFrustumSource = frustumStats;
         lastVisibilityStats.explicitlyHidden = visibilityStats.explicitlyHidden;
         if (frame.materialTextureSources !== undefined) {
           lastMaterialTextureSources = Object.freeze({
@@ -3118,7 +3129,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               },
               activeEntityKeys: visibilityProjection.activeEntityKeys,
               activeEntityRevision: visibilityProjection.activeEntityRevision,
-              visibleRasterRows: Math.max(0, frustumStats.total - frustumStats.culled),
+              visibleRasterRows: () => Math.max(0, frustumStats.total - frustumStats.culled),
               ...(captureOnly || frame.cameraVisible === undefined
                 ? {}
                 : { cameraVisible: frame.cameraVisible }),

@@ -123,9 +123,7 @@ export function recordStandardLutFailure(
 }
 
 /** Detached, bounded LUT facts for renderer inspection: a frozen copy of the state. */
-export type StandardLutInspection = StandardLutState;
-
-export function inspectStandardLutState(state: StandardLutState): Readonly<StandardLutInspection> {
+export function inspectStandardLutState(state: StandardLutState): Readonly<StandardLutState> {
   return Object.freeze({
     resident: state.resident,
     lastKnownGood: state.lastKnownGood,

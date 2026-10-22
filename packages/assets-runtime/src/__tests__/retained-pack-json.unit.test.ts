@@ -1,7 +1,9 @@
+import { compressZstd } from '@forgeax/engine-codec/encode';
 import { expect, it, vi } from 'vitest';
 import {
   isRetainedJsonTree,
   parseRetainedPackJson,
+  readDocumentJson,
   readRetainedPackJson,
 } from '../internal/retained-pack-json.js';
 
@@ -121,6 +123,19 @@ it('reads platform Response JSON into an owned retained tree without sharing res
   expect(isRetainedJsonTree(structuredClone(first))).toBe(false);
 });
 
+it('decodes a zstd-stored platform Response document', async () => {
+  const text = '{"assets":[{"payload":{"config":{"label":"night"}}}]}';
+  const compressed = await compressZstd(new TextEncoder().encode(text));
+  if (!compressed.ok) throw new Error('compress failed');
+  const value = await readRetainedPackJson(new Response(compressed.value));
+  expect(value).toEqual(JSON.parse(text));
+  expect(isRetainedJsonTree(value)).toBe(true);
+  expect(await readDocumentJson(new Response(compressed.value))).toEqual(JSON.parse(text));
+  await expect(
+    readDocumentJson(new Response(new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0]))),
+  ).rejects.toBeInstanceOf(SyntaxError);
+});
+
 it('preserves json-only reader identity and receiver without using function.call', async () => {
   const value = { assets: [], opaque: Symbol('custom') };
   let calls = 0;
@@ -195,11 +210,11 @@ it('preserves inherited platform json for a subclass overriding text', async () 
   expect(isRetainedJsonTree(value)).toBe(false);
 });
 
-it('never reads a text getter on an exact platform Response', async () => {
+it('never reads an own arrayBuffer getter on an exact platform Response', async () => {
   const response = new Response('{"assets":[]}');
-  Object.defineProperty(response, 'text', {
+  Object.defineProperty(response, 'arrayBuffer', {
     get() {
-      throw new Error('must not read text getter');
+      throw new Error('must not read arrayBuffer getter');
     },
   });
   const value = await readRetainedPackJson(response);
@@ -233,23 +248,23 @@ it('preserves malformed platform JSON and custom reader rejection', async () => 
   await expect(readRetainedPackJson(response)).rejects.toBe(failure);
 });
 
-it('falls back without reading a changed platform text descriptor', async () => {
+it('falls back without reading a changed platform arrayBuffer descriptor', async () => {
   const prototype = Response.prototype;
-  const original = Object.getOwnPropertyDescriptor(prototype, 'text');
-  if (original === undefined) throw new Error('platform text descriptor is absent');
+  const original = Object.getOwnPropertyDescriptor(prototype, 'arrayBuffer');
+  if (original === undefined) throw new Error('platform arrayBuffer descriptor is absent');
   const response = new Response('{"assets":[]}');
   try {
-    Object.defineProperty(prototype, 'text', {
+    Object.defineProperty(prototype, 'arrayBuffer', {
       configurable: true,
       get() {
-        throw new Error('must not read changed platform text');
+        throw new Error('must not read changed platform arrayBuffer');
       },
     });
     const value = await readRetainedPackJson(response);
     expect(value).toEqual({ assets: [] });
     expect(isRetainedJsonTree(value)).toBe(false);
   } finally {
-    Object.defineProperty(prototype, 'text', original);
+    Object.defineProperty(prototype, 'arrayBuffer', original);
   }
 });
 

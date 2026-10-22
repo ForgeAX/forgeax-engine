@@ -98,7 +98,7 @@ describe('forgeax-view package contribution', () => {
     const materialPreview = claims.find((claim) => claim.id === 'material-preview');
     const materialStats = claims.find((claim) => claim.id === 'material-stats');
     assert.equal(materialStats.closable, true);
-    assert.deepEqual(materialStats.layout, { dock: 'bottom', size: { value: 200, unit: 'px' }, stack: 'tabs', order: 2 });
+    assert.deepEqual(materialStats.layout, { dock: 'right-bottom', stack: 'tabs', order: 2 });
     assert.deepEqual(materialPreview.props.owner, {
       panelId: 'material-preview',
       pageType: VIEW_PAGE_TYPES.material,

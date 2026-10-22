@@ -1,6 +1,7 @@
 import { readAssetBundleTable } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { findVerifiedArtifactBytes } from './shared-immutable.js';
 
 type BundleWindow = NonNullable<ArtifactDescriptor['byteRange']>;
 
@@ -17,6 +18,12 @@ export interface BundleWindowRead<Failure> {
   finish(stored: Uint8Array): Promise<Result<Uint8Array, Failure>>;
   /** Verify a private copy of a value another owner already extracted. */
   reuse(copy: Uint8Array): Promise<Result<Uint8Array, Failure>>;
+  /**
+   * Content digest of the decoded entry. A consumer may keep the realm's shared
+   * view of that content after the extracted value is gone; reusing it avoids a
+   * Range refetch.
+   */
+  readonly digest?: string;
   invalid(reason: string): Failure;
 }
 
@@ -54,7 +61,9 @@ export class BundleStore<Failure> {
       const shared = await existing;
       return shared.ok ? request.reuse(shared.value.slice()) : shared;
     }
-    const alive = existing?.deref();
+    const alive =
+      existing?.deref() ??
+      (request.digest === undefined ? undefined : findVerifiedArtifactBytes(request.digest));
     if (alive !== undefined) {
       // Owners may mutate or transfer their bytes; a reuse is a verified private copy.
       const reused = await request.reuse(alive.slice());

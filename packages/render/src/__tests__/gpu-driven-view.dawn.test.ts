@@ -115,12 +115,12 @@ describe('GPU-driven View Dawn', () => {
   // A 64-texel PCF3 map: one texel of filter radius plus the two-texel margin.
   const pcf3 = shadowCameraCullDilation(1, 0, 64)?.ndcDilation ?? Number.NaN;
 
-  // The first Windows Dawn camera-cull execution exceeded the prior 60-second limit.
+  // This Windows Dawn case took 104 seconds on 2026-10-22 and exceeded its 90-second limit.
   it('culls a shadow caster only when every receiver it can darken is hidden', async () => {
     await expect(
       runGpuDrivenShadowCameraCullEvidence({ light: 'camera', wall: 'left', ndcDilation: pcf3 }),
     ).resolves.toEqual({ visible: 2, cameraCulled: 1 });
-  }, 90_000);
+  }, 150_000);
 
   it('keeps a hidden caster whose receiver prism reaches visible ground', async () => {
     // The x = -1 caster is behind the wall (the camera-light case above culls

@@ -15,6 +15,7 @@ export type WorkspaceInputOptions = {
   bindings?: WorkspaceInputBindings;
   interactionIdFactory?: () => string; shouldCapture?: (event: Event) => boolean;
   onError?: (error: unknown) => void; onFocusSelection?: () => unknown;
+  selectOnClick?: boolean;
   window?: Window | typeof globalThis; document?: Document;
 };
 type RemoveInput = ((reason?: string) => void) & { handlesAbort?: boolean };
@@ -26,7 +27,7 @@ export type WorkspaceShellOptions = {
   api?: ViewWorkspaceClient; presentation?: WorkspacePresentation; resourceBrowser?: boolean; presentationOnly?: boolean; inspectorPanel?: boolean;
   inputControllerFactory?: (options: WorkspaceInputOptions) => ViewWorkspaceInputController;
 };
-import { createViewportInputApi } from './camera-client.ts';
+import { createViewportInputApi } from '@forgeax/view-workspace-core/preview-camera';
 import { reportWorkspaceCommandError, workspaceDiagnosticRecord } from '@forgeax/view-workspace-core/command-error';
 import {
   VIEW_DISPLAY_TAB_ID,
@@ -192,6 +193,7 @@ export class ViewWorkspaceInputController {
   declare shouldCapture: (event: Event) => boolean;
   declare onError: (error: unknown) => void;
   declare onFocusSelection: () => unknown;
+  declare selectOnClick: boolean;
   declare speed: number;
   declare held: Set<string>;
   declare shiftHeld: boolean;
@@ -225,6 +227,7 @@ export class ViewWorkspaceInputController {
     shouldCapture = () => true,
     onError = () => {},
     onFocusSelection = () => {},
+    selectOnClick = true,
     window = globalThis,
     document = globalThis.document,
   }: Partial<WorkspaceInputOptions> = {}) {
@@ -241,6 +244,7 @@ export class ViewWorkspaceInputController {
     this.shouldCapture = shouldCapture;
     this.onError = onError;
     this.onFocusSelection = onFocusSelection;
+    this.selectOnClick = selectOnClick;
     this.speed = 4;
     this.held = new Set();
     this.shiftHeld = false;
@@ -803,7 +807,7 @@ export class ViewWorkspaceInputController {
       }
     };
     const click = (event: MouseEvent) => {
-      if (orbitBindings) return;
+      if (!this.selectOnClick || orbitBindings) return;
       const consumed = consumedClick;
       consumedClick = false;
       const dragged = clickStart && Math.hypot(event.clientX - clickStart.x, event.clientY - clickStart.y) > 4;

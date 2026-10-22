@@ -54,24 +54,40 @@ export function createPresentationDraws() {
   };
 }
 
-/** Display workset used by recording and its later submitted-picture checks. */
+const displayWorksets = new WeakMap<
+  DispatchList,
+  {
+    readonly renderables: FrameList<RenderableSnapshot>;
+    readonly value: FrameList<RenderableSnapshot>;
+  }
+>();
+
+/**
+ * Display workset used by recording and its later submitted-picture checks.
+ * It reads only the fixed dispatch and immutable snapshots, so an unchanged
+ * culled frame reuses the previous workset instead of rescanning every row.
+ */
 export function projectDisplayRenderables(
   renderables: FrameList<RenderableSnapshot>,
   dispatch: DispatchList,
 ): FrameList<RenderableSnapshot> {
+  const cached = displayWorksets.get(dispatch);
+  if (cached?.renderables === renderables) return cached.value;
   const displayRenderableIndices = new Set<number>();
   for (const entry of dispatch) {
     if (entry.renderableIndex === undefined) continue;
     if (entry.tags.LightMode !== 'ShadowCaster')
       displayRenderableIndices.add(entry.renderableIndex);
   }
-  return renderables.filter(
+  const value = renderables.filter(
     (renderable, index) =>
       displayRenderableIndices.has(index) &&
       renderable.authorVisible !== false &&
       renderable.instances?.instanceCount !== 0 &&
       renderable.spriteInstances?.instanceCount !== 0,
   );
+  displayWorksets.set(dispatch, { renderables, value });
+  return value;
 }
 
 /** Check material readiness once, after the display work has actually submitted. */

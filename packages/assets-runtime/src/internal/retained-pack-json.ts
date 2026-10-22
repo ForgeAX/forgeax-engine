@@ -1,7 +1,8 @@
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { retainJsonMaterialFacts } from './retained-material-facts.js';
 
-// Capture optional platform methods without consulting response.text or function.call.
+// Capture optional platform methods without consulting function.call.
 // The fast path assumes standard platform Body semantics, not arbitrary polyfills.
 // A global subclass or adapter prototype must retain the original json-reader path.
 const responsePrototype = globalThis.Response?.prototype;
@@ -15,29 +16,47 @@ const platformReadJson =
   platformResponsePrototype === undefined
     ? undefined
     : Object.getOwnPropertyDescriptor(platformResponsePrototype, 'json')?.value;
-const platformReadText =
+const platformReadArrayBuffer =
   platformResponsePrototype === undefined
     ? undefined
-    : Object.getOwnPropertyDescriptor(platformResponsePrototype, 'text')?.value;
+    : Object.getOwnPropertyDescriptor(platformResponsePrototype, 'arrayBuffer')?.value;
 
-/** Retain only owner-parsed platform JSON; custom readers keep their original ownership. */
-export async function readRetainedPackJson(response: Pick<Response, 'json'>): Promise<unknown> {
+/**
+ * Parse a document body. A standard platform Response body is read as bytes so a
+ * zstd-stored delivery document decodes here; custom readers own their body and
+ * its encoding and keep their original json result.
+ */
+async function readDocument(
+  response: Pick<Response, 'json'>,
+  parse: (text: string) => unknown,
+): Promise<unknown> {
   const readJson = response.json;
   if (
-    typeof platformReadJson === 'function' &&
-    typeof platformReadText === 'function' &&
-    readJson === platformReadJson &&
-    Object.getPrototypeOf(response) === platformResponsePrototype &&
-    !Object.hasOwn(response, 'json') &&
-    !Object.hasOwn(response, 'text') &&
-    Object.getOwnPropertyDescriptor(platformResponsePrototype, 'json')?.value ===
-      platformReadJson &&
-    Object.getOwnPropertyDescriptor(platformResponsePrototype, 'text')?.value === platformReadText
-  ) {
-    return parseRetainedPackJson(await Reflect.apply(platformReadText, response, []));
-  }
-  return Reflect.apply(readJson, response, []);
+    typeof platformReadJson !== 'function' ||
+    typeof platformReadArrayBuffer !== 'function' ||
+    readJson !== platformReadJson ||
+    Object.getPrototypeOf(response) !== platformResponsePrototype ||
+    Object.hasOwn(response, 'json') ||
+    Object.hasOwn(response, 'arrayBuffer') ||
+    Object.getOwnPropertyDescriptor(platformResponsePrototype, 'json')?.value !==
+      platformReadJson ||
+    Object.getOwnPropertyDescriptor(platformResponsePrototype, 'arrayBuffer')?.value !==
+      platformReadArrayBuffer
+  )
+    return Reflect.apply(readJson, response, []);
+  const bytes: ArrayBuffer = await Reflect.apply(platformReadArrayBuffer, response, []);
+  const text = await decodeDocumentText(new Uint8Array(bytes));
+  if (!text.ok) throw new SyntaxError(`document decode failed: ${text.error.code}`);
+  return parse(text.value);
 }
+
+/** Read a catalog or other JSON document body. */
+export const readDocumentJson = (response: Pick<Response, 'json'>): Promise<unknown> =>
+  readDocument(response, JSON.parse);
+
+/** Retain only owner-parsed platform JSON; custom readers keep their original ownership. */
+export const readRetainedPackJson = (response: Pick<Response, 'json'>): Promise<unknown> =>
+  readDocument(response, parseRetainedPackJson);
 
 // Only JSON text parsed by this owner can acquire the retained-tree brand.
 // Public cache objects, including proxies around parsed nodes, are never branded.

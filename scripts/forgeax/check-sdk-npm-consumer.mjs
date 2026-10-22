@@ -249,11 +249,12 @@ async function verifyInstalledNpmOwners(installedSdk, consumerEnv, output, parti
     await sdkGpuStage('verifyInstalledNpmDiagnostics', () =>
       execFileAsync(
         process.execPath,
-        [resolve(root, 'tools/view-plugins/integration/verify-diagnostic-pages.mjs')],
+        [resolve(root, 'tools/view/scripts/verify-diagnostic-pages-integration.mjs')],
         {
           cwd: installedSdk,
           env: {
             ...consumerEnv,
+            FORGEAX_VIEW_ENGINE_SOURCE_ROOT: root,
             FORGEAX_VIEW_TOOL_PACKAGE: resolve(
               installedSdk,
               '.forgeax/cli-runtime/node_modules/@forgeax/view',

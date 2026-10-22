@@ -2752,7 +2752,6 @@ export const LTC_TABLE_HASHES = {
   lambert: 'a391de32f868fd4aa8774917b793174b7be804c08e2fb8924c30f31d7aa8dcd7',
   ggx: 'fa1ecbc6deb3c85ddf603cdf1e98e30279444f905eb1cebb849d761b570dd696',
 } as const;
-export const LTC_TABLE_INPUT_HASHES = LTC_SOURCE_PROVENANCE.inputSha256;
 
 export function generateLtcTables(): { lambert: Uint16Array; ggx: Uint16Array } {
   return { lambert: new Uint16Array(LTC_LAMBERT), ggx: new Uint16Array(LTC_GGX) };

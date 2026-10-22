@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
-import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { createPrimitiveMesh, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import type { MeshAsset, TextureAsset } from '@forgeax/engine-types';
@@ -160,6 +160,38 @@ it('transfers only mesh channel and texture region bytes without publishing thei
       })
       .unwrap();
     expect(texture.data[(10 * 1024 + 510) * 4]).toBe(127);
+  } finally {
+    f.close();
+  }
+});
+
+it('publishes a multi-range mesh write as one patch with changed bytes only', () => {
+  const f = fixture();
+  try {
+    const source = runtimeAssets(f.assets).borrow<MeshAsset>(f.mesh).unwrap();
+    const stride = deriveVertexLayoutProjection(source.attributes).arrayStride;
+    const rows = source.vertices.slice(0, (2 * stride) / 4);
+    const indices =
+      source.indices instanceof Uint16Array ? Uint16Array.of(0, 0, 0) : Uint32Array.of(0, 0, 0);
+    f.assets
+      .writeRange(f.mesh, [
+        { first: 2, vertices: rows },
+        { first: 3, indices },
+      ])
+      .unwrap();
+    const { packet } = f.transfer();
+    expect(packet.assets).toHaveLength(0);
+    expect(packet.upserts).toHaveLength(0);
+    expect(packet.assetPatches).toHaveLength(1);
+    const patch = packet.assetPatches[0];
+    assert(patch);
+    const patchBytes = patch.ranges.reduce((sum, range) => sum + range.bytes.byteLength, 0);
+    // Interleaved rows once, their derived packed channels once, and three indices.
+    expect(patchBytes).toBe(2 * stride * 2 + 3 * indices.BYTES_PER_ELEMENT);
+    const accepted = f.receiver.accept(packet).unwrap();
+    const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
+    expect([...mesh.vertices.subarray((2 * stride) / 4, (4 * stride) / 4)]).toEqual([...rows]);
+    expect([...(mesh.indices ?? []).subarray(3, 6)]).toEqual([0, 0, 0]);
   } finally {
     f.close();
   }

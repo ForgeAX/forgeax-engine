@@ -81,7 +81,7 @@ function target(
   return createRenderPipelineTarget(graph, label, descriptor);
 }
 
-function buildUrp(
+export function buildStandardForwardLane(
   context: StandardPipelineBuildContext,
   topology: RenderPipelineTopology,
   lighting: StandardTopologyInputValue,
@@ -625,5 +625,3 @@ function buildUrp(
   if (!post.ok) return post;
   return ok(undefined);
 }
-
-export const buildStandardForwardLane = buildUrp;

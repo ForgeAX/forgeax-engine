@@ -156,6 +156,13 @@ test('CI install entrypoints clean stale workspace sources first', () => {
     assert.doesNotMatch(consumer, /pnpm install --frozen-lockfile/);
     assert.match(consumer, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);
   }
+  const nativeRayQuery = readFileSync('.github/workflows/native-ray-query.yml', 'utf8');
+  assert.doesNotMatch(nativeRayQuery, /pnpm install --frozen-lockfile/);
+  assert.equal(
+    (nativeRayQuery.match(/node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/g) ?? []).length,
+    2,
+    'both Native Ray Query workspaces must clean retired submodules before installing',
+  );
 });
 
 test('ordinary CI installs only the current platform and never executes root lifecycle hooks', async () => {

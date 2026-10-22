@@ -93,7 +93,6 @@ export type {
   ExecutionWorkerDecision,
   ExecutionWorkerPolicy,
   ExecutionWorkersOptions,
-  ExecutionWorldHealth,
   KernelDispatchReason,
   PreparedExecutionBootstrap,
 } from './execution';
@@ -174,7 +173,6 @@ export {
   ENGINE_WORKSPACE_COMMAND_TOPIC,
   ENGINE_WORKSPACE_PLUGIN_ID,
   ENGINE_WORKSPACE_PREVIEWABLE_KINDS,
-  ENGINE_WORKSPACE_SERVICE,
   type EngineWorkspaceAppTargetOptions,
   EngineWorkspaceError,
   engineWorkspacePlugin,

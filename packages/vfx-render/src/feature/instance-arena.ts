@@ -24,8 +24,16 @@ export interface VfxArenaRange {
   readonly scope: string;
   readonly layout: Layout;
   readonly slot: number;
+  /** Lease key (`scope:source`), built once with the lease. */
+  readonly lease: string;
 }
-type Range = VfxArenaRange;
+/** Arena-private lease state carried on the same range object. */
+interface Range extends VfxArenaRange {
+  /** Set once the lease is deleted; a released range is never valid again. */
+  released: boolean;
+  /** Serial of the last retained frame that confirmed this lease. */
+  retained: number;
+}
 function retainedStride(size: number, alignment: number, elementStride: number): number {
   if (!Number.isSafeInteger(elementStride) || elementStride <= 0) return NaN;
   const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
@@ -80,20 +88,49 @@ export function createVfxInstanceArena() {
     readonly generation: number;
     readonly limits?: Readonly<Partial<GPUSupportedLimits>>;
   };
-  let retainedScopes: Map<string, Map<string, Range>> | undefined;
+  /**
+   * Leases by scope and source name, maintained only when a lease is created
+   * or deleted. Retaining a steady roster writes one serial per range; it no
+   * longer rebuilds lease keys or per-frame lookup maps. A lookup accepts a
+   * range only when the current retained frame confirmed it.
+   */
+  const leaseIndex = new Map<string, Map<string, Range>>();
+  /** Serial of the open retained frame, consumed by the next pack. */
+  let retainedSerial: number | undefined;
+  const addLease = (range: Range) => {
+    leases.set(range.lease, range);
+    let scoped = leaseIndex.get(range.scope);
+    if (scoped === undefined) {
+      scoped = new Map();
+      leaseIndex.set(range.scope, scoped);
+    }
+    scoped.set(range.source, range);
+  };
+  const dropLease = (range: Range) => {
+    leases.delete(range.lease);
+    range.released = true;
+    const scoped = leaseIndex.get(range.scope);
+    if (scoped?.get(range.source) !== range) return;
+    scoped.delete(range.source);
+    if (scoped.size === 0) leaseIndex.delete(range.scope);
+  };
   const begin = (input: FrameInput) => {
     if (generation !== input.generation) {
       generation = input.generation;
       layouts.clear();
+      leases.forEach((lease) => {
+        lease.released = true;
+      });
       leases.clear();
+      leaseIndex.clear();
       bindingLayouts.clear();
       nextId = 0;
     }
     serial += 1;
-    leases.forEach((lease, key) => {
+    leases.forEach((lease) => {
       if (input.liveOwners.has(lease.owner)) return;
       lease.layout.slots[lease.slot] = undefined;
-      leases.delete(key);
+      dropLease(lease);
     });
   };
   const pack = (input: {
@@ -105,7 +142,8 @@ export function createVfxInstanceArena() {
     readonly transferPasses?: boolean;
     readonly limits?: Readonly<Partial<GPUSupportedLimits>>;
   }): readonly RenderFeatureWork[] => {
-    if (retainedScopes === undefined) begin(input);
+    const retainedFrame = retainedSerial;
+    if (retainedFrame === undefined) begin(input);
     const instances = new Map<string, VfxArenaInstance>();
     for (const row of input.instances) instances.set(row.prefix, row);
     const instanceFor = (name: string) => {
@@ -115,14 +153,27 @@ export function createVfxInstanceArena() {
       // Internal tests and non-stock naming keep the exact prefix boundary.
       return input.instances.find((row) => name.startsWith(`${row.prefix}.`));
     };
-    const retained = retainedScopes;
-    retainedScopes = undefined;
-    const shared = retained?.get('frame') ?? new Map<string, Range>();
+    retainedSerial = undefined;
+    const retainedFrameIndex = retainedFrame === undefined ? undefined : leaseIndex.get('frame');
+    const retainedRange = (index: Map<string, Range> | undefined, name: string) => {
+      const range = index?.get(name);
+      return range !== undefined && !range.released && range.retained === retainedFrame
+        ? range
+        : undefined;
+    };
+    // Ordinary arena declarations of this pack. Retained ranges are read from
+    // the persistent index instead of being copied into per-frame maps.
+    const shared = new Map<string, Range>();
     const nextBindingLayouts: typeof bindingLayouts = new Map();
     const packed = input.work.map((work): RenderFeatureWork => {
       const scope = work.scope === 'frame' ? 'frame' : `view:${work.scope.view}`;
-      const local =
-        work.scope === 'frame' ? shared : (retained?.get(scope) ?? new Map<string, Range>());
+      const local = work.scope === 'frame' ? shared : new Map<string, Range>();
+      const retainedLocal =
+        retainedFrame === undefined
+          ? undefined
+          : work.scope === 'frame'
+            ? retainedFrameIndex
+            : leaseIndex.get(scope);
       const arenas = new Map<string, ArenaBuffer>();
       const resources: Resource[] = [];
       for (const resource of work.resources) {
@@ -160,7 +211,7 @@ export function createVfxInstanceArena() {
             !resource.usage.every((usage, index) => usage === range?.layout.usage[index]))
         ) {
           range.layout.slots[range.slot] = undefined;
-          leases.delete(leaseKey);
+          dropLease(range);
           range = undefined;
         }
         if (range === undefined) {
@@ -196,9 +247,12 @@ export function createVfxInstanceArena() {
             scope,
             layout,
             slot,
+            lease: leaseKey,
+            released: false,
+            retained: -1,
           };
           layout.slots[slot] = range;
-          leases.set(leaseKey, range);
+          addLease(range);
         }
         range.layout.lastUsed = serial;
         local.set(resource.name, range);
@@ -218,7 +272,11 @@ export function createVfxInstanceArena() {
         }
       }
       const range = (name: string) =>
-        local.get(name) ?? (work.scope === 'frame' ? undefined : shared.get(name));
+        local.get(name) ??
+        retainedRange(retainedLocal, name) ??
+        (work.scope === 'frame'
+          ? undefined
+          : (shared.get(name) ?? retainedRange(retainedFrameIndex, name)));
       const at = (name: string, offset = 0, size?: number) => {
         const mapped = range(name);
         if (
@@ -389,10 +447,6 @@ export function createVfxInstanceArena() {
         });
         return draws === pass.draws ? pass : { ...pass, draws };
       });
-      if (work.scope === 'frame')
-        local.forEach((value, name) => {
-          shared.set(name, value);
-        });
       return { ...work, resources, passes };
     });
     layouts.forEach((layout, key) => {
@@ -402,8 +456,8 @@ export function createVfxInstanceArena() {
       )
         return;
       layouts.delete(key);
-      leases.forEach((lease, name) => {
-        if (lease.layout === layout) leases.delete(name);
+      leases.forEach((lease) => {
+        if (lease.layout === layout) dropLease(lease);
       });
     });
     bindingLayouts = nextBindingLayouts;
@@ -411,29 +465,27 @@ export function createVfxInstanceArena() {
   };
   return Object.assign(pack, {
     discardRetainedFrame: () => {
-      retainedScopes = undefined;
+      retainedSerial = undefined;
     },
     beginRetainedFrame: (input: FrameInput) => {
       begin(input);
-      const scopes = new Map<string, Map<string, Range>>();
-      retainedScopes = scopes;
-      const retain = (entries: readonly Range[]) => {
-        if (
-          entries.some(
-            (range) =>
-              leases.get(`${range.scope}:${range.source}`) !== range ||
-              !input.liveOwners.has(range.owner),
-          )
-        )
-          return false;
-        for (const range of entries) {
-          range.layout.lastUsed = serial;
-          let ranges = scopes.get(range.scope);
-          if (ranges === undefined) {
-            ranges = new Map();
-            scopes.set(range.scope, ranges);
+      const frame = serial;
+      retainedSerial = frame;
+      const retain = (entries: readonly VfxArenaRange[]) => {
+        // One emitter's ranges share an owner; test each distinct run once.
+        let owner: string | undefined;
+        for (const entry of entries) {
+          const range = entry as Range;
+          if (range.released) return false;
+          if (range.owner !== owner) {
+            if (!input.liveOwners.has(range.owner)) return false;
+            owner = range.owner;
           }
-          ranges.set(range.source, range);
+        }
+        for (const entry of entries) {
+          const range = entry as Range;
+          range.layout.lastUsed = frame;
+          range.retained = frame;
         }
         return true;
       };
@@ -481,7 +533,7 @@ export function createVfxInstanceArena() {
           }
           if (range !== undefined) {
             range.layout.slots[range.slot] = undefined;
-            leases.delete(key);
+            dropLease(range);
           }
           const capacity = Math.min(16, Math.floor(arenaBufferLimit(input.limits, usage) / stride));
           if (
@@ -524,9 +576,12 @@ export function createVfxInstanceArena() {
             scope,
             layout,
             slot,
+            lease: key,
+            released: false,
+            retained: -1,
           };
           layout.slots[slot] = range;
-          leases.set(key, range);
+          addLease(range);
           retain([range]);
           return range;
         },

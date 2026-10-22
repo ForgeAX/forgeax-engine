@@ -363,13 +363,36 @@ describe('dynamic Viewer panel contributions', () => {
     assert.equal(nextHost.parentNode, nextAnchor);
   });
 
+  it('reattaches a retained panel when Dock replaces its slot anchor', () => {
+    const { document, root } = fakeDocument();
+    const registry = createViewSlotRegistry(document);
+    const claim = { id: 'inspector', pageType: 'scene', layout: { dock: 'right', stack: 'tabs', order: 0 } };
+    const unclaim = registry.claim(claim);
+    const api = fakeDockApi();
+    const firstAnchor = node('div');
+    firstAnchor.id = 'forgeax-view-slot-inspector';
+    root.append(firstAnchor);
+    reconcileDockPanels(api, [claim], { availableWidth: 800, availableHeight: 600, attach: id => registry.resolve(id) });
+    const host = registry.resolve('inspector');
+    const child = node('div');
+    registry.mount('inspector', child);
+    firstAnchor.remove();
+    const nextAnchor = node('div');
+    nextAnchor.id = firstAnchor.id;
+    root.append(nextAnchor);
+    reconcileDockPanels(api, [claim], { availableWidth: 800, availableHeight: 600, attach: id => registry.resolve(id) });
+    assert.equal(nextAnchor.contains(host), true);
+    assert.equal(host.contains(child), true);
+    unclaim();
+  });
+
   it('solves a generic grid-docked layout from independent panel claims', () => {
     const api = fakeDockApi();
     const claims = [
       { id: 'scene-tree', titleKey: 'scene', layout: { dock: 'left', size: { value: 0.17, unit: 'fraction' }, stack: 'tabs', order: 0 } },
       { id: 'viewport', titleKey: 'viewport', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
       { id: 'inspector', titleKey: 'inspector', layout: { dock: 'right', size: { value: 0.25, unit: 'fraction' }, stack: 'tabs', order: 0 } },
-      { id: 'content-browser', titleKey: 'content', layout: { dock: 'bottom', size: { value: 0.34, unit: 'fraction' }, stack: 'tabs', order: 0 } },
+      { id: 'content-browser', titleKey: 'content', layout: { dock: 'bottom', size: { value: 0.34, unit: 'fraction', additionalPx: 200 }, stack: 'tabs', order: 0 } },
     ];
     reconcileDockPanels(api, [claims[3]]);
     assert.deepEqual(api.panels.map(({ id }) => id), ['content-browser']);
@@ -382,7 +405,7 @@ describe('dynamic Viewer panel contributions', () => {
       direction: 'below',
       referencePanel: 'viewport',
     });
-    assert.equal(api.getPanel('content-browser').options.initialHeight, 204);
+    assert.equal(api.getPanel('content-browser').options.initialHeight, 404);
     assert.deepEqual(api.getPanel('scene-tree').options.position, {
       direction: 'left',
       referencePanel: 'viewport',
@@ -395,6 +418,54 @@ describe('dynamic Viewer panel contributions', () => {
     assert.equal(api.getPanel('inspector').options.initialWidth, 250);
     reconcileDockPanels(api, [claims[1]]);
     assert.deepEqual(api.panels.map(({ id }) => id), ['viewport']);
+  });
+
+  it('keeps the existing tab active when a contributed panel joins its group', () => {
+    const api = fakeDockApi();
+    const claims = [
+      { id: 'viewport', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'inspector', layout: { dock: 'right', stack: 'tabs', order: 0 } },
+      { id: 'parameters', layout: { dock: 'right', stack: 'tabs', order: 900 } },
+    ];
+    reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
+    assert.equal(api.getPanel('inspector').options.inactive, undefined);
+    assert.deepEqual(api.getPanel('parameters').options.position, {
+      direction: 'within', referencePanel: 'inspector',
+    });
+    assert.equal(api.getPanel('parameters').options.inactive, true);
+  });
+
+  it('places a right-bottom group below any right group at half its height', () => {
+    const api = fakeDockApi();
+    const claims = [
+      { id: 'preview', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'properties', layout: { dock: 'right', stack: 'tabs', order: 0 } },
+      { id: 'statistics', layout: { dock: 'right-bottom', stack: 'tabs', order: 2 } },
+    ];
+    reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
+    assert.deepEqual(api.panels.map(panel => panel.id), ['preview', 'properties', 'statistics']);
+    assert.deepEqual(api.getPanel('statistics').options.position, { direction: 'below', referencePanel: 'properties' });
+    assert.equal(api.getPanel('statistics').options.initialHeight, 300);
+  });
+
+  it('lets a right-bottom group occupy the right side alone', () => {
+    const api = fakeDockApi();
+    const claims = [
+      { id: 'preview', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'statistics', layout: { dock: 'right-bottom', stack: 'tabs', order: 2 } },
+    ];
+    reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
+    assert.deepEqual(api.getPanel('statistics').options.position, { direction: 'right', referencePanel: 'preview' });
+    assert.equal(api.getPanel('statistics').options.initialHeight, undefined);
+  });
+
+  it('accepts the right-bottom zone during claim registration', () => {
+    const { document } = fakeDocument();
+    const registry = createViewSlotRegistry(document);
+    registry.claim({ id: 'statistics', pageType: 'material', layout: {
+      dock: 'right-bottom', stack: 'tabs', order: 2,
+    } });
+    assert.equal(registry.getClaims()[0].layout.dock, 'right-bottom');
   });
 
   it('passes panel closable=false into dock params for pinned slots', () => {

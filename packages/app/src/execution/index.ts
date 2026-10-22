@@ -43,7 +43,6 @@ export type {
   ExecutionWorkerDecision,
   ExecutionWorkerPolicy,
   ExecutionWorkersOptions,
-  ExecutionWorldHealth,
   KernelDispatchReason,
 } from './types';
 export {

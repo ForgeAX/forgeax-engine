@@ -46,7 +46,6 @@ export type ExecutionCapabilities = Readonly<
 >;
 
 export type ExecutionEngineHealth = 'idle' | 'starting' | 'running' | 'stopped' | 'faulted';
-export type ExecutionWorldHealth = WorldExecutionHealth;
 
 export type KernelDispatchReason =
   | 'no-eligible-kernel'
@@ -130,7 +129,7 @@ export interface ExecutionReport {
   };
   readonly world: {
     readonly identity: string | null;
-    readonly health: ExecutionWorldHealth;
+    readonly health: WorldExecutionHealth;
     readonly partialWrite: boolean;
     readonly retryable: boolean;
   };

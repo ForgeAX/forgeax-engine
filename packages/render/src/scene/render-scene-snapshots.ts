@@ -102,20 +102,43 @@ function materialHasDisplacement(resource: MaterialResource, materials?: Materia
   );
 }
 
+/** A fixed MaterialFrame answers each material table once; per-frame temporal reads reuse it. */
+const displacementByFrame = new WeakMap<MaterialFrame, WeakMap<object, boolean>>();
+
 export function hasDisplacementSource(
   snapshot: RenderableSnapshot,
   materials?: MaterialFrame,
 ): boolean {
-  if (snapshot.materials.length === 0) return materialHasDisplacement(snapshot.material, materials);
-  for (const resource of snapshot.materials) {
-    if (materialHasDisplacement(resource, materials)) return true;
+  let answers: WeakMap<object, boolean> | undefined;
+  if (materials !== undefined) {
+    answers = displacementByFrame.get(materials);
+    if (answers === undefined) {
+      answers = new WeakMap();
+      displacementByFrame.set(materials, answers);
+    }
   }
-  return false;
+  // Without a fixed frame the live resource snapshot is read on every call.
+  const key = snapshot.materials.length === 0 ? snapshot.material : snapshot.materials;
+  const cached = answers?.get(key);
+  if (cached !== undefined) return cached;
+  let found = false;
+  if (snapshot.materials.length === 0)
+    found = materialHasDisplacement(snapshot.material, materials);
+  else
+    for (const resource of snapshot.materials)
+      if (materialHasDisplacement(resource, materials)) {
+        found = true;
+        break;
+      }
+  answers?.set(key, found);
+  return found;
 }
 
 export interface CachedWorldBounds {
   readonly radius: number;
   readonly bounds: RenderSceneBounds | null;
+  /** Fixed material frame that proved `radius`; the same frame proves it again. */
+  materials?: MaterialFrame | undefined;
 }
 
 interface TemporalMemo {

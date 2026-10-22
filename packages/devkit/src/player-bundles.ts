@@ -105,7 +105,7 @@ function buckets<T>(
 }
 
 /** Every catalog transport keeps Pack location and source path on its rows. */
-function catalogRows(catalog: unknown): readonly Record<string, unknown>[] {
+export function catalogRows(catalog: unknown): readonly Record<string, unknown>[] {
   let rows = catalog;
   for (let depth = 0; depth < 2 && !Array.isArray(rows); depth++)
     rows = rows !== null && typeof rows === 'object' ? (rows as { entries?: unknown }).entries : [];

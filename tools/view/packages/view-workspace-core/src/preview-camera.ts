@@ -1,3 +1,4 @@
+import type { EngineWorkspaceCameraInput, EngineWorkspacePresentation } from '@forgeax/engine/app';
 import type { ViewWorkspaceClient } from './client.ts';
 import type { WorkspaceTarget } from './contract.ts';
 import { VIEW_WORKSPACE_TAB_ID, workspaceError } from './contract.ts';
@@ -182,6 +183,36 @@ export async function commitPreviewCameraPivot(
 }
 
 export { selectMeshPreviewCameraTarget } from './resource-open.ts';
+
+const localCameraMethods = {
+  getCamera: 'getCamera',
+  beginCamera: 'beginCameraInteraction',
+  updateCamera: 'updateCameraDraft',
+  commitCamera: 'commitCamera',
+  abortCamera: 'abortCameraInteraction',
+} as const;
+
+/** Camera input borrows the canvas owner's public target methods when available. */
+export function createViewportInputApi(
+  api: ViewWorkspaceClient,
+  presentation: Pick<EngineWorkspacePresentation, 'resolveTarget'> | undefined,
+  target: { targetId: string },
+): ViewWorkspaceClient {
+  const local = presentation?.resolveTarget?.(target.targetId);
+  if (!local) return api;
+  return new Proxy(api, { get(client, key) {
+    if (Object.hasOwn(localCameraMethods, key)) {
+      const method = local[localCameraMethods[key as keyof typeof localCameraMethods]];
+      if (!method) throw new Error(`Engine target camera method is unavailable: ${String(key)}`);
+      return (input: EngineWorkspaceCameraInput) => {
+        const owned: EngineWorkspaceCameraInput = { ...input, clientId: `${api.clientId}:canvas` };
+        return Promise.resolve(method(owned));
+      };
+    }
+    const value = Reflect.get(client, key, client);
+    return typeof value === 'function' ? value.bind(client) : value;
+  } }) as ViewWorkspaceClient;
+}
 
 /** Same motion samples the scene viewport submits through camera.update. */
 export type PreviewCameraMotion = {

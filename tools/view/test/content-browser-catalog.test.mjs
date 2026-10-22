@@ -1,7 +1,70 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { it } from 'node:test';
 import { build } from 'esbuild';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+
+it('renders collapsible single-output Pack cards without changing other source presentations', async () => {
+  const bundled = await build({
+    stdin: {
+      contents: `export { CBGrid } from './CBGrid.tsx'; export { deriveViewItems } from './derived-view.ts';`,
+      resolveDir: resolve(import.meta.dirname, '../packages/view-plugin-content-browser/src/ui'),
+    },
+    bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic',
+    external: ['react', 'react/*'], loader: { '.css': 'empty' }, write: false,
+  });
+  const module = { exports: {} };
+  new Function('require', 'module', bundled.outputFiles[0].text)(createRequire(import.meta.url), module);
+  const { CBGrid, deriveViewItems } = module.exports;
+  const file = (count, name = `pack-${count}.pack.ts`, isAssetPackage = true) => ({
+    type: 'file', path: `assets/${name}`, diskPath: `assets/${name}`, name,
+    family: 'pack', isAssetPackage, kindLabel: '',
+    assets: Array.from({ length: count }, (_, index) => ({
+      type: 'asset', guid: `asset-${index}`, kind: 'mesh', name: `mesh-${index}`, packPath: `assets/${name}`,
+    })),
+  });
+  const render = (source, { expanded = false, searchQuery = '', families = ['pack'], layout = 'grid' } = {}) => {
+    const expandedPacks = new Set(expanded ? [source.path] : []);
+    const { viewItems: items, searchActive } = deriveViewItems({
+      folders: [], files: [source], currentPath: 'assets', searchQuery,
+      activeFamilies: new Set(families), activeKinds: new Set(),
+      sortState: { key: 'name', dir: 'asc' }, expandedPacks, withKindLabel: value => value,
+    });
+    const noop = () => {};
+    return renderToStaticMarkup(createElement(CBGrid, {
+      items, searchActive, expandedPacks, layout, thumbnailSize: 96,
+      selectedIds: new Set(), thumbnails: new Map(), onVisibleAssets: noop,
+      onSelect: noop, onActivate: noop, onContextMenu: noop,
+      onTogglePackExpansion: noop, onBlankClick: noop,
+    }));
+  };
+  for (const layout of ['grid', 'list']) {
+    for (const count of [1, 2]) {
+      const source = file(count);
+      for (const expanded of [false, true, false]) {
+        const html = render(source, { layout, expanded });
+        assert.match(html, new RegExp(`class="cb-group-badge${expanded ? ' open' : ''}"`));
+        assert.match(html, new RegExp(`class="cb-group-badge-num">${count}</span>`));
+        assert.equal((html.match(/data-cb-guid=/g) ?? []).length, expanded ? count : 0);
+        assert.equal((html.match(/data-cb-group=/g) ?? []).length, expanded ? count + 1 : 0);
+        assert.equal(html.includes('cb-pack-expanded'), expanded);
+        assert.equal(html.includes('cb-group-card'), count > 1);
+      }
+    }
+    for (const expanded of [false, true]) {
+      assert.doesNotMatch(render(file(0), { layout, expanded }), /cb-group-badge|data-cb-group=/);
+      assert.doesNotMatch(render(file(1, 'guide.html', false), { layout, expanded, families: [] }), /cb-group-badge|data-cb-group=/);
+      const unfiltered = render(file(1), { layout, expanded, families: [] });
+      assert.doesNotMatch(unfiltered, /data-cb-path=|cb-group-badge|data-cb-group=/);
+      assert.match(unfiltered, /data-cb-guid="asset-0"/);
+      const searched = render(file(1), { layout, expanded, searchQuery: 'pack-1' });
+      assert.doesNotMatch(searched, /cb-group-badge|data-cb-group=/);
+      assert.match(searched, /data-cb-guid="asset-0"/);
+    }
+  }
+});
 
 it('shows Pack source keys while retaining asset identity and other names', async () => {
   const bundled = await build({
@@ -39,7 +102,7 @@ it('projects the Game 3D fixture source counts and directory tree', async () => 
     ['assets/environment.pack.ts', 1], ['assets/fantasy-meshes.pack.ts', 3],
     ['assets/game.pack.ts', 1], ['assets/geometry.pack.ts', 8],
     ['assets/materials.pack.ts', 15], ['assets/physics.pack.json', 1],
-    ['assets/scene.pack.ts', 1], ['assets/guide.ui.html', 1],
+    ['assets/scene.pack.ts', 4], ['assets/guide.ui.html', 1],
   ]) assert.equal(counts.get(path), count, path);
   for (const folder of ['assets/camera', 'assets/player', 'assets/runtime-vase', 'assets/ui', 'assets/world']) {
     assert(catalog.folders.some(item => item.path === folder), folder);

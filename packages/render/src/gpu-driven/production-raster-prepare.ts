@@ -549,6 +549,8 @@ export class BatchPreparation {
       readonly execution?: BatchExecution;
       readonly materialAddress?: number | undefined;
       readonly geometryAddress?: number | undefined;
+      /** Scene geometry whose pinned version proved geometryAddress. */
+      readonly geometry?: import('../scene/mesh-frame').MeshGeometry | undefined;
       /** Render state is author-mutable in place; its serialization stays observed. */
       readonly renderState?: string | undefined;
     }

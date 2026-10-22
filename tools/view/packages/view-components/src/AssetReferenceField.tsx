@@ -1,4 +1,5 @@
 import { Box, ChevronDown, Crosshair, ExternalLink, Focus, Folder, Image, Paintbrush } from 'lucide-react';
+import { useState } from 'react';
 
 import { MenuDropdown } from './components';
 import { useClipboardAction } from './clipboard';
@@ -16,6 +17,15 @@ export type AssetReferenceLabels = {
   more: string;
   clear: string;
   copyGuid: string;
+  previewLoading: string;
+  previewFailed: string;
+  previewUnsupported: string;
+};
+
+export type AssetReferenceThumbnail = {
+  state: 'loading' | 'ready' | 'failed' | 'unsupported';
+  src?: string;
+  hint?: string;
 };
 
 const DEFAULT_LABELS: AssetReferenceLabels = {
@@ -31,6 +41,9 @@ const DEFAULT_LABELS: AssetReferenceLabels = {
   more: 'More reference actions',
   clear: 'Clear',
   copyGuid: 'Copy GUID',
+  previewLoading: 'Loading asset preview',
+  previewFailed: 'Asset preview failed',
+  previewUnsupported: 'Asset preview unavailable',
 };
 
 export function AssetReferenceField({
@@ -42,6 +55,7 @@ export function AssetReferenceField({
   onBrowse,
   onReveal,
   onClear,
+  thumbnail,
 }: {
   value: unknown;
   labels?: Partial<AssetReferenceLabels>;
@@ -51,8 +65,10 @@ export function AssetReferenceField({
   onBrowse?: () => void;
   onReveal?: () => void;
   onClear?: () => void;
+  thumbnail?: AssetReferenceThumbnail;
 }) {
   const writeClipboard = useClipboardAction();
+  const [failedSrc, setFailedSrc] = useState<string>();
   const labels = { ...DEFAULT_LABELS, ...customLabels };
   const record = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
@@ -69,13 +85,28 @@ export function AssetReferenceField({
   const openTitle = canOpen ? openLabel : `${openLabel} · ${missing ? labels.missing : !guid ? bound ? labels.identityUnavailable : labels.none : labels.openUnavailable}`;
   const ThumbnailIcon = /texture|image/i.test(kind) ? Image
     : /material/i.test(kind) ? Paintbrush : Box;
+  const previewState = thumbnail?.state === 'ready' && (!thumbnail.src || failedSrc === thumbnail.src)
+    ? 'failed' : thumbnail?.state;
+  const previewTitle = previewState && previewState !== 'ready'
+    ? `${labels[previewState === 'loading' ? 'previewLoading' : previewState === 'failed' ? 'previewFailed' : 'previewUnsupported']}${thumbnail?.hint ? `: ${thumbnail.hint}` : ''}` : '';
 
   return (
     <div className="fx-asset-ref asset-ref" data-testid="asset-reference-field">
-      <div className="asset-ref-thumb" aria-hidden="true">
-        {bound && !missing ? <ThumbnailIcon size={18} strokeWidth={1.6} />
+      <button type="button" className="asset-ref-thumb" disabled={!canOpen}
+        aria-label={openLabel} title={[openTitle, previewTitle].filter(Boolean).join(' · ')}
+        data-testid="asset-reference-thumbnail" data-preview-state={previewState}
+        aria-busy={previewState === 'loading' || undefined}
+        onDoubleClick={event => { event.stopPropagation(); if (canOpen) onOpen?.(); }}
+        onKeyDown={event => {
+          if (event.key === 'Enter' && !event.repeat && canOpen) {
+            event.preventDefault(); event.stopPropagation(); onOpen?.();
+          }
+        }}>
+        {bound && !missing && previewState === 'ready' && thumbnail?.src
+          ? <img src={thumbnail.src} alt="" draggable={false} onError={() => setFailedSrc(thumbnail.src)} />
+          : bound && !missing ? <ThumbnailIcon size={24} strokeWidth={1.6} aria-hidden="true" />
           : <span className="asset-ref-thumb-empty" />}
-      </div>
+      </button>
       <div className="asset-ref-body">
         <div className="asset-ref-combo" role="textbox" aria-readonly="true" tabIndex={0}
           aria-label={labels.readOnly} title={`${name || guid || displayName} · ${labels.readOnly}`}>

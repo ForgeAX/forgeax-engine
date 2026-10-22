@@ -79,7 +79,6 @@ export {
   createMaterialPackCooker,
   listMaterialSourcePaths,
 } from './material/pack-cooker.js';
-export { parseMaterialParticleInputs } from './material/particle-inputs.js';
 export {
   characterizeMaterialWgslProfile,
   MATERIAL_WGSL_PROFILE,
@@ -124,22 +123,12 @@ export {
   SURFACE_SLOT,
   type SurfaceContract,
   type SurfaceContractRequest,
-  validateSingleLayerMediumSurfaceSource,
   validateSurfaceSource,
 } from './material/surface-contract.js';
 export { terrainProgramSource } from './material/terrain-program.js';
 export {
-  createMaterialVariantContext,
   lowerMaterialVariantContext,
-  type MaterialBackend,
-  type MaterialCapability,
-  type MaterialGeometry,
-  type MaterialInstrumentation,
-  type MaterialPass,
-  type MaterialPipeline,
   type MaterialVariantContext,
-  type MaterialVariantContextError,
-  type MaterialVariantContextInput,
 } from './material/variant-context.js';
 export { createShaderProgramCompiler } from './program-compiler.js';
 export {

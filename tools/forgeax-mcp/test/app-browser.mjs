@@ -355,7 +355,7 @@ try {
   await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
   await view.getByRole('button', { name: 'Play', exact: true }).click();
   const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
-  await preparingPlay.waitFor();
+  await preparingPlay.waitFor({ state: 'attached' });
   assert.equal(await preparingPlay.getAttribute('srcdoc'), null, 'The adopted Stop probe holds document delivery');
   // The published target is adopted: its owner retains presentation through
   // initial readiness before native cleanup, within the existing workspace bound.

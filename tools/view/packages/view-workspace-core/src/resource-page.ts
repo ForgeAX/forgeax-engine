@@ -112,7 +112,10 @@ async function mountResourcePage(ctx: Context, config: FrontendConfig & Presenta
   });
   const workspaceClient = ctx.get('viewOperationClient');
   const reader = createWorkspaceStateReader(workspaceClient);
-  ctx.effect(() => () => reader.dispose());
+  ctx.effect(() => {
+    const stop = reader.subscribe(() => {});
+    return () => { stop(); reader.dispose(); };
+  });
   const assetActions: ResourceAssetActionResolver = value => {
     const guid = typeof value === 'string' ? value : value && typeof value === 'object' && 'guid' in value && typeof value.guid === 'string' ? value.guid : undefined;
     const snapshot = reader.getSnapshot();

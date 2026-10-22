@@ -33,7 +33,7 @@ groups after run `39457755532` exhausted its original process bound beside a
 long GPU group. Keep its measured receipt, cases, pixels and deadlines intact.
 
 For View texture channels, source mip/slice or environment projection failures,
-run `tools/view-plugins/integration/verify-texture-preview.mjs` and inspect its
+run `tools/view/scripts/verify-texture-preview-integration.mjs` and inspect its
 PNG/pixel evidence under `artifacts/texture-preview`. It uses the real browser
 Pack path and the existing exact-target capture. One-level Equirect sources do
 not expose Renderer-owned IBL roughness mips. Follow RHI Debug first for an
@@ -283,6 +283,11 @@ integration. SDK ZIP/npm groups and their receipt aggregate must likewise match
 the four consumers. When native owner arrays are shortened, map retained cost
 samples by their original files before assigning the new numeric group labels. Preserve original native, pixel, lifecycle and seed identity
 checks; a selector failure before execution is not a backend failure.
+
+For `[function-complexity]` or `[dependency-vulnerabilities]` failures, follow
+[source quality ratchets](../../scripts/ci/README.md#source-quality-ratchets): split the
+named function by owner or upgrade the owning dependency declaration; accept a
+baseline increase only with a reviewed reason.
 
 For CI code reduction, follow [CI code ownership](../../scripts/ci/README.md#ci-code-ownership).
 A sudden roster or fixture-cost increase after a merge may restore retired work.

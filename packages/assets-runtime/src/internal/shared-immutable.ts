@@ -63,6 +63,14 @@ export function isRetainedMaterialPayload(payload: object): boolean {
 }
 
 /**
+ * The realm's live view for verified artifact bytes, if any holder still
+ * retains it. Callers that verify content may use it instead of rereading.
+ */
+export function findVerifiedArtifactBytes(digest: string): Uint8Array<ArrayBuffer> | undefined {
+  return shared.bytes.get(digest)?.deref();
+}
+
+/**
  * Return the realm's one view for verified artifact bytes. The caller must
  * already have checked that `bytes` hash to `digest`; equal digests and
  * lengths then denote equal content. The first caller's bytes are copied into

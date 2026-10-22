@@ -2,7 +2,7 @@ import {
   buildRectAreaWorldFrame,
   rectAreaFacesPoint,
   DeviceScope,
-  PROBE_MAX_CONTRIBUTORS,
+  PROBE_BLEND_RECORD_CAPACITY,
   admitProbeContributors,
   blendLightProbes,
   createExtendedLightingState,
@@ -162,7 +162,7 @@ function evaluateProbeOracleCoverage(): ExtendedLightingSemanticCoverageResult {
   );
   const skyOnly = blendLightProbes({ normal, skyIrradiance: sky, contributors: [] });
   const overflow = admitProbeContributors(
-    Array.from({ length: PROBE_MAX_CONTRIBUTORS + 1 }, (_, index) => ({
+    Array.from({ length: PROBE_BLEND_RECORD_CAPACITY + 1 }, (_, index) => ({
       identity: `overflow-${index}`,
       admitted: true,
       distance: 0,

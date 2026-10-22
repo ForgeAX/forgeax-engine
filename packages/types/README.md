@@ -255,8 +255,7 @@ Main entry: types plus pure functions over them (e.g. `Result` helpers, `isTrian
 
 | Category | Exports | Description |
 |:--|:--|:--|
-| GPUFlagsConstant alias | `BufferUsageFlags` / `TextureUsageFlags` / `MapModeFlags` / `ShaderStageFlags` / `ColorWriteFlags` | TS side collapses to `number`; runtime values provided by `@webgpu/types` injected globals |
-| Enum alias pass-through | `TextureFormat` / `AddressMode` / `FilterMode` / `CompareFunction` / `PrimitiveTopology` / others | `@webgpu/types` namespace literal union pass-through |
+| Enum alias pass-through | `TextureFormat` / `AddressMode` / `FilterMode` / `CompareFunction` / `PrimitiveTopology` | `@webgpu/types` namespace literal union pass-through |
 | Pass-based material types | `ParamSchemaEntry` / `MaterialAsset` / `MaterialPass` | ParamSchema entry shape + MaterialAsset with passes[] + pass descriptor; see MaterialAsset section below |
 | Managed asset contracts | `AssetHandle` / `AssetKind` / `AssetDecoderContribution` / `AssetError` | Runtime identity, kind-owned source admission and structured failures; see [`assets-runtime`](../assets-runtime/README.md) |
 | Remote error model | `RemoteErrorCode` / `RemoteError` | 5-member closed union (script-syntax-error / script-runtime-error / server-startup-failed / server-not-running / eval-result-not-serializable) + structured interface/detail; runtime class lives in `@forgeax/engine-remote/errors` (`implements RemoteError`); see [`@forgeax/engine-remote` README](../remote/README.md) for the full error model |
@@ -555,7 +554,7 @@ Full interface source (SSOT): [`src/material/asset.ts`](./src/material/asset.ts)
 ## Relationship with `@webgpu/types`
 
 - **Dependency**: `@webgpu/types ^0.1.69` (version lock strategy detailed in repo root `AGENTS.md`).
-- **Shape alignment**: All numeric aliases (`BufferUsageFlags` etc.) strictly correspond to `GPUFlagsConstant` namespace -- TS side collapses to `number`, runtime values defined by W3C CR 3.6.
+- **Shape alignment**: Each alias is the `@webgpu/types` literal union it names; flag and size values stay the W3C globals (`GPUBufferUsage` etc.) with no forgeax alias.
 - **No redefinition**: This package never writes `export const BufferUsage = { MAP_READ: 0x0001, ... }`.
 - **Intentional differences**: None (this package only alias pass-through, zero shape divergence).
 

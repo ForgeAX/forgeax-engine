@@ -44,6 +44,23 @@ export class FilteredPlanContributionOwner {
       topology: GpuDrivenBatch;
     }
   >();
+  /**
+   * One row's complete projection. An identical prepared row with the same object
+   * bindings selects the same partitions, windows and assembled batches, so a
+   * retained row publishes its last outputs without recomputing any key.
+   */
+  private readonly rows = new Map<
+    number,
+    {
+      readonly row: PreparedBatchRows;
+      readonly bindings: ReadonlyMap<string, string> | undefined;
+      readonly windowKeys: readonly string[];
+      readonly topology: readonly GpuDrivenBatch[];
+      readonly batches: readonly PreparedBatch[];
+      seen: number;
+    }
+  >();
+  private pass = 0;
   private readonly visibleRanges = new StableRangeAllocator();
   private readonly indirectRanges = new StableRangeAllocator();
   private nextId = 0;
@@ -63,6 +80,7 @@ export class FilteredPlanContributionOwner {
     this.geometry.clear();
     this.windows.clear();
     this.prepared.clear();
+    this.rows.clear();
     this.visibleRanges.reset();
     this.indirectRanges.reset();
     this.nextId = 0;
@@ -83,14 +101,36 @@ export class FilteredPlanContributionOwner {
     };
     const objectBindings = bindings?.size === 0 ? undefined : bindings;
     const build = () => {
-      const liveSources = new Set<number>();
-      const liveWindows = new Set<string>();
+      const pass = ++this.pass;
+      // Window keys are owned by one source batch; only rows that dropped or
+      // retired a key can release a window. Duplicate rows fall back to a scan.
+      const releasedWindows: string[] = [];
+      let scanWindows = false;
       const batches: PreparedBatch[] = [];
       const topology: GpuDrivenBatch[] = [];
       let fixedCandidates = true;
       for (const row of prepared.batchRows) {
         const source = row.source;
-        liveSources.add(source.batchId);
+        const retainedRow = this.rows.get(source.batchId);
+        if (
+          retainedRow !== undefined &&
+          retainedRow.row === row &&
+          retainedRow.bindings === objectBindings &&
+          retainedRow.seen !== pass
+        ) {
+          retainedRow.seen = pass;
+          for (const batch of retainedRow.topology) {
+            topology.push(batch);
+            fixedCandidates &&= MemberCandidates.is(batch.candidates);
+          }
+          for (const batch of retainedRow.batches) batches.push(batch);
+          this.assemblyCounters.batchHits += retainedRow.topology.length;
+          this.lastWork.reusedGroups += retainedRow.topology.length;
+          continue;
+        }
+        const rowWindowKeys: string[] = [];
+        const rowTopology: GpuDrivenBatch[] = [];
+        const rowBatches: PreparedBatch[] = [];
         let geometry = this.geometry.get(source.batchId);
         if (
           geometry === undefined ||
@@ -114,7 +154,7 @@ export class FilteredPlanContributionOwner {
           const group = groupForPartition(row, partition);
           const key = `${source.batchId}:${partition.key}`;
           // Geometry windows stay allocated while a Pass temporarily selects the direct lane.
-          liveWindows.add(key);
+          rowWindowKeys.push(key);
           const lod = group?.lod ?? row.lod;
           const levels = batchLodLevelCount({ ...(lod === undefined ? {} : { lod }) });
           const capacity =
@@ -175,19 +215,49 @@ export class FilteredPlanContributionOwner {
             this.lastWork.reusedGroups++;
           }
           topology.push(cached.topology);
+          rowTopology.push(cached.topology);
           fixedCandidates &&= MemberCandidates.is(cached.topology.candidates);
-          if (cached.batch !== undefined) batches.push(cached.batch);
+          if (cached.batch !== undefined) {
+            batches.push(cached.batch);
+            rowBatches.push(cached.batch);
+          }
         }
+        if (retainedRow !== undefined && retainedRow.seen !== pass) {
+          // A replaced row may retire partition windows its last projection owned.
+          for (const key of retainedRow.windowKeys)
+            if (!rowWindowKeys.includes(key)) releasedWindows.push(key);
+        } else if (retainedRow !== undefined) scanWindows = true;
+        this.rows.set(source.batchId, {
+          row,
+          bindings: objectBindings,
+          windowKeys: rowWindowKeys,
+          topology: rowTopology,
+          batches: rowBatches,
+          seen: pass,
+        });
       }
-      for (const id of this.geometry.keys()) if (!liveSources.has(id)) this.geometry.delete(id);
-      for (const [key, window] of this.windows)
-        if (!liveWindows.has(key)) {
-          this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
-          this.indirectRanges.release(window.indirectStart, window.levels);
-          this.freeIds.push(window.id);
-          this.windows.delete(key);
-          this.prepared.delete(key);
-        }
+      // Retired rows release their geometry, windows and assembled batches.
+      for (const [id, retained] of this.rows) {
+        if (retained.seen === pass) continue;
+        this.rows.delete(id);
+        this.geometry.delete(id);
+        for (const key of retained.windowKeys) releasedWindows.push(key);
+      }
+      const releaseWindow = (key: string) => {
+        const window = this.windows.get(key);
+        if (window === undefined) return;
+        this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
+        this.indirectRanges.release(window.indirectStart, window.levels);
+        this.freeIds.push(window.id);
+        this.windows.delete(key);
+        this.prepared.delete(key);
+      };
+      if (scanWindows) {
+        const liveWindows = new Set<string>();
+        for (const retained of this.rows.values())
+          for (const key of retained.windowKeys) liveWindows.add(key);
+        for (const key of [...this.windows.keys()]) if (!liveWindows.has(key)) releaseWindow(key);
+      } else for (const key of releasedWindows) releaseWindow(key);
       const previous = this.publication;
       if (
         previous !== undefined &&

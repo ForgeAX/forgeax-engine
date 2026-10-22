@@ -1366,7 +1366,8 @@ export function* prepareFrameRecording(
     readonly activeEntityKeys?: ReadonlySet<number>;
     readonly activeEntityRevision?: number;
     /** Extraction culling count; GPU-owned candidates can stay in residency rows. */
-    readonly visibleRasterRows: number;
+    /** Evaluated only by a dynamic-resolution owner; the count is lazy. */
+    readonly visibleRasterRows: number | (() => number);
     readonly cameraVisible?: (source: RenderableSnapshot) => boolean;
     readonly telemetryCandidateCount?: number;
     readonly telemetrySubmit?: GpuDrivenLodSubmitIdentity;
@@ -3831,7 +3832,10 @@ export function* prepareFrameRecording(
       for (const capture of captureFrames)
         internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
       captureCompletion = completion;
-      resolution.commit(renderExtent, gpuDriven?.visibleRasterRows ?? renderables.length);
+      const rasterRows = gpuDriven?.visibleRasterRows;
+      resolution.commit(renderExtent, () =>
+        typeof rasterRows === 'function' ? rasterRows() : (rasterRows ?? renderables.length),
+      );
       if (sampleResolution) {
         const passCapture = internals.gpuPassTimingCapture;
         const observation =

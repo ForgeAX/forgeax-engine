@@ -237,6 +237,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           return verified.ok ? verified : err(decodeError(verified.error));
         },
         invalid: (reason) => artifactError(request.guid, reason),
+        ...(descriptor.integrity === undefined ? {} : { digest: descriptor.integrity.digest }),
       });
       const decoded = await waitForAsset(reading, signal, request.guid);
       if (!decoded.ok)

@@ -117,6 +117,7 @@ import {
   isGBufferOrderDiagnosticEncode,
   orderGBufferDiagnostic,
 } from './gbuffer-order-diagnostic';
+import { type LiveRasterBatch, type LiveRasterCache, projectLiveRaster } from './live-raster';
 import type { LodViewCamera } from './lod-projection.wgsl';
 import { type BatchExecutions, prepareHiddenGpuDrivenPipelines } from './material-artifacts';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
@@ -157,7 +158,6 @@ import {
   suppressedPrimitiveWords,
 } from './production-raster-prepare';
 import { RasterGraphIdentity } from './raster-graph-identity';
-import { type RasterMeshBinding, RasterMeshBindings } from './raster-mesh-bindings';
 import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
 import { combineGpuResourceAllocationInspections } from './resource-allocation';
 import {
@@ -166,6 +166,7 @@ import {
   samePreparedAssemblyInputs,
 } from './retained-batch-inputs';
 import { restrictShadowCasterClasses, ShadowCasterClassifier } from './shadow-caster-classes';
+import { filteredRows, ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-projection-publication';
 import {
   type ShadowCameraCullDilation,
@@ -353,19 +354,6 @@ type RasterPipelineFor = (
   preparation?: boolean,
 ) => Result<RenderPipeline, RhiError>;
 
-/** One filtered batch as the compiled raster encoder reads it on each frame. */
-interface LiveRasterBatch {
-  readonly batch: GpuDrivenBatch;
-  readonly classKey: string;
-  readonly recordingClassKey: string;
-  readonly mesh: MeshGpuHandles;
-  readonly meshBinding: RasterMeshBinding;
-  readonly materialBindingClass: string;
-  /** Complete LOD windows, retained independently for the two visible regions. */
-  visibleBindGroups: { early?: readonly BindGroup[]; late?: readonly BindGroup[] } | undefined;
-  readonly bundles: PreparedRasterBundleCache;
-}
-
 export interface GpuDrivenPrepareInput {
   readonly materialArtifactResolver?: RenderSystemInternals['getMaterialShaderArtifact'];
   readonly materialFrame?: import('../scene/material-dispatch').MaterialFrame;
@@ -515,16 +503,7 @@ export class GpuDrivenProduction {
     | undefined;
   /** Live draw facts of the latest prepared frame, read by compiled raster encoders. */
   private liveRasterBatches: readonly LiveRasterBatch[] = [];
-  private liveRasterCache:
-    | {
-        readonly filtered: FilteredProductionPlan;
-        readonly visibleBuffer: Buffer;
-        readonly rigidBindings: object;
-        readonly skinBindings: object | undefined;
-        readonly value: readonly LiveRasterBatch[];
-        readonly meshBindings: RasterMeshBindings;
-      }
-    | undefined;
+  private liveRasterCache: LiveRasterCache | undefined;
   /** Per-frame admission facts; recomputed only when the active entity set changes. */
   private admissionCache:
     | {
@@ -547,6 +526,7 @@ export class GpuDrivenProduction {
   private preparedBatchBuilds = 0;
   private filteredBatchBuilds = 0;
   private planRebuildBatches = 0;
+  private preparedAssemblyHits = 0;
   private planRebuildCandidates = 0;
   private lodSelectionChanges = 0;
   private lodSelectionBaseline:
@@ -606,6 +586,8 @@ export class GpuDrivenProduction {
     {
       readonly plan: SubmissionPlan;
       filtered: FilteredProductionPlan;
+      /** Executions every projected material was validated against. */
+      executions?: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>;
       artifacts: ShadowArtifactObservations;
       readonly visibleBuffer: Buffer;
       readonly meshBinding: BindGroup;
@@ -711,6 +693,7 @@ export class GpuDrivenProduction {
     this.preparedBatchBuilds = 0;
     this.filteredBatchBuilds = 0;
     this.planRebuildBatches = 0;
+    this.preparedAssemblyHits = 0;
     this.planRebuildCandidates = 0;
     this.lodSelectionChanges = 0;
     this.batchBindGroupCreates = 0;
@@ -1329,9 +1312,15 @@ export class GpuDrivenProduction {
     // rows from the scene tables, so no per-batch row projection exists.
     const sceneIdentity = this.sceneIdentity(scene.scene);
     const viewInspection = view.inspect();
-    const liveRaster = this.liveRaster(filtered, visibleBuffer, materialRaster, skinRaster);
-    if (!liveRaster.ok) return liveRaster;
-    this.liveRasterBatches = liveRaster.value;
+    this.liveRasterCache = projectLiveRaster(
+      this.liveRasterCache,
+      filtered,
+      visibleBuffer,
+      materialRaster.visibleBindingIdentity,
+      skinRaster?.visibleBindingIdentity,
+    );
+    const liveRasterBatches = this.liveRasterCache.value;
+    this.liveRasterBatches = liveRasterBatches;
     this.gbufferOrderMode = input.gbufferBatchOrderDiagnostic;
     this.gbufferOrderMaterials = input.materialFrame;
     this.gbufferOrderView =
@@ -1365,7 +1354,7 @@ export class GpuDrivenProduction {
       filtered,
       sceneIdentity,
       viewInspection,
-      liveRaster.value,
+      liveRasterBatches,
       materialRaster.visibleBindingIdentity,
       skinRaster?.visibleBindingIdentity,
     );
@@ -1639,7 +1628,7 @@ export class GpuDrivenProduction {
           : undefined;
         const initialFormatKey = initialFormats?.join(',');
         for (const [liveIndex, prepared] of filtered.batches.entries()) {
-          const live = liveRaster.value[liveIndex];
+          const live = liveRasterBatches[liveIndex];
           const classKey = rendererRecording ? live?.recordingClassKey : live?.classKey;
           if (classKey === undefined || rasterClasses.has(classKey)) continue;
           const deformation = prepared.batch.prepared?.identity.deformation ?? 'rigid';
@@ -2594,95 +2583,6 @@ export class GpuDrivenProduction {
     });
   }
 
-  /** Bind shared geometry and material classes without reading any candidate. */
-  private liveRaster(
-    filtered: FilteredProductionPlan,
-    visibleBuffer: Buffer,
-    rigid: MaterialAbiRasterAdapter,
-    skin: MaterialAbiRasterAdapter | undefined,
-  ): Result<readonly LiveRasterBatch[], RhiError> {
-    const cached = this.liveRasterCache;
-    const rigidBindings = rigid.visibleBindingIdentity;
-    const skinBindings = skin?.visibleBindingIdentity;
-    if (cached?.filtered === filtered) {
-      if (
-        cached.visibleBuffer !== visibleBuffer ||
-        cached.rigidBindings !== rigidBindings ||
-        cached.skinBindings !== skinBindings
-      ) {
-        // Content writes keep the bindings. Physical replacement resets only
-        // the affected adapter's windows, without revisiting candidate rows.
-        for (const live of cached.value) {
-          if (
-            cached.visibleBuffer !== visibleBuffer ||
-            (live.batch.prepared?.identity.deformation === 'skin'
-              ? cached.skinBindings !== skinBindings
-              : cached.rigidBindings !== rigidBindings)
-          ) {
-            live.visibleBindGroups = undefined;
-          }
-        }
-        this.liveRasterCache = {
-          filtered,
-          visibleBuffer,
-          rigidBindings,
-          skinBindings,
-          value: cached.value,
-          meshBindings: cached.meshBindings,
-        };
-      }
-      return ok(cached.value);
-    }
-    const value: LiveRasterBatch[] = [];
-    const meshBindings = new RasterMeshBindings();
-    const previousById = new Map(cached?.value.map((live) => [live.batch.batchId, live]));
-    for (const prepared of filtered.batches) {
-      const retained = previousById.get(prepared.batch.batchId);
-      const previous =
-        retained?.batch.generation === prepared.batch.generation ? retained : undefined;
-      const batch = prepared.batch;
-      const deformation = batch.prepared?.identity.deformation ?? 'rigid';
-      // Bindings describe physical windows, independent of their current
-      // candidates/material. Reuse the previous ordered slot only when both
-      // LOD phases still address exactly the same resources and ranges.
-      // The late base is the view's allocated capacity, fixed per buffer.
-      const visibleBindGroups =
-        previous !== undefined &&
-        cached?.visibleBuffer === visibleBuffer &&
-        (deformation === 'skin'
-          ? cached.skinBindings === skinBindings
-          : cached.rigidBindings === rigidBindings) &&
-        (previous.batch.prepared?.identity.deformation ?? 'rigid') === deformation &&
-        previous.batch.visibleBase === batch.visibleBase &&
-        (previous.batch.visibleAllocationCapacity ?? previous.batch.visibleCapacity) ===
-          (batch.visibleAllocationCapacity ?? batch.visibleCapacity) &&
-        batchLevelStride(previous.batch) === batchLevelStride(batch) &&
-        batchLodLevelCount(previous.batch) === batchLodLevelCount(batch)
-          ? previous.visibleBindGroups
-          : undefined;
-      value.push({
-        batch: prepared.batch,
-        classKey: prepared.rasterClassKey,
-        recordingClassKey: prepared.recordingRasterClassKey,
-        mesh: prepared.mesh,
-        meshBinding: meshBindings.forMesh(prepared.mesh),
-        materialBindingClass: prepared.materialBindingClass,
-        visibleBindGroups,
-        bundles: previous?.bundles ?? new PreparedRasterBundleCache(),
-      });
-    }
-    const frozen = Object.freeze(value);
-    this.liveRasterCache = {
-      filtered,
-      visibleBuffer,
-      rigidBindings,
-      skinBindings,
-      value: frozen,
-      meshBindings,
-    };
-    return ok(frozen);
-  }
-
   private assemblePrepared(
     scene: PersistentGpuDrivenState,
     materials: GpuSceneResourceFrame | undefined,
@@ -2710,10 +2610,21 @@ export class GpuDrivenProduction {
     ) {
       if (previous.slotAt !== scene.slotAt)
         preparation.cached = { ...previous, slotAt: scene.slotAt };
+      this.preparedAssemblyHits++;
       return ok(previous.value);
     }
     let rebuiltBatches = 0;
     const serializedStates = new Map<object, string>();
+    // Re-pinning the last assembly's versions proves every retained address in
+    // this frame, so an edited plan re-joins only its new or changed rows.
+    const inputs = previous?.inputs;
+    const pinsAdopted =
+      sameInputs &&
+      inputs?.fixedRows === true &&
+      inputs.pins !== undefined &&
+      materials !== undefined &&
+      inputs.materials !== materials &&
+      materials.adoptPins?.(inputs.pins) === true;
     const batchRows = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/plan/rows',
@@ -2736,6 +2647,41 @@ export class GpuDrivenProduction {
           // remains in the plan so its real fallback still owns those rows.
           if (execution.route === 'none') continue;
           const index = rows.length;
+          const geometry =
+            execution.route === 'gpu'
+              ? scene.meshes?.get(sourceBatch.binding.worldId, sourceBatch.binding.assetHandle)
+              : undefined;
+          const mesh = meshByBinding.get(sourceBatch.binding);
+          const retained = preparation.batches.get(sourceBatch.batchId);
+          let renderState: string | undefined;
+          if (execution.route === 'gpu') {
+            // Shared Pass state is serialized once per assembly, still observing in-place edits.
+            const state = execution.pass.renderState;
+            renderState = state === undefined ? 'undefined' : serializedStates.get(state);
+            if (renderState === undefined && state !== undefined) {
+              renderState = JSON.stringify(state);
+              serializedStates.set(state, renderState);
+            }
+          }
+          if (
+            pinsAdopted &&
+            nativeMembership &&
+            renderState !== undefined &&
+            retained !== undefined &&
+            retained.source === sourceBatch &&
+            retained.execution === execution &&
+            retained.geometry === geometry &&
+            retained.renderState === renderState &&
+            retained.materialAddress !== undefined &&
+            capturedGpuDrivenBatchKey(sourceBatch) !== undefined &&
+            retained.value.mesh === mesh &&
+            retained.value.meshContentEpoch === mesh?.contentEpoch &&
+            samePreparedBatchLod(retained.value.lod, sourceBatch, mesh)
+          ) {
+            sameRows &&= retained.value === previous?.batchRows[index];
+            rows.push(retained.value);
+            continue;
+          }
           const materialAddress = materials?.logicalForResource(
             sourceBatch.binding.material,
             execution.material,
@@ -2746,10 +2692,6 @@ export class GpuDrivenProduction {
               owner: 'material',
               expected: 'resident shared material row for the accepted batch',
             });
-          const geometry =
-            execution.route === 'gpu'
-              ? scene.meshes?.get(sourceBatch.binding.worldId, sourceBatch.binding.assetHandle)
-              : undefined;
           const geometryAddress =
             execution.route === 'gpu'
               ? materials?.logicalForGeometry(
@@ -2768,19 +2710,6 @@ export class GpuDrivenProduction {
               owner: 'geometry',
               expected: 'resident shared geometry for the accepted frame',
             });
-          const mesh =
-            sourceBatch.binding === undefined ? undefined : meshByBinding.get(sourceBatch.binding);
-          const retained = preparation.batches.get(sourceBatch.batchId);
-          let renderState: string | undefined;
-          if (execution.route === 'gpu') {
-            // Shared Pass state is serialized once per assembly, still observing in-place edits.
-            const state = execution.pass.renderState;
-            renderState = state === undefined ? 'undefined' : serializedStates.get(state);
-            if (renderState === undefined && state !== undefined) {
-              renderState = JSON.stringify(state);
-              serializedStates.set(state, renderState);
-            }
-          }
           // Signature, execution key and artifact all derive from these captured identities.
           if (
             sameInputs &&
@@ -2798,6 +2727,8 @@ export class GpuDrivenProduction {
             samePreparedBatchLod(retained.value.lod, sourceBatch, mesh)
           ) {
             sameRows &&= retained.value === previous.batchRows[index];
+            if (retained.geometry !== geometry)
+              preparation.batches.set(sourceBatch.batchId, { ...retained, geometry });
             rows.push(retained.value);
             continue;
           }
@@ -2899,6 +2830,7 @@ export class GpuDrivenProduction {
                   execution,
                   materialAddress,
                   geometryAddress,
+                  geometry,
                   renderState,
                 });
               rows.push(cached.value);
@@ -2918,6 +2850,7 @@ export class GpuDrivenProduction {
               execution,
               materialAddress,
               geometryAddress,
+              geometry,
               renderState,
             });
             rows.push(rebased);
@@ -2945,6 +2878,7 @@ export class GpuDrivenProduction {
             execution,
             materialAddress,
             geometryAddress,
+            geometry,
             renderState,
           });
           rebuiltBatches += 1;
@@ -2984,6 +2918,7 @@ export class GpuDrivenProduction {
           [meshByBinding, scene.meshes],
           batchRows,
           serializedStates,
+          fixedMembership,
         ),
       };
       return ok(previous.value);
@@ -3015,6 +2950,7 @@ export class GpuDrivenProduction {
         [meshByBinding, scene.meshes],
         batchRows,
         serializedStates,
+        fixedMembership,
       ),
     };
     return ok(value);
@@ -3108,6 +3044,7 @@ export class GpuDrivenProduction {
       );
     }
     let preparedByBatch: ReadonlyMap<number, FilteredProductionPlan['batches'][number]> | undefined;
+    const diffs = new ShadowProjectionDiffs(filtered, batchExecutions);
     const sceneTransformBuffer = scene.scene.transformBuffer;
     const sceneTransformBytes = scene.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride;
     const meshBinding = materialRaster.sceneMeshBindGroup(
@@ -3160,10 +3097,12 @@ export class GpuDrivenProduction {
               const key = shadowMaterialKey(batch);
               return artifacts.has(key) && previousSource.artifacts.get(key) !== artifacts.get(key);
             });
+          // Projected rows matched previousSource.filtered; unchanged rows keep their mesh.
           const meshesChanged =
             !sameInputs &&
             previousSource !== undefined &&
-            filtered.batches.some((prepared) => {
+            previousSource.filtered !== filtered &&
+            diffs.rowsChangedSince(previousSource.filtered).changed.some((prepared) => {
               const previous = previousProjections?.get(prepared.batch.batchId);
               return (
                 previous !== undefined &&
@@ -3175,7 +3114,11 @@ export class GpuDrivenProduction {
           else if (meshesChanged) shadowViews.invalidate('content-changed', input.identity);
           else if (
             !sameInputs &&
-            previousSource?.plan.batches.some((batch) => {
+            previousSource !== undefined &&
+            previousSource.executions !== batchExecutions &&
+            (previousSource.executions === undefined ||
+              diffs.executionsChangedSince(previousSource.executions).size > 0) &&
+            previousSource.plan.batches.some((batch) => {
               const execution =
                 batch.binding === undefined
                   ? undefined
@@ -3257,16 +3200,28 @@ export class GpuDrivenProduction {
             sameShadowProjectionLayout(previousSource.plan, submission.plan) &&
             sameBindings &&
             (previousSource.filtered === filtered ||
+              (!diffs.rowsChangedSince(previousSource.filtered).removed &&
+                diffs
+                  .rowsChangedSince(previousSource.filtered)
+                  .changed.every(
+                    ({ batch, mesh }) =>
+                      !previousProjections.has(batch.batchId) ||
+                      previousProjections.get(batch.batchId)?.mesh === mesh,
+                  )) ||
               submission.plan.batches.every((batch) => {
-                preparedByBatch ??= new Map(
-                  filtered.batches.map((entry) => [entry.batch.batchId, entry]),
-                );
+                preparedByBatch ??= filteredRows(filtered);
                 return (
                   preparedByBatch.get(batch.batchId)?.mesh ===
                   previousProjections.get(batch.batchId)?.mesh
                 );
               })) &&
-            submission.plan.batches.every((batch) => {
+            submission.plan.batches.every((batch, index) => {
+              // The same retained row, validated against the same execution table.
+              if (
+                previousSource.executions === batchExecutions &&
+                previousSource.plan.batches.at(index) === batch
+              )
+                return true;
               if (batch.visibleCapacity === 0) return !previousProjections.has(batch.batchId);
               const execution =
                 batch.binding === undefined
@@ -3290,13 +3245,12 @@ export class GpuDrivenProduction {
             })
           ) {
             previousSource.filtered = filtered;
+            previousSource.executions = batchExecutions;
             previousSource.artifacts = artifacts;
             nextProjections.set(identityKey, previousProjections);
             return ok(updated.value.cache);
           }
-          preparedByBatch ??= new Map(
-            filtered.batches.map((entry) => [entry.batch.batchId, entry]),
-          );
+          preparedByBatch ??= filteredRows(filtered);
           const previousBatches = sameBindings ? previousSource.plan.batches : undefined;
           // A topology/depth revision can leave every physical draw projection unchanged.
           // Keep that publication without allocating and filling another complete map.
@@ -3449,6 +3403,7 @@ export class GpuDrivenProduction {
           this.shadowProjectionSources.set(publishedProjections, {
             plan: submission.plan,
             filtered,
+            executions: batchExecutions,
             artifacts,
             visibleBuffer,
             meshBinding: meshBinding.value,
@@ -3731,6 +3686,7 @@ export class GpuDrivenProduction {
       preparedBatchBuilds: this.preparedBatchBuilds,
       filteredBatchBuilds: this.filteredBatchBuilds,
       planRebuildBatches: this.planRebuildBatches,
+      preparedAssemblyHits: this.preparedAssemblyHits,
       planRebuildCandidates: this.planRebuildCandidates,
       lodSelectionChanges: this.lodSelectionChanges,
       shadowCasterFlips: this.shadowCasterClasses.inspect().flips,

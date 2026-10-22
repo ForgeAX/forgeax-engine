@@ -82,7 +82,7 @@ import type {
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { SsrAdmissionIdentity } from '../ssr/identity';
-import type { GpuPassTimingReason } from './gpu-pass-timing/errors';
+import type { GpuPassTimingError } from './gpu-pass-timing/errors';
 import type {
   GpuPassTimingCapture,
   GpuPassTimingFrameIdentity,
@@ -555,7 +555,7 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   gpuPassTimingViewId?: number | undefined;
   gpuPassTimingSubmittedWork?: Promise<void> | undefined;
   gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
-  gpuPassTimingBeginReason?: GpuPassTimingReason | undefined;
+  gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
   readonly getRenderTargetPhysical?: (target: RenderTarget) => RenderTargetPhysical | undefined;
   readonly markRenderTargetSubmitted?: (
     target: RenderTarget,

@@ -47,7 +47,6 @@ export {
   pluginRootCommand,
   previewCommand,
   projectLintCommand,
-  runRhiDebugCommand,
   sdkInstallCommand,
   shaderCheckCommand,
   skillInstallCommand,
@@ -65,7 +64,6 @@ export type {
 } from './engine-binding.js';
 export {
   ENGINE_BINDING_SCHEMA_VERSION,
-  engineBindingFilePath,
   inspectEngineWorkspace,
   readEngineBinding,
 } from './engine-binding.js';

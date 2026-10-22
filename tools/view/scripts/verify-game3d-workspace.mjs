@@ -284,6 +284,8 @@ try {
   const position = async () => (await workspace.call('entity.inspect', { ...playArgs, entityId: livePlayer.entityId })).components.find(component => component.name === 'Transform').values.pos;
   const playerInspection = await workspace.call('entity.inspect', { ...playArgs, entityId: livePlayer.entityId });
   assert.ok(playerInspection.components.some(component => component.name === 'Game3dThirdPersonRig'), 'the ordinary player plugin must be active');
+  // Completed frames can precede the startup fade that still owns input.
+  await game.locator('#forgeax-loading').waitFor({ state: 'hidden' });
   await game.evaluate(() => {
     globalThis.__inputTrace = [];
     for (const type of ['pointerdown', 'keydown', 'keyup']) window.addEventListener(type, event => {
@@ -297,7 +299,9 @@ try {
   await page.waitForFunction(({ x, y, targetId }) => document.elementFromPoint(x, y)?.getAttribute('data-forgeax-scene-play') === targetId,
     { ...center, targetId: playArgs.targetId });
   // Game UI can cover its canvas; use the same visible document gesture as a player.
+  await page.bringToFront();
   await page.mouse.click(center.x, center.y);
+  await game.waitForFunction(() => document.hasFocus());
   const walk = async () => {
     const frame = await game.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted));
     await page.keyboard.down('w');

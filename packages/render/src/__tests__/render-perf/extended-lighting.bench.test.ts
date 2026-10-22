@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { PROBE_MAX_CONTRIBUTORS, ProbeBlendSceneProjection } from '../../scene/probe-blend';
+import { ProbeBlendSceneProjection } from '../../scene/probe-blend';
+import { PROBE_BLEND_RECORD_CAPACITY } from '../../scene/probe-blend-record';
 
 const OBJECT_COUNT = 8;
-const PROBE_COUNT = PROBE_MAX_CONTRIBUTORS;
+const PROBE_COUNT = PROBE_BLEND_RECORD_CAPACITY;
 const SAMPLE_COUNT = 5;
 
 function summarize(samplesMs: readonly number[]) {

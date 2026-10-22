@@ -1054,10 +1054,10 @@ describe('bounded tree publication reads', () => {
     const afterSource = source();
     observed.reset();
     const after = physical.query(afterSource, undefined);
-    // This explicit query enumerates actual tasks. Only source publication above
-    // has the bounded change-path contract; task work is accounted separately.
-    // The diff also observes the removed old node before actual task reads.
-    expect(observed.nodes).toBe(count);
+    // The retained task projection re-joins only the edited sources: the
+    // removal is observed through the bounded source diff, not a roster walk.
+    expect(observed.nodes).toBeGreaterThan(0);
+    expect(observed.nodes).toBeLessThan(128);
     expect(after.candidateCount).toBe(count - 1);
     expect(after.batches.at(-1)).toBe(survivor);
     expect(before.batches.length).toBe(count);

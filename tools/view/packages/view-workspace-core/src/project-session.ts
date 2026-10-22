@@ -240,6 +240,7 @@ export function createProjectSession(client: ViewWorkspaceClient, { window = glo
     if (snapshot.project) {
       if (snapshot.project.root !== root) throw new Error('Another project is already open. Close it explicitly before opening a different project.');
       record = { ...record, version: 1, root, targetId: snapshot.projectTarget?.targetId };
+      if (!snapshot.projectTarget?.url) return;
       await recover();
       return;
     }

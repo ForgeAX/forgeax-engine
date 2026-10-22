@@ -37,9 +37,17 @@ function sameGeometry(
   );
 }
 
+const MASK_DRAWS = 31;
+const MASK_COMPUTED = 1 << 31;
+const MASK_DRAWS_ALL = 0x7fffffff;
+
 /** Shared execution membership, queried by the draw that is about to consume it. */
 export class GpuDrawSelection {
   private readonly materials = new Map<MaterialResource, Worlds>();
+  /** Owned executions per shared binding; selections diff these to retain derived answers. */
+  readonly #byBinding = new Map<GpuDrivenBatchBinding, GpuDrivenBatch[]>();
+  /** Weakly keyed: a selection never keeps an earlier selection (or its plan) reachable. */
+  readonly #changes = new WeakMap<GpuDrawSelection, ReadonlySet<GpuDrivenBatchBinding>>();
 
   constructor(batches: FrameList<GpuDrivenBatch>) {
     for (const batch of batches) {
@@ -47,6 +55,9 @@ export class GpuDrawSelection {
       const binding = batch.binding;
       if (binding === undefined)
         throw new Error('GPU draw selection requires a shared geometry binding');
+      const owned = this.#byBinding.get(binding);
+      if (owned === undefined) this.#byBinding.set(binding, [batch]);
+      else owned.push(batch);
       let worlds = this.materials.get(binding.material);
       if (worlds === undefined) {
         worlds = new Map();
@@ -65,6 +76,30 @@ export class GpuDrawSelection {
       const selected = draws.get(binding.drawItemIndex) ?? [];
       draws.set(binding.drawItemIndex, [...selected, batch]);
     }
+  }
+
+  /**
+   * Bindings whose owned executions differ from an earlier selection. Every
+   * binding-keyed answer of this selection depends only on that binding's
+   * executions, so consumers retain all other answers across a replacement.
+   */
+  changedBindingsSince(previous: GpuDrawSelection): ReadonlySet<GpuDrivenBatchBinding> {
+    const cached = this.#changes.get(previous);
+    if (cached !== undefined) return cached;
+    const changed = new Set<GpuDrivenBatchBinding>();
+    for (const [binding, owned] of this.#byBinding) {
+      const before = previous.#byBinding.get(binding);
+      if (
+        before === undefined ||
+        before.length !== owned.length ||
+        before.some((batch, index) => batch !== owned[index])
+      )
+        changed.add(binding);
+    }
+    for (const binding of previous.#byBinding.keys())
+      if (!this.#byBinding.has(binding)) changed.add(binding);
+    this.#changes.set(previous, changed);
+    return changed;
   }
 
   private batches(source: RenderableSnapshot, draw: GpuDrivenDrawSnapshot, compactIndex: number) {
@@ -105,13 +140,20 @@ export class GpuDrawSelection {
     return false;
   }
 
-  owns(
+  /**
+   * Per-snapshot ownership masks. Snapshots are immutable publications and this
+   * selection never changes after construction, so a pose-stable source answers
+   * from one lookup instead of re-joining its draws on every frame and reader.
+   */
+  readonly #forwardMasks = new WeakMap<RenderableSnapshot, number>();
+  readonly #temporalMasks = new WeakMap<RenderableSnapshot, number>();
+
+  private ownsUncached(
     source: RenderableSnapshot,
     draw: GpuDrivenDrawSnapshot,
     compactIndex: number,
-    passKind: PassKind = 'forward',
+    passKind: PassKind,
   ): boolean {
-    if (!gpuDrivenGeometryEligible(source)) return false;
     for (const batch of this.batches(source, draw, compactIndex) ?? [])
       if (
         batch.binding !== undefined &&
@@ -125,6 +167,41 @@ export class GpuDrawSelection {
       )
         return true;
     return false;
+  }
+
+  /** Bit i answers compact draw i; bit 31 marks a computed mask. */
+  private ownershipMask(source: RenderableSnapshot, passKind: PassKind): number {
+    const masks = passKind === 'temporal' ? this.#temporalMasks : this.#forwardMasks;
+    let mask = masks.get(source);
+    if (mask !== undefined) return mask;
+    mask = MASK_COMPUTED;
+    const draws = source.gpuDrivenDraws;
+    if (draws !== undefined && gpuDrivenGeometryEligible(source))
+      for (let index = 0; index < draws.length; index++) {
+        const draw = draws[index];
+        if (draw !== undefined && this.ownsUncached(source, draw, index, passKind))
+          mask |= 1 << index;
+      }
+    masks.set(source, mask);
+    return mask;
+  }
+
+  owns(
+    source: RenderableSnapshot,
+    draw: GpuDrivenDrawSnapshot,
+    compactIndex: number,
+    passKind: PassKind = 'forward',
+  ): boolean {
+    const memoized =
+      compactIndex >= 0 &&
+      compactIndex < MASK_DRAWS &&
+      (passKind === 'forward' || passKind === 'temporal') &&
+      source.gpuDrivenDraws !== undefined &&
+      source.gpuDrivenDraws.length <= MASK_DRAWS &&
+      source.gpuDrivenDraws[compactIndex] === draw;
+    if (memoized) return (this.ownershipMask(source, passKind) & (1 << compactIndex)) !== 0;
+    if (!gpuDrivenGeometryEligible(source)) return false;
+    return this.ownsUncached(source, draw, compactIndex, passKind);
   }
 
   /** Native view ranges are ordered by slot; lookup never expands them into entity claims. */
@@ -171,11 +248,12 @@ export class GpuDrawSelection {
 
   ownsAll(source: RenderableSnapshot): boolean {
     const draws = source.gpuDrivenDraws;
-    return (
-      draws !== undefined &&
-      draws.length > 0 &&
-      draws.every((draw, index) => this.owns(source, draw, index))
-    );
+    if (draws === undefined || draws.length === 0) return false;
+    if (draws.length <= MASK_DRAWS) {
+      const all = draws.length === MASK_DRAWS ? MASK_DRAWS_ALL : (1 << draws.length) - 1;
+      return (this.ownershipMask(source, 'forward') & all) === all;
+    }
+    return draws.every((draw, index) => this.owns(source, draw, index));
   }
 }
 

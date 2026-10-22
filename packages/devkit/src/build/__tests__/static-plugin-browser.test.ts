@@ -310,6 +310,14 @@ it.each([
         );
         if (helper?.type !== 'chunk') throw new Error('missing shared helper');
         helperExports = helper.exports;
+        // Only selected exports own an addressable program chunk; interior modules
+        // live in their reachability group without a re-export facade file.
+        const programChunks = output.output.filter(
+          (chunk) => chunk.type === 'chunk' && /^program-[0-9a-f]{16}$/.test(chunk.name),
+        );
+        expect(programChunks.length).toBeGreaterThan(0);
+        for (const chunk of programChunks)
+          expect(chunk.type === 'chunk' && chunk.facadeModuleId?.startsWith('\0')).toBe(true);
         const archivePath = (await readdir(resolve(root, 'dist'), { recursive: true })).find(
           (path) => path.endsWith('.programs.json'),
         );

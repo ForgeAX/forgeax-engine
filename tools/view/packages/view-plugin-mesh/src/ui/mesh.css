@@ -45,3 +45,9 @@
 .mesh-bound-identity { margin: 0; padding: var(--fx-ref-space-8); font-size: var(--fx-type-caption-font-size); }
 .mesh-bound-identity > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--fx-ref-space-8); margin-block: var(--fx-ref-space-4); }
 .mesh-bound-identity dt, .mesh-bound-identity dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.mesh-properties-body { flex: 1; min-height: 0; overflow: auto; }
+.mesh-properties-body > .fx-inspector-form { overflow: visible; height: auto; }
+.mesh-material-slots__group > .fx-collapsible > .fx-collapsible__heading > .fx-collapsible__trigger { border-left-color: var(--fx-color-status-info-fg); }
+.mesh-material-slots__items { padding-inline: var(--fx-ref-space-8); }
+.mesh-material-entry { min-width: 0; border-bottom: 1px solid var(--fx-color-border-default); padding-block: var(--fx-ref-space-4); }
+.mesh-material-detail { min-width: 0; overflow-wrap: anywhere; }

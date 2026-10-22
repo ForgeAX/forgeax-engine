@@ -65,13 +65,9 @@ export {
   createCanonicalPreviewRecipe,
 } from './kit/canonical.js';
 export {
-  MATERIAL_PRESENTATION,
-  MESH_PRESENTATION,
   type PreviewPresentation,
   type PreviewSubject,
   type PreviewSubjectKind,
-  TEXTURE_PRESENTATION,
-  VFX_PRESENTATION,
 } from './kit/presentation.js';
 export {
   type CanonicalKitReceipt,

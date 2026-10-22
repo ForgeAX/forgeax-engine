@@ -27,6 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-rhi": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@webgpu/types": "^0.1.74",

@@ -68,27 +68,12 @@ export { sdkInstallCommand } from './sdk-install.js';
 export { shaderCheckCommand } from './shader-check.js';
 export { skillInstallCommand, skillVerifyCommand } from './skill-install.js';
 
-import {
-  type RhiDebugOperationContext,
-  type RhiDebugOperationInput,
-  type RhiDebugOperationName,
-  type RhiDebugOperationOutput,
-  runRhiDebugOperation,
-} from './rhi-debug/operations.js';
 import type {
   BuildOptions,
   CommandResult,
   PackageOptions,
   ProjectCommandOptions,
 } from './types.js';
-
-export function runRhiDebugCommand(
-  name: RhiDebugOperationName,
-  input: RhiDebugOperationInput,
-  context: RhiDebugOperationContext,
-): Promise<CommandResult<RhiDebugOperationOutput>> {
-  return runRhiDebugOperation(name, input, context);
-}
 
 export async function buildCommand(
   options: BuildOptions = {},
@@ -151,7 +136,9 @@ export async function packageCommand(
   const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
   let playerRoot: string | undefined;
   try {
-    const player = await preparePlayerDist(distRoot, verified.value);
+    const player = await preparePlayerDist(distRoot, verified.value, {
+      compressDocuments: format === 'web-zip' && options.compress !== false,
+    });
     playerRoot = player.root;
     if (format === 'single-html') {
       const indexHtml = await readFile(resolve(player.root, 'index.html'), 'utf8');

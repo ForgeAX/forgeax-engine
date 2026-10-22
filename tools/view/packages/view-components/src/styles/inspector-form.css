@@ -201,15 +201,24 @@
 .fx-asset-ref .asset-ref-thumb {
   display: grid;
   place-items: center;
-  width: var(--fx-component-control-height-compact);
-  height: var(--fx-component-control-height-compact);
-  flex: 0 0 var(--fx-component-control-height-compact);
+  width: 64px;
+  height: 64px;
+  flex: 0 0 64px;
+  padding: 0;
   overflow: hidden;
   border: var(--fx-border-width) solid var(--fx-color-border-control);
   border-radius: var(--fx-ref-radius-4);
   background: var(--fx-color-surface-raised);
   color: var(--fx-color-text-secondary);
+  cursor: pointer;
 }
+.fx-asset-ref .asset-ref-thumb:disabled { cursor: default; }
+.fx-asset-ref .asset-ref-thumb:focus-visible {
+  outline: var(--fx-border-focus-width) solid var(--fx-color-border-focus);
+  outline-offset: var(--fx-border-focus-offset);
+}
+.fx-asset-ref .asset-ref-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.fx-asset-ref .asset-ref-thumb[data-preview-state="loading"] { border-style: dashed; }
 .fx-asset-ref .asset-ref-thumb-empty {
   width: calc(var(--fx-component-control-height-compact) - var(--fx-ref-space-6));
   height: calc(var(--fx-component-control-height-compact) - var(--fx-ref-space-6));
@@ -266,3 +275,10 @@
 .fx-asset-ref .asset-ref-act:disabled { color: var(--fx-color-text-disabled); cursor: default; }
 .fx-asset-ref .asset-ref-combo:focus-visible,
 .fx-asset-ref .asset-ref-act:focus-visible { outline: var(--fx-border-focus-width) solid var(--fx-color-border-focus); outline-offset: var(--fx-ref-space-2); }
+.fx-material-slot { min-width: 0; }
+.fx-material-slot__heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--fx-ref-space-8); padding-block: var(--fx-ref-space-6); }
+.fx-material-slot__heading > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.fx-material-slot__source { flex-shrink: 0; color: var(--fx-color-text-muted); font-size: var(--fx-type-caption-font-size); }
+.fx-material-slot__item { display: flex; align-items: center; min-width: 0; gap: var(--fx-ref-space-6); padding: var(--fx-ref-space-2) 0; }
+.fx-material-slot__index { flex: 0 0 var(--fx-ref-space-16); color: var(--fx-color-text-muted); font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size)/var(--fx-type-caption-line-height) var(--fx-type-code-font-family); }
+.fx-material-slot__reference { flex: 1; min-width: 0; }

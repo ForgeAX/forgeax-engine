@@ -645,6 +645,7 @@ export class BatchTopology {
           topologyChanged = removedChanged || addedChanged || topologyChanged;
           continue;
         }
+        if (update.content) this.contentPatches += 1;
         if (previous.instanceCount !== next.instanceCount) {
           for (const membership of previous.draws) {
             const batch = this.batches.get(membership.batchText);
@@ -728,6 +729,11 @@ export class BatchTopology {
 
   revisionValue(): number {
     return this.revision;
+  }
+
+  /** A same-handle mesh content patch keeps every draw fact; only content epochs change. */
+  recordContentPatch(): void {
+    this.contentPatches += 1;
   }
 
   inspect(): BatchTopologyInspection {

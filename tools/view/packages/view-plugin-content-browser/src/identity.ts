@@ -7,7 +7,7 @@ export const SLOT = 'content-browser';
 export const PAGE_TYPE = VIEW_PAGE_TYPES.scene;
 export const PANEL_LAYOUT = Object.freeze({
   dock: 'bottom',
-  size: Object.freeze({ value: 0.34, unit: 'fraction' }),
+  size: Object.freeze({ value: 0.34, unit: 'fraction', additionalPx: 200 }),
   stack: 'tabs',
   order: 0,
 });

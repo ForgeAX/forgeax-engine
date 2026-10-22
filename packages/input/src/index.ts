@@ -108,10 +108,7 @@ export {
 } from './input-snapshot';
 export { inputBackendPlugin, ownedInputBackendPlugin } from './plugin-service';
 export {
-  createUiInputResetBoundary,
   isUiOwnedEvent,
   resolveUiOwnership,
-  type UiInputResetBoundary,
-  type UiInputResetBoundaryOptions,
   type UiOwnershipResult,
 } from './ui-ownership';

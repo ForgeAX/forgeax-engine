@@ -12691,9 +12691,6 @@ importers:
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../math
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../render
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -14340,6 +14337,9 @@ importers:
 
   packages/shader:
     dependencies:
+      '@forgeax/engine-codec':
+        specifier: workspace:*
+        version: link:../codec
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -14924,6 +14924,9 @@ importers:
       '@forgeax/view-plugin-mesh':
         specifier: workspace:*
         version: link:packages/view-plugin-mesh
+      '@forgeax/view-plugin-parameters':
+        specifier: workspace:*
+        version: link:packages/view-plugin-parameters
       '@forgeax/view-plugin-plugins':
         specifier: workspace:*
         version: link:packages/view-plugin-plugins
@@ -15034,9 +15037,6 @@ importers:
 
   tools/view/packages/view-plugin-content-browser:
     dependencies:
-      '@forgeax/engine-pack':
-        specifier: workspace:*
-        version: link:../../../../packages/pack
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../../packages/plugin
@@ -15189,6 +15189,37 @@ importers:
 
   tools/view/packages/view-plugin-mesh:
     dependencies:
+      '@forgeax/engine-plugin':
+        specifier: workspace:*
+        version: link:../../../../packages/plugin
+      '@forgeax/view-components':
+        specifier: workspace:*
+        version: link:../view-components
+      '@forgeax/view-workspace-core':
+        specifier: workspace:*
+        version: link:../view-workspace-core
+      lucide-react:
+        specifier: ^0.460.0
+        version: 0.460.0(react@19.2.8)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+
+  tools/view/packages/view-plugin-parameters:
+    dependencies:
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../../../../packages/pack
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../../../../packages/plugin
@@ -15394,6 +15425,9 @@ importers:
       '@forgeax/view-plugin-mesh':
         specifier: workspace:*
         version: link:../view-plugin-mesh
+      '@forgeax/view-plugin-parameters':
+        specifier: workspace:*
+        version: link:../view-plugin-parameters
       '@forgeax/view-plugin-plugins':
         specifier: workspace:*
         version: link:../view-plugin-plugins
@@ -21627,32 +21661,6 @@ snapshots:
       '@vitest/browser': 4.1.11(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.11)
       '@vitest/mocker': 4.1.11(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))
       playwright: 1.56.1
-      tinyrainbow: 3.1.0
-      vitest: 4.1.11(@types/node@20.19.40)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))
-    transitivePeerDependencies:
-      - bufferutil
-      - msw
-      - utf-8-validate
-      - vite
-
-  '@vitest/browser-playwright@4.1.11(playwright@1.60.0)(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.11)':
-    dependencies:
-      '@vitest/browser': 4.1.11(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.11)
-      '@vitest/mocker': 4.1.11(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))
-      playwright: 1.60.0
-      tinyrainbow: 3.1.0
-      vitest: 4.1.11(@types/node@20.19.40)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))
-    transitivePeerDependencies:
-      - bufferutil
-      - msw
-      - utf-8-validate
-      - vite
-
-  '@vitest/browser-playwright@4.1.11(playwright@1.63.0)(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.11)':
-    dependencies:
-      '@vitest/browser': 4.1.11(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.11)
-      '@vitest/mocker': 4.1.11(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))
-      playwright: 1.63.0
       tinyrainbow: 3.1.0
       vitest: 4.1.11(@types/node@20.19.40)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.0.16(@types/node@20.19.40)(esbuild@0.27.7)(jiti@1.21.7)(yaml@2.9.1))
     transitivePeerDependencies:

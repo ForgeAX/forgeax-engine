@@ -1,5 +1,3 @@
-import type { Result } from '@forgeax/engine-types';
-import type { RhiDebugError } from '../errors';
 import type { RhiCallEvent as LegacyRhiCallEvent } from '../types';
 
 export const TAPE_FORMAT_VERSION = 7 as const;
@@ -65,5 +63,3 @@ export type TapeStructure = Omit<Tape, 'blobs'> & {
 export interface TapeEncodeOptions {
   readonly compression?: TapeBlobCompression;
 }
-
-export type RhiDebugResult<T> = Result<T, RhiDebugError>;

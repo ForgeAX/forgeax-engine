@@ -77,13 +77,6 @@ function rayBoxInterval(
   return end > start ? { start, end } : undefined;
 }
 
-export function intersectCloudLayer(
-  ray: CloudRay,
-  params: ValidatedCloudLayer,
-): { readonly start: number; readonly end: number } | undefined {
-  return rayBoxInterval(ray, params);
-}
-
 function phaseFunction(cosTheta: number, g: number): number {
   const boundedG = Math.max(-0.95, Math.min(0.95, g));
   const denominator = Math.max(1e-4, 1 + boundedG * boundedG - 2 * boundedG * cosTheta);
@@ -264,22 +257,5 @@ export function applyCloudSolarTransmittance(
     (directSunRadiance[0] ?? 0) * factor,
     (directSunRadiance[1] ?? 0) * factor,
     (directSunRadiance[2] ?? 0) * factor,
-  ];
-}
-
-/** Scene-linear HDR composition at the cloud interval/depth boundary. */
-export function compositeCloudRadiance(
-  sceneLinearHdr: readonly [number, number, number, number],
-  cloud: CloudOpticalResult,
-  sceneDepth: number,
-  cloudDepth = cloud.representativeDepth,
-): readonly [number, number, number, number] {
-  if (!Number.isFinite(sceneDepth) || cloudDepth > sceneDepth) return sceneLinearHdr;
-  const transmittance = Math.min(1, Math.max(0, cloud.transmittance));
-  return [
-    (sceneLinearHdr[0] ?? 0) * transmittance + (cloud.scattering[0] ?? 0),
-    (sceneLinearHdr[1] ?? 0) * transmittance + (cloud.scattering[1] ?? 0),
-    (sceneLinearHdr[2] ?? 0) * transmittance + (cloud.scattering[2] ?? 0),
-    1,
   ];
 }

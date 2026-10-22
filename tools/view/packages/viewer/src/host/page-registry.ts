@@ -305,6 +305,7 @@ export function createViewPageTypeRegistry({ onChange }: { onChange?: (types: re
   const mounts = new Map<string, { node: HTMLElement; anchor?: HTMLElement }>();
   const anchors = new Map<string, HTMLElement>();
   const listeners = new Set<(types: readonly PageType[]) => void>();
+  const closeListeners = new Map<string, Set<(signal: AbortSignal) => void | Promise<void>>>();
   let snapshot: readonly PageType[] = Object.freeze([]);
   const notify = () => {
     snapshot = Object.freeze(
@@ -314,6 +315,21 @@ export function createViewPageTypeRegistry({ onChange }: { onChange?: (types: re
     onChange?.(snapshot);
   };
   return Object.freeze({
+    onBeforeClose(typeId: string, listener: (signal: AbortSignal) => void | Promise<void>) {
+      let handlers = closeListeners.get(typeId);
+      if (!handlers) closeListeners.set(typeId, handlers = new Set());
+      handlers.add(listener);
+      return () => {
+        handlers.delete(listener);
+        if (!handlers.size && closeListeners.get(typeId) === handlers) closeListeners.delete(typeId);
+      };
+    },
+    async beforeClose(typeId: string, signal: AbortSignal) {
+      for (const listener of closeListeners.get(typeId) ?? []) {
+        signal.throwIfAborted();
+        await listener(signal);
+      }
+    },
     registerType(input: PageTypeContribution) {
       const pageType = normalizePageType(input);
       if (types.has(pageType.typeId)) {
@@ -324,6 +340,7 @@ export function createViewPageTypeRegistry({ onChange }: { onChange?: (types: re
       return () => {
         if (types.get(pageType.typeId) !== pageType) return;
         types.delete(pageType.typeId);
+        closeListeners.delete(pageType.typeId);
         pageType.controller?.dispose?.();
         mounts.get(pageType.typeId)?.node.remove?.();
         mounts.delete(pageType.typeId);

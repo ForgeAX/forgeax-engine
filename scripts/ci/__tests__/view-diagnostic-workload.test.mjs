@@ -8,7 +8,7 @@ import { reduceTestProject } from '../../test/reduce-test-project.mjs';
 import quality from '../../test/render-quality.json' with { type: 'json' };
 
 const source = await readFile(
-  new URL('../../../tools/view-plugins/integration/verify-diagnostic-pages.mjs', import.meta.url),
+  new URL('../../../tools/view/scripts/verify-diagnostic-pages-integration.mjs', import.meta.url),
   'utf8',
 );
 const start = source.indexOf('async function prepareDiagnosticGameProject(');

@@ -359,8 +359,11 @@ export class BatchSources extends FrameListBase<GpuDrivenBatch> {
     }
     return undefined;
   }
-  *[Symbol.iterator](): Generator<GpuDrivenBatch> {
-    for (const node of nodes(this.#root)) yield node.value;
+  /** The published roster is iterated by several stages per frame; flatten it once. */
+  #values: readonly GpuDrivenBatch[] | undefined;
+  [Symbol.iterator](): IterableIterator<GpuDrivenBatch> {
+    this.#values ??= Array.from(nodes(this.#root), (node) => node.value);
+    return this.#values[Symbol.iterator]();
   }
 }
 

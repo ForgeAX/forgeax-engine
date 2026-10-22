@@ -19,6 +19,55 @@ function plainData(value: unknown, ancestors = new Set<object>()): boolean {
   return true;
 }
 
+type Descriptor = Program['program'];
+
+/** Descriptors whose producer guarantees they are never mutated after registration. */
+const ownedPrograms = new WeakSet<object>();
+/** Sharing key per owned descriptor, computed at most once per descriptor object. */
+const programKeys = new WeakMap<object, string>();
+
+/**
+ * Register a producer-owned graphics program descriptor. The descriptor and
+ * its color format list are frozen, and its render state must already be
+ * immutable plain data; its sharing key is then computed once instead of on
+ * every frame that declares it.
+ */
+export function ownVfxGraphicsProgram<T extends Descriptor>(program: T): T {
+  Object.freeze(program.colorFormats);
+  Object.freeze(program);
+  if (program.renderState === undefined || deepFrozenPlainData(program.renderState))
+    ownedPrograms.add(program);
+  return program;
+}
+
+const frozenStates = new WeakSet<object>();
+function deepFrozenPlainData(value: object): boolean {
+  if (frozenStates.has(value)) return true;
+  if (!Object.isFrozen(value) || !plainData(value)) return false;
+  for (const key of Object.keys(value)) {
+    const property = (value as Record<string, unknown>)[key];
+    if (property !== null && typeof property === 'object' && !deepFrozenPlainData(property))
+      return false;
+  }
+  frozenStates.add(value);
+  return true;
+}
+
+function programKey(program: Descriptor, state: string | undefined): string {
+  return JSON.stringify([
+    program.shader,
+    program.preparePipelines,
+    program.vertexLayout,
+    program.particleInputLanes,
+    program.colorFormats,
+    program.depthFormat,
+    program.sampleCount,
+    program.topology,
+    program.indexFormat,
+    state ?? null,
+  ]);
+}
+
 /** The stock native producer has finished every current source read. Collapse
  * identical pipeline declarations in this scope before Host prepares them.
  * Accessor-bearing states keep the complete original normalization order.
@@ -31,6 +80,8 @@ export function shareVfxGraphicsPrograms(
   const states = new Map<object, string>();
   for (const resource of work.resources) {
     if (resource.kind !== 'graphics-program') continue;
+    // An owned descriptor's state was proven immutable plain data at registration.
+    if (programKeys.has(resource.program)) continue;
     const state = resource.program.renderState;
     if (state === undefined || states.has(state)) continue;
     if (!plainData(state)) return work;
@@ -42,18 +93,14 @@ export function shareVfxGraphicsPrograms(
   for (const resource of work.resources) {
     if (resource.kind !== 'graphics-program') continue;
     const program = resource.program;
-    const key = JSON.stringify([
-      program.shader,
-      program.preparePipelines,
-      program.vertexLayout,
-      program.particleInputLanes,
-      program.colorFormats,
-      program.depthFormat,
-      program.sampleCount,
-      program.topology,
-      program.indexFormat,
-      program.renderState === undefined ? null : states.get(program.renderState),
-    ]);
+    let key = programKeys.get(program);
+    if (key === undefined) {
+      key = programKey(
+        program,
+        program.renderState === undefined ? undefined : states.get(program.renderState),
+      );
+      if (ownedPrograms.has(program)) programKeys.set(program, key);
+    }
     let shared = programs.get(key);
     if (shared === undefined) {
       // Full state, not a roster ordinal or lossy hash. Player birth/retirement

@@ -20,6 +20,14 @@ export class RasterMeshBindings {
     return row;
   }
 
+  /** Keep a retained row's binding in this publication, so capture still refreshes it. */
+  adopt(row: RasterMeshBinding): RasterMeshBinding {
+    const current = this.rows.get(row.mesh);
+    if (current !== undefined) return current;
+    this.rows.set(row.mesh, row);
+    return row;
+  }
+
   capture(): void {
     for (const row of this.rows.values()) {
       const vertex = row.mesh.vertexBuffer;

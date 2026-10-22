@@ -38,7 +38,3 @@ export function buildReflectionProbeTable(
     gpuIndexByPrimitive: indexFor,
   };
 }
-
-export function reflectionProbeTableBytes(table: ReflectionProbeTable): number {
-  return table.rows.length * 48;
-}

@@ -96,7 +96,13 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'project.init': schema({ ...root, install: boolean, dryRun: boolean }),
   'project.check': schema({ ...root, json: boolean }),
   'project.test': schema({ ...root, json: boolean }),
-  'project.package': schema({ ...root, output: string, format: string, json: boolean }),
+  'project.package': schema({
+    ...root,
+    output: string,
+    format: string,
+    compress: boolean,
+    json: boolean,
+  }),
   'project.preview': schema({ ...root, port, json: boolean }),
   'project.capture': schema({
     ...root,

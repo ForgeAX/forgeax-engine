@@ -19,6 +19,10 @@ export function coalesceVfxComputePasses(
   bindings: (name: string) => Bindings | undefined,
 ): readonly Pass[] {
   if (privatePrograms.size === 0 || passes.length < 2) return passes;
+  // Copies only flush pending compute batches; without a private compute pass
+  // there is nothing to batch and the order is returned unchanged.
+  if (!passes.some((pass) => pass.kind === 'compute' && privatePrograms.has(pass.program)))
+    return passes;
   interface Batch {
     readonly program: string;
     readonly passes: Compute[];

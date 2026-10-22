@@ -45,6 +45,23 @@ export interface TransparencyViewResolution {
  * renderable and blendable once `rgba16float` renders; WebGL2 enables both
  * with the same extension. `rgba16floatRenderable` is therefore the one fact.
  */
+/**
+ * The classification is a pure function of its fixed inputs. Pose-only frames
+ * keep the same culled dispatch, renderables and material frame; reuse it.
+ */
+const resolvedViews = new WeakMap<
+  object,
+  {
+    readonly requested: Transparency;
+    readonly rgba16floatRenderable: boolean;
+    readonly renderables: object;
+    readonly materialFrame: MaterialFrame;
+    readonly value: TransparencyViewResolution;
+    /** The rows the classification read: renderable index and its material/skin facts. */
+    readonly rows: readonly (readonly [number, object, object, boolean])[];
+  }
+>();
+
 export function resolveTransparencyView(input: {
   readonly requested: Transparency;
   readonly rgba16floatRenderable: boolean;
@@ -54,6 +71,44 @@ export function resolveTransparencyView(input: {
   readonly materialFrame: MaterialFrame;
   readonly dispatch: DispatchList;
 }): TransparencyViewResolution {
+  // Only an immutable list can stand for its entries across frames.
+  const fixed = !Array.isArray(input.dispatch) || Object.isFrozen(input.dispatch);
+  const retained = fixed ? resolvedViews.get(input.dispatch) : undefined;
+  if (
+    retained !== undefined &&
+    retained.requested === input.requested &&
+    retained.rgba16floatRenderable === input.rgba16floatRenderable &&
+    retained.materialFrame === input.materialFrame &&
+    (retained.renderables === input.renderables ||
+      retained.rows.every(([index, materials, material, skinned]) => {
+        const row = input.renderables.at(index);
+        return (
+          row !== undefined &&
+          row.materials === materials &&
+          row.material === material &&
+          (row.skinBinding !== undefined) === skinned
+        );
+      }))
+  )
+    return retained.value;
+  const rows: [number, object, object, boolean][] = [];
+  const value = resolveTransparencyViewUncached(input, rows);
+  if (fixed)
+    resolvedViews.set(input.dispatch, {
+      requested: input.requested,
+      rgba16floatRenderable: input.rgba16floatRenderable,
+      renderables: input.renderables,
+      materialFrame: input.materialFrame,
+      value,
+      rows,
+    });
+  return value;
+}
+
+function resolveTransparencyViewUncached(
+  input: Parameters<typeof resolveTransparencyView>[0],
+  rows: [number, object, object, boolean][],
+): TransparencyViewResolution {
   const capabilityAbsent = input.requested === 'weighted-blended' && !input.rgba16floatRenderable;
   const resolved: Transparency = capabilityAbsent ? 'sorted' : input.requested;
   const ineligible: Record<OitIneligibleReason, number> = {
@@ -67,6 +122,12 @@ export function resolveTransparencyView(input: {
     for (const entry of input.dispatch) {
       const row = input.renderables.at(entry.renderableIndex);
       if (row === undefined || !matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
+      rows.push([
+        entry.renderableIndex,
+        row.materials,
+        row.material,
+        row.skinBinding !== undefined,
+      ]);
       const resource =
         row.materials.find(
           (candidate) =>

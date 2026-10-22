@@ -21,6 +21,32 @@ body {
   overflow: hidden;
 }
 
+#root[data-forgeax-codex-browser],
+#forgeax-view-root[data-forgeax-codex-browser] {
+  --fx-view-codex-gutter-width: 15px;
+  box-sizing: border-box;
+  padding-left: var(--fx-view-codex-gutter-width);
+  background: #f8f8f8;
+}
+
+html[data-theme="dark"] #root[data-forgeax-codex-browser],
+html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
+  background: #181818;
+}
+
+#root[data-forgeax-codex-browser]::before,
+#forgeax-view-root[data-forgeax-codex-browser]::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: calc(var(--fx-component-navigation-row-height) - var(--fx-border-width));
+  left: 0;
+  width: var(--fx-view-codex-gutter-width);
+  height: var(--fx-border-width);
+  background: var(--fx-color-border-default);
+  pointer-events: none;
+}
+
 /* ThemeProvider wrapper: restores the viewport height chain broken by an extra fx-ui shell. */
 .fx-view-root.fx-ui {
   position: relative;
@@ -689,7 +715,7 @@ body {
 .fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-left.fx-edge-drawer-open > .dv-content-container,
 .fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-left {
   left: calc(var(--fx-edge-drawer-left) - 3px);
-  width: calc(var(--fx-edge-drawer-width, 300px) + 3px);
+  width: min(calc(var(--fx-edge-drawer-width, 300px) + 3px), var(--fx-edge-drawer-max-width));
   box-shadow: 4px 0 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
     1px 0 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
 }
@@ -697,7 +723,7 @@ body {
 .fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-right.fx-edge-drawer-open > .dv-content-container,
 .fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-right {
   right: calc(var(--fx-edge-drawer-right) - 3px);
-  width: calc(var(--fx-edge-drawer-width, 300px) + 3px);
+  width: min(calc(var(--fx-edge-drawer-width, 300px) + 3px), var(--fx-edge-drawer-max-width));
   box-shadow: -4px 0 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
     -1px 0 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
 }

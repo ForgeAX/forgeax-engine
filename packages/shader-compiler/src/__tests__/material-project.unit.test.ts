@@ -2,7 +2,7 @@ import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { projectMaterial } from '../material/project.js';
 import {
-  createMaterialVariantContext,
+  DEFAULT_MATERIAL_VARIANT_CONTEXT,
   lowerMaterialVariantContext,
 } from '../material/variant-context.js';
 
@@ -81,20 +81,9 @@ describe('MaterialAsset runtime and module projection', () => {
     expect(result.value.staticSelection.moduleSlots).toEqual({ lighting: 'game::pbr' });
   });
 
-  it('accepts only the closed producer-owned variant context', () => {
-    const context = createMaterialVariantContext({
-      backend: 'webgpu',
-      capability: 'storage-buffer',
-      pipeline: 'forward',
-      geometry: 'mesh',
-      pass: 'forward',
-      profile: 'forgeax-material-wgsl-v1',
-      toolchain: 'naga-oil',
-      instrumentation: 'none',
-    });
-    expect(context.ok).toBe(true);
-    if (!context.ok) return;
-    expect(lowerMaterialVariantContext(context.value)).toEqual({
+  it('lowers the producer-owned variant context to private selectors', () => {
+    const context = DEFAULT_MATERIAL_VARIANT_CONTEXT;
+    expect(lowerMaterialVariantContext(context)).toEqual({
       STORAGE_BUFFER_AVAILABLE: true,
       ATMOSPHERE_AVAILABLE: false,
       CLUSTER_FORWARD_AVAILABLE: true,
@@ -110,31 +99,18 @@ describe('MaterialAsset runtime and module projection', () => {
       VISIBLE_SURFACE_AVAILABLE: false,
     });
     expect(
-      lowerMaterialVariantContext({ ...context.value, capability: 'storage-buffer-atmosphere' }),
+      lowerMaterialVariantContext({ ...context, capability: 'storage-buffer-atmosphere' }),
     ).toMatchObject({ STORAGE_BUFFER_AVAILABLE: true, ATMOSPHERE_AVAILABLE: true });
     expect(
-      lowerMaterialVariantContext({ ...context.value, capability: 'uniform-fallback' }),
+      lowerMaterialVariantContext({ ...context, capability: 'uniform-fallback' }),
     ).toMatchObject({
       CLUSTER_FORWARD_AVAILABLE: true,
       PROBE_BLEND_AVAILABLE: false,
       EXTENDED_LIGHTING_AVAILABLE: false,
       PROJECTOR_AVAILABLE: false,
     });
-    expect(lowerMaterialVariantContext({ ...context.value, pipeline: 'deferred' })).toEqual(
-      lowerMaterialVariantContext(context.value),
+    expect(lowerMaterialVariantContext({ ...context, pipeline: 'deferred' })).toEqual(
+      lowerMaterialVariantContext(context),
     );
-    expect(
-      createMaterialVariantContext({
-        backend: 'webgpu',
-        capability: 'storage-buffer',
-        pipeline: 'forward',
-        geometry: 'mesh',
-        pass: 'forward',
-        profile: 'forgeax-material-wgsl-v1',
-        toolchain: 'naga-oil',
-        instrumentation: 'none',
-        STORAGE_BUFFER_AVAILABLE: false,
-      } as never).ok,
-    ).toBe(false);
   });
 });

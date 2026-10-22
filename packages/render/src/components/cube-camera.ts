@@ -28,17 +28,6 @@ export function cubeCameraUpdateIntentFromF32(value: number): CubeCameraUpdateIn
   }
 }
 
-export function cubeCameraUpdateIntentToF32(intent: CubeCameraUpdateIntent): number {
-  switch (intent) {
-    case 'once':
-      return CUBE_CAMERA_UPDATE_ONCE;
-    case 'on-demand':
-      return CUBE_CAMERA_UPDATE_ON_DEMAND;
-    case 'continuous':
-      return CUBE_CAMERA_UPDATE_CONTINUOUS;
-  }
-}
-
 /** ECS declaration for a bounded, transient six-face capture request. */
 export const CubeCamera = defineComponent('CubeCamera', {
   target: { type: 'shared<RenderTarget>', simulationTransient: true },

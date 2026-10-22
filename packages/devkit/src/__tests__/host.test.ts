@@ -192,6 +192,8 @@ describe('standalone host', () => {
           const config = await createViteConfig(facts.value, command);
           try {
             const source = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
+            // The page realm reads the catalog through its one installed source.
+            expect(source).not.toContain('configurePackIndex(');
             const expression = source.slice(
               source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
               source.indexOf('const cpuProfileRequested ='),

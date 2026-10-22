@@ -1,6 +1,9 @@
 import type { RenderFeatureWork } from '@forgeax/engine-render';
-import { describe, expect, it } from 'vitest';
-import { shareVfxGraphicsPrograms } from '../feature/shared-graphics-programs';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  ownVfxGraphicsProgram,
+  shareVfxGraphicsPrograms,
+} from '../feature/shared-graphics-programs';
 
 type Program = Extract<RenderFeatureWork['resources'][number], { kind: 'graphics-program' }>;
 
@@ -234,5 +237,60 @@ describe('current-scope VFX graphics program declarations', () => {
       expect(shadow.draws[0]?.program).toBe(programs(result)[0]?.name);
       expect(shadow.draws[0]?.bindings).toBe(raster.draws[0]?.bindings);
     }
+  });
+});
+
+describe('owned VFX graphics program keys', () => {
+  const owned = (renderState: Program['program']['renderState']) =>
+    ownVfxGraphicsProgram<Program['program']>({
+      shader: 'fixture::particles',
+      vertexLayout: 'billboard-material-instance',
+      colorFormats: ['rgba16float'],
+      depthFormat: 'depth32float',
+      sampleCount: 1,
+      topology: 'triangle-list',
+      ...(renderState === undefined ? {} : { renderState }),
+    });
+  const frame = (program: Program['program']): RenderFeatureWork => ({
+    scope: { view: 'main' },
+    resources: ['one', 'two'].flatMap((name) => [
+      { kind: 'graphics-program' as const, name, program },
+      { kind: 'graphics-bindings' as const, name: `${name}.bindings`, program: name, values: {} },
+    ]),
+    passes: [],
+  });
+
+  it('computes the sharing key of a reused immutable descriptor once', () => {
+    const state = Object.freeze({ depthWriteEnabled: false, cullMode: 'none' as const });
+    const program = owned(state);
+    expect(Object.isFrozen(program)).toBe(true);
+    const first = programs(shareVfxGraphicsPrograms(frame(program)));
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      const second = programs(shareVfxGraphicsPrograms(frame(program)));
+      expect(stringify).not.toHaveBeenCalled();
+      expect(second.map((row) => row.name)).toEqual(first.map((row) => row.name));
+      expect(second).toHaveLength(1);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
+  it('keeps reading a mutable render state referenced by an owned descriptor', () => {
+    const state = { depthWriteEnabled: false, cullMode: 'none' as const };
+    const program = owned(state);
+    const before = programs(shareVfxGraphicsPrograms(frame(program)))[0]?.name;
+    state.depthWriteEnabled = true;
+    const after = programs(shareVfxGraphicsPrograms(frame(program)))[0]?.name;
+    expect(after).not.toBe(before);
+  });
+
+  it('keeps distinct descriptors with equal content on one shared program', () => {
+    const state = Object.freeze({ depthWriteEnabled: false, cullMode: 'none' as const });
+    const work = frame(owned(state));
+    const second = work.resources[2];
+    if (second?.kind !== 'graphics-program') throw new Error('Missing second program');
+    work.resources[2] = { ...second, program: owned(state) };
+    expect(programs(shareVfxGraphicsPrograms(work))).toHaveLength(1);
   });
 });

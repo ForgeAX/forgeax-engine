@@ -1,6 +1,6 @@
 import { X } from 'lucide-react';
 import { IconButton } from '@forgeax/view-components';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from '../i18n/useTranslation';
 import { dirOfPath, fileSupportsDualPreview, resolveDualPreviewFile } from './format';
 import { itemIcon } from './icons';
@@ -9,6 +9,11 @@ import { FileContentPreview } from './preview/FileContentPreview';
 import { ResizeHandle } from './resize-handle';
 import type { CBAsset, CBFile, CBFilePreviewMode, CBFolder, CBViewItem, PreviewFileInfo } from './types';
 import type { WorkspaceThumbnail } from '@forgeax/view-workspace-core/contract';
+import type { ContentBrowserDetailContribution } from '@forgeax/view-workspace-core/frontend-contract';
+import { mountDetailTabContribution } from '../detail-tab-mount.ts';
+import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
+
+type DetailTab = { contribution: ContentBrowserDetailContribution; sourcePath: string };
 
 export function CBPreviewPanel({
   previewItem,
@@ -21,7 +26,9 @@ export function CBPreviewPanel({
   onClose,
   onDrag,
   onDragEnd,
-  authoring,
+  detailTabs = [],
+  client,
+  addConversationReference,
 }: {
   previewItem: CBViewItem | null;
   thumbnail?: WorkspaceThumbnail;
@@ -33,17 +40,23 @@ export function CBPreviewPanel({
   onClose: () => void;
   onDrag: (delta: number) => void;
   onDragEnd: () => void;
-  authoring?: ReactNode;
+  detailTabs?: readonly DetailTab[];
+  client?: ViewWorkspaceClient;
+  addConversationReference?: (reference: { title: string; text: string }) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [filePreviewMode, setFilePreviewMode] = useState<CBFilePreviewMode>('assets');
   const [authoringOpen, setAuthoringOpen] = useState(false);
+  const [detailTabId, setDetailTabId] = useState<string | null>(null);
+  const [detailTabError, setDetailTabError] = useState('');
+  const detailMount = useRef<HTMLDivElement | null>(null);
   const [previewInfo, setPreviewInfo] = useState<PreviewFileInfo | null>(null);
   const [previewStatus, setPreviewStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
   const dualPreviewFile = previewItem ? resolveDualPreviewFile(previewItem, diskFiles) : undefined;
   const showDualPreview = dualPreviewFile !== undefined && fileSupportsDualPreview(dualPreviewFile);
   const previewKey = previewItem ? (previewItem.type === 'asset' ? previewItem.guid : previewItem.path) : null;
   const previewSourcePath = dualPreviewFile?.diskPath || dualPreviewFile?.path || null;
+  const defaultDetailTabId = detailTabs[0]?.contribution.id ?? null;
   const dualAssetCount = dualPreviewFile?.assets.length ?? 0;
   const dualSupportsPreview = dualPreviewFile ? fileSupportsDualPreview(dualPreviewFile) : false;
   const embeddedSourcePreview = dualPreviewFile?.sourcePreview ?? null;
@@ -51,8 +64,26 @@ export function CBPreviewPanel({
 
   useEffect(() => {
     setFilePreviewMode('assets');
-    setAuthoringOpen(false);
-  }, [previewKey]);
+    setAuthoringOpen(defaultDetailTabId !== null);
+    setDetailTabId(defaultDetailTabId);
+  }, [previewKey, defaultDetailTabId]);
+
+  const activeDetailTab = detailTabs.find(tab => tab.contribution.id === detailTabId);
+  useEffect(() => {
+    if (!authoringOpen || !activeDetailTab || !client || !detailMount.current) return undefined;
+    setDetailTabError('');
+    return mountDetailTabContribution(detailMount.current, activeDetailTab.contribution, {
+      client,
+      sourcePath: activeDetailTab.sourcePath,
+      addConversationReference,
+    }, error => setDetailTabError(error instanceof Error ? error.message : String(error)));
+  }, [activeDetailTab?.contribution, activeDetailTab?.sourcePath, addConversationReference, authoringOpen, client]);
+  useEffect(() => {
+    if (authoringOpen && !detailTabs.some(tab => tab.contribution.id === detailTabId)) {
+      setDetailTabId(defaultDetailTabId);
+      setAuthoringOpen(defaultDetailTabId !== null);
+    }
+  }, [authoringOpen, defaultDetailTabId, detailTabId, detailTabs]);
 
   useEffect(() => {
     if (!previewSourcePath) {
@@ -228,18 +259,18 @@ export function CBPreviewPanel({
             onClick={onClose}
           />
         </div>
-        {showDualPreview || authoring ? (
+        {showDualPreview || detailTabs.length ? (
           <div className="cb-preview-mode-bar" role="tablist" aria-label={t('contentBrowser.preview.modeAssets')}>
+            {detailTabs.map(tab => <button key={tab.contribution.id} type="button" role="tab" className={`cb-preview-mode-btn${authoringOpen && detailTabId === tab.contribution.id ? ' is-active' : ''}`} aria-selected={authoringOpen && detailTabId === tab.contribution.id} onClick={() => { setDetailTabId(tab.contribution.id); setAuthoringOpen(true); }}>{t(tab.contribution.titleKey)}</button>)}
             <button type="button" role="tab" className={`cb-preview-mode-btn${!authoringOpen && filePreviewMode === 'assets' ? ' is-active' : ''}`} aria-selected={!authoringOpen && filePreviewMode === 'assets'} onClick={() => { setAuthoringOpen(false); setFilePreviewMode('assets'); }}>
               {t('contentBrowser.preview.modeAssets')}
             </button>
             <button type="button" role="tab" className={`cb-preview-mode-btn${!authoringOpen && filePreviewMode === 'source' ? ' is-active' : ''}`} aria-selected={!authoringOpen && filePreviewMode === 'source'} onClick={() => { setAuthoringOpen(false); setFilePreviewMode('source'); }}>
               {t('contentBrowser.preview.modeSource')}
             </button>
-            {authoring ? <button type="button" role="tab" className={`cb-preview-mode-btn${authoringOpen ? ' is-active' : ''}`} aria-selected={authoringOpen} onClick={() => setAuthoringOpen(true)}>{t('contentBrowser.preview.modeParameters')}</button> : null}
           </div>
         ) : null}
-        <div className="cb-preview-body">{authoringOpen ? authoring : body}</div>
+        <div className="cb-preview-body">{authoringOpen ? <><div ref={detailMount} className="cb-preview-detail-contribution" />{detailTabError ? <p role="alert">{detailTabError}</p> : null}</> : body}</div>
       </aside>
     </>
   );

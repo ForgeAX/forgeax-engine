@@ -140,12 +140,10 @@ export {
   type CloudOpticalResult,
   type CloudOpticsInput,
   type CloudRay,
-  compositeCloudRadiance,
   integrateCloudCameraPath,
   integrateCloudInterior,
   integrateCloudPath,
   integrateCloudSolarColumn,
-  intersectCloudLayer,
 } from './cloud/optics.js';
 export {
   CLOUD_QUALITY_PROFILES,
@@ -157,15 +155,12 @@ export {
   validateCloudLayer,
 } from './cloud/parameters.js';
 export {
-  acceptCloudLayerGeneration,
   CLOUD_HISTORY_SURFACE_COUNT,
   CLOUD_RGBA16FLOAT_BYTES_PER_TEXEL,
   type CloudGpuResourceEvidence,
-  type CloudLayerGeneration,
   type CloudLayerResourceFacts,
   type CloudLayerResourceInputs,
   inspectCloudLayerResources,
-  retainCloudLayerAfterFailure,
 } from './cloud/resources.js';
 export {
   type CloudShadowProjection,
@@ -192,7 +187,6 @@ export {
   AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITIES,
-  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
   ambientOcclusionParameters,
@@ -282,7 +276,6 @@ export {
   type CubeCameraFace,
   type CubeCameraUpdateIntent,
   cubeCameraUpdateIntentFromF32,
-  cubeCameraUpdateIntentToF32,
 } from './components/cube-camera.js';
 export {
   DepthOfField,
@@ -355,7 +348,6 @@ export {
   type ReflectionProbeData,
   type ReflectionProbeUpdateIntent,
   reflectionProbeUpdateIntentFromF32,
-  reflectionProbeUpdateIntentToF32,
 } from './components/reflection-probe.js';
 export { SceneInstance } from './components/scene-instance.js';
 export {
@@ -370,7 +362,6 @@ export {
 } from './components/skybox-background.js';
 export { Skylight } from './components/skylight.js';
 export { SortKey } from './components/sort-key.js';
-export type { SpotLightAuthoring, SpotLightProjector } from './components/spot-light.js';
 export { SpotLight } from './components/spot-light.js';
 export {
   Visibility,
@@ -807,8 +798,6 @@ export type {
   GpuPassTimingObservation,
   GpuPassTimingOptions,
   GpuPassTimingPassIdentity,
-  GpuPassTimingReason,
-  GpuPassTimingReasonCode,
   GpuPassTimingRef,
   GpuPassTimingUnmeasuredEntry,
 } from './record/gpu-pass-timing/index.js';
@@ -826,7 +815,6 @@ export {
   buildReflectionProbeTable,
   type ReflectionProbeTable,
   type ReflectionProbeTableRow,
-  reflectionProbeTableBytes,
 } from './reflection/gpu-table.js';
 export {
   inspectReflectionFallback,
@@ -873,10 +861,7 @@ export type {
   RenderWorldLease,
 } from './render-contract.js';
 export { RENDER_PHASE_CATALOG } from './render-contract.js';
-export type {
-  TemporalInspectionInput,
-  TemporalInspectionStatus,
-} from './renderer-inspect.js';
+export type { TemporalInspectionStatus } from './renderer-inspect.js';
 export type { RenderSceneBounds } from './scene/render-scene-types.js';
 export type {
   LodOcclusionInspectionInput,
@@ -1030,7 +1015,6 @@ export {
 export { tilemapGeometry } from './tilemap-geometry';
 export {
   composeSingleLayerMediumColor,
-  estimateSingleLayerPathLength,
   integrateSingleLayerMedium,
   type MediumVector3,
   resolveSingleLayerMediumBackground,
@@ -1059,7 +1043,6 @@ export {
   type VolumeDensityBinding,
   VolumetricFog,
   type VolumetricFogAuthoring,
-  type VolumetricFogLightSelection,
   VolumetricFogSamplingValue,
   validateVolumetricFog,
 } from './volume/component.js';

@@ -188,6 +188,20 @@ export class GpuDrivenMaterialExecutionRetention {
   prepared = 0;
   /** Last collected frame; an identical join keeps its identity for downstream caches. */
   last: CollectedMaterialArtifacts | undefined;
+  /**
+   * Inputs of the last complete join. A collection is a pure function of its
+   * batch roster, accepted programs, frame flags and the artifacts its distinct
+   * reads resolved, so identical inputs return the last join without visiting a batch.
+   */
+  lastInputs:
+    | {
+        readonly batches: object;
+        readonly programs: object | undefined;
+        readonly flags: number;
+        readonly reads: readonly MaterialArtifactRead[];
+        readonly collected: CollectedMaterialArtifacts;
+      }
+    | undefined;
   get(
     kind: 'forward' | 'shadow',
     binding: GpuDrivenBatchBinding,
@@ -238,16 +252,44 @@ export function collectGpuDrivenMaterialArtifacts({
   readonly shadowViews: boolean;
   readonly programs: GpuDrivenMaterialProgramIndex | undefined;
   readonly retention?: GpuDrivenMaterialExecutionRetention;
-}) {
+}): CollectedMaterialArtifacts {
   if (retention === undefined && resolve !== undefined) {
     retention = new GpuDrivenMaterialExecutionRetention();
     resolverRetention.set(resolve, retention);
   }
+  const flags =
+    (clustered ? 1 : 0) |
+    (reflectionFallback ? 2 : 0) |
+    (probeBlend ? 4 : 0) |
+    (shadowViews ? 8 : 0);
+  const retainedInputs = retention?.lastInputs;
+  // With the same accepted programs, flags and artifact resolutions, every
+  // binding of the last join keeps its execution; only new bindings join.
+  const retainedJoin =
+    retention !== undefined &&
+    retainedInputs !== undefined &&
+    retainedInputs.collected === retention.last &&
+    retainedInputs.programs === programs &&
+    retainedInputs.flags === flags &&
+    retainedInputs.reads.every((read) => resolve?.(read.shader, read.request) === read.artifact)
+      ? retainedInputs
+      : undefined;
+  if (retainedJoin?.batches === batches) return retainedJoin.collected;
+  const distinctReads: MaterialArtifactRead[] = [...(retainedJoin?.reads ?? [])];
   const materialArtifacts = new Map<string, MaterialShaderArtifact>();
   const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>();
   const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
   const selectedArtifacts = new Map<string, Map<string, MaterialShaderArtifact | undefined>>();
   let firstSkinArtifact: MaterialShaderArtifact | undefined;
+  for (const read of distinctReads) {
+    let variants = selectedArtifacts.get(read.shader);
+    if (variants === undefined) {
+      variants = new Map();
+      selectedArtifacts.set(read.shader, variants);
+    }
+    const { pass, deformation, vertexColorAvailable } = read.request;
+    variants.set(`${pass}/${deformation}/${vertexColorAvailable}`, read.artifact);
+  }
   const selectArtifact: BatchArtifactResolver = (shader, request) => {
     let variants = selectedArtifacts.get(shader);
     if (variants === undefined) {
@@ -256,14 +298,15 @@ export function collectGpuDrivenMaterialArtifacts({
     }
     // This resolver's address is always scene-index; the other request fields vary.
     const key = `${request.pass}/${request.deformation}/${request.vertexColorAvailable}`;
-    if (!variants.has(key))
-      variants.set(
-        key,
-        resolve?.(shader, {
-          ...request,
-          ...(request.pass === 'forward' ? { clustered, probeBlend, reflectionFallback } : {}),
-        }),
-      );
+    if (!variants.has(key)) {
+      const resolved = {
+        ...request,
+        ...(request.pass === 'forward' ? { clustered, probeBlend, reflectionFallback } : {}),
+      };
+      const artifact = resolve?.(shader, resolved);
+      variants.set(key, artifact);
+      distinctReads.push({ shader, request: resolved, artifact });
+    }
     return variants.get(key);
   };
   const select = (
@@ -353,8 +396,10 @@ export function collectGpuDrivenMaterialArtifacts({
       }
       return execution.value;
     };
-    const forward = prepare('forward');
-    const shadow: BatchExecution = shadowViews ? prepare('shadow') : NO_EXECUTION;
+    const reused = retainedJoin?.collected.batchExecutions.get(binding);
+    const forward = reused?.forward ?? prepare('forward');
+    const shadow: BatchExecution =
+      reused?.shadow ?? (shadowViews ? prepare('shadow') : NO_EXECUTION);
     batchExecutions.set(binding, { forward, shadow });
     const forwardKey =
       forward.route === 'gpu' ? capturedPreparedMaterialArtifactKey(forward.prepared) : undefined;
@@ -380,15 +425,23 @@ export function collectGpuDrivenMaterialArtifacts({
   };
   if (retention === undefined) return collected;
   const last = retention.last;
+  let published: CollectedMaterialArtifacts = collected;
   if (
     last !== undefined &&
     sameOrderedEntries(last.batchExecutions, batchExecutions, sameBatchExecutions) &&
     sameOrderedEntries(last.materialArtifacts, materialArtifacts, Object.is) &&
     sameOrderedEntries(last.shadowMaterialArtifacts, shadowMaterialArtifacts, Object.is)
   )
-    return last;
-  retention.last = collected;
-  return collected;
+    published = last;
+  retention.last = published;
+  retention.lastInputs = {
+    batches,
+    programs,
+    flags,
+    reads: distinctReads,
+    collected: published,
+  };
+  return published;
 }
 
 export interface CollectedMaterialArtifacts {

@@ -20,7 +20,7 @@ not a latency guarantee. The template retains its original warm sunlight default
 The generation badge describes the draft's generation state; runtime fields do
 not require Generate.
 
-The Engine's maintained `verify-pack-authoring.mjs` journey covers failed legacy
+The View-owned `verify-pack-authoring-integration.mjs` journey covers failed legacy
 opens followed by external source repair, immediate edits, Generate, Save/reopen,
 JSON, external additions, conflicts and preview retirement. The focused DevKit
 regression rejects generator execution and Catalog enumeration during recovery.

@@ -171,6 +171,11 @@ export class MeshBatchProjection {
   // It deliberately cannot retain an unrelated MeshFrame's payload closure.
   private queriedMeshes = new WeakSet<MeshFrame>();
   private queriedWithoutMeshes = false;
+  /** Meshes of the last full or patched query; a mesh edit re-joins only its bindings. */
+  private meshes: MeshFrame | undefined;
+  private meshKnown = false;
+  private readonly sourcesByMesh = new Map<string, Map<number, GpuDrivenBatch>>();
+  private readonly meshKeyBySource = new Map<number, string>();
   readonly windowCompactions = 0;
   windowRelocations = 0;
 
@@ -184,6 +189,10 @@ export class MeshBatchProjection {
     this.plan = undefined;
     this.queriedMeshes = new WeakSet();
     this.queriedWithoutMeshes = false;
+    this.meshes = undefined;
+    this.meshKnown = false;
+    this.sourcesByMesh.clear();
+    this.meshKeyBySource.clear();
     this.freeIds.length = 0;
     for (let id = this.generations.length - 1; id >= 0; id--) this.freeIds.push(id);
   }
@@ -204,15 +213,51 @@ export class MeshBatchProjection {
       (meshes === undefined ? this.queriedWithoutMeshes : this.queriedMeshes.has(meshes))
     )
       return this.plan;
-    if (this.sourceRoot !== undefined && this.sourceRoot !== batches) {
-      batches.changesSince(this.sourceRoot, (before, after) => {
-        if (before !== undefined && after === undefined) this.remove(before.batchId);
-      });
-    }
     // Each join supplies an actual selector/raster task, including tasks whose
     // GPU cull produces zero visible instances. No resource-version polling or
     // group repair runs from Mesh adoption, publication, or a skipped view.
-    for (const member of batches) this.update(member, meshes);
+    // A retained baseline re-joins only edited sources and sources whose Mesh
+    // changed; every other window and publication is unchanged by definition.
+    const baseline = this.sourceRoot;
+    const patch =
+      baseline !== undefined &&
+      this.meshKnown &&
+      (meshes === undefined) === (this.meshes === undefined);
+    // A failed join leaves partial windows; the next query then rejoins all.
+    this.meshKnown = false;
+    if (patch) {
+      const touched = new Map<number, GpuDrivenBatch>();
+      if (baseline !== batches)
+        batches.changesSince(baseline, (before, after) => {
+          if (after !== undefined) touched.set(after.batchId, after);
+          else if (before !== undefined) {
+            this.remove(before.batchId);
+            this.unindex(before.batchId);
+          }
+        });
+      if (meshes !== undefined && this.meshes !== undefined && meshes !== this.meshes)
+        meshes.changesSince(this.meshes, (before, after) => {
+          const geometry = after ?? before;
+          if (geometry === undefined) return;
+          for (const member of this.sourcesByMesh
+            .get(`${geometry.worldId}:${geometry.handle}`)
+            ?.values() ?? [])
+            if (batches.get(member.batchId) === member) touched.set(member.batchId, member);
+        });
+      for (const member of touched.values()) this.update(member, meshes);
+    } else {
+      if (baseline !== undefined && baseline !== batches) {
+        batches.changesSince(baseline, (before, after) => {
+          if (before !== undefined && after === undefined) {
+            this.remove(before.batchId);
+            this.unindex(before.batchId);
+          }
+        });
+      }
+      for (const member of batches) this.update(member, meshes);
+    }
+    this.meshes = meshes;
+    this.meshKnown = true;
     const previous = this.plan;
     const plan =
       previous?.batches === this.published && previous.sourceGroups === batches
@@ -232,6 +277,30 @@ export class MeshBatchProjection {
     return plan;
   }
 
+  private unindex(batchId: number): void {
+    const key = this.meshKeyBySource.get(batchId);
+    if (key === undefined) return;
+    this.meshKeyBySource.delete(batchId);
+    const sources = this.sourcesByMesh.get(key);
+    sources?.delete(batchId);
+    if (sources?.size === 0) this.sourcesByMesh.delete(key);
+  }
+
+  private index(member: GpuDrivenBatch): void {
+    const binding = member.binding;
+    if (binding === undefined) return;
+    const key = `${binding.worldId}:${binding.assetHandle}`;
+    const previous = this.meshKeyBySource.get(member.batchId);
+    if (previous !== undefined && previous !== key) this.unindex(member.batchId);
+    this.meshKeyBySource.set(member.batchId, key);
+    let sources = this.sourcesByMesh.get(key);
+    if (sources === undefined) {
+      sources = new Map();
+      this.sourcesByMesh.set(key, sources);
+    }
+    sources.set(member.batchId, member);
+  }
+
   private remove(batchId: number): void {
     const group = this.groups.get(batchId);
     if (group === undefined) return;
@@ -249,6 +318,7 @@ export class MeshBatchProjection {
   private update(member: GpuDrivenBatch, meshes: MeshFrame | undefined): void {
     const binding = member.binding;
     if (binding === undefined) throw new Error('Mesh membership requires its source binding');
+    this.index(member);
     const authored = binding.source;
     const mesh = meshes?.get(binding.worldId, binding.assetHandle);
     const draws =

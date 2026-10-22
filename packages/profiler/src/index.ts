@@ -1,10 +1,4 @@
 /** Creates the default monotonic microsecond clock. */
-
-/** Opt-in browser User Timing projection shared by editor and Play hosts. */
-export {
-  createUserTimingProfiler,
-  type UserTimingProfilerOptions,
-} from './browser-user-timing.js';
 export { createProfileClock } from './clock.js';
 export type {
   ProfileComparisonError,

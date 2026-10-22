@@ -1,5 +1,3 @@
-import type { MaterialProgramAbi } from '@forgeax/engine-types';
-
 export type GpuDrivenPreparationErrorCode =
   | 'missing-material-receipt'
   | 'material-abi-not-executable'
@@ -123,12 +121,4 @@ export class GpuDrivenPreparationError extends Error {
       recovery: detail.recovery ?? policy.recovery,
     });
   }
-}
-
-export interface GpuDrivenPreparedMaterial {
-  readonly receipt: MaterialProgramAbi;
-  readonly resourceSlots: MaterialProgramAbi['resourceSlots'];
-  readonly uvSets: MaterialProgramAbi['uvSets'];
-  readonly vertexInputs: MaterialProgramAbi['vertexInputs'];
-  readonly alphaMask: MaterialProgramAbi['alphaMask'];
 }

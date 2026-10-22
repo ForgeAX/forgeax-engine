@@ -136,7 +136,7 @@ import {
   promoteExtendedLightingCandidate,
 } from '../prepare/extended-lighting/state';
 import type { FrameObservationOptions } from '../record/frame';
-import type { GpuPassTimingReason } from '../record/gpu-pass-timing/errors.js';
+import type { GpuPassTimingError } from '../record/gpu-pass-timing/errors.js';
 import {
   DEFAULT_GPU_PASS_TIMING_OPTIONS,
   type GpuPassTimingCapture,
@@ -693,7 +693,7 @@ async function makeWebGPURenderer(
     gpuPassTimingSession = undefined;
     retired?.dispose();
   };
-  const failedGpuPassTimingObservation = (error: GpuPassTimingReason): GpuPassTimingObservation => {
+  const failedGpuPassTimingObservation = (error: GpuPassTimingError): GpuPassTimingObservation => {
     const latestKnownGood = timingObservationStore?.inspect().latestKnownGood;
     return {
       status: 'failed',
@@ -2188,14 +2188,14 @@ async function makeWebGPURenderer(
     get gpuPassTimingBeginReason() {
       return (
         internals as WebGPURendererInternals & {
-          gpuPassTimingBeginReason?: GpuPassTimingReason | undefined;
+          gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
         }
       ).gpuPassTimingBeginReason;
     },
-    set gpuPassTimingBeginReason(reason: GpuPassTimingReason | undefined) {
+    set gpuPassTimingBeginReason(reason: GpuPassTimingError | undefined) {
       (
         internals as WebGPURendererInternals & {
-          gpuPassTimingBeginReason?: GpuPassTimingReason | undefined;
+          gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
         }
       ).gpuPassTimingBeginReason = reason;
     },
@@ -2926,7 +2926,7 @@ async function makeWebGPURenderer(
             ? undefined
             : async (): Promise<GpuPassTimingObservation> =>
                 gpuPassTimingUnavailable ??
-                failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingReason)
+                failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingError)
           : async (): Promise<GpuPassTimingObservation> => {
               const observed = await passTimingCapture.observe();
               if (!observed.ok) return failedGpuPassTimingObservation(observed.error);

@@ -1331,6 +1331,9 @@ function bufferBinding(buffer: Buffer): {
 
 interface EncodedViewTopology {
   readonly batchBytes: Uint8Array;
+  /** Fixed source rows and their candidate bases; an identical row keeps its encoded bytes. */
+  readonly plan?: SubmissionPlan;
+  readonly candidateBases?: Uint32Array;
   readonly memberships: readonly {
     readonly candidates: FrameList<GpuDrivenCandidate>;
     readonly offsets: readonly number[];
@@ -1339,11 +1342,22 @@ interface EncodedViewTopology {
 const encodedTopologies = new WeakMap<GpuScene, WeakMap<SubmissionPlan, EncodedViewTopology>>();
 
 /** Task headers retain logical member roots; physical roots are leased on each read. */
-function encodedViewTopology(plan: SubmissionPlan, scene: GpuScene): EncodedViewTopology {
+function encodedViewTopology(
+  plan: SubmissionPlan,
+  scene: GpuScene,
+  previous?: EncodedViewTopology,
+): EncodedViewTopology {
   let owner = encodedTopologies.get(scene);
   const fixed = hasFixedTaskHeaders(plan);
   const cached = fixed ? owner?.get(plan) : undefined;
   if (cached !== undefined) return cached;
+  // A replaced fixed plan copies each identical logical row from the last
+  // encoding of the same scene; only edited rows and shifted bases re-encode.
+  const reusable =
+    fixed && previous?.plan !== undefined && previous.candidateBases !== undefined
+      ? previous
+      : undefined;
+  const candidateBases = fixed ? new Uint32Array(plan.batches.length) : undefined;
   if (owner === undefined) {
     owner = new WeakMap();
     encodedTopologies.set(scene, owner);
@@ -1364,13 +1378,26 @@ function encodedViewTopology(plan: SubmissionPlan, scene: GpuScene): EncodedView
   let candidateIndex = 0;
   let batchIndex = 0;
   for (const batch of plan.batches) {
-    const offset = batchIndex++ * BATCH_STRIDE;
+    const index = batchIndex++;
+    const offset = index * BATCH_STRIDE;
     let offsets = memberships.get(batch.candidates);
     if (offsets === undefined) {
       offsets = [];
       memberships.set(batch.candidates, offsets);
     }
     offsets.push(offset + 48);
+    if (candidateBases !== undefined) candidateBases[index] = candidateIndex;
+    if (
+      reusable !== undefined &&
+      batch.materialAddress !== undefined &&
+      batch.geometryAddress !== undefined &&
+      reusable.plan?.batches.at(index) === batch &&
+      reusable.candidateBases?.[index] === candidateIndex
+    ) {
+      batchBytes.set(reusable.batchBytes.subarray(offset, offset + BATCH_STRIDE), offset);
+      candidateIndex += batch.candidates.length;
+      continue;
+    }
     const lodCount = batchLodLevelCount(batch);
     batches.setUint32(offset, batch.visibleBase, true);
     batches.setUint32(offset + 4, batch.visibleCapacity, true);
@@ -1417,6 +1444,7 @@ function encodedViewTopology(plan: SubmissionPlan, scene: GpuScene): EncodedView
   }
   const encoded = {
     batchBytes,
+    ...(candidateBases === undefined ? {} : { plan, candidateBases }),
     memberships: Array.from(memberships, ([candidates, offsets]) => ({ candidates, offsets })),
   };
   if (fixed) owner.set(plan, encoded);
@@ -1790,7 +1818,11 @@ export class GpuDrivenView {
       }
       const topologyChanged = this.plan !== plan;
       const inputUploadStart = scene.inputs.uploadBytes;
-      const template = encodedViewTopology(plan, scene);
+      const template = encodedViewTopology(
+        plan,
+        scene,
+        this.sceneRef === scene ? this.encodedTopology : undefined,
+      );
       let batchBytes = template.batchBytes;
       let patched = false;
       let header = new DataView(batchBytes.buffer);

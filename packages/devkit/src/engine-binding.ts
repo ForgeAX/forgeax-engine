@@ -668,7 +668,3 @@ export async function engineDoctorCommand(
   }
   return status;
 }
-
-export function engineBindingFilePath(rootInput = process.cwd()): string {
-  return bindingFile(resolve(rootInput));
-}

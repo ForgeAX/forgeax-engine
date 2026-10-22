@@ -22,6 +22,7 @@ import * as scene from '@forgeax/view-plugin-scene/identity';
 import * as html from '@forgeax/view-plugin-html/identity';
 import * as history from '@forgeax/view-plugin-history/identity';
 import * as assetReferences from '@forgeax/view-plugin-asset-references/identity';
+import { PARAMETERS_FRONTEND_MODULE, PARAMETERS_FRONTEND_PLUGIN_ID } from '@forgeax/view-plugin-parameters/identity';
 
 import { SHELL_MODULE, SHELL_PLUGIN_ID } from './plugins/shell-identity.ts';
 import { PRESENTATION_MODULE, PRESENTATION_PLUGIN_ID } from '@forgeax/view-plugin-viewport/presentation-identity';
@@ -61,6 +62,10 @@ export const VIEW_PRODUCT_PLUGINS = Object.freeze([
   history,
 ]);
 
+export const VIEW_CAPABILITY_FRONTEND_PLUGINS = Object.freeze([
+  Object.freeze({ FRONTEND_PLUGIN_ID: PARAMETERS_FRONTEND_PLUGIN_ID, FRONTEND_MODULE: PARAMETERS_FRONTEND_MODULE }),
+]);
+
 /** Static native composition. Pack assets own game plugin identity; View owns only its UI policy. */
 export function createViewProductPlan({ backendConfig, frontendConfig, disabledPages = [] }: { backendConfig?: ViewBackendProductConfig; frontendConfig?: ViewFrontendConfig; disabledPages?: readonly string[] } = {}) {
   const pages = new Set<string>(VIEW_PRODUCT_PLUGINS.map(plugin => plugin.PAGE_TYPE));
@@ -92,6 +97,7 @@ export function createViewProductPlan({ backendConfig, frontendConfig, disabledP
     { id: PRESENTATION_PLUGIN_ID, module: PRESENTATION_MODULE },
     ...VIEW_PRODUCT_PLUGINS.filter(plugin => plugin !== scene && !disabled.has(plugin.PAGE_TYPE))
       .map(plugin => ({ id: plugin.FRONTEND_PLUGIN_ID, module: plugin.FRONTEND_MODULE })),
+    ...VIEW_CAPABILITY_FRONTEND_PLUGINS.map(plugin => ({ id: plugin.FRONTEND_PLUGIN_ID, module: plugin.FRONTEND_MODULE })),
   ];
   return Object.freeze({
     backend: Object.freeze(backend),

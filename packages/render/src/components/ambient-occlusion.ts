@@ -24,7 +24,6 @@ export const AMBIENT_OCCLUSION_ALGORITHMS = ['ssao', 'gtao'] as const;
 /** Closed f32 encodings for `AmbientOcclusion.quality`. */
 export const AMBIENT_OCCLUSION_QUALITIES = ['low', 'medium', 'high'] as const;
 
-export const AMBIENT_OCCLUSION_SSAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('ssao');
 export const AMBIENT_OCCLUSION_GTAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('gtao');
 
 export const AmbientOcclusion = defineComponent('AmbientOcclusion', {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 // Execute the actual TS/TSX entrypoints, including the throwing Window getter
@@ -8,7 +9,7 @@ const output = await build({
   stdin: {
     contents: `export { getStoredTheme, initializeTheme } from './packages/view-components/src/theme.tsx';
 export { initI18n, getLocale, setLocale } from './packages/viewer/src/i18n/index.ts';`,
-    resolveDir: new URL('..', import.meta.url).pathname,
+    resolveDir: fileURLToPath(new URL('..', import.meta.url)),
   },
   bundle: true, write: false, platform: 'node', format: 'esm',
 });

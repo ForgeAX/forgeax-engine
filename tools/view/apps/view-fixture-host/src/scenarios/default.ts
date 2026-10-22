@@ -5,6 +5,7 @@ type FixtureAsset = EngineWorkspaceAsset & { sourcePath: string; sourceKey?: str
 export const PROJECT_ROOT = '/fixture/project';
 export const PROJECT = Object.freeze({ id: 'fixture-project', root: PROJECT_ROOT, assetRoots: ['assets'], name: 'Game 3D' });
 export const SCENE_TARGET_ID = 'fixture-scene-target';
+export const FIXTURE_SESSION_ID = 'fixture-session';
 export const SCENE_ASSET_ID = 'fixture-scene';
 
 function fixtureAsset(source: string, key: string, kind: string, guid = `fixture-${key.replaceAll('/', '-')}`): FixtureAsset {
@@ -26,6 +27,9 @@ export const ASSETS = Object.freeze([
   ...fixturePack('assets/materials.pack.ts', 'material', Array.from({ length: 15 }, (_, index) => `materials/surface-${index + 1}`)),
   fixtureAsset('assets/physics.pack.json', 'physics/world', 'data'),
   fixtureAsset('assets/scene.pack.ts', 'scene/showcase', 'scene', SCENE_ASSET_ID),
+  fixtureAsset('assets/scene.pack.ts', 'material/ground', 'material'),
+  fixtureAsset('assets/scene.pack.ts', 'mesh/ground', 'mesh'),
+  fixtureAsset('assets/scene.pack.ts', 'material/player', 'material'),
   fixtureAsset('assets/guide.ui.html', 'guide.ui.html', 'ui'),
   fixtureAsset('assets/camera/camera.pack.ts', 'camera/rig', 'prefab'),
   fixtureAsset('assets/player/player.pack.ts', 'player/controller', 'prefab'),

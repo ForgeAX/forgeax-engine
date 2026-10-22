@@ -70,8 +70,8 @@ export function scenePassRequests(graph: object): readonly ScenePassRequest[] {
 const directSelections = new WeakMap<
   ScenePassRequest,
   {
-    readonly materials: MaterialFrame;
-    readonly gpu: GpuDrawSelection;
+    materials: MaterialFrame;
+    gpu: GpuDrawSelection;
     readonly selected: Map<GpuDrivenBatchBinding, MaterialSnapshot | null>;
     /** The plan's batches this request draws directly, for one fixed plan. */
     direct?: { readonly plan: object; readonly batches: readonly GpuDrivenBatch[] };
@@ -91,8 +91,14 @@ function directPassScene<
   let direct = cache.direct;
   if (direct?.plan !== scene.plan) {
     const batches: GpuDrivenBatch[] = [];
-    for (const batch of scene.plan.batches)
+    const live = new Set<GpuDrivenBatchBinding>();
+    for (const batch of scene.plan.batches) {
+      if (batch.binding !== undefined) live.add(batch.binding);
       if (batch.binding === undefined || select(batch.binding) !== undefined) batches.push(batch);
+    }
+    // Retained answers are bounded by the current plan's bindings.
+    for (const binding of cache.selected.keys())
+      if (!live.has(binding)) cache.selected.delete(binding);
     direct = { plan: scene.plan, batches };
     cache.direct = direct;
   }
@@ -105,6 +111,35 @@ export function directPassMaterial(
   gpu: GpuDrawSelection,
 ): (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined {
   let cache = directSelections.get(request);
+  if (cache !== undefined && cache.materials !== materials) {
+    // Material adoption re-selects only bindings of changed accepted versions;
+    // the direct roster survives unless one of them changes admission.
+    const changedMaterials = new Set<object>();
+    materials.changesSince(cache.materials, (before, after) => {
+      const resource = (after ?? before)?.resource;
+      if (resource !== undefined) changedMaterials.add(resource);
+    });
+    const reselect = selectDirectPassMaterial(request, materials, cache.gpu);
+    for (const [binding, previous] of cache.selected) {
+      if (!changedMaterials.has(binding.material)) continue;
+      if (materials.get(binding.material) === undefined) {
+        if (previous !== null) delete cache.direct;
+        cache.selected.delete(binding);
+        continue;
+      }
+      const next = reselect(binding) ?? null;
+      if ((next === null) !== (previous === null)) delete cache.direct;
+      cache.selected.set(binding, next);
+    }
+    cache.materials = materials;
+  }
+  if (cache?.materials === materials && cache.gpu !== gpu) {
+    // A replaced selection re-joins only bindings whose owned executions changed.
+    const changed = gpu.changedBindingsSince(cache.gpu);
+    for (const binding of changed) cache.selected.delete(binding);
+    if (changed.size > 0) delete cache.direct;
+    cache.gpu = gpu;
+  }
   if (cache?.materials !== materials || cache.gpu !== gpu) {
     cache = { materials, gpu, selected: new Map() };
     directSelections.set(request, cache);
@@ -121,20 +156,39 @@ export function directPassMaterial(
   };
 }
 
+/**
+ * A request's Pass match is a pure function of one immutable accepted version.
+ * It survives GPU selection and plan replacements, which re-join only ownership.
+ */
+const passMatches = new WeakMap<ScenePassRequest, WeakMap<object, boolean>>();
+
 function selectDirectPassMaterial(
   request: ScenePassRequest,
   materials: MaterialFrame,
   gpu: GpuDrawSelection,
 ): (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined {
+  let matches = passMatches.get(request);
+  if (matches === undefined) {
+    matches = new WeakMap();
+    passMatches.set(request, matches);
+  }
+  const matched = matches;
   return (binding) => {
     if (request.late) return undefined;
     const accepted = materials.get(binding.material);
     if (accepted === undefined)
       throw new Error('Scene Pass requires its accepted material version');
-    if (
-      !materialMatchesPass(accepted, request.selector, request.recordMode, request.excludeSelector)
-    )
-      return undefined;
+    let match = matched.get(accepted);
+    if (match === undefined) {
+      match = materialMatchesPass(
+        accepted,
+        request.selector,
+        request.recordMode,
+        request.excludeSelector,
+      );
+      matched.set(accepted, match);
+    }
+    if (!match) return undefined;
     if (
       request.gpu &&
       gpu.ownsBinding(

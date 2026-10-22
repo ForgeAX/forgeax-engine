@@ -102,9 +102,24 @@ export interface GpuSceneResourceFrame {
   indexForGeometry(worldId: number, handle: number, geometry?: MeshGeometry): number | undefined;
   /** Close the actual read domain before exposing independently retained work. */
   inputReads(): GpuInputReadFrame;
+  /** Versions this frame has resolved so far; a later frame may adopt the same set. */
+  pins?(): GpuSceneResourcePins;
+  /**
+   * Pin every recorded version while each is still the current, initialized and
+   * mapped version of its resource. Returns false (pinning nothing further)
+   * once any recorded address would resolve differently in this frame.
+   */
+  adoptPins?(pins: GpuSceneResourcePins): boolean;
   seal(): Result<void, RhiError>;
   release(): void;
   submit(completed?: Promise<void>): void;
+}
+
+/** Opaque version roster captured from one resource frame. */
+export interface GpuSceneResourcePins {
+  readonly scene: object;
+  readonly materials: readonly (readonly [MaterialResource, MaterialVersion, MaterialSnapshot])[];
+  readonly meshes: readonly (readonly [string, MeshVersion, MeshGeometry])[];
 }
 
 interface MeshVersion {
@@ -597,6 +612,55 @@ export class GpuScene {
           inputs.resource(slot) !== descriptor
           ? undefined
           : slot;
+      },
+      pins: () => ({
+        scene: this,
+        materials: Array.from(
+          versions,
+          ([resource, version]) => [resource, version, version.snapshot] as const,
+        ),
+        meshes: Array.from(meshes, ([key, version]) => [key, version, version.geometry] as const),
+      }),
+      adoptPins: (pins) => {
+        if (
+          pins.scene !== this ||
+          state !== 'prepared' ||
+          this.disposed ||
+          this.failure !== undefined
+        )
+          return false;
+        for (const [resource, version, snapshot] of pins.materials) {
+          if (versions.get(resource) === version) continue;
+          const allocation = this.sharedMaterials.get(resource);
+          if (
+            allocation === undefined ||
+            allocation.version !== version ||
+            !version.initialized ||
+            version.snapshot !== snapshot ||
+            versions.has(resource) ||
+            inputs.resource(allocation.logicalSlot) !== version.descriptor
+          )
+            return false;
+          pinBuffers();
+          version.references++;
+          versions.set(resource, version);
+        }
+        for (const [key, version, geometry] of pins.meshes) {
+          if (meshes.get(key) === version) continue;
+          const allocation = this.sharedMeshes.get(key);
+          if (
+            allocation === undefined ||
+            allocation.version !== version ||
+            version.geometry !== geometry ||
+            meshes.has(key) ||
+            inputs.resource(allocation.logicalSlot) !== version.descriptor
+          )
+            return false;
+          pinBuffers();
+          version.references++;
+          meshes.set(key, version);
+        }
+        return true;
       },
       inputReads: () => {
         if (this.failure !== undefined) throw this.failure;

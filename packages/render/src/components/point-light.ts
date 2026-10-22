@@ -21,7 +21,7 @@
 //
 // charter mapping: proposition 1 (single import + IDE autocomplete on
 // payload.range) + proposition 3 (silent failure -> explicit failure;
-// spawn-time fail-fast on range<0 / NaN with structured EcsError) +
+// extract routes invalid decay / lighting channels as structured EcsError) +
 // proposition 5 (consistent abstraction: shared payload shape with
 // SpotLight; `range` semantics aligned with KHR_lights_punctual).
 

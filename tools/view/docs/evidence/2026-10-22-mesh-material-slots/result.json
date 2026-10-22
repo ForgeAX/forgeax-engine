@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "engine": "artifacts/engine-ci-284f102/packages/engine",
+  "mesh": "68819e53-5d1e-58a6-9d0a-e6eb48d5fdb6",
+  "material": "70df3f6e-7d87-5cfb-807f-71ed340a7b41",
+  "meshTarget": {
+    "targetId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383",
+    "targetGeneration": 1
+  },
+  "materialTarget": {
+    "targetId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:4ddcf6c3-dc99-4acb-9ed3-8d59dba7a62c",
+    "generation": 2,
+    "sessionId": "workspace-bc7a46ab-23a9-4e50-877f-d2a5105bbb75",
+    "worldId": "world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-3",
+    "headed": true,
+    "width": 1280,
+    "height": 720
+  },
+  "contrast": 61.33333333333334,
+  "errors": [],
+  "boundary": "Native Engine preview, real thumbnail PNG and Mesh-to-Material navigation."
+}

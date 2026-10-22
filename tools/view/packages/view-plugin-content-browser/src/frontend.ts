@@ -7,7 +7,7 @@ export const VIEW_CONTENT_BROWSER_FRONTEND_MODULE = FRONTEND_MODULE;
 
 const viewContentBrowserFrontendPlugin = {
   name: VIEW_CONTENT_BROWSER_FRONTEND_PLUGIN_ID,
-  inject: ['viewOperationClient', 'viewScenePage'],
+  inject: ['viewOperationClient', 'viewScenePage', 'contentBrowserDetailTabs'],
   provide: ['viewAssetBrowser'],
   async apply(ctx: Context, config: FrontendConfig = {}) {
     const document = config.document ?? globalThis.document;
@@ -23,6 +23,7 @@ const viewContentBrowserFrontendPlugin = {
       revealAsset: input => revealAsset?.(input) ?? Promise.resolve(false),
     };
     ctx.provide('viewAssetBrowser', assetBrowser);
+    const detailTabs = ctx.get('contentBrowserDetailTabs');
     const wrapper = document.createElement('div');
     wrapper.className = 'fx-view-content-browser-host';
     wrapper.dataset.forgeaxView = 'content-browser-root';
@@ -46,9 +47,11 @@ const viewContentBrowserFrontendPlugin = {
         panel: 'ContentBrowser',
         props: {
           client: workspaceClient,
+          detailTabs,
           assetReferences: ctx.get('viewAssetReferences', false),
           pageHost: config.pageHost ?? ctx.get('pageHost', false),
           revealPanel: () => panelHost.reveal?.(SLOT) ?? Promise.resolve(false),
+          dismissUnpinnedEdge: () => panelHost.dismissUnpinnedEdge?.(SLOT),
           registerAssetReveal: (handler: typeof revealAsset) => {
             revealAsset = handler;
             return () => { if (revealAsset === handler) revealAsset = undefined; };

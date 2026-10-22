@@ -281,12 +281,13 @@ export class RenderScene {
   }
 
   /** Direct asset evidence changes one shared geometry row, without visiting its instances. */
-  adoptMesh(worldId: number, handle: number, mesh: MeshAsset | undefined): void {
-    if (!this.meshHolders.has(identityKey(worldId, handle))) return;
+  adoptMesh(worldId: number, handle: number, mesh: MeshAsset | undefined): boolean {
+    if (!this.meshHolders.has(identityKey(worldId, handle))) return false;
     this.meshes =
       mesh === undefined
         ? this.meshes.without(worldId, handle)
         : this.meshes.with(worldId, handle, mesh);
+    return mesh !== undefined;
   }
 
   private acquireMesh(snapshot: RenderableSnapshot): void {
@@ -379,6 +380,7 @@ export class RenderScene {
     WeakMap<RenderSceneSlot, CachedWorldBounds>
   >();
   private readonly sourceWorldBounds = new WeakMap<RenderSceneSlot, CachedWorldBounds>();
+  private readonly slotBySnapshot = new WeakMap<RenderableSnapshot, RenderSceneSlot>();
   private readonly instanceBoundsCache = new InstanceBoundsCache();
   private materialized:
     | {
@@ -807,13 +809,18 @@ export class RenderScene {
     const visible = this.lastSubmittedVisible;
     const temporal = this.temporalTracking;
     const memo = this.temporalBySlot;
+    // Several Scene Passes read the same slots in one recording; resolve each once.
+    const resolved = new Map<number, RenderableSnapshot | undefined>();
     return (slot) => {
+      if (resolved.has(slot)) return resolved.get(slot);
       const record = current.slotAt(slot);
-      if (record === undefined) return undefined;
-      const source = meshDrawSnapshot(record.snapshot, meshes);
-      return temporal
-        ? temporalDrawSnapshot(source, counters, current, submitted, visible, materials, memo)
-        : source;
+      const source = record === undefined ? undefined : meshDrawSnapshot(record.snapshot, meshes);
+      const value =
+        source === undefined || !temporal
+          ? source
+          : temporalDrawSnapshot(source, counters, current, submitted, visible, materials, memo);
+      resolved.set(slot, value);
+      return value;
     };
   }
 
@@ -929,6 +936,15 @@ export class RenderScene {
   readonly slot = (worldId: number, entityKey: number): RenderSceneSlot | undefined => {
     return this.lookup(worldId, entityKey);
   };
+
+  /** Current slot of a projected snapshot; immutable snapshots memoize the identity search. */
+  slotOf(snapshot: RenderableSnapshot): RenderSceneSlot | undefined {
+    const cached = this.slotBySnapshot.get(snapshot);
+    if (cached !== undefined && this.slots.get(cached.slot) === cached) return cached;
+    const slot = this.lookup(snapshot.worldId, snapshot.entityKey);
+    if (slot !== undefined) this.slotBySnapshot.set(snapshot, slot);
+    return slot;
+  }
 
   has(worldId: number, entityKey: number): boolean {
     return this.lookup(worldId, entityKey) !== undefined;
@@ -1090,7 +1106,6 @@ export class RenderScene {
     // A static Skin Binding never grants permission to use bind-pose bounds.
     // Its caller must provide the fixed recording root to the numeric writer.
     if (snapshot.skinBinding !== undefined) return undefined;
-    const radius = cullingDisplacementRadius(snapshot, geometry, materials);
     let bounds =
       geometry === undefined ? this.sourceWorldBounds : this.meshWorldBounds.get(geometry);
     if (bounds === undefined) {
@@ -1099,7 +1114,15 @@ export class RenderScene {
       if (geometry !== undefined) this.meshWorldBounds.set(geometry, bounds);
     }
     const cached = bounds.get(slot);
-    if (cached !== undefined && cached.radius === radius) return cached.bounds ?? undefined;
+    // The slot, geometry and fixed material frame all match, so the material
+    // radius is the one already proven; mutable material roots re-derive it.
+    if (cached !== undefined && materials !== undefined && cached.materials === materials)
+      return cached.bounds ?? undefined;
+    const radius = cullingDisplacementRadius(snapshot, geometry, materials);
+    if (cached !== undefined && cached.radius === radius) {
+      cached.materials = materials;
+      return cached.bounds ?? undefined;
+    }
     let candidate: RenderSceneBounds | undefined;
     let local =
       geometry === undefined ||
@@ -1142,7 +1165,7 @@ export class RenderScene {
     } else {
       candidate = worldBounds(snapshot, undefined, local);
     }
-    bounds.set(slot, { radius, bounds: candidate ?? null });
+    bounds.set(slot, { radius, bounds: candidate ?? null, materials });
     return candidate;
   }
 
@@ -1397,7 +1420,7 @@ interface PersistentCullMemo {
   readonly renderables: RenderableSnapshot[];
   readonly dispatch: DispatchEntry[];
   /** Private address scratch; published entries themselves stay immutable. */
-  readonly dispatchRemapping: WeakMap<DispatchEntry, DispatchEntry>;
+  readonly dispatchRemapping: ReadonlyMap<DispatchEntry, DispatchEntry>;
 }
 
 /** Draw keys the GPU-driven raster owned last primary frame, in its world-key space. */
@@ -1456,7 +1479,61 @@ function cullPersistentFrame(
   const shadowOnly = new Set<number>();
   const hidden = new Set<number>();
   const hiddenSections = new Map<number, Set<number>>();
+  // GPU-owned candidates are culled by their view pass. Their CPU test is
+  // deferred: only camera-visibility readers and frustum statistics pay it.
+  const deferredSources: RenderableSnapshot[] = [];
+  const deferredIndices: number[] = [];
+  // Readers pass their own snapshot of the same row (for example a scene
+  // slot), so look candidates up by entity identity, not object identity.
+  let deferredByEntity: Map<number, number> | undefined;
+  let deferredBySection: Map<number, Map<number, number>> | undefined;
+  const deferredVisible = new Map<number, boolean | undefined>();
+  const deferredAabb = box3.create();
+  const deferredAt = (source: RenderableSnapshot): number | undefined => {
+    if (deferredSources.length === 0) return undefined;
+    if (deferredByEntity === undefined || deferredBySection === undefined) {
+      deferredByEntity = new Map();
+      deferredBySection = new Map();
+      for (let i = 0; i < deferredSources.length; i++) {
+        const deferred = deferredSources[i] as RenderableSnapshot;
+        const key = worldEntityKey(deferred.worldId, deferred.entityKey);
+        if (deferred.terrainSection === undefined) deferredByEntity.set(key, i);
+        else {
+          let sections = deferredBySection.get(key);
+          if (sections === undefined) {
+            sections = new Map();
+            deferredBySection.set(key, sections);
+          }
+          sections.set(deferred.terrainSection.index, i);
+        }
+      }
+    }
+    const key = worldEntityKey(source.worldId, source.entityKey);
+    return source.terrainSection === undefined
+      ? deferredByEntity.get(key)
+      : deferredBySection.get(key)?.get(source.terrainSection.index);
+  };
+  const testDeferred = (position: number): boolean | undefined => {
+    if (deferredVisible.has(position)) return deferredVisible.get(position);
+    const source = deferredSources[position] as RenderableSnapshot;
+    let visible: boolean | undefined;
+    if (boundsOf(source, deferredIndices[position] as number, deferredAabb)) {
+      visible = planes.length === 0;
+      for (const cameraPlanes of planes)
+        if (
+          cameraPlanes.length === 0 ||
+          frustum.intersectsBox(cameraPlanes as frustum.Frustum, deferredAabb as box3.Box3Like)
+        ) {
+          visible = true;
+          break;
+        }
+    }
+    deferredVisible.set(position, visible);
+    return visible;
+  };
   const cameraVisible = (source: RenderableSnapshot) => {
+    const deferred = deferredAt(source);
+    if (deferred !== undefined) return testDeferred(deferred) !== false;
     const key = worldEntityKey(source.worldId, source.entityKey);
     return source.terrainSection === undefined
       ? !hidden.has(key)
@@ -1494,7 +1571,11 @@ function cullPersistentFrame(
     // the same bounds), but the CPU test still feeds `frustumStats` so the
     // statistic does not depend on which lane executed the cull.
     const gpuOwned = gpuCulled?.(candidate) === true;
-    if (boundsOf(candidate, index, worldAabb)) {
+    if (gpuOwned) {
+      // Always admitted; its view pass owns the frustum test.
+      deferredSources.push(candidate);
+      deferredIndices.push(index);
+    } else if (boundsOf(candidate, index, worldAabb)) {
       total += 1;
       isVisible = planes.length === 0;
       for (const cameraPlanes of planes) {
@@ -1548,15 +1629,40 @@ function cullPersistentFrame(
     visible?.push(source);
     visibleCount += 1;
   }
-  const frustumStats = { culled, total };
+  const cpuCulled = culled;
+  const cpuTotal = total;
+  let deferredStats: { readonly culled: number; readonly total: number } | undefined;
+  const statsOf = () => {
+    if (deferredStats === undefined) {
+      let deferredCulled = 0;
+      let deferredTotal = 0;
+      for (let i = 0; i < deferredSources.length; i++) {
+        const visible = testDeferred(i);
+        if (visible === undefined) continue;
+        deferredTotal++;
+        if (!visible) deferredCulled++;
+      }
+      deferredStats = { culled: deferredCulled, total: deferredTotal };
+    }
+    return deferredStats;
+  };
+  const frustumStats = {
+    get culled() {
+      return cpuCulled + (deferredSources.length === 0 ? 0 : statsOf().culled);
+    },
+    get total() {
+      return cpuTotal + (deferredSources.length === 0 ? 0 : statsOf().total);
+    },
+  };
   sourceSubsurface.adopt(materials);
   authorSubsurface.adopt(materials);
-  const sameVisibility =
+  // Dispatch addresses depend only on the projection, not on row snapshots.
+  const sameAddresses =
     previous !== undefined &&
     sameProjection &&
     previous.shadowOnly.size === shadowOnly.size &&
-    previous.renderables.length === visibleCount &&
-    visible === undefined;
+    previous.renderables.length === visibleCount;
+  const sameVisibility = sameAddresses && visible === undefined;
   const admittedSubsurface = sameVisibility
     ? previous.admittedSubsurface
     : new SubsurfaceSelection();
@@ -1595,9 +1701,33 @@ function cullPersistentFrame(
   if (!sameVisibility) for (const source of selected) admittedSubsurface.add(source, materials);
 
   admittedSubsurface.adopt(materials);
+  if (sameAddresses && previous.sourceDispatch === frame.dispatch) {
+    if (memo !== undefined)
+      memo.value = {
+        ...previous,
+        meshes,
+        sourceSubsurface,
+        authorSubsurface,
+        admittedSubsurface,
+        sourceRenderables: frame.renderables,
+        sourceOwner,
+        sourceRevision,
+        shadowOnly,
+        renderables: selected,
+      };
+    return result({
+      ...frame,
+      renderables: selected,
+      dispatch: previous.dispatch,
+      frustumStats,
+      cameraVisible,
+    });
+  }
   const dispatch: DispatchEntry[] = [];
-  const dispatchRemapping =
-    previous?.dispatchRemapping ?? new WeakMap<DispatchEntry, DispatchEntry>();
+  // Strong per-run table: only the entries this cull remapped stay reachable,
+  // with no ephemeron churn when a scene edit shifts every later address.
+  const previousRemapping = previous?.dispatchRemapping;
+  const dispatchRemapping = new Map<DispatchEntry, DispatchEntry>();
   for (const entry of frame.dispatch) {
     const candidateIndex = entry.renderableIndex;
     // Shadow-only candidates must never enter the main forward/transparent
@@ -1613,14 +1743,14 @@ function cullPersistentFrame(
     if (renderableIndex === entry.renderableIndex) {
       dispatch.push(entry);
     } else {
-      let mapped = dispatchRemapping.get(entry);
-      if (mapped?.renderableIndex !== renderableIndex) {
-        mapped = { ...entry, renderableIndex };
-        dispatchRemapping.set(entry, mapped);
-      }
+      let mapped = previousRemapping?.get(entry);
+      if (mapped?.renderableIndex !== renderableIndex) mapped = { ...entry, renderableIndex };
+      dispatchRemapping.set(entry, mapped);
       dispatch.push(mapped);
     }
   }
+  // Published once; readers may key derived classifications on its identity.
+  Object.freeze(dispatch);
   if (memo !== undefined) {
     memo.value = {
       meshes,
@@ -1816,12 +1946,16 @@ export class PersistentRenderScene {
         const mesh = change.removed
           ? undefined
           : runtimeAssets(world.assets).borrow<MeshAsset>(change.handle);
-        if (change.removed || (mesh?.ok && mesh.value.kind === 'mesh'))
+        if (
+          (change.removed || (mesh?.ok && mesh.value.kind === 'mesh')) &&
           this.composition?.projection.adoptMesh(
             worldId,
             change.handle,
             mesh?.ok ? mesh.value : undefined,
-          );
+          ) === true &&
+          isMeshContentPatch(change)
+        )
+          this.composition?.topology.recordContentPatch();
         const skeleton = this.composition?.skin;
         if (skeleton !== undefined) {
           const definition = change.removed
@@ -2216,8 +2350,12 @@ export class PersistentRenderScene {
     for (const change of input.assetChanges) {
       this.options.onAssetChange?.(resources, change);
       const mesh = change.removed ? undefined : resources.resolveAsset<MeshAsset>(change.handle);
-      if (change.removed || (mesh?.ok && mesh.value.kind === 'mesh'))
-        entry.projection.adoptMesh(0, change.handle, mesh?.ok ? mesh.value : undefined);
+      if (
+        (change.removed || (mesh?.ok && mesh.value.kind === 'mesh')) &&
+        entry.projection.adoptMesh(0, change.handle, mesh?.ok ? mesh.value : undefined) &&
+        isMeshContentPatch(change)
+      )
+        entry.topology.recordContentPatch();
       const definition = change.removed
         ? undefined
         : resources.resolveAsset<SkeletonAsset>(change.handle);
@@ -3461,7 +3599,7 @@ export class PersistentRenderScene {
       ownedFrame,
       materialFrame,
       (snapshot, _index, out) => {
-        const slot = entry.projection.slot(snapshot.worldId, snapshot.entityKey);
+        const slot = entry.projection.slotOf(snapshot);
         if (snapshot.terrainSection !== undefined || snapshot.generatedMesh !== undefined)
           return writeBounds(worldBounds(snapshot), out);
         return slot === undefined
@@ -3672,7 +3810,7 @@ export class PersistentRenderScene {
       ownedFrame,
       materialFrame,
       (snapshot, _index, out) => {
-        const slot = entry.projection.slot(snapshot.worldId, snapshot.entityKey);
+        const slot = entry.projection.slotOf(snapshot);
         if (snapshot.terrainSection !== undefined || snapshot.generatedMesh !== undefined)
           return writeBounds(worldBounds(snapshot), out);
         return slot === undefined
@@ -3924,4 +4062,19 @@ export class PersistentRenderScene {
     this.gpuStatus = 'error';
     this.options.onGpuError?.(error);
   }
+}
+
+/** Range-only evidence cannot change submeshes, so batch keys and membership stay intact. */
+function isMeshContentPatch(change: AssetChange): boolean {
+  return (
+    !change.removed &&
+    change.ranges.length > 0 &&
+    change.fields.every(
+      (field) =>
+        field === 'aabb' ||
+        field === 'collision' ||
+        field === 'distanceField' ||
+        field === 'cardLayout',
+    )
+  );
 }

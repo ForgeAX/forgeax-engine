@@ -5787,7 +5787,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@forgeax/engine-math": "workspace:*",
-        "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-rhi": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
       },
@@ -6651,6 +6650,7 @@
       "name": "@forgeax/engine-shader",
       "version": "0.0.0",
       "dependencies": {
+        "@forgeax/engine-codec": "workspace:*",
         "@forgeax/engine-rhi": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
         "@noble/hashes": "^2.2.0",
@@ -6987,6 +6987,7 @@
         "@forgeax/view-plugin-inspector": "workspace:*",
         "@forgeax/view-plugin-material": "workspace:*",
         "@forgeax/view-plugin-mesh": "workspace:*",
+        "@forgeax/view-plugin-parameters": "workspace:*",
         "@forgeax/view-plugin-plugins": "workspace:*",
         "@forgeax/view-plugin-scene": "workspace:*",
         "@forgeax/view-plugin-scene-tree": "workspace:*",
@@ -7051,7 +7052,6 @@
       "name": "@forgeax/view-plugin-content-browser",
       "version": "0.0.0",
       "dependencies": {
-        "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/engine-tool-runtime": "workspace:*",
         "@forgeax/view-components": "workspace:*",
@@ -7141,6 +7141,23 @@
       "name": "@forgeax/view-plugin-mesh",
       "version": "0.0.0",
       "dependencies": {
+        "@forgeax/engine-plugin": "workspace:*",
+        "@forgeax/view-components": "workspace:*",
+        "@forgeax/view-workspace-core": "workspace:*",
+        "lucide-react": "^0.460.0",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8",
+      },
+      "devDependencies": {
+        "@types/react": "19.3.0",
+        "@types/react-dom": "19.3.0",
+      },
+    },
+    "tools/view/packages/view-plugin-parameters": {
+      "name": "@forgeax/view-plugin-parameters",
+      "version": "0.0.0",
+      "dependencies": {
+        "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/view-components": "workspace:*",
         "@forgeax/view-workspace-core": "workspace:*",
@@ -7256,6 +7273,7 @@
         "@forgeax/view-plugin-inspector": "workspace:*",
         "@forgeax/view-plugin-material": "workspace:*",
         "@forgeax/view-plugin-mesh": "workspace:*",
+        "@forgeax/view-plugin-parameters": "workspace:*",
         "@forgeax/view-plugin-plugins": "workspace:*",
         "@forgeax/view-plugin-scene": "workspace:*",
         "@forgeax/view-plugin-scene-tree": "workspace:*",
@@ -8156,6 +8174,8 @@
     "@forgeax/view-plugin-material": ["@forgeax/view-plugin-material@workspace:tools/view/packages/view-plugin-material"],
 
     "@forgeax/view-plugin-mesh": ["@forgeax/view-plugin-mesh@workspace:tools/view/packages/view-plugin-mesh"],
+
+    "@forgeax/view-plugin-parameters": ["@forgeax/view-plugin-parameters@workspace:tools/view/packages/view-plugin-parameters"],
 
     "@forgeax/view-plugin-plugins": ["@forgeax/view-plugin-plugins@workspace:tools/view/packages/view-plugin-plugins"],
 
@@ -9826,6 +9846,8 @@
     "@forgeax/view-plugin-material/lucide-react": ["lucide-react@0.460.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc" } }, "sha512-BVtq/DykVeIvRTJvRAgCsOwaGL8Un3Bxh8MbDxMhEWlZay3T4IpEKDEpwt5KZ0KJMHzgm6jrltxlT5eXOWXDHg=="],
 
     "@forgeax/view-plugin-mesh/lucide-react": ["lucide-react@0.460.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc" } }, "sha512-BVtq/DykVeIvRTJvRAgCsOwaGL8Un3Bxh8MbDxMhEWlZay3T4IpEKDEpwt5KZ0KJMHzgm6jrltxlT5eXOWXDHg=="],
+
+    "@forgeax/view-plugin-parameters/lucide-react": ["lucide-react@0.460.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc" } }, "sha512-BVtq/DykVeIvRTJvRAgCsOwaGL8Un3Bxh8MbDxMhEWlZay3T4IpEKDEpwt5KZ0KJMHzgm6jrltxlT5eXOWXDHg=="],
 
     "@forgeax/view-plugin-plugins/lucide-react": ["lucide-react@0.460.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc" } }, "sha512-BVtq/DykVeIvRTJvRAgCsOwaGL8Un3Bxh8MbDxMhEWlZay3T4IpEKDEpwt5KZ0KJMHzgm6jrltxlT5eXOWXDHg=="],
 

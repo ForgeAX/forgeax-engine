@@ -2185,6 +2185,40 @@ it('retains a pinned geometry descriptor through replacement, deletion and submi
   }
 });
 
+it('re-pins a resolved geometry version only while it remains current', () => {
+  const queue = new RecordingQueue();
+  const available = GpuScene.create(createDevice(queue), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const before = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  try {
+    scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes: before }).unwrap();
+    const first = scene.captureResources().unwrap();
+    const address = first.logicalForGeometry(0, 9, before.get(0, 9));
+    expect(address).toBeDefined();
+    const pins = first.pins?.();
+    if (pins === undefined) throw new Error('missing pins');
+    first.release();
+    const second = scene.captureResources().unwrap();
+    expect(second.adoptPins?.(pins)).toBe(true);
+    // The adopted version keeps the old address readable after replacement.
+    second.seal().unwrap();
+    const after = before.with(0, 9, {
+      ...BUILTIN_CUBE,
+      aabb: new Float32Array([-9, -1, -1, 1, 1, 1]),
+    });
+    scene.sync({ ...projection.apply([]), meshes: after }).unwrap();
+    const third = scene.captureResources().unwrap();
+    expect(third.adoptPins?.(pins)).toBe(false);
+    expect(third.logicalForGeometry(0, 9, after.get(0, 9))).toBeDefined();
+    third.release();
+    second.release();
+  } finally {
+    scene.dispose();
+  }
+});
+
 it('starts material residency independently of a large primitive reservation', () => {
   const created = GpuScene.create(createDevice(new RecordingQueue()), 65536).unwrap();
   if (created.status !== 'available') throw new Error('expected GPU scene');

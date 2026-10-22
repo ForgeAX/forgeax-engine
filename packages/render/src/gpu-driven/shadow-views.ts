@@ -1884,8 +1884,6 @@ export class ShadowViewStatePool {
   }
 }
 
-export { ShadowViewStatePool as GpuDrivenShadowViewPool };
-
 /**
  * Caster classes are renderer-global, so every final view of every light kind
  * retains a static layer; only the static layer itself has none.

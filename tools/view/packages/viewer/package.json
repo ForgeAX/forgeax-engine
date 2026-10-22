@@ -47,7 +47,8 @@
     "lucide-react": "^0.460.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "@forgeax/view-plugin-history": "workspace:*"
+    "@forgeax/view-plugin-history": "workspace:*",
+    "@forgeax/view-plugin-parameters": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",

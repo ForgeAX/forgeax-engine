@@ -75,10 +75,6 @@ export interface MobilityDiagnosticSubject {
   readonly sceneEntityRef?: SceneEntityRef;
 }
 
-export type MobilityInvalidKindDetail = MobilityDiagnosticSubject;
-
-export type MobilityStaticMovedDetail = MobilityDiagnosticSubject;
-
 export interface MobilityPhysicsConflictDetail extends MobilityDiagnosticSubject {
   readonly rigidBodyType: 'dynamic' | 'kinematic';
 }
@@ -89,13 +85,13 @@ export type MobilityDiagnostic =
       readonly code: 'mobility-invalid-kind';
       readonly expected: string;
       readonly hint: string;
-      readonly detail: MobilityInvalidKindDetail;
+      readonly detail: MobilityDiagnosticSubject;
     }
   | {
       readonly code: 'mobility-static-moved';
       readonly expected: string;
       readonly hint: string;
-      readonly detail: MobilityStaticMovedDetail;
+      readonly detail: MobilityDiagnosticSubject;
     }
   | {
       readonly code: 'mobility-physics-conflict';

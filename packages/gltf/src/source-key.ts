@@ -1,4 +1,4 @@
-import type { GltfDocItemLike } from './sub-asset-key.js';
+import type { GltfDocItem } from './sub-asset-key.js';
 
 interface GltfSourceKeyErrorBase {
   readonly expected: string;
@@ -37,13 +37,13 @@ export type GltfSourceKeyErrorCode = GltfSourceKeyError['code'];
 export type GltfSourceKeyResult =
   | {
       readonly ok: true;
-      readonly items: readonly (GltfDocItemLike & { readonly sourceKey: string })[];
+      readonly items: readonly (GltfDocItem & { readonly sourceKey: string })[];
     }
   | { readonly ok: false; readonly error: GltfSourceKeyError };
 
 /** Derive a semantic glTF key; sourceIndex and source path are never inputs. */
 export function sourceKeyForGltfOutput(
-  item: Pick<GltfDocItemLike, 'kind' | 'name'>,
+  item: Pick<GltfDocItem, 'kind' | 'name'>,
 ): string | undefined {
   const kind = item.kind.trim();
   if (kind.length === 0) return undefined;
@@ -52,8 +52,8 @@ export function sourceKeyForGltfOutput(
 }
 
 /** Require every output in a multi-output declaration to carry a unique key. */
-export function deriveGltfSourceKeys(items: readonly GltfDocItemLike[]): GltfSourceKeyResult {
-  const keyed: (GltfDocItemLike & { readonly sourceKey: string })[] = [];
+export function deriveGltfSourceKeys(items: readonly GltfDocItem[]): GltfSourceKeyResult {
+  const keyed: (GltfDocItem & { readonly sourceKey: string })[] = [];
   const missing: number[] = [];
   for (const item of items) {
     const sourceKey = sourceKeyForGltfOutput(item);
@@ -72,12 +72,12 @@ export function deriveGltfSourceKeys(items: readonly GltfDocItemLike[]): GltfSou
     };
   }
 
-  const seen = new Map<string, GltfDocItemLike>();
+  const seen = new Map<string, GltfDocItem>();
   for (const current of keyed) {
     const key = current.sourceKey;
     const prior = seen.get(key);
     if (prior !== undefined) {
-      const entry = (item: GltfDocItemLike): GltfSourceKeyConflictEntry => {
+      const entry = (item: GltfDocItem): GltfSourceKeyConflictEntry => {
         const name = item.name?.trim();
         return {
           kind: item.kind.trim(),

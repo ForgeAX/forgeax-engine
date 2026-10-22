@@ -2,7 +2,7 @@ import type { HostCallerIdentity, HostTransportServer, HostTransportClient } fro
 import type { FrontendConfig } from './frontend-contract.ts';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-export type ViewHostServerOptions = { backendHost?: { transport: HostTransportServer }; transport?: HostTransportServer; accessToken?: string; host?: string; port?: number; path?: string; staticRoot?: string | URL; frontendConfig?: Pick<FrontendConfig, 'layout'>; onClientConnect?: (caller: HostCallerIdentity) => unknown; onClientDisconnect?: (caller: HostCallerIdentity) => unknown };
+export type ViewHostServerOptions = { backendHost?: { transport: HostTransportServer }; transport?: HostTransportServer; accessToken?: string; host?: string; port?: number; path?: string; staticRoot?: string | URL; frontendConfig?: Pick<FrontendConfig, 'layout'>; frontendSourceId?: string; onClientConnect?: (caller: HostCallerIdentity) => unknown; onClientDisconnect?: (caller: HostCallerIdentity) => unknown };
 
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { join, normalize } from 'node:path';
@@ -86,6 +86,7 @@ export async function startViewHostServer({
   host = '127.0.0.1',
   port = 0,
   path = DEFAULT_PATH,
+  frontendSourceId = 'view-frontend',
   onClientConnect,
   onClientDisconnect,
   staticRoot,
@@ -173,7 +174,7 @@ export async function startViewHostServer({
   // admission and the loss of that page so the workspace can reset per-page
   // session state instead of replaying the previous page's history.
   const isTrustedFrontendCaller = (caller: HostCallerIdentity) =>
-    caller?.kind === 'frontend' && caller?.sourceId === 'view-frontend';
+    caller?.kind === 'frontend' && caller?.sourceId === frontendSourceId;
   // Lifecycle notifications run user code against possibly dead targets; a
   // throw here would break transport admission, and an unhandled rejection
   // would crash the backend process.
@@ -219,7 +220,7 @@ export async function startViewHostServer({
     const dispose = attachHostWebSocketServer(
       socket,
       transport,
-      role === 'frontend' ? { kind: 'frontend', sourceId: 'view-frontend' } : { kind: 'websocket' },
+      role === 'frontend' ? { kind: 'frontend', sourceId: frontendSourceId } : { kind: 'websocket' },
     );
     disposers.add(dispose);
     const remove = () => {

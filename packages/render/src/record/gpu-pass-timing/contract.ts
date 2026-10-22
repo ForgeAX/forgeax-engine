@@ -1,6 +1,6 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { GpuPassTimingReason } from './errors.js';
+import type { GpuPassTimingError } from './errors.js';
 
 export const GPU_PASS_TIMING_SCHEMA_VERSION = '1.0' as const;
 
@@ -22,7 +22,7 @@ export const DEFAULT_GPU_PASS_TIMING_OPTIONS: NormalizedGpuPassTimingOptions = O
   retentionFrames: 8,
 });
 
-function optionError(field: string, value: number, min: number, max: number): GpuPassTimingReason {
+function optionError(field: string, value: number, min: number, max: number): GpuPassTimingError {
   return {
     code: 'invalid-timing-options',
     expected: `${field} is an integer in [${min}, ${max}]`,
@@ -37,7 +37,7 @@ function validInteger(value: number, min: number, max: number): boolean {
 
 export function normalizeGpuPassTimingOptions(
   options: GpuPassTimingOptions = {},
-): Result<NormalizedGpuPassTimingOptions, GpuPassTimingReason> {
+): Result<NormalizedGpuPassTimingOptions, GpuPassTimingError> {
   const maxPassesPerFrame =
     options.maxPassesPerFrame ?? DEFAULT_GPU_PASS_TIMING_OPTIONS.maxPassesPerFrame;
   if (!validInteger(maxPassesPerFrame, 1, 2048)) {
@@ -77,7 +77,7 @@ export interface GpuPassTimingMeasuredEntry extends GpuPassTimingPassIdentity {
 
 export interface GpuPassTimingUnmeasuredEntry extends GpuPassTimingPassIdentity {
   readonly status: 'unmeasured';
-  readonly reason: GpuPassTimingReason;
+  readonly reason: GpuPassTimingError;
 }
 
 export type GpuPassTimingEntry = GpuPassTimingMeasuredEntry | GpuPassTimingUnmeasuredEntry;
@@ -131,16 +131,16 @@ export type GpuPassTimingObservation =
   | {
       readonly status: 'partial';
       readonly frame: GpuPassTimingFrame;
-      readonly reason: GpuPassTimingReason;
+      readonly reason: GpuPassTimingError;
     }
   | {
       readonly status: 'unavailable';
-      readonly reason: GpuPassTimingReason;
+      readonly reason: GpuPassTimingError;
       readonly capability: GpuPassTimingCapability;
     }
   | {
       readonly status: 'failed';
-      readonly error: GpuPassTimingReason;
+      readonly error: GpuPassTimingError;
       readonly latestKnownGood?: GpuPassTimingRef | undefined;
     };
 

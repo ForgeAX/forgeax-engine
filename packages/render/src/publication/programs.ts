@@ -95,18 +95,6 @@ function publicationProjectionServesMaterial(
   return true;
 }
 
-/** Validate the fixed context table against its source and already admitted program closure. */
-export function validPublicationMaterialProjection(
-  input: unknown,
-  material: MaterialAsset,
-  available: (key: string) => boolean,
-): input is PublishedMaterialProjection {
-  return (
-    validPublicationProjectionShape(input, validPublicationProjectionProgram) &&
-    publicationProjectionServesMaterial(input, material, available)
-  );
-}
-
 function projectionInternKey(value: PublishedMaterialProjection): string {
   return `${value.materialGuid}\u0000${value.specializationKey}\u0000${value.artifactHash}\u0000${value.publicationGeneration}`;
 }

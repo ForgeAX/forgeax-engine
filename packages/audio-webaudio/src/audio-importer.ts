@@ -10,12 +10,6 @@ import {
   type ImportResult,
 } from '@forgeax/engine-types';
 
-/** Audio output identity is semantic and independent of source path/index. */
-export function sourceKeyForAudioOutput(kind = 'audio'): string | undefined {
-  const normalizedKind = kind.trim();
-  return normalizedKind.length === 0 ? undefined : `audio:${normalizedKind}`;
-}
-
 function audioMediaType(source: string): string {
   const lower = source.toLowerCase();
   if (lower.endsWith('.wav')) return 'audio/wav';

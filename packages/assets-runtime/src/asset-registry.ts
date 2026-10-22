@@ -105,7 +105,12 @@ import {
 import type { ScenePublicationFence } from './registry/scene-publication-fence.js';
 import { materialShaderTextureFieldNames as materialShaderTextureFieldNamesImpl } from './registry/validate-material.js';
 import { prepareRuntimeAnimationGraph } from './runtime-animation-graph';
-import { type MeshRange, prepareRuntimeMeshPatch, prepareRuntimeMeshRange } from './runtime-mesh';
+import {
+  type MeshRange,
+  prepareRuntimeMeshPatch,
+  prepareRuntimeMeshRange,
+  prepareRuntimeMeshRanges,
+} from './runtime-mesh';
 import { prepareRuntimeScene } from './runtime-scene';
 
 export { type TilesetValidateOptions, validateTilesetPayload } from './payload-validate.js';
@@ -928,13 +933,19 @@ export class AssetRegistry implements AssetReferenceOwner {
     return committed;
   }
 
-  /** Update a complete attribute range without copying or validating untouched vertices. */
-  writeRange(handle: AssetHandle<'mesh'>, range: MeshRange): Result<void, AssetError>;
+  /**
+   * Update a complete attribute range without copying or validating untouched vertices.
+   * A mesh range list (vertices, indices and attributes) commits at one revision.
+   */
+  writeRange(
+    handle: AssetHandle<'mesh'>,
+    range: MeshRange | readonly MeshRange[],
+  ): Result<void, AssetError>;
   writeRange(handle: AssetHandle<'texture'>, range: TextureRegion): Result<void, AssetError>;
   writeRange(handle: AssetHandle<'terrain'>, range: TerrainHeightRange): Result<void, AssetError>;
   writeRange(
     handle: AssetHandle<'mesh'> | AssetHandle<'texture'> | AssetHandle<'terrain'>,
-    range: MeshRange | TextureRegion | TerrainHeightRange,
+    range: MeshRange | readonly MeshRange[] | TextureRegion | TerrainHeightRange,
   ): Result<void, AssetError> {
     const current = this.#runtime.borrow<Asset>(handle);
     if (!current.ok) return current;
@@ -947,8 +958,10 @@ export class AssetRegistry implements AssetReferenceOwner {
         (value, captured, limits) =>
           prepareTerrainHeightRange(value, captured, this.#runtime, handle, limits),
       );
-    return current.value.kind === 'texture'
-      ? this.#runtime.writeRange(handle, range as TextureRegion, prepareRuntimeTextureRange)
+    if (current.value.kind === 'texture')
+      return this.#runtime.writeRange(handle, range as TextureRegion, prepareRuntimeTextureRange);
+    return Array.isArray(range)
+      ? this.#runtime.writeRange(handle, range as readonly MeshRange[], prepareRuntimeMeshRanges)
       : this.#runtime.writeRange(handle, range as MeshRange, prepareRuntimeMeshRange);
   }
 

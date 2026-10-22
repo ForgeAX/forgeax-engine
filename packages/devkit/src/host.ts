@@ -865,7 +865,7 @@ function hostSource(
     facts.startupTimeoutMs === undefined
       ? `(import.meta.env.DEV ? ${DEV_EXECUTION_TIMEOUT_MS} : ${PRODUCTION_EXECUTION_TIMEOUT_MS})`
       : JSON.stringify(facts.startupTimeoutMs);
-  return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+  return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\nimport { decodeDocumentText } from '@forgeax/engine/codec';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
 import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
@@ -1461,7 +1461,9 @@ const appBootstrapPlugin = {
         ? ''
         : `const pipelineLibraryResponse = await fetch(pipelineLibraryUrl);
     if (!pipelineLibraryResponse.ok) throw new Error('Pipeline library load failed: ' + pipelineLibraryResponse.status);
-    const pipelineLibrary = await pipelineLibraryResponse.json();`
+    const pipelineLibraryText = await decodeDocumentText(new Uint8Array(await pipelineLibraryResponse.arrayBuffer()));
+    if (!pipelineLibraryText.ok) throw new Error('Pipeline library decode failed: ' + pipelineLibraryText.error.code);
+    const pipelineLibrary = JSON.parse(pipelineLibraryText.value);`
     }
     const result = await createApp(
       canvas,
@@ -1553,7 +1555,8 @@ const appBootstrapPlugin = {
       // DOM plugins load POD assets through the same catalog without a GPU or
       // a second World. Host UI never downloads the renderer shader manifest.
       const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }), importTransport: bundler.importTransport });
-      if (!import.meta.env.DEV) assets.configurePackIndex(new URL('pack-index.json', document.baseURI).href);
+      // assembleAssetRuntime installs the page catalog source; a second source would
+      // download and parse the complete catalog again.
       const assembly = assembleAssetRuntime(assets, [], {
         ownsRegistry: true,
         catalogSource: assetCatalog,

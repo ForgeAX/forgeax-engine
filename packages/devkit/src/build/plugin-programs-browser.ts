@@ -21,12 +21,15 @@ function assertPortableResources(context: Rolldown.PluginContext, chunk: Rolldow
 /** Archive the player's own transformed graph, without reevaluating its bootstrap. */
 export class BrowserPluginProgramArchive {
   readonly entries = new Map<string, string>();
+  /** Emitted entry chunks, keyed by selected export module. */
   private readonly chunks = new Map<string, string>();
+  /** Every module of the program graph; group membership decides their output chunks. */
+  private readonly modules = new Set<string>();
   private readonly rendered = new Map<string, string>();
   private readonly groups = new Map<string, string>();
 
   recordRendered(code: string, chunk: Rolldown.RenderedChunk): void {
-    if (Object.keys(chunk.modules).some((id) => this.chunks.has(id)))
+    if (Object.keys(chunk.modules).some((id) => this.modules.has(id)))
       this.rendered.set(chunk.fileName, code);
   }
 
@@ -40,6 +43,7 @@ export class BrowserPluginProgramArchive {
   }
 
   preserveModules(context: Rolldown.PluginContext): void {
+    const entries = new Set([...this.entries.values()].map(normalizePath));
     const visited = new Set<string>();
     const visit = (input: string) => {
       const id = normalizePath(input);
@@ -47,9 +51,11 @@ export class BrowserPluginProgramArchive {
       visited.add(id);
       const info = context.getModuleInfo(id);
       if (!info || info.code === null || info.meta[engineCapabilityMeta]) return;
-      // Strict entries keep shared project modules out of the page bootstrap,
-      // retaining the same native URL for page, plugins and their tool executors.
-      if (!this.chunks.has(id))
+      this.modules.add(id);
+      // Only selected exports need a strict, addressable chunk. Interior modules
+      // join their reachability group, which keeps shared project modules out of
+      // the page bootstrap and gives page, plugins and tool executors one URL.
+      if (entries.has(id) && !this.chunks.has(id))
         this.chunks.set(
           id,
           context.emitFile({
@@ -71,7 +77,7 @@ export class BrowserPluginProgramArchive {
     for (const id of context.getModuleIds()) {
       const info = context.getModuleInfo(id);
       if (!info) continue;
-      if (info.isEntry && !this.chunks.has(normalizePath(id))) roots.add(id);
+      if (info.isEntry && !this.modules.has(normalizePath(id))) roots.add(id);
       for (const dependency of info.dynamicallyImportedIds) roots.add(dependency);
     }
     const memberships = new Map<string, string[]>();
@@ -82,7 +88,7 @@ export class BrowserPluginProgramArchive {
         seen.add(id);
         const info = context.getModuleInfo(id);
         if (!info || info.meta[engineCapabilityMeta]) return;
-        if (this.chunks.has(normalizePath(id))) {
+        if (this.modules.has(normalizePath(id))) {
           const entries = memberships.get(id) ?? [];
           entries.push(root);
           memberships.set(id, entries);

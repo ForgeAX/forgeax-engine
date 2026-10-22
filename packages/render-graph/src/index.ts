@@ -77,7 +77,6 @@ export type {
   GraphExtent,
   GraphPass,
   GraphPassKind,
-  GraphResource,
   GraphResourceKind,
   GraphResourceOrigin,
   GraphResourceResolver,

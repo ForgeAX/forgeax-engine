@@ -2,61 +2,10 @@
 // catalog/loader bridges, and the EngineMetrics protocol.  Kept as one leaf so
 // the public index remains a small, explicit barrel without duplicate values.
 
-// === GPUFlagsConstant namespace numeric aliases (5 *Flags + 8 Size/Index/Offset/SampleMask) ===
-//
-// One-to-one with the W3C CR §3.6 `unsigned long` definitions; runtime values are
-// surfaced by the global objects (GPUBufferUsage / GPUColorWrite / GPUMapMode /
-// GPUShaderStage / GPUTextureUsage).
-
-/** GPU buffer usage bit flags (OR combination of GPUBufferUsage.MAP_READ / COPY_SRC / ...). */
-export type BufferUsageFlags = GPUBufferUsageFlags;
-
-/** GPU color write mask bit flags (GPUColorWrite.RED / GREEN / BLUE / ALPHA / ALL). */
-export type ColorWriteFlags = GPUColorWriteFlags;
-
-/** GPU buffer map mode bit flags (GPUMapMode.READ / WRITE). */
-export type MapModeFlags = GPUMapModeFlags;
-
-/** GPU shader stage bit flags (GPUShaderStage.VERTEX / FRAGMENT / COMPUTE). */
-export type ShaderStageFlags = GPUShaderStageFlags;
-
-/** GPU texture usage bit flags (GPUTextureUsage.COPY_SRC / COPY_DST / TEXTURE_BINDING / ...). */
-export type TextureUsageFlags = GPUTextureUsageFlags;
-
-/** GPU 32-bit unsigned size. */
-export type Size32 = GPUSize32;
-
-/** GPU 64-bit unsigned size. */
-export type Size64 = GPUSize64;
-
-/** GPU 32-bit unsigned index. */
-export type Index32 = GPUIndex32;
-
-/** GPU 32-bit signed offset. */
-export type SignedOffset32 = GPUSignedOffset32;
-
-/** GPU integer coordinate (used for texture / viewport extents). */
-export type IntegerCoordinate = GPUIntegerCoordinate;
-
-/** GPU sample mask bit pattern. */
-export type SampleMask = GPUSampleMask;
-
-/** GPU buffer dynamic offset. */
-export type BufferDynamicOffset = GPUBufferDynamicOffset;
-
-/** GPU stencil value (reference / read mask / write mask). */
-export type StencilValue = GPUStencilValue;
-
 // === String literal enum re-exports (already exported by @webgpu/types; we only alias) ===
 
 /** GPU texture format enum (e.g. 'rgba8unorm' / 'depth24plus' / ...). */
 export type TextureFormat = GPUTextureFormat;
-
-/** GPU texture dimension ('1d' / '2d' / '3d'). */
-export type TextureDimension = GPUTextureDimension;
-
-/** GPU texture view dimension ('1d' / '2d' / '2d-array' / 'cube' / 'cube-array' / '3d'). */
-export type TextureViewDimension = GPUTextureViewDimension;
 
 /** GPU compare function ('never' / 'less' / 'equal' / 'less-equal' / 'greater' / 'not-equal' / 'greater-equal' / 'always'). */
 export type CompareFunction = GPUCompareFunction;
@@ -67,42 +16,12 @@ export type FilterMode = GPUFilterMode;
 /** GPU address mode ('clamp-to-edge' / 'repeat' / 'mirror-repeat'). */
 export type AddressMode = GPUAddressMode;
 
-/** GPU vertex format enum ('float32' / 'float32x2' / ... 32 variants in total). */
-export type VertexFormat = GPUVertexFormat;
-
-/** GPU vertex step mode ('vertex' / 'instance'). */
-export type VertexStepMode = GPUVertexStepMode;
-
-/** GPU index format ('uint16' / 'uint32'). */
-export type IndexFormat = GPUIndexFormat;
-
 /** GPU primitive topology ('point-list' / 'line-list' / 'line-strip' / 'triangle-list' / 'triangle-strip'). */
 export {
   isStripTopology,
   isTriangleTopology,
   type PrimitiveTopology,
 } from './primitive-topology.js';
-
-/** GPU triangle cull mode ('none' / 'front' / 'back'). */
-export type CullMode = GPUCullMode;
-
-/** GPU triangle front-face winding ('ccw' / 'cw'). */
-export type FrontFace = GPUFrontFace;
-
-/** GPU stencil operation ('keep' / 'zero' / 'replace' / 'invert' / 'increment-clamp' / 'decrement-clamp' / 'increment-wrap' / 'decrement-wrap'). */
-export type StencilOperation = GPUStencilOperation;
-
-/** GPU blend factor ('zero' / 'one' / 'src' / 'one-minus-src' / ...). */
-export type BlendFactor = GPUBlendFactor;
-
-/** GPU blend operation ('add' / 'subtract' / 'reverse-subtract' / 'min' / 'max'). */
-export type BlendOperation = GPUBlendOperation;
-
-/** GPU load op ('load' / 'clear'). */
-export type LoadOp = GPULoadOp;
-
-/** GPU store op ('store' / 'discard'). */
-export type StoreOp = GPUStoreOp;
 
 // === Shader pipeline trio SSOT (feat-20260508-shader-pipeline-mvp) =================
 //

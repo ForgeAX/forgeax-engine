@@ -256,21 +256,39 @@ export class CandidatePipelinePreparationOwner {
           request.finish(err(unavailable('current graph has no raster lane for this candidate')));
           continue;
         }
-        if (!state.pipelinePreparationPending)
-          request.finish(
-            ok({
-              isCurrent: () =>
-                !this.disposed &&
-                this.releases.has(request.release) &&
-                request.projection?.graph === this.currentGraph() &&
-                input.isCurrent(),
-              release: request.release,
-            }),
-          );
+        if (!state.pipelinePreparationPending) request.finish(ok(this.prepared(request, graph)));
       } catch (cause) {
         request.finish(err(unavailable(cause)));
       }
     }
+  }
+
+  /**
+   * The prepared result lives as long as its mesh lease. Build it outside
+   * process(): a closure there shares that frame's scope (its context copy,
+   * selection and dispatch), which would pin one whole frame per live lease.
+   * The finished request also drops its frame projection, and the result
+   * observes its preparing graph only weakly.
+   */
+  private prepared(request: Request, graph: InstalledFrameGraph): PreparedCandidatePipelines {
+    const { input, release } = request;
+    delete request.projection;
+    // A replaced graph is never current again. Hold it weakly: its passes
+    // capture their frame's GPU-driven projections and native plans.
+    const preparedGraph = new WeakRef(graph);
+    return {
+      isCurrent: () => {
+        const current = preparedGraph.deref();
+        return (
+          !this.disposed &&
+          this.releases.has(release) &&
+          current !== undefined &&
+          current === this.currentGraph() &&
+          input.isCurrent()
+        );
+      },
+      release,
+    };
   }
 
   dispose(): void {

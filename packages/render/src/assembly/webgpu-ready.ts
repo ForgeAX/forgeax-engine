@@ -2,7 +2,7 @@ import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import { atmosphereAvailable } from '../environment/capability';
 import type { GpuDrivenPbrProgram } from '../gpu-driven/pbr-program';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from '../record/mesh-ssbo';
-import { SHADOW_PARAMS_BYTES } from '../record/view-ubo';
+import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
 import { transmissionBackdropAvailable } from './device-feature-admission';
 import { buildClusterMembershipProducer } from './webgpu-cluster-ready';
 // WebGPU generation-scoped ready-state builder.
@@ -122,7 +122,6 @@ import {
   BLOOM_HORIZONTAL_PARAMS_BYTES,
   BLOOM_VERTICAL_PARAMS_BYTES,
   HDR_COLOR_ATTACHMENT_FORMAT,
-  VIEW_UBO_BYTES,
 } from './webgpu-ready-contract';
 import { prewarmMipmapPipeline } from './webgpu-ready-mipmap';
 import { createReadyPerPassResources } from './webgpu-ready-per-pass';
@@ -1699,7 +1698,7 @@ export async function buildReadyWebGPU(
     () =>
       createPersistentBuffer({
         label: 'pbr-view-ubo',
-        size: VIEW_UBO_BYTES,
+        size: VIEW_UNIFORM_BUFFER_SIZE,
         usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
         mappedAtCreation: false,
       }),
@@ -2190,8 +2189,8 @@ export async function buildReadyWebGPU(
   // feat-20260625-spot-light-shadow-mapping w25 (scope-amend webkit-fallback):
   // the per-spot fragment-read perspective lightViewProj matrices no longer have
   // a standalone uniform buffer — they fold into the View UBO tail
-  // (`view.spotLightViewProj`, bytes 528..784, allocated as part of
-  // VIEW_UBO_BYTES = 784 above). The View UBO's createBuffer already zero-fills
+  // (`view.spotLightViewProj`, allocated as part of
+  // VIEW_UNIFORM_BUFFER_SIZE above). The View UBO's createBuffer already zero-fills
   // on first writeBuffer; render-system-record writes the spot lanes inside the
   // per-frame viewPayload. Removing the dedicated buffer drops the WebGL2
   // fallback fragment uniform-buffer count from 12 back to 11.

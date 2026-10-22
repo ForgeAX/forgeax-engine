@@ -12,11 +12,13 @@ import { logResourceOpen, observeWorkspaceOpenRequests } from './resource-open.t
 import { initViewTraceFromEnvironment, wrapViewWorkspaceClient } from './view-trace.ts';
 import { attachPresentationResponder } from './presentation.ts';
 import { workspaceError } from './contract.ts';
+import { createContentBrowserDetailTabs } from './content-browser-detail-tabs.ts';
 
 export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> = {
   name: 'forgeax.view.service.workspace-client.frontend',
-  provide: ['viewOperationClient'],
+  provide: ['viewOperationClient', 'contentBrowserDetailTabs'],
   async apply(ctx, config = {}) {
+    ctx.provide('contentBrowserDetailTabs', createContentBrowserDetailTabs());
     ctx.effect(initViewTraceFromEnvironment);
     const lifetime = new AbortController();
     // Cordis emits removal before waiting for an asynchronous apply to settle.

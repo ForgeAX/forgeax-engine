@@ -43,8 +43,6 @@ export interface SceneDataTarget<Schema extends SceneDataSchemaId = SceneDataSch
   readonly __sceneDataTarget: unique symbol;
 }
 
-export type SceneDataTokenMismatch = RenderFeaturePreparedStateMismatchError;
-
 const targetOwners = new WeakMap<object, SceneDataCatalogIdentity>();
 
 export interface SceneDataCatalogIdentity {
@@ -71,7 +69,7 @@ export function sceneDataTokenMismatch(
   reason: 'foreign-feature' | 'foreign-kind' | 'generation-mismatch' | 'layout-mismatch',
   owner: SceneDataCatalogIdentity,
   target: Partial<SceneDataTarget> | undefined,
-): SceneDataTokenMismatch {
+): RenderFeaturePreparedStateMismatchError {
   const detail =
     reason === 'generation-mismatch'
       ? {

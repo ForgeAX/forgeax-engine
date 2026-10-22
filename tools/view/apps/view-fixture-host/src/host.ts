@@ -1,5 +1,5 @@
 import { createViewBackend } from '../../../src/plugins/backend.ts';
-import { PROJECT_ROOT, SCENE_ASSET_ID } from './scenarios/default.ts';
+import { FIXTURE_SESSION_ID, PROJECT_ROOT, SCENE_ASSET_ID, SCENE_TARGET_ID } from './scenarios/default.ts';
 import { createFixtureArtifacts } from './artifacts.ts';
 import { createFixtureWorkspaceProvider } from './workspace-provider.ts';
 
@@ -11,6 +11,7 @@ export async function startFixtureHost({ port = 0 }: { port?: number } = {}) {
       workspaceEngine: createFixtureWorkspaceProvider(),
       workspaceHost: '127.0.0.1',
       workspacePort: port,
+      workspaceFrontendSourceId: `forgeax-workspace:${FIXTURE_SESSION_ID}:${SCENE_TARGET_ID}`,
       staticRoot: artifacts.root,
     });
     backend = started;

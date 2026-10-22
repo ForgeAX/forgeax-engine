@@ -1,0 +1,32 @@
+{
+  "passed": true,
+  "engine": "artifacts/engine-ci-284f102/packages/engine",
+  "source": "templates/game-3d",
+  "material": "6f32fb18-c1b5-551d-b242-01c95b713c6a",
+  "textures": [
+    {
+      "guid": "fd9145db-6bc8-57c0-a15a-391508daf751",
+      "name": "texture/brick-floor-base-color",
+      "target": "target-268ca0fe-c2ca-4b8d-8efb-83b7dad1188e:preview:aa91c562-ffc9-48e7-ac68-cd7aacf4e5ad",
+      "generation": 2,
+      "contrast": 135.33333333333334
+    },
+    {
+      "guid": "e257e162-d746-5671-b6d1-3fe838300d43",
+      "name": "texture/brick-floor-normal",
+      "target": "target-268ca0fe-c2ca-4b8d-8efb-83b7dad1188e:preview:51d87d7e-623f-4ce1-ac75-0257a5dab778",
+      "generation": 3,
+      "contrast": 223
+    },
+    {
+      "guid": "5690bdef-858f-57d1-82ae-78f6802e630f",
+      "name": "texture/brick-floor-roughness",
+      "target": "target-268ca0fe-c2ca-4b8d-8efb-83b7dad1188e:preview:912f9310-2de0-4a4a-bdd1-db6eaf486654",
+      "generation": 4,
+      "contrast": 247
+    }
+  ],
+  "errors": [],
+  "engineDiagnostics": [],
+  "boundary": "Candidate View build, copied Game 3D sources, real Engine PNG thumbnails and three texture viewer targets; no Play."
+}

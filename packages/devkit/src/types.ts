@@ -80,6 +80,8 @@ export interface BuildOptions extends ProjectCommandOptions {
 export interface PackageOptions extends ProjectCommandOptions {
   readonly output?: string;
   readonly format?: PackageFormat;
+  /** Store large Web ZIP JSON documents zstd-compressed; `false` keeps plain JSON. Defaults to true. */
+  readonly compress?: boolean;
 }
 
 export type PackageFormat = 'web-zip' | 'single-html';

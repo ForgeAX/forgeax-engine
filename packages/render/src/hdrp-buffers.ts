@@ -5,15 +5,15 @@ import type { SkinTaskBinding } from './record/skin-tasks';
 // buffers; downlevel devices pack the same records/grid/memberships into one
 // RGBA32uint texture. Both transports share the cluster uniform contract.
 
-import {
-  type BindGroup,
-  type BindGroupLayout,
-  type BindGroupLayoutDescriptor,
-  type Buffer,
+import type {
+  BindGroup,
+  BindGroupLayout,
+  BindGroupLayoutDescriptor,
+  Buffer,
   RhiError,
-  type Sampler,
-  type Texture,
-  type TextureView,
+  Sampler,
+  Texture,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { GPU_SHADER_STAGE_COMPUTE } from './gpu-stage';
 import {
@@ -651,6 +651,3 @@ export function createHdrpClusterMembershipBindGroup(
   }
   return result.value;
 }
-
-/** Sentinel error class re-export for tests asserting the error path. */
-export { RhiError as HdrpBufferAllocError };

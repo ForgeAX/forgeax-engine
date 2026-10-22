@@ -1,6 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { GpuPassTimingEntry, GpuPassTimingMeasuredEntry } from './contract.js';
-import type { GpuPassTimingReason } from './errors.js';
+import type { GpuPassTimingError } from './errors.js';
 
 export interface GpuPassTimingTickInput {
   readonly beginningTick: string;
@@ -14,11 +14,11 @@ export type GpuPassTimingTickResult = Omit<
 >;
 
 function failure(
-  code: GpuPassTimingReason['code'],
+  code: GpuPassTimingError['code'],
   expected: string,
   hint: string,
   detail: { readonly [key: string]: null | boolean | number | string },
-): GpuPassTimingReason {
+): GpuPassTimingError {
   return { code, expected, hint, detail };
 }
 
@@ -28,7 +28,7 @@ function decimal(value: string): bigint | undefined {
 
 export function parseGpuPassTimingTicks(
   input: GpuPassTimingTickInput,
-): Result<GpuPassTimingTickResult, GpuPassTimingReason> {
+): Result<GpuPassTimingTickResult, GpuPassTimingError> {
   const period = input.timestampPeriodNanoseconds;
   if (!Number.isFinite(period) || period <= 0) {
     return err(
@@ -112,7 +112,7 @@ export interface GpuPassTimingIntervalSummary {
 export function summarizeGpuPassTimingIntervals(
   passes: readonly GpuPassTimingEntry[],
   timestampPeriodNanoseconds: number,
-): Result<GpuPassTimingIntervalSummary, GpuPassTimingReason> {
+): Result<GpuPassTimingIntervalSummary, GpuPassTimingError> {
   const ranges: { begin: bigint; end: bigint }[] = [];
   let sum = 0n;
   for (const pass of passes) {

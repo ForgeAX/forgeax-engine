@@ -533,6 +533,8 @@ export interface GpuDrivenProductionInspection {
   readonly filteredBatchBuilds: number;
   /** Submission-plan batches re-derived for the last frame; zero on a prepared-plan cache hit. */
   readonly planRebuildBatches: number;
+  /** Prepared-plan assemblies adopted whole for the last frame, without a row walk. */
+  readonly preparedAssemblyHits: number;
   /** Submission-plan candidates re-derived for the last frame; zero on a prepared-plan cache hit. */
   readonly planRebuildCandidates: number;
   /**

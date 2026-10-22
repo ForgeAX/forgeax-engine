@@ -43,11 +43,10 @@ import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack
 import type { EngineWorkspaceTargetTools } from './workspace-target-tools';
 
 /**
- * Engine-owned workspace service names. A frontend plugin consumes
- * the service through its Host plugin; it does not implement a second asset
+ * Engine-owned workspace plugin identity. A frontend plugin consumes
+ * the workspace through its Host plugin; it does not implement a second asset
  * registry, scene loader, camera controller, or renderer.
  */
-export const ENGINE_WORKSPACE_SERVICE = 'engine.workspace';
 export const ENGINE_WORKSPACE_PLUGIN_ID = 'forgeax:engine-workspace';
 export const ENGINE_WORKSPACE_API_VERSION = 'forgeax.engine.workspace/1';
 /** Host transport topic used to dispatch commands into the browser realm. */

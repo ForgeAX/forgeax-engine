@@ -66,7 +66,8 @@ interface Binding {
   readonly layer: number;
   readonly shadowCaster: boolean;
   readonly visible: boolean;
-  readonly entries: WeakMap<Pass, DispatchEntry>;
+  /** Strong: a binding sees only its own few Pass versions and dies with its slot. */
+  readonly entries: Map<Pass, DispatchEntry>;
 }
 /** The binding group key; equal keys select the same held materials and members. */
 function materialBindingKey(
@@ -631,7 +632,7 @@ export class MaterialDispatch {
         layer: snapshot.layer ?? 0,
         shadowCaster: snapshot.shadowCaster !== false,
         visible: snapshot.authorVisible !== false,
-        entries: new WeakMap(),
+        entries: new Map(),
       };
       group.holders++;
       if (snapshot.authorVisible !== false) {

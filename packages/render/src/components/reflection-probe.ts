@@ -26,17 +26,6 @@ export function reflectionProbeUpdateIntentFromF32(value: number): ReflectionPro
   }
 }
 
-export function reflectionProbeUpdateIntentToF32(intent: ReflectionProbeUpdateIntent): number {
-  switch (intent) {
-    case 'once':
-      return REFLECTION_PROBE_UPDATE_ONCE;
-    case 'on-change':
-      return REFLECTION_PROBE_UPDATE_ON_CHANGE;
-    case 'continuous':
-      return REFLECTION_PROBE_UPDATE_CONTINUOUS;
-  }
-}
-
 export const ReflectionProbe = defineComponent('ReflectionProbe', {
   halfExtents: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
   priority: { type: 'f32', default: 0 },

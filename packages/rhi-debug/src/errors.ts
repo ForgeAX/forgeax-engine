@@ -85,8 +85,6 @@ type RhiDebugDetailByCode = {
   'readback-unsupported': ReadbackUnsupportedDetail;
 };
 
-export type RhiDebugErrorDetail = RhiDebugDetailByCode[RhiDebugErrorCode];
-
 export type RhiDebugErrorFor<C extends RhiDebugErrorCode> = {
   readonly code: C;
   readonly expected: string;

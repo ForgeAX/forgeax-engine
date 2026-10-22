@@ -1,5 +1,5 @@
 import type { PanelClaim, PanelLayout } from '@forgeax/view-workspace-core/frontend-contract';
-const PANEL_DOCKS = new Set(['fill', 'top', 'bottom', 'left', 'right']);
+const PANEL_DOCKS = new Set(['fill', 'top', 'bottom', 'left', 'right', 'right-bottom']);
 const PANEL_STACKS = new Set(['tabs', 'split']);
 
 function normalizeLayout(layout: PanelLayout | undefined) {
@@ -12,7 +12,7 @@ function normalizeLayout(layout: PanelLayout | undefined) {
     }
   }
   if (!PANEL_DOCKS.has(layout.dock)) {
-    throw new TypeError('panel layout dock must be fill, top, bottom, left, or right');
+    throw new TypeError('panel layout dock must be fill, top, bottom, left, right, or right-bottom');
   }
   if (!PANEL_STACKS.has(layout.stack)) {
     throw new TypeError('panel layout stack must be tabs or split');
@@ -24,7 +24,7 @@ function normalizeLayout(layout: PanelLayout | undefined) {
       throw new TypeError('panel layout size must be an object');
     }
     for (const field of Object.keys(layout.size)) {
-      if (!['value', 'unit'].includes(field)) {
+      if (!['value', 'unit', 'additionalPx'].includes(field)) {
         throw new TypeError(`Unknown panel layout size field: ${field}`);
       }
     }
@@ -37,7 +37,10 @@ function normalizeLayout(layout: PanelLayout | undefined) {
     if (layout.size.unit === 'fraction' && layout.size.value > 1) {
       throw new TypeError('panel layout fraction must not exceed 1');
     }
-    size = Object.freeze({ value: layout.size.value, unit: layout.size.unit });
+    if (layout.size.additionalPx !== undefined && (layout.size.unit !== 'fraction' || !Number.isFinite(layout.size.additionalPx) || layout.size.additionalPx < 0)) {
+      throw new TypeError('panel layout additionalPx must be a nonnegative fraction offset');
+    }
+    size = Object.freeze({ value: layout.size.value, unit: layout.size.unit, ...(layout.size.additionalPx === undefined ? {} : { additionalPx: layout.size.additionalPx }) });
   }
   return Object.freeze({
     dock: layout.dock,

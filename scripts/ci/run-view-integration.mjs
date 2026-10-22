@@ -56,13 +56,13 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-dependency-identity.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
-  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-texture-preview.mjs']],
-  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-pack-authoring.mjs']],
-  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-pack-save-reopen.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   [
     'diagnostics',
     'node',
-    ['tools/view-plugins/integration/verify-diagnostic-pages.mjs'],
+    ['tools/view/scripts/verify-diagnostic-pages-integration.mjs'],
     ...(process.env.CI === 'true' ? [{ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' }] : []),
   ],
   ['engine-only', 'node', ['scripts/ci/verify-engine-without-view.mjs']],
@@ -187,7 +187,11 @@ for (const [owner, file, args, env = {}] of selected) {
     }),
   );
   if (result.status !== 0) {
-    if (viewProbe || args[0]?.startsWith('tools/view-plugins/integration/')) {
+    if (
+      viewProbe ||
+      args[0]?.startsWith('tools/view-plugins/integration/') ||
+      args[0]?.startsWith('tools/view/scripts/verify-')
+    ) {
       try {
         const files = collectViewBackendDiagnostics({
           probePid: result.pid,

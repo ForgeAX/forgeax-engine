@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { decompressZstd } from '@forgeax/engine-codec';
+import { decodeDocumentText, decompressZstd } from '@forgeax/engine-codec';
 import { readAssetBundleTable } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -45,6 +45,11 @@ async function fixture(base: string, table: boolean) {
     kind: 'mesh',
     packageUrl: url('assets/main.pack.json'),
     cookReceiptUrl: url('assets/main.receipt.json'),
+    sourcePath: 'assets/main.pack.ts',
+    revision: { rootId: 'assets', digest: 'sha256:revision', observedAt: 1 },
+    relations: [{ kind: 'depends-on', guid: '01900000-0000-7000-8000-000000000002' }],
+    provenance: { provider: 'pack-ts', version: '1.0.0' },
+    sourceIndex: 0,
     projection: {
       lastKnownGood: {
         packageUrl: url('assets/main.pack.json'),
@@ -111,13 +116,23 @@ describe('player distribution', () => {
     let playerRoot: string | undefined;
     try {
       expect((await verifyDist(source.root)).ok).toBe(true);
-      const player = await preparePlayerDist(source.root, source.manifest);
+      const player = await preparePlayerDist(source.root, source.manifest, {
+        compressDocuments: false,
+      });
       playerRoot = player.root;
       expect(await verifyDist(player.root)).toEqual({ ok: true, value: player.manifest });
       const catalog = await readFile(resolve(player.root, 'pack-index.json'), 'utf8');
       expect(catalog).not.toContain('cookReceiptUrl');
       expect(catalog).not.toContain('receiptUrl');
       expect(catalog).toContain('main.pack.json');
+      // Authoring-only row facts stay in the build catalog for `forgeax asset` queries.
+      const row = JSON.parse(catalog).entries?.entries?.[0] ?? JSON.parse(catalog)[0];
+      expect(row).toMatchObject({
+        guid: '01900000-0000-7000-8000-000000000001',
+        sourcePath: 'assets/main.pack.ts',
+      });
+      for (const field of ['revision', 'relations', 'provenance', 'sourceIndex'])
+        expect(row).not.toHaveProperty(field);
       for (const path of ['assets/main.receipt.json', 'assets/prior.receipt.json']) {
         expect(player.manifest.artifacts.some((artifact) => artifact.path === path)).toBe(false);
         await expect(access(resolve(player.root, path))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -133,9 +148,9 @@ describe('player distribution', () => {
         );
       }
       expect((await verifyDist(source.root)).ok).toBe(true);
-      expect(await readFile(resolve(source.root, 'pack-index.json'), 'utf8')).toContain(
-        'cookReceiptUrl',
-      );
+      const sourceCatalog = await readFile(resolve(source.root, 'pack-index.json'), 'utf8');
+      expect(sourceCatalog).toContain('cookReceiptUrl');
+      expect(sourceCatalog).toContain('provenance');
     } finally {
       await rm(source.root, { recursive: true, force: true });
       if (playerRoot !== undefined) await rm(playerRoot, { recursive: true, force: true });
@@ -160,13 +175,55 @@ describe('player distribution', () => {
             : artifact,
         ),
       };
-      const player = await preparePlayerDist(source.root, manifest);
+      const player = await preparePlayerDist(source.root, manifest, { compressDocuments: false });
       playerRoot = player.root;
       expect(player.manifest).toEqual(manifest);
       expect(await readFile(resolve(player.root, 'pack-index.json'), 'utf8')).toBe(bytes);
     } finally {
       await rm(source.root, { recursive: true, force: true });
       if (playerRoot !== undefined) await rm(playerRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('stores player JSON documents as zstd frames by default', async () => {
+    const source = await fixture('./', false);
+    const library = 'assets/pipeline-library-a1b2.json';
+    await writeFile(resolve(source.root, library), '{"recipes":[]}');
+    const manifest: DistManifest = {
+      ...source.manifest,
+      artifacts: [
+        ...source.manifest.artifacts,
+        { path: library, mediaType: 'application/json', bytes: 14, sha256: sha('{"recipes":[]}') },
+      ],
+    };
+    const roots: string[] = [];
+    try {
+      const plain = await preparePlayerDist(source.root, manifest, { compressDocuments: false });
+      roots.push(plain.root);
+      const player = await preparePlayerDist(source.root, manifest);
+      roots.push(player.root);
+      expect(await verifyDist(player.root)).toEqual({ ok: true, value: player.manifest });
+      for (const path of [
+        'pack-index.json',
+        'shaders/manifest.json',
+        'assets/main.pack.json',
+        library,
+      ]) {
+        const stored = new Uint8Array(await readFile(resolve(player.root, path)));
+        expect([...stored.subarray(0, 4)]).toEqual([0x28, 0xb5, 0x2f, 0xfd]);
+        const text = await decodeDocumentText(stored);
+        expect(text).toEqual({
+          ok: true,
+          value: await readFile(resolve(plain.root, path), 'utf8'),
+        });
+      }
+      for (const path of ['index.html', 'assets/mesh.bin', 'assets/runtime-abi.receipt.json'])
+        expect(await readFile(resolve(player.root, path))).toEqual(
+          await readFile(resolve(plain.root, path)),
+        );
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      for (const root of roots) await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -228,7 +285,9 @@ describe('player distribution', () => {
     const source = await writeDist('/', files);
     let playerRoot: string | undefined;
     try {
-      const player = await preparePlayerDist(source.root, source.manifest);
+      const player = await preparePlayerDist(source.root, source.manifest, {
+        compressDocuments: false,
+      });
       playerRoot = player.root;
       expect(await verifyDist(player.root)).toEqual({ ok: true, value: player.manifest });
       const paths = player.manifest.artifacts.map((artifact) => artifact.path);

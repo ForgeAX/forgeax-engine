@@ -14,6 +14,7 @@ const productIds = [
   'display',
   'history',
   'content-browser',
+  'parameters',
   'plugins',
   'inspector',
   'scene-tree',

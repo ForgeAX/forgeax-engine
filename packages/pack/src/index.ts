@@ -74,11 +74,6 @@ export {
   PACK_SOURCE_KEY_RE,
   PackageId,
 } from './guid.js';
-export {
-  type MaterialArtifactWriteInput,
-  type MaterialArtifactWriteResult,
-  writeMaterialArtifact,
-} from './material/artifact-writer.js';
 export { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material-program-wire.js';
 export {
   decodeMeshBinHeader,
@@ -95,11 +90,7 @@ export {
 } from './mesh-bin-contract.js';
 export * from './pack-authoring.js';
 export { validateProducerContract, validateProducerOutputs } from './producer-contract.js';
-export {
-  projectRuntimePack,
-  type RuntimeAssetProjectionInput,
-  type RuntimePackProjectionInput,
-} from './runtime-projection.js';
+export { projectRuntimePack } from './runtime-projection.js';
 export { parsePackV2, validateMeta, validatePack, validatePackV2 } from './schema-compiled.js';
 export {
   type AssetReader,
@@ -112,4 +103,4 @@ export {
   type ScriptablePackSceneComponentInput,
   type ScriptablePackSourceClosureEntry,
 } from './scriptable-pack.js';
-export { calculateTopologyDiff, diffTopology } from './topology.js';
+export { diffTopology } from './topology.js';

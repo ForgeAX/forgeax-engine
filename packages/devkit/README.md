@@ -220,7 +220,7 @@ forgeax dev start
 forgeax project build
 forgeax project capture --backend auto --require-ui --output artifacts/capture/game-ui.png --json
 forgeax project preview
-forgeax project package [--format web-zip|single-html] [--output release/game-web.zip]
+forgeax project package [--format web-zip|single-html] [--output release/game-web.zip] [--compress=false]
 forgeax help --tree --json
 forgeax rhi summary --artifact .forgeax-debug/{runId}/frame.rhitape --json
 forgeax rhi inspect --artifact .forgeax-debug/{runId}/frame.rhitape --work-index {workIndex} --json
@@ -955,11 +955,23 @@ The Bundle file is `FXBUNDL1`, a u32 entry count, u32 entry lengths, then the en
 `byteLength` and add `byteRange { offset, length, bundleDigest }`. At runtime the first read
 fetches and verifies the whole Bundle, which then stays resident as separate entries. An
 extracted entry leaves the Bundle, so each byte has one owner; a later reader of the same
-window receives a verified private copy instead of a refetch. Once its extracted value is
-gone, a later read requests only that entry with HTTP `Range`; a host that answers with the
+window receives a verified private copy instead of a refetch, including from the realm's
+shared view of equal content (material programs shared by many materials). Once no copy is
+live, a later read requests only that entry with HTTP `Range`; a host that answers with the
 whole file repopulates the Bundle. Resident Bundles share a 256 MiB budget and are evicted
 least recently used first. The package JSON reports the file
 count and `bundles: { bundles, entries, storedBytes, sourceBytes }`.
+
+#### Compressed player documents
+
+The Web ZIP stores the Catalog, shader manifest, pipeline library and every Pack document
+as one zstd frame under its unchanged file name and URL, so any static host serves them
+small without content negotiation. The runtime recognizes the zstd magic bytes where it
+reads these documents from a platform `Response` (Catalog and Pack reads, the
+`ShaderRegistry` manifest fetch, the generated host's pipeline library) and decodes
+them before parsing; plain JSON reads unchanged, and a custom `PackageFetcher` keeps
+owning its transport encoding. `forgeax-dist.json` records the stored bytes and hashes.
+`--compress=false` keeps plain JSON; `single-html` always keeps plain JSON.
 
 | Web ZIP path | Owner | Purpose |
 |:--|:--|:--|

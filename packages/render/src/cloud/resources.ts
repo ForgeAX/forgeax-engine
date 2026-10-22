@@ -95,33 +95,3 @@ export function inspectCloudLayerResources(
     shadowResolution,
   });
 }
-
-export interface CloudLayerGeneration {
-  readonly generation: number;
-  readonly sourceKey: string;
-  readonly resourceFacts: CloudLayerResourceFacts;
-  readonly status: 'candidate' | 'active' | 'lkg' | 'retiring';
-}
-
-/** Candidate -> active transition used by the renderer's existing graph owner. */
-export function acceptCloudLayerGeneration(
-  candidate: CloudLayerGeneration,
-  previous: CloudLayerGeneration | undefined,
-): { readonly active: CloudLayerGeneration; readonly lkg: CloudLayerGeneration | undefined } {
-  return Object.freeze({
-    active: Object.freeze({ ...candidate, status: 'active' as const }),
-    lkg:
-      previous === undefined ? undefined : Object.freeze({ ...previous, status: 'lkg' as const }),
-  });
-}
-
-/** A failed candidate never replaces the LKG; retirement is fence-owned by Render. */
-export function retainCloudLayerAfterFailure(
-  active: CloudLayerGeneration | undefined,
-  candidate: CloudLayerGeneration,
-): { readonly active: CloudLayerGeneration | undefined; readonly retiring: CloudLayerGeneration } {
-  return Object.freeze({
-    active,
-    retiring: Object.freeze({ ...candidate, status: 'retiring' as const }),
-  });
-}

@@ -3,7 +3,7 @@ import type { PageResourceOpenRequest as ResourceOpenRequest } from '@forgeax/vi
 import type { createViewPageTypeRegistry } from '../host/page-registry.ts';
 import type { createViewPanelHost } from '../host/panel-bridge.ts';
 type PageRegistry = ReturnType<typeof createViewPageTypeRegistry>;
-type PanelPresentation = { pageType: string; reveal(slot: string): boolean; read(): PresentationSnapshot['panels'] };
+type PanelPresentation = { pageType: string; reveal(slot: string): boolean; dismissUnpinnedEdge(slot: string): boolean; read(): PresentationSnapshot['panels'] };
 import {
   DockviewReact,
   themeAbyss,
@@ -48,7 +48,7 @@ import {
 import { reportWorkspaceCommandError } from '@forgeax/view-workspace-core/command-error';
 import { VIEW_PAGE_TYPES, workspaceError } from '@forgeax/view-workspace-core/contract';
 import { logResourceOpen, summarizeResourceAsset } from '@forgeax/view-workspace-core/resource-open';
-import { claimsForPage, refreshDockPanelTitles, reconcileDockPanels } from './panel-reconciler.ts';
+import { claimsForPage, panelLayoutSignature, refreshDockPanelTitles, reconcileDockPanels } from './panel-reconciler.ts';
 import { installEdgeDrawer, type EdgeDrawerController } from './workbench-layout/edge-drawer.ts';
 import {
   EDGE_PIN_CLASS,
@@ -79,7 +79,7 @@ function pageIdFor(pageType: PageType) {
   return pageType.singleton ? `page-${pageType.typeId}` : createPageId(pageType.typeId);
 }
 
-function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType) => string) {
+function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType) => string, pageRegistry: PageRegistry) {
   const [pages, setPages] = useState<PageTabItem[]>([]);
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const userSelectedPage = useRef(false);
@@ -147,6 +147,7 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
     const controller = typesById.get(page.typeId)?.controller;
     const completion = (async () => {
       signal.throwIfAborted();
+      await pageRegistry.beforeClose(page.typeId, signal);
       await controller?.beforeClose?.(signal);
       signal.throwIfAborted();
       if (currentTypes.current.get(page.typeId)?.controller !== controller) throw new DOMException('Page controller changed while closing', 'AbortError');
@@ -160,7 +161,7 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
     })().finally(() => { closeRequests.current.delete(pageId); });
     closeRequests.current.set(pageId, completion);
     return completion;
-  }, [closeLifetime, pages, typesById]);
+  }, [closeLifetime, pageRegistry, pages, typesById]);
   const closeMany = useCallback(async (ids: readonly string[]) => {
     const results = await Promise.allSettled(ids.map(id => closePage(id)));
     for (const result of results) if (result.status === 'rejected') reportWorkspaceCommandError(result.reason);
@@ -412,6 +413,14 @@ function DockPageWorkbench({
       if (panel.api.location.type === 'edge') edgeDrawerRef.current?.revealPanel(slot);
       return true;
     },
+    dismissUnpinnedEdge(slot) {
+      const panel = apiRef.current?.getPanel(slot);
+      const drawer = edgeDrawerRef.current;
+      if (!panel || panel.api.location.type !== 'edge' || drawer?.getOpenPanelId() !== slot) return false;
+      if (pinScopeRef.current?.pinnedIn(panel.group.id) === slot) return false;
+      drawer.forceClose();
+      return true;
+    },
     read: () => claims.map(claim => {
       const panel = apiRef.current?.getPanel(claim.id);
       const visible = panel?.api.location.type === 'edge'
@@ -423,7 +432,13 @@ function DockPageWorkbench({
   }), [active, claims, pageId, pageTypeId, registerPanelPresentation, titleForClaim]);
   const [dockReadyRevision, setDockReadyRevision] = useState(0);
   const [presentationReady, setPresentationReady] = useState(0);
+  const [panelTopologyRevision, setPanelTopologyRevision] = useState(0);
+  const panelLayoutSignatureRef = useRef<string | null>(null);
   const [dockExtent, setDockExtent] = useState({ width: 0, height: 0 });
+  const primaryPanelIds = useMemo(
+    () => new Set(claims.filter(claim => claim.layout.dock === 'fill').map(claim => claim.id)),
+    [claims],
+  );
   const sidebar = useWorkbenchSidebar({
     workbenchRef,
     dockHostRef,
@@ -431,6 +446,8 @@ function DockPageWorkbench({
     layoutReady,
     presentationReady,
     edgeDrawerRef,
+    primaryPanelIds,
+    panelTopologyRevision,
     responsiveAutoTuck,
   });
   const panelClosableById = useMemo(() => {
@@ -453,6 +470,24 @@ function DockPageWorkbench({
     setDockReadyRevision((revision) => revision + 1);
     setPresentationReady(0);
   }, []);
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return undefined;
+    let frame = 0;
+    const attachActive = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const id = api.activePanel?.id;
+        if (id && getClaimsSnapshot(slotRegistry).some(claim => claim.id === id)) slotRegistry.resolve(id);
+      });
+    };
+    const subscription = api.onDidActivePanelChange(attachActive);
+    attachActive();
+    return () => {
+      cancelAnimationFrame(frame);
+      subscription.dispose();
+    };
+  }, [dockReadyRevision, slotRegistry]);
   useLayoutEffect(() => {
     if (!layoutReady) return undefined;
     const element = dockHostRef.current ?? workbenchRef.current;
@@ -539,7 +574,7 @@ function DockPageWorkbench({
     // Initial fractional sizes need a real presentation extent. Existing
     // panels keep their user layout when an inactive page becomes visible.
     if (availableWidth > 0 && availableHeight > 0) api.layout(availableWidth, availableHeight);
-    const hadContentBrowser = Boolean(api.getPanel('content-browser'));
+    const previousContentBrowser = api.getPanel('content-browser');
     reconcileDockPanels(api, claims, {
       titleFor: titleForClaim,
       attach: (id: string) => {
@@ -556,16 +591,14 @@ function DockPageWorkbench({
         closeEdgeDrawer: () => edgeDrawerRef.current?.forceClose(),
       });
     }
-    if (!hadContentBrowser) {
-      const panel = api.getPanel('content-browser');
-      const bottom = api.groups.find((group) => group.api.location.type === 'edge' && group.api.location.position === 'bottom');
-      if (panel && bottom) {
-        panel.api.moveTo({ group: bottom, position: 'center' });
-        bottom.element.classList.remove('fx-edge-empty');
-        api.setEdgeGroupVisible?.('bottom', true);
-        bottom.api.collapse?.();
-        edgeDrawerRef.current?.refreshBottomSpan();
-      }
+    const contentBrowser = api.getPanel('content-browser');
+    const bottom = api.groups.find((group) => group.api.location.type === 'edge' && group.api.location.position === 'bottom');
+    if (contentBrowser && contentBrowser !== previousContentBrowser && bottom) {
+      contentBrowser.api.moveTo({ group: bottom, position: 'center' });
+      bottom.element.classList.remove('fx-edge-empty');
+      api.setEdgeGroupVisible?.('bottom', true);
+      bottom.api.collapse?.();
+      edgeDrawerRef.current?.refreshBottomSpan();
     }
     for (const claim of claims) {
       if (claim.dockTitleHidden !== true) continue;
@@ -575,6 +608,11 @@ function DockPageWorkbench({
     sidebar.applyNow();
     if (availableWidth > 0 && availableHeight > 0 && claims.length > 0) {
       setPresentationReady((generation) => (generation === 0 ? 1 : generation));
+    }
+    const nextPanelLayoutSignature = panelLayoutSignature(claims);
+    if (panelLayoutSignatureRef.current !== nextPanelLayoutSignature) {
+      panelLayoutSignatureRef.current = nextPanelLayoutSignature;
+      setPanelTopologyRevision((revision) => revision + 1);
     }
   }, [active, claims, dockExtent.height, dockExtent.width, dockReadyRevision, layoutReady, sidebar.applyNow, slotRegistry, titleForClaim]);
   useLayoutEffect(() => {
@@ -674,7 +712,14 @@ export function ViewerShell({
   );
   const pageTitleRevision = useSyncExternalStore(subscribeTitles, getTitleRevision, getTitleRevision);
   const titleForPageType = useCallback(
-    (pageType: PageType) => resolvePageTypeTitle(pageType, t),
+    (pageType: PageType) => {
+      const title = resolvePageTypeTitle(pageType, t);
+      const resource = pageType.controller?.getResource?.();
+      if (pageType.typeId === 'scene' || !resource || !('asset' in resource)) return title;
+      const kindKey = `view.pages.${resource.asset.kind}`;
+      const kindLabel = t(kindKey);
+      return `[${kindLabel === kindKey ? resource.asset.kind : kindLabel}]${title}`;
+    },
     [pageTitleRevision, t],
   );
   const {
@@ -687,7 +732,7 @@ export function ViewerShell({
     closeToRight,
     reorderPages,
     openPage,
-  } = useViewPages(pageTypes, titleForPageType);
+  } = useViewPages(pageTypes, titleForPageType, pageRegistry);
   const openPageRef = useRef(openPage);
   openPageRef.current = openPage;
   const panelPresentations = useRef(new Map<string, PanelPresentation>());
@@ -714,6 +759,12 @@ export function ViewerShell({
     }
     return false;
   }), [activePageId, claims, onSelectPageType, pages, panelHost, selectLocalPage]);
+  useEffect(() => panelHost?.setEdgeDismisser(slot => {
+    for (const presentation of panelPresentations.current.values()) {
+      if (presentation.dismissUnpinnedEdge(slot)) return true;
+    }
+    return false;
+  }), [panelHost]);
   const pageTypesRef = useRef(pageTypes);
   pageTypesRef.current = pageTypes;
   const handledOpenRequest = useRef<{ requestId: string; sequence: number; ok: boolean } | null>(null);

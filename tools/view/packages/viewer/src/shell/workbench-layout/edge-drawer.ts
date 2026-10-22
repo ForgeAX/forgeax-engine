@@ -36,6 +36,7 @@ const BOTTOM_SPAN_VARS = [
 
 const DRAWER_VAR_NAMES = [
   '--fx-edge-drawer-width',
+  '--fx-edge-drawer-max-width',
   '--fx-edge-drawer-height',
   '--fx-edge-drawer-left',
   '--fx-edge-drawer-right',
@@ -209,24 +210,28 @@ export function installEdgeDrawer(
   const positionGrip = (group: DockviewApi['groups'][number]) => {
     const e = edgeOf(group);
     const r = group.element.getBoundingClientRect();
-    const size = readDrawerSize(group, e);
+    const maxWidth = parseFloat(group.element.style.getPropertyValue('--fx-edge-drawer-max-width'));
+    const size = e === 'bottom' ? readDrawerSize(group, e) : Math.min(readDrawerSize(group, e), maxWidth);
+    const sideHeight = parseFloat(group.element.style.getPropertyValue('--fx-edge-strip-height'));
+    const bottomLeft = parseFloat(group.element.style.getPropertyValue('--fx-edge-strip-left'));
+    const bottomWidth = parseFloat(group.element.style.getPropertyValue('--fx-edge-strip-width'));
     const g = grip.style;
     g.position = 'fixed';
     if (e === 'left') {
       g.top = `${r.top + DRAWER_CROSS_INSET_PX}px`;
-      g.height = `${r.height - 2 * DRAWER_CROSS_INSET_PX}px`;
+      g.height = `${Math.max(0, sideHeight - 2 * DRAWER_CROSS_INSET_PX)}px`;
       g.left = `${r.right + size - 3}px`;
       g.width = '6px';
       g.cursor = 'ew-resize';
     } else if (e === 'right') {
       g.top = `${r.top + DRAWER_CROSS_INSET_PX}px`;
-      g.height = `${r.height - 2 * DRAWER_CROSS_INSET_PX}px`;
+      g.height = `${Math.max(0, sideHeight - 2 * DRAWER_CROSS_INSET_PX)}px`;
       g.left = `${r.left - size - 3}px`;
       g.width = '6px';
       g.cursor = 'ew-resize';
     } else {
-      g.left = `${r.left + DRAWER_CROSS_INSET_PX}px`;
-      g.width = `${r.width - 2 * DRAWER_CROSS_INSET_PX}px`;
+      g.left = `${bottomLeft + DRAWER_CROSS_INSET_PX}px`;
+      g.width = `${Math.max(0, bottomWidth - 2 * DRAWER_CROSS_INSET_PX)}px`;
       g.top = `${r.top - size - 3}px`;
       g.height = '6px';
       g.cursor = 'ns-resize';
@@ -237,22 +242,32 @@ export function installEdgeDrawer(
     const edge = edgeOf(group);
     const style = group.element.style;
     const r = group.element.getBoundingClientRect();
+    const occupied = (side: WorkbenchEdge) => edgeGroups(api).find(candidate =>
+      edgeOf(candidate) === side && candidate.panels.length > 0,
+    )?.element.getBoundingClientRect();
 
     if (edge === 'bottom') {
-      const hostW = root.getBoundingClientRect().width;
-      style.setProperty('--fx-edge-strip-left', `${r.left}px`);
-      style.setProperty('--fx-edge-strip-width', `${r.width}px`);
+      const left = occupied('left')?.right ?? r.left;
+      const right = occupied('right')?.left ?? r.right;
+      style.setProperty('--fx-edge-strip-left', `${left}px`);
+      style.setProperty('--fx-edge-strip-width', `${Math.max(0, right - left)}px`);
       style.setProperty('--fx-edge-drawer-bottom', `${window.innerHeight - r.top}px`);
       style.setProperty('--fx-edge-drawer-left', '0');
-      style.setProperty('--fx-edge-drawer-width', `${hostW}px`);
     } else {
+      const opposite = occupied(edge === 'left' ? 'right' : 'left');
+      const boundary = edge === 'left'
+        ? opposite?.left ?? root.getBoundingClientRect().right
+        : opposite?.right ?? root.getBoundingClientRect().left;
+      const maxWidth = edge === 'left' ? boundary - r.right - 3 : r.left - boundary - 3;
+      const sideHeight = Math.min(r.height, Math.max(0, (occupied('bottom')?.top ?? r.bottom) - r.top));
+      style.setProperty('--fx-edge-drawer-max-width', `${Math.max(0, maxWidth)}px`);
       style.setProperty('--fx-edge-drawer-left', `${r.right}px`);
       style.setProperty('--fx-edge-drawer-right', `${window.innerWidth - r.left}px`);
       style.setProperty('--fx-edge-drawer-top', `${r.bottom}px`);
       style.setProperty('--fx-edge-drawer-bottom', `${window.innerHeight - r.top}px`);
       style.setProperty('--fx-edge-strip-top', `${r.top}px`);
       style.setProperty('--fx-edge-strip-left', `${r.left}px`);
-      style.setProperty('--fx-edge-strip-height', `${r.height}px`);
+      style.setProperty('--fx-edge-strip-height', `${sideHeight}px`);
       style.setProperty('--fx-edge-strip-width', `${r.width}px`);
     }
     if (openGroup === group && drawerPortalHost) {

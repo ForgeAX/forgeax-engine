@@ -139,9 +139,9 @@ instance creation. Commented WGSL declarations and imports are excluded from
 layout and Data Interface discovery. When Custom is present, both hooks receive a pointer to that
 record; the managed shell writes it on spawn and persists it across update
 ticks. Renderer semantics are explicit source-to-Core/Custom mappings rather
-than field-name guesses. Material WGSL may declare particle inputs with a
-comment such as `// forgeax-vfx-particle-input heat: f32 fragment lane=0`;
-the cooked material reflection and VFX compiler perform the name/type/lane
+than field-name guesses. A material declares particle inputs in
+`MaterialAsset.particleInputs` (name, type, visibility, lane); the cooked
+material artifact carries them and the VFX compiler performs the name/type/lane
 match.
 
 Within one cook, identical complete shader source and imports share one validated

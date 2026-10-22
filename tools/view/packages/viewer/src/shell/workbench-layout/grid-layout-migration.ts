@@ -6,11 +6,6 @@ import {
   findEdgeGroup,
   syncEdgeEmptyChrome,
 } from './dock-edges.ts';
-import {
-  defaultDockForPanel,
-  isAutoTuckCandidatePanel,
-  isFillCorePanel,
-} from './panel-default-dock.ts';
 import { isWorkbenchEdge } from './sidebar-state.ts';
 import type { WorkbenchEdge } from './types.ts';
 
@@ -18,15 +13,6 @@ const PERIMETER_PX = 12;
 const LEFT_FRAC = 0.22;
 const RIGHT_FRAC = 0.22;
 const BOTTOM_FRAC = 0.28;
-
-function resolvePanelTuckEdge(panelId: string, groupSide: WorkbenchEdge): WorkbenchEdge | null {
-  if (!isAutoTuckCandidatePanel(panelId)) return null;
-  const dock = defaultDockForPanel(panelId);
-  if (dock === 'left') return 'left';
-  if (dock === 'right') return 'right';
-  if (dock === 'bottom') return 'bottom';
-  return groupSide;
-}
 
 /**
  * Drop auto-tuck records when the user moves a panel back to grid or to a different edge than `tuckedToEdge`.
@@ -67,6 +53,7 @@ export type PanelRestoreEntry = {
 export type GridGroupSnapshot = {
   id: string;
   panelIds: string[];
+  activePanelId?: string;
   width?: number;
   height?: number;
   /** width / gridHostWidth at capture — used for proportional wide restore. */
@@ -139,19 +126,19 @@ function scoreGroupForSide(gr: DOMRect, hostRect: DOMRect, side: WorkbenchEdge):
       const touch = gr.left - hostRect.left <= PERIMETER_PX;
       const band = gr.left + gr.width / 2 <= hostRect.left + hostRect.width * LEFT_FRAC;
       if (!touch && !band) return null;
-      return Math.max(0, gr.left - hostRect.left);
+      return (Math.max(0, gr.left - hostRect.left) + gr.width) / hostRect.width;
     }
     case 'right': {
       const touch = hostRect.right - gr.right <= PERIMETER_PX;
       const band = gr.left + gr.width / 2 >= hostRect.right - hostRect.width * RIGHT_FRAC;
       if (!touch && !band) return null;
-      return Math.max(0, hostRect.right - gr.right);
+      return (Math.max(0, hostRect.right - gr.right) + gr.width) / hostRect.width;
     }
     case 'bottom': {
       const touch = hostRect.bottom - gr.bottom <= PERIMETER_PX;
       const band = gr.top + gr.height / 2 >= hostRect.bottom - hostRect.height * BOTTOM_FRAC;
       if (!touch && !band) return null;
-      return Math.max(0, hostRect.bottom - gr.bottom);
+      return (Math.max(0, hostRect.bottom - gr.bottom) + gr.height) / hostRect.height;
     }
     default:
       return null;
@@ -162,6 +149,7 @@ function classifyPeripheralGroups(
   api: DockviewApi,
   host: HTMLElement,
   sides: readonly WorkbenchEdge[],
+  primaryPanelIds: ReadonlySet<string>,
 ): Partial<Record<WorkbenchEdge, GridGroup[]>> {
   const hostRect = rectOf(host);
   const result: Partial<Record<WorkbenchEdge, GridGroup[]>> = {};
@@ -172,7 +160,7 @@ function classifyPeripheralGroups(
   const sidePriority: WorkbenchEdge[] = ['left', 'right', 'bottom'];
 
   for (const group of gridGroups) {
-    if (group.panels.some((p) => isFillCorePanel(p.id))) continue;
+    if (group.panels.some((panel) => primaryPanelIds.has(panel.id))) continue;
     const gr = rectOf(group.element);
     if (!gr) continue;
     const scores: EdgeScore[] = [];
@@ -317,6 +305,7 @@ export function inferSplitRelations(api: DockviewApi): GridGroupSnapshot[] {
   const snapshots: GridGroupSnapshot[] = gridGroups.map((group) => ({
     id: group.id,
     panelIds: group.panels.map((p) => p.id),
+    ...(group.activePanel ? { activePanelId: group.activePanel.id } : {}),
     ...readGroupSize(group),
   }));
   const byId = new Map(snapshots.map((s) => [s.id, s]));
@@ -471,7 +460,8 @@ class GridRestoreSession {
     const runtime = this.resolveRuntimeGroup(entry.groupId);
     if (!panel || !runtime || entry.locationType !== 'grid') return false;
     if (panel.group.id !== runtime.id) return false;
-    return panel.group.panels.indexOf(panel) === entry.index;
+    const actualIndex = panel.group.panels.indexOf(panel);
+    return actualIndex === Math.min(entry.index, panel.group.panels.length - 1);
   }
 
   private resolveAnchorRuntime(anchorId: string | undefined): GridGroup | undefined {
@@ -544,6 +534,15 @@ class GridRestoreSession {
         gridSurface.width,
         gridSurface.height,
       );
+    }
+  }
+
+  restoreActiveTabs(skip: ReadonlySet<string>) {
+    for (const meta of this.snapshot.gridGroups) {
+      if (!meta.activePanelId || skip.has(meta.activePanelId)) continue;
+      const group = this.resolveRuntimeGroup(meta.id);
+      const panel = this.api.getPanel(meta.activePanelId);
+      if (group && panel?.group.id === group.id) panel.api.setActive();
     }
   }
 
@@ -756,6 +755,7 @@ export function restorePresentation(
 
   const session = new GridRestoreSession(api, snapshot, options?.layoutHost);
   session.runTransaction(snapshot.panels.filter((e) => e.locationType === 'grid'), options);
+  session.restoreActiveTabs(skip);
 
   const layoutHost = options?.layoutHost;
   if (layoutHost) {
@@ -799,11 +799,12 @@ export function tuckPeripheralGridGroups(
   host: HTMLElement,
   sides: readonly WorkbenchEdge[],
   autoTucked: AutoTuckedMap,
-  options?: { skipGroupIds?: ReadonlySet<string> },
+  options?: { skipGroupIds?: ReadonlySet<string>; primaryPanelIds?: ReadonlySet<string> },
 ) {
   const skipGroups = options?.skipGroupIds ?? new Set<string>();
   const alreadyTucked = new Set(Object.keys(autoTucked));
-  const groupsBySide = classifyPeripheralGroups(api, host, sides);
+  const primaryPanelIds = options?.primaryPanelIds ?? new Set<string>();
+  const groupsBySide = classifyPeripheralGroups(api, host, sides, primaryPanelIds);
 
   type PendingTuck = {
     panel: GridGroup['panels'][number];
@@ -823,9 +824,7 @@ export function tuckPeripheralGridGroups(
         if (panel.api.location.type === 'edge') continue;
         if (alreadyTucked.has(panel.id)) continue;
         if (pendingPanelIds.has(panel.id)) continue;
-        if (!isAutoTuckCandidatePanel(panel.id)) continue;
-        const edge = resolvePanelTuckEdge(panel.id, side);
-        if (edge === null || !sides.includes(edge)) continue;
+        const edge = side;
         pendingPanelIds.add(panel.id);
         pending.push({ panel, groupId: group.id, index, edge });
       }
@@ -908,6 +907,7 @@ export function applyStageMigration(
   toSides: readonly WorkbenchEdge[],
   baseline: PresentationSnapshot | null,
   autoTucked: AutoTuckedMap,
+  primaryPanelIds: ReadonlySet<string>,
 ): StageMigrationOutcome {
   const from = sidesSet(fromSides);
   const to = sidesSet(toSides);
@@ -952,6 +952,7 @@ export function applyStageMigration(
     const tuckedGroupIds = new Set(Object.values(nextAuto).map((e) => e.groupId));
     nextAuto = tuckPeripheralGridGroups(api, host, tuckSides, nextAuto, {
       skipGroupIds: tuckedGroupIds,
+      primaryPanelIds,
     });
   }
 

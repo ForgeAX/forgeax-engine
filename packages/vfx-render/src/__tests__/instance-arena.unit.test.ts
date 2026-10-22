@@ -785,3 +785,73 @@ it('bounds retained physical storage slabs by whole-buffer binding limits and al
   expect(frame.declaration(first).size).toBeLessThanOrEqual(8192);
   expect(frame.supports(8193, ['storage'])).toBe(false);
 });
+
+describe('incremental retained arena frames', () => {
+  const bindingsFor = (prefix: string): RenderFeatureWork => ({
+    scope: 'frame',
+    resources: [
+      {
+        kind: 'compute-bindings',
+        name: `${prefix}.bindings`,
+        program: 'stock-program',
+        entries: [{ binding: 0, resource: `${prefix}.particles` }],
+      },
+    ],
+    passes: [],
+  });
+  const pack = (
+    arena: ReturnType<typeof createVfxInstanceArena>,
+    rows: readonly VfxArenaInstance[],
+    prefix: string,
+  ) =>
+    stateRange(
+      workAt(
+        arena({
+          work: [bindingsFor(prefix)],
+          instances: rows,
+          liveOwners: owners(rows),
+          generation: 1,
+        }),
+      ),
+      prefix,
+    );
+
+  it('maps a retained lease only in a frame that retained it again', () => {
+    const arena = createVfxInstanceArena(),
+      a = instance('a');
+    const first = arena.beginRetainedFrame({ liveOwners: owners([a]), generation: 1 });
+    const range = first.acquire(a, 'a.particles', 112, ['storage']);
+    expect(pack(arena, [a], 'a').resource).toBe(range.name);
+    // The persistent index keeps the lease, but this frame never confirmed it.
+    const second = arena.beginRetainedFrame({ liveOwners: owners([a]), generation: 1 });
+    expect(pack(arena, [a], 'a').resource).toBe('a.particles');
+    const third = arena.beginRetainedFrame({ liveOwners: owners([a]), generation: 1 });
+    expect(third.retain([range])).toBe(true);
+    expect(pack(arena, [a], 'a')).toMatchObject({ resource: range.name, offset: range.offset });
+    expect(second).not.toBe(third);
+  });
+
+  it('refuses a released lease even when its range object is offered again', () => {
+    const arena = createVfxInstanceArena(),
+      a = instance('a'),
+      b = instance('b');
+    const first = arena.beginRetainedFrame({ liveOwners: owners([a, b]), generation: 1 });
+    const range = first.acquire(a, 'a.particles', 112, ['storage']);
+    // Owner a retires: its slot is released and must not be revived.
+    arena.beginRetainedFrame({ liveOwners: owners([b]), generation: 1 });
+    const revived = arena.beginRetainedFrame({ liveOwners: owners([a, b]), generation: 1 });
+    expect(revived.retain([range])).toBe(false);
+    const fresh = revived.acquire(a, 'a.particles', 112, ['storage']);
+    expect(fresh).not.toBe(range);
+    expect(pack(arena, [a, b], 'a')).toMatchObject({ resource: fresh.name, offset: fresh.offset });
+  });
+
+  it('drops every retained lease on a device generation change', () => {
+    const arena = createVfxInstanceArena(),
+      a = instance('a');
+    const first = arena.beginRetainedFrame({ liveOwners: owners([a]), generation: 1 });
+    const range = first.acquire(a, 'a.particles', 112, ['storage']);
+    const next = arena.beginRetainedFrame({ liveOwners: owners([a]), generation: 2 });
+    expect(next.retain([range])).toBe(false);
+  });
+});

@@ -9,6 +9,7 @@ import { useTranslation } from '../i18n/useTranslation';
 import { inspectorEntityFromInspection, inspectorWorkspaceTarget, type EntityInspection, type InspectorEntity } from '../inspection.ts';
 import { useInspectorAuthoring } from './InspectorAuthoring';
 import { EntityInspectorBody } from './EntityInspectorBody';
+import { InspectorThumbnailContext, useInspectorThumbnails } from './InspectorThumbnails';
 
 type InspectionRecord = { key: string; source: InspectorEntity | null };
 
@@ -82,6 +83,7 @@ export function InspectorPanel({ client, assetReferences, browseAsset, addConver
     // A batched return to the same selection still needs a fresh observation.
   }, [client, connected, selectionKey, reader, workspace, t, visible, assetReferences, referenceState]);
   const source = connected && inspection?.key === selectionKey ? inspection.source : null;
+  const thumbnails = useInspectorThumbnails({ client, reader, workspace, source, active: connected && visible });
   const authoring = useInspectorAuthoring({ client, inspection: source?.raw, project: workspace?.project, target, projectId, sessionId: workspace?.projectTarget?.sessionId, targetId: target?.targetId, addConversationReference });
   const submit = (operation: string, args: Record<string, unknown>) => {
     if (!client || !connected || !target || !primary?.entityId) return;
@@ -99,7 +101,7 @@ export function InspectorPanel({ client, assetReferences, browseAsset, addConver
       : !source ? <div className="fx-inspector__loading-pane" data-testid="insp-loading"><Spinner label={t('inspector.loading')} /></div>
         : <>
           {authoring.toolbar}
-          <EntityInspectorBody renderAuthorField={authoring.renderField} key={selectionKey} source={source} selectionCount={workspace?.sceneSelection?.entityIds?.length ?? 1}
+          <InspectorThumbnailContext.Provider value={thumbnails}><EntityInspectorBody renderAuthorField={authoring.renderField} key={selectionKey} source={source} selectionCount={workspace?.sceneSelection?.entityIds?.length ?? 1}
             focus={() => submit('entity.focus', { entityId: primary.entityId })}
             openAsset={guid => {
               if (!matches(reader.getSnapshot())) return;
@@ -107,7 +109,7 @@ export function InspectorPanel({ client, assetReferences, browseAsset, addConver
               else submit('asset.open', { guid });
             }} browseAsset={browseAsset ? guid => { if (!matches(reader.getSnapshot())) return; void browseAsset(guid).then(ok => {
               if (!ok) throw new Error(t('inspector.resourceIdentityUnavailable'));
-            }).catch(error => setActionFailure(String(error))); } : undefined} />
+            }).catch(error => setActionFailure(String(error))); } : undefined} /></InspectorThumbnailContext.Provider>
           {actionFailure ? <Text as="div" role="alert" className="insp-action-error">{actionFailure}</Text> : null}
           {source.assetReferencesTruncated ? <Text as="div" role="status" className="insp-section-status">{t('inspector.assetReferencesTruncated')}</Text> : null}
           {assetReferences && ['failed', 'unavailable'].includes(referenceState?.phase ?? '') ? <Text as="div" role="status" className="insp-section-status" title={referenceState?.error}>{t('inspector.assetReferencesUnavailable')}</Text> : null}

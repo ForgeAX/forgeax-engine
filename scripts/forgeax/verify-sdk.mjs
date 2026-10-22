@@ -1651,12 +1651,13 @@ if (selected('source')) {
   await sdkGpuStage('verifyPublicSourceViewTool', () =>
     execFileAsync(
       process.execPath,
-      [resolve(sourceRoot, 'tools/view-plugins/integration/verify-diagnostic-pages.mjs')],
+      [resolve(sourceRoot, 'tools/view/scripts/verify-diagnostic-pages-integration.mjs')],
       {
         streamOutput: true,
         cwd: sourceRoot,
         env: {
           ...sourceEnv,
+          FORGEAX_VIEW_ENGINE_SOURCE_ROOT: sourceRoot,
           FORGEAX_VIEW_TOOL_PACKAGE: resolve(sourceRoot, 'tools/view'),
           FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
           FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
@@ -1699,13 +1700,14 @@ if (selected('project')) {
         [
           resolve(
             import.meta.dirname,
-            '../../tools/view-plugins/integration/verify-diagnostic-pages.mjs',
+            '../../tools/view/scripts/verify-diagnostic-pages-integration.mjs',
           ),
         ],
         {
           cwd: sdkRoot,
           env: {
             ...offlineEnv,
+            FORGEAX_VIEW_ENGINE_SOURCE_ROOT: sourceRoot,
             FORGEAX_VIEW_TOOL_PACKAGE: resolve(
               sdkRoot,
               '.forgeax/cli-runtime/node_modules/@forgeax/view',

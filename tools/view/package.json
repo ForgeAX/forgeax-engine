@@ -46,6 +46,7 @@
     "@forgeax/view-plugin-texture": "workspace:*",
     "@forgeax/view-plugin-asset": "workspace:*",
     "@forgeax/view-plugin-plugins": "workspace:*",
+    "@forgeax/view-plugin-parameters": "workspace:*",
     "@forgeax/view-plugin-scene": "workspace:*",
     "@forgeax/view-plugin-scene-tree": "workspace:*",
     "@forgeax/view-plugin-viewport": "workspace:*",
@@ -98,6 +99,9 @@
     "./plugins/content-browser/frontend": "./dist/modules/plugins/content-browser/frontend.mjs",
     "./plugins/content-browser/schema": "./dist/modules/plugins/content-browser/schema.mjs",
     "./plugins/content-browser/ui": "./dist/modules/plugins/content-browser/ui.mjs",
+    "./plugins/parameters/identity": "./dist/modules/plugins/parameters/identity.mjs",
+    "./plugins/parameters/frontend": "./dist/modules/plugins/parameters/frontend.mjs",
+    "./plugins/parameters/ui": "./dist/modules/plugins/parameters/ui.mjs",
     "./plugins/plugins/identity": "./dist/modules/plugins/plugins/identity.mjs",
     "./plugins/plugins/backend": "./dist/modules/plugins/plugins/backend.mjs",
     "./plugins/plugins/frontend": "./dist/modules/plugins/plugins/frontend.mjs",
@@ -147,6 +151,7 @@
     "./workspace/engine-adapter": "./dist/modules/workspace/engine-adapter.mjs",
     "./workspace/extension-bridge": "./dist/modules/workspace/extension-bridge.mjs",
     "./workspace/frontend-plugin": "./dist/modules/workspace/frontend-plugin.mjs",
+    "./workspace/content-browser-detail-tabs": "./dist/modules/workspace/content-browser-detail-tabs.mjs",
     "./workspace/frontend": "./dist/modules/workspace/frontend.mjs",
     "./workspace/id": "./dist/modules/workspace/id.mjs",
     "./workspace/resident": "./dist/modules/workspace/resident.mjs",
@@ -188,15 +193,15 @@
     "metrics": {
       "bundle-size": {
         "enabled": false,
-        "reason": "Product build and interaction evidence is collected by Engine test:view."
+        "reason": "View-owned product and interaction tests run in paired Engine test:view CI."
       },
       "fps": {
         "enabled": false,
-        "reason": "Product build and interaction evidence is collected by Engine test:view."
+        "reason": "View-owned product and interaction tests run in paired Engine test:view CI."
       },
       "bench": {
         "enabled": false,
-        "reason": "Product build and interaction evidence is collected by Engine test:view."
+        "reason": "View-owned product and interaction tests run in paired Engine test:view CI."
       },
       "gate": {
         "enabled": true,
@@ -205,7 +210,7 @@
       },
       "spike-report": {
         "enabled": false,
-        "reason": "Product build and interaction evidence is collected by Engine test:view."
+        "reason": "View-owned product and interaction tests run in paired Engine test:view CI."
       }
     }
   }

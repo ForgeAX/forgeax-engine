@@ -436,20 +436,35 @@ export function particleRendererRenderState(
   if (authored !== undefined) return authored;
   if (kind === 'mesh') return undefined;
   const mode = kind === 'billboard' ? (blend ?? 'alpha') : 'alpha';
-  if (mode === 'opaque-cutout') {
-    return {
-      cullMode: 'none',
-      depthCompare: 'less-equal',
-      depthWriteEnabled: true,
-    };
-  }
-  return {
-    cullMode: 'none',
-    depthCompare: 'less-equal',
-    depthWriteEnabled: false,
-    blend: mode === 'additive' ? PARTICLE_ADDITIVE_BLEND : PARTICLE_PREMULTIPLIED_ALPHA_BLEND,
-  };
+  if (mode === 'opaque-cutout') return PARTICLE_CUTOUT_STATE;
+  return mode === 'additive' ? PARTICLE_ADDITIVE_STATE : PARTICLE_ALPHA_STATE;
 }
+
+function deepFreeze<T extends object>(value: T): T {
+  for (const property of Object.values(value))
+    if (property !== null && typeof property === 'object') deepFreeze(property);
+  return Object.freeze(value);
+}
+
+// Stock defaults are immutable shared values, so a graphics program descriptor
+// that references them can be reused and keyed once across frames.
+const PARTICLE_CUTOUT_STATE: MaterialRenderState = deepFreeze({
+  cullMode: 'none',
+  depthCompare: 'less-equal',
+  depthWriteEnabled: true,
+});
+const PARTICLE_ALPHA_STATE: MaterialRenderState = deepFreeze({
+  cullMode: 'none',
+  depthCompare: 'less-equal',
+  depthWriteEnabled: false,
+  blend: structuredClone(PARTICLE_PREMULTIPLIED_ALPHA_BLEND),
+});
+const PARTICLE_ADDITIVE_STATE: MaterialRenderState = deepFreeze({
+  cullMode: 'none',
+  depthCompare: 'less-equal',
+  depthWriteEnabled: false,
+  blend: structuredClone(PARTICLE_ADDITIVE_BLEND),
+});
 
 /** The selected shader contract owns group-1 demand, not unrelated authored material parameters. */
 export function particleMaterialUsesBindings(
@@ -497,13 +512,18 @@ export function particleMeshVertices(mesh: MeshAsset): Float32Array {
     const source = floatAttribute(mesh.attributes[key]);
     const width = attribute.byteLength / Float32Array.BYTES_PER_ELEMENT;
     if (source.length !== 0 && source.length !== vertexCount * width) return new Float32Array();
+    // Direct element copies: no per-vertex views on the per-frame emitter path.
+    const defaults = PARTICLE_MESH_DEFAULTS[key];
+    const base = attribute.offset / Float32Array.BYTES_PER_ELEMENT;
     for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-      result.set(
-        source.length >= (vertex + 1) * width
-          ? source.subarray(vertex * width, (vertex + 1) * width)
-          : PARTICLE_MESH_DEFAULTS[key],
-        vertex * stride + attribute.offset / Float32Array.BYTES_PER_ELEMENT,
-      );
+      const output = vertex * stride + base;
+      if (source.length >= (vertex + 1) * width) {
+        const input = vertex * width;
+        for (let lane = 0; lane < width; lane++)
+          result[output + lane] = source[input + lane] as number;
+      } else
+        for (let lane = 0; lane < defaults.length; lane++)
+          result[output + lane] = defaults[lane] as number;
     }
   }
   return result;

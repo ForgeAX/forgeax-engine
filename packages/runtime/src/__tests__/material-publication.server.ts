@@ -86,7 +86,6 @@ ${index === 0 ? `, 'material/child': { kind: 'material', parent: new Uint8Array(
     join(assets, 'particle.wgsl'),
     `#define_import_path game::published-particle
 #import forgeax_view::common::{view}
-// forgeax-vfx-particle-input heat: f32 fragment lane=0
 struct Input { @location(0) position: vec3<f32>, @location(4) center: vec3<f32>, @location(10) heat: vec4<f32>, }
 struct Output { @builtin(position) position: vec4<f32>, @location(0) heat: f32, }
 @vertex fn vs_main(input: Input) -> Output {

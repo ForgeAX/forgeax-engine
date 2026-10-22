@@ -55,7 +55,6 @@ export {
   LTC_SOURCE_PROVENANCE,
   LTC_TABLE_HASHES,
   LTC_TABLE_HEIGHT,
-  LTC_TABLE_INPUT_HASHES,
   LTC_TABLE_WIDTH,
   LTC_TABLES,
 } from './ltc/tables.js';
@@ -114,7 +113,6 @@ export {
   type ShaderRegistryOptions,
   type ShaderRegistryOptions as ShaderCatalogOptions,
   SSR_SHADER_MODULES,
-  type SsrShaderModule,
 } from './ShaderRegistry.js';
 export {
   findVariantByKey,
@@ -465,4 +463,4 @@ export {
   rayMaterialFailure,
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
-export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE, type TonemapShaderMode } from './tonemap.js';
+export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';

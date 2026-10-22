@@ -66,6 +66,9 @@
     "rotation": "旋转",
     "unavailable": "不可用",
     "assetRef": {
+      "previewLoading": "正在加载资产预览",
+      "previewFailed": "资产预览失败",
+      "previewUnsupported": "资产预览不可用",
       "openUnavailable": "资产查看器不可用",
       "readOnly": "只读资产引用",
       "none": "无",

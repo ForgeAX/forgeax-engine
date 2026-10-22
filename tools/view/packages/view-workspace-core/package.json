@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Transport-neutral workspace host, client, contract, and Engine adapter for ForgeaX View.",
   "exports": {
+    "./asset-thumbnails": "./src/asset-thumbnails.ts",
     "./asset-references": "./src/asset-references.ts",
     ".": "./src/api.ts",
     "./api": "./src/api.ts",
@@ -22,6 +23,7 @@
     "./adopt-surface": "./src/adopt-surface.ts",
     "./extension-bridge": "./src/extension-bridge.ts",
     "./frontend-plugin": "./src/frontend-plugin.ts",
+    "./content-browser-detail-tabs": "./src/content-browser-detail-tabs.ts",
     "./id": "./src/id.ts",
     "./locale-bridge": "./src/locale-bridge.ts",
     "./resident": "./src/resident.ts",

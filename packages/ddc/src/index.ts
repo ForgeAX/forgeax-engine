@@ -27,15 +27,12 @@ export { semanticDdcKey } from './key.js';
 export {
   DDC_LAYOUT_VERSION,
   type DdcBuildLayout,
-  type DdcBuildLayoutResult,
-  type DdcBuildOptions,
   type DdcLayout,
   type DdcLayoutError,
   type DdcLayoutFailure,
   type DdcLayoutResult,
   type DdcProjectLayout,
   type DdcServeOptions,
-  resolveBuildDdcLayout,
   resolveDdcLayout,
 } from './layout.js';
 export {

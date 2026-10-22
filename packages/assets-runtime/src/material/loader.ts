@@ -218,10 +218,16 @@ function snapshotMaterialRecord(record: CookedMaterialRecord): CookedMaterialRec
       return accepted;
     };
     if (!dataOnly(record)) return undefined;
+    // Retained ABIs are deep-frozen shared facts restored below; never clone them.
     const metadata = structuredClone({
       ...record,
       programs: record.programs.map((program) => ({
         ...program,
+        selections: program.selections.map((selection) => {
+          if (!isRetainedMaterialAbi(selection.abi)) return selection;
+          const { abi: _retained, ...rest } = selection;
+          return rest;
+        }),
         artifact: { ...program.artifact, bytes: undefined },
       })),
     });

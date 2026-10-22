@@ -28,7 +28,7 @@ function batch(): GpuDrivenShadowBatch {
 
 function submission(rows: readonly GpuDrivenShadowBatch[]): GpuDrivenShadowSubmission {
   return {
-    view: { indirectBuffer: {} as Buffer },
+    view: { indirectBuffer: {} as Buffer, skinTaskBinding: () => ({ auxiliaryOffset: 768 }) },
     batches: rows.map((row, index) => ({ ...row, indirectOffset: index * 40 })),
   } as unknown as GpuDrivenShadowSubmission;
 }
@@ -88,7 +88,7 @@ function expectDraws(recorded: ReturnType<typeof recorder>, rows: readonly GpuDr
       expect(draw?.material).toBe(row.materialGroup);
       expect(draw?.mesh).toBe(row.meshBindGroup);
       expect(draw?.visible).toBe(visible);
-      expect(draw?.meshOffsets).toEqual(row.deformation === 'skin' ? [0, 0, 0] : [0]);
+      expect(draw?.meshOffsets).toEqual(row.deformation === 'skin' ? [0, 768] : [0]);
     }
   }
   expect(recorded.draws).toHaveLength(cursor);
@@ -100,7 +100,7 @@ describe('GPU shadow indirect binding state', () => {
     const rows = [240, 0, 100].map((indirectOffset) => ({ ...first, indirectOffset }));
     const recorded = recorder();
     recordGpuDrivenShadowIndirect(recorded.pass, {
-      view: { indirectBuffer: {} as Buffer },
+      view: { indirectBuffer: {} as Buffer, skinTaskBinding: () => ({ auxiliaryOffset: 768 }) },
       batches: rows,
     } as unknown as GpuDrivenShadowSubmission);
     expect(recorded.draws.map(({ offset }) => offset)).toEqual([240, 0, 100]);
@@ -238,7 +238,7 @@ describe('GPU shadow indirect binding state', () => {
       [3, first.visibleBindGroups[0], undefined],
       [1, second.materialGroup, [0]],
       [2, second.meshBindGroup, [0]],
-      [2, skin.meshBindGroup, [0, 0, 0]],
+      [2, skin.meshBindGroup, [0, 768]],
       [1, first.materialGroup, [0]],
       [2, first.meshBindGroup, [0]],
     ] as const;

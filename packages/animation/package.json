@@ -48,6 +48,7 @@
     "@forgeax/engine-plugin": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "@forgeax/engine-math": "workspace:*",

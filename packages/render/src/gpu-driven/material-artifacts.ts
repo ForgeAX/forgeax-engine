@@ -247,6 +247,7 @@ export function collectGpuDrivenMaterialArtifacts({
   const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>();
   const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
   const selectedArtifacts = new Map<string, Map<string, MaterialShaderArtifact | undefined>>();
+  let firstSkinArtifact: MaterialShaderArtifact | undefined;
   const selectArtifact: BatchArtifactResolver = (shader, request) => {
     let variants = selectedArtifacts.get(shader);
     if (variants === undefined) {
@@ -357,21 +358,19 @@ export function collectGpuDrivenMaterialArtifacts({
     batchExecutions.set(binding, { forward, shadow });
     const forwardKey =
       forward.route === 'gpu' ? capturedPreparedMaterialArtifactKey(forward.prepared) : undefined;
-    if (forward.route === 'gpu' && forwardKey !== undefined)
+    if (forward.route === 'gpu' && forwardKey !== undefined) {
       materialArtifacts.set(forwardKey, forward.artifact);
+      // Admission already proved this pass consumes paired Skin vertex inputs.
+      // Selecting its task layout does not rescan immutable program contracts.
+      if (firstSkinArtifact === undefined && forward.prepared.identity.deformation === 'skin')
+        firstSkinArtifact = forward.artifact;
+    }
     if (shadow.route === 'gpu') {
       const key = capturedPreparedMaterialArtifactKey(shadow.prepared);
       if (key !== undefined) shadowMaterialArtifacts.set(key, shadow.artifact);
     }
   }
   const firstArtifact = materialArtifacts.values().next().value;
-  let firstSkinArtifact: MaterialShaderArtifact | undefined;
-  for (const artifact of materialArtifacts.values()) {
-    if (artifact.receipt?.skinPaletteAddress !== undefined) {
-      firstSkinArtifact = artifact;
-      break;
-    }
-  }
   const collected = {
     materialArtifacts,
     shadowMaterialArtifacts,

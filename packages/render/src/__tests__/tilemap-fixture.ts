@@ -94,7 +94,7 @@ export function tilemapFixture(
       owners,
       assets,
       (request) =>
-        extractFrames([world], owners, assets, undefined, scene.materialSnapshotCacheStore(), {
+        extractFrames([world], owners, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,

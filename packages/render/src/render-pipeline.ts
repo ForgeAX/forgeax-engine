@@ -624,8 +624,7 @@ export interface GpuDrivenStandardPbrFrameResources {
     | ((
         meshBuffer: Buffer,
         meshBindingBytes: number,
-        paletteBuffer: Buffer,
-        paletteBindingWindowBytes: number,
+        task: import('./record/skin-tasks').SkinTaskBinding,
       ) => BindGroup | undefined)
     | undefined;
 }

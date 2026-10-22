@@ -128,7 +128,7 @@ it('GPU culling follows resized material content without reuploading candidates 
     scene.sync({ ...projection.apply([]), materials }).unwrap();
     const after = await run(1 << 1);
     expect(scene.materialIndexForSlot(0, 0)).toBe(descriptor);
-    expect(after.uploads).toBe(8);
+    expect(after.uploads).toBe(12);
     expect(view.inspect().batchUploadBytes).toBe(0);
     expect(scene.inputs.memberNodesWritten).toBe(memberNodes);
     expect(after.words[5]).toBe(1);

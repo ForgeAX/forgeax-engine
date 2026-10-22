@@ -24,7 +24,7 @@ import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extr
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
+import { SkinSceneInputs } from '../scene/skin-scene-inputs';
 import { observeCandidateReads } from './gpu-driven-candidate-read-observer';
 import { mesh, standardPbrInputs } from './gpu-driven-production-fixture';
 
@@ -44,26 +44,22 @@ async function fixture(
   const materialPipelineState = pbr.materialPipelineState;
   assert(materialPipelineState);
   const receipt = createStandardPbrArtifactReceipt(skinned);
-  const palette = skinned ? createSkinPaletteAllocator(device, 1 << 20) : undefined;
-  const skinReceipt = palette?.allocatePersistentSlice({
-    identity: 'shared-pose',
-    generation: 1,
-    jointCount: 1,
-    bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-  });
-  if (palette !== undefined) {
+  if (skinned) {
     const skinLayout = device
       .createBindGroupLayout({
-        entries: [0, 1].map((binding) => ({
-          binding,
-          visibility: 1,
-          buffer: { type: 'read-only-storage' as const },
-        })),
+        entries: [
+          {
+            binding: 0,
+            visibility: 1,
+            buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+          },
+          { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
+        ],
       })
       .unwrap();
     Object.assign(pbr, { materialArtifact: { ...pbr.materialArtifact, receipt } });
     Object.assign(materialPipelineState, {
-      skinPaletteAllocator: palette,
       gpuDrivenPbrSkinPipelineLayout: materialPipelineState.gpuDrivenPbrPipelineLayout,
       pbrSkinMeshBindGroupLayout: skinLayout,
     });
@@ -133,7 +129,7 @@ async function fixture(
   };
   const snapshot: RenderableSnapshot = {
     worldId: 0,
-    ...(skinReceipt === undefined ? {} : { skin: skinReceipt }),
+    ...(skinned ? { skinBinding: { skeleton: 7, joints: [19] } } : {}),
     entityKey: 0,
     assetHandle: 3,
     material,
@@ -170,6 +166,14 @@ async function fixture(
   if (available.status !== 'available') throw new Error('Missing GPU Scene');
   const scene = available.scene;
   scene.sync(delta).unwrap();
+  const skinInputs = new SkinSceneInputs(scene.inputs.arena, () => ({
+    kind: 'skeleton',
+    jointCount: 1,
+    inverseBindMatrices: mat4.identity(mat4.create()),
+  }));
+  skinInputs.apply(new RenderScene().slotsSnapshot(), delta);
+  skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+  const skinFrame = skinInputs.prepareFrame(projection.slotsSnapshot());
   const slots = projection.slotsSnapshot();
   const topology = new BatchTopology();
   topology.rebuild(slots);
@@ -217,6 +221,7 @@ async function fixture(
   };
   const state = {
     scene,
+    skin: skinFrame,
     plan,
     slots,
     completeGeometry: topology.completeGeometry,
@@ -269,8 +274,8 @@ async function fixture(
   const dispose = () => {
     stopObservingCandidates();
     production.dispose();
+    skinInputs.dispose();
     scene.dispose();
-    palette?.dispose();
     gpuMesh.vertexBuffer.destroy();
     gpuMesh.indexBuffer?.destroy();
   };
@@ -452,7 +457,7 @@ it('retains candidate addresses when one of several material batches leaves the 
         sharedMeshReads: 2,
         slotReads: 0,
       });
-      expect(f.production.inspect().sharedInputUploadBytes).toBe(4 * 1024 + 8); // Map pages and material descriptor.
+      expect(f.production.inspect().sharedInputUploadBytes).toBe(4 * 1024 + 12); // Map pages and material descriptor.
       expect(f.production.inspect().indirectDrawCount).toBe(material === f.opaque ? 2 : 1);
     }
   } finally {

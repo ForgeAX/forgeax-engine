@@ -16,15 +16,8 @@ export const SHADOW_CASTER_SETTLE_MAX = 1600;
 export interface ShadowCasterClasses {
   readonly staticSlots: FrameSet;
   readonly dynamicSlots: FrameSet;
-  /** Dynamic casters left in directional views once capsule-ready casters leave. */
-  readonly directionalDynamicSlots: FrameSet;
   /** Every caster, static or dynamic: a single-layer view draws all of them. */
   readonly casterSlots: FrameSet;
-  /**
-   * Every caster a single-layer directional view draws: static casters plus
-   * the directional dynamic ones. Used when a light disables its static cache.
-   */
-  readonly directionalCasterSlots: FrameSet;
 }
 
 export interface ShadowCasterClassInspection {
@@ -55,9 +48,8 @@ interface ShadowCasterSlot {
   readonly snapshot: {
     readonly shadowCaster?: false;
     readonly authorVisible?: boolean;
-    readonly skin?: unknown;
+    readonly skinBinding?: unknown;
     readonly spriteInstances?: unknown;
-    readonly capsuleShadow?: { readonly status: string };
     readonly mobility?: 'static';
   };
 }
@@ -72,7 +64,6 @@ interface CasterState {
   readonly generation: number;
   declared: boolean;
   alwaysDynamic: boolean;
-  capsuleReady: boolean;
   dynamic: boolean;
   created: boolean;
   threshold: number;
@@ -105,9 +96,7 @@ export class ShadowCasterClassifier {
   private readonly timers = new Map<number, Set<CasterState>>();
   private readonly staticSlots = new SlotClass();
   private readonly dynamicSlots = new SlotClass();
-  private readonly directionalSlots = new SlotClass();
   private readonly casterSlots = new SlotClass();
-  private readonly directionalCasterSlots = new SlotClass();
   private declared = 0;
   private alwaysDynamic = 0;
   private flips = 0;
@@ -122,9 +111,7 @@ export class ShadowCasterClassifier {
   private classes: ShadowCasterClasses = Object.freeze({
     staticSlots: this.staticSlots.snapshot(),
     dynamicSlots: this.dynamicSlots.snapshot(),
-    directionalDynamicSlots: this.dynamicSlots.snapshot(),
     casterSlots: this.casterSlots.snapshot(),
-    directionalCasterSlots: this.casterSlots.snapshot(),
   });
 
   update(
@@ -133,7 +120,6 @@ export class ShadowCasterClassifier {
       slotAt(slot: number): ShadowCasterSlot | undefined;
     },
     scene: ShadowCasterScene,
-    capsuleShadowDirectional = false,
   ): ShadowCasterClasses {
     this.frame++;
     this.flips = 0;
@@ -186,27 +172,13 @@ export class ShadowCasterClassifier {
     }
     const staticSlots = this.staticSlots.snapshot();
     const dynamicSlots = this.dynamicSlots.snapshot();
-    const directionalDynamicSlots = capsuleShadowDirectional
-      ? this.directionalSlots.snapshot()
-      : dynamicSlots;
     const casterSlots = this.casterSlots.snapshot();
-    const directionalCasterSlots = capsuleShadowDirectional
-      ? this.directionalCasterSlots.snapshot()
-      : casterSlots;
     if (
       staticSlots !== this.classes.staticSlots ||
       dynamicSlots !== this.classes.dynamicSlots ||
-      directionalDynamicSlots !== this.classes.directionalDynamicSlots ||
-      casterSlots !== this.classes.casterSlots ||
-      directionalCasterSlots !== this.classes.directionalCasterSlots
+      casterSlots !== this.classes.casterSlots
     ) {
-      this.classes = Object.freeze({
-        staticSlots,
-        dynamicSlots,
-        directionalDynamicSlots,
-        casterSlots,
-        directionalCasterSlots,
-      });
+      this.classes = Object.freeze({ staticSlots, dynamicSlots, casterSlots });
     }
     return this.classes;
   }
@@ -224,9 +196,9 @@ export class ShadowCasterClassifier {
       this.replacements++;
       row = undefined;
     }
-    const alwaysDynamic = snapshot.skin !== undefined || snapshot.spriteInstances !== undefined;
+    const alwaysDynamic =
+      snapshot.skinBinding !== undefined || snapshot.spriteInstances !== undefined;
     const declared = !alwaysDynamic && snapshot.mobility === 'static';
-    const capsuleReady = snapshot.capsuleShadow?.status === 'ready';
     if (row === undefined) {
       if (!replaced) this.creations++;
       row = {
@@ -234,7 +206,6 @@ export class ShadowCasterClassifier {
         generation,
         declared,
         alwaysDynamic,
-        capsuleReady,
         dynamic: alwaysDynamic || (!initial && !declared),
         created: true,
         threshold: SHADOW_CASTER_SETTLE_FRAMES,
@@ -256,7 +227,6 @@ export class ShadowCasterClassifier {
     this.alwaysDynamic += Number(alwaysDynamic) - Number(row.alwaysDynamic);
     row.declared = declared;
     row.alwaysDynamic = alwaysDynamic;
-    row.capsuleReady = capsuleReady;
     this.cancel(row);
     if (newlyDeclared || alwaysDynamic) {
       row.threshold = SHADOW_CASTER_SETTLE_FRAMES;
@@ -292,9 +262,7 @@ export class ShadowCasterClassifier {
     row.dynamic = dynamic;
     this.staticSlots.set(row.slot, !dynamic);
     this.dynamicSlots.set(row.slot, dynamic);
-    this.directionalSlots.set(row.slot, dynamic && !row.capsuleReady);
     this.casterSlots.set(row.slot, true);
-    this.directionalCasterSlots.set(row.slot, !dynamic || !row.capsuleReady);
   }
 
   private remove(slot: number, count = true): void {
@@ -306,9 +274,7 @@ export class ShadowCasterClassifier {
     this.alwaysDynamic -= Number(row.alwaysDynamic);
     this.staticSlots.set(slot, false);
     this.dynamicSlots.set(slot, false);
-    this.directionalSlots.set(slot, false);
     this.casterSlots.set(slot, false);
-    this.directionalCasterSlots.set(slot, false);
     if (count) this.removals++;
   }
 
@@ -415,14 +381,6 @@ export function restrictShadowCasterClasses(
   return Object.freeze({
     staticSlots: new ShadowSlotSelection(classes.staticSlots, allowed),
     dynamicSlots,
-    directionalDynamicSlots:
-      classes.directionalDynamicSlots === classes.dynamicSlots
-        ? dynamicSlots
-        : new ShadowSlotSelection(classes.directionalDynamicSlots, allowed),
     casterSlots,
-    directionalCasterSlots:
-      classes.directionalCasterSlots === classes.casterSlots
-        ? casterSlots
-        : new ShadowSlotSelection(classes.directionalCasterSlots, allowed),
   });
 }

@@ -26,12 +26,13 @@ describe('Standard Surface pass templates', () => {
     expect(shader).not.toMatch(/\bin\.position\s*=|\bin\.positionWS\s*=/);
   });
 
-  it('keeps the GPU scene palette base separate from the material row', () => {
+  it('addresses Skin tasks by the actual candidate, separately from the material row', () => {
     const shader = source('default-standard-pbr-skin.wgsl');
     expect(shader).toContain('paletteBase : u32');
-    expect(shader).toContain('palette[paletteBase + in.skinIndex.x]');
+    expect(shader).toContain('skinTaskDescriptor(paletteBase)');
+    expect(shader).toContain('let paletteBase = visible.z;');
     expect(shader).toContain('let materialIndex = visible.y;');
     expect(shader).not.toContain('meshes[visible.x]');
-    expect(shader).toContain('let paletteBase = 0u;');
+    expect(shader).toContain('let paletteBase = skinTaskDirectCandidate();');
   });
 });

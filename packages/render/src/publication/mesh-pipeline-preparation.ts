@@ -29,7 +29,7 @@ export function captureMeshPipelinePreparation(input: {
       ),
     );
   try {
-    const frame = extractFrames([input.world], 0, input.assets, undefined, undefined, {
+    const frame = extractFrames([input.world], 0, input.assets, undefined, {
       ...renderMaterialContext(input.capabilities, input.limits),
       cull: 'none',
       retainHidden: true,
@@ -44,8 +44,7 @@ export function captureMeshPipelinePreparation(input: {
     )
       return invalid('candidate render snapshot is unavailable');
     if (
-      row.skin !== undefined ||
-      row.skinPose !== undefined ||
+      row.skinBinding !== undefined ||
       row.morph !== undefined ||
       row.terrain !== undefined ||
       row.pointsLines !== undefined ||

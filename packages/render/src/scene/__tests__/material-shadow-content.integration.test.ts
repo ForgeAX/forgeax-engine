@@ -178,7 +178,7 @@ it('checks actual shadow material content before accepting an unchanged World pr
     renderables: [],
     dispatch: [],
     prepareDrawDispatch: () => [],
-    worldBoundsOf: () => undefined,
+    worldBoundsOf: () => false,
   });
   const decide = () =>
     prepareDirectionalShadowCache(

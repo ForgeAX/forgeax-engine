@@ -99,13 +99,7 @@ fn materialTextureFilteringWitness() {
 }
 
 #if SKINNING_DISABLED == false
-#if STORAGE_BUFFER_AVAILABLE == true
-@group(2) @binding(1) var<storage, read> palette : array<mat4x4<f32>>;
-@group(2) @binding(2) var<storage, read> previousPalette : array<mat4x4<f32>>;
-#else
-@group(2) @binding(1) var<uniform> palette : array<mat4x4<f32>, 255>;
-@group(2) @binding(2) var<uniform> previousPalette : array<mat4x4<f32>, 255>;
-#endif
+#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate, skinTaskHistoryValid}
 #endif
 
 struct VsIn {
@@ -162,10 +156,8 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
 #if SKINNING_DISABLED == false
   // Palette entries are jointWorld * inverseBind; the mesh-node transform is
   // ignored for a skinned glTF mesh, as in the Standard skin vertex path.
-  let localToWorld = palette[in.skinIndex.x] * in.skinWeight.x +
-    palette[in.skinIndex.y] * in.skinWeight.y +
-    palette[in.skinIndex.z] * in.skinWeight.z +
-    palette[in.skinIndex.w] * in.skinWeight.w;
+  let descriptor = skinTaskDescriptor(skinTaskDirectCandidate());
+  let localToWorld = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
 #else
   let localToWorld = meshes[0].worldFromLocal * instances[idx].localFromInstance;
 #endif
@@ -341,6 +333,7 @@ struct TemporalVsOut {
   @builtin(position) @invariant clip : vec4<f32>,
   @location(0) uv : vec2<f32>,
   @location(5) alphaUv : vec2<f32>,
+  @location(6) @interpolate(flat) skinHistoryValid : u32,
   @location(1) @interpolate(perspective) currentClip : vec4<f32>,
   @location(2) @interpolate(perspective) previousClip : vec4<f32>,
 #ifdef VERTEX_COLOR_AVAILABLE
@@ -351,13 +344,16 @@ struct TemporalVsOut {
 @vertex
 fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
   let current = unlitVertex(in, idx);
+#if SKINNING_DISABLED == false
+  let descriptor = skinTaskDescriptor(skinTaskDirectCandidate());
+  let currentSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
+  let currentWorld = currentSkin * vec4<f32>(in.pos, 1.0);
+#else
   let currentWorld = vec4<f32>(current.worldPos, 1.0);
+#endif
   var previousWorld = currentWorld;
 #if SKINNING_DISABLED == false
-  let previousSkin = previousPalette[in.skinIndex.x] * in.skinWeight.x +
-    previousPalette[in.skinIndex.y] * in.skinWeight.y +
-    previousPalette[in.skinIndex.z] * in.skinWeight.z +
-    previousPalette[in.skinIndex.w] * in.skinWeight.w;
+  let previousSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, true);
   previousWorld = previousSkin * vec4<f32>(in.pos, 1.0);
 #else
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -366,6 +362,11 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #endif
 #endif
   var out : TemporalVsOut;
+#if SKINNING_DISABLED == false
+  out.skinHistoryValid = select(0u, 1u, skinTaskHistoryValid(descriptor));
+#else
+  out.skinHistoryValid = 1u;
+#endif
   out.positionOS = in.pos;
   out.clippingPositionWS = currentWorld.xyz;
   out.currentClip = view.temporalCurrentViewProj * currentWorld;
@@ -409,6 +410,7 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   reactive = meshes[0].temporal.x;
   motionValid = meshMotionValid(meshes[0].temporal.y);
 #endif
+  motionValid = motionValid && in.skinHistoryValid != 0u;
   // Material coverage is shared shader state, never copied into every Mesh row.
   if (material.alphaHash <= 0.5 && alpha < 1.0) { reactive = 1.0; }
   return packSceneTemporalV1WithValidity(

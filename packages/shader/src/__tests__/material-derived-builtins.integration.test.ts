@@ -47,10 +47,16 @@ describe('material derived built-in integration contract', () => {
     );
     expect(STANDARD_PBR_ARTIFACT_RECEIPT.directEntry).toBe('vs_main');
     expect(STANDARD_PBR_ARTIFACT_RECEIPT.sceneIndexEntry).toBe('vs_scene_index');
-    expect(STANDARD_PBR_SKIN_ARTIFACT_RECEIPT.skinPaletteAddress).toMatchObject({
-      group: 2,
-      binding: 1,
-    });
+    expect(
+      STANDARD_PBR_SKIN_ARTIFACT_RECEIPT.vertexInputs.some(
+        (input) => input.semantic === 'skinIndex',
+      ),
+    ).toBe(true);
+    expect(
+      STANDARD_PBR_SKIN_ARTIFACT_RECEIPT.vertexInputs.some(
+        (input) => input.semantic === 'skinWeight',
+      ),
+    ).toBe(true);
   });
 
   it('includes a coordinate member pair for every built-in texture binding', () => {

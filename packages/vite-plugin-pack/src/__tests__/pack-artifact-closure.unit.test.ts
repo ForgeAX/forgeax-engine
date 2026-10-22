@@ -8,9 +8,19 @@ it('reads the artifact closure from material-program wire transport', () => {
     assets: [{ artifacts: { body: { path: 'mesh/body.bin' } } }],
   };
   expect(
-    persistedArtifactPaths({ schemaVersion: 'pack-material-programs/1', pack, programs: [] }),
+    persistedArtifactPaths({
+      schemaVersion: 'pack-material-programs/2',
+      pack,
+      programs: [],
+      abis: [],
+    }),
   ).toEqual(['mesh/body.bin']);
   expect(
-    persistedArtifactPaths({ schemaVersion: 'pack-material-programs/1', pack, programs: [{}] }),
+    persistedArtifactPaths({
+      schemaVersion: 'pack-material-programs/2',
+      pack,
+      programs: [{}],
+      abis: [],
+    }),
   ).toBeUndefined();
 });

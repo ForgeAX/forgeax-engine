@@ -41,7 +41,6 @@ function fixture() {
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
       assets,
-      undefined,
       scene.materialSnapshotCacheStore(),
       { cull: 'none', renderables: request },
     );

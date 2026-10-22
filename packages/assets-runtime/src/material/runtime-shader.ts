@@ -19,7 +19,21 @@ import type {
   ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import { createMaterialError, projectMaterialParameterSchema } from '@forgeax/engine-types';
+import { isSharedImmutableAssetData } from '../internal/shared-immutable.js';
 import type { MaterialLoadError, MaterialReady } from './loader';
+
+// Materials that share one realm-immutable program view decode its WGSL once.
+// Private views may change between installs and are always decoded again.
+const decodedPrograms = new WeakMap<Uint8Array, string>();
+function decodeProgram(bytes: Uint8Array): string {
+  if (!isSharedImmutableAssetData(bytes)) return new TextDecoder().decode(bytes);
+  let source = decodedPrograms.get(bytes);
+  if (source === undefined) {
+    source = new TextDecoder().decode(bytes);
+    decodedPrograms.set(bytes, source);
+  }
+  return source;
+}
 
 export interface MaterialRenderPassProjection {
   readonly name: string;
@@ -308,7 +322,7 @@ export function installMaterialReadyShaders(
     return parameter;
   });
   const entries = readiness.record.programs.map((program) => {
-    const source = new TextDecoder().decode(program.artifact.bytes);
+    const source = decodeProgram(program.artifact.bytes);
     if (source.length === 0)
       throw new Error(
         `MaterialReady ${readiness.record.guid} contains an empty shader program ${program.specializationKey}`,

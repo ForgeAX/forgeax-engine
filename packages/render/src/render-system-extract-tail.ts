@@ -10,7 +10,7 @@ import {
 } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { isFiniteAabb } from '@forgeax/engine-geometry';
-import { box3, frustum, type Mat4, mat4, type Vec3 } from '@forgeax/engine-math';
+import { box3, frustum, type Vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import { RhiError } from '@forgeax/engine-rhi';
@@ -25,7 +25,6 @@ import {
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
   JointCountMismatchError,
-  JointEntityDanglingError,
   SkeletonResolveFailedError,
   Skin,
   SkinInstancesCoexistForbiddenError,
@@ -37,9 +36,8 @@ import type {
   MeshLodLevel,
   SkeletonAsset,
 } from '@forgeax/engine-types';
-import { ASSET_ERROR_HINTS, AssetError, ok } from '@forgeax/engine-types';
+import { ASSET_ERROR_HINTS, AssetError, materialProgramUsesSkin, ok } from '@forgeax/engine-types';
 import { buildCameraFrusta } from './camera-frusta';
-import { type CapsuleShadowSnapshot, poseShadowCapsules } from './capsule-shadow/world-capsules';
 import {
   CapsuleShadow,
   Instances,
@@ -97,7 +95,6 @@ import type {
   ExtractedFrame,
   ExtractedLights,
   ExtractFramesOwner,
-  ExtractPipelineSurface,
   InstancesSnapshot,
   MaterialProgramSelection,
   MaterialSnapshot,
@@ -137,31 +134,13 @@ import {
 } from './render-system-extract';
 import { captureMaterialOverrides } from './scene/mesh-materials';
 import { buildShadowFrusta } from './scene/shadow-visibility';
-import { skinPosedBounds, skinPosedBoundsCache } from './skin-posed-bounds';
 import { spriteUvRegion } from './sprite-region';
 import {
   expandDisplacementBounds,
   standardDisplacementRadius,
 } from './standard-displacement-bounds';
-import { prepareSkinPalette } from './systems/skin-palette-allocator';
-import type { SkinPaletteReceipt, SkinPose } from './systems/skin-palette-types';
 import { extractTerrainSources } from './terrain/source.js';
 import { extractTilemapSources } from './tilemap-source';
-
-function skinPaletteIdentity(world: World, entity: number): string {
-  return `skin:${world.identity}:${entity}`;
-}
-
-function materialProgramSelectionRequiresSkin(selection: {
-  readonly abi?: {
-    readonly skinPaletteAddress?: unknown;
-    readonly vertexInputs?: readonly { readonly semantic?: unknown }[];
-  };
-}): boolean {
-  if (selection.abi?.skinPaletteAddress !== undefined) return true;
-  const semantics = new Set((selection.abi?.vertexInputs ?? []).map((input) => input.semantic));
-  return semantics.has('skinIndex') && semantics.has('skinWeight');
-}
 
 function isMissingMaterialProgram(error: unknown): boolean {
   return (
@@ -175,7 +154,6 @@ export function extractFrames(
   worlds: readonly World[],
   owner: number | ExtractFramesOwner,
   assets?: AssetRegistry | null,
-  pipelineState?: ExtractPipelineSurface | null,
   materialSnapshotCachesByWorld?: MaterialSnapshotCachesByWorld,
   options: {
     readonly materialContext?: MaterialCookRasterContext;
@@ -222,24 +200,6 @@ export function extractFrames(
     typeof renderableRequest === 'object' ? renderableRequest.entitiesByWorld : undefined;
   const retainHidden = options.retainHidden ?? typeof renderableRequest === 'object';
 
-  // ── D-2: frame-level side effects live here ────────────────────────────
-  //
-  // resetForFrame is called exactly once per frame, at the extractFrames
-  // entry. The skinPaletteAllocator cursor is reset before each per-world
-  // extract runs, so sequential per-world allocation yields non-overlapping
-  // palette slices (AC-08).
-  const skinPaletteAllocator = pipelineState?.skinPaletteAllocator ?? null;
-  // A partial request is still normalized to the producer's full renderable
-  // query, but it is not a full allocator reconciliation.  beginFrame/endFrame
-  // mark every persistent identity not visited by this selected subset as
-  // detached; doing that here would release untouched palettes.  Only the
-  // explicit full request is allowed to reconcile the identity set.
-  const reconcileSkinFrame = renderableRequest === 'full';
-  if (skinPaletteAllocator !== null && reconcileSkinFrame) {
-    skinPaletteAllocator.beginFrame();
-    skinPaletteAllocator.resetForFrame();
-  }
-
   const failedWorlds = new Set<World>();
   // Resource-owner selection is a frame-level concern. Select Fog once before
   // per-world extraction so non-owner worlds do not scan their ECS tables for
@@ -271,20 +231,11 @@ export function extractFrames(
   for (const wi of extractionOrder) {
     const world = worlds[wi];
     if (world === undefined || failedWorlds.has(world)) continue;
-    const skinComponent = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
     try {
-      if (skinPaletteAllocator !== null && partialEntitiesByWorld !== undefined) {
-        for (const entityKey of partialEntitiesByWorld[wi] ?? []) {
-          if (!world.hasComponent(entityKey as EntityHandle, skinComponent)) {
-            skinPaletteAllocator.releasePersistentSlice(skinPaletteIdentity(world, entityKey));
-          }
-        }
-      }
       const isCameraOwner = wi === cameraOwner;
       const cameraOwnerFrame = framesByWorld.get(cameraOwner);
       const prepared = prepareExtractContext(world, {
         ...(assets !== undefined ? { assets } : {}),
-        ...(pipelineState !== undefined ? { pipelineState } : {}),
         resourceOwnerFog: wi === resourceOwner ? resourceOwnerFog : null,
         ...(materialSnapshotCachesByWorld === undefined
           ? {}
@@ -342,13 +293,6 @@ export function extractFrames(
         // If _routeError itself throws, the world already failed — skip silently.
       }
     }
-  }
-
-  // Reconcile persistent palette identities from the extracted producer
-  // projection. Identities absent after a detach are fence-retired by the
-  // allocator; surviving identities keep their stable slices.
-  if (skinPaletteAllocator !== null && reconcileSkinFrame) {
-    skinPaletteAllocator.endFrame();
   }
 
   // Restore the caller's world order after the camera-owner-first extraction.
@@ -697,7 +641,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // side effects. See plan-decisions PD2 for the reviewer ruling.
   const {
     assets: contextAssets,
-    pipelineState,
     materialSnapshotContexts,
     cull: cullMode,
     resourceOwnerFog,
@@ -714,7 +657,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     resourceOwnerFog === undefined ? selectFogFrame(world) : (resourceOwnerFog ?? undefined);
   const fogFailure = fogState(world).failure;
   const visibility = context.visibility.hasAnyHiddenIntent ? context.visibility : undefined;
-  const skinPaletteAllocator = pipelineState?.skinPaletteAllocator ?? null;
   const materialTextureSourceStats: MaterialTextureSourceStats = {
     sourceFieldsVisited: 0,
     producerRoutes: {},
@@ -730,7 +672,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     mesh: number | undefined,
   ): boolean => {
     const wantsSkin =
-      selections?.some(materialProgramSelectionRequiresSkin) === true ||
+      selections?.some((selection) => materialProgramUsesSkin(selection.abi)) === true ||
       isStandardPbrSkinMaterialShader(shader);
     if (hasSkin && skeleton !== undefined && skeleton !== 0 && !wantsSkin) {
       worldInternal._routeError(new SkinMaterialMismatchError(entity, shader), {
@@ -1344,7 +1286,9 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                     vertexColorAvailable,
                   );
                   if (
-                    skinnedSelections?.some(materialProgramSelectionRequiresSkin) === true &&
+                    skinnedSelections?.some((selection) =>
+                      materialProgramUsesSkin(selection.abi),
+                    ) === true &&
                     gpuDrivenMesh !== undefined
                   ) {
                     const hasSkinIndex = gpuDrivenMesh.attributes.skinIndex !== undefined;
@@ -1480,21 +1424,10 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       }
 
       if (isRenderable) {
-        // feat-20260612 M2 / m2-6: Skin + Instances coexistence + per-joint
-        // dangling fail-fast + real palette slice allocation. Replaces the
-        // T-21 placeholder ({0,0} discriminator-only sentinel) with full
-        // resolve / validate / write chain (D-9 reset already fired at
-        // extractFrame entry; per-entity allocate + writeJointPalette here).
-        let skinSlice: SkinPaletteReceipt | undefined;
-        let skinPose: SkinPose | undefined;
-        let posedCapsules: Float32Array | undefined;
-        let skeletonHasCapsules = false;
-        const skinIdentity = hasSkin ? skinPaletteIdentity(world, entity) : undefined;
-        const releaseSkinIdentity = (): void => {
-          if (skinIdentity !== undefined) {
-            skinPaletteAllocator?.releasePersistentSlice(skinIdentity);
-          }
-        };
+        // Static source membership only; actual demand resolves the shared pose.
+        let skinBinding:
+          | { readonly skeleton: number; readonly joints: readonly number[] }
+          | undefined;
         if (hasSkin) {
           const skeletonHandleRaw = skinSkeletonView;
           if (
@@ -1509,7 +1442,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 severity: Severity.Error,
                 systemName: 'RenderSystem.extract (skin-instances-coexist)',
               });
-              releaseSkinIdentity();
               continue;
             }
             // (a) Resolve skeleton asset; on failure -> skeleton-resolve-failed.
@@ -1522,7 +1454,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 severity: Severity.Error,
                 systemName: 'RenderSystem.extract (skeleton-resolve-failed)',
               });
-              releaseSkinIdentity();
               continue;
             }
             const skeleton = skeletonRes.value;
@@ -1530,7 +1461,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             // the old path repeated a second whole-row world.get here.
             const skinJoints = skin?.joints;
             if (skinJoints === undefined) {
-              releaseSkinIdentity();
               continue;
             }
             const jointsLength = skinJoints.length;
@@ -1542,62 +1472,13 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                   systemName: 'RenderSystem.extract (joint-count-mismatch)',
                 },
               );
-              releaseSkinIdentity();
-              continue;
+              // Keep nonempty static membership; actual fixed-frame demand rejects an incompatible resource.
             }
-            // (c) Resolve only each joint's GlobalTransform.world column. The
-            // transient view is consumed before a structural mutation and
-            // therefore preserves the same dangling-joint behavior without
-            // constructing every other Transform field.
-            // Build mat4 list eagerly so write happens once per entity (no
-            // half-written slice on dangling).
-            const jointWorlds = new Array<Mat4>(skeleton.jointCount);
-            // One owned backing store survives publication as one clone, rather
-            // than one ArrayBuffer allocation and clone for every joint.
-            const jointWorldStorage = new Float32Array(skeleton.jointCount * 16);
-            let jointDangling = -1;
-            for (let jIdx = 0; jIdx < skeleton.jointCount; jIdx++) {
-              const jointEntityRaw = skinJoints[jIdx] ?? 0;
-              const jointEntity = jointEntityRaw as EntityHandle;
-              const jointWorld = readPresentationWorldMatrix(world, jointEntity);
-              if (jointWorld === undefined) {
-                jointDangling = jIdx;
-                break;
-              }
-              // The allocator consumes the canonical Mat4 brand. Copy the
-              // column view into that owner-created value so the ECS storage
-              // view never crosses the math brand boundary by assertion.
-              const jointWorldMat = mat4.view(jointWorldStorage, jIdx);
-              jointWorldMat.set(jointWorld);
-              jointWorlds[jIdx] = jointWorldMat;
-            }
-            if (jointDangling >= 0) {
-              worldInternal._routeError(new JointEntityDanglingError(entity, jointDangling), {
-                severity: Severity.Error,
-                systemName: 'RenderSystem.extract (joint-entity-dangling)',
-              });
-              releaseSkinIdentity();
-              continue;
-            }
-            // (d) Slice the IBM flat Float32Array into per-joint Float32Arrays.
-            //     skeleton.inverseBindMatrices length === jointCount * 16.
-            const ibmFlat = skeleton.inverseBindMatrices;
-            const ibms: Float32Array[] = new Array<Float32Array>(skeleton.jointCount);
-            for (let jIdx = 0; jIdx < skeleton.jointCount; jIdx++) {
-              ibms[jIdx] = ibmFlat.subarray(jIdx * 16, jIdx * 16 + 16);
-            }
-            if (capsuleShadowRequested && skeleton.shadowCapsules !== undefined) {
-              skeletonHasCapsules = true;
-              posedCapsules = poseShadowCapsules(skeleton.shadowCapsules, ibms, jointWorlds);
-            }
-            // (e) Retain current pose facts. Bounds and palette allocation
-            // follow mesh resolution so the cull and draw share this pose.
-            skinPose = {
-              identity: skinPaletteIdentity(world, entity),
-              generation: ((skeletonHandleRaw >>> 0) ^ skeleton.jointCount) >>> 0,
-              jointCount: skeleton.jointCount,
-              inverseBindMatrices: ibms,
-              jointWorlds,
+            if (jointsLength === 0) continue; // Invalid static membership never crosses the protocol boundary.
+            // Static Binding admission does not read or duplicate dynamic joint matrices.
+            skinBinding = {
+              skeleton: skeletonHandleRaw,
+              joints: Object.freeze(Array.from(skinJoints, Number)),
             };
           }
         }
@@ -1606,11 +1487,12 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         // projection. Do not publish a renderable or its staged dispatch when
         // palette extraction was unavailable; the record stage must never
         // reinterpret a skinned vertex stream through an ordinary mesh group.
-        if (skinSlice === undefined && skinPose === undefined && hasSkin) {
-          releaseSkinIdentity();
+        if (skinBinding === undefined && hasSkin) {
           if (
             materialSnap.materialShaderId === 'forgeax::pbr-skin' ||
-            materialProgramSelections?.some(materialProgramSelectionRequiresSkin) === true
+            materialProgramSelections?.some((selection) =>
+              materialProgramUsesSkin(selection.abi),
+            ) === true
           ) {
             pendingDispatch.length = 0;
             continue;
@@ -1626,7 +1508,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         // only the `entity` source switched to `bundle.Entity.self[i]`.
         const worldView = readPresentationWorldMatrix(world, entity);
         if (worldView === undefined) {
-          releaseSkinIdentity();
           continue;
         }
         const worldMat = new Float32Array(worldView);
@@ -1770,21 +1651,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             lods = meshAsset.lods;
             lodHysteresis = meshAsset.lodHysteresis;
             morph = morphSnapshotFor(meshAsset, morphWeightsView);
-            if (skinPose !== undefined) {
-              const bounds = skinPosedBounds(
-                meshAsset,
-                skinPose,
-                worldMat,
-                skinPosedBoundsCache(world, skinPose.identity),
-                world[worldRead].getFieldValue(
-                  row.entity,
-                  MeshRenderer,
-                  'conservativeSkinBounds',
-                ) === 1,
-              );
-              if (bounds !== undefined) skinPose = { ...skinPose, bounds };
-            }
-            const meshAabb = hasSkin ? skinPose?.bounds : meshAsset.aabb;
+            const meshAabb = hasSkin ? undefined : meshAsset.aabb;
             // Morph targets can expand the authored bounds. Keep the
             // specialized lane conservative until a target-aware bounds
             // projection is available; a false-positive draw is preferable
@@ -1793,10 +1660,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               localAabb = new Float32Array(meshAabb);
             }
           }
-        }
-
-        if (skinPose !== undefined && skinPaletteAllocator !== null) {
-          skinSlice = prepareSkinPalette(skinPose, skinPaletteAllocator);
         }
 
         const displacementRadius = standardDisplacementRadius(materialsArr);
@@ -1937,34 +1800,28 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           worldId: context.worldId,
           entityKey: entity,
           ...(authorVisible ? {} : { authorVisible: false }),
-          ...(skinSlice !== undefined ? { skin: skinSlice } : {}),
-          ...(skinPose === undefined ? {} : { skinPose }),
-          ...(skin?.joints === undefined
-            ? {}
-            : { skinJointEntities: Array.from(skin.joints, (joint) => Number(joint)) }),
+          ...(skinBinding === undefined ? {} : { skinBinding }),
+          ...(capsuleShadowRequested ? { capsuleShadowRequested: true } : {}),
           ...(morph !== undefined ? { morph } : {}),
           ...(instancesSnap !== undefined ? { instances: instancesSnap } : {}),
           ...(spriteInstancesSnap !== undefined ? { spriteInstances: spriteInstancesSnap } : {}),
           ...(pointsLines !== undefined ? { pointsLines } : {}),
         };
-        const gpuDrivenDraws =
-          skinPose === undefined || skinSlice !== undefined
-            ? buildGpuDrivenDraws({
-                mesh: gpuDrivenMesh,
-                materials: materialsArr,
-                fallbackMaterial: materialSnap,
-                deformation: baseRenderable.skin === undefined ? 'rigid' : 'skin',
-                ...(getMaterialShaderArtifact === undefined ? {} : { getMaterialShaderArtifact }),
-                ...(lods === undefined
-                  ? {}
-                  : {
-                      lodMeshes: lods.map((lod) => {
-                        const lower = renderAsset(worldRenderResources(world), lod.mesh);
-                        return lower?.kind === 'mesh' ? lower : undefined;
-                      }),
-                    }),
-              })
-            : [];
+        const gpuDrivenDraws = buildGpuDrivenDraws({
+          mesh: gpuDrivenMesh,
+          materials: materialsArr,
+          fallbackMaterial: materialSnap,
+          deformation: skinBinding === undefined ? 'rigid' : 'skin',
+          ...(getMaterialShaderArtifact === undefined ? {} : { getMaterialShaderArtifact }),
+          ...(lods === undefined
+            ? {}
+            : {
+                lodMeshes: lods.map((lod) => {
+                  const lower = renderAsset(worldRenderResources(world), lod.mesh);
+                  return lower?.kind === 'mesh' ? lower : undefined;
+                }),
+              }),
+        });
         for (const draw of gpuDrivenDraws) {
           if (draw.preparationError === undefined) continue;
           worldInternal._routeError(draw.preparationError, {
@@ -2083,19 +1940,12 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         // Retain hidden snapshots for incremental composition, but never
         // publish their display or ShadowCaster passes to either record lane.
         if (!authorVisible) pendingDispatch.length = 0;
-        const capsuleShadow: CapsuleShadowSnapshot | undefined = !capsuleShadowRequested
-          ? undefined
-          : !hasSkin
-            ? { status: 'not-skinned' }
-            : !skeletonHasCapsules || posedCapsules === undefined
-              ? { status: 'no-shadow-capsules' }
-              : { status: 'ready', capsules: posedCapsules };
+        // Pose and capsule shadow admission belong to the selected fixed frame's actual demand.
         const renderableWithShadowPasses =
-          capsuleShadow === undefined && !mobilityStatic && !shadowReceiveDisabled
+          !mobilityStatic && !shadowReceiveDisabled
             ? renderable
             : {
                 ...renderable,
-                ...(capsuleShadow === undefined ? {} : { capsuleShadow }),
                 ...(mobilityStatic ? { mobility: 'static' as const } : {}),
                 ...(shadowReceiveDisabled ? { shadowReceiver: false as const } : {}),
               };

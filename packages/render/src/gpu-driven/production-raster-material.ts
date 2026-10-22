@@ -28,9 +28,13 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { materialColorTarget, materialDepthStencil } from '../material-render-state';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
-import { packInstanceStorageBuffer } from '../record/mesh-ssbo';
+import {
+  createPbrSkinMeshBindGroupEntries,
+  isCanonicalStandardPbrMaterialShader,
+} from '../pbr-pipeline';
+import { getOrCreateFromChainResult, packInstanceStorageBuffer } from '../record/mesh-ssbo';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
+import type { SkinTaskBinding } from '../record/skin-tasks';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
 import type { GpuDrivenStandardPbrFrameResources } from '../render-pipeline';
 import { PROBE_BLEND_RECORD_BYTE_SIZE } from '../scene/probe-blend-record';
@@ -62,20 +66,17 @@ export function resolveGpuDrivenMeshGroup(input: {
     GpuDrivenStandardPbrFrameResources,
     'clusterBindGroup' | 'clusterBindGroupForMesh' | 'clusterBindGroupForSkin'
   >;
-  readonly skinPaletteBinding?:
-    | { readonly buffer: Buffer; readonly bindingWindowBytes: number }
-    | undefined;
+  readonly skinTaskBinding?: SkinTaskBinding | undefined;
 }): BindGroup | undefined {
   if (!input.clustered) return input.meshBindGroup;
   if (input.deformation === 'skin') {
-    const palette = input.skinPaletteBinding;
-    return palette === undefined
+    const task = input.skinTaskBinding;
+    return task === undefined
       ? undefined
       : input.frameResources.clusterBindGroupForSkin?.(
           input.sceneTransformBuffer,
           input.sceneTransformBytes,
-          palette.buffer,
-          palette.bindingWindowBytes,
+          task,
         );
   }
   return input.frameResources.clusterBindGroupForMesh?.(
@@ -360,7 +361,6 @@ export class MaterialAbiRasterAdapter {
     | {
         readonly transformBuffer: Buffer;
         readonly transformBytes: number;
-        readonly paletteBuffer: Buffer | undefined;
         readonly bindGroup: BindGroup;
       }
     | undefined;
@@ -440,8 +440,6 @@ export class MaterialAbiRasterAdapter {
     private readonly artifact: MaterialShaderArtifact,
     private readonly deformation: 'rigid' | 'skin',
     private readonly pipelineFactory: MaterialPipelineFactory | undefined,
-    private paletteBuffer: Buffer | undefined,
-    private paletteBindingWindowBytes: number | undefined,
     dynamicInputBuffer: Buffer,
     dynamicInputFrameBuffer: Buffer,
     dynamicSharedFrame: SurfaceSharedFrameState,
@@ -476,8 +474,6 @@ export class MaterialAbiRasterAdapter {
     readonly artifact: MaterialShaderArtifact;
     readonly visibleBuffer: Buffer;
     readonly deformation?: 'rigid' | 'skin';
-    readonly paletteBuffer?: Buffer;
-    readonly paletteBindingWindowBytes?: number;
     readonly sharedSurfaceFrame?: SurfaceSharedFrameState;
     readonly probeBlendRecordBuffer?: Buffer;
     /** Renderer-owned factory for the selected artifact's actual PSO. */
@@ -582,18 +578,6 @@ export class MaterialAbiRasterAdapter {
           code: 'rhi-not-available',
           expected: `${deformation === 'skin' ? 'skinned ' : ''}material mesh bind-group layout`,
           hint: 'publish the exact mesh-array layout selected by the material receipt',
-        }),
-      );
-    }
-    if (
-      deformation === 'skin' &&
-      (input.paletteBuffer === undefined || input.paletteBindingWindowBytes === undefined)
-    ) {
-      return err(
-        new RhiError({
-          code: 'rhi-not-available',
-          expected: 'persistent skin palette buffer and binding window',
-          hint: 'keep the palette receipt and the GPU-driven skinned projection on one frame identity',
         }),
       );
     }
@@ -748,8 +732,6 @@ export class MaterialAbiRasterAdapter {
         input.artifact,
         deformation,
         input.pipelineFactory,
-        input.paletteBuffer,
-        input.paletteBindingWindowBytes,
         dynamicInputBuffer.value,
         dynamicFrameBuffer.value,
         dynamicSharedFrame,
@@ -758,35 +740,6 @@ export class MaterialAbiRasterAdapter {
         allocationLedger,
       ),
     );
-  }
-
-  ensurePaletteBuffer(
-    paletteBuffer: Buffer | undefined,
-    paletteBindingWindowBytes: number | undefined,
-  ): Result<void, RhiError> {
-    if (this.deformation !== 'skin') return ok(undefined);
-    if (paletteBuffer === undefined || paletteBindingWindowBytes === undefined) {
-      return err(
-        new RhiError({
-          code: 'rhi-not-available',
-          expected: 'persistent skin palette buffer and binding window',
-          hint: 'publish a storage-backed SkinPaletteReceipt before the GPU-driven skinned lane',
-        }),
-      );
-    }
-    this.paletteBuffer = paletteBuffer;
-    this.paletteBindingWindowBytes = paletteBindingWindowBytes;
-    return ok(undefined);
-  }
-
-  skinPaletteBinding():
-    | { readonly buffer: Buffer; readonly bindingWindowBytes: number }
-    | undefined {
-    return this.deformation === 'skin' &&
-      this.paletteBuffer !== undefined &&
-      this.paletteBindingWindowBytes !== undefined
-      ? { buffer: this.paletteBuffer, bindingWindowBytes: this.paletteBindingWindowBytes }
-      : undefined;
   }
 
   ensureVisibleBuffer(visibleBuffer: Buffer): Result<void, RhiError> {
@@ -1779,58 +1732,52 @@ export class MaterialAbiRasterAdapter {
     this.pipelines.clear();
   }
 
-  /**
-   * Scene-index group(2): binding 0 is the GPU Scene transform table (the
-   * vertex stage composes root * instance transforms from it), and skin
-   * batches add the palette arena. One group serves every batch of this
-   * adapter; it is rebuilt only when the scene or palette buffer changes.
-   */
-  sceneMeshBindGroup(transformBuffer: Buffer, transformBytes: number): Result<BindGroup, RhiError> {
+  private readonly skinMeshBindings = new WeakMap<object, unknown>();
+  private readonly skinMeshBindingCounts = { createBindGroup: 0, keys: [] as string[] };
+
+  /** Actual view task output is borrowed; neither a palette cache nor a pose revision. */
+  sceneMeshBindGroup(
+    transformBuffer: Buffer,
+    transformBytes: number,
+    task?: SkinTaskBinding,
+  ): Result<BindGroup, RhiError> {
+    if (this.deformation === 'skin') {
+      if (task === undefined)
+        return err(
+          new RhiError({
+            code: 'rhi-not-available',
+            expected: 'the selected view physical Skin task buffers',
+            hint: 'prepare Skin demand before binding this view for raster',
+          }),
+        );
+      this.skinMeshBindingCounts.keys.length = 0;
+      return getOrCreateFromChainResult(
+        this.skinMeshBindings,
+        [transformBuffer, task.data, task.auxiliary],
+        'skin-view',
+        () =>
+          this.device.createBindGroup({
+            label: 'standard-pbr-gpu-driven-skin-task-bg',
+            layout: this.meshLayout,
+            entries: createPbrSkinMeshBindGroupEntries(transformBuffer, transformBytes, task),
+          }),
+        this.skinMeshBindingCounts,
+      );
+    }
     const cached = this.sceneMeshBinding;
     if (
       cached !== undefined &&
       cached.transformBuffer === transformBuffer &&
-      cached.transformBytes === transformBytes &&
-      cached.paletteBuffer === this.paletteBuffer
-    ) {
+      cached.transformBytes === transformBytes
+    )
       return ok(cached.bindGroup);
-    }
-    const entries = [
-      { binding: 0, resource: bufferBinding(transformBuffer, 0, transformBytes) },
-      ...(this.deformation === 'skin' &&
-      this.paletteBuffer !== undefined &&
-      this.paletteBindingWindowBytes !== undefined
-        ? [
-            {
-              binding: 1,
-              // The scene-index palette lane is a global palette row. Bind the
-              // complete arena so rows beyond the legacy 255-joint window
-              // remain addressable; the shader performs the row selection.
-              resource: bufferBinding(this.paletteBuffer),
-            },
-            {
-              binding: 2,
-              // The dedicated GPU-driven skin layout keeps the current /
-              // previous palette pair used by the direct skin layout. The
-              // scene-index shader currently reads the current arena, but
-              // the shared layout still requires a complete binding shape.
-              resource: bufferBinding(this.paletteBuffer),
-            },
-          ]
-        : []),
-    ];
     const bindGroup = this.device.createBindGroup({
       label: 'standard-pbr-gpu-driven-scene-mesh-bg',
       layout: this.meshLayout,
-      entries,
+      entries: [{ binding: 0, resource: bufferBinding(transformBuffer, 0, transformBytes) }],
     });
     if (!bindGroup.ok) return bindGroup;
-    this.sceneMeshBinding = {
-      transformBuffer,
-      transformBytes,
-      paletteBuffer: this.paletteBuffer,
-      bindGroup: bindGroup.value,
-    };
+    this.sceneMeshBinding = { transformBuffer, transformBytes, bindGroup: bindGroup.value };
     return ok(bindGroup.value);
   }
 

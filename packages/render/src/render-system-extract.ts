@@ -158,7 +158,12 @@ import type {
   ParamSchemaEntry,
   TextureAsset,
 } from '@forgeax/engine-types';
-import { derive, materialValuesToLinearRuntime, toShared } from '@forgeax/engine-types';
+import {
+  derive,
+  materialProgramUsesSkin,
+  materialValuesToLinearRuntime,
+  toShared,
+} from '@forgeax/engine-types';
 import { buildCubeCameraFaceViews } from './capture/cube-views';
 import {
   AmbientOcclusion,
@@ -235,8 +240,6 @@ import type { ReflectionProbeFact } from './reflection/projection';
 import type { CameraSnapshot, CubeCameraSnapshot, PhysicalViewExtent } from './render-contract';
 import { getActiveCamera, selectActiveCameraIndex } from './systems/active-camera';
 import { selectPasses } from './systems/pass-selector';
-import type { SkinPaletteAllocator } from './systems/skin-palette-allocator';
-import type { SkinPaletteReceipt } from './systems/skin-palette-types';
 import type { RenderTarget } from './targets/contracts';
 import type { MaterialTextureSource } from './textures/canvas-texture';
 import { isRenderTextureSourceToken } from './textures/source-token';
@@ -878,24 +881,10 @@ export interface RenderableSnapshot {
    *   - `'sprite-instances-count-mismatch'`
    */
   readonly spriteInstances?: SpriteInstancesSnapshot;
-  /**
-   * feat-20260523-skin-skeleton-animation M2 / T-21: when the entity carries
-   * a `Skin` component the extract stage populates this field with the
-   * skin palette slice metadata. The record stage uses this to route the
-   * draw to `forgeax::pbr-skin` pipeline + set the palette dynamic offset.
-   * Absent (`undefined`) means the entity is not skinned.
-   */
-  readonly skin?: SkinPaletteReceipt;
-  /** Retained CPU pose for palette assignment and replacement-device recovery. */
-  readonly skinPose?: import('./systems/skin-palette-types').SkinPose;
-  /** Joint identities consumed by the retained scene dependency index. */
-  readonly skinJointEntities?: readonly number[];
-  /**
-   * Present when the entity carries `CapsuleShadow`: world-space capsules for
-   * the directional capsule lane, or the entity-level reason it keeps
-   * rasterizing its mesh into the cascades instead.
-   */
-  readonly capsuleShadow?: import('./capsule-shadow/world-capsules').CapsuleShadowSnapshot;
+  /** Static author membership. Dynamic joint facts belong to the fixed shared Skin root. */
+  readonly skinBinding?: import('./scene/skin-scene-inputs').SkinBindingInput;
+  /** Author request evaluated only by actual capsule-shadow demand. */
+  readonly capsuleShadowRequested?: true;
   /** Present when the entity declares `Mobility static`: shadow caches skip observation. */
   readonly mobility?: 'static';
   /** Present when `ShadowParticipation.receive` is false: surface skips shadow sampling. */
@@ -936,7 +925,6 @@ export interface RenderableTemporalSnapshot {
   readonly reactiveReasons: readonly RenderableReactiveReason[];
   readonly previousTransform: TransformSnapshot;
   readonly previousInstances: InstancesSnapshot | undefined;
-  readonly previousSkin: SkinPaletteReceipt | undefined;
   readonly previousMorphWeights: Float32Array | undefined;
 }
 
@@ -1040,6 +1028,8 @@ export interface TransformSnapshot {
  * {@link materialShaderId} is the single source of truth for material dispatch.
  */
 export interface MaterialSnapshot {
+  /** Common position proof of every actual selected Pass of this accepted material. */
+  readonly positionBounds?: MaterialProgramAbi['positionBounds'];
   /** Inputs of this shared preparation; publications preserve the selected resource identity. */
   readonly materialContext?: Pick<MaterialSnapshotContext, 'geometry' | 'vertexColor'>;
   /** Reflected entry contracts of the exact accepted programs, shared with their registry. */
@@ -2528,7 +2518,29 @@ export function prepareMaterialSnapshot({
   const normalTextureHandle = textureHandles.get('normalTexture');
 
   const surfaceModel = materialSurfaceModel(allPasses, resolved.surface?.model);
+  const materialEntryPoints: Record<
+    string,
+    readonly import('@forgeax/engine-types').ShaderEntryPointReads[]
+  > = {};
+  let positionBounds: MaterialProgramAbi['positionBounds'] =
+    allPasses.length === 0 ? undefined : 'standard-input';
+  for (const pass of allPasses) {
+    const key =
+      materialProgramKeys?.[pass.name] ?? runtimeMaterialShaderId(pass.program.module, pass.name);
+    const shader =
+      key === undefined ? undefined : assetsRef.shaderRegistry.findMaterialArtifact(key);
+    if (
+      shader?.ok !== true ||
+      shader.value.receipt?.positionBounds !== 'standard-input' ||
+      (geometry === 'skinned' &&
+        (shader.value.receipt === undefined || !materialProgramUsesSkin(shader.value.receipt)))
+    )
+      positionBounds = undefined;
+    const reads = shader?.ok ? shader.value.program.entryPoints : undefined;
+    if (reads !== undefined) materialEntryPoints[pass.name] = reads;
+  }
   const snapshot: MaterialSnapshot = {
+    ...(positionBounds === undefined ? {} : { positionBounds }),
     materialContext: { geometry, vertexColor: vertexColorAvailable },
     passes: allPasses,
     ...valueSnapshot,
@@ -2541,17 +2553,7 @@ export function prepareMaterialSnapshot({
     ),
     materialShaderId: firstPassShader,
     materialProgramKeys,
-    materialEntryPoints: Object.fromEntries(
-      allPasses.flatMap((pass) => {
-        const key =
-          materialProgramKeys?.[pass.name] ??
-          runtimeMaterialShaderId(pass.program.module, pass.name);
-        if (key === undefined) return [];
-        const shader = assetsRef.shaderRegistry.findMaterialArtifact(key);
-        const reads = shader.ok ? shader.value.program.entryPoints : undefined;
-        return reads === undefined ? [] : [[pass.name, reads]];
-      }),
-    ),
+    materialEntryPoints,
     materialPublication: materialPublicationForMaterial(
       programOwner,
       assetsRef,
@@ -2651,19 +2653,6 @@ export function resolveMaterialSnapshot(
     materialSnapshotCache?.set(handleRaw, cacheEntry);
   }
   return cacheEntry?.snapshot ?? snapshot;
-}
-
-/**
- * feat-20260612-skin-palette-per-frame-upload M2 / m2-6: narrow per-frame
- * pipeline surface consumed by `extractFrame`. Today only `skinPaletteAllocator`
- * crosses the seam (the allocator owns the per-frame palette buffer + cursor;
- * extract calls `resetForFrame` at frame entry then `allocateSlice` +
- * `writeJointPalette` per skinned entity). Kept narrow on purpose — extract
- * does NOT see the rest of `PipelineState` to avoid a circular import via
- * `render-system.ts`.
- */
-export interface ExtractPipelineSurface {
-  readonly skinPaletteAllocator: SkinPaletteAllocator | null;
 }
 
 /**
@@ -3105,7 +3094,6 @@ export interface ExtractFramesOwner {
 export interface PreparedExtractContext {
   readonly materialContext?: MaterialCookRasterContext | undefined;
   readonly assets: AssetRegistry | null | undefined;
-  readonly pipelineState: ExtractPipelineSurface | null | undefined;
   readonly materialSnapshotContexts: MaterialSnapshotContexts;
   /** `undefined` keeps direct extractFrame's local Fog semantics; `null` means
    * the frame owner already selected that no Fog is present for this world. */
@@ -3572,7 +3560,6 @@ export function prepareExtractContext(
   options: {
     readonly materialContext?: MaterialCookRasterContext;
     readonly assets?: AssetRegistry | null;
-    readonly pipelineState?: ExtractPipelineSurface | null;
     readonly materialSnapshotContexts?: MaterialSnapshotContexts;
     readonly resourceOwnerFog?: FogFrame | null;
     readonly cull?: 'self' | 'none' | 'external';
@@ -3605,7 +3592,6 @@ export function prepareExtractContext(
   return {
     materialContext: options.materialContext,
     assets: options.assets,
-    pipelineState: options.pipelineState,
     materialSnapshotContexts: options.materialSnapshotContexts ?? new Map(),
     resourceOwnerFog: options.resourceOwnerFog,
     cull: options.cull ?? 'self',
@@ -3832,6 +3818,7 @@ export function extractVolumeSnapshot(
 
 /** Immutable author-independent default; extraction retains its producer identity. */
 const DEFAULT_MATERIAL_SNAPSHOT: MaterialSnapshot = Object.freeze({
+  positionBounds: 'standard-input',
   passes: Object.freeze([
     {
       name: 'shadow-caster',

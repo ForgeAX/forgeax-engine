@@ -96,7 +96,7 @@ it.each([
         if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
         else if (request === 'full') extractions += 128;
-        return extractFrames([world], owner, assets, undefined, caches, {
+        return extractFrames([world], owner, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,

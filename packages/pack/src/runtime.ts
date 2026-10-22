@@ -1,3 +1,9 @@
+export {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  type AnimationClipSampleWindow,
+  decodeAnimationClipSamples,
+  encodeAnimationClipSamples,
+} from './animation-clip-samples.js';
 export { validateArtifactPath } from './artifact-path.js';
 export { decodePackBlob, type PackBlob, validatePackBlob } from './blob.js';
 export { projectPackageCatalog } from './catalog-projection.js';

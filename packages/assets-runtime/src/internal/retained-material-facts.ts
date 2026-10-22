@@ -1,7 +1,10 @@
 import { isMaterialProgramAbi, type MaterialProgramAbi } from '@forgeax/engine-types';
-
-const retainedPayloads = new WeakSet<object>();
-const retainedAbis = new WeakSet<object>();
+import {
+  isRetainedMaterialPayload,
+  isSharedMaterialAbi,
+  markRetainedMaterialPayload,
+  shareFrozenMaterialAbi,
+} from './shared-immutable.js';
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -68,14 +71,14 @@ export function retainJsonMaterialFacts(assets: readonly unknown[]): void {
           freezeJson(abi);
           retained = abi;
           abis.set(key, retained);
-          retainedAbis.add(retained);
+          shareFrozenMaterialAbi(retained);
         }
         selection.abi = retained;
       }
     }
     freezeJson(cooked);
     Object.defineProperty(payload, 'cooked', { writable: false, configurable: false });
-    retainedPayloads.add(payload);
+    markRetainedMaterialPayload(payload);
   }
 }
 
@@ -84,7 +87,7 @@ export function cloneRetainedPackPayload(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
   const cloned = structuredClone(payload);
-  if (retainedPayloads.has(payload)) {
+  if (isRetainedMaterialPayload(payload)) {
     Object.defineProperty(cloned, 'cooked', {
       value: payload.cooked,
       writable: false,
@@ -96,5 +99,5 @@ export function cloneRetainedPackPayload(
 }
 
 export function isRetainedMaterialAbi(value: unknown): value is MaterialProgramAbi {
-  return value !== null && typeof value === 'object' && retainedAbis.has(value);
+  return value !== null && typeof value === 'object' && isSharedMaterialAbi(value);
 }

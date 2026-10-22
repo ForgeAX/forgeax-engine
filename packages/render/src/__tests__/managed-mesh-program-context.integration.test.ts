@@ -34,9 +34,17 @@ async function material(assets: AssetRegistry, id: number) {
     [false, true].map((color) => {
       const bytes = new TextEncoder().encode(`program ${id} ${geometry} ${color}`);
       const digest = createMaterialArtifactDigest(bytes);
-      const inputs: MaterialProgramAbi['vertexInputs'] = color
-        ? [{ semantic: 'color', location: 13, format: 'float32x4' }]
-        : [];
+      const inputs: MaterialProgramAbi['vertexInputs'] = [
+        ...(color
+          ? [{ semantic: 'color' as const, location: 13, format: 'float32x4' as const }]
+          : []),
+        ...(geometry === 'skinned'
+          ? [
+              { semantic: 'skinIndex' as const, location: 4, format: 'uint32x4' as const },
+              { semantic: 'skinWeight' as const, location: 5, format: 'float32x4' as const },
+            ]
+          : []),
+      ];
       const abi: MaterialProgramAbi = {
         directEntry: 'vs_main',
         sceneIndexEntry: 'vs_scene_index',
@@ -48,9 +56,6 @@ async function material(assets: AssetRegistry, id: number) {
         reflection: { layoutIdentity: 'layout', resourceSlots: [], vertexInputs: inputs },
         receiptIdentity: `${geometry}:${color}`,
         generation: 1,
-        ...(geometry === 'skinned'
-          ? { skinPaletteAddress: { group: 2, binding: 0, stride: 64 } }
-          : {}),
       };
       return {
         specializationKey: `program/${digest}`,
@@ -173,7 +178,7 @@ it.each([
         if (request === 'full') extracted += 128;
         else if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) extracted += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           materialContext: MATERIAL_CONTEXT,
           cull: 'none',
           renderables: request,
@@ -184,7 +189,7 @@ it.each([
   };
   const facts = (frame: ReturnType<typeof draw>) =>
     frame.renderables.map((row) => ({
-      skin: row.skinPose !== undefined || row.skin !== undefined,
+      skin: row.skinBinding !== undefined,
       override: row.materialOverrides?.[0] !== undefined,
       program: row.material.snapshot.materialPublication?.programs[0],
     }));
@@ -292,7 +297,7 @@ it.each([
       { cameraOwner: 0, resourceOwner: 0 },
       assets,
       (request) =>
-        extractFrames([world], 0, assets, undefined, caches, {
+        extractFrames([world], 0, assets, caches, {
           materialContext: MATERIAL_CONTEXT,
           cull: 'none',
           renderables: request,

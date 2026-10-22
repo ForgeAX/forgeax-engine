@@ -149,8 +149,9 @@ export function createStandardPbrArtifactReceipt(
       : []),
     ...(vertexColorAvailable ? [{ semantic: 'color', location: 13, format: 'float32x4' }] : []),
   ];
-  const layoutIdentity = `standard-pbr/${STANDARD_PIPELINE_DERIVED.layoutIdentity}/address-16${vertexColorAvailable ? '/vertex-color' : ''}`;
+  const layoutIdentity = `standard-pbr/${STANDARD_PIPELINE_DERIVED.layoutIdentity}/address-16/vertex-contract-5${vertexColorAvailable ? '/vertex-color' : ''}`;
   return {
+    positionBounds: 'standard-input',
     directEntry: 'vs_main',
     sceneIndexEntry: 'vs_scene_index',
     materialRow: {
@@ -162,29 +163,24 @@ export function createStandardPbrArtifactReceipt(
     uvSets,
     vertexInputs,
     alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' },
-    ...(skinned ? { skinPaletteAddress: { group: 2, binding: 1, stride: 64 } } : {}),
     reflection: {
       layoutIdentity,
       resourceSlots,
       vertexInputs,
     },
     receiptIdentity: layoutIdentity,
-    generation: 3,
+    generation: 5,
   };
 }
 
 export interface MaterialProgramArtifactReceiptInput {
+  readonly positionBounds?: MaterialProgramAbi['positionBounds'];
   readonly schema: readonly ParamSchemaEntry[];
   readonly directEntry: string;
   readonly sceneIndexEntry?: string;
   readonly vertexInputs: readonly MaterialProgramVertexInput[];
   readonly layoutIdentity?: string;
   readonly alphaMask?: { readonly cutoff: string; readonly source: string };
-  readonly skinPaletteAddress?: {
-    readonly group: number;
-    readonly binding: number;
-    readonly stride: number;
-  };
   /** Storage row page used by the renderer-owned GPU Scene material table. */
   readonly rowStride?: number;
   /** Optional producer-owned Surface model projection. */
@@ -237,13 +233,14 @@ export function createMaterialProgramArtifactReceipt(
     .join('|');
   const layoutIdentity =
     input.layoutIdentity ??
-    `material-program/${derived.layoutIdentity}/row-${rowStride}${input.sceneIndexEntry === undefined ? '' : '/address-16'}/vertex-${vertexIdentity}`;
+    `material-program/${derived.layoutIdentity}/row-${rowStride}${input.sceneIndexEntry === undefined ? '' : '/address-16'}/vertex-${vertexIdentity}${input.positionBounds === undefined ? '' : '/position-standard-input'}`;
   // Coverage is authored by the selected Pass. The Standard cooker supplies
   // its active cutoff explicitly; custom or statically opaque programs retain
   // an empty cutoff interface unless their producer provides one. Inferring it
   // here would make opaque shadow lanes read an unused or absent value.
   const alphaMask = input.alphaMask ?? { cutoff: '', source: '' };
   return {
+    ...(input.positionBounds === undefined ? {} : { positionBounds: input.positionBounds }),
     directEntry: input.directEntry,
     ...(input.sceneIndexEntry === undefined ? {} : { sceneIndexEntry: input.sceneIndexEntry }),
     materialRow: {
@@ -257,16 +254,13 @@ export function createMaterialProgramArtifactReceipt(
     uvSets,
     vertexInputs: [...input.vertexInputs],
     alphaMask,
-    ...(input.skinPaletteAddress === undefined
-      ? {}
-      : { skinPaletteAddress: input.skinPaletteAddress }),
     reflection: {
       layoutIdentity,
       resourceSlots,
       vertexInputs: [...input.vertexInputs],
     },
     receiptIdentity: layoutIdentity,
-    generation: 3,
+    generation: 5,
     ...(input.surface === undefined ? {} : { surface: input.surface }),
   };
 }

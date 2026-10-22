@@ -1,4 +1,5 @@
 import { atmosphereViewLayoutEntries } from './environment/bindings';
+import type { SkinTaskBinding } from './record/skin-tasks';
 // pbr-pipeline.ts -- PBR / unlit pipeline-layout factories (M4 round-4 D-5).
 //
 // Anchors:
@@ -959,9 +960,9 @@ export function buildPbrSkinLayouts(
   caps: PbrCaps,
   pbr: PbrPipelineLayoutBundle,
 ): PbrPipelineLayoutBundle {
-  // 3-entry mesh-array BGL: binding 0 meshes + binding 1 current palette
-  // + binding 2 previous palette. All use dynamic offsets for the same
-  // per-entity window contract.
+  // 3-entry mesh-array BGL: binding 0 meshes, then the actual Skin task.
+  // Storage reads one shared task output (binding 1) through a per-draw
+  // address window (binding 2); uniform reads per-draw current/previous windows.
   const skinMeshArrayBglRes = device.createBindGroupLayout(
     buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
       kind: 'pbr-skin-mesh-array',
@@ -1094,38 +1095,40 @@ export function buildGpuDrivenPbrSkinPipelineLayout(
   return result.value;
 }
 
-/** Project the canonical group(2) resources for a PBR skin draw. */
+/** Canonical paired task resources; offsets remain the actual draw's facts. */
 export function createPbrSkinMeshBindGroupEntries(
   meshBuffer: Buffer,
   meshSize: number,
-  paletteBuffer: Buffer,
-  paletteWindowBytes: number,
+  task: SkinTaskBinding,
 ): BindGroupEntry[] {
   return [
     {
       binding: 0,
       resource: { kind: 'buffer', value: { buffer: meshBuffer, offset: 0, size: meshSize } },
     },
-    ...[1, 2].map((binding) => ({
-      binding,
+    {
+      binding: 1,
+      resource: { kind: 'buffer', value: { buffer: task.data, offset: 0, size: task.dataSize } },
+    },
+    {
+      binding: 2,
       resource: {
-        kind: 'buffer' as const,
-        value: {
-          buffer: paletteBuffer,
-          offset: 0,
-          size: paletteWindowBytes,
-        },
+        kind: 'buffer',
+        value: { buffer: task.auxiliary, offset: 0, size: task.auxiliarySize },
       },
-    })),
+    },
   ];
 }
 
-/** Project all dynamic offsets for the canonical PBR skin group(2) shape. */
+/** Storage binds the full output; only the task address uniform is dynamic. */
 export function pbrSkinMeshDynamicOffsets(
   meshOffset: number,
-  paletteOffset: number,
-): readonly [number, number, number] {
-  return [meshOffset, paletteOffset, paletteOffset];
+  task: SkinTaskBinding,
+  storageBuffer: boolean,
+): readonly number[] {
+  return storageBuffer
+    ? [meshOffset, task.auxiliaryOffset]
+    : [meshOffset, task.dataOffset, task.auxiliaryOffset];
 }
 
 // ─── Unlit material BGL factory ─────────────────────────────────────────────
@@ -1267,7 +1270,8 @@ export const SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET = '';
  *    - `'pbr-instances'` — 2 entries: per-instance SSBO plus the compact
  *      visible-item index stream (the second entry is used only by the
  *      scene-index vertex entry and shares the frame's instance bind group)
- *    - `'pbr-skin-mesh-array'` — 3 entries: meshes + current/previous palette
+ *    - `'pbr-skin-mesh-array'` — 3 entries: meshes + Skin task output/address
+ *      (storage) or current/previous task windows (uniform)
  * 3. Attachment-driven (fullscreen post-process):
  *    - `'fullscreen-post'` — 2 entries: input texture + sampler. The texture
  *      `sampleType` is derived from `spec.attachments` (plan §R3 fix):
@@ -1405,12 +1409,12 @@ export function createHdrpSkinBindGroupLayoutDescriptor(
       {
         binding: 1,
         visibility: GPU_SHADER_STAGE_VERTEX,
-        buffer: { type: paletteType, hasDynamicOffset: true },
+        buffer: { type: paletteType, hasDynamicOffset: !storageBuffer },
       },
       {
         binding: 2,
         visibility: GPU_SHADER_STAGE_VERTEX,
-        buffer: { type: paletteType, hasDynamicOffset: true },
+        buffer: { type: 'uniform', hasDynamicOffset: true },
       },
       ...baseEntries.slice(1),
     ],
@@ -1678,12 +1682,12 @@ export function buildBindGroupLayoutDescriptor(
           {
             binding: 1,
             visibility: GPU_SHADER_STAGE_VERTEX,
-            buffer: { type: meshBufType, hasDynamicOffset: true },
+            buffer: { type: meshBufType, hasDynamicOffset: !caps.storageBuffer },
           },
           {
             binding: 2,
             visibility: GPU_SHADER_STAGE_VERTEX,
-            buffer: { type: meshBufType, hasDynamicOffset: true },
+            buffer: { type: 'uniform', hasDynamicOffset: true },
           },
         ],
       };

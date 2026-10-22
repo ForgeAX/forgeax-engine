@@ -304,7 +304,7 @@ numeric writes leave projections current. Array, buffer and managed-field writes
 remain explicit publications: a fixed-array view may already have been edited
 through an alias before `set` is called.
 
-State consumers use `createStateProjection` from the projection subpath. World
+State consumers use `createStateProjection` from the projection subpath. Its current candidate exposes `hasStructuralChange(index)` over the existing per-index evidence, so consumers can refresh that identity after component removal without treating a global structural change as a change to every row. Read this predicate before accepting or superseding the candidate; those actions expire it. World
 publishes writes into mutable max-epoch radix indices over stable entity slots.
 A consumer reads only changed index paths and retains its accepted membership
 and cursor. Component indices own the only changed epoch for each live component identity;

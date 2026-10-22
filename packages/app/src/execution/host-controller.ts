@@ -168,6 +168,9 @@ export async function createWorkerExecutionApp(
       ...(options.appOptions.dynamicGeometryMeshBudgetBytes === undefined
         ? {}
         : { dynamicGeometryMeshBudgetBytes: options.appOptions.dynamicGeometryMeshBudgetBytes }),
+      ...(options.appOptions.assetBudgetBytes === undefined
+        ? {}
+        : { assetBudgetBytes: options.appOptions.assetBudgetBytes }),
       timeoutMs: startupTimeoutMs,
       workers: options.selection,
     });

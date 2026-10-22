@@ -68,7 +68,7 @@ describe('managed assets in persistent rendering', () => {
           if (typeof request !== 'string' && request.kind === 'partial')
             for (const entities of request.entitiesByWorld)
               requestedEntities += entities?.size ?? 0;
-          return extractFrames([world], owner, assets, undefined, caches, {
+          return extractFrames([world], owner, assets, caches, {
             cull: 'none',
             retainHidden: true,
             renderables: request,
@@ -213,14 +213,11 @@ it('fences transitive resource edits and retires dependencies on rebind and remo
             (total, rows) => total + (rows?.size ?? 0),
             0,
           );
-        return extractFrames(
-          [world],
-          owner,
-          assets,
-          undefined,
-          scene.materialSnapshotCacheStore(),
-          { cull: 'none', retainHidden: true, renderables: request },
-        );
+        return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
       },
       [lease],
     );

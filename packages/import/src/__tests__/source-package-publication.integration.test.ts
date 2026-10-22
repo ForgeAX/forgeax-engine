@@ -495,7 +495,7 @@ describe('source package publication concurrency', () => {
   ] as const)('rejects $label before advancing the DDC head', async ({ pack, artifacts, body }) => {
     for (const wire of [false, true]) {
       const publishedPack = wire
-        ? { schemaVersion: 'pack-material-programs/1', pack, programs: [] }
+        ? { schemaVersion: 'pack-material-programs/2', pack, programs: [], abis: [] }
         : pack;
       const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
       roots.push(root);

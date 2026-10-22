@@ -638,6 +638,9 @@ async function receive(message: RenderWorkerInput): Promise<void> {
           ...(message.dynamicGeometryMeshBudgetBytes === undefined
             ? {}
             : { dynamicGeometryMeshBudgetBytes: message.dynamicGeometryMeshBudgetBytes }),
+          ...(message.assetBudgetBytes === undefined
+            ? {}
+            : { assetBudgetBytes: message.assetBudgetBytes }),
           ...(prepared.value.features === undefined ? {} : { features: prepared.value.features }),
           ...(prepared.value.ssrIdentity === undefined
             ? {}

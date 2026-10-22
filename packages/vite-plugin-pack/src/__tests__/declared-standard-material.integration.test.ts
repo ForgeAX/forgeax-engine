@@ -357,8 +357,8 @@ it('publishes the declared Unlit shorthand beside an explicit custom animation s
         expect(shadow?.abi?.vertexInputs.some((input) => input.semantic === 'skinIndex')).toBe(
           geometry === 'skinned',
         );
-        expect(shadow?.abi?.skinPaletteAddress).toEqual(
-          geometry === 'skinned' ? { group: 2, binding: 1, stride: 64 } : undefined,
+        expect(shadow?.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
+          geometry === 'skinned',
         );
       }
     } else {

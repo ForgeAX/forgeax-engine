@@ -60,6 +60,7 @@ import { materialMatchesPass } from './material-pass-selection';
 import { flushMeshDrawUploads } from './mesh-ssbo';
 import { gpuDrivenMeshesForFrame, querySceneExecution } from './resident-meshes';
 import { prepareScenePasses, scenePassRequests } from './scene-pass-work';
+import { shadowPlanes, shadowViewPlanesByView } from './shadow-culling';
 import { prepareShadowMaterialPipelines } from './shadow-pass';
 import { shadowUpdatePolicy } from './shadow-update-policy';
 import {
@@ -72,7 +73,7 @@ import { PLANAR_REFLECTION_UNIFORM_OFFSET } from './view-ubo';
 
 import { readMaterialContent } from '@forgeax/engine-assets-runtime/internal';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
-import { frustum, mat4, vec3 } from '@forgeax/engine-math';
+import { mat4, vec3 } from '@forgeax/engine-math';
 import {
   type CurrentFrameObservationLease,
   createCurrentFrameObservationLease,
@@ -198,6 +199,7 @@ import {
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from './render-context';
+import { mapSsrHistoryResetReason, reportSsrHistoryFailure } from './ssr-history-frame';
 import {
   emptyVolumetricFogParams,
   prepareVolumetricFogFrame,
@@ -324,7 +326,6 @@ import {
   motionBlurTemporalDemand,
 } from '../features/motion-blur/motion-blur-params';
 import { projectVisibleSurfaces } from '../raytracing/visible-surface';
-import type { TemporalFrameStage } from '../temporal/frame-coordinator';
 import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
 import { createTemporalView, resolveTemporalReset, type TemporalView } from '../temporal/view';
 import { inspectVolumetricFog } from '../volume/inspection';
@@ -459,10 +460,6 @@ function prepareCubeCapture(
 
 const EMPTY_ENTITY_KEYS: ReadonlySet<number> = new Set<number>();
 
-function shadowPlanes(matrix: Float32Array): Float32Array {
-  return frustum.fromViewProjection(frustum.create(), matrix as never);
-}
-
 /** Unknown graphs retain all four padded matrix slots, including recovery/LKG. */
 export function directionalShadowPreparationLimit(
   cascadeCount: number | undefined,
@@ -484,35 +481,6 @@ export function directionalShadowPreparationLimit(
     return Math.max(cascadeCount, count, old);
   }
   return Math.max(cascadeCount, count);
-}
-
-function shadowViewPlanesByView(
-  lights: ExtractedLights,
-  directionalLimit?: number,
-): ReadonlyMap<string, Float32Array> {
-  const views = new Map<string, Float32Array>();
-  for (const [index, matrix] of (lights.lightViewProj ?? []).entries()) {
-    if (directionalLimit !== undefined && index >= directionalLimit) continue;
-    views.set(shadowViewIdentityKey({ kind: 'directional', index }), shadowPlanes(matrix));
-  }
-  for (const [index, point] of lights.pointShadow.entries()) {
-    for (let face = 0; face < 6; face += 1) {
-      views.set(
-        shadowViewIdentityKey({ kind: 'point', index, face }),
-        shadowPlanes(point.shadowMatrices.subarray(face * 16, face * 16 + 16)),
-      );
-    }
-  }
-  let spotIndex = 0;
-  for (const spot of lights.spot) {
-    if (spot.lightViewProj === undefined) continue;
-    views.set(
-      shadowViewIdentityKey({ kind: 'spot', index: spotIndex }),
-      shadowPlanes(spot.lightViewProj),
-    );
-    spotIndex += 1;
-  }
-  return views;
 }
 
 function createReflectionFallbackReadbackRequest(
@@ -966,56 +934,6 @@ function stageAcceptedVolumetricFogFrame(
   return { ...accepted, paramsBuffer };
 }
 
-function ssrRuntimeError(
-  cause: unknown,
-): RhiError | { code: string; message: string; name?: string } {
-  if (cause instanceof RhiError) return cause;
-  if (cause instanceof Error)
-    return { code: 'ssr-history-failure', message: cause.message, name: cause.name };
-  return { code: 'ssr-history-failure', message: String(cause) };
-}
-
-function reportSsrHistoryFailure(
-  internals: RenderSystemInternals,
-  stage: TemporalFrameStage,
-  cause: unknown,
-): void {
-  internals.errorRegistry.fire(
-    new RhiError({
-      code: 'webgpu-runtime-error',
-      expected: `SSR history ${stage} succeeds before queue submission`,
-      hint: 'inspect the SSR history owner failure and retry the next frame',
-      detail: { error: ssrRuntimeError(cause) },
-    }),
-  );
-}
-
-function mapSsrHistoryResetReason(
-  reason: TemporalView['resetReason'],
-): import('../ssr/history').SsrHistoryResetReason | undefined {
-  switch (reason) {
-    case 'first-frame':
-      return 'first-enable';
-    case 'resize':
-      return 'resize';
-    case 'camera-cut':
-    case 'view-switch':
-      return 'camera-cut';
-    case 'history-version':
-      return 'history-version';
-    case 'environment-change':
-    case 'fog-change':
-      return 'reflection-generation';
-    case 'time-discontinuity':
-      return 'camera-cut';
-    case 'device-recover':
-      return 'device-recovery';
-    case 'submit-failure':
-    case undefined:
-      return undefined;
-  }
-}
-
 interface FrameClockSample {
   readonly deltaSeconds: number;
   readonly elapsedSeconds: number | undefined;
@@ -1442,6 +1360,8 @@ export function* prepareFrameRecording(
   gpuDriven?: {
     readonly owner: GpuDrivenProduction;
     readonly scene: PersistentGpuDrivenState | undefined;
+    /** Physical queue acceptance, before publication/finalization observers. */
+    readonly onSubmittedWork?: (completed: Promise<void>) => void;
     readonly onRasterLane: (owned: GpuRasterOwnership | undefined) => void;
     readonly activeEntityKeys?: ReadonlySet<number>;
     readonly activeEntityRevision?: number;
@@ -2152,10 +2072,6 @@ export function* prepareFrameRecording(
         }
       acceptedMaterialArtifacts = materialArtifacts;
       acceptedShadowMaterialArtifacts = shadowMaterialArtifacts;
-      const paletteUploadBytes = renderables.reduce(
-        (total, source) => total + (source.skin?.uploadBytes ?? 0),
-        0,
-      );
       const gpuProbeBlendRequested = [...materialArtifacts.values()].some((artifact) =>
         requiresProbeBlendRecord(artifact),
       );
@@ -2224,12 +2140,7 @@ export function* prepareFrameRecording(
               : { surfaceDynamicInput: frameGpuDriven.surfaceDynamicInput }),
             ...(frameGpuDriven.scene?.structureMetrics === undefined
               ? {}
-              : {
-                  structureMetrics: {
-                    ...frameGpuDriven.scene.structureMetrics,
-                    paletteUploadBytes,
-                  },
-                }),
+              : { structureMetrics: frameGpuDriven.scene.structureMetrics }),
             ...(firstArtifact === undefined ? {} : { materialArtifact: firstArtifact }),
             ...(firstSkinArtifact === undefined ? {} : { materialSkinArtifact: firstSkinArtifact }),
             ...(materialArtifacts.size === 0 ? {} : { materialArtifacts }),
@@ -3734,7 +3645,10 @@ export function* prepareFrameRecording(
           : {
               isCurrent: () => nativeScene.retained?.isSourceCurrent() === true,
             }),
-        onSubmittedWork: (done: Promise<void>) => preparedGpuDriven?._trackSubmittedWork(done),
+        onSubmittedWork: (done: Promise<void>) => {
+          gpuDriven?.onSubmittedWork?.(done);
+          preparedGpuDriven?._trackSubmittedWork(done);
+        },
         reportError: (error: import('@forgeax/engine-rhi').RhiError) =>
           internals.errorRegistry.fire(error),
       };
@@ -3781,7 +3695,9 @@ export function* prepareFrameRecording(
       frameState.compiledFrameGraph?.graph === preflightGraph
         ? frameState.graphGeneration
         : undefined;
+    // Skin history/task buffers track accepted submissions independently of other owners.
     const frameHooks =
+      gpuDriven?.onSubmittedWork === undefined &&
       preparedGpuDriven === undefined &&
       ssrCandidate === undefined &&
       rayDiffuse === undefined &&
@@ -3817,6 +3733,7 @@ export function* prepareFrameRecording(
                   : -1,
             },
             onSubmittedWork: (done: Promise<void>) => {
+              gpuDriven?.onSubmittedWork?.(done);
               preparedGpuDriven?._trackSubmittedWork(done);
               pointsLinesOwner?.track(done);
               probePlacement?.track(done);
@@ -4030,6 +3947,7 @@ export function* prepareFrameRecording(
           capsuleShadowDirectional,
           lights.directionalShadowQuality !== undefined,
           frameState.capsuleShadowSubmission,
+          internals.demandCapsuleShadow ?? (() => undefined),
         ),
       };
     }

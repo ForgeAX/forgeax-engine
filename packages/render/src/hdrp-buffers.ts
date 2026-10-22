@@ -1,3 +1,4 @@
+import type { SkinTaskBinding } from './record/skin-tasks';
 // Renderer-owned clustered light resources. One immutable bundle keeps the
 // producer uploads, graph imports, draw bindings and queue-fenced retirement
 // on the same device generation. Storage-capable devices retain the native
@@ -577,14 +578,13 @@ export function createHdrpUnifiedBindGroup(
   return result.value;
 }
 
-/** Build the clustered skin group(2) bind group with one shared palette window. */
+/** Bind the actual paired Skin task with the existing clustered lighting. */
 export function createHdrpSkinUnifiedBindGroup(
   runtime: RenderSystemRuntime,
   hdrpBuffers: HdrpBuffers,
   layout: BindGroupLayout,
   meshStorageBuffer: Buffer,
-  paletteBuffer: Buffer,
-  paletteBindingWindowBytes: number,
+  task: SkinTaskBinding,
   ssaoOptions: SsaoBindOptions = { enabled: false },
   meshBindingBytes = runtime.device.caps.storageBuffer
     ? MESH_PER_ENTITY_STRIDE
@@ -596,12 +596,7 @@ export function createHdrpSkinUnifiedBindGroup(
     label: 'hdrp-skin-unified-bg-group2',
     layout,
     entries: [
-      ...createPbrSkinMeshBindGroupEntries(
-        meshStorageBuffer,
-        meshBindingBytes,
-        paletteBuffer,
-        paletteBindingWindowBytes,
-      ),
+      ...createPbrSkinMeshBindGroupEntries(meshStorageBuffer, meshBindingBytes, task),
       ...standardLightingEntries(
         hdrpBuffers,
         ssaoOptions.enabled ? ssaoOptions.ssaoBlurredView : fallback.view,

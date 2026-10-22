@@ -69,7 +69,7 @@ export interface RenderPublicationTemplate {
 
 /** Numeric storage and published mesh copies are owned; source buffers never transfer. */
 export interface RenderPublication extends RenderPublicationIdentity {
-  readonly protocol: 2;
+  readonly protocol: 3;
   readonly materials: readonly {
     readonly id: number;
     readonly value: import('../render-system-extract').MaterialSnapshot;
@@ -106,6 +106,7 @@ export interface RenderPublication extends RenderPublicationIdentity {
   /** entity, template index pairs. A publication source owns one World. */
   readonly upserts: Uint32Array;
   readonly removed: Uint32Array;
+  readonly retiredJoints: Uint32Array;
   readonly transformEntities: Uint32Array;
   readonly transforms: Float32Array;
   readonly assets: readonly {
@@ -147,10 +148,11 @@ export function renderPublicationTransfers(packet: RenderPublication): ArrayBuff
     packet.removed.buffer,
     packet.transformEntities.buffer,
     packet.transforms.buffer,
+    packet.retiredJoints.buffer,
   ] as ArrayBuffer[];
 }
 
-/** Mesh copies stay with the receiver; only the four frame columns are recycled. */
+/** Mesh copies stay with the receiver; only the five frame columns are recycled. */
 export function renderPublicationAssetTransfers(packet: RenderPublication): ArrayBuffer[] {
   const buffers = new Set<ArrayBuffer>();
   const collect = (value: unknown): void => {

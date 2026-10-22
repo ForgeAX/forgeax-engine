@@ -19,6 +19,10 @@ import { reconcileMeshLodMeta } from '@forgeax/engine-import';
 import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { box3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
 import type {
   AnimationClipPod,
   AssetGuid as AssetGuidType,
@@ -671,25 +675,35 @@ export function toAssetPack(params: {
     if (!clip) continue;
     const guid = guidOf('animation-clip', i);
     if (guid === undefined) continue;
+    const payload = {
+      kind: 'animation-clip',
+      name: clip.name ?? `Clip${i}`,
+      duration: clip.duration,
+      channels: clip.channels.map((ch) => ({
+        targetId: ch.targetId,
+        property: ch.property,
+        sampler: {
+          input: Array.from(ch.sampler.input),
+          output: Array.from(ch.sampler.output),
+          interpolation: ch.sampler.interpolation,
+        },
+      })),
+    };
+    const samples = encodeAnimationClipSamples(payload);
     assets.push({
       guid,
       kind: 'animation-clip',
-      payload: {
-        kind: 'animation-clip',
-        name: clip.name ?? `Clip${i}`,
-        duration: clip.duration,
-        channels: clip.channels.map((ch) => ({
-          targetId: ch.targetId,
-          property: ch.property,
-          sampler: {
-            input: Array.from(ch.sampler.input),
-            output: Array.from(ch.sampler.output),
-            interpolation: ch.sampler.interpolation,
-          },
-        })),
-      } as never,
+      payload: (samples?.payload ?? payload) as never,
       refs: [],
-      artifacts: {},
+      artifacts:
+        samples === undefined
+          ? {}
+          : {
+              [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+                mediaType: 'application/octet-stream',
+                bytes: samples.bytes,
+              },
+            },
     });
   }
 

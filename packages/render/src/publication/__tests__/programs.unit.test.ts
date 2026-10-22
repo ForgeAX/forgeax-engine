@@ -164,7 +164,7 @@ it('still validates an installed receipt when the incoming object was mutated in
   installPublicationPrograms(assets, [row]);
   Object.assign(row.shader.receipt, { generation: Number.NaN });
   expect(() => installPublicationPrograms(assets, [row])).toThrow();
-  expect(assets.shaderRegistry.findMaterialArtifact(row.key).unwrap().receipt?.generation).toBe(3);
+  expect(assets.shaderRegistry.findMaterialArtifact(row.key).unwrap().receipt?.generation).toBe(5);
 });
 
 it('owns receipt content so an in-place valid change cannot alter the admitted program', () => {

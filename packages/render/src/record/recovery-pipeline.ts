@@ -285,7 +285,7 @@ function addStandardMaterialRequests(input: {
         `${entry.renderableIndex}:${material.materialHandle ?? -1}`,
       );
       const materialShaderId =
-        entry.source.skin === undefined
+        entry.source.skinBinding === undefined
           ? (forwardProgram?.materialShaderId ??
             material.materialShaderId ??
             'forgeax::default-unlit')
@@ -296,7 +296,7 @@ function addStandardMaterialRequests(input: {
         >,
         'forward',
       );
-      if (entry.source.skin !== undefined && submesh === entry.mesh.submeshes[0]) {
+      if (entry.source.skinBinding !== undefined && submesh === entry.mesh.submeshes[0]) {
         const skinProbeVariant = projectionVariant(meshProjection, standardPbrCapabilityVariantSet);
         addRequest({
           requests: input.requests,
@@ -481,7 +481,7 @@ function addTransparentSpriteRequests(input: {
     if (
       entityShaderId === 'forgeax::sprite' ||
       entityShaderId === 'forgeax::sprite-lit' ||
-      entry.source.skin !== undefined ||
+      entry.source.skinBinding !== undefined ||
       entry.source.instances !== undefined
     ) {
       continue;
@@ -569,14 +569,14 @@ function addShadowRequests(input: {
             materialShaderId === SHADOW_CASTER_SHADER_ID
               ? shadowCasterVariantSet(
                   input.internals.device.caps.storageBuffer,
-                  entry.source.skin !== undefined,
+                  entry.source.skinBinding !== undefined,
                 )
               : undefined,
           ),
           passKind: 'shadow-caster',
           sampleCount: 1,
           vertexLayoutProjection: entry.mesh.layoutProjection,
-          layoutKindOverride: entry.source.skin === undefined ? 'pbr' : 'pbr-skin',
+          layoutKindOverride: entry.source.skinBinding === undefined ? 'pbr' : 'pbr-skin',
           ...(dispatch?.vertexEntry === undefined ? {} : { vertexEntry: dispatch.vertexEntry }),
           ...(dispatch?.fragmentEntry === undefined
             ? {}

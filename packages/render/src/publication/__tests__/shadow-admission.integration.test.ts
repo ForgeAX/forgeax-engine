@@ -80,7 +80,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
     candidate.accept();
     const replay = structuredClone(packet);
     const received = receiver.accept(packet).unwrap();
-    const prepared = preparePublicationGeometry(received, scene, undefined, assets, instances);
+    const prepared = preparePublicationGeometry(received, assets, instances);
     const frame = scene.consumePublication(prepared);
     publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     return { received, frame, packet: replay };
@@ -343,13 +343,7 @@ it.each([
     const { packet } = f.publish();
     const received = receiver.accept(packet).unwrap();
     rebuilt.consumePublication(
-      preparePublicationGeometry(
-        received,
-        rebuilt,
-        undefined,
-        f.assets,
-        new InstanceProjectionStore(),
-      ),
+      preparePublicationGeometry(received, f.assets, new InstanceProjectionStore()),
     );
     const selected = f.admit((id, request) => {
       const current = f.resolve(id, request);
@@ -509,7 +503,7 @@ it('rejects stale prepared publications before geometry or persistent scene muta
     const work = [...projection.dispatch];
     const instances = new InstanceProjectionStore();
     const release = vi.spyOn(instances, 'release');
-    expect(() => preparePublicationGeometry(old, f.scene, undefined, f.assets, instances)).toThrow(
+    expect(() => preparePublicationGeometry(old, f.assets, instances)).toThrow(
       /stale prepared geometry input/,
     );
     expect(release).not.toHaveBeenCalled();

@@ -2,7 +2,7 @@ import type { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { PassKind, PassSelector } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
-import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
+import type { GpuDrivenBatch, GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
@@ -73,8 +73,31 @@ const directSelections = new WeakMap<
     readonly materials: MaterialFrame;
     readonly gpu: GpuDrawSelection;
     readonly selected: Map<GpuDrivenBatchBinding, MaterialSnapshot | null>;
+    /** The plan's batches this request draws directly, for one fixed plan. */
+    direct?: { readonly plan: object; readonly batches: readonly GpuDrivenBatch[] };
   }
 >();
+
+/**
+ * Direct draw work visits only batches whose material this request selects.
+ * With a fixed material frame and GPU selection the subset is fixed per plan,
+ * so steady frames no longer walk every GPU-owned batch for each scene pass.
+ */
+function directPassScene<
+  S extends Pick<PersistentGpuDrivenState, 'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots'>,
+>(request: ScenePassRequest, scene: S, select: (binding: GpuDrivenBatchBinding) => unknown): S {
+  const cache = directSelections.get(request);
+  if (cache === undefined) return scene;
+  let direct = cache.direct;
+  if (direct?.plan !== scene.plan) {
+    const batches: GpuDrivenBatch[] = [];
+    for (const batch of scene.plan.batches)
+      if (batch.binding === undefined || select(batch.binding) !== undefined) batches.push(batch);
+    direct = { plan: scene.plan, batches };
+    cache.direct = direct;
+  }
+  return { ...scene, plan: { ...scene.plan, batches: direct.batches } };
+}
 
 export function directPassMaterial(
   request: ScenePassRequest,
@@ -179,7 +202,7 @@ export function prepareScenePasses(
       ? []
       : lod(
           directDrawRows(
-            scene,
+            directPassScene(request, scene, selected),
             selected,
             meshes,
             worlds,

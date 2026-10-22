@@ -94,7 +94,7 @@ it('rebinds and strips lifecycle fields inside shared material program transport
     outputSetDigest: 'outputs',
     assets: [],
   };
-  const wire = { schemaVersion: 'pack-material-programs/1', pack, programs: [] };
+  const wire = { schemaVersion: 'pack-material-programs/2', pack, programs: [], abis: [] };
   const bound = bindRuntimePackScope(wire, 'new', 9);
   expect(bound).not.toEqual(wire);
   const semantic = stripRuntimePackLifecycle(wire);

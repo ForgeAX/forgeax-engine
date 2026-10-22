@@ -1,4 +1,4 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import type { RenderError, RendererOptions, RenderResult } from '@forgeax/engine-render';
 import type {
   BundlerOptions,
@@ -66,7 +66,11 @@ export { loadRhiPack } from './backend-selection';
 export type { AssetRegistry };
 
 /** CPU asset assembly for the source realm of a split Renderer. */
-export async function createPublicationAssets(bundler?: BundlerOptions): Promise<AssetRegistry> {
+export async function createPublicationAssets(
+  bundler?: BundlerOptions,
+  options: { readonly assetBudgetBytes?: number } = {},
+): Promise<AssetRegistry> {
+  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
   const shaders = new ShaderRegistry({
     ...(bundler?.readShaderManifest === undefined ? {} : { readText: bundler.readShaderManifest }),
     manifestUrl:
@@ -80,6 +84,9 @@ export async function createPublicationAssets(bundler?: BundlerOptions): Promise
     shaderRegistry: shaders,
     importTransport: bundler?.importTransport,
     postSpawnHook: postSpawnResolveJoints,
+    ...(options.assetBudgetBytes === undefined
+      ? {}
+      : { limits: { maxBytes: options.assetBudgetBytes } }),
   });
   installDefaultAssetDecoders(assets);
   return assets;

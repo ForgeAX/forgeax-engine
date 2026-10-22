@@ -149,7 +149,10 @@ it('resolves non-indexed triangle starts and rejects malformed source ranges', (
 
 it('publishes no rows for deformed or LOD draws so their pixels read as uncovered', () => {
   const scene = new RenderScene();
-  const skinned = { ...snapshot(19), skin: {} } as RenderableSnapshot;
+  const skinned = {
+    ...snapshot(19),
+    skinBinding: { skeleton: 7, joints: [19] },
+  } as RenderableSnapshot;
   scene.apply([update(snapshot(17)), update(skinned)]);
   const frame = projectVisibleSurfaces(scene.slotsSnapshot(), 3).unwrap();
   expect(frame.entityBases.has(19)).toBe(false);

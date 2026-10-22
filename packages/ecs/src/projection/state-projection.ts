@@ -31,6 +31,8 @@ export interface StateProjectionBatch {
   readonly checkedBlocks: number;
   readonly checkedIndexEntries: number;
   readonly membershipChanged: boolean;
+  /** Existing per-index structural evidence; valid only before this candidate is accepted or superseded. */
+  hasStructuralChange(index: number): boolean;
   readonly changedComponents: readonly Component[];
   /** Commit only after the owning consumer has successfully applied its candidate. */
   validate(): void;
@@ -180,6 +182,10 @@ export function createStateProjection(
         checkedIndexEntries,
         membershipChanged: invalid || structure !== acceptedStructure,
         changedComponents,
+        hasStructuralChange(index) {
+          if (accepted || token !== readToken) throw new StateProjectionExpiredError();
+          return ((flags[index] ?? 0) & MEMBERSHIP) !== 0;
+        },
         validate,
         accept() {
           if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();

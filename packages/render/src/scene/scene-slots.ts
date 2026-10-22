@@ -233,6 +233,22 @@ export class SceneSlots {
     return this.frame;
   }
 
+  /** Cold recovery prepares new pages without mutating the accepted owner. */
+  fork(): SceneSlots {
+    const next = new SceneSlots();
+    next.frame = this.capture();
+    next.identities = this.identities;
+    next.highWater = this.highWater;
+    next.live = this.live;
+    next.newPages = this.newPages;
+    next.copiedPages = this.copiedPages;
+    next.copiedBytes = this.copiedBytes;
+    next.terrainCount = this.terrainCount;
+    next.glyphCount = this.glyphCount;
+    next.tilemapCount = this.tilemapCount;
+    return next;
+  }
+
   clear(): void {
     this.pending.clear();
     this.identities = undefined;

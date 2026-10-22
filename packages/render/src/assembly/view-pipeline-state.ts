@@ -15,7 +15,6 @@ import {
 } from '../record/render-context';
 import { SHADOW_CASTER_BUFFER_SIZE } from '../record/shadow-pass';
 import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import { createMeshSsboGrowController, INITIAL_MESH_SSBO_SLOT_COUNT } from './mesh-ssbo-grow';
 import {
   BLOOM_COMPOSITE_PARAMS_BYTES,
@@ -170,13 +169,6 @@ export function createViewPipelineState(
     shadowParamsBuffer: allocate('shadow-params', SHADOW_PARAMS_BYTES),
     meshStorageBuffer: mesh.state.mesh as PipelineState['meshStorageBuffer'],
     materialUniformBuffer: mesh.state.material as PipelineState['materialUniformBuffer'],
-    skinPaletteAllocator: createSkinPaletteAllocator(
-      device,
-      device.caps.storageBuffer
-        ? device.limits.maxStorageBufferBindingSize
-        : device.limits.maxUniformBufferBindingSize,
-      device.caps.storageBuffer,
-    ),
     ...(base.cookieMatrixBuffer === undefined
       ? {}
       : {

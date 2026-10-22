@@ -67,6 +67,10 @@ export {
   SceneCollectEntityRefOutOfClosureError,
 } from './errors/asset.js';
 export type { AssetLimits } from './internal/asset-records.js';
+export {
+  DEFAULT_ASSET_BUDGET_BYTES,
+  validateAssetBudgetBytes,
+} from './internal/asset-records.js';
 // ─── Loader-injection surface ───────────────────────────────────────────────
 export { iesProfileContribution } from './loaders/ies-profile';
 export { terrainContribution } from './loaders/terrain';

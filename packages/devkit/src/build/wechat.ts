@@ -423,6 +423,7 @@ async function boot(identity, reload) {
     ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
     features: [gameVfx.feature],
     dynamicGeometryMeshBudgetBytes: ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)},
+    assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},
     pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
     standardProfile: ${JSON.stringify(appOptions.standardProfile)},
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },

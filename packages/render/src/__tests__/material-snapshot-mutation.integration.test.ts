@@ -48,7 +48,7 @@ function fixture(material: MaterialAsset = Materials.unlit([1, 0, 0, 1])) {
     read: () =>
       resolveMaterialSnapshot(handle, worldRenderResources(world), assets, undefined, cache),
     extract: () => {
-      const row = extractFrames([world], 0, assets, undefined, caches).renderables.at(0);
+      const row = extractFrames([world], 0, assets, caches).renderables.at(0);
       if (row === undefined) throw new Error('missing extracted mesh');
       return row;
     },

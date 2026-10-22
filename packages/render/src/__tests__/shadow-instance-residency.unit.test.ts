@@ -108,7 +108,7 @@ it.each([
     runtime: {
       device,
       errorRegistry: { fire: vi.fn() },
-      getMaterialShaderPipeline: () => pipeline,
+      getMaterialShaderPipelineEntry: () => ({ pipeline, group2Contract: 'mesh' }),
       getParamSchema: () => [],
     },
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),

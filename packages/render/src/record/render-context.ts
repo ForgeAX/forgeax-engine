@@ -152,7 +152,6 @@ import type {
   SkyboxSnapshot,
   SkylightSnapshot,
 } from '../render-system-extract';
-import type { SkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import type { RenderTarget } from '../targets/contracts';
 import type { RenderTargetPhysical } from '../targets/physical';
 import type {
@@ -165,6 +164,20 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  readonly demandCapsuleShadow?:
+    | ((
+        source: import('../render-system-extract').RenderableSnapshot,
+      ) => import('../capsule-shadow/world-capsules').CapsuleShadowSnapshot | undefined)
+    | undefined;
+  /** Actual CPU draw demand; unavailable current poses produce no draw. */
+  readonly demandSkinTask?:
+    | ((
+        source: Pick<
+          import('../render-system-extract').RenderableSnapshot,
+          'worldId' | 'entityKey'
+        >,
+      ) => import('./skin-tasks').SkinTaskBinding | undefined)
+    | undefined;
   readonly growMeshSsbo?: MeshSsboGrowController['growMeshSsbo'] | undefined;
   readonly meshSsboState?: Readonly<MeshSsboCapacity> | undefined;
   /** The accepted program registry used by material layout and binding preparation. */
@@ -446,7 +459,6 @@ export interface PipelineState {
   readonly hdrpSkinPipelineLayout: PipelineLayout | null;
   readonly hdrpSkinProbePipelineLayout?: PipelineLayout | null;
   readonly hdrpSkinMeshBindGroupLayout: BindGroupLayout | null;
-  readonly skinPaletteAllocator: SkinPaletteAllocator | null;
   readonly defaultWhiteTextureView: TextureView;
   readonly defaultNormalTextureView: TextureView;
   /** White volume for `texture_3d` material params before their source promotes. */

@@ -19,4 +19,5 @@ export {
   runtimeAssets,
 } from './internal/runtime-assets.js';
 
+export { shareVerifiedArtifactBytes } from './internal/shared-immutable.js';
 export { createMaterialLoader } from './material/loader.js';

@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
-import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { createMeshBuilder, createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import { type Buffer, type Result, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue } from '@forgeax/engine-rhi-null';
@@ -33,6 +33,7 @@ import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from '../material-row';
 import { Materials } from '../materials';
+import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type {
   ExtractedFrame,
@@ -43,6 +44,7 @@ import { extractFrames } from '../render-system-extract-tail';
 import { MeshFrame } from '../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
+import * as skinGeometry from '../scene/skin-geometry';
 import { classifySceneDataCoverage } from '../temporal/coverage';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -492,7 +494,7 @@ describe('GpuScene', () => {
         { cameraOwner: 0, resourceOwner: 0 },
         assets,
         (request) =>
-          extractFrames([world], 0, assets, undefined, persistent.materialSnapshotCacheStore(), {
+          extractFrames([world], 0, assets, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
@@ -610,7 +612,7 @@ describe('GpuScene', () => {
         { cameraOwner: 0, resourceOwner: 0 },
         assets,
         (request) =>
-          extractFrames([world], 0, assets, undefined, persistent.materialSnapshotCacheStore(), {
+          extractFrames([world], 0, assets, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
@@ -1278,7 +1280,7 @@ describe('GpuScene', () => {
         { cameraOwner: 0, resourceOwner: 0 },
         assets,
         (request) =>
-          extractFrames([world], 0, assets, undefined, persistent.materialSnapshotCacheStore(), {
+          extractFrames([world], 0, assets, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
@@ -2109,7 +2111,7 @@ it('uploads one shared geometry descriptor for 2048 mesh users without rewriting
     const reads = scene.inputs.capture();
     const inputBuffer = reads.buffer().unwrap().buffer;
     reads.release();
-    expect(scene.inputs.uploadBytes - beforeUpload).toBe(28);
+    expect(scene.inputs.uploadBytes - beforeUpload).toBe(32);
     expect(queue.writes).toHaveLength(1);
     const descriptor = scene.geometryIndexForResource(0, 9);
     if (descriptor === undefined) throw new Error('missing shared geometry');
@@ -2225,6 +2227,229 @@ it('keeps entity tables stable while old frames hold distinct shared mesh versio
     }
   } finally {
     for (const frame of held) frame.release();
+    scene.dispose();
+  }
+});
+
+it('retires unheld tables with a disposed scene and held tables at frame release', () => {
+  const tables = (scene: GpuScene) => [
+    scene.primitiveBuffer,
+    scene.instanceBuffer,
+    scene.transformBuffer,
+  ];
+  for (const holdFrame of [false, true]) {
+    const device = createDevice(new RecordingQueue());
+    const available = GpuScene.create(device, 4).unwrap();
+    if (available.status !== 'available') throw Error('GPU scene unavailable');
+    const scene = available.scene;
+    const projection = new RenderScene();
+    scene
+      .sync({
+        ...projection.apply([updateSnapshot(snapshot(1))]),
+        meshes: new MeshFrame().with(0, 9, BUILTIN_CUBE),
+      })
+      .unwrap();
+    const held = holdFrame ? scene.captureResources().unwrap() : undefined;
+    held?.inputReads().buffer().unwrap();
+    held?.seal().unwrap();
+    const destroyed = new Set<Buffer>();
+    const destroyBuffer = device.destroyBuffer.bind(device);
+    device.destroyBuffer = (buffer) => {
+      destroyed.add(buffer);
+      return destroyBuffer(buffer);
+    };
+    const reads = scene.inputs.capture();
+    const owned = [...tables(scene), reads.buffer().unwrap().buffer];
+    reads.release();
+    scene.dispose();
+    // A discarded recovery candidate must not outlive its owner's disposal.
+    expect(owned.map((buffer) => destroyed.has(buffer))).toEqual(owned.map(() => !holdFrame));
+    held?.release();
+    expect(owned.every((buffer) => destroyed.has(buffer))).toBe(true);
+  }
+});
+
+function sharedSkinMesh(joints = 1): materialTypes.MeshAsset {
+  return createMeshBuilder({
+    attributes: {
+      position: new Float32Array([-2, 1, 0, 3, -1, 2, 0, 0, 0]),
+      skinIndex: new Uint16Array([0, 0, 0, 0, joints - 1, 0, 0, 0, 0, 0, 0, 0]),
+      skinWeight: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+    },
+    indices: [0, 1, 2],
+  })
+    .build()
+    .unwrap();
+}
+
+it('admits shared Skin Mesh envelopes once and versions their numeric input with geometry', () => {
+  const queue = new RecordingQueue(),
+    available = GpuScene.create(createDevice(queue), 128).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene,
+    projection = new RenderScene(),
+    source = sharedSkinMesh();
+  const first = new MeshFrame().with(0, 9, source);
+  try {
+    expect(first.get(0, 9)?.skinEnvelopes).toEqual(
+      new Float32Array([1, 1, 1, 1, -2, -1, 0, 0, 3, 1, 2, 0]),
+    );
+    const operations = Array.from({ length: 64 }, (_, index) =>
+      updateSnapshot(snapshot(index + 1)),
+    );
+    scene.sync({ ...projection.apply(operations), meshes: first }).unwrap();
+    const held = scene.captureResources().unwrap();
+    try {
+      const oldAddress = held.indexForGeometry(0, 9, first.get(0, 9));
+      if (oldAddress === undefined) throw new Error('Missing shared Skin geometry');
+      const oldReads = held.inputReads(),
+        oldInput = oldReads.buffer().unwrap().buffer;
+      held.seal().unwrap();
+      const oldDescriptor = residentView(queue, oldInput, oldAddress * 4);
+      const oldEnvelope = oldDescriptor.getUint32(7 * 4, true);
+      expect(oldEnvelope).toBe(oldAddress + 8);
+      expect(residentView(queue, oldInput, oldEnvelope * 4).getFloat32(4 * 4, true)).toBe(-2);
+      const primitive = scene.primitiveBuffer,
+        instance = scene.instanceBuffer,
+        transforms = scene.transformBuffer,
+        revision = scene.allocationRevision;
+      (source.attributes.position as Float32Array)[0] = -99;
+      expect(first.get(0, 9)?.skinEnvelopes?.[4]).toBe(-2);
+      const next = first.with(0, 9, sharedSkinMesh(2));
+      scene.sync({ ...projection.apply([]), meshes: next }).unwrap();
+      const currentAddress = scene.geometryIndexForResource(0, 9);
+      if (currentAddress === undefined) throw new Error('Missing updated shared Skin geometry');
+      expect(currentAddress).not.toBe(oldAddress);
+      const reads = scene.inputs.capture();
+      const currentInput = reads.buffer().unwrap().buffer;
+      reads.release();
+      const currentEnvelope = residentView(queue, currentInput, currentAddress * 4).getUint32(
+        7 * 4,
+        true,
+      );
+      expect(residentView(queue, currentInput, currentEnvelope * 4).getFloat32(3 * 4, true)).toBe(
+        2,
+      );
+      expect(residentView(queue, oldInput, oldEnvelope * 4).getFloat32(3 * 4, true)).toBe(1);
+      expect(scene.primitiveBuffer).toBe(primitive);
+      expect(scene.instanceBuffer).toBe(instance);
+      expect(scene.transformBuffer).toBe(transforms);
+      expect(scene.allocationRevision).toBe(revision);
+    } finally {
+      held.release();
+    }
+  } finally {
+    scene.dispose();
+  }
+});
+
+it('resizes unpinned Skin Mesh descriptors and preserves uncullable geometry explicitly', () => {
+  const queue = new RecordingQueue(),
+    available = GpuScene.create(createDevice(queue), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene,
+    projection = new RenderScene();
+  let meshes = new MeshFrame().with(0, 9, sharedSkinMesh());
+  try {
+    scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
+    const first = scene.geometryIndexForResource(0, 9);
+    meshes = meshes.with(0, 9, sharedSkinMesh(2));
+    scene.sync({ ...projection.apply([]), meshes }).unwrap();
+    const second = scene.geometryIndexForResource(0, 9);
+    expect(second).not.toBe(first);
+    const mesh = sharedSkinMesh(2);
+    meshes = meshes.with(0, 9, { ...mesh, morphTargets: [{ position: new Float32Array(6) }] });
+    expect(meshes.get(0, 9)?.skinEnvelopes).toBeUndefined();
+    scene.sync({ ...projection.apply([]), meshes }).unwrap();
+    const address = scene.geometryIndexForResource(0, 9);
+    if (address === undefined) throw new Error('Missing uncullable shared geometry');
+    const reads = scene.inputs.capture(),
+      buffer = reads.buffer().unwrap().buffer;
+    reads.release();
+    expect(residentView(queue, buffer, address * 4).getUint32(7 * 4, true)).toBe(0);
+    expect(scene.sync({ ...projection.apply([]), meshes }).unwrap().bytes).toBe(0);
+  } finally {
+    scene.dispose();
+  }
+});
+
+it('derives a shared Skin enclosure on Mesh evidence without visiting instance geometry again', () => {
+  const assets = new AssetRegistry(),
+    mesh = sharedSkinMesh();
+  const handle = assets.create(mesh).unwrap(),
+    world = new World({ assets });
+  const projection = new RenderScene([worldRenderResources(world)]);
+  const derive = vi.spyOn(skinGeometry, 'skinGeometryEnvelopes');
+  try {
+    const rows = Array.from({ length: 64 }, (_, index) => ({
+      ...snapshot(index + 1),
+      assetHandle: handle,
+    }));
+    projection.apply(rows.map(updateSnapshot));
+    expect(derive).toHaveBeenCalledTimes(1);
+    const before = projection.meshFrame(),
+      geometry = before.get(0, handle);
+    for (const row of rows)
+      projection.apply([
+        { kind: 'update', worldId: 0, entityKey: row.entityKey, world: row.transform.world },
+      ]);
+    expect(derive).toHaveBeenCalledTimes(1);
+    expect(projection.meshFrame().get(0, handle)).toBe(geometry);
+    projection.adoptMesh(0, handle, sharedSkinMesh(2));
+    expect(derive).toHaveBeenCalledTimes(2);
+    expect(projection.meshFrame().get(0, handle)?.skinEnvelopes?.[3]).toBe(2);
+    expect(geometry?.skinEnvelopes?.[3]).toBe(1);
+  } finally {
+    derive.mockRestore();
+  }
+});
+
+it('drops unuploaded Skin Mesh tail dirtiness with the retired allocation', () => {
+  const queue = new RecordingQueue(),
+    available = GpuScene.create(createDevice(queue), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene,
+    projection = new RenderScene();
+  let meshes = new MeshFrame().with(0, 9, sharedSkinMesh());
+  try {
+    scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
+    const warm = scene.inputs.capture();
+    warm.buffer().unwrap();
+    warm.release();
+    const bytes = scene.inputs.uploadBytes;
+    meshes = meshes.with(0, 9, sharedSkinMesh(2));
+    scene.sync({ ...projection.apply([]), meshes }).unwrap();
+    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    const empty = scene.inputs.capture();
+    empty.buffer().unwrap();
+    empty.release();
+    expect(scene.inputs.uploadBytes - bytes).toBe(0);
+  } finally {
+    scene.dispose();
+  }
+});
+
+it('retires the allocated Skin Mesh extent even if an exposed envelope backing is detached', () => {
+  const queue = new RecordingQueue(),
+    available = GpuScene.create(createDevice(queue), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene,
+    projection = new RenderScene(),
+    meshes = new MeshFrame().with(0, 9, sharedSkinMesh());
+  const release = vi.spyOn(scene.inputs.arena, 'releaseDescriptor');
+  try {
+    scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
+    const address = scene.geometryIndexForResource(0, 9),
+      envelopes = meshes.get(0, 9)?.skinEnvelopes;
+    if (address === undefined || envelopes === undefined) throw new Error('Missing Skin envelope');
+    const words = 8 + envelopes.length;
+    structuredClone(envelopes, { transfer: [envelopes.buffer] });
+    expect(envelopes.length).toBe(0);
+    release.mockClear();
+    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    expect(release.mock.calls).toContainEqual([address, words]);
+  } finally {
+    release.mockRestore();
     scene.dispose();
   }
 });

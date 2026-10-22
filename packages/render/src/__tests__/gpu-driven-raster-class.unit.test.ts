@@ -1030,7 +1030,8 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     oldInputs.release();
     // Stable material allocation can make an ordinary replacement fit. Force
     // actual arena growth instead of relying on that former allocation order.
-    for (let i = 0; i <= oldCapacity / 8; i++) availability.scene.inputs.allocateDescriptor(2);
+    for (let i = 0; i <= oldCapacity / 8; i++)
+      availability.scene.inputs.arena.allocateDescriptor(2);
     current = prepare(replacement);
     // Arena capacity replacement is a real graph dependency even when the
     // independently retained vertex/index allocation is unchanged.

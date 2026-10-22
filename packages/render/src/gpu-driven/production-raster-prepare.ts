@@ -1,6 +1,5 @@
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
-import { isFiniteBounds3 } from '@forgeax/engine-types';
 import {
   materialArtifactProgramIdentity,
   sameMaterialArtifactProgram,
@@ -10,7 +9,7 @@ import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import { reflectedRenderState } from '../material-render-state';
 import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
 import { geometryRenderStateForTopology } from '../record/main-pass-material';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { type BatchExecution, captureBatchLod } from './batch-execution';
@@ -31,6 +30,7 @@ import {
   lodCrossfadeCapable,
   prepareLodProjectionPlan,
 } from './production-raster-lod';
+import type { PreparedAssemblyInputs } from './retained-batch-inputs';
 
 export interface PreparedBatch {
   readonly batch: GpuDrivenBatch;
@@ -46,22 +46,6 @@ export interface PreparedBatch {
   readonly materialBindingClass: string;
   /** Stable World attachment key used to join same-submit GPU counters. */
   readonly worldKey: number;
-}
-
-export function skinLaneReason(
-  snapshot: RenderableSnapshot,
-): 'skin-bounds-missing' | 'skin-address-missing' | undefined {
-  if (snapshot.skin === undefined) return undefined;
-  if (!isFiniteBounds3(snapshot.skin.bounds)) return 'skin-bounds-missing';
-  if (
-    snapshot.skin.storageOrUniform !== 'storage' ||
-    !Number.isInteger(snapshot.skin.customDataStart) ||
-    snapshot.skin.customDataStart < 0 ||
-    snapshot.skin.buffer === undefined
-  ) {
-    return 'skin-address-missing';
-  }
-  return undefined;
 }
 
 export function meshSupportsBatch(mesh: MeshGpuHandles, batch: GpuDrivenBatch): boolean {
@@ -551,4 +535,35 @@ export function shadowArtifactSignature(
     artifact.uvSetCount ?? -1,
     artifact.reflectionFallbackOutputAvailable === true,
   ]);
+}
+
+export class BatchPreparation {
+  readonly batches = new Map<
+    number,
+    {
+      readonly source: GpuDrivenBatch;
+      readonly signature: string;
+      readonly artifact: MaterialShaderArtifact | undefined;
+      readonly value: PreparedBatchRows;
+      /** Identity facts that let a retained execution skip signature derivation. */
+      readonly execution?: BatchExecution;
+      readonly materialAddress?: number | undefined;
+      readonly geometryAddress?: number | undefined;
+      /** Render state is author-mutable in place; its serialization stays observed. */
+      readonly renderState?: string | undefined;
+    }
+  >();
+  cached:
+    | {
+        readonly plan: SubmissionPlan;
+        /** Current immutable frame lookup for attribution, independent of prepared geometry. */
+        readonly slotAt: PersistentGpuDrivenState['slotAt'];
+        readonly worldKeys: readonly number[] | undefined;
+        readonly scene: PersistentGpuDrivenState['scene'];
+        readonly batchRows: readonly PreparedBatchRows[];
+        readonly value: PreparedProductionPlan;
+        /** Exact inputs of an unchanged assembly; equal inputs skip the row walk. */
+        readonly inputs?: PreparedAssemblyInputs;
+      }
+    | undefined;
 }

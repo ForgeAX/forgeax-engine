@@ -1,4 +1,9 @@
-/** Private runtime storage captures logical views, never their unrelated backing bytes. */
+import { isSharedImmutableAssetData } from './shared-immutable.js';
+
+/** Private runtime storage captures logical views, never their unrelated backing bytes.
+ * Realm-shared immutable facts (deep-frozen JSON and verified content-addressed
+ * bytes) keep their identity: copying them would only duplicate equal content.
+ */
 export function copyAssetData<T>(input: T): T {
   const active = new Set<object>();
   const copy = (value: unknown): unknown => {
@@ -8,6 +13,7 @@ export function copyAssetData<T>(input: T): T {
       return value;
     }
     if (active.has(value)) throw new TypeError('asset content contains a cycle');
+    if (isSharedImmutableAssetData(value)) return value;
     if (value instanceof ArrayBuffer) {
       const result = value.slice(0);
       return result;

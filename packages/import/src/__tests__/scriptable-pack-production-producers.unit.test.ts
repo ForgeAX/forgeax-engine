@@ -254,7 +254,7 @@ describe('standard ScriptablePack output producers', () => {
   it('registers the production producer versions for all ordinary Asset kinds', () => {
     const registry = createStandardAssetOutputProducerRegistry();
     expect(registry.versions()).toEqual({
-      'animation-clip': 'animation-clip/2',
+      'animation-clip': 'animation-clip/3',
       'animation-graph': 'ordinary-pod/1',
       audio: 'ordinary-pod/1',
       equirect: 'ordinary-pod/1',

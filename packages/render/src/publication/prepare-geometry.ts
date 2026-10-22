@@ -4,8 +4,6 @@ import { buildGpuDrivenDraws } from '../extract/gpu-driven';
 import type { InstanceProjectionStore } from '../instances';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { extractFrames } from '../render-system-extract-tail';
-import type { PersistentRenderScene } from '../scene/render-scene';
-import { prepareSkinPalette, type SkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import { RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 import { renderAsset } from './resource-scope';
@@ -13,12 +11,10 @@ import { renderAsset } from './resource-scope';
 /** Resolve GPU ownership after source data has crossed the publication boundary. */
 export function preparePublicationGeometry(
   input: PreparedRenderPublication,
-  scene: PersistentRenderScene,
-  palette: SkinPaletteAllocator | null | undefined,
   _assets: AssetRegistry,
   instances: InstanceProjectionStore,
   getMaterialShaderArtifact?: NonNullable<
-    Parameters<typeof extractFrames>[5]
+    Parameters<typeof extractFrames>[4]
   >['getMaterialShaderArtifact'],
 ): PreparedRenderPublication {
   if (input.resources.revision !== input.packet.revision)
@@ -31,22 +27,8 @@ export function preparePublicationGeometry(
     if (operation.kind !== 'remove' && operation.snapshot === undefined) continue;
     if (operation.kind === 'remove' || operation.snapshot?.instances === undefined)
       instances.release(input.resources, operation.entityKey);
-    const prior = scene.compositionSlot(0, operation.entityKey)?.snapshot.skin;
-    const pose = operation.kind === 'remove' ? undefined : operation.snapshot?.skinPose;
-    if (prior !== undefined && prior.identity !== pose?.identity)
-      palette?.releasePersistentSlice(prior.identity);
   }
   for (const row of input.frame.renderables) {
-    const { skinPose } = row;
-    let skin = row.skin;
-    if (skinPose !== undefined) {
-      if (palette == null)
-        throw new RenderPublicationError({
-          reason: 'unsupported',
-          subject: 'skin palette allocator',
-        });
-      skin = prepareSkinPalette(skinPose, palette);
-    }
     const projected =
       row.instances === undefined
         ? undefined
@@ -54,7 +36,6 @@ export function preparePublicationGeometry(
     if (projected instanceof Error) throw projected;
     const snapshot: RenderableSnapshot = {
       ...row,
-      ...(skin === undefined ? {} : { skin }),
       ...(projected === undefined || row.instances === undefined
         ? {}
         : { instances: { ...row.instances, ...projected, archVersion: 0 } }),
@@ -72,7 +53,7 @@ export function preparePublicationGeometry(
             mesh: mesh.value,
             materials: row.materials.map((material) => material.snapshot),
             fallbackMaterial: row.material.snapshot,
-            deformation: snapshot.skin === undefined ? 'rigid' : 'skin',
+            deformation: snapshot.skinBinding === undefined ? 'rigid' : 'skin',
             ...(getMaterialShaderArtifact === undefined ? {} : { getMaterialShaderArtifact }),
             ...(row.lods === undefined
               ? {}

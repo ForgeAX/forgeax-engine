@@ -12387,6 +12387,9 @@ importers:
       '@forgeax/engine-math':
         specifier: workspace:*
         version: link:../math
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../pack
       '@forgeax/engine-path':
         specifier: workspace:*
         version: link:../path

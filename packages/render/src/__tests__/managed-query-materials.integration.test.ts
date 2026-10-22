@@ -65,7 +65,7 @@ async function fixture() {
       { cameraOwner: 0, resourceOwner: 0 },
       assets,
       (request) =>
-        extractFrames([world], 0, assets, undefined, caches, {
+        extractFrames([world], 0, assets, caches, {
           cull: 'none',
           renderables: request,
         }),

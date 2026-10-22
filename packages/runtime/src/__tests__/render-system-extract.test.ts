@@ -648,7 +648,7 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
       const owner = { cameraOwner: 0, resourceOwner: 0 };
       const scene = new PersistentRenderScene();
       const frame = scene.extractComposition(worlds, owner, testAssets(sceneWorld), () =>
-        extractFrames(worlds, owner, undefined, undefined, undefined, { cull: 'none' }),
+        extractFrames(worlds, owner, undefined, undefined, { cull: 'none' }),
       );
       expect(frame.frustumStats).toEqual({ culled: 1, total: 1 });
       expect(frame.renderables).toHaveLength(1);

@@ -42,6 +42,10 @@ import { groupMeshPrimitives } from './mesh-primitives';
 import { deriveDefaultLodScreenCoverages } from '@forgeax/engine-import';
 import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { AssetGuid as AssetGuidCodec } from '@forgeax/engine-pack/guid';
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
 import type {
   AssetGuid,
   AssetHandle,
@@ -1065,7 +1069,22 @@ async function importGltf(
           },
         })),
       };
-      out.push({ guid: sub.guid, kind: 'animation-clip', payload, refs: [], artifacts: {} });
+      const samples = encodeAnimationClipSamples(payload);
+      out.push({
+        guid: sub.guid,
+        kind: 'animation-clip',
+        payload: samples?.payload ?? payload,
+        refs: [],
+        artifacts:
+          samples === undefined
+            ? {}
+            : {
+                [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+                  mediaType: 'application/octet-stream',
+                  bytes: samples.bytes,
+                },
+              },
+      });
     }
   }
   return { ok: true, value: { assets: out, sourceDependencies: [] } };

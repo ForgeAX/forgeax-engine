@@ -1,3 +1,7 @@
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
 import type {
   ArtifactDescriptor,
   AssetRef,
@@ -136,6 +140,18 @@ export function projectImportedAssetPayload(
       kind: 'mesh',
       ...(payload.distanceField === undefined ? {} : { distanceField: payload.distanceField }),
     };
+  if (
+    asset.kind === 'animation-clip' &&
+    asset.artifacts[ANIMATION_CLIP_SAMPLES_ARTIFACT] !== undefined
+  )
+    return encodeAnimationClipSamples(payload)?.payload ?? payload;
+  if (
+    asset.kind === 'particle-effect' &&
+    asset.artifacts['particle-effect/program.json'] !== undefined
+  ) {
+    const { program: _publishedArtifact, ...summary } = payload;
+    return summary;
+  }
   if (asset.kind === 'texture' || asset.kind === 'equirect') {
     const { data: _runtimeBytes, ...metadata } = payload;
     return metadata;

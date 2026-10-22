@@ -65,14 +65,11 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
       owner,
       assets,
       (request) => {
-        const frame = extractFrames(
-          [world],
-          owner,
-          assets,
-          undefined,
-          scene.materialSnapshotCacheStore(),
-          { cull: 'none', retainHidden: true, renderables: request },
-        );
+        const frame = extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
         return {
           ...frame,
           lights: { ...frame.lights, lightViewProj: [lightMatrix], cascadeCount: 1 },

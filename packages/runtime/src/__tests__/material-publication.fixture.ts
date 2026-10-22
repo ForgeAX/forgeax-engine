@@ -1,7 +1,7 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
+import { AssetGuid, decodeCatalogWire, decodeMaterialProgramWire } from '@forgeax/engine-pack';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import { Transform } from '@forgeax/engine-scene';
@@ -145,7 +145,7 @@ export async function verifyMaterialPublication(options: {
     const cookedGenerationsFor = async (row: PackIndexEntry) => {
       const response = await fetch(new URL(row.packageUrl, options.binding.catalogUrl));
       expect(response.status).toBe(200);
-      const body = (await response.json()) as {
+      const body = decodeMaterialProgramWire(await response.json()).unwrap() as {
         readonly assets?: readonly {
           readonly guid: string;
           readonly payload?: {
@@ -179,8 +179,11 @@ export async function verifyMaterialPublication(options: {
     const transportResult = await transport.fetchPack(firstGuid, options.binding);
     expect(transportResult.ok, inspect(transportResult)).toBe(true);
     const packUrl = new URL(firstRow.packageUrl, options.binding.catalogUrl).href;
-    const pack = await (await fetch(packUrl)).json();
-    const row = pack.assets.find((asset: { guid: string }) => asset.guid === firstGuid);
+    const pack = decodeMaterialProgramWire(await (await fetch(packUrl)).json()).unwrap() as {
+      assets: { guid: string; artifacts: Record<string, unknown>; payload: unknown }[];
+    };
+    const row = pack.assets.find((asset) => asset.guid === firstGuid);
+    if (row === undefined) throw new Error('missing fetched material Pack row');
     const descriptors = Object.values(row.artifacts) as { path: string; byteLength: number }[];
     expect(pack).toMatchObject({
       scopeId: options.binding.scopeId,

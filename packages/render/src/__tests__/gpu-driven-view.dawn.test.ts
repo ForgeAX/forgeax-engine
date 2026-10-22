@@ -10,12 +10,13 @@ import {
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
-  it('keeps skin palette addressing in the captured Instance row, independently of candidate index', async () => {
+  it('keeps true Skin source slot independent of visible instance and candidate identity', async () => {
     const result = await runGpuDrivenSkinVisibleAddressEvidence();
     expect(result, `actual skin visible addresses ${JSON.stringify(result)}`).toEqual({
-      visibleInstance: 1,
+      visibleInstance: 0,
       candidateIndex: 2,
-      paletteBase: 17,
+      sourceSlot: 1,
+      primitiveIndex: 0,
     });
   });
 

@@ -1,13 +1,15 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createPrimitiveMesh, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createSkinPaletteOwner } from '../../../render/src/assembly/skin-palette-owner';
+import { SkinTasks } from '../../../render/src/record/skin-tasks';
 import { extractFrames } from '../../../render/src/render-system-extract-tail';
+import { PersistentRenderScene } from '../../../render/src/scene/render-scene';
 
 afterEach(() => vi.restoreAllMocks());
 async function fixture() {
@@ -27,7 +29,9 @@ async function fixture() {
     })
     .unwrap();
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const allocator = createSkinPaletteOwner(device, true);
+  const tasks = new SkinTasks(device, true),
+    scene = new PersistentRenderScene(),
+    lease = createRenderReadLease(world);
   const joint = () => world.spawn({ component: Transform, data: {} }).unwrap() as EntityHandle;
   const spawn = (count: number, joints: EntityHandle[]) => {
     const inverseBindMatrices = new Float32Array(count * 16);
@@ -47,30 +51,42 @@ async function fixture() {
   };
   const extract = () => {
     propagateTransforms(world);
-    return extractFrames(
+    const owner = { cameraOwner: 0, resourceOwner: 0 };
+    const frame = scene.extractComposition(
       [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      owner,
       assets,
-      { skinPaletteAllocator: allocator },
-      undefined,
-      { cull: 'none' },
+      (renderables) =>
+        extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          renderables,
+        }),
+      [lease],
     );
+    const fixed = scene.skinRecordingFrame();
+    if (fixed === undefined) throw new Error('Missing accepted Skin frame');
+    tasks.begin(fixed);
+    return frame;
   };
   return {
     assets,
     world,
-    allocator,
+    tasks,
+    scene,
     joint,
     spawn,
     extract,
-    dispose() {
-      allocator.dispose();
+    async dispose() {
+      await tasks.complete();
+      await tasks.dispose();
+      scene.dispose();
+      lease.dispose();
       assets.dispose();
     },
   };
 }
 
-it('allocates distinct aligned palettes for two entities sharing managed geometry', async () => {
+it('resolves distinct actual task windows from shared managed geometry', async () => {
   const f = await fixture();
   try {
     f.spawn(2, [f.joint(), f.joint()]);
@@ -79,18 +95,24 @@ it('allocates distinct aligned palettes for two entities sharing managed geometr
     const frame = f.extract();
     expect(error).not.toHaveBeenCalled();
     expect(frame.renderables).toHaveLength(2);
-    const skins = frame.renderables.map((row) => row.skin);
-    expect(skins.every((skin) => skin?.jointCount === 2 && skin.byteOffset % 256 === 0)).toBe(true);
-    expect(skins[0]?.byteOffset).not.toBe(skins[1]?.byteOffset);
+    const tasks = frame.renderables.map((row) => {
+      const slot = f.scene.compositionSlot(row.worldId, row.entityKey);
+      if (slot === undefined) throw new Error('Missing accepted Skin slot');
+      return f.tasks.demand(slot);
+    });
+    expect(tasks.every((task) => task !== undefined && task.auxiliaryOffset % 16 === 0)).toBe(true);
+    // Two tasks x two joints, current and previous matrices each.
+    expect(f.tasks.paletteUploadBytes).toBe(2 * 2 * 128);
+    expect(tasks[0]?.auxiliaryOffset).not.toBe(tasks[1]?.auxiliaryOffset);
   } finally {
-    f.dispose();
+    await f.dispose();
   }
 });
 
 it.each([
   'joint-count-mismatch',
   'joint-entity-dangling',
-] as const)('isolates %s while a valid sibling keeps its palette', async (code) => {
+] as const)('isolates %s at actual demand while a valid sibling remains drawable', async (code) => {
   const f = await fixture();
   try {
     const joint = f.joint();
@@ -99,10 +121,20 @@ it.each([
     if (code === 'joint-entity-dangling') f.world.despawn(joint).unwrap();
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const frame = f.extract();
-    expect(error).toHaveBeenCalledTimes(1);
-    expect(error.mock.calls[0]?.[1]).toMatchObject({ code });
-    expect(frame.renderables.filter((row) => row.skin !== undefined)).toHaveLength(1);
+    if (code === 'joint-count-mismatch') {
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0]?.[1]).toMatchObject({ code });
+    } else expect(error).not.toHaveBeenCalled();
+    const resolved = frame.renderables.map((row) => {
+      const slot = f.scene.compositionSlot(row.worldId, row.entityKey);
+      if (slot === undefined) throw new Error('Missing accepted Skin slot');
+      return f.tasks.demand(slot);
+    });
+    expect(frame.renderables).toHaveLength(2);
+    expect(resolved[0]).toBeUndefined();
+    expect(resolved[1]).toBeDefined();
+    expect(f.tasks.paletteUploadBytes).toBe(128);
   } finally {
-    f.dispose();
+    await f.dispose();
   }
 });

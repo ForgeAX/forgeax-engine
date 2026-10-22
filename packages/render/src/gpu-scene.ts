@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-types';
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
 import { GpuDirtyRanges } from './gpu-dirty-ranges';
+import type { GpuInputArena } from './gpu-input-arena';
 import {
   type GpuSceneChangedBounds,
   GpuSceneChangeLog,
@@ -60,6 +61,8 @@ const PRIMITIVE_ACTIVE = 1;
 const PRIMITIVE_HAS_BOUNDS = 2;
 const PRIMITIVE_GPU_DRIVEN = 4;
 const PRIMITIVE_SHARED_GEOMETRY = 64;
+/** Static author request; readiness stays in the fixed Skin source root. */
+export const GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW = 128;
 /** Color history must not be trusted for this primitive in the current frame. */
 export const GPU_SCENE_PRIMITIVE_REACTIVE = 8;
 /** Previous transforms were seeded from current; no motion vector this frame. */
@@ -106,8 +109,14 @@ export interface GpuSceneResourceFrame {
 
 interface MeshVersion {
   readonly descriptor: number;
+  readonly words: number;
   geometry: MeshGeometry;
   references: number;
+}
+
+/** Header and shared envelope have one allocation and one frame lifetime. */
+function meshInputWords(geometry: MeshGeometry): number {
+  return GPU_MESH_DESCRIPTOR.words + (geometry.skinEnvelopes?.length ?? 0);
 }
 
 interface MeshAllocation {
@@ -375,8 +384,9 @@ export class GpuScene {
     private capacity: number,
     buffers: GpuSceneBuffers,
     private readonly shaderRegistry?: ShaderRegistry,
+    arena?: GpuInputArena,
   ) {
-    this.inputs = new GpuSceneInputs(device, (slot) => this.primitiveIndexForSlot(slot));
+    this.inputs = new GpuSceneInputs(device, (slot) => this.primitiveIndexForSlot(slot), arena);
     this.buffers = buffers;
     this.materialCapacity = INITIAL_MATERIAL_CAPACITY;
     this.tableBytes = this.allocateCpuTables(capacity, this.materialCapacity);
@@ -390,6 +400,7 @@ export class GpuScene {
     device: RhiDevice,
     initialCapacity = 256,
     shaderRegistry?: ShaderRegistry,
+    arena?: GpuInputArena,
   ): Result<GpuSceneAvailability, RhiError> {
     if (!device.caps.storageBuffer) {
       return ok({ status: 'unavailable', reason: 'storage-buffer-unavailable' });
@@ -402,7 +413,7 @@ export class GpuScene {
     if (!buffers.ok) return err(buffers.error);
     return ok({
       status: 'available',
-      scene: new GpuScene(device, capacity, buffers.value, shaderRegistry),
+      scene: new GpuScene(device, capacity, buffers.value, shaderRegistry, arena),
     });
   }
 
@@ -689,10 +700,12 @@ export class GpuScene {
           const range = this.sharedMeshes.get(`${geometry.worldId}:${geometry.handle}`);
           if (range !== undefined) {
             const previous = range.version;
-            if (previous.references === 1) previous.geometry = geometry;
+            const words = meshInputWords(geometry);
+            if (previous.references === 1 && previous.words === words) previous.geometry = geometry;
             else {
               range.version = {
-                descriptor: this.inputs.allocateDescriptor(GPU_MESH_DESCRIPTOR.words),
+                descriptor: this.inputs.arena.allocateDescriptor(words),
+                words,
                 geometry,
                 references: 1,
               };
@@ -779,6 +792,13 @@ export class GpuScene {
       }
 
       for (const range of this.pendingMeshes) {
+        const envelopes = range.geometry.skinEnvelopes;
+        if ((envelopes?.length ?? 0) !== range.words - GPU_MESH_DESCRIPTOR.words)
+          throw new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'the complete admitted Skin Mesh envelope within its allocated extent',
+            hint: 'retain immutable Mesh facts until every recorded frame has retired',
+          });
         const bounds = range.geometry.bounds;
         this.rowScratchView.setUint32(
           GPU_MESH_DESCRIPTOR.flags * 4,
@@ -797,11 +817,23 @@ export class GpuScene {
             true,
           );
         }
-        this.inputs.writeDescriptor(
-          range.descriptor,
-          this.rowScratchView,
-          GPU_MESH_DESCRIPTOR.words,
-        );
+        const envelopeAddress =
+          envelopes === undefined ? 0 : range.descriptor + GPU_MESH_DESCRIPTOR.words;
+        this.rowScratchView.setUint32(GPU_MESH_DESCRIPTOR.skinEnvelopes * 4, envelopeAddress, true);
+        for (let word = 0; word < GPU_MESH_DESCRIPTOR.words; word++)
+          this.inputs.arena.writeDescriptorWord(
+            range.descriptor,
+            range.words,
+            word,
+            this.rowScratchView.getUint32(word * 4, true),
+          );
+        if (envelopes !== undefined)
+          this.inputs.arena.writeDescriptor(
+            range.descriptor,
+            new DataView(envelopes.buffer, envelopes.byteOffset, envelopes.byteLength),
+            range.words,
+            GPU_MESH_DESCRIPTOR.words,
+          );
       }
 
       // A shared material has one packed value per publication, independent of
@@ -986,21 +1018,36 @@ export class GpuScene {
   }
 
   dispose(): void {
-    this.inputs.dispose();
-    this.sharedMeshes.clear();
-    this.pendingMeshes.clear();
-    this.meshes = new MeshFrame();
-    this.materialFrame = undefined;
-    this.sharedMaterials.clear();
-    this.pendingMaterials.clear();
-    this.pendingMaterialRoots.clear();
-    this.records.reset();
     if (this.disposed) return;
     this.disposed = true;
-    for (const buffer of this.retiredBuffers) this.device.destroyBuffer(buffer);
-    this.retiredBuffers.clear();
-    this.bufferHolders.clear();
-    for (const buffer of Object.values(this.buffers)) this.device.destroyBuffer(buffer);
+    let failure: AggregateError | undefined;
+    const attempt = (operation: () => void) => {
+      try {
+        operation();
+      } catch (cause) {
+        if (failure === undefined)
+          failure = new AggregateError([cause], 'GPU Scene retirement failed', { cause });
+        else failure.errors.push(cause);
+      }
+    };
+    // Each allocation owns one Version independent of primitive holders. Held
+    // read frames keep their Version/range and buffers through final retirement.
+    for (const range of this.sharedMeshes.values())
+      attempt(() => this.releaseMeshVersion(range.version));
+    for (const range of this.sharedMaterials.values())
+      attempt(() => this.releaseMaterialVersion(range.version, this.writesByTable));
+    this.allocations.clear();
+    this.sharedMeshes.clear();
+    this.sharedMaterials.clear();
+    this.pendingMeshes.clear();
+    this.pendingMaterials.clear();
+    this.pendingMaterialRoots.clear();
+    this.meshes = new MeshFrame();
+    this.materialFrame = undefined;
+    this.records.reset();
+    attempt(() => this.inputs.dispose());
+    for (const buffer of Object.values(this.buffers)) attempt(() => this.retireBuffer(buffer));
+    if (failure !== undefined) throw failure;
   }
 
   private writeSlot(
@@ -1024,6 +1071,7 @@ export class GpuScene {
         (bounds === undefined ? 0 : PRIMITIVE_HAS_BOUNDS) |
         (allocation.mesh === undefined ? 0 : PRIMITIVE_SHARED_GEOMETRY) |
         (record.snapshot.gpuDrivenDraws === undefined ? 0 : PRIMITIVE_GPU_DRIVEN) |
+        (record.snapshot.capsuleShadowRequested === true ? GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW : 0) |
         (record.snapshot.shadowReceiver === false ? GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE : 0) |
         temporalFlags,
       true,
@@ -1082,11 +1130,8 @@ export class GpuScene {
           transformIndex,
         ) || metadataChanged;
       metadataChanged =
-        writeChangedU32(
-          instance,
-          instanceOffset + offset(INSTANCE, 'customDataStart'),
-          record.snapshot.skin?.customDataStart ?? 0,
-        ) || metadataChanged;
+        writeChangedU32(instance, instanceOffset + offset(INSTANCE, 'customDataStart'), 0) ||
+        metadataChanged;
       metadataChanged =
         writeChangedU32(instance, instanceOffset + offset(INSTANCE, 'flags'), PRIMITIVE_ACTIVE) ||
         metadataChanged;
@@ -1228,7 +1273,12 @@ export class GpuScene {
       materialDisplacementRadius(range.snapshot),
       true,
     );
-    this.inputs.writeDescriptor(
+    this.rowScratchView.setUint32(
+      GPU_MATERIAL_DESCRIPTOR.positionBounds * 4,
+      range.snapshot.positionBounds === 'standard-input' ? 1 : 0,
+      true,
+    );
+    this.inputs.arena.writeDescriptor(
       range.descriptor,
       this.rowScratchView,
       GPU_MATERIAL_DESCRIPTOR.words,
@@ -1453,8 +1503,6 @@ export class GpuScene {
         ),
     );
     const geometry =
-      record.snapshot.skinPose !== undefined ||
-      record.snapshot.skin !== undefined ||
       record.snapshot.morph !== undefined ||
       record.snapshot.terrainSection !== undefined ||
       record.snapshot.pointsLines !== undefined
@@ -1521,13 +1569,14 @@ export class GpuScene {
       existing.holders++;
       return existing;
     }
-    const descriptor = this.inputs.allocateDescriptor(GPU_MESH_DESCRIPTOR.words);
+    const words = meshInputWords(geometry);
+    const descriptor = this.inputs.arena.allocateDescriptor(words);
     let logicalSlot: number;
     try {
       logicalSlot = this.inputs.allocateResource(descriptor);
     } catch (cause) {
       try {
-        this.inputs.releaseDescriptor(descriptor, GPU_MESH_DESCRIPTOR.words);
+        this.inputs.arena.releaseDescriptor(descriptor, words);
       } catch (cleanupCause) {
         throw new AggregateError([cause, cleanupCause], 'Unpublished Mesh cleanup failed', {
           cause,
@@ -1538,7 +1587,7 @@ export class GpuScene {
     const range: MeshAllocation = {
       logicalSlot,
       key,
-      version: { descriptor, geometry, references: 1 },
+      version: { descriptor, words, geometry, references: 1 },
       holders: 1,
     };
     this.sharedMeshes.set(key, range);
@@ -1562,9 +1611,9 @@ export class GpuScene {
   }
 
   private releaseMeshVersion(version: MeshVersion): void {
-    if (--version.references !== 0 || this.disposed) return;
+    if (--version.references !== 0) return;
     this.pendingMeshes.delete(version);
-    this.inputs.releaseDescriptor(version.descriptor, GPU_MESH_DESCRIPTOR.words);
+    this.inputs.arena.releaseDescriptor(version.descriptor, version.words);
   }
 
   private acquireMaterial(
@@ -1609,7 +1658,7 @@ export class GpuScene {
     const start = this.materials.allocate(count, count);
     try {
       return {
-        descriptor: this.inputs.allocateDescriptor(GPU_MATERIAL_DESCRIPTOR.words),
+        descriptor: this.inputs.arena.allocateDescriptor(GPU_MATERIAL_DESCRIPTOR.words),
         start,
         count,
         snapshot,
@@ -1646,9 +1695,9 @@ export class GpuScene {
     version: MaterialVersion,
     writes: Record<GpuSceneTableName, number[]>,
   ): void {
-    if (--version.references !== 0 || this.disposed) return;
+    if (--version.references !== 0) return;
     this.pendingMaterials.delete(version);
-    this.inputs.releaseDescriptor(version.descriptor, GPU_MATERIAL_DESCRIPTOR.words);
+    this.inputs.arena.releaseDescriptor(version.descriptor, GPU_MATERIAL_DESCRIPTOR.words);
     this.clearMaterialRows(version, writes);
   }
 
@@ -1746,9 +1795,15 @@ export class GpuScene {
   }
 
   private retireBuffer(buffer: Buffer): void {
-    if (this.disposed) return;
     this.retiredBuffers.add(buffer);
     if (this.bufferHolders.has(buffer)) return;
+    // Submitted frames hold their buffers through completion, so a disposed
+    // scene's unheld table has no pending work and retires with its owner.
+    if (this.disposed) {
+      this.retiredBuffers.delete(buffer);
+      this.device.destroyBuffer(buffer);
+      return;
+    }
     const release = () => {
       if (!this.retiredBuffers.delete(buffer)) return;
       this.device.destroyBuffer(buffer);

@@ -170,13 +170,15 @@ clears the program references; failed creation stays retryable.
 
 All render extraction reads Scene's `readPresentationWorldMatrix`: meshes,
 skin joints, cameras, light/probe captures and terrain share one sampled
-hierarchy. Skin palettes still multiply each sampled joint world by its
-inverse bind matrix. Native publications copy those same matrices and publish
-half-fixed-frame changes even when the exact simulation root did not change.
-Accepted joint-to-skin subscriptions survive pose-only upserts. Full joint handles
-and their order determine rebinding; removing Skin or an entity releases its
-subscriptions. The publisher owns a private binding copy, independent of packet
-metadata.
+hierarchy. Each sampled joint world is one shared row in the renderer-owned input
+arena; a joint edit updates that row only, with no joint-to-Skin fanout. Native
+publications copy those same matrices and publish half-fixed-frame changes even
+when the exact simulation root did not change. Static Skin membership (Skeleton
+identity plus full ordered joint handles) is published separately and alone
+determines rebinding. Deformation multiplies joint world by inverse bind only at
+actual draw demand: GPU candidates claim, deduplicate and resolve transient
+current/previous task output before culling, and Direct/uniform draws write
+transient task buffers. No binding retains a pose palette across frames.
 Physics keeps GlobalTransform.world; Render owns no interpolation history.
 
 ## Managed simulation scene SDF
@@ -232,8 +234,8 @@ contract belong to [VFX](../vfx-render/README.md#managed-scene-sdf-collision).
 
 Skinned main-pass draws select their group(2) layout from each submesh's resolved
 material pipeline contract. Direct skin and clustered skin may coexist on one
-mesh; the binding cache includes the selected layout, and palette dynamic offsets
-retain the entity slice. Pipeline preparation remains the admission authority;
+mesh; the binding cache includes the selected layout, and the uniform Skin task
+address dynamic offset selects the draw's transient output. Pipeline preparation remains the admission authority;
 recording does not probe a separate canonical skin program or infer bindings from
 shader names.
 
@@ -383,7 +385,7 @@ Only successful format selections are retained, and failed admission retries on
 the next use. This sharing ends with the compiled projection.
 Within one main raster encode, rigid clustered batches resolve their shared
 whole-scene transform and lighting binding only on first use. Each new encode
-starts fresh; skin palettes still resolve separately, and pipeline transitions
+starts fresh; Skin task output still resolves separately, and pipeline transitions
 still rebind group(2). This adds no cross-frame binding cache.
 Raster class keys use the shared geometry, selected program and physical buffers.
 Object-specific reflection-probe selections partition geometry independently of
@@ -1224,9 +1226,8 @@ withdraws its scene through this same frame shape so Fatal and Reload keep drawi
 Recovery prepares the last successfully submitted workset; the next draw still
 consumes current World edits and admits new resources through normal residency.
 Skin snapshots retain CPU pose facts for both local and published sources. Recovery
-assigns fresh palettes through the candidate device's allocator before binding or
-validation; candidate publication replaces retained receipts and cuts previous-frame
-palette history. Discarding a candidate leaves the active projection unchanged.
+rebuilds the shared Skin root from the receiver's complete current baseline;
+candidate publication replaces retained receipts and cuts previous-pose history. Discarding a candidate leaves the active projection unchanged.
 Fullscreen recovery warms only active declared post-process identities; graph-local
 resource aliases are resolved by the prepared feature and are not separate pipelines.
 Standard and Skin module preparation deduplicates exact source bytes in bounded
@@ -2478,8 +2479,9 @@ Shadow views stay cached under ordinary motion:
   frame) and `shadowCasterPendingPromotions`. Each view keeps a
   `layer: 'static'` companion identity for its settled casters. The final view
   copies the static layer and re-rasters only dynamic casters;
-  `static-layer-changed` marks a final miss caused by its static layer. A skin
-  palette change invalidates only views that draw skinned casters; a change to
+  `static-layer-changed` marks a final miss caused by its static layer. A view
+  whose selected task draws skinned casters redraws as `skin-task-demand`;
+  joint edits broadcast nothing to other views. A change to
   camera clipping with `clipShadows` invalidates every view. The static
   layer doubles shadow depth memory for directional, spot, and point maps.
 - A static-layer miss caused only by changed content, membership or LOD, with
@@ -2494,7 +2496,7 @@ Shadow views stay cached under ordinary motion:
   shadow map is below one texel in every layer. Static/dynamic classification
   changes caching, never this visibility threshold. The view row reports `minCasterDiameter` in the pool inspection and the
   raster row reports `texelCulled`, read back after each submit that re-culled
-  the view (palette-only re-culls reuse the last count), so a retained layer
+  the view (Skin-task-only re-culls reuse the last count), so a retained layer
   keeps the count of the cull that produced it. Perspective views never
   texel-cull. Shadow observation decodes only the submitted batch cull counters
   through the same map and resource-generation checks as complete LOD
@@ -4211,7 +4213,7 @@ the canonical five user-region textures plus the diffuse-transmission names. The
 
 Authored physical Standard roots use the canonical material cooker. Storage variants
 publish direct and scene-index programs with reflected artifact receipts; skin roots
-retain their palette ABI. Clustered lighting, Rect LTC and probe bindings follow the
+retain the Skin task ABI (binding 1 task output, binding 2 task address). Clustered lighting, Rect LTC and probe bindings follow the
 selected program's contract. Opaque and MASK materials can use the GPU lane when
 geometry, bounds and device limits admit it. Blend, backdrop transmission, morph and
 unsupported custom contracts retain their documented CPU paths. Color aliases may
@@ -5653,32 +5655,26 @@ void materialHandle;
 | Candidate | Main GPU lane | Shadow GPU lane | Closed result |
 |:--|:--:|:--:|:--|
 | Standard opaque or Alpha Mask, finite resources | supported | supported | `gpu` |
-| Standard skin with finite current-pose bounds derived from Mesh attributes and its joint palette | supported | supported | `gpu` |
+| Standard skin with finite current-pose bounds derived from Mesh joint envelopes and the current shared joints | supported | supported | `gpu` |
 | Skin pose bounds unavailable (missing CPU attributes, non-finite inputs, or singular mesh transform) | refused | refused | `cpu-deformation` |
 | Capable resource/pipeline not ready | refused | refused | `blocked` (`resource-not-ready`) |
 | Blend, transmission, morph, custom without a published ABI, or unsupported topology | refused | refused | `cpu-semantic` |
 | ABI-backed custom Surface/full-custom row within the producer page | supported | supported when a ShadowCaster ABI is published | `gpu` |
 
-Skin bounds are derived during extraction from the same current joint world matrices,
-inverse binds and Mesh vertex attributes consumed by the draw. The palette produces
-world-space vertices; extraction converts their envelope to mesh-local space for the
-existing culling projection without applying the mesh transform to the Skin twice.
-`MeshRenderer.conservativeSkinBounds: true` opts a moving character into current-joint
-influence envelopes. The default remains exact. Render validates every position, index
-and weight, owns private snapshots and compares their complete bytes on later frames,
-including public in-place edits. The bounded owner retains at most 32 skins and 1 MiB
-per skin; it never trusts asset identity as evidence of unchanged geometry.
-Large comparisons copy the current private buffers into one bounded 2 MiB scratch
-and compare their complete bytes with a lazy SIMD kernel. Smaller inputs, hosts
-without SIMD, and denied WebAssembly compilation retain the ordinary JavaScript
-scan. No geometry result, asset revision, or caller-owned byte buffer is cached by
-this comparison kernel.
+Skin publishes one static ordered joint Binding and shared presentation matrices.
+A joint edit changes one shared row without revisiting its Skin consumers. Actual
+pre-cull work derives current-pose bounds from shared Mesh influence envelopes;
+it does not retain a per-character vertex copy or synchronized palette. The
+mesh-node transform is not applied a second time to world-space Skin results.
 
-| Current input | Bounds production |
-|:--|:--|
-| Affine joints, nonnegative weights, ordinary buffers within the snapshot budget | Transform each joint's influence box; their union encloses the normalized blend. Include raw XYZ for nonunit sums and expand for floating-point rounding. |
-| Projective joints, signed weights, shared or unusual arrays, oversized inputs | Existing exact vertex path. |
-| Active morph or displacement | Existing conservative admission rules still apply. |
+Cook certifies `MaterialProgramAbi.positionBounds: 'standard-input'` only for
+trusted Engine vertex templates with their validated input/displacement and
+linear Skin contract. Every selected Pass must carry that proof. Paired Skin
+vertex inputs establish layout capability alone. Unknown custom vertex programs,
+missing poses, active morphs and unsupported weights or arithmetic remain
+uncullable; bind-pose bounds never substitute for missing proof. The former
+`MeshRenderer.conservativeSkinBounds` option is removed with the exact/per-Skin
+bounds owner.
 
 This policy can admit extra invisible geometry. It preserves the original mesh, pose,
 materials, shadows and animation; evaluate the extra culling admissions against the

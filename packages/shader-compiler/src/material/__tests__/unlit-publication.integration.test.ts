@@ -70,14 +70,14 @@ it('publishes real direct unlit color and skin inputs without claiming a scene-i
           expect(selection.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
             geometry === 'skinned',
           );
-          expect(selection.abi?.skinPaletteAddress).toEqual(
-            geometry === 'skinned' ? { group: 2, binding: 1, stride: 64 } : undefined,
+          expect(selection.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
+            geometry === 'skinned',
           );
           expect(
-            /var<storage(?:,\s*read)?>\s+palette/.test(wgsl),
+            /var<storage(?:,\s*read)?>\s+skinTaskOutput/.test(wgsl),
             wgsl
               .split('\n')
-              .filter((line) => line.includes('palette'))
+              .filter((line) => line.includes('skinTask'))
               .join('\n'),
           ).toBe(geometry === 'skinned');
         }

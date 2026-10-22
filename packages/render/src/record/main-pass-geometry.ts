@@ -13,6 +13,7 @@ import { variantSetFromDefines } from './helpers';
 import { detectNineSliceScaleTooSmall } from './main-pass-material';
 import { drawMaterial } from './material-pass-selection';
 import { materialUniformSlot } from './material-uniforms';
+import type { SkinTaskBinding } from './skin-tasks';
 import { resolveSpriteInstancesBuffer } from './sprite-instance-buffer';
 import { submeshRange } from './submesh-range';
 // @forgeax/engine-runtime - RenderSystem record stage: main-pass geometry draws.
@@ -527,15 +528,14 @@ export function resolveGeometryMaterialVariantSet(
   return variantSetFromVertexLayoutProjection(projection, variantSet);
 }
 
-function geometrySkinBindGroup(
+export function geometrySkinBindGroup(
   c: _InternalRenderPipelineContext,
-  skinSlice: RenderableSnapshot['skin'],
+  task: SkinTaskBinding | undefined,
   meshBinding: ReturnType<typeof meshSsboBufferBinding>,
   contract: MaterialShaderPipelineEntry['group2Contract'],
 ): BindGroup | null {
   const { pipelineState, runtime, frameState, bindGroupCounts } = c;
-  const skinAllocator = pipelineState.skinPaletteAllocator;
-  if (skinAllocator === null || skinSlice === undefined) return null;
+  if (task === undefined) return null;
   if (contract !== 'skin' && contract !== 'skin-cluster') return null;
   const layout =
     contract === 'skin-cluster'
@@ -558,7 +558,8 @@ function geometrySkinBindGroup(
     [
       layout,
       meshBinding.buffer,
-      skinSlice.buffer,
+      task.data,
+      task.auxiliary,
       ...(hdrpBuffers === null ? [] : [hdrpBuffers]),
       ...(hdrpBuffers === null || c.hdrpSsaoBlurredView === undefined
         ? []
@@ -572,8 +573,7 @@ function geometrySkinBindGroup(
           hdrpBuffers,
           layout,
           meshBinding.buffer,
-          skinSlice.buffer,
-          skinAllocator.bindingWindowBytes,
+          task,
           c.hdrpSsaoBlurredView === undefined
             ? { enabled: false }
             : { enabled: true, ssaoBlurredView: c.hdrpSsaoBlurredView },
@@ -590,12 +590,7 @@ function geometrySkinBindGroup(
       const result = runtime.device.createBindGroup({
         label: 'pbr-skin-mesh-bg',
         layout,
-        entries: createPbrSkinMeshBindGroupEntries(
-          meshBinding.buffer,
-          meshBindSize,
-          skinSlice.buffer,
-          skinAllocator.bindingWindowBytes,
-        ),
+        entries: createPbrSkinMeshBindGroupEntries(meshBinding.buffer, meshBindSize, task),
       });
       if (!result.ok) throw result.error;
       return result.value;
@@ -955,13 +950,13 @@ export function recordGeometryDraws(
     authoredVariantSet: string | undefined,
     pipelinePreparation = false,
   ): boolean => {
-    const isSkinEntry = entry.source.skin !== undefined;
+    const isSkinEntry = entry.source.skinBinding !== undefined;
     const probeBlendRecordAvailable =
       runtime.device.caps.storageBuffer && entry.source.probeBlendRecord !== undefined;
     const smMaterialShaderId =
       selectedPass !== undefined
         ? selectedShaderId
-        : entry.source.skin !== undefined
+        : entry.source.skinBinding !== undefined
           ? isStandardPbrSkinMaterialShader(submeshMaterial.materialShaderId)
             ? submeshMaterial.materialShaderId
             : SKIN_MATERIAL_SHADER_ID
@@ -1204,7 +1199,7 @@ export function recordGeometryDraws(
           if (oit !== undefined) {
             const eligibility = classifyOitDraw({
               materialShaderId: selectedPass.materialShaderId,
-              skinned: entry.source.skin !== undefined,
+              skinned: entry.source.skinBinding !== undefined,
               renderState: selectedPass.renderState,
               fragmentEntry,
             });
@@ -1433,48 +1428,14 @@ export function recordGeometryDraws(
 
     // feat-20260611 R2 / M8 / w28 (IS-14): skin entries need a 3-binding
     // group(2) BG matching `pbr-skin-pl` (binding 0 mesh-array UBO +
-    // binding 1 current palette UBO + binding 2 previous palette UBO).
-    // Building this here -- not in the
-    // `meshBindGroup` factory above -- because the binding-shape
-    // (1-entry vs 3-entry) is per-entry, not per-frame. URP / HDRP
-    // entries keep using `meshGroup2` (1-entry mesh-array or HDRP
-    // unified). The skin-variant cache key includes both buffer
-    // identities so a future allocator-driven palette buffer rotation
-    // invalidates the BG without manual eviction.
-    //
-    // PSO-availability gate: only swap to the skin BG when (a) the
-    // skin pipeline layout itself was built (charter P3 fail-stop on
-    // BGL-build failure), AND (b) the skin PSO cache returns a non-null
-    // pipeline for this entry. Without (b), the per-submesh selector
-    // below falls back to URP `standardPipeline` (`pbr-pl` layout,
-    // 1-entry mesh-array BGL); binding the 3-entry skin BG against
-    // that pipeline reproduces the exact `pbr-mesh-array-bgl ... does
-    // not match layout pbr-skin-mesh-array-bgl` device error R1
-    // captured. Mirrors the uniform null skip-draw pattern (M6-T1).
+    // The selected submesh Pass owns its group(2) contract. Rigid Passes on
+    // the same Mesh do not demand Skin or borrow another Pass's task binding.
     let group2BindGroup: BindGroup = meshGroup2 as BindGroup;
-    // feat-20260612-skin-palette-per-frame-upload M3 / m3-2: dyn-offset
-    // tuple follows the skin group2 offset contract. Defaults to the
-    // length-1 non-skin shape; the skin branch below re-computes with the
-    // per-entity `entry.source.skin.byteOffset` cursor.
     let meshBinding: ReturnType<typeof meshSsboBufferBinding> | undefined;
     let directMeshGroup = meshBindGroup;
     let group2DynamicOffsets: readonly number[] = meshGroup2DynamicOffsets;
-    const isSkinEntry = entry.source.skin !== undefined;
-    // feat-20260612-skin-palette-per-frame-upload M1 / m1-3 + M6: the
-    // record stage reads the GPU buffer reference through
-    // `entry.source.skin.buffer` (per-slice carrier set at extract time
-    // by allocateSlice). On the storage path every slice carries the
-    // same shared buffer pointer, so the BG cache key collapses to one
-    // entry per frame (miss=1 + hit=N-1). On the uniform fallback path
-    // each slice carries its own per-entity 16320 B UBO, so the BG
-    // cache key naturally splits per entity (one BG per buffer pointer)
-    // -- there is no shared-buffer assumption to break under
-    // 16 KiB UBO cap. Charter P3 explicit failure preserved: skin
-    // entries skip when the pipeline layout is missing OR the slice
-    // failed to allocate (no buffer field). dynOffset[1] = byteOffset
-    // is 0 on the uniform path (entry already covers the full buffer)
-    // and walks 0, 1536, 3072, ... on the storage path.
-    const skinSlice = entry.source.skin;
+    const isSkinEntry = entry.source.skinBinding !== undefined;
+    let skinTask: SkinTaskBinding | undefined;
 
     // feat-20260520-2d-sprite-layer-mvp M-3 / w25 (@fallback sprite
     // bucket): sprite entries get a per-entity material BindGroup so
@@ -1814,13 +1775,29 @@ export function recordGeometryDraws(
           pipelineState.meshStorageBuffer.pages !== undefined
             ? clusteredMeshSlotBindGroup(c, meshSlot * MESH_PER_ENTITY_STRIDE)
             : meshGroup2;
-        const selectedGroup = isSkinEntry
-          ? geometrySkinBindGroup(c, skinSlice, drawMeshBinding, materialGroup2Contract)
+        const requiresSkin =
+          materialGroup2Contract === 'skin' || materialGroup2Contract === 'skin-cluster';
+        if (requiresSkin) {
+          if (!isSkinEntry)
+            throw new RhiError({
+              code: 'rhi-descriptor-invalid',
+              expected: 'a Skin Binding for the selected material Skin contract',
+              hint: 'bind a complete Skin source before recording a Skin-input material',
+            });
+          skinTask ??= runtime.demandSkinTask?.(entry.source);
+          if (skinTask === undefined) continue;
+        }
+        const selectedGroup = requiresSkin
+          ? geometrySkinBindGroup(c, skinTask, drawMeshBinding, materialGroup2Contract)
           : selectMaterialGroup2(entryMeshGroup2, directMeshGroup, materialGroup2Contract);
         if (selectedGroup === null) continue;
         group2BindGroup = selectedGroup;
-        group2DynamicOffsets = isSkinEntry
-          ? pbrSkinMeshDynamicOffsets(drawMeshBinding.byteOffset, skinSlice?.byteOffset ?? 0)
+        group2DynamicOffsets = requiresSkin
+          ? pbrSkinMeshDynamicOffsets(
+              drawMeshBinding.byteOffset,
+              skinTask as SkinTaskBinding,
+              runtime.device.caps.storageBuffer,
+            )
           : meshGroup2DynamicOffsets;
         if (diagnosticsEnabled && submeshMaterial.textureHandles !== undefined) {
           console.error(
@@ -1834,11 +1811,11 @@ export function recordGeometryDraws(
                   handle,
                 }),
               ),
-              skin: isSkinEntry
+              skin: requiresSkin
                 ? {
                     group2Contract: materialGroup2Contract,
-                    paletteBufferReady: skinSlice?.buffer !== undefined,
-                    paletteByteOffset: skinSlice?.byteOffset,
+                    taskReady: skinTask !== undefined,
+                    taskByteOffset: skinTask?.dataOffset,
                     dynamicOffsets: [...group2DynamicOffsets],
                   }
                 : undefined,
@@ -1875,7 +1852,7 @@ export function recordGeometryDraws(
                       passKind !== 'forward' ||
                       fold !== undefined ||
                       entry.source.instances !== undefined ||
-                      entry.source.skin !== undefined ||
+                      entry.source.skinBinding !== undefined ||
                       draw.instanceCount !== 1,
                     ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
                   },

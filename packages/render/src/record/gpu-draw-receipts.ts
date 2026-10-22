@@ -1,6 +1,5 @@
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
-import { skinLaneReason } from '../gpu-driven/production-raster-prepare';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 
@@ -73,13 +72,11 @@ export function emitGpuDrivenDrawReceipts(
       }
       cpuDraws++;
       summary.cpuDraws++;
-      const skinReason = skinLaneReason(source);
-      if (skinReason !== undefined || draw?.preparationError?.detail.owner === 'skin') {
+      if (draw?.preparationError?.detail.owner === 'skin') {
         const reason =
-          skinReason ??
-          (draw?.preparationError?.detail.reason === 'skin-address-missing'
+          draw?.preparationError?.detail.reason === 'skin-address-missing'
             ? 'skin-address-missing'
-            : 'resource-not-ready');
+            : 'resource-not-ready';
         summary.deformationDraws++;
         deformationReasons.set(reason, (deformationReasons.get(reason) ?? 0) + 1);
       } else if (

@@ -178,6 +178,7 @@ describe('standalone host', () => {
                   module: { specifier: './build.ts' },
                   config: {
                     dynamicGeometryMeshBudgetBytes: budget,
+                    assetBudgetBytes: budget * 16,
                     standardProfile,
                     pipelineLibrary,
                     time,
@@ -211,6 +212,8 @@ describe('standalone host', () => {
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
+            // Both execution placements receive the admitted AssetRegistry content budget.
+            expect(call.split(`assetBudgetBytes: ${budget * 16},`)).toHaveLength(3);
             expect(call.split(`time: ${JSON.stringify(time)},`)).toHaveLength(3);
             const appCall = (
               await transformWithOxc(

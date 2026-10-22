@@ -195,8 +195,7 @@ export function projectSceneFields(
     const mesh = resolved.value,
       field = mesh.distanceField;
     if (
-      source.skin !== undefined ||
-      source.skinPose !== undefined ||
+      source.skinBinding !== undefined ||
       source.morph !== undefined ||
       mesh.morphWeights !== undefined ||
       mesh.morphTargets !== undefined

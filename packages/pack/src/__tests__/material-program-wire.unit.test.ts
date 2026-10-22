@@ -130,6 +130,30 @@ describe('package material program sharing', () => {
     for (const input of [unused, malformed, unknown])
       expect(decodeMaterialProgramWire(input).ok).toBe(false);
   });
+  it('shares one ABI between distinct program specializations', () => {
+    const source = fixture();
+    const second = required(required(required(source.assets[1]).payload.cooked).programs[0]);
+    second.specializationKey = 'sha256:other';
+    const encoded = JSON.parse(JSON.stringify(encodeMaterialProgramWire(source)));
+    expect(encoded).toMatchObject({ schemaVersion: 'pack-material-programs/2' });
+    expect(encoded.programs).toHaveLength(2);
+    expect(encoded.abis).toEqual([{ fields: ['baseColor'] }]);
+    expect(encoded.programs.map((entry: typeof program) => entry.selections[0]?.abi)).toEqual([
+      0, 0,
+    ]);
+    const result = decodeMaterialProgramWire(encoded);
+    expect(result).toMatchObject({ ok: true, value: source });
+  });
+  it.each([-1, 0.5, '0', null, {}, 999])('rejects invalid ABI reference %s', (index) => {
+    const input = wire();
+    input.programs[0].selections[0].abi = index;
+    expect(decodeMaterialProgramWire(input).ok).toBe(false);
+  });
+  it('rejects unused ABI entries', () => {
+    const input = wire();
+    input.abis.push({ fields: ['unused'] });
+    expect(decodeMaterialProgramWire(input).ok).toBe(false);
+  });
   it('shares records nested in direct and record material representations', () => {
     const source = fixture();
     const first = required(source.assets[0]),

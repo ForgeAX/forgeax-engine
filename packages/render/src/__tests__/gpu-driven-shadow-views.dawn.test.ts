@@ -853,7 +853,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     if (pointIdentity === undefined || pointInput === undefined) {
       throw new Error('point shadow input missing');
     }
-    pool.invalidate('skin-palette-changed', pointIdentity);
+    pool.invalidate('skin-task-demand', pointIdentity);
     expect(updateShadowView(pool, pointInput, pointInput.sourcePlan).unwrap().cache).toBe(
       'invalidated',
     );

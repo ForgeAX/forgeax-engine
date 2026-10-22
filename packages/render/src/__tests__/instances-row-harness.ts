@@ -105,7 +105,7 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
   const lease = createRenderReadLease(world);
   const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames([world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
+    extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,

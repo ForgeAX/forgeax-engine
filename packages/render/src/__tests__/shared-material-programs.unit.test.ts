@@ -426,6 +426,8 @@ it('distinguishes skin and color ABI variants under one material identity', () =
   const result = collectGpuDrivenMaterialArtifacts({ ...f.input, batches, resolve });
   expect(result.materialArtifacts.size).toBe(2);
   expect(result.shadowMaterialArtifacts.size).toBe(2);
+  expect(result.firstArtifact?.receipt).toBe(rigid);
+  expect(result.firstSkinArtifact?.receipt).toBe(skinned);
   expect(
     resolve.mock.calls.map(([, request]) => {
       if (typeof request !== 'object')

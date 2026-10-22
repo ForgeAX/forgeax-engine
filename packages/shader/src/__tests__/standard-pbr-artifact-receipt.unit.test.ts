@@ -1,6 +1,7 @@
-import { derive } from '@forgeax/engine-types';
+import { derive, isMaterialProgramAbi } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
+  createMaterialProgramArtifactReceipt,
   createStandardPbrArtifactReceipt,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '../material/artifact-types.js';
@@ -47,6 +48,24 @@ const CASES = [
 ] as const;
 
 describe('Standard PBR artifact receipt vertex ABI', () => {
+  it('keeps generic vertex programs unbounded unless their producer certifies the contract', () => {
+    const unknown = createMaterialProgramArtifactReceipt({
+      schema: [],
+      directEntry: 'vs_main',
+      vertexInputs: [],
+    });
+    expect(unknown.positionBounds).toBeUndefined();
+    expect(isMaterialProgramAbi(unknown)).toBe(true);
+    expect(isMaterialProgramAbi({ ...unknown, positionBounds: 'arbitrary' })).toBe(false);
+    const known = createMaterialProgramArtifactReceipt({
+      schema: [],
+      directEntry: 'vs_main',
+      vertexInputs: [],
+      positionBounds: 'standard-input',
+    });
+    expect(isMaterialProgramAbi(known)).toBe(true);
+    expect(known.receiptIdentity).not.toBe(unknown.receiptIdentity);
+  });
   it.each(CASES)('publishes the $name input sequence in location order', (testCase) => {
     const receipt = createStandardPbrArtifactReceipt(
       testCase.skinned,
@@ -54,12 +73,14 @@ describe('Standard PBR artifact receipt vertex ABI', () => {
     );
 
     expect(receipt.vertexInputs).toEqual(testCase.vertexInputs);
+    expect(receipt.positionBounds).toBe('standard-input');
+    expect(receipt.generation).toBe(5);
     expect(receipt.reflection.vertexInputs).toEqual(testCase.vertexInputs);
     expect(receipt.vertexInputs.map((input) => input.location)).toEqual(
       testCase.vertexInputs.map((input) => input.location),
     );
-    expect(receipt.skinPaletteAddress).toEqual(
-      testCase.skinned ? { group: 2, binding: 1, stride: 64 } : undefined,
+    expect(receipt.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
+      testCase.skinned,
     );
   });
 
@@ -87,7 +108,7 @@ describe('Standard PBR artifact receipt vertex ABI', () => {
     const skinColor = createStandardPbrArtifactReceipt(true, true);
 
     expect(rigid.receiptIdentity).toBe(
-      `standard-pbr/${derive(STANDARD_PIPELINE_PARAM_SCHEMA).layoutIdentity}/address-16`,
+      `standard-pbr/${derive(STANDARD_PIPELINE_PARAM_SCHEMA).layoutIdentity}/address-16/vertex-contract-5`,
     );
     expect(rigid.reflection.layoutIdentity).toBe(rigid.receiptIdentity);
     expect(skin.receiptIdentity).toBe(rigid.receiptIdentity);

@@ -601,6 +601,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       ...(init.dynamicGeometryMeshBudgetBytes === undefined
         ? {}
         : { dynamicGeometryMeshBudgetBytes: init.dynamicGeometryMeshBudgetBytes }),
+      ...(init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes }),
     };
     if (init.diagnostics?.rhiCapture === true && !init.workers.render.enabled) {
       const attachment = await attachWorkerRhiRecorder();
@@ -638,7 +639,12 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
               ? {}
               : { expectedScope: init.assetCatalog.expectedScope }),
           });
-    const assets = host?.assets ?? (await createPublicationAssets(bundler));
+    const assets =
+      host?.assets ??
+      (await createPublicationAssets(
+        bundler,
+        init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes },
+      ));
     try {
       const assembly = createAssetRuntimeAssembly(assets, {
         ...(catalogSource === undefined ? {} : { catalogSource }),

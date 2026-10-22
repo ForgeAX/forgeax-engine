@@ -95,14 +95,13 @@ export async function prepareVfxGpuEffect(
   if (
     input.payload.kind !== 'particle-effect' ||
     !Array.isArray(input.payload.emitters) ||
-    typeof input.payload.programFingerprint !== 'string' ||
-    !record(input.payload.program)
+    typeof input.payload.programFingerprint !== 'string'
   ) {
     return failure(
       invalidCode,
       input.guid,
       'payload',
-      'a schemaVersion 3 particle payload with its complete cooked program and fingerprint',
+      'a schemaVersion 3 particle payload with its emitters and program fingerprint',
       'cold-cook the source with the current VFX compiler and retry the load',
     );
   }
@@ -137,20 +136,8 @@ export async function prepareVfxGpuEffect(
       'recook with the current VFX compiler ABI',
     );
   }
+  // The artifact is the only program copy; the payload carries its fingerprint.
   const decodedEmitters = decoded.emitters as VfxGpuEmitterProgram[];
-  if (
-    input.payload.program.format !== expectedFormat ||
-    input.payload.program.fingerprint !== input.payload.programFingerprint ||
-    !Array.isArray(input.payload.program.emitters)
-  ) {
-    return failure(
-      invalidCode,
-      input.guid,
-      'payload.program',
-      'the complete canonical program matching payload.programFingerprint',
-      'recook the particle effect atomically',
-    );
-  }
   const actualFingerprint = await fingerprint(artifact.bytes);
   if (actualFingerprint !== input.payload.programFingerprint) {
     return failure(

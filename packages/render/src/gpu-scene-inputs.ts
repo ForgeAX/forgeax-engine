@@ -1,6 +1,7 @@
 import { type Buffer, err, ok, type Result, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { type BatchMemberEntry, BatchSources, MemberCandidates } from './gpu-driven/batch-members';
 import type { GpuDrivenBatch, GpuDrivenCandidate } from './gpu-driven/batch-topology';
+import { GpuInputArena, type GpuInputUpload, gpuInputByteLimit } from './gpu-input-arena';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_COPY_SRC,
@@ -12,8 +13,19 @@ import { StableRangeAllocator } from './stable-range-allocator';
 
 /** binding3 addresses are u32 word offsets; zero is the null child. */
 export const GPU_MEMBER_WORDS = 8;
-export const GPU_MATERIAL_DESCRIPTOR = Object.freeze({ words: 2, payload: 0, radius: 1 });
-export const GPU_MESH_DESCRIPTOR = Object.freeze({ words: 7, flags: 0, min: 1, max: 4 });
+export const GPU_MATERIAL_DESCRIPTOR = Object.freeze({
+  words: 3,
+  payload: 0,
+  radius: 1,
+  positionBounds: 2,
+});
+export const GPU_MESH_DESCRIPTOR = Object.freeze({
+  words: 8,
+  flags: 0,
+  min: 1,
+  max: 4,
+  skinEnvelopes: 7,
+});
 
 /** Numeric encoding/lifetime only: never holds a CPU source or native Mesh payload. */
 class InputNode {
@@ -67,7 +79,6 @@ function u32(value: number): number {
 
 /** One Scene-owned encoding of the existing source/member roots, shared by views. */
 export class GpuSceneInputs {
-  private readonly ranges = new StableRangeAllocator();
   private readonly resourceSlots = new StableRangeAllocator();
   private resources: ResourcePage | undefined;
   private resourceRevision = 0;
@@ -77,8 +88,9 @@ export class GpuSceneInputs {
   private readonly sourceMemo = new WeakMap<Node<GpuDrivenBatch>, InputNode>();
   private source: Node<GpuDrivenBatch> | undefined;
   private current: InputNode | undefined;
-  private words = new Uint32Array(256);
-  private readonly pending = new Map<number, number>();
+  private readonly upload: GpuInputUpload;
+  private readonly ownsArena: boolean;
+  readonly arena: GpuInputArena;
   private buffer: Buffer | undefined;
   private bufferBytes = 0;
   private readonly bufferHolders = new Map<Buffer, number>();
@@ -86,13 +98,19 @@ export class GpuSceneInputs {
   private disposed = false;
   memberNodesWritten = 0;
   memberNodesReleased = 0;
-  uploadBytes = 0;
+  get uploadBytes(): number {
+    return this.upload.uploadBytes;
+  }
 
   constructor(
     private readonly device: RhiDevice,
     private readonly primitiveIndex: (slot: number) => number | undefined,
+    arena?: GpuInputArena,
   ) {
-    this.ranges.reset(1);
+    this.ownsArena = arena === undefined;
+    this.arena = arena ?? new GpuInputArena(gpuInputByteLimit(device));
+    this.upload = this.arena.connect();
+    if (this.ownsArena) this.upload.activate();
     this.resourceSlots.reset(1);
   }
 
@@ -105,55 +123,6 @@ export class GpuSceneInputs {
     this.current = next;
     this.source = sources.root;
     this.release(previous);
-  }
-
-  /** The existing resource Version owns this numeric range until its last release. */
-  allocateDescriptor(wordCount: number): number {
-    if (this.disposed) throw invalid('a live GPU input owner');
-    u32(wordCount);
-    if (wordCount === 0) throw invalid('a nonempty numeric descriptor');
-    const address = this.allocateWords(wordCount);
-    try {
-      this.words.fill(0, address, address + wordCount);
-      this.pending.set(address, wordCount);
-      return address;
-    } catch (cause) {
-      this.pending.delete(address);
-      this.ranges.release(address, wordCount);
-      throw cause;
-    }
-  }
-
-  /** Numeric storage only; GpuScene owns version pins and resource publication. */
-  writeDescriptor(address: number, source: DataView, wordCount: number): void {
-    if (this.disposed) throw invalid('a live GPU input owner');
-    u32(address);
-    u32(wordCount);
-    if (
-      address === 0 ||
-      wordCount === 0 ||
-      address + wordCount > this.words.length ||
-      wordCount * 4 > source.byteLength
-    )
-      throw invalid('a complete numeric descriptor within shared input storage');
-    let changed = false;
-    for (let index = 0; index < wordCount; index++) {
-      const value = source.getUint32(index * 4, true);
-      if (this.words[address + index] === value) continue;
-      this.words[address + index] = value;
-      changed = true;
-    }
-    if (changed) this.pending.set(address, wordCount);
-  }
-
-  releaseDescriptor(address: number, wordCount: number): void {
-    if (this.disposed) return;
-    u32(address);
-    u32(wordCount);
-    if (address === 0 || wordCount === 0 || address + wordCount > this.words.length)
-      throw invalid('a numeric descriptor range within shared input storage');
-    this.pending.delete(address);
-    this.ranges.release(address, wordCount);
   }
 
   allocateResource(descriptor: number): number {
@@ -198,7 +167,7 @@ export class GpuSceneInputs {
     let page = root;
     for (let shift = 24; shift > 0; shift -= 8) page = page?.children.get((slot >>> shift) & 255);
     if (page === undefined) return undefined;
-    const descriptor = this.words[page.address + (slot & 255)];
+    const descriptor = this.arena.readWord(page.address + (slot & 255));
     return descriptor === ABSENT_RESOURCE ? undefined : descriptor;
   }
 
@@ -239,27 +208,29 @@ export class GpuSceneInputs {
       if (shift === 0 && descriptor === ABSENT_RESOURCE && previous !== undefined) {
         let remaining = false;
         for (let index = 0; index < RESOURCE_PAGE_WORDS; index++) {
-          if (index !== key && this.words[previous.address + index] !== ABSENT_RESOURCE) {
+          if (index !== key && this.arena.readWord(previous.address + index) !== ABSENT_RESOURCE) {
             remaining = true;
             break;
           }
         }
         if (!remaining) return undefined;
       }
-      address = this.allocateWords(RESOURCE_PAGE_WORDS);
+      address = this.arena.allocateDescriptor(RESOURCE_PAGE_WORDS);
       if (previous === undefined)
-        this.words.fill(ABSENT_RESOURCE, address, address + RESOURCE_PAGE_WORDS);
-      else this.words.copyWithin(address, previous.address, previous.address + RESOURCE_PAGE_WORDS);
-      this.words[address + key] =
-        shift === 0 ? descriptor : (children.get(key)?.address ?? ABSENT_RESOURCE);
-      this.pending.set(address, RESOURCE_PAGE_WORDS);
+        this.arena.fillDescriptor(address, RESOURCE_PAGE_WORDS, ABSENT_RESOURCE);
+      else this.arena.copyDescriptor(address, previous.address, RESOURCE_PAGE_WORDS);
+      this.arena.writeDescriptorWord(
+        address,
+        RESOURCE_PAGE_WORDS,
+        key,
+        shift === 0 ? descriptor : (children.get(key)?.address ?? ABSENT_RESOURCE),
+      );
       this.resourcePagesWritten++;
       return new ResourcePage(address, children);
     } catch (cause) {
       for (const child of children.values()) this.releasePage(child);
       if (address !== undefined) {
-        this.pending.delete(address);
-        this.ranges.release(address, RESOURCE_PAGE_WORDS);
+        this.arena.releaseDescriptor(address, RESOURCE_PAGE_WORDS);
       }
       throw cause;
     }
@@ -267,46 +238,30 @@ export class GpuSceneInputs {
 
   private releasePage(page: ResourcePage | undefined): void {
     if (page === undefined || --page.holders !== 0) return;
-    for (const child of page.children.values()) this.releasePage(child);
-    page.children.clear();
-    if (!this.disposed) {
-      this.pending.delete(page.address);
-      this.ranges.release(page.address, RESOURCE_PAGE_WORDS);
-      this.resourcePagesReleased++;
+    let failure: AggregateError | undefined;
+    for (const child of page.children.values()) {
+      try {
+        this.releasePage(child);
+      } catch (cause) {
+        if (failure === undefined)
+          failure = new AggregateError([cause], 'Resource page retirement failed', { cause });
+        else failure.errors.push(cause);
+      }
     }
+    page.children.clear();
+    try {
+      this.arena.releaseDescriptor(page.address, RESOURCE_PAGE_WORDS);
+      this.resourcePagesReleased++;
+    } catch (cause) {
+      if (failure === undefined)
+        failure = new AggregateError([cause], 'Resource page retirement failed', { cause });
+      else failure.errors.push(cause);
+    }
+    if (failure !== undefined) throw failure;
   }
 
   private get byteLimit(): number {
-    // RHI Null deliberately reports no numeric limits. As with view allocation,
-    // only finite positive device limits constrain the u32-addressable arena.
-    const storage = Number(this.device.limits.maxStorageBufferBindingSize);
-    const buffer = Number(this.device.limits.maxBufferSize);
-    return Math.min(
-      0xffffffff * 4,
-      Number.isFinite(storage) && storage > 0 ? storage : Infinity,
-      Number.isFinite(buffer) && buffer > 0 ? buffer : Infinity,
-    );
-  }
-
-  /** Capacity growth is distinct from a normal bounded path copy. */
-  private allocateWords(count: number): number {
-    const address = this.ranges.allocate(count);
-    try {
-      const end = u32(address + count);
-      const maxWords = Math.floor(this.byteLimit / 4);
-      if (end > maxWords) throw invalid('shared GPU input allocation fits device limits');
-      if (end > this.words.length) {
-        let capacity = this.words.length;
-        while (capacity < end) capacity = Math.min(capacity * 2, maxWords);
-        const next = new Uint32Array(capacity);
-        next.set(this.words);
-        this.words = next;
-      }
-      return address;
-    } catch (cause) {
-      this.ranges.release(address, count);
-      throw cause;
-    }
+    return gpuInputByteLimit(this.device);
   }
 
   private retain(node: InputNode | undefined): InputNode | undefined {
@@ -324,6 +279,7 @@ export class GpuSceneInputs {
       return;
     }
     const pending = [root];
+    let failure: AggregateError | undefined;
     while (pending.length > 0) {
       const node = pending.pop();
       if (node === undefined) break;
@@ -333,12 +289,18 @@ export class GpuSceneInputs {
       if (node.right !== undefined) pending.push(node.right);
       if (node.members !== undefined) pending.push(node.members);
       node.left = node.right = node.members = undefined;
-      if (node.words !== 0 && !this.disposed) {
-        this.pending.delete(node.address);
-        this.ranges.release(node.address, node.words);
-        this.memberNodesReleased++;
+      if (node.words !== 0) {
+        try {
+          this.arena.releaseDescriptor(node.address, node.words);
+          this.memberNodesReleased++;
+        } catch (cause) {
+          if (failure === undefined)
+            failure = new AggregateError([cause], 'Member retirement failed', { cause });
+          else failure.errors.push(cause);
+        }
       }
     }
+    if (failure !== undefined) throw failure;
   }
 
   private encodeSource(source: Node<GpuDrivenBatch> | undefined): InputNode | undefined {
@@ -405,15 +367,14 @@ export class GpuSceneInputs {
   }
 
   private writeNode(values: readonly number[], left?: InputNode, right?: InputNode): InputNode {
-    const address = this.allocateWords(GPU_MEMBER_WORDS);
+    const address = this.arena.allocateDescriptor(GPU_MEMBER_WORDS);
     try {
-      this.words.set(values, address);
-      this.pending.set(address, GPU_MEMBER_WORDS);
+      for (let index = 0; index < GPU_MEMBER_WORDS; index++)
+        this.arena.writeDescriptorWord(address, GPU_MEMBER_WORDS, index, values[index] as number);
       this.memberNodesWritten++;
       return new InputNode(address, GPU_MEMBER_WORDS, left, right);
     } catch (cause) {
-      this.pending.delete(address);
-      this.ranges.release(address, GPU_MEMBER_WORDS);
+      this.arena.releaseDescriptor(address, GPU_MEMBER_WORDS);
       throw cause;
     }
   }
@@ -475,6 +436,12 @@ export class GpuSceneInputs {
   private retireBuffer(buffer: Buffer): void {
     this.retiredBuffers.add(buffer);
     if (this.bufferHolders.has(buffer)) return;
+    // Held reads cover submitted work; a disposed owner retires the rest now.
+    if (this.disposed) {
+      this.retiredBuffers.delete(buffer);
+      this.device.destroyBuffer(buffer);
+      return;
+    }
     void this.device.queue.onSubmittedWorkDone().then(
       () => {
         if (this.retiredBuffers.delete(buffer)) this.device.destroyBuffer(buffer);
@@ -486,7 +453,7 @@ export class GpuSceneInputs {
   }
 
   private flush(): Result<GpuInputBuffer, RhiError> {
-    const byteLength = this.words.byteLength;
+    const byteLength = this.arena.byteLength;
     const limit = this.byteLimit;
     if (byteLength > limit)
       return err(invalid('shared GPU input arena fits device storage limits'));
@@ -498,7 +465,7 @@ export class GpuSceneInputs {
         mappedAtCreation: false,
       });
       if (!created.ok) return created;
-      const uploaded = this.device.queue.writeBuffer(created.value, 0, this.words);
+      const uploaded = this.upload.flush(this.device.queue, created.value, true);
       if (!uploaded.ok) {
         this.device.destroyBuffer(created.value);
         return uploaded;
@@ -506,26 +473,22 @@ export class GpuSceneInputs {
       const previous = this.buffer;
       this.buffer = created.value;
       this.bufferBytes = byteLength;
-      this.uploadBytes += byteLength;
-      this.pending.clear();
       if (previous !== undefined) this.retireBuffer(previous);
     } else {
-      for (const [address, count] of this.pending) {
-        const uploaded = this.device.queue.writeBuffer(
-          this.buffer,
-          address * 4,
-          this.words.subarray(address, address + count),
-        );
-        if (!uploaded.ok) return uploaded;
-        this.uploadBytes += count * 4;
-      }
-      this.pending.clear();
+      const uploaded = this.upload.flush(this.device.queue, this.buffer, false);
+      if (!uploaded.ok) return uploaded;
     }
     return ok({
       buffer: this.buffer,
       byteLength: this.bufferBytes,
       resourceRoot: this.resources?.address ?? ABSENT_RESOURCE,
     });
+  }
+
+  /** Transfer the single incremental upload owner only after candidate acceptance. */
+  activate(): void {
+    if (this.disposed) throw invalid('a live GPU Scene input incarnation');
+    this.upload.activate();
   }
 
   capture(): GpuInputReadFrame {
@@ -593,39 +556,62 @@ export class GpuSceneInputs {
       release: () => {
         if (state === 'released') return;
         state = 'released';
-        this.releasePage(resources);
+        const held = resources;
         resources = undefined;
         source = undefined;
-        for (const root of roots) this.release(root);
-        roots.clear();
-        for (const buffer of buffers) {
-          const holders = (this.bufferHolders.get(buffer) ?? 1) - 1;
-          if (holders > 0) this.bufferHolders.set(buffer, holders);
-          else {
-            this.bufferHolders.delete(buffer);
-            if (this.retiredBuffers.has(buffer)) this.retireBuffer(buffer);
+        let failure: AggregateError | undefined;
+        const attempt = (operation: () => void) => {
+          try {
+            operation();
+          } catch (cause) {
+            if (failure === undefined)
+              failure = new AggregateError([cause], 'GPU read retirement failed', { cause });
+            else failure.errors.push(cause);
           }
-        }
+        };
+        attempt(() => this.releasePage(held));
+        for (const root of roots) attempt(() => this.release(root));
+        roots.clear();
+        for (const buffer of buffers)
+          attempt(() => {
+            const holders = (this.bufferHolders.get(buffer) ?? 1) - 1;
+            if (holders > 0) this.bufferHolders.set(buffer, holders);
+            else {
+              this.bufferHolders.delete(buffer);
+              if (this.retiredBuffers.has(buffer)) this.retireBuffer(buffer);
+            }
+          });
         buffers.clear();
+        if (failure !== undefined) throw failure;
       },
     };
   }
 
   dispose(): void {
     if (this.disposed) return;
-    this.release(this.current);
-    this.releasePage(this.resources);
-    this.resources = undefined;
-    this.current = this.source = undefined;
     this.disposed = true;
-    this.ranges.reset(1);
-    this.resourceSlots.reset(1);
-    this.words = new Uint32Array(0);
-    this.pending.clear();
-    if (this.buffer !== undefined) this.device.destroyBuffer(this.buffer);
+    const source = this.current,
+      resources = this.resources,
+      buffer = this.buffer;
+    this.current = this.source = undefined;
+    this.resources = undefined;
     this.buffer = undefined;
-    for (const buffer of this.retiredBuffers) this.device.destroyBuffer(buffer);
-    this.retiredBuffers.clear();
-    this.bufferHolders.clear();
+    let failure: AggregateError | undefined;
+    const attempt = (operation: () => void) => {
+      try {
+        operation();
+      } catch (cause) {
+        if (failure === undefined)
+          failure = new AggregateError([cause], 'GPU input retirement failed', { cause });
+        else failure.errors.push(cause);
+      }
+    };
+    attempt(() => this.release(source));
+    attempt(() => this.releasePage(resources));
+    attempt(() => this.upload.release());
+    this.resourceSlots.reset(1);
+    if (this.ownsArena) attempt(() => this.arena.dispose());
+    if (buffer !== undefined) attempt(() => this.retireBuffer(buffer));
+    if (failure !== undefined) throw failure;
   }
 }

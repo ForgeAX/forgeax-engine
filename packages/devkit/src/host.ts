@@ -1347,7 +1347,7 @@ const gbufferBatchOrderDiagnostic = (() => {
   return { order, programDigests };
 })();
 const renderTaskYield = query.get('forgeax-render-task-yield') === 'features' ? 'features' : query.get('forgeax-render-task-yield') === 'completion' ? 'completion' : 'none';
-const renderPipelineCapacity = query.get('forgeax-render-pipeline-capacity') === '4' ? 4 : query.get('forgeax-render-pipeline-capacity') === '2' ? 2 : 3;
+const renderPipelineCapacity = query.get('forgeax-render-pipeline-capacity') === '4' ? 4 : query.get('forgeax-render-pipeline-capacity') === '3' ? 3 : query.get('forgeax-render-pipeline-capacity') === '2' ? 2 : ${JSON.stringify(appOptions.renderPipelineCapacity ?? 3)};
 const dynamicGeometryMeshBudgetBytes = query.has('forgeax-dynamic-mesh-budget-bytes')
   ? Number(query.get('forgeax-dynamic-mesh-budget-bytes')) : ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)};
 const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
@@ -1470,6 +1470,7 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.assetBudgetBytes === undefined ? '' : `assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},`}
             ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
             ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
             execution: {
@@ -1513,6 +1514,7 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.assetBudgetBytes === undefined ? '' : `assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},`}
             ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
             ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
             standardProfile: ${JSON.stringify(appOptions.standardProfile)},

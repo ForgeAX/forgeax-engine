@@ -1,5 +1,9 @@
 // Browser construction delegates to the same realm-neutral App assembly.
-import { type AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import {
+  type AssetRegistry,
+  createCatalogSource,
+  validateAssetBudgetBytes,
+} from '@forgeax/engine-assets-runtime';
 import { createAudioIntentBackend } from '@forgeax/engine-audio';
 import type { DebugDraw } from '@forgeax/engine-debug-draw';
 import { createWorldContext, World, worldPlugin } from '@forgeax/engine-ecs';
@@ -169,6 +173,8 @@ export async function createApp(
   // out at a different size. Set the physical buffer before the renderer
   // configures its swap chain; the same helper runs before each frame so a CSS
   // resize remains visible to both rendering and camera policy.
+  // Programmer configuration: reject before any realm creates an AssetRegistry.
+  if (opts?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(opts.assetBudgetBytes);
   resetCanvasDeviceLimit(canvas);
   syncCanvasDrawingBuffer(canvas);
 
@@ -352,6 +358,9 @@ export async function createApp(
     Object.assign(rendererOpts, {
       dynamicGeometryMeshBudgetBytes: opts.dynamicGeometryMeshBudgetBytes,
     });
+  }
+  if (opts?.assetBudgetBytes !== undefined) {
+    Object.assign(rendererOpts, { assetBudgetBytes: opts.assetBudgetBytes });
   }
   if (opts?.rhiInstrumentation !== undefined) {
     Object.assign(rendererOpts, { rhiInstrumentation: opts.rhiInstrumentation });

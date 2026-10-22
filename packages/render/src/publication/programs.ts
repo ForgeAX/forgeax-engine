@@ -7,16 +7,41 @@ import {
   type MaterialAsset,
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
+import {
+  equalDescriptorValue,
+  isOwnedRenderFeatureProgramData,
+  ownRenderFeatureProgramData,
+  ownRenderFeatureProgramDataWith,
+} from '../features/prepared-gpu-work';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 
-/** Validate the fixed context table against its source and already admitted program closure. */
-export function validPublicationMaterialProjection(
+type PublishedMaterialProjection = NonNullable<
+  RenderPublication['assets'][number]['materialProjection']
+>;
+type PublishedMaterialProjectionProgram =
+  PublishedMaterialProjection['passes'][number]['programs'][number];
+
+/** Content-independent program row facts: compiler context, address and ABI. */
+function validPublicationProjectionProgram(program: unknown): boolean {
+  if (program === null || typeof program !== 'object') return false;
+  const row = program as Record<string, unknown>;
+  return (
+    typeof row.specializationKey === 'string' &&
+    typeof row.artifactHash === 'string' &&
+    validateMaterialCookProgramContext(row.context).ok &&
+    (row.address === undefined || row.address === 'direct' || row.address === 'scene-index') &&
+    (row.entry === undefined || typeof row.entry === 'string') &&
+    (row.abi === undefined || isMaterialProgramAbi(row.abi))
+  );
+}
+
+/** Structural projection validity, independent of any receiver state or material. */
+function validPublicationProjectionShape(
   input: unknown,
-  material: MaterialAsset,
-  available: (key: string) => boolean,
-): input is NonNullable<RenderPublication['assets'][number]['materialProjection']> {
+  validProgram: (program: unknown) => boolean,
+): input is PublishedMaterialProjection {
   if (input === null || typeof input !== 'object') return false;
   const value = input as Record<string, unknown>;
   if (
@@ -32,7 +57,7 @@ export function validPublicationMaterialProjection(
     typeof value.runtimeValues !== 'object'
   )
     return false;
-  const passes = new Map<string, string>();
+  const names = new Set<string>();
   for (const pass of value.passes) {
     if (
       pass === null ||
@@ -40,28 +65,193 @@ export function validPublicationMaterialProjection(
       typeof pass.name !== 'string' ||
       typeof pass.module !== 'string' ||
       !Array.isArray(pass.programs) ||
-      passes.has(pass.name)
+      names.has(pass.name)
     )
       return false;
-    passes.set(pass.name, pass.module);
-    for (const program of pass.programs) {
-      if (
-        program === null ||
-        typeof program !== 'object' ||
-        typeof program.specializationKey !== 'string' ||
-        typeof program.artifactHash !== 'string' ||
-        !available(program.specializationKey) ||
-        !validateMaterialCookProgramContext(program.context).ok ||
-        (program.address !== undefined &&
-          program.address !== 'direct' &&
-          program.address !== 'scene-index') ||
-        (program.entry !== undefined && typeof program.entry !== 'string') ||
-        (program.abi !== undefined && !isMaterialProgramAbi(program.abi))
-      )
-        return false;
-    }
+    names.add(pass.name);
+    for (const program of pass.programs) if (!validProgram(program)) return false;
   }
-  return (material.passes ?? []).every((pass) => passes.get(pass.name) === pass.program.module);
+  return true;
+}
+
+/** The receiver-state and material checks every admission repeats, even for interned content. */
+function publicationProjectionServesMaterial(
+  projection: PublishedMaterialProjection,
+  material: MaterialAsset,
+  available: (key: string) => boolean,
+): boolean {
+  for (const pass of projection.passes)
+    for (const program of pass.programs) if (!available(program.specializationKey)) return false;
+  const authored = material.passes ?? [];
+  for (const pass of authored) {
+    let module: string | undefined;
+    for (const candidate of projection.passes)
+      if (candidate.name === pass.name) {
+        module = candidate.module;
+        break;
+      }
+    if (module !== pass.program.module) return false;
+  }
+  return true;
+}
+
+/** Validate the fixed context table against its source and already admitted program closure. */
+export function validPublicationMaterialProjection(
+  input: unknown,
+  material: MaterialAsset,
+  available: (key: string) => boolean,
+): input is PublishedMaterialProjection {
+  return (
+    validPublicationProjectionShape(input, validPublicationProjectionProgram) &&
+    publicationProjectionServesMaterial(input, material, available)
+  );
+}
+
+function projectionInternKey(value: PublishedMaterialProjection): string {
+  return `${value.materialGuid}\u0000${value.specializationKey}\u0000${value.artifactHash}\u0000${value.publicationGeneration}`;
+}
+
+function programInternKey(value: PublishedMaterialProjectionProgram): string {
+  return `${value.specializationKey}\u0000${value.artifactHash}`;
+}
+
+/**
+ * Digest-keyed buckets of owned content. A value stays alive only while an
+ * admitted row holds it; a key is a candidate selector, never proof of content.
+ */
+class InternTable<T extends object> {
+  static readonly BUCKET = 4;
+  readonly #slots = new Map<string, WeakRef<T>[]>();
+  readonly #collected = new FinalizationRegistry<string>((key) => {
+    const live = this.#slots.get(key)?.filter((slot) => slot.deref() !== undefined);
+    if (live === undefined) return;
+    if (live.length === 0) this.#slots.delete(key);
+    else this.#slots.set(key, live);
+  });
+  /** The first owned value under this key that the comparison proves equal to the input. */
+  find(key: string, equal: (value: T) => boolean): T | undefined {
+    for (const slot of this.#slots.get(key) ?? []) {
+      const value = slot.deref();
+      if (value !== undefined && equal(value)) return value;
+    }
+    return undefined;
+  }
+  add(key: string, value: T): void {
+    const bucket = (this.#slots.get(key) ?? []).filter((slot) => slot.deref() !== undefined);
+    bucket.unshift(new WeakRef(value));
+    this.#slots.set(key, bucket.slice(0, InternTable.BUCKET));
+    this.#collected.register(value, key);
+  }
+  get size(): number {
+    let size = 0;
+    for (const bucket of this.#slots.values())
+      for (const slot of bucket) if (slot.deref() !== undefined) size += 1;
+    return size;
+  }
+  clear(): void {
+    this.#slots.clear();
+  }
+}
+
+/**
+ * Receiver-owned admission of Worker-cloned material projections. Every Worker
+ * packet carries private copies, but materials published from one cooked root
+ * (copies, damage variants) share identical projections and program rows.
+ *
+ * The digest fields only select a candidate: a received row reuses owned
+ * content only after a structural comparison proves it equal to content that
+ * already passed full validation. A mismatch, a non-JSON row or an unseen
+ * digest takes the complete validation and copy. Receiver state and material
+ * checks are repeated for every row. Reused content is deeply frozen.
+ */
+export class PublicationMaterialProjectionAdmission {
+  readonly #projections = new InternTable<PublishedMaterialProjection>();
+  readonly #programs = new InternTable<PublishedMaterialProjectionProgram>();
+  /** Owned projections that passed shape validation in this realm. */
+  readonly #validated = new WeakSet<object>();
+
+  /** Interned slot counts, for diagnostics and tests. */
+  get size(): { readonly projections: number; readonly programs: number } {
+    return { projections: this.#projections.size, programs: this.#programs.size };
+  }
+
+  /**
+   * Validate and own one received projection. `aliases` maps a received object
+   * to its owned result within one packet, where structured clone preserves
+   * sharing between rows. Returns undefined for an invalid projection.
+   */
+  admit(
+    input: unknown,
+    material: MaterialAsset,
+    available: (key: string) => boolean,
+    aliases?: Map<object, PublishedMaterialProjection>,
+  ): PublishedMaterialProjection | undefined {
+    if (input === null || typeof input !== 'object') return undefined;
+    let owned =
+      aliases?.get(input) ??
+      (this.#validated.has(input) ? (input as PublishedMaterialProjection) : undefined);
+    if (owned === undefined) {
+      owned = this.#intern(input);
+      if (owned === undefined) return undefined;
+      aliases?.set(input, owned);
+    }
+    return publicationProjectionServesMaterial(owned, material, available) ? owned : undefined;
+  }
+
+  clear(): void {
+    this.#projections.clear();
+    this.#programs.clear();
+  }
+
+  #intern(input: object): PublishedMaterialProjection | undefined {
+    const candidate = input as PublishedMaterialProjection;
+    const key = projectionKeyOf(candidate);
+    const known =
+      key === undefined
+        ? undefined
+        : this.#projections.find(key, (value) => equalDescriptorValue(value, input));
+    if (known !== undefined) return known;
+    // Unseen content: validate each program row once per digest, then own the
+    // projection while sharing every already owned, equal program row.
+    const reused = new Map<object, PublishedMaterialProjectionProgram>();
+    const validProgram = (program: unknown): boolean => {
+      if (program === null || typeof program !== 'object') return false;
+      const row = program as PublishedMaterialProjectionProgram;
+      const programKey =
+        typeof row.specializationKey === 'string' && typeof row.artifactHash === 'string'
+          ? programInternKey(row)
+          : undefined;
+      const prior =
+        programKey === undefined
+          ? undefined
+          : this.#programs.find(programKey, (value) => equalDescriptorValue(value, program));
+      if (prior !== undefined) {
+        reused.set(program, prior);
+        return true;
+      }
+      if (!validPublicationProjectionProgram(program)) return false;
+      const ownedProgram = ownRenderFeatureProgramData(row);
+      if (programKey !== undefined && isOwnedRenderFeatureProgramData(ownedProgram))
+        this.#programs.add(programKey, ownedProgram);
+      reused.set(program, ownedProgram);
+      return true;
+    };
+    if (!validPublicationProjectionShape(input, validProgram)) return undefined;
+    const owned = ownRenderFeatureProgramDataWith(candidate, (node) => reused.get(node));
+    if (!isOwnedRenderFeatureProgramData(owned)) return owned;
+    this.#validated.add(owned);
+    if (key !== undefined) this.#projections.add(key, owned);
+    return owned;
+  }
+}
+
+function projectionKeyOf(value: PublishedMaterialProjection): string | undefined {
+  return typeof value.materialGuid === 'string' &&
+    typeof value.specializationKey === 'string' &&
+    typeof value.artifactHash === 'string' &&
+    Number.isSafeInteger(value.publicationGeneration)
+    ? projectionInternKey(value)
+    : undefined;
 }
 
 /** The same complete program closure feeds scene publication and candidate preparation. */
@@ -155,12 +345,29 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
         return reads === undefined ? [] : [[pass.name, reads]];
       }),
     );
-    if (Object.keys(entryPoints).length > 0)
+    // A re-published material that already carries these exact program reads
+    // keeps its identity; a fresh object would invalidate every material cache.
+    if (
+      Object.keys(entryPoints).length > 0 &&
+      !sameEntryPoints(rebound.materialEntryPoints, entryPoints)
+    )
       rebound = { ...rebound, materialEntryPoints: entryPoints };
     materials.set(material, rebound);
     return rebound;
   };
   return rebind;
+}
+
+function sameEntryPoints(
+  current: MaterialSnapshot['materialEntryPoints'],
+  next: Readonly<Record<string, unknown>>,
+): boolean {
+  if (current === undefined) return false;
+  const keys = Object.keys(next);
+  if (Object.keys(current).length !== keys.length) return false;
+  for (const key of keys)
+    if ((current as Readonly<Record<string, unknown>>)[key] !== next[key]) return false;
+  return true;
 }
 
 export function rebindPublicationMaterialSchemas(
@@ -169,7 +376,10 @@ export function rebindPublicationMaterialSchemas(
 ): PreparedRenderPublication {
   if (input.materialUpdates.length === 0) return input;
   const rebind = publicationMaterialSchemaRebinder(registry);
-  for (const resource of input.materialUpdates) resource.adopt(rebind(resource.snapshot));
+  for (const resource of input.materialUpdates) {
+    const rebound = rebind(resource.snapshot);
+    if (rebound !== resource.snapshot) resource.adopt(rebound);
+  }
   return input;
 }
 

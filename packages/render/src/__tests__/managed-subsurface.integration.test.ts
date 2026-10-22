@@ -85,7 +85,7 @@ function fixture(worker: boolean) {
           if (request === 'full') extractions++;
           else if (typeof request === 'object')
             for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
-          return extractFrames([world], 0, assets, undefined, caches, {
+          return extractFrames([world], 0, assets, caches, {
             cull: 'none',
             retainHidden: true,
             renderables: request,

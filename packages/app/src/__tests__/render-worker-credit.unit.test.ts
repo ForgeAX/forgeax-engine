@@ -327,6 +327,7 @@ it('publishes geometry without a global temporal reset and faults paired recover
         draw.publication.removed.buffer,
         draw.publication.transformEntities.buffer,
         draw.publication.transforms.buffer,
+        draw.publication.retiredJoints.buffer,
       ],
       frame: {
         kind: 'frame-complete',
@@ -437,6 +438,7 @@ it.each([
       p.removed.buffer,
       p.transformEntities.buffer,
       p.transforms.buffer,
+      p.retiredJoints.buffer,
     ];
     worker.emit({
       kind: 'completed',
@@ -584,6 +586,7 @@ it.each([
       publication.removed.buffer,
       publication.transformEntities.buffer,
       publication.transforms.buffer,
+      publication.retiredJoints.buffer,
     ],
     gpuPassTiming: observation,
     frame: {

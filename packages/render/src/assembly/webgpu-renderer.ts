@@ -627,6 +627,9 @@ async function makeWebGPURenderer(
     shaderRegistry: shaderCatalog,
     importTransport: internals.importTransport,
     postSpawnHook: postSpawnResolveJoints,
+    ...(internals.options?.assetBudgetBytes === undefined
+      ? {}
+      : { limits: { maxBytes: internals.options.assetBudgetBytes } }),
   });
   // feat-20260601-device/gpu-residency-extraction M1: the GPU residency layer
   // lives in a standalone store; `assets` keeps the CPU POD registry only.

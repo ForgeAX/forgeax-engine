@@ -531,22 +531,20 @@ export function encodeMainPass(
       gpuDrivenStandardPbrFrameResources.clusterBindGroupForSkin = (
         meshBuffer,
         meshBindingBytes,
-        paletteBuffer,
-        paletteBindingWindowBytes,
+        task,
       ) => {
         const skinLayout = pipelineState.hdrpSkinMeshBindGroupLayout;
         if (skinLayout === null) return undefined;
         return cachedGroup(
-          [meshBuffer, paletteBuffer, skinLayout, ...lighting],
-          `gpu-driven-hdrp-skin:${meshBindingBytes}:${paletteBindingWindowBytes}`,
+          [meshBuffer, task.data, task.auxiliary, skinLayout, ...lighting],
+          `gpu-driven-hdrp-skin:${meshBindingBytes}:${task.dataSize}:${task.auxiliarySize}`,
           () =>
             createHdrpSkinUnifiedBindGroup(
               runtime,
               hdrpBuffers,
               skinLayout,
               meshBuffer,
-              paletteBuffer,
-              paletteBindingWindowBytes,
+              task,
               ssao,
               meshBindingBytes,
             ),
@@ -949,7 +947,11 @@ export function encodeMainPass(
       );
     }
 
-    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
+    // A preparation-only lane (hidden transparent PSOs, no validated rows) has
+    // no frame view group and records no draws; binding null with dynamic
+    // offsets is a GPU validation error that fails the whole frame.
+    if (viewBindGroup !== null)
+      pass.setBindGroup(0, viewBindGroup, [viewBindGroupDynamicOffset, 0]);
 
     // Track which (mesh-vertex-buffer, mesh-index-buffer, pipeline) combo
     // was last bound so consecutive entities sharing the same combo skip

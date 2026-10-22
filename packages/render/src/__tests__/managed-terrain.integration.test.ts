@@ -95,7 +95,7 @@ function fixture(worker: boolean, columns = 2, rows = 2, n = 2, entities = 1) {
       assets,
       (request) => {
         if (request !== 'none') extracted++;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,

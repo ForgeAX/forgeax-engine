@@ -1,7 +1,9 @@
 export { AssetClosure } from './internal/asset-closure';
+export { assetDataBytes } from './internal/asset-data';
 export type {
   AssetChange,
   AssetRange,
+  AssetRevisionGuard,
   AssetSnapshot,
   AssetVersion,
   AssetVersionDelta,

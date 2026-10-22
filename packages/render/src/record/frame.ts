@@ -2286,6 +2286,10 @@ export function* prepareFrameRecording(
                   targetSize: graphShadowMapSize,
                   graphGeneration: frameState.graphGeneration,
                   ...(cameraCull === undefined ? {} : { cameraCull }),
+                  ...(identity.kind === 'directional' &&
+                  lights.directionalCsmConfig?.staticShadowCache === false
+                    ? { staticLayer: false as const }
+                    : {}),
                 });
               };
               const directionalCameraCull =
@@ -2679,6 +2683,20 @@ export function* prepareFrameRecording(
       materialFrame: fixedMaterials,
       dispatch: transparentDispatch,
     });
+    const preparationMaterials = frameState.candidatePipelinePreparations?.materials;
+    const preparationTransmission = preparationMaterials?.transmissionDemand;
+    const graphTransmission =
+      preparationTransmission !== undefined && preparationTransmission.activeCount > 0
+        ? {
+            activeCount:
+              (transmissionDemand?.activeCount ?? 0) + preparationTransmission.activeCount,
+            needsRoughMips:
+              transmissionDemand?.needsRoughMips === true || preparationTransmission.needsRoughMips,
+            needsBackPass:
+              transmissionDemand?.needsBackPass === true ||
+              preparationTransmission.needsBackPass === true,
+          }
+        : transmissionDemand;
     const preflightGraph = runRecordProfilePhase(profilePhase, 'record/render-graph', () =>
       captureOnly
         ? (captureFrames[0]?.graph ?? null)
@@ -2695,14 +2713,14 @@ export function* prepareFrameRecording(
             featureGraphCandidate,
             cubeCapture?.state,
             cameras.length === 0,
-            transmissionDemand,
+            graphTransmission,
             graphVolumetricFog,
             volumeTopologyCandidate,
             standard,
             undefined,
             ssrAdmission,
             renderExtent,
-            fixedMaterials.hasMedium,
+            fixedMaterials.hasMedium || preparationMaterials?.hasMedium === true,
             analyticFog !== undefined && analyticFog.density > 0 && analyticFog.maxOpacity > 0,
             cloudShadowProjection?.resolution,
             transparencyView.topology,

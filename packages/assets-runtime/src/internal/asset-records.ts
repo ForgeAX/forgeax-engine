@@ -73,11 +73,14 @@ export interface AssetObserver {
   dispose(): void;
 }
 
-export interface AssetSnapshot {
-  read<T>(handle: number): Result<T, AssetError>;
+export interface AssetRevisionGuard {
   version(handle: number): Result<number, AssetError>;
   matchesCurrent(): boolean;
   dispose(): void;
+}
+
+export interface AssetSnapshot extends AssetRevisionGuard {
+  read<T>(handle: number): Result<T, AssetError>;
 }
 
 /** Engine-only fixed content lease. No borrowed storage is exposed by public snapshots. */
@@ -98,6 +101,10 @@ export interface AssetVersion<T> {
 }
 
 interface CapturedSnapshot extends AssetSnapshot {
+  matchesCurrent(preserveChangeEvidence?: boolean): boolean;
+}
+
+interface CapturedRevisionGuard extends AssetRevisionGuard {
   matchesCurrent(preserveChangeEvidence?: boolean): boolean;
 }
 
@@ -1007,6 +1014,56 @@ export class AssetRecords implements AssetReferenceOwner {
     return ok(lease());
   }
 
+  /** Domain-owned copies use their domain byte budget; retain only closure revisions here. */
+  captureRevision(handle: number): Result<AssetRevisionGuard, AssetError> {
+    const conflict = this.mutationError();
+    if (conflict !== undefined) return err(conflict);
+    const closure = this.collectRecords([handle]);
+    if (!closure.ok) return closure;
+    const versions = new Map<number, { revision: number }>();
+    for (const [reference, record] of closure.value)
+      versions.set(reference, { revision: record.revision });
+    const guard = this.revisionGuard(versions);
+    return ok({
+      ...guard,
+      dispose: () => {
+        guard.dispose();
+        versions.clear();
+      },
+    });
+  }
+
+  private revisionGuard(
+    versions: ReadonlyMap<number, { readonly revision: number }>,
+  ): CapturedRevisionGuard {
+    let active = true;
+    const cursor = this.openCursor();
+    return {
+      version: (reference) => {
+        const retained = versions.get(reference);
+        return active && retained !== undefined
+          ? ok(retained.revision)
+          : err(failure('asset-reference-invalid', 'a live asset revision reference'));
+      },
+      matchesCurrent: (preserveChangeEvidence = false) => {
+        if (!active || this.closed || this.preparingAdoption || cursor.index < 0) return false;
+        for (const [reference, retained] of versions) {
+          if (this.records.get(reference)?.revision !== retained.revision) {
+            if (!preserveChangeEvidence) this.closeCursor(cursor);
+            return false;
+          }
+        }
+        this.acceptCursor(cursor, this.revision);
+        return true;
+      },
+      dispose: () => {
+        if (!active) return;
+        active = false;
+        this.closeCursor(cursor);
+      },
+    };
+  }
+
   private captureSnapshot(
     handle: number,
   ): Result<{ snapshot: CapturedSnapshot; value: unknown }, AssetError> {
@@ -1028,35 +1085,19 @@ export class AssetRecords implements AssetReferenceOwner {
     this.snapshots++;
     this.snapshotBytes += bytes;
     let active = true;
-    const cursor = this.openCursor();
+    const guard = this.revisionGuard(values);
     const snapshot: CapturedSnapshot = {
-      version: (reference) => {
-        const retained = values.get(reference);
-        return active && retained !== undefined
-          ? ok(retained.revision)
-          : err(failure('asset-reference-invalid', 'a live fixed snapshot reference'));
-      },
+      ...guard,
       read: <T>(reference: number): Result<T, AssetError> => {
         const retained = values.get(reference);
         return active && retained !== undefined
           ? this.capture(retained.value as T)
           : err(failure('asset-reference-invalid', 'a live fixed snapshot reference'));
       },
-      matchesCurrent: (preserveChangeEvidence = false) => {
-        if (!active || this.closed || this.preparingAdoption || cursor.index < 0) return false;
-        for (const [reference, retained] of values) {
-          if (this.records.get(reference)?.revision !== retained.revision) {
-            if (!preserveChangeEvidence) this.closeCursor(cursor);
-            return false;
-          }
-        }
-        this.acceptCursor(cursor, this.revision);
-        return true;
-      },
       dispose: () => {
         if (!active) return;
         active = false;
-        this.closeCursor(cursor);
+        guard.dispose();
         values.clear();
         this.snapshots--;
         this.snapshotBytes -= bytes;

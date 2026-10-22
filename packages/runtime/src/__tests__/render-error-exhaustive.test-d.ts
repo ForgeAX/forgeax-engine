@@ -1,7 +1,7 @@
 // feat-20260704-runtime-tier1-decomposition M2 / w13 (AC-07 c): render cluster
 // exhaustive type-level regression guard. Split out of the former
 // hdrp-error-exhaustive.test-d.ts, which exhaustively switched the whole
-// RuntimeErrorCode union; after the D-3 decomposition each cluster owns its own
+// runtime-layer code union; after the D-3 decomposition each cluster owns its own
 // exhaustive assertion.
 //
 // If any RenderErrorCode member is missing from the switch below, the

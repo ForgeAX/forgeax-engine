@@ -8,7 +8,7 @@ import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-
 import type { ToolRunOptions, ToolTerminal } from '@forgeax/engine-tool-runtime';
 import type { ImportContext, Importer, ImportProductFinalizeResult } from '@forgeax/engine-types';
 import type { InlineConfig } from 'vite';
-import type { DevKitAppOptions } from '../plugin-build.js';
+import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 import type { ProjectFacts } from '../types.js';
 import type {
   BuildCallbackRequest,
@@ -24,6 +24,7 @@ import { compileNodePluginPrograms } from './plugin-programs-node.js';
 
 export interface ProjectCookers {
   readonly appOptions: DevKitAppOptions;
+  readonly delivery: DevKitDeliveryOptions;
   readonly cookers: readonly NativeCooker[];
   readonly importers: readonly Importer[];
   readonly watchFiles: ReadonlySet<string>;
@@ -60,6 +61,7 @@ export async function loadProjectCookers(
   if (!facts.roots.build)
     return {
       appOptions: {},
+      delivery: {},
       cookers: builtins,
       importers: [],
       watchFiles: new Set(),
@@ -207,6 +209,7 @@ export async function loadProjectCookers(
     });
     const started = await request<{
       appOptions: DevKitAppOptions;
+      delivery: DevKitDeliveryOptions;
       cookers: readonly string[];
       importers: readonly BuildImporterDescriptor[];
     }>(
@@ -301,6 +304,7 @@ export async function loadProjectCookers(
                 await import('./pipeline-library.js')
               ).precomputePipelineLibrary(started.appOptions.pipelineLibrary),
             },
+      delivery: started.delivery,
       cookers: [...builtins, ...remote],
       importers,
       watchFiles,

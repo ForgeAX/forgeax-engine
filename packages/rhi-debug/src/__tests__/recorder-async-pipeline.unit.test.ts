@@ -1,7 +1,93 @@
-import { ok, type RenderPipelineDescriptor } from '@forgeax/engine-rhi';
+import {
+  err,
+  ok,
+  type PipelineLibrary,
+  type PipelineLibraryInspection,
+  type PipelineLibraryManifest,
+  type RenderPipelineDescriptor,
+  RhiError,
+} from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { wrap } from '../recorder';
+
+it('preserves the optional pipeline library owner and its outcomes', async () => {
+  const real = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const manifest: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  };
+  const inspection: PipelineLibraryInspection = {
+    state: 'active',
+    shaders: 0,
+    renderPipelines: 0,
+    computePipelines: 0,
+    shaderHits: 0,
+    pipelineHits: 0,
+    synchronousCreations: 0,
+    asynchronousCreations: 0,
+    compilationCompleted: 0,
+    compilationPending: 0,
+    failures: 0,
+    unrecordable: 0,
+    overflow: 0,
+    sourceBytes: 0,
+    warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+  };
+  const prepared = ok(inspection);
+  const preparationFailure = err(
+    new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'pipeline library preparation to preserve its failure',
+      hint: 'controlled failure',
+    }),
+  );
+  let preparationCount = 0;
+  const prepare = vi.fn(async function (this: PipelineLibrary, _manifest: PipelineLibraryManifest) {
+    expect(this).toBe(pipelineLibrary);
+    preparationCount += 1;
+    return preparationCount === 1 ? prepared : preparationFailure;
+  });
+  const exported = ok(manifest);
+  const pipelineLibrary: PipelineLibrary = {
+    inspect: vi.fn(() => inspection),
+    export: vi.fn(() => exported),
+    prepare,
+  };
+  Object.assign(real, { pipelineLibrary });
+
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const debug = wrap(
+    { requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }) },
+    createShaderModule,
+  );
+  const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
+
+  expect(device.pipelineLibrary).toBe(pipelineLibrary);
+  expect(device.pipelineLibrary?.inspect()).toBe(inspection);
+  expect(device.pipelineLibrary?.export()).toBe(exported);
+  expect(await device.pipelineLibrary?.prepare(manifest)).toBe(prepared);
+  expect(await device.pipelineLibrary?.prepare(manifest)).toBe(preparationFailure);
+  expect(prepare).toHaveBeenNthCalledWith(1, manifest);
+  expect(prepare).toHaveBeenNthCalledWith(2, manifest);
+});
+
+it('keeps an absent pipeline library absent through the recorder', async () => {
+  const real = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const debug = wrap(
+    { requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }) },
+    createShaderModule,
+  );
+  const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
+
+  expect(device.pipelineLibrary).toBeUndefined();
+});
 
 it('preserves native async completion and records the call-time descriptor once', async () => {
   const real = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();

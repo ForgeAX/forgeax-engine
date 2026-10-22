@@ -247,7 +247,7 @@ The schema is the SSOT in [`src/asset-evidence.ts`](./src/asset-evidence.ts). Pr
 | Entry | Surface | Browser-safe? |
 |:--|:--|:--|
 | `@forgeax/engine-types` (main) | POD types + closed-union aliases (math-free, zero `ws`) | yes |
-| `@forgeax/engine-types/inspector-client` | `defaultConnect` / `InspectorClient` plus `INSPECTOR_DEFAULT_HOST` / `INSPECTOR_DEFAULT_PORT` — JSON-RPC 2.0 WS client and its CLI connection defaults | **Node-only** (`exports['./inspector-client']` carries `node` condition + `default: null`; `ws` is a `peerDependencies` + `peerDependenciesMeta.ws.optional=true` — consumers must install `ws` themselves to use this sub-export) |
+| `@forgeax/engine-types/inspector-client` | `defaultConnect` / `InspectorClient` plus `INSPECTOR_DEFAULT_PORT` — JSON-RPC 2.0 WS client and its CLI connection default | **Node-only** (`exports['./inspector-client']` carries `node` condition + `default: null`; `ws` is a `peerDependencies` + `peerDependenciesMeta.ws.optional=true` — consumers must install `ws` themselves to use this sub-export) |
 
 ## API index
 

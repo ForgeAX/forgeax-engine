@@ -12,14 +12,30 @@ import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 /** Serializable project options sampled after the native build root starts. */
 export type DevKitAppOptions = Pick<
   CreateAppOptions,
-  'dynamicGeometryMeshBudgetBytes' | 'standardProfile' | 'pipelineLibrary'
->;
+  'dynamicGeometryMeshBudgetBytes' | 'standardProfile' | 'pipelineLibrary' | 'time'
+> & {
+  /**
+   * Default sealed publications in flight between simulation, preparation and
+   * GPU completion. Deeper pipelines overlap Workers at one frame of latency.
+   * The `forgeax-render-pipeline-capacity` query still overrides it.
+   */
+  readonly renderPipelineCapacity?: 2 | 3 | 4;
+};
+
+/**
+ * Player packaging groups Pack artifacts into Asset Bundles. Each named Bundle
+ * lists project-relative source path prefixes; matching Packs ship together.
+ */
+export interface DevKitDeliveryOptions {
+  readonly bundles?: Readonly<Record<string, readonly string[]>>;
+}
 
 /** Build-only Context vocabulary. Import this subpath for authored build plugins. */
 declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {
     nativeCookers?: NativeCookerRegistry;
     devkitAppOptions?: DevKitAppOptions;
+    devkitDelivery?: DevKitDeliveryOptions;
     importers?: ImporterRegistry;
   }
 }

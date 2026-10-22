@@ -30,8 +30,8 @@ struct TaaResolveParams {
   temporalFrameIndex : u32,
   hasSecondaryReactivity : u32,
   hasOutputTemporal : u32,
+  hasSecondaryRows : u32,
   // WebGL2 uniform bindings must span a 16-byte multiple.
-  _pad0 : u32,
   _pad1 : u32,
 };
 
@@ -53,20 +53,55 @@ struct TaaResolveOutput {
 @group(1) @binding(9) var historyStability : texture_2d<f32>;
 @group(1) @binding(10) var secondaryReactivity : texture_2d<f32>;
 @group(1) @binding(11) var currentOutputTemporal : texture_2d<f32>;
+@group(1) @binding(12) var secondaryReactivitySource : texture_2d<f32>;
+
+fn secondaryReactivityTap(pixel : vec2<i32>) -> f32 {
+  let value = textureLoad(secondaryReactivity, pixel, 0).r;
+  if (value != value || abs(value) > 3.402823e+38) { return 1.0; }
+  return clamp(value, 0.0, 1.0);
+}
+
+// Row half of the separable 7x7 footprint max. Equal physical and declared
+// extents put both passes on the same texel lattice, so the resolve reads 7
+// instead of 49 producer texels. The resolve keeps the actual producer view
+// too: an imported texture can retain its prior physical extent during resize,
+// and then the declared-size copy is a different lattice.
+@fragment
+fn fs_secondary_reactivity_rows(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let size = vec2<i32>(textureDimensions(secondaryReactivity));
+  let center = clamp(vec2<i32>(in.uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
+  var reactive = 0.0;
+  for (var x = -3; x <= 3; x++) {
+    let pixel = clamp(center + vec2<i32>(x, 0), vec2<i32>(0), size - vec2<i32>(1));
+    reactive = max(reactive, secondaryReactivityTap(pixel));
+  }
+  return vec4<f32>(reactive, 0.0, 0.0, 1.0);
+}
 
 fn sampleSecondaryReactivity(uv : vec2<f32>) -> f32 {
   if (params.hasSecondaryReactivity == 0u) { return 0.0; }
   let size = vec2<i32>(textureDimensions(secondaryReactivity));
   let center = vec2<i32>(uv * vec2<f32>(size));
   var reactive = 0.0;
-  // Conservatively cover the reconstruction footprint, including producers
-  // on a reduced-resolution lattice. Never interpolate a motion flag away.
-  for (var y = -3; y <= 3; y++) {
-    for (var x = -3; x <= 3; x++) {
-      let pixel = clamp(center + vec2<i32>(x, y), vec2<i32>(0), size - vec2<i32>(1));
-      let value = textureLoad(secondaryReactivity, pixel, 0).r;
-      if (value != value || abs(value) > 3.402823e+38) { return 1.0; }
-      reactive = max(reactive, clamp(value, 0.0, 1.0));
+  let sourceSize = vec2<i32>(textureDimensions(secondaryReactivitySource));
+  if (params.hasSecondaryRows != 0u && all(size == sourceSize)) {
+    // Columns come pre-reduced by fs_secondary_reactivity_rows on this same
+    // texel lattice; max remains exactly the original 7x7 footprint.
+    for (var y = -3; y <= 3; y++) {
+      let pixel = clamp(center + vec2<i32>(0, y), vec2<i32>(0), size - vec2<i32>(1));
+      reactive = max(reactive, textureLoad(secondaryReactivity, pixel, 0).r);
+    }
+  } else {
+    // A resized row copy has different texel centers. Evaluate the same
+    // source-centered footprint on the producer's physical lattice instead.
+    let sourceCenter = vec2<i32>(uv * vec2<f32>(sourceSize));
+    for (var y = -3; y <= 3; y++) {
+      for (var x = -3; x <= 3; x++) {
+        let pixel = clamp(sourceCenter + vec2<i32>(x, y), vec2<i32>(0), sourceSize - vec2<i32>(1));
+        let value = textureLoad(secondaryReactivitySource, pixel, 0).r;
+        let finiteValue = select(1.0, clamp(value, 0.0, 1.0), value == value && abs(value) <= 3.402823e+38);
+        reactive = max(reactive, finiteValue);
+      }
     }
   }
   return reactive;

@@ -36,10 +36,9 @@ import {
   classifyCaptureAdapter,
   resolveBrowserExecutable,
 } from '../browser-capture.js';
-import type { BootstrapRoot } from '../host/base-host.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
-import type { CaptureBackend, CaptureBackendObserved } from '../types.js';
+import type { BootstrapRoot, CaptureBackend, CaptureBackendObserved } from '../types.js';
 import {
   acquireBrowserCarrierPage,
   type BrowserCarrierAttachment,

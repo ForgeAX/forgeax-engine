@@ -26,6 +26,7 @@ export default defineConfig({
     runtime: 'src/runtime.ts',
     'program-browser': 'src/program-browser.ts',
     'artifact-path': 'src/artifact-path.ts',
+    bundle: 'src/bundle.ts',
     'material-cook': 'src/material-cook.ts',
     'mesh-bin-contract': 'src/mesh-bin-contract.ts',
   },

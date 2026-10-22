@@ -119,12 +119,10 @@ export interface ParticleEmitterSourceV3 extends ParticleEmitterSourceBase {
   readonly forceFields?: readonly VfxForceField[];
 }
 
-export interface ParticleEffectRootSourceV3 {
+export interface ParticleEffectSourceV3 {
   readonly schemaVersion: 3;
   readonly emitters: readonly ParticleEmitterSourceV3[];
 }
-
-export type ParticleEffectSourceV3 = ParticleEffectRootSourceV3;
 
 /**
  * Renderer semantic vocabulary shared by source validation and compiler

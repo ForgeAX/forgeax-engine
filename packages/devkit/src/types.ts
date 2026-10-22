@@ -3,6 +3,9 @@ import type { GameProjectRoots } from '@forgeax/engine-project';
 import type { ArtifactRef } from '@forgeax/engine-tool-runtime';
 import type { BrowserCarrierAdapter, BrowserCarrierRunIdentity } from './tools/display-carrier.js';
 
+/** Physical preview root that a browser host boots. */
+export type BootstrapRoot = 'project-bootstrap' | 'resource-bootstrap';
+
 export interface CommandError {
   readonly code: string;
   readonly expected: string;

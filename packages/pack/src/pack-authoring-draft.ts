@@ -398,6 +398,7 @@ export class PackAuthoringDraft<T> {
         liveChanges.push([field, field.default]);
     }
     this.document = document;
+    this.error = undefined;
     this.inputKey = undefined;
     this.indexFields();
     if (liveChanges.length > 0) {

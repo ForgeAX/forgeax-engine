@@ -52,7 +52,6 @@ import {
   sourcePackageAssetsByGuid,
 } from './source-package.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
-import { chunkMeshArtifacts, meshChunkingRequested } from './transport-artifact-chunks.js';
 
 export interface BuildProductionFailure {
   readonly code: string;
@@ -380,13 +379,7 @@ async function emitPackDocument(
   work: BuildEmissionWork,
   options: PackEmissionOptions,
 ): Promise<string> {
-  const transport = meshChunkingRequested(
-    process.env.FORGEAX_BUNDLE_SMALL_MESHES,
-    options.sourcePath,
-  )
-    ? chunkMeshArtifacts(options.pack, options.artifacts, options.guids)
-    : { pack: options.pack, artifacts: options.artifacts };
-  for (const artifact of transport.artifacts) {
+  for (const artifact of options.artifacts) {
     const shared = /^shared\/materials\/programs\/([a-f0-9]{64})\.wgsl$/.exec(artifact.path);
     if (shared !== null) {
       const actual = createHash('sha256').update(artifact.bytes).digest('hex');
@@ -414,7 +407,7 @@ async function emitPackDocument(
       : `assets/${options.packageName}`,
     name: options.packageName,
     originalFileName: options.originalFileName,
-    source: new TextEncoder().encode(JSON.stringify(projectMaterialPackTransport(transport.pack))),
+    source: new TextEncoder().encode(JSON.stringify(projectMaterialPackTransport(options.pack))),
   });
   const packageUrl = work.context.sink.fileUrl(work.context.sink.getFileName(referenceId));
   const receiptUrls = new Map<string, string>();

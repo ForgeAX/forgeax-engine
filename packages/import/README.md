@@ -391,6 +391,12 @@ flowchart LR
 
 Domain producers return structured `ImportError`; the generic bridge contains no per-kind switch. `createStandardAssetOutputProducerRegistry(sceneComponents)` composes the production Scene, Material, and Mesh owners with the definition-bound scene schema. Scene refs use the ECS externalization kernel shared with runtime save, Material refs cover parent/texture/sampler GUIDs, and Mesh emits the versioned binary artifact. The fingerprint covers canonical Meta, the definition-bound scene schema, the recursive source closure, observed external evidence, authoring contract version, and registered producer versions.
 
+The standard particle producer also accepts `{ kind: 'particle-effect', source }`
+authoring outputs. With a native build host it cooks the declared effect/modules
+and projects the same runtime payload, GUID closure and program artifact as an
+already-compiled particle Asset. Source declarations carry no runtime compiler;
+custom `execution: 'cooked'` outputs still cannot override built-in producers.
+
 Authored, staged and file-backed snapshots share `scriptable-pack-fingerprint/3`.
 A binary leaf contains its type, view byte length and SHA-256 of the selected
 bytes; ordered metadata hashes those leaves without concatenating large buffers.
@@ -942,26 +948,7 @@ Producer payload typing derives unchanged kinds from the Asset union and lists
 only serialized overrides explicitly. Product payload, reference and artifact
 fields derive from ImportedAsset; runtime Assets still never carry ref indices.
 
-### Small mesh transport chunks
+### Player Asset Bundles
 
-`FORGEAX_BUNDLE_SMALL_MESHES` opts a production build into physical mesh
-bundling. Unset, empty, or `0` disables it; `1` selects all source publications;
-any other nonempty value selects a project-relative source-path prefix. Prefer
-a measured source family over a global opt-in: unrelated consumers can have
-different read orders and transfer costs. Asset GUIDs, payloads, refs, codecs and individual
-integrity facts remain unchanged.
-
-| Constraint | Value |
-| :-- | --: |
-| Eligible identity-encoded mesh artifact | At most 8 KiB |
-| Stored container | At most 64 KiB |
-| Minimum members per container | 4 |
-| Private runtime container cache | 4 MiB, at most 256 entries |
-
-Chunks follow the producer's asset order. A loader should read in that order to
-avoid redundant transfers when its working set exceeds the cache. Each range
-retains individual integrity and declares a complete container digest. Runtime
-admission verifies the container once, verifies each logical artifact, and gives
-each decoder a private window. Memory pressure and source disposal release
-completed chunk bytes. Fixed publication capture retains complete containers
-for portable replay.
+Production builds emit one file per artifact. Player packaging groups them into
+Asset Bundles; see [the DevKit player delivery contract](../devkit/README.md#player-asset-bundles).

@@ -6,8 +6,17 @@ import { compareBufferBytes } from './buffer-bytes';
 import type { SkinPose } from './systems/skin-palette-types';
 
 const cachesByWorld = new WeakMap<World, Map<string, SkinPosedBoundsCache>>();
+const ledgersByWorld = new WeakMap<World, EnvelopeLedger>();
 const MAX_CACHED_SKINS = 32;
 const MAX_CACHED_GEOMETRY_BYTES = 1_048_576;
+// Envelope snapshots above the exact-reuse cap (e.g. a 54k-vertex viewmodel)
+// share one per-World budget, so opting into conservative bounds stays O(joints).
+const MAX_ENVELOPE_GEOMETRY_BYTES = 4 * 1_048_576;
+const MAX_LARGE_ENVELOPE_BYTES = 8 * 1_048_576;
+
+interface EnvelopeLedger {
+  bytes: number;
+}
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const bufferOf = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')?.get;
 const offsetOf = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset')?.get;
@@ -29,14 +38,21 @@ function ordinaryBuffer(value: ArrayBufferView, prototype: object): boolean {
 /** Bounded source-owner scratch; no caller-owned bytes or returned bounds are retained. */
 export function skinPosedBoundsCache(world: World, identity: string): SkinPosedBoundsCache {
   let entries = cachesByWorld.get(world);
-  if (entries === undefined) {
+  let ledger = ledgersByWorld.get(world);
+  if (entries === undefined || ledger === undefined) {
     entries = new Map();
+    ledger = { bytes: 0 };
     cachesByWorld.set(world, entries);
+    ledgersByWorld.set(world, ledger);
   }
   let cache = entries.get(identity);
   if (cache === undefined) {
-    if (entries.size === MAX_CACHED_SKINS) entries.delete(entries.keys().next().value as string);
-    cache = new SkinPosedBoundsCache();
+    if (entries.size === MAX_CACHED_SKINS) {
+      const oldest = entries.keys().next().value as string;
+      entries.get(oldest)?.release();
+      entries.delete(oldest);
+    }
+    cache = new SkinPosedBoundsCache(ledger);
     entries.set(identity, cache);
   }
   return cache;
@@ -131,6 +147,7 @@ function jointEnvelopes(
 
 export class SkinPosedBoundsCache {
   private envelopes: JointEnvelopes | undefined;
+  private chargedBytes = 0;
   private last:
     | {
         geometry?: { positions: Float32Array; indices: Uint16Array; weights: Float32Array };
@@ -141,6 +158,29 @@ export class SkinPosedBoundsCache {
     | undefined;
   private previousPoseRepeated = false;
   private captureGeometry = false;
+
+  constructor(private readonly ledger: EnvelopeLedger = { bytes: 0 }) {}
+
+  /** Drops retained snapshots and returns their bytes to the World budget. */
+  release(): void {
+    this.setEnvelopes(undefined);
+    this.last = undefined;
+  }
+
+  private setEnvelopes(envelope: JointEnvelopes | undefined): void {
+    this.ledger.bytes -= this.chargedBytes;
+    this.chargedBytes = 0;
+    this.envelopes = envelope;
+    if (envelope === undefined) return;
+    const bytes =
+      envelope.positions.byteLength +
+      envelope.indices.byteLength +
+      envelope.weights.byteLength +
+      envelope.bounds.byteLength;
+    if (bytes <= MAX_CACHED_GEOMETRY_BYTES) return;
+    this.chargedBytes = bytes;
+    this.ledger.bytes += bytes;
+  }
 
   conservative(
     positions: Float32Array,
@@ -175,8 +215,16 @@ export class SkinPosedBoundsCache {
       !sameBytes(indices, envelope.indices) ||
       !sameBytes(weights, envelope.weights)
     ) {
+      this.setEnvelopes(undefined);
+      const bytes =
+        (lengthOf?.call(positions) as number) +
+        (lengthOf?.call(indices) as number) +
+        (lengthOf?.call(weights) as number) +
+        jointCount * 6 * 8;
+      if (bytes > MAX_CACHED_GEOMETRY_BYTES && this.ledger.bytes + bytes > MAX_LARGE_ENVELOPE_BYTES)
+        return undefined;
       envelope = jointEnvelopes(positions, indices, weights, jointCount);
-      this.envelopes = envelope;
+      this.setEnvelopes(envelope);
     }
     if (envelope === undefined) return undefined;
     const minimum = [Infinity, Infinity, Infinity];
@@ -244,7 +292,7 @@ export class SkinPosedBoundsCache {
     palette: Float32Array,
     inverse: Float32Array,
   ): Float32Array | undefined {
-    this.envelopes = undefined;
+    this.setEnvelopes(undefined);
     const last = this.last;
     const samePose =
       last !== undefined && sameBytes(palette, last.palette) && sameBytes(inverse, last.inverse);
@@ -346,25 +394,29 @@ export function skinPosedBounds(
   }
   // Read and validate the live palette first, including caller accessors and
   // invalid/singular input. Only private ordinary buffers enter exact reuse.
-  const reusable =
+  const ordinary =
     cache !== undefined &&
     ordinaryBuffer(positions, Float32Array.prototype) &&
     ordinaryBuffer(indices, Uint16Array.prototype) &&
-    ordinaryBuffer(weights, Float32Array.prototype) &&
-    (lengthOf?.call(positions) as number) +
+    ordinaryBuffer(weights, Float32Array.prototype);
+  const geometryBytes = ordinary
+    ? (lengthOf?.call(positions) as number) +
       (lengthOf?.call(indices) as number) +
-      (lengthOf?.call(weights) as number) +
+      (lengthOf?.call(weights) as number)
+    : Infinity;
+  if (conservative && geometryBytes + pose.jointCount * 6 * 8 <= MAX_ENVELOPE_GEOMETRY_BYTES) {
+    const enclosure = cache?.conservative(positions, indices, weights, palette, inverse);
+    if (enclosure !== undefined) return enclosure;
+  }
+  const reusable =
+    geometryBytes +
       palette.byteLength +
       (conservative ? pose.jointCount * 6 * 8 : 0) +
       inverse.byteLength +
       24 <=
-      MAX_CACHED_GEOMETRY_BYTES
+    MAX_CACHED_GEOMETRY_BYTES
       ? cache
       : undefined;
-  if (conservative) {
-    const enclosure = reusable?.conservative(positions, indices, weights, palette, inverse);
-    if (enclosure !== undefined) return enclosure;
-  }
   const previous = reusable?.read(positions, indices, weights, palette, inverse);
   if (previous !== undefined) return previous;
   const minimum = [Infinity, Infinity, Infinity];

@@ -51,6 +51,7 @@ import {
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine/render';
 import { EngineEnvironmentError } from '@forgeax/engine/runtime';
+import { waitForReadyFrames } from './wait-for-ready-frames';
 
 import type { MaterialAsset } from '@forgeax/engine/types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -258,6 +259,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       resize: (width: number, height: number) => void;
       reconfigureSurface: () => { release: unknown; restore: unknown };
       recoverDeviceLoss: () => Promise<unknown>;
+      waitForReadyFrames: (count: number) => Promise<number>;
       inspect: () => ReturnType<typeof inspectCarrier>;
     };
   }).__bloomCarrierProbe = {
@@ -299,6 +301,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       return { release, restore };
     },
     recoverDeviceLoss: () => app.renderer.recover(),
+    waitForReadyFrames: (count) => waitForReadyFrames(app.renderer, count),
     inspect: inspectCarrier,
   };
 

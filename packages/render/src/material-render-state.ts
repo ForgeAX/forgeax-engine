@@ -14,12 +14,41 @@ export function isReflectedTransform(world: Float32Array): boolean {
   return a * (e * i - h * f) - b * (d * i - g * f) + c * (d * h - g * e) < 0;
 }
 
+const reflectedStates = new WeakMap<MaterialRenderState, MaterialRenderState>();
+const REFLECTED_DEFAULT: MaterialRenderState = Object.freeze({ frontFace: 'cw' as const });
+
 /** Model and view reflections compose by parity; authored material state stays immutable. */
 export function reflectedRenderState(
   state: MaterialRenderState | undefined,
   reflected: boolean,
 ): MaterialRenderState | undefined {
-  return reflected ? { ...state, frontFace: state?.frontFace === 'cw' ? 'ccw' : 'cw' } : state;
+  if (!reflected) return state;
+  if (state === undefined) return REFLECTED_DEFAULT;
+  // One stable reflected identity per authored state lets per-view caches compare by reference.
+  // In-place authored edits are observed by a shallow field check before reuse.
+  const frontFace = state.frontFace === 'cw' ? 'ccw' : 'cw';
+  let mirrored = reflectedStates.get(state);
+  if (mirrored === undefined || !sameReflection(state, mirrored, frontFace)) {
+    mirrored = { ...state, frontFace };
+    reflectedStates.set(state, mirrored);
+  }
+  return mirrored;
+}
+
+function sameReflection(
+  state: MaterialRenderState,
+  mirrored: MaterialRenderState,
+  frontFace: 'cw' | 'ccw',
+): boolean {
+  if (mirrored.frontFace !== frontFace) return false;
+  const source = state as Record<string, unknown>,
+    target = mirrored as Record<string, unknown>;
+  let count = 0;
+  for (const key in source) {
+    count++;
+    if (key !== 'frontFace' && source[key] !== target[key]) return false;
+  }
+  return Object.keys(target).length === count + (source.frontFace === undefined ? 1 : 0);
 }
 
 export function transformRenderState(

@@ -1,14 +1,15 @@
 import { assert, expect, it } from 'vitest';
 import { ShaderRegistry } from '../../../shader/src/ShaderRegistry';
-import { emit_reflection, parse, readReflectionWire, validate } from '../index';
+import { emit_reflection, parse, parseReflectionWire, validate } from '../index';
 
 it('retains immutable native entry facts across private publication and registry forks', async () => {
   const source =
     'struct P { value: vec4<f32>, unused: vec4<f32>, } @group(1) @binding(0) var<uniform> p: P; @vertex fn vs_main() -> @builtin(position) vec4<f32> { return p.value; }';
   const module = (await validate((await parse(source)).unwrap())).unwrap();
   try {
-    const entryPoints = readReflectionWire((await emit_reflection(module, '{}')).unwrap()).unwrap()
-      .entryPoints;
+    const entryPoints = parseReflectionWire(
+      (await emit_reflection(module, '{}')).unwrap(),
+    ).entryPoints;
     assert(entryPoints !== undefined);
     const prepared = new ShaderRegistry({ manifestUrl: undefined });
     prepared.installMaterialArtifact('game::entry-reads', { source, paramSchema: [], entryPoints });

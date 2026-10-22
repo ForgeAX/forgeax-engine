@@ -358,7 +358,6 @@ import { LoadGameError, type LoadGameErrorCode } from '../src/load-game-errors';
     'app-execution-bootstrap-failed',
     'app-execution-deadline-exceeded',
     'app-execution-kernel-failed',
-    'app-execution-stale-world',
     'app-execution-rebuild-failed',
     'app-renderer-inspection-unavailable',
   ] as const;
@@ -451,15 +450,7 @@ import { LoadGameError, type LoadGameErrorCode } from '../src/load-game-errors';
                               kernelName: 'movement',
                               worldIdentity: 'world-1',
                               cause: new Error('kernel failed'),
-                              partialWrite: true as const,
-                              retryable: false as const,
                             }
-                          : code === 'app-execution-stale-world'
-                            ? {
-                                expectedIdentity: 'world-2',
-                                receivedIdentity: 'world-1',
-                                messageKind: 'frame-complete',
-                              }
                             : code === 'app-execution-rebuild-failed'
                               ? { worldIdentity: 'world-1', cause: new Error('rebuild failed') }
                               : {};
@@ -591,8 +582,6 @@ import { LoadGameError, type LoadGameErrorCode } from '../src/load-game-errors';
               return 'i';
             case 'app-execution-kernel-failed':
               return 'j';
-            case 'app-execution-stale-world':
-              return 'k';
             case 'app-renderer-inspection-unavailable':
               return 'inspection';
             case 'app-execution-rebuild-failed':
@@ -647,15 +636,7 @@ import { LoadGameError, type LoadGameErrorCode } from '../src/load-game-errors';
                               kernelName: 'movement',
                               worldIdentity: 'world-1',
                               cause: 0,
-                              partialWrite: true as const,
-                              retryable: false as const,
                             }
-                          : code === 'app-execution-stale-world'
-                            ? {
-                                expectedIdentity: 'world-2',
-                                receivedIdentity: 'world-1',
-                                messageKind: 'frame-complete',
-                              }
                             : code === 'app-execution-rebuild-failed'
                               ? { worldIdentity: 'world-1', cause: 0 }
                               : {};

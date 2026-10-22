@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { assembleAssetRuntime, assembleRuntimePacks } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { FixedTime, Time, World } from '@forgeax/engine-ecs';
 import { decodeCatalogWire, type RuntimeCatalogWire } from '@forgeax/engine-pack';
 import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
@@ -155,6 +156,11 @@ describe('standalone host', () => {
         renderPipelines: [],
         computePipelines: [],
       };
+      const time = {
+        fixedDeltaSeconds: 1 / 20,
+        maxStepsPerUpdate: 2,
+        maxDeltaSeconds: 3 * (1 / 20),
+      };
       for (const budget of [256 * 1024 * 1024, 128 * 1024 * 1024]) {
         const standardProfile = {
           ...DEFAULT_STANDARD_PROFILE,
@@ -174,6 +180,7 @@ describe('standalone host', () => {
                     dynamicGeometryMeshBudgetBytes: budget,
                     standardProfile,
                     pipelineLibrary,
+                    time,
                   },
                 },
               },
@@ -204,6 +211,69 @@ describe('standalone host', () => {
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
+            expect(call.split(`time: ${JSON.stringify(time)},`)).toHaveLength(3);
+            const appCall = (
+              await transformWithOxc(
+                call
+                  .replaceAll('import.meta.env.DEV', String(command === 'serve'))
+                  .replaceAll('import.meta.url', JSON.stringify('https://game.test/main.js')),
+                'app-call.ts',
+                { lang: 'ts' },
+              )
+            ).code;
+            for (const workerExecution of [false, true]) {
+              const world = (await runInNewContext(
+                `(async () => { ${appCall} return result; })()`,
+                {
+                  canvas: {},
+                  document: { querySelector: () => null, baseURI: 'https://game.test/' },
+                  URL,
+                  workerExecution,
+                  animation: {},
+                  dynamicGeometryMeshBudgetBytes: budget,
+                  pipelineLibrary,
+                  executionWorkers: {},
+                  programDeliveryChannel: 'test',
+                  isolateVfxViewGraph: false,
+                  vfxInstanceArenas: true,
+                  vfxNativePlanning: true,
+                  vfxRetainedResources: true,
+                  gameChannel: undefined,
+                  cpuProfileRequested: false,
+                  rhiCaptureRequested: false,
+                  gpuPassTiming: undefined,
+                  shadowWorkload: undefined,
+                  geometryLane: undefined,
+                  gbufferBatchOrderDiagnostic: undefined,
+                  featureReadOnlyDepthBatchDiagnostic: undefined,
+                  renderTaskYield: 'none',
+                  renderPipelineCapacity: 3,
+                  pointerLockAllowed: undefined,
+                  runtimeScopeBinding: {},
+                  bundler: {},
+                  ctx: { root: {} },
+                  assetCatalog: {},
+                  pluginPrograms: {},
+                  runtimePacks: {},
+                  profiler: undefined,
+                  workspaceGame: false,
+                  workspaceMode: false,
+                  gameVfx: undefined,
+                  mainAudio: undefined,
+                  webAudioPlugin: () => ({}),
+                  audioPlugin: () => ({}),
+                  skinningPlugin: () => ({}),
+                  createApp: (_canvas: unknown, options: ConstructorParameters<typeof World>[0]) =>
+                    new World(options),
+                },
+              )) as World;
+              world.update(1 / 60).unwrap();
+              expect(world.getResource(Time).maxDeltaSeconds).toBe(time.maxDeltaSeconds);
+              expect(world.getResource(FixedTime)).toMatchObject({
+                delta: time.fixedDeltaSeconds,
+                maxStepsPerUpdate: 2,
+              });
+            }
             expect(
               JSON.parse(
                 await readFile(resolve(config.root ?? '', 'pipeline-library.json'), 'utf8'),

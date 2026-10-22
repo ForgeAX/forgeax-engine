@@ -871,7 +871,7 @@ describe('GPU-driven filtered-plan cache', () => {
       scene: availability.scene,
       plan: topology.query(topology.sourcePlan(), undefined),
       slots,
-      slotAt: projection.slotAt,
+      slotAt: slots.slotAt,
     };
     const meshes = new Map(slots.map((slot) => [slot.slot, gpuMesh] as const));
 
@@ -902,12 +902,14 @@ describe('GPU-driven filtered-plan cache', () => {
     expect(slots.at(1)?.snapshot.transform.world[14]).toBe(0);
     expect(projection.slotsSnapshot().at(1)?.snapshot.transform.world[14]).toBe(50);
     availability.scene.sync(movedDelta).unwrap();
+    const movedSlots = projection.slotsSnapshot();
+    expect(movedSlots.slotAt).not.toBe(slots.slotAt);
 
     const moved = production
       .prepare(
         admitGpuFixture({
           ...pbrInputs,
-          scene,
+          scene: { ...scene, slots: movedSlots, slotAt: movedSlots.slotAt },
           camera,
           meshBySlot: meshes,
           viewBindGroupLayout: viewLayout,
@@ -918,6 +920,8 @@ describe('GPU-driven filtered-plan cache', () => {
     moved?._commitResourceReplacement();
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
+      preparedBatchBuilds: 0,
+      planRebuildBatches: 0,
       batchCount: 1,
       indirectDrawCount: 2,
       sharedInputUploadBytes: 0,
@@ -937,15 +941,16 @@ describe('GPU-driven filtered-plan cache', () => {
       scene: availability.scene,
       plan: topology.query(topology.sourcePlan(), undefined),
       slots,
-      slotAt: projection.slotAt,
+      slotAt: slots.slotAt,
     };
     const meshes = new Map(slots.map((slot) => [slot.slot, gpuMesh] as const));
     const prepare = () => {
+      const currentSlots = projection.slotsSnapshot();
       const frame = production
         .prepare(
           admitGpuFixture({
             ...pbrInputs,
-            scene,
+            scene: { ...scene, slots: currentSlots, slotAt: currentSlots.slotAt },
             camera,
             meshBySlot: meshes,
             viewBindGroupLayout: viewLayout,
@@ -960,9 +965,12 @@ describe('GPU-driven filtered-plan cache', () => {
     expect(production.inspect().filteredPlanBuilds).toBe(1);
     const movedDelta = projection.apply([updateWorld(2, 50)]);
     availability.scene.sync(movedDelta).unwrap();
+    expect(projection.slotsSnapshot().slotAt).not.toBe(slots.slotAt);
     expect(prepare()).toBeDefined();
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
+      preparedBatchBuilds: 0,
+      planRebuildBatches: 0,
       batchCount: 1,
       indirectDrawCount: 1,
     });

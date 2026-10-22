@@ -1,7 +1,7 @@
 // @forgeax/engine-runtime -- skin cluster error classes.
 //
 // feat-20260704-runtime-tier1-decomposition M2 / w8 (D-3): skin / skeleton
-// animation cluster -- joint count / despawn / path / coexistence and
+// animation cluster -- joint path / coexistence and
 // extract-stage binding failures. Palette/material/GPU failures stay in the
 // render error union because render owns the emitting frame stages. Binding
 // class names, .code literals, and .detail shapes are preserved byte-for-byte
@@ -28,99 +28,22 @@
  * | `'joint-count-mismatch'` | `JointCountMismatchError` | `Skin.joints.length !== SkeletonAsset.jointCount` |
  * | `'joint-entity-dangling'` | `JointEntityDanglingError` | `Skin.joints[i]` Entity is despawned (GlobalTransform.world view undefined) |
  *
- * AI users discriminate via `switch (err.code)` over `RuntimeErrorCode`;
+ * AI users discriminate via `switch (err.code)` over `SkinErrorCode`;
  * each member narrows to its `*Error` class with structured `.detail`.
  *
- * NOTE: distinct from the pre-existing `'skin-joint-despawned'` /
- * `'skin-joint-path-unresolved'` / `'skin-joint-count-exceeded'`
- * (advanceAnimationPlayer + post-spawn jointPath resolution); plan-strategy
- * D-4 forbids reusing those codes for the new extract-stage triggers.
+ * NOTE: distinct from `'skin-joint-path-unresolved'` (post-spawn jointPath
+ * resolution); plan-strategy D-4 forbids reusing that code for the
+ * extract-stage triggers.
  */
 export type SkinExtractErrorCode =
   | 'skeleton-resolve-failed'
   | 'joint-count-mismatch'
   | 'joint-entity-dangling';
 
-// ── SkinJointCountExceededError ────────────────────────────────────────────
-
-/**
- * Detail for `RuntimeErrorCode 'skin-joint-count-exceeded'`.
- *
- * Emitted when a glTF skin has more than MAX_JOINTS (256) joints.
- */
-export interface SkinJointCountExceededDetail {
-  readonly jointCount: number;
-  readonly max: number;
-}
-
-/**
- * Structured error for skin joint count exceeding the engine cap.
- *
- * Emitted during skin import/validation. Four-field surface:
- *   - `.code = 'skin-joint-count-exceeded'`
- *   - `.expected` — max allowed (256)
- *   - `.hint` — reduce joint count in the source asset
- *   - `.detail = { jointCount, max }` — actual vs limit
- */
-export class SkinJointCountExceededError extends Error {
-  readonly code = 'skin-joint-count-exceeded' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: SkinJointCountExceededDetail;
-
-  constructor(jointCount: number, max = 256) {
-    const expected = `jointCount <= ${max}`;
-    const hint = `skin has ${jointCount} joints (max ${max}); reduce joint count in the source glTF asset (OOS-skin-many-joints)`;
-    super(`skin joint count ${jointCount} exceeds max ${max}`);
-    this.name = 'SkinJointCountExceededError';
-    this.expected = expected;
-    this.hint = hint;
-    this.detail = { jointCount, max };
-  }
-}
-
-// ── SkinJointDespawnedError ─────────────────────────────────────────────
-
-/**
- * Detail for `RuntimeErrorCode 'skin-joint-despawned'`.
- *
- * Emitted at extract time when a Skin.joints[i] Entity has been despawned.
- */
-export interface SkinJointDespawnedDetail {
-  readonly meshEntity: number;
-  readonly jointIndex: number;
-}
-
-/**
- * Structured error for despawned skin joint Entity.
- *
- * Emitted at extract time; the mesh draw is fully skipped.
- *   - `.code = 'skin-joint-despawned'`
- *   - `.expected` — all Skin.joints alive
- *   - `.hint` — remove the Skin component or re-spawn joints
- *   - `.detail = { meshEntity, jointIndex }`
- */
-export class SkinJointDespawnedError extends Error {
-  readonly code = 'skin-joint-despawned' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: SkinJointDespawnedDetail;
-
-  constructor(meshEntity: number, jointIndex: number) {
-    const expected = `Skin.joints[${jointIndex}] references a live entity`;
-    const hint = `joint[${jointIndex}] of entity ${meshEntity} has been despawned; remove Skin component or re-spawn the joint entity (OOS-skin-joint-respawn)`;
-    super(`skin joint[${jointIndex}] despawned for entity ${meshEntity}`);
-    this.name = 'SkinJointDespawnedError';
-    this.expected = expected;
-    this.hint = hint;
-    this.detail = { meshEntity, jointIndex };
-  }
-}
-
 // ── SkinJointPathUnresolvedError ────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'skin-joint-path-unresolved'`.
+ * Detail for `SkinErrorCode 'skin-joint-path-unresolved'`.
  *
  * Emitted at post-spawn time when a jointPath leaf name cannot be found.
  */
@@ -162,7 +85,7 @@ export class SkinJointPathUnresolvedError extends Error {
 // ── SkinInstancesCoexistForbiddenError ──────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'skin-instances-coexist-forbidden'`.
+ * Detail for `SkinErrorCode 'skin-instances-coexist-forbidden'`.
  *
  * Emitted at extract time when Skin + Instances coexist on the same entity.
  */
@@ -199,7 +122,7 @@ export class SkinInstancesCoexistForbiddenError extends Error {
 // ── SkeletonResolveFailedError ─────────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'skeleton-resolve-failed'`.
+ * Detail for `SkinErrorCode 'skeleton-resolve-failed'`.
  *
  * Emitted at extract time when `assets.get<SkeletonAsset>(skin.skeleton)`
  * returns `null` / `undefined`. The skeleton handle is non-zero (the entity
@@ -243,7 +166,7 @@ export class SkeletonResolveFailedError extends Error {
 // ── JointCountMismatchError ────────────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'joint-count-mismatch'`.
+ * Detail for `SkinErrorCode 'joint-count-mismatch'`.
  *
  * Emitted at extract time when `Skin.joints.length !== SkeletonAsset.jointCount`.
  * `expected` is the SkeletonAsset's jointCount (the source of truth);
@@ -289,7 +212,7 @@ export class JointCountMismatchError extends Error {
 // ── JointEntityDanglingError ──────────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'joint-entity-dangling'`.
+ * Detail for `SkinErrorCode 'joint-entity-dangling'`.
  *
  * Emitted at extract time when `Skin.joints[i]` points at an Entity that has
  * been despawned (or lost its Transform component) so
@@ -305,9 +228,8 @@ export interface JointEntityDanglingDetail {
  * Structured error for despawned (or Transform-less) joint Entity at extract
  * time (feat-20260612-skin-palette-per-frame-upload M2 / m2-5).
  *
- * Distinct from the pre-existing `SkinJointDespawnedError` which fires from
- * advanceAnimationPlayer (animation-stage); this one fires from extractFrame
- * (palette-upload stage) when the per-joint world mat4 view is missing.
+ * Fires from extractFrame (palette-upload stage) when the per-joint world
+ * mat4 view is missing.
  *
  * Emitted at extract time; the entity draw is skipped (continue).
  *   - `.code = 'joint-entity-dangling'`
@@ -365,8 +287,6 @@ export type SkinErrorCode = SkinError['code'];
  */
 export type SkinError =
   | SkinAssetUnresolvedError
-  | SkinJointCountExceededError
-  | SkinJointDespawnedError
   | SkinJointPathUnresolvedError
   | SkinInstancesCoexistForbiddenError
   | SkeletonResolveFailedError

@@ -14,6 +14,7 @@ import {
   type PackOutputMap,
   type PackParameterDefinition,
   type PackParameterValue,
+  type ParticleEffectAssetSource,
   type PluginAssetSource,
   resolvePackParameterValues,
 } from '@forgeax/engine-pack/source';
@@ -99,7 +100,7 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isAsset(value: unknown): value is Asset | PluginAssetSource {
+function isAsset(value: unknown): value is Asset | PluginAssetSource | ParticleEffectAssetSource {
   return record(value) && typeof value.kind === 'string' && isScriptablePackAssetKind(value.kind);
 }
 
@@ -517,6 +518,7 @@ export async function buildScriptablePack(
         guid,
         sourceKey,
         asset,
+        ...(cookerRegistry === undefined ? {} : { cookers: cookerRegistry }),
         sourcePath: options.sourcePath,
         ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
       });

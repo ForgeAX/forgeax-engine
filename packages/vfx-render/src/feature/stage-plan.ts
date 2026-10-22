@@ -1,29 +1,22 @@
-import type { VfxGpuStageReflection } from '@forgeax/engine-vfx';
+import {
+  PARTICLE_MANAGED_STAGE_IDS,
+  PARTICLE_STAGE_RESOURCE_NAMES,
+  type VfxGpuStageReflection,
+} from '@forgeax/engine-vfx';
 import type {
   RenderFeatureGpuBindingsRef,
   RenderFeatureGpuDispatch,
 } from '../../../render/src/features/prepared-gpu-work.js';
 
-const MANAGED_STAGES = new Set(['spawn', 'update', 'scan', 'compact']);
-const RESOURCE_NAMES = new Set([
-  'particles',
-  'runtime',
-  'aliveIndices',
-  'counters',
-  'indirect',
-  'scratch',
-  'billboardInstances',
-  'channelInputs',
-  'events',
-  'eventCounters',
-]);
+const MANAGED_STAGES = new Set<string>(PARTICLE_MANAGED_STAGE_IDS);
+const RESOURCE_NAMES = new Set<string>(PARTICLE_STAGE_RESOURCE_NAMES);
 const STAGE_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const ENTRY_POINT = /^forgeax_vfx_stage_[a-z][a-z0-9-]{0,31}_main$/;
 const MAX_ITERATIONS = 64;
 
 export interface VfxStageReadiness {
   readonly id: string;
-  readonly state: 'ready' | 'candidate-rejected' | 'stale' | 'rebuilding';
+  readonly state: 'ready' | 'candidate-rejected';
   readonly generation: number;
   readonly lastKnownGoodGeneration?: number;
   readonly retryable: boolean;
@@ -57,8 +50,6 @@ export interface VfxStagePlanError {
   readonly stageId: string;
   readonly hint: string;
 }
-
-export type VfxStageRecovery = 'device-loss' | 'stale';
 
 function failure(
   code: VfxStagePlanError['code'],
@@ -101,7 +92,7 @@ export function validatedStagePlan(
       );
     }
     ids.add(stage.id);
-    if (stage.domain !== 'particle' || MANAGED_STAGES.has(stage.domain)) {
+    if (stage.domain !== 'particle') {
       return failure('stage-domain-invalid', stage.id, 'use the managed particle dispatch domain');
     }
     if (!ENTRY_POINT.test(stage.entryPoint)) {
@@ -254,19 +245,4 @@ export function observeStagePlan(
             generation: lastKnownGoodStage.generation,
           },
   };
-}
-
-export function stageRecoveryReadiness(
-  plan: VfxValidatedStagePlan,
-  generation: number,
-  recovery: VfxStageRecovery,
-): readonly VfxStageReadiness[] {
-  return plan.stages.map((stage) => ({
-    id: stage.id,
-    state: recovery === 'stale' ? ('stale' as const) : ('rebuilding' as const),
-    generation,
-    lastKnownGoodGeneration: plan.generation,
-    retryable: true,
-    error: recovery,
-  }));
 }

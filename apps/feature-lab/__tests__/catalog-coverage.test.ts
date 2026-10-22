@@ -61,6 +61,7 @@ const GATE_PROVED_ROWS = new Set([
   'Long audio windows',
   // Packaging, SDK and release.
   'Single-HTML offline delivery',
+  'Player Asset Bundles',
   'Asset/format producers',
   'Shader check',
   'SDK archive build',

@@ -8,7 +8,7 @@ import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuEffectAssetAny,
+  type VfxGpuEffectAsset,
   type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
@@ -96,7 +96,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
           programFingerprint: program.fingerprint,
           emitters: program.program.emitters.map(({ id, capacity }) => ({ id, capacity })),
           program: { ...program.program, fingerprint: program.fingerprint },
-        } satisfies VfxGpuEffectAssetAny),
+        } satisfies VfxGpuEffectAsset),
       )
       .unwrap();
     const version = runtimeAssets(assets).pin(effect).unwrap();
@@ -105,7 +105,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       id: required(program.program.emitters[0]).id,
       effect,
       revision: version.revision,
-      fingerprint: (version.value as VfxGpuEffectAssetAny).program.fingerprint,
+      fingerprint: (version.value as VfxGpuEffectAsset).program.fingerprint,
     };
   };
   const references = new Map([

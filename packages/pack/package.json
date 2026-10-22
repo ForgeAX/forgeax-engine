@@ -52,6 +52,10 @@
       "types": "./dist/artifact-path.d.ts",
       "import": "./dist/artifact-path.mjs"
     },
+    "./bundle": {
+      "types": "./dist/bundle.d.ts",
+      "import": "./dist/bundle.mjs"
+    },
     "./material-cook": {
       "types": "./dist/material-cook.d.ts",
       "import": "./dist/material-cook.mjs"

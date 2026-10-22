@@ -66,7 +66,39 @@ export function scenePassRequests(graph: object): readonly ScenePassRequest[] {
   return requestsByGraph.get(graph) ?? [];
 }
 
+/** Per-request selections; fixed material frames and GPU selections survive pose frames. */
+const directSelections = new WeakMap<
+  ScenePassRequest,
+  {
+    readonly materials: MaterialFrame;
+    readonly gpu: GpuDrawSelection;
+    readonly selected: Map<GpuDrivenBatchBinding, MaterialSnapshot | null>;
+  }
+>();
+
 export function directPassMaterial(
+  request: ScenePassRequest,
+  materials: MaterialFrame,
+  gpu: GpuDrawSelection,
+): (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined {
+  let cache = directSelections.get(request);
+  if (cache?.materials !== materials || cache.gpu !== gpu) {
+    cache = { materials, gpu, selected: new Map() };
+    directSelections.set(request, cache);
+  }
+  const { selected } = cache;
+  const select = selectDirectPassMaterial(request, materials, gpu);
+  return (binding) => {
+    let material = selected.get(binding);
+    if (material === undefined) {
+      material = select(binding) ?? null;
+      selected.set(binding, material);
+    }
+    return material ?? undefined;
+  };
+}
+
+function selectDirectPassMaterial(
   request: ScenePassRequest,
   materials: MaterialFrame,
   gpu: GpuDrawSelection,

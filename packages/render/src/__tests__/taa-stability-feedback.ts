@@ -163,6 +163,7 @@ export async function verifyTaaStabilityFeedback(
             { binding: 9, resource: { kind: 'textureView', value: state.stability[index].view } },
             { binding: 10, resource: { kind: 'textureView', value: secondary.view } },
             { binding: 11, resource: { kind: 'textureView', value: temporal.view } },
+            { binding: 12, resource: { kind: 'textureView', value: secondary.view } },
           ],
         })
         .unwrap();

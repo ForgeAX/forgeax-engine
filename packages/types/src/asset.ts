@@ -46,7 +46,7 @@ export interface ArtifactDescriptor {
   readonly byteRange?: {
     readonly offset: number;
     readonly length: number;
-    readonly containerDigest: string;
+    readonly bundleDigest: string;
   };
 }
 

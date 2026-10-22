@@ -17,24 +17,6 @@ export type AssetLoadErrorCode =
   | 'asset-load-cancelled'
   | 'asset-runtime-disposed';
 
-export const ASSET_LOAD_ERROR_HINTS: Readonly<Record<AssetLoadErrorCode, string>> = {
-  'asset-guid-invalid': 'provide a valid asset GUID and retry the current publication',
-  'asset-kind-mismatch': 'pass the Catalog kind or the matching custom AssetKind token',
-  'asset-not-found': 'inspect the producer Catalog and rebuild the missing publication',
-  'asset-not-ready': 'wait for the current publication or inspect its producer lifecycle',
-  'catalog-unavailable': 'inspect the scope and create a fresh Registry for a new scope',
-  'catalog-discontinuous': 'reconcile the Catalog baseline before loading the current row',
-  'asset-fetch-failed': 'verify the package locator and republish the Pack',
-  'asset-integrity-failed': 'verify the artifact digest and recook the Pack',
-  'asset-package-invalid': 'validate the Pack v2 envelope and recook invalid output',
-  'asset-decoder-missing': 'install the owner decoder lease for this kind',
-  'asset-decode-failed': 'inspect the structured decoder detail and repair the owner output',
-  'asset-dependency-failed': 'repair the dependency publication named in detail and retry',
-  'asset-superseded': 'load the current publication instead of the superseded ticket',
-  'asset-load-cancelled': 'retry with a live AbortSignal when the request is still needed',
-  'asset-runtime-disposed': 'obtain a new Registry from the current realm',
-};
-
 type AssetLoadErrorBase<C extends AssetLoadErrorCode, D> = {
   readonly code: C;
   readonly expected: string;

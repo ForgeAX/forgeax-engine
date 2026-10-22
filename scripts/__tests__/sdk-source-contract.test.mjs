@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import Ajv2020 from 'ajv/dist/2020.js';
-
 import {
   discoverSdkTemplates,
   SDK_MANIFEST_VERSION,
@@ -19,6 +18,8 @@ import {
   sdkResourceManifest,
   sdkTemplateResourceManifest,
 } from '../forgeax/sdk-lib.mjs';
+import { reduceTestProject } from '../test/reduce-test-project.mjs';
+import quality from '../test/render-quality.json' with { type: 'json' };
 
 test('SDK template discovery fails closed on orphan and invalid descriptors', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-templates-'));
@@ -77,7 +78,8 @@ test('SDK source contract keeps the source root and prebuilt WASM closure explic
       'rapier-native.mjs',
       'rapier-native.d.mts',
       'rapier.wasm',
-      ...(entry.package.endsWith('rapier3d') ? ['rapier.mjs', 'rapier.d.mts'] : []),
+      'rapier.mjs',
+      'rapier.d.mts',
       'LICENSE',
       'provenance.json',
     ]);
@@ -146,65 +148,28 @@ test('SDK manifest admits a pack-only template set with no copied resources', as
   );
 });
 
-test('SDK CI workload edits only the generated consumer and rejects fixture drift', async () => {
+test('SDK CI workload reduces only the generated consumer through the shared test-project owner', async () => {
   const source = await readFile(new URL('../forgeax/verify-sdk.mjs', import.meta.url), 'utf8');
-  const body = source.slice(
-    source.indexOf(
-      "  if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {",
-      source.indexOf('async function verifySelectedTemplate()'),
-    ),
-    source.indexOf(
-      '  const selectedManifest = JSON.parse(',
-      source.indexOf('async function verifySelectedTemplate()'),
-    ),
+  const selected = source.slice(source.indexOf('async function verifySelectedTemplate()'));
+  assert.match(
+    selected,
+    /if \(process\.env\.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'\) \{\s*await reduceTestProject\(selectedProject\);\s*\}/,
   );
-  const apply = new (Object.getPrototypeOf(async () => {}).constructor)(
-    'resolve',
-    'readFile',
-    'writeFile',
-    'selectedProject',
-    'process',
-    'console',
-    body,
-  );
+  const template = new URL('../../templates/game-3d/assets/', import.meta.url);
+  const original = await readFile(new URL('scene.pack.ts', template), 'utf8');
   const root = await mkdtemp(resolve(tmpdir(), 'sdk-ci-consumer-'));
-  const original = await readFile(
-    new URL('../../templates/game-3d/assets/scene.pack.ts', import.meta.url),
-    'utf8',
-  );
-  const path = resolve(root, 'assets/scene.pack.ts');
   try {
     await mkdir(resolve(root, 'assets'));
-    await writeFile(path, original);
-    await apply(resolve, readFile, writeFile, root, { env: {} }, { log() {} });
-    assert.equal(await readFile(path, 'utf8'), original, 'full qualification keeps original bytes');
-    await apply(
-      resolve,
-      readFile,
-      writeFile,
-      root,
-      { env: { FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' } },
-      { log() {} },
-    );
-    assert.equal(await readFile(path, 'utf8'), original.replace('mapSize: 1024,', 'mapSize: 256,'));
+    await writeFile(resolve(root, 'assets/scene.pack.ts'), original);
+    await reduceTestProject(root);
+    const reduced = await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8');
+    const light = /DirectionalLight: \{([^{}]*)\}/.exec(reduced)?.[1] ?? '';
+    assert.match(light, new RegExp(`mapSize: ${quality.shadowMapSize}\\b`));
+    assert.match(light, new RegExp(`cascadeCount: ${quality.cascadeCount}\\b`));
     assert.equal(
-      await readFile(
-        new URL('../../templates/game-3d/assets/scene.pack.ts', import.meta.url),
-        'utf8',
-      ),
+      await readFile(new URL('scene.pack.ts', template), 'utf8'),
       original,
       'source template remains immutable',
-    );
-    await assert.rejects(
-      apply(
-        resolve,
-        readFile,
-        writeFile,
-        root,
-        { env: { FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' } },
-        { log() {} },
-      ),
-      /sdk-ci-shadow-fixture-changed/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

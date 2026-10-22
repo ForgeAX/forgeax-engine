@@ -81,15 +81,25 @@ async function resolveCoverage(source: string, edge: boolean) {
     const inputLayout = device
       .createBindGroupLayout({
         entries: [
-          ...[0, 2, 4, 6, 9, 10].map((binding) => ({
+          ...[0, 2, 4, 9].map((binding) => ({
             binding,
             visibility: GPU_SHADER_STAGE_COMPUTE,
             texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
           })),
+          ...[6, 10, 12].map((binding) => ({
+            binding,
+            visibility: GPU_SHADER_STAGE_COMPUTE,
+            texture: { sampleType: 'unfilterable-float' as const, viewDimension: '2d' as const },
+          })),
           ...[1, 3, 5, 7].map((binding) => ({
             binding,
             visibility: GPU_SHADER_STAGE_COMPUTE,
-            sampler: { type: 'filtering' as const },
+            sampler: {
+              type:
+                binding === 5 || binding === 7
+                  ? ('non-filtering' as const)
+                  : ('filtering' as const),
+            },
           })),
           { binding: 8, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
           {
@@ -100,14 +110,16 @@ async function resolveCoverage(source: string, edge: boolean) {
         ],
       })
       .unwrap();
-    const pipeline = device
-      .createComputePipeline({
+    if (device.createComputePipelineAsync === undefined)
+      throw new Error('Dawn requires validated async compute pipelines');
+    const pipeline = (
+      await device.createComputePipelineAsync({
         layout: device
           .createPipelineLayout({ bindGroupLayouts: [outputLayout, inputLayout] })
           .unwrap(),
         compute: { module, entryPoint: 'probe_coverage' },
       })
-      .unwrap();
+    ).unwrap();
     const outputGroup = device
       .createBindGroup({
         layout: outputLayout,
@@ -130,6 +142,7 @@ async function resolveCoverage(source: string, edge: boolean) {
           { binding: 9, resource: { kind: 'textureView', value: age.view } },
           { binding: 10, resource: { kind: 'textureView', value: age.view } },
           { binding: 11, resource: { kind: 'textureView', value: currentTemporal.view } },
+          { binding: 12, resource: { kind: 'textureView', value: age.view } },
         ],
       })
       .unwrap();

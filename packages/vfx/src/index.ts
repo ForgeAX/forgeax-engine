@@ -33,12 +33,12 @@ export type {
 } from './code-source.js';
 export {
   PARTICLE_CODE_DEFAULT_MODULE_ID,
+  PARTICLE_MANAGED_STAGE_IDS,
   PARTICLE_STAGE_RESOURCE_NAMES,
   parseVfxStageDeclarations,
 } from './code-source.js';
 export type {
   ParticleAttributeRef,
-  ParticleEffectRootSourceV3,
   ParticleEffectSourceV3,
   ParticleEmitterSourceV3,
   ParticleRendererSemantic,
@@ -79,7 +79,7 @@ export type {
   VfxValueMap,
   VfxValueType,
 } from './effect-contract.js';
-export { createVfxEffectContract, validateVfxEffectValues } from './effect-contract.js';
+export { createVfxEffectContract } from './effect-contract.js';
 export type { VfxForceField, VfxForceFieldError } from './force-fields.js';
 export {
   isVfxFieldTransform,
@@ -98,17 +98,11 @@ export {
 } from './gpu-loader.js';
 export type {
   VfxGpuEffectAsset,
-  VfxGpuEffectAssetAny,
-  VfxGpuEffectAssetV3,
   VfxGpuEmitterProgram,
-  VfxGpuEmitterProgramAny,
-  VfxGpuEmitterProgramV3,
   VfxGpuInstanceComputeProgram,
   VfxGpuProgram,
   VfxGpuProgramReflection,
-  VfxGpuProgramReflectionV3,
-  VfxGpuProgramV3,
-  VfxGpuRendererReflectionV3,
+  VfxGpuRendererReflection,
   VfxGpuStageReflection,
 } from './gpu-program.js';
 export {

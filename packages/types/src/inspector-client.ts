@@ -81,7 +81,6 @@ export type ConnectFn = (url: string) => Promise<InspectorClientResult>;
 
 /** Default inspector listener target used by the Node-only CLI clients. */
 export const INSPECTOR_DEFAULT_PORT = 5732;
-export const INSPECTOR_DEFAULT_HOST = 'localhost';
 
 const CONNECT_HINT = `start the demo first: pnpm --filter inspector-demo dev; verify the host called startConsoleServer({ port, registry }); pass --port to override default ${INSPECTOR_DEFAULT_PORT}`;
 

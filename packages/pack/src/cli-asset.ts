@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import * as zlib from 'node:zlib';
 import type {
   ArtifactDescriptor,
   AssetEvidence,
@@ -639,6 +640,15 @@ function packagePath(projectRoot: string, packageUrl: string): string {
   return resolve(projectRoot, relative);
 }
 
+// Node 22.15 adds zstd to zlib; older runtimes report the artifact as unverifiable.
+const zstdDecompress = (zlib as { zstdDecompressSync?: (bytes: Uint8Array) => Uint8Array })
+  .zstdDecompressSync;
+
+function zstdDecoded(bytes: Uint8Array): Uint8Array {
+  if (zstdDecompress === undefined) throw new Error('zstd decoding requires Node 22.15');
+  return zstdDecompress(bytes);
+}
+
 function artifactInputs(
   pack: { readonly guid: string; readonly artifacts: Readonly<Record<string, ArtifactDescriptor>> },
   packagePathValue: string,
@@ -663,13 +673,12 @@ function artifactInputs(
             range.length > 0 &&
             Number.isSafeInteger(range.offset + range.length) &&
             range.offset + range.length <= stored.length &&
-            (descriptor.contentEncoding ?? 'identity') === 'identity' &&
             descriptor.delivery === undefined &&
             descriptor.integrity !== undefined &&
-            `sha256:${createHash('sha256').update(stored).digest('hex')}` ===
-              range.containerDigest);
-        const bytes =
+            `sha256:${createHash('sha256').update(stored).digest('hex')}` === range.bundleDigest);
+        const window =
           range === undefined ? stored : stored.subarray(range.offset, range.offset + range.length);
+        const bytes = descriptor.contentEncoding === 'zstd' ? zstdDecoded(window) : window;
         const lengthOk =
           descriptor.byteLength === undefined || descriptor.byteLength === bytes.byteLength;
         const digestOk =

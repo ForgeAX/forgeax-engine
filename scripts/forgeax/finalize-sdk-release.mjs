@@ -104,8 +104,8 @@ async function createOrReadRelease() {
         target_commitish: expectedCommit,
         name: title,
         body: await readFile(notesFile, 'utf8'),
-        prerelease: tag.includes('-dev.'),
-        make_latest: tag.includes('-dev.') ? 'false' : 'true',
+        prerelease: /-(?:dev|rc)\./.test(tag),
+        make_latest: /-(?:dev|rc)\./.test(tag) ? 'false' : 'true',
       }),
     }).then((response) => response.json());
   } catch (cause) {

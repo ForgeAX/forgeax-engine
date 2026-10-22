@@ -2,7 +2,6 @@
 
 export type {
   ParticleAttributeRef,
-  ParticleEffectRootSourceV3,
   ParticleEffectSourceV3,
   ParticleEmitterSourceV3,
   ParticleRendererSemantic,
@@ -14,6 +13,7 @@ export type {
   ParticleCodeCompileError,
   ParticleCodeCookError,
   ParticleCodeCookProduct,
+  ParticleCodeCookSource,
   ParticleCodeEffectPayload,
   ParticleCodeModuleSet,
   ParticleCodeNativeCookInput,

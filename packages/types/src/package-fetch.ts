@@ -15,6 +15,8 @@ export interface PackageRequest {
   readonly method?: string;
   readonly signal?: AbortSignal | null;
   readonly cache?: 'default' | 'reload' | 'no-store';
+  /** Hosts may ignore headers; readers accept the complete resource instead. */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** Browser fetch satisfies this contract; native hosts need no DOM Request/Response objects. */

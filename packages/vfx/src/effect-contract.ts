@@ -338,10 +338,3 @@ export function createVfxEffectContract<Values extends VfxValueMap = VfxValueMap
     },
   };
 }
-
-export function validateVfxEffectValues(
-  reflection: VfxEffectReflection,
-  values: VfxValueMap,
-): Result<VfxValueMap, VfxEffectContractError> {
-  return validateMap(reflection, values);
-}

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { brotliDecompressSync } from 'node:zlib';
+import { FixedTime, Time, World } from '@forgeax/engine-ecs';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { expect, it } from 'vitest';
 import { verifyDist, writeDistManifest } from '../../dist.js';
@@ -13,6 +14,7 @@ it.each([
   undefined,
   256 * 1024 * 1024,
 ])('passes the projected native mesh budget %s to the actual Renderer owner', async (budget) => {
+  const time = { fixedDeltaSeconds: 1 / 20, maxStepsPerUpdate: 2, maxDeltaSeconds: 3 * (1 / 20) };
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-app-options-'));
   try {
     await prepareWechatBuild(
@@ -25,7 +27,7 @@ it.each([
         sourceSnapshot: createScriptablePackSourceSnapshot(),
         filesystemInputs: undefined,
       },
-      budget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: budget },
+      budget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: budget, time },
     );
     const source = await readFile(resolve(root, 'wechat-main.ts'), 'utf8');
     const call = source.slice(
@@ -49,6 +51,18 @@ it.each([
       },
     );
     expect(options.dynamicGeometryMeshBudgetBytes).toBe(budget);
+    const world = runInNewContext(
+      `${source.slice(source.indexOf('const world = new World('), source.indexOf('let game;'))} world`,
+      { World },
+    ) as World;
+    world.update(1 / 60).unwrap();
+    expect(world.getResource(Time).maxDeltaSeconds).toBe(
+      budget === undefined ? 0.1 : time.maxDeltaSeconds,
+    );
+    expect(world.getResource(FixedTime).delta).toBe(
+      budget === undefined ? 1 / 60 : time.fixedDeltaSeconds,
+    );
+    expect(world.getResource(FixedTime).maxStepsPerUpdate).toBe(budget === undefined ? 4 : 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -15,6 +15,7 @@ import {
   Visibility,
   VisibilityStateValue,
 } from '../components';
+import { Materials } from '../materials';
 import { extractFrames } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
@@ -233,5 +234,124 @@ it('keeps untouched World hidden reports during partial edits and removals', () 
   } finally {
     for (const lease of leases) lease.dispose();
     scene.dispose();
+  }
+});
+
+it('keeps pending temporal sources hidden until the same identity publishes an accepted material', () => {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  registerPropagateTransforms(world);
+  const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: {} },
+      { component: MotionBlur, data: { shutterAngle: 180 } },
+    )
+    .unwrap();
+  const entity = world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const lease = createRenderReadLease(world),
+    scene = new PersistentRenderScene();
+  let available = true;
+  const build = (request: PersistentRenderCandidateRequest) => {
+    const frame = extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+      cull: 'none',
+      retainHidden: true,
+      renderables: request,
+    });
+    return !available && typeof request === 'object'
+      ? { ...frame, renderables: [], dispatch: [] }
+      : frame;
+  };
+  const draw = () =>
+    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  try {
+    expect(draw().renderables.length).toBe(1);
+    available = false;
+    world.set(entity, MeshRenderer, { lightingChannels: 2 }).unwrap();
+    world.update(0).unwrap();
+    const pending = draw();
+    expect(pending.renderables.length).toBe(0);
+    expect(pending.dispatch.length).toBe(0);
+    available = true;
+    const ready = draw();
+    expect(ready.renderables.length).toBe(1);
+    expect(ready.renderables.at(0)?.entityKey).toBe(entity);
+    expect(ready.renderables.at(0)?.lightingChannels).toBe(2);
+    expect(pending.renderables.length).toBe(0);
+    expect(scene.inspect().fullRebuilds).toBe(1);
+  } finally {
+    lease.dispose();
+    scene.dispose();
+    assets.dispose();
+  }
+});
+
+it('does not read retired material versions while an authored temporal source is hidden', () => {
+  const assets = new AssetRegistry(),
+    world = new World({ assets });
+  registerPropagateTransforms(world);
+  const material = assets.create(Materials.standard({ baseColor: [1, 0, 0, 1] })).unwrap();
+  const geometry = createPrimitiveMesh('cube').unwrap();
+  const mesh = assets
+    .create({
+      ...geometry,
+      materialSlots: geometry.materialSlots.map((slot) => ({ ...slot, defaultMaterial: material })),
+    })
+    .unwrap();
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: {} },
+      { component: MotionBlur, data: { shutterAngle: 180 } },
+    )
+    .unwrap();
+  const entity = world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: mesh } },
+      { component: MeshRenderer, data: {} },
+      { component: Visibility, data: { state: VisibilityStateValue.visible } },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const lease = createRenderReadLease(world),
+    scene = new PersistentRenderScene({ assets });
+  const build = (request: PersistentRenderCandidateRequest) =>
+    extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+      cull: 'none',
+      retainHidden: true,
+      renderables: request,
+    });
+  const draw = () =>
+    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  try {
+    const initial = draw();
+    expect(initial.renderables.length).toBe(1);
+    world.set(entity, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
+    world.update(0).unwrap();
+    const hidden = draw();
+    expect(hidden.renderables.length).toBe(0);
+    expect(hidden.dispatch.length).toBe(0);
+    world.set(entity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
+    world.update(0).unwrap();
+    const shown = draw();
+    expect(shown.renderables.length).toBe(1);
+    expect(shown.renderables.at(0)?.entityKey).toBe(entity);
+    expect(shown.renderables.at(0)?.temporal?.reactive).toBe(true);
+    expect(hidden.renderables.length).toBe(0);
+    expect(initial.renderables.length).toBe(1);
+    expect(scene.inspect().fullRebuilds).toBe(1);
+  } finally {
+    lease.dispose();
+    scene.dispose();
+    assets.dispose();
   }
 });

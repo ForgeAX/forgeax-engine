@@ -7,8 +7,6 @@ export {
   type SkinError,
   type SkinErrorCode,
   SkinInstancesCoexistForbiddenError,
-  SkinJointCountExceededError,
-  SkinJointDespawnedError,
   SkinJointPathUnresolvedError,
 } from './errors';
 export { type FitShadowCapsulesOptions, fitShadowCapsules } from './fit-shadow-capsules';

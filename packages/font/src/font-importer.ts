@@ -44,16 +44,6 @@ import type { BakeAtlas, MsdfGenerator } from './atlas-font-data.js';
 import { atlasFontData } from './atlas-font-data.js';
 import { generateFontAtlas } from './atlas-generator.js';
 
-/** Stable semantic identities for the three writable font outputs. */
-export function sourceKeyForFontOutput(kind: string): string | undefined {
-  const normalizedKind = kind.trim();
-  return normalizedKind.length === 0 ? undefined : `font:${normalizedKind}`;
-}
-
-export function fontOutputSourceKeys(): readonly string[] {
-  return ['texture', 'sampler', 'font'].map((kind) => sourceKeyForFontOutput(kind) as string);
-}
-
 function makeAtlasTexture(atlas: BakeAtlas): TextureAsset {
   return {
     kind: 'texture',

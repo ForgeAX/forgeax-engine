@@ -35,7 +35,8 @@ it.skipIf(process.env.FOCUS_SELECTOR !== selector)(
           timeout: 900_000,
           maxBuffer: 64 * 1024 * 1024,
         });
-        console.info(result.stdout, result.stderr);
+        process.stdout.write(result.stdout);
+        process.stderr.write(result.stderr);
       } catch (error) {
         const failure = error as { stdout?: string; stderr?: string };
         console.error(failure.stdout, failure.stderr);

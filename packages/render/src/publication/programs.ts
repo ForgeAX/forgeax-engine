@@ -155,12 +155,29 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
         return reads === undefined ? [] : [[pass.name, reads]];
       }),
     );
-    if (Object.keys(entryPoints).length > 0)
+    // A re-published material that already carries these exact program reads
+    // keeps its identity; a fresh object would invalidate every material cache.
+    if (
+      Object.keys(entryPoints).length > 0 &&
+      !sameEntryPoints(rebound.materialEntryPoints, entryPoints)
+    )
       rebound = { ...rebound, materialEntryPoints: entryPoints };
     materials.set(material, rebound);
     return rebound;
   };
   return rebind;
+}
+
+function sameEntryPoints(
+  current: MaterialSnapshot['materialEntryPoints'],
+  next: Readonly<Record<string, unknown>>,
+): boolean {
+  if (current === undefined) return false;
+  const keys = Object.keys(next);
+  if (Object.keys(current).length !== keys.length) return false;
+  for (const key of keys)
+    if ((current as Readonly<Record<string, unknown>>)[key] !== next[key]) return false;
+  return true;
 }
 
 export function rebindPublicationMaterialSchemas(
@@ -169,7 +186,10 @@ export function rebindPublicationMaterialSchemas(
 ): PreparedRenderPublication {
   if (input.materialUpdates.length === 0) return input;
   const rebind = publicationMaterialSchemaRebinder(registry);
-  for (const resource of input.materialUpdates) resource.adopt(rebind(resource.snapshot));
+  for (const resource of input.materialUpdates) {
+    const rebound = rebind(resource.snapshot);
+    if (rebound !== resource.snapshot) resource.adopt(rebound);
+  }
   return input;
 }
 

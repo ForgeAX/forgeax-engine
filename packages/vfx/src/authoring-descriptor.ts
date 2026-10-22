@@ -1,4 +1,4 @@
-import type { VfxGpuEffectAssetAny, VfxGpuEmitterProgramAny } from './gpu-program.js';
+import type { VfxGpuEffectAsset, VfxGpuEmitterProgram } from './gpu-program.js';
 
 export type VfxAuthoringValue =
   | null
@@ -90,9 +90,9 @@ const V3_CAPABILITIES: readonly VfxAuthoringCapabilityDescriptor[] = Object.free
  * the cooked program shape. This deliberately validates the stable producer
  * discriminants only; detailed artifact validation remains the pack loader's
  * responsibility. */
-export function isVfxGpuEffectAsset(value: unknown): value is VfxGpuEffectAssetAny {
+export function isVfxGpuEffectAsset(value: unknown): value is VfxGpuEffectAsset {
   if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Partial<VfxGpuEffectAssetAny>;
+  const candidate = value as Partial<VfxGpuEffectAsset>;
   const program = candidate.program;
   return (
     candidate.kind === 'particle-effect' &&
@@ -170,7 +170,7 @@ function node(
 }
 
 function reflectionNodes(
-  emitter: VfxGpuEmitterProgramAny,
+  emitter: VfxGpuEmitterProgram,
   path: string,
 ): VfxAuthoringNodeDescriptor[] {
   const nodes: VfxAuthoringNodeDescriptor[] = [];
@@ -231,10 +231,7 @@ function reflectionNodes(
   return nodes;
 }
 
-function emitterNode(
-  emitter: VfxGpuEmitterProgramAny,
-  index: number,
-): VfxAuthoringEmitterDescriptor {
+function emitterNode(emitter: VfxGpuEmitterProgram, index: number): VfxAuthoringEmitterDescriptor {
   const path = `emitters[${index}]`;
   const children: VfxAuthoringNodeDescriptor[] = [
     node({
@@ -295,7 +292,7 @@ function emitterNode(
   });
 }
 
-function dependencies(effect: VfxGpuEffectAssetAny): readonly VfxAuthoringDependencyDescriptor[] {
+function dependencies(effect: VfxGpuEffectAsset): readonly VfxAuthoringDependencyDescriptor[] {
   const entries: VfxAuthoringDependencyDescriptor[] = [];
   const seen = new Set<string>();
   const add = (entry: VfxAuthoringDependencyDescriptor): void => {
@@ -340,7 +337,7 @@ function dependencies(effect: VfxGpuEffectAssetAny): readonly VfxAuthoringDepend
 }
 
 /** Project the cooked runtime asset into a compiler-free, UI-neutral authoring read model. */
-export function describeVfxGpuEffect(effect: VfxGpuEffectAssetAny): VfxAuthoringDescriptor {
+export function describeVfxGpuEffect(effect: VfxGpuEffectAsset): VfxAuthoringDescriptor {
   return Object.freeze({
     version: 1,
     assetGuid: effect.guid,

@@ -1,3 +1,4 @@
+import { assetDataBytes } from '@forgeax/engine-assets-runtime/internal';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 
@@ -282,15 +283,9 @@ function validateMesh(mesh: MeshAsset): string | undefined {
 }
 
 function meshByteSize(mesh: MeshAsset): number {
-  let bytes = mesh.vertices.byteLength + (mesh.indices?.byteLength ?? 0);
-  for (const value of Object.values(mesh.attributes)) {
-    if (value instanceof ArrayBuffer) bytes += value.byteLength;
-    else if (value !== undefined && ArrayBuffer.isView(value)) bytes += value.byteLength;
-  }
-  if (mesh.aabb !== undefined) bytes += mesh.aabb.byteLength;
-  // The byte budget covers typed geometry and GPU upload inputs. Metadata
-  // follows the candidate's World owner, including offscreen residents.
-  return bytes;
+  // Charge the complete private MeshAsset copy, including morph/offline data.
+  // This is the same logical-view accounting used by its runtime storage owner.
+  return assetDataBytes(mesh);
 }
 
 /**

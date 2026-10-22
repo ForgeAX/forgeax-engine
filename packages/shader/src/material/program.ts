@@ -26,6 +26,8 @@ export interface MaterialShaderProgram {
   readonly materialUniformRequired: boolean;
   /** Literal group(1) declarations; undefined keeps unknown source contracts conservative. */
   readonly materialBindings: readonly number[] | undefined;
+  /** Numeric `@id` pipeline overrides this exact module declares, in source order. */
+  readonly overrideIds: readonly string[];
 }
 
 export function materialShaderUvSetCount(source: string): number | undefined {
@@ -190,6 +192,13 @@ export function createMaterialShaderProgram(
       ...vertexInputs(code),
       materialUniformRequired: materialUniformRequired(code),
       materialBindings: materialBindings(code),
+      overrideIds: Object.freeze([
+        ...new Set(
+          [...code.matchAll(/@id\s*\(\s*(\d+)u?\s*\)\s*override\b/gu)].map((match) =>
+            String(Number(match[1])),
+          ),
+        ),
+      ]),
     }),
     entryPoints,
   );

@@ -12,7 +12,6 @@ import {
   summarizeBenchmarkSamples,
 } from '../benchmark/report.js';
 import { calculateSampleStatistics } from '../benchmark/statistics.js';
-import { createServiceCache } from '../cache.js';
 import {
   authorPluginCreateDescriptor,
   describeTool,
@@ -49,12 +48,7 @@ import {
   runCarrierPreviewRoute,
   runPreviewHost,
 } from '../preview-host.js';
-import {
-  createRealmCapabilityMatrix,
-  createResourceProbe,
-  resolveRealmCapability,
-} from '../realms.js';
-import { createDevkitToolRuntime, createPreviewToolRuntime } from '../runtime.js';
+import { createResourceProbe } from '../realms.js';
 import { createServiceExecutor } from '../service.js';
 import { createAuthenticatedLoopbackService } from '../service-transport.js';
 
@@ -124,18 +118,6 @@ describe('DevKit tool coverage contracts', () => {
     expect(probe.snapshot().process).toEqual([]);
     expect(() => probe.owner('host')).not.toThrow();
     expect(() => probe.owner('host')).toThrow('resource-owner-duplicate');
-    const cache = createServiceCache();
-    expect(cache.get('missing')).toBeUndefined();
-    cache.set('key', { artifactDigest: 'sha256:a', value: { ok: true } });
-    expect(cache.size()).toBe(1);
-    expect(cache.evict('key')).toBe(true);
-    expect(cache.evict('key')).toBe(false);
-    cache.clear();
-    const matrix = createRealmCapabilityMatrix({
-      catalogDigest: 'sha256:c',
-      supported: { build: true, host: false, engine: true, frontend: false },
-    });
-    expect(resolveRealmCapability(matrix, 'host')).toMatchObject({ supported: false });
     probe.release('page', 'unowned');
     expect(() => owner.observe('fiber', 'after-stop')).toThrow('resource-owner-stopped');
   });
@@ -161,8 +143,7 @@ describe('DevKit tool coverage contracts', () => {
     expect(analyzePreviewArtifacts({ manifest, required: ['missing' as never] })).toMatchObject({
       ok: false,
     });
-    expect(createPreviewToolRuntime().list()).toHaveLength(2);
-    expect(createDevkitToolRuntime(contributions).list()).toHaveLength(2);
+    expect(runtime.list()).toHaveLength(2);
   });
 
   it('covers carrier pre-start fallback, lease, started, exit, and ordinary paths', async () => {

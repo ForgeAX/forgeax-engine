@@ -20,11 +20,11 @@ grep -n "deriveStorageBufferCeiling" packages/runtime/src/createRenderer.ts
 
 (a) deriveStorageBufferCeiling uses positive maxStorageBufferBindingSize; for zero/undefined, falls back through maxBufferSize, maxUniformBufferBindingSize, then the 128 MiB specification floor.
 
-(b) Capacity failure renders validatedOrdered.slice(0, degradedToSlotCount), discards overflow, and fires mesh-ssbo-capacity-exceeded with requested/capacity/ceiling. It no longer skips the whole frame.
+(b) Capacity failure fires mesh-ssbo-ceiling-reached (MeshSsboCeilingReachedError) with requested/capacity/ceiling, keeps the current buffers, and returns degradedTo mesh/material slot counts; the record stage renders the retained prefix that fits and discards overflow. It no longer skips the whole frame.
 
 (c) Existing onError subscribers receive the degradation signal without a new API or error-union member.
 
-Owners: runtime/createRenderer.ts deriveStorageBufferCeiling/growMeshSsbo and render-system-record.ts ensureMeshSsboCapacity.
+Owners: render/src/assembly/mesh-ssbo-grow.ts deriveStorageBufferCeiling/growMeshSsbo, render/src/record/mesh-ssbo.ts ensureMeshSsboCapacity, and render/src/record/fold-buckets.ts (degraded prefix).
 
 ---
 

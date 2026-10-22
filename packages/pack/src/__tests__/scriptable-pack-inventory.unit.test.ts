@@ -167,4 +167,33 @@ describe('ScriptablePack source inventory', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('omits erased type-only declarations but keeps every possibly executed import', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-inventory-type-only-')));
+    try {
+      const file = (name: string) => join(root, name);
+      for (const name of ['types.ts', 'reexported.ts', 'star.ts', 'inline.ts', 'value.ts'])
+        await writeFile(file(name), 'export type T = number; export const v = 1;');
+      const source = file('root.pack.ts');
+      await writeFile(
+        source,
+        [
+          "import type { T } from './types.ts';",
+          "export type { T as U } from './reexported.ts';",
+          "export type * from './star.ts';",
+          "import { type T as I } from './inline.ts';",
+          "import type { T as V } from './value.ts';",
+          "import { v } from './value.ts';",
+          'export const read = (x: T | I | V) => v + x;',
+        ].join('\n'),
+      );
+      const paths = (await inventoryScriptablePackSource(source)).map((entry) => entry.path);
+      expect(paths).toContain(file('inline.ts'));
+      expect(paths).toContain(file('value.ts'));
+      for (const name of ['types.ts', 'reexported.ts', 'star.ts'])
+        expect(paths).not.toContain(file(name));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

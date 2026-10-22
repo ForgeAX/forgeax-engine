@@ -86,6 +86,11 @@ export {
  * settled stale layers flush on the next clean frame. GPU view pools and
  * unproven lease-less recording keep their existing cache policy.
  *
+ * staticShadowCache (bool, default true) retains settled casters in a cached
+ * static layer per cascade. Disable for scenes whose static casters change
+ * constantly (heavy destruction), where the extra per-view pass costs more
+ * than it saves: each cascade then rasters every caster in one pass.
+ *
  * contactShadowLength (meters, finite, >= 0, default 0 = off) enables
  * screen-space contact shadows for this light: a short depth-buffer ray march
  * toward the light that darkens small-scale occlusion the shadow map cannot
@@ -170,5 +175,7 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   shadowIntensity: { type: 'f32', default: 1 },
   shadowBlurSamples: { type: 'f32', default: 8 },
   staggerCascades: { type: 'bool', default: false },
+  // Retained static cascade layer for GPU-driven casters (see doc above).
+  staticShadowCache: { type: 'bool', default: true },
   contactShadowLength: { type: 'f32', default: 0 },
 });

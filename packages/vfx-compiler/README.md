@@ -60,6 +60,25 @@ event buffer for the retained channel/sub-emitter path, then reserves
 Parameters and Custom and allocates only the declared camera, single-sample
 scene-depth, and noise resources.
 
+Scriptable Packs can declare inline WGSL without compiling inside the bounded
+`Pack.build()` callback. Return a `ParticleEffectAssetSource` with
+`kind: 'particle-effect'` and a `source` satisfying `ParticleCodeCookSource`:
+
+```ts
+out['effect/sparks'] = {
+  kind: 'particle-effect',
+  source: { effect: sparksSource, modules: sparksModules, materials: particleInputs },
+};
+```
+
+The standard particle producer delegates compilation to Native Cook and owns
+the same final artifacts and references as already-compiled particle assets.
+`execution: 'cooked'` remains reserved for custom kinds. The Native Cook stage owns
+fingerprints. Explicit module/material catalogs are authoritative for that
+source; the adapter does not fall back to ambient files when they are invalid.
+The Pack source fingerprint includes these inputs for DDC invalidation. Raw
+effect sources still use the catalog supplied to the native cooker factory.
+
 The optional `#import forgeax_vfx::data::scene_sdf` also reflects a managed
 read-only storage requirement at binding 15. The compiler composes
 `vfx_sdf_sample`, `vfx_sdf_normal` and `vfx_sdf_collide`; omitting the import

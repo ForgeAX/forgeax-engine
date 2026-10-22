@@ -740,3 +740,21 @@ it('retains accepted Pass identity across atomic last-binding replacement and re
   expect((owner as unknown as { queryRoot: unknown }).queryRoot).toBeUndefined();
   expect(first.map((entry) => entry.queue)).toEqual([2000, 2000]);
 });
+
+it('keeps the query and dispatch list when a pose-only republication rebinds the same facts', () => {
+  const resource = new MaterialResource(material(121, 2000, true));
+  const row = slot(0, resource);
+  const owner = new MaterialDispatch();
+  owner.bind(0, row.snapshot);
+  const slots = fixedSlots([row]);
+  const first = owner.query(slots);
+  const entries = [...first];
+  owner.bind(0, { ...row.snapshot, transform: { world: new Float32Array(16) } });
+  const posed = owner.query(slots);
+  expect(posed).toBe(first);
+  expect([...posed]).toEqual(entries);
+  owner.bind(0, { ...row.snapshot, layer: 3 });
+  const moved = owner.query(slots);
+  expect(moved).not.toBe(first);
+  expect([...moved].every((entry) => entry.layer === 3)).toBe(true);
+});

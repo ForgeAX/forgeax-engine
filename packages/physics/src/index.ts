@@ -18,16 +18,10 @@ export type {
 } from './components.js';
 export {
   CharacterController,
-  COLLIDER_SHAPE_CAPSULE,
-  COLLIDER_SHAPE_CUBOID,
-  COLLIDER_SHAPE_SPHERE,
   Collider,
   ColliderShapeValue,
   CollidingEntities,
   colliderShapeFromF32,
-  RIGID_BODY_TYPE_DYNAMIC,
-  RIGID_BODY_TYPE_KINEMATIC,
-  RIGID_BODY_TYPE_STATIC,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,

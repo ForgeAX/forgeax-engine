@@ -334,6 +334,11 @@ export function getTemporalBindGroupResources(state: TemporalGpuState): {
           visibility: 2,
           texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
         },
+        {
+          binding: 12,
+          visibility: 2,
+          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+        },
       ],
     });
     if (!layout.ok) throw layout.error;

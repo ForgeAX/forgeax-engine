@@ -656,7 +656,13 @@ export interface PackCookSource {
   readonly source: unknown;
 }
 
-export type PackOutput = Asset | PluginAssetSource | PackCookSource;
+/** Built-in particle authoring data; its standard producer owns Native Cook. */
+export interface ParticleEffectAssetSource {
+  readonly kind: 'particle-effect';
+  readonly source: unknown;
+}
+
+export type PackOutput = Asset | PluginAssetSource | ParticleEffectAssetSource | PackCookSource;
 export type PackOutputMap = Readonly<Record<string, PackOutput>>;
 export type PackBuildResult<TError = unknown> =
   | Result<PackOutputMap, TError>

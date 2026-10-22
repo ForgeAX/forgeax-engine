@@ -93,6 +93,11 @@ authorize publication or stress/performance work. `project preview` serves files
 browser behavior still needs observation. `plugin-startup-failed` fails even with an active root;
 repair the named descendant and verify a fresh session. Keep original pinned-release,
 new-release, and post-fix evidence distinct when diagnosing across releases.
+Use the game's local-playable evidence table for completion and blocked-check handling.
+Run `dev verify --revision <current-revision> --json` (or `engine.run.verify`) for
+runtime acceptance; `dev capture` preserves observations and is not that gate.
+Evidence from a different execution diagnoses the owner; it does not accept the
+user's delivery target.
 
 ## Optional workspace clients
 
@@ -277,8 +282,15 @@ It excludes SDK source, node_modules, authored source, and remote debugging serv
 |:--|:--|:--|
 | Local development | forgeax dev start | HMR/development catalog, not release evidence. |
 | Local acceptance | forgeax project preview | Serves verified dist over HTTP. |
-| Build Web release | forgeax project package --format web-zip | release/*-web.zip and SHA-256. |
+| Build Web release | forgeax project package --format web-zip | release/*-web.zip and SHA-256; JSON reports `files` and `bundles`. |
 | Share with players | Upload ZIP to HTTPS static/HTML-game hosting | Players open the URL, not index.html directly. |
+
+Both package formats ship Pack artifacts in Asset Bundles: one Pack never splits across
+Bundles, bytes shared by several Bundles are stored once, and streaming artifacts keep their
+files. Group Packs that load together with the build root's
+`ctx.devkitDelivery = { bundles: { <name>: ['<source path prefix>/'] } }`; unmatched Packs
+fall into automatic Bundles of at most 8 MiB. See the DevKit README section
+"Player Asset Bundles".
 
 > [!CAUTION]
 > The HTTP(S) requirement applies to web-zip: its index.html cannot be opened through file://.

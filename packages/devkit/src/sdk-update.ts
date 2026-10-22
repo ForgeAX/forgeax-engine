@@ -115,11 +115,17 @@ export async function checkSdkUpdate(currentVersion: string): Promise<SdkUpdateS
     );
     if (!response.ok) throw new Error(`registry-http-${response.status}`);
     const metadata = (await response.json()) as {
-      readonly 'dist-tags'?: { readonly latest?: unknown; readonly next?: unknown };
+      readonly 'dist-tags'?: Readonly<Record<'latest' | 'next' | 'rc', unknown>>;
     };
     const tag = currentVersion.includes('-dev.') ? 'next' : 'latest';
-    const latestVersion = metadata['dist-tags']?.[tag];
-    if (typeof latestVersion !== 'string') throw new Error(`registry-${tag}-version-missing`);
+    const channelVersion = metadata['dist-tags']?.[tag];
+    if (typeof channelVersion !== 'string') throw new Error(`registry-${tag}-version-missing`);
+    // An rc install follows its test line until that line is promoted to latest.
+    const rcVersion = currentVersion.includes('-rc.') ? metadata['dist-tags']?.rc : undefined;
+    const latestVersion =
+      typeof rcVersion === 'string' && newerSdkVersion(channelVersion, rcVersion)
+        ? rcVersion
+        : channelVersion;
     return newerSdkVersion(currentVersion, latestVersion)
       ? {
           status: 'available',

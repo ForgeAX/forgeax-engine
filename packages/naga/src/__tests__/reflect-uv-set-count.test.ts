@@ -14,7 +14,7 @@
 // spec permits them but being conservative avoids naga parser edge cases).
 
 import { describe, expect, it } from 'vitest';
-import { emit_reflection, parse, readReflectionWire, validate } from '../index.js';
+import { emit_reflection, parse, parseReflectionWire, validate } from '../index.js';
 
 // --- wgsl test fixtures --------------------------------------------------
 
@@ -227,7 +227,7 @@ struct MaterialBlock {
 @group(2) @binding(1) var<uniform> palette: array<${type}, 4>;
 @compute @workgroup_size(1) fn main() { let value = palette[0]; }
 `);
-      const wire = readReflectionWire(JSON.stringify(reflection)).unwrap();
+      const wire = parseReflectionWire(JSON.stringify(reflection));
       expect(
         wire.boundGlobals.find((global) => global.group === 2 && global.binding === 1),
       ).toMatchObject({

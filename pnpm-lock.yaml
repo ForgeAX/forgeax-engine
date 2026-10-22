@@ -12722,6 +12722,9 @@ importers:
       '@forgeax/engine-audio-webaudio':
         specifier: workspace:*
         version: link:../audio-webaudio
+      '@forgeax/engine-codec':
+        specifier: workspace:*
+        version: link:../codec
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../dawn-node

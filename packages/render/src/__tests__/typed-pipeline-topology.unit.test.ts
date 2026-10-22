@@ -823,12 +823,23 @@ describe('typed built-in pipeline topology', () => {
       resource: 'ssr-hit-reactivity',
       usage: 'storage-write',
     });
+    // The separable footprint max reads the producer once; TAA samples its rows.
+    expect(
+      info.passes.find((p) => p.name === 'taa-secondary-reactivity-rows')?.accesses,
+    ).toContainEqual({ resource: 'ssr-hit-reactivity', usage: 'sampled-read' });
+    expect(info.passes.find((p) => p.name === 'taa-resolve')?.accesses).toContainEqual({
+      resource: 'taa-secondary-reactivity-rows',
+      usage: 'sampled-read',
+    });
     expect(info.passes.find((p) => p.name === 'taa-resolve')?.accesses).toContainEqual({
       resource: 'ssr-hit-reactivity',
       usage: 'sampled-read',
     });
     const names = info.passes.map((p) => p.name);
-    expect(names.indexOf('ssr-trace')).toBeLessThan(names.indexOf('taa-resolve'));
+    expect(names.indexOf('ssr-trace')).toBeLessThan(names.indexOf('taa-secondary-reactivity-rows'));
+    expect(names.indexOf('taa-secondary-reactivity-rows')).toBeLessThan(
+      names.indexOf('taa-resolve'),
+    );
   });
 
   it('pairs post-TAA Motion Blur color with resolved temporal coverage', () => {

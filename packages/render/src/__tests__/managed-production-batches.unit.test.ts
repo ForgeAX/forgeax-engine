@@ -4,7 +4,7 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { createStandardPbrArtifactReceipt } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
-import { assert, expect, it, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type FrameRecording,
   recordFrameTransaction,
@@ -378,20 +378,28 @@ it('admits initially transparent geometry after only the material Pass changes',
   }
 });
 
-it('does not revisit candidates for a scalar material edit', async () => {
-  const f = await fixture(50_000);
-  try {
+describe('scalar material edits in a populated scene', () => {
+  let f: Awaited<ReturnType<typeof fixture>> | undefined;
+
+  beforeEach(async () => {
+    // Run after the candidate observer's setup, within the normal bounded hook
+    // budget. The edit below retains its populated scene and default deadline.
+    f = await fixture(50_000);
     expect(f.prepare()).toBeDefined();
     expect(f.work.candidateReads).toBeGreaterThan(0);
+  });
+
+  afterEach(() => f?.dispose());
+
+  it('does not revisit candidates for a scalar material edit', () => {
+    assert(f);
     f.work.memberReads = f.work.candidateReads = f.work.sharedMeshReads = f.work.slotReads = 0;
     f.adopt({ ...f.opaque, roughness: 0.8 });
     expect(f.prepare()).toBeDefined();
     expect(f.work).toEqual({ memberReads: 0, candidateReads: 0, sharedMeshReads: 1, slotReads: 0 });
     expect(f.production.inspect().planRebuildCandidates).toBe(0);
     expect(f.production.inspect().gpuOwnedSnapshotsMaterialized).toBe(0);
-  } finally {
-    f.dispose();
-  }
+  });
 });
 
 it('changes the shared Pass lane without reading or copying instance membership', async () => {

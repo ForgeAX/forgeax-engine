@@ -134,12 +134,7 @@ export async function prepareDevicePipelineLibrary(
   manifest: PipelineLibraryManifest,
   shader: Pick<ShaderCatalog, 'materialProgram'>,
 ): Promise<void> {
-  if (device.pipelineLibrary === undefined)
-    throw new RhiError({
-      code: 'feature-not-enabled',
-      expected: 'backend pipeline library support',
-      hint: 'select a backend with native asynchronous pipeline compilation',
-    });
+  if (device.pipelineLibrary === undefined) return;
   const prepared = await device.pipelineLibrary.prepare(manifest);
   if (!prepared.ok) throw prepared.error;
   // Native compilation and CPU source analysis share the captured graphics

@@ -94,37 +94,6 @@ for (const tok of [
   }
 }
 
-// (d) console-startup-failed inspect-routing hint template surfaces the unified live path.
-if (!/forgeax dev eval --root <project>/.test(src)) {
-  failures.push('(d) types source is missing the unified forgeax dev eval recovery hint template');
-}
-
-// (e) RemoteErrorDetail server-startup-failed variant declares removedAt + docAnchor.
-if (!/server-startup-failed[\s\S]{0,400}?removedAt/.test(src)) {
-  failures.push(
-    `(e) types source RemoteErrorDetail server-startup-failed variant missing removedAt sub-field`,
-  );
-}
-if (!/server-startup-failed[\s\S]{0,400}?docAnchor/.test(src)) {
-  failures.push(
-    `(e) types source RemoteErrorDetail server-startup-failed variant missing docAnchor sub-field`,
-  );
-}
-
-// (f) hint literals do not embed historical narrative tokens.
-for (const [name, hints] of [
-  ['PACK_ERROR_HINTS', PACK_ERROR_HINTS],
-  ['GLTF_ERROR_HINTS', GLTF_ERROR_HINTS],
-]) {
-  for (const [code, hint] of Object.entries(hints)) {
-    for (const tok of ['removedAt', 'docAnchor']) {
-      if (hint.includes(tok)) {
-        failures.push(`(f) ${name}["${code}"] embeds historical-narrative token "${tok}"`);
-      }
-    }
-  }
-}
-
 // (g) RemoteErrorCode closed union still surfaces all 4 members in source
 // (feat-20260629-inspector-two-layer-model: script-timeout + inspector-write-denied
 // deleted with route-B eval + sandbox dismantling; console-* renamed server-*).

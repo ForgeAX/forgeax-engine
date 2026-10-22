@@ -59,6 +59,14 @@ export const PARTICLE_STAGE_RESOURCE_NAMES = Object.freeze([
   'eventCounters',
 ] as const);
 
+/** Built-in managed dispatches a custom stage may depend on without declaring them. */
+export const PARTICLE_MANAGED_STAGE_IDS = Object.freeze([
+  'spawn',
+  'update',
+  'scan',
+  'compact',
+] as const);
+
 export interface ParticleChannelSource {
   readonly id: string;
   readonly payload?: 'impact';

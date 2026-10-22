@@ -10,8 +10,6 @@ type Assert<Value extends true> = Value;
 
 type ExpectedSkinErrorCodes =
   | 'skin-asset-unresolved'
-  | 'skin-joint-count-exceeded'
-  | 'skin-joint-despawned'
   | 'skin-joint-path-unresolved'
   | 'skin-instances-coexist-forbidden'
   | 'skeleton-resolve-failed'
@@ -58,14 +56,6 @@ function narrowSkinErrorDetail(error: SkinError): void {
     case 'skeleton-resolve-failed': {
       const skeletonHandle: number = error.detail.skeletonHandle;
       void skeletonHandle;
-      break;
-    }
-    case 'skin-joint-count-exceeded': {
-      void error.detail.max;
-      break;
-    }
-    case 'skin-joint-despawned': {
-      void error.detail.meshEntity;
       break;
     }
     case 'skin-instances-coexist-forbidden': {

@@ -13,13 +13,17 @@ export function createWorkspaceLiveTools(defaultRoot?: string): readonly ToolCon
     realm: 'host' as const,
     argsSchema: toolJsonSchema<Record<string, unknown>>({
       type: 'object',
-      required: defaultRoot ? [] : ['root'],
-      properties: { root: { type: 'string', minLength: 1 } },
+      required: [...(defaultRoot ? [] : ['root']), ...(operation === 'verify' ? ['revision'] : [])],
+      properties: {
+        root: { type: 'string', minLength: 1 },
+        revision: { type: 'string', minLength: 1 },
+        timeoutMs: { type: 'integer', ...(operation === 'verify' ? { minimum: 1 } : {}) },
+      },
     }),
     resultSchema: toolJsonSchema({}),
     inputSchema: {
       type: 'object',
-      required: defaultRoot ? [] : ['root'],
+      required: [...(defaultRoot ? [] : ['root']), ...(operation === 'verify' ? ['revision'] : [])],
       properties: {
         root: { type: 'string', minLength: 1 },
         headless: { type: 'boolean' },
@@ -32,7 +36,7 @@ export function createWorkspaceLiveTools(defaultRoot?: string): readonly ToolCon
         checkpoint: { type: 'string' },
         name: { type: 'string' },
         ref: { type: 'string' },
-        timeoutMs: { type: 'integer' },
+        timeoutMs: { type: 'integer', ...(operation === 'verify' ? { minimum: 1 } : {}) },
         lease: { type: 'boolean' },
         limit: { type: 'integer', minimum: 1, maximum: 100 },
         distance: { type: 'number' },
@@ -72,6 +76,7 @@ export function createWorkspaceLiveTools(defaultRoot?: string): readonly ToolCon
         'reload',
         'stop',
         'capture',
+        'verify',
         'eval',
         'find',
         'focus',

@@ -43,7 +43,7 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 const W = 256;
 const H = 256;
 
-// RhiErrorCode / RuntimeErrorCode / PostProcessErrorCode members that are
+// RhiErrorCode / render-asset-skin layer / PostProcessErrorCode members that are
 // SUT-attributable — PSO compile failure, limit exceeded, queue submit
 // failure, etc. Errors from device-lost / teardown races are EXCLUDED.
 const SUT_ATTRIBUTABLE_RENDER_CODES: ReadonlySet<string> = new Set([
@@ -53,14 +53,12 @@ const SUT_ATTRIBUTABLE_RENDER_CODES: ReadonlySet<string> = new Set([
   'limit-exceeded',
   'queue-submit-failed',
   'queue-write-buffer-out-of-bounds',
-  // RuntimeErrorCode — render-system / asset-load failures the SUT owns
+  // Render / asset layer — render-system / asset-load failures the SUT owns
   'render-system-no-camera',
   'render-system-multi-camera',
   'render-system-multi-light',
   'asset-not-registered',
-  'material-resolved-empty-passes',
   'vertex-storage-buffer-unavailable',
-  'mesh-ssbo-capacity-exceeded',
   'mesh-ssbo-ceiling-reached',
   'standard-light-budget-exceeded',
   'standard-cluster-index-overflow',

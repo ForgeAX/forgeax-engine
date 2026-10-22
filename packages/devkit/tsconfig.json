@@ -23,6 +23,7 @@
     { "path": "../mesh-io" },
     { "path": "../image" },
     { "path": "../physics" },
+    { "path": "../codec" },
     { "path": "../pack" },
     { "path": "../preview" },
     { "path": "../tool-runtime" },

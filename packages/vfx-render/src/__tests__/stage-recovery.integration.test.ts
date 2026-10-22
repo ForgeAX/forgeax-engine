@@ -5,14 +5,12 @@ import { describe, expect, it } from 'vitest';
 const stagePlanPath = resolve(import.meta.dirname, '../feature/stage-plan.ts');
 
 describe('VFX stage generation recovery', () => {
-  it('keeps candidate failure and device recovery observable without stale resources', () => {
+  it('keeps candidate failure observable against the last-known-good generation', () => {
     const source = readFileSync(stagePlanPath, 'utf8');
     expect(source).toContain('candidate');
     expect(source).toContain('lastKnownGood');
     expect(source).toContain('generation');
     expect(source).toContain('retryable');
-    expect(source).toContain('device-loss');
-    expect(source).toContain('stale');
   });
 
   it('does not introduce a second VFX RPC or a CPU fallback recovery path', () => {

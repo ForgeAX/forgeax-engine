@@ -36,6 +36,23 @@ A concrete startup, asset, or schema error goes directly to its named owner. If
 capture is unavailable, keep the structured failure and follow the skill's recovery
 path; missing evidence is never a rendering pass.
 
+### CPU diagnostics without a GPU: WebGPU stub
+
+> [!IMPORTANT]
+> On a host without a usable GPU (or to remove GPU cost on one), observe CPU-side
+> Engine/game cost with the WebGPU stub: `?forgeax-gpu-stub=1` in generated hosts,
+> `createApp({ gpuStub: profile })` in custom hosts. It keeps `rhi-webgpu`,
+> `backendKind: 'webgpu'`, the profiled caps and the Worker topology, and installs
+> in every App realm. Do not substitute software WebGPU (SwiftShader /
+> `--enable-unsafe-webgpu` adapters), which spends CPU emulating the GPU, or
+> `rhi-null`, which changes backend kind, caps and render branches.
+
+- Missing: GPU execution, browser WebGPU/Dawn validation and IPC, readback contents
+  (zero-filled), GPU back-pressure. Results are CPU attribution and same-host A/B
+  only; never pixel, GPU-time, FPS or cross-machine acceptance evidence.
+- Details: [`packages/rhi-webgpu/README.md`](packages/rhi-webgpu/README.md#webgpu-stub)
+  and the [performance skill](skills/forgeax-engine-performance/references/measurement.md#cpu-only-measurement-with-the-webgpu-stub).
+
 ### Bug-fix stability loop
 
 > [!TIP]
@@ -214,11 +231,11 @@ package contracts in the same change.
 | Package | Core design idea / invariant |
 |---|---|
 | `rhi` | A math-free, spec-aligned, opaque-handle interface. Capability absence is data, not an exception; high-level code depends on this seam, never a backend kind. Borrowed same-device native textures and frame-scoped external video textures are capability-gated device imports that never transfer ownership. |
-| `rhi-webgpu` | Browser-native WebGPU adapter preserving RHI shape and opaque handles. One physical-device pipeline library interns exact shader/layout/pipeline recipes, coalesces asynchronous completion, and exports the reachable recipe graph for startup preparation; renderer feature policy stays above this owner. |
+| `rhi-webgpu` | Browser-native WebGPU adapter preserving RHI shape and opaque handles. One physical-device pipeline library interns exact shader/layout/pipeline recipes, coalesces asynchronous completion, and exports the reachable recipe graph for startup preparation; renderer feature policy stays above this owner. Its opt-in WebGPU stub (`installWebGpuStub`) replaces a realm's `navigator.gpu` with a no-op `GPU` reporting a captured adapter profile, so the ordinary WebGPU path runs without GPU work for CPU diagnostics. |
 | `rhi-wgpu` | Thin TypeScript shell over the wgpu WASM substrate; it provides the same RHI vocabulary while isolating Rust binding details. Native builds require an explicit Host initializer through the same module cache and exclude browser WASM loading; device resolution limits derive from the actual adapter. |
 | `rhi-wgpu-native` | Native-wgpu owner. For desktop hosts, one crate keeps native device/surface lifetime, capability probes, the bounded Ray Query spike and opaque scene reference transport, so raw wgpu never leaks into Tauri apps. For Node, an opt-in synchronous napi addon exposes a W3C-shaped GPU and native window/Surface through the existing rhi-webgpu shim. The Host owns window lifetime, observed dimensions and resize requests; Surface capabilities drive composition, while the ordinary TypeScript World/Renderer owns commands, accepted submission and GPU completion. Presented images expire, device retirement releases their contexts, and recovery uses the same Renderer contract. An external same-process GUI host lends an opaque drawable and retains it until Surface retirement; RHI keeps the sole Surface/device path. The separate contributor Tauri/Wry fixture qualifies native TypeScript rendering and HTML/CSS interaction in one Linux window. Packaged native games remain unqualified. The addon is never a default-build dependency, ships no committed binary, and a missing addon yields `adapter-unavailable`. |
 | `dawn-node` | Optional Node GPU test/replay carrier imported as `@forgeax/engine-dawn-node`. Installation and ordinary builds never compile it; `build:native` explicitly builds pinned official source with the Metal empty-compute timestamp correction on macOS or DXC and its digest-checked DLL closure on Windows x64. Linux retains the exact upstream provider. Generated binaries are not committed, and original timestamp/60-frame/browser/Dawn gates remain maintainer/CI acceptance authorities. |
-| `rhi-null` | A headless no-op RHI with structural bookkeeping for deterministic unit tests; it is a real backend boundary, not a test mock leaked into production code. |
+| `rhi-null` | A headless no-op RHI with structural bookkeeping for deterministic unit tests; it is a real backend boundary, not a test mock leaked into production code. It changes `backendKind` and caps, so it is never a performance proxy; use the WebGPU stub for that. |
 | `net-websocket` | Browser WebSocket connection and Node ws listener implement the NetEndpoint contract; real-socket lifecycle, independent peer disconnect with no post-terminal messages, and binary frames without replication/profile/codec knowledge. |
 | `wgpu-wasm` | The merged Rust `wgpu` + `naga` raw-binding substrate is intentionally below AI-facing packages; only its narrow RHI/shader shells expose it. |
 

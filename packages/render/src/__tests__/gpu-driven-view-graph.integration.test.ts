@@ -576,3 +576,60 @@ describe('GpuDrivenView graph projection', () => {
     sceneAvailability.scene.dispose();
   });
 });
+
+describe('GpuDrivenView scene buffer growth', () => {
+  it('rebinds grown scene buffers without advancing the graph generation', async () => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+    const projection = new RenderScene();
+    const available = GpuScene.create(device, 1).unwrap();
+    if (available.status !== 'available') throw new Error('missing structural GPU Scene');
+    available.scene.sync(projection.apply([updateSnapshot(snapshot(1))])).unwrap();
+    const topology = new BatchTopology();
+    topology.rebuild(projection.slotsSnapshot());
+    const view = GpuDrivenView.create({
+      device,
+      shaderModuleFactory: { createShaderModule: () => ok(shader) },
+    }).unwrap();
+    const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+    const update = () =>
+      updateGpuView(
+        view,
+        topology.query(topology.sourcePlan(), undefined),
+        available.scene,
+        planes,
+      );
+    try {
+      update().unwrap();
+      const generation = view.inspect().resourceGeneration;
+      const primitive = available.scene.primitiveBuffer;
+      const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+      view.addPasses(graph).unwrap();
+      const bindings = view as unknown as { bindGroup: object | undefined };
+      const bound = bindings.bindGroup;
+      // Grow the scene past its initial row capacity; topology keeps its batch.
+      available.scene
+        .sync(projection.apply([2, 3, 4].map((key) => updateSnapshot(snapshot(key)))))
+        .unwrap();
+      expect(available.scene.primitiveBuffer).not.toBe(primitive);
+      update().unwrap();
+      expect(view.inspect().resourceGeneration).toBe(generation);
+      expect(bindings.bindGroup).not.toBe(bound);
+      // A replaced material table is resolved by the live import at execute
+      // time: only the material-observation generation advances, never the
+      // compute/raster graph generation.
+      const compute = view.computeResourceGeneration;
+      const current = view.currentResourceGeneration;
+      (view as unknown as { sceneMaterial: unknown }).sceneMaterial = device
+        .createBuffer({ size: 16, usage: 128 })
+        .unwrap();
+      update().unwrap();
+      expect(view.computeResourceGeneration).toBe(compute);
+      expect(view.currentResourceGeneration).toBe(current + 1);
+    } finally {
+      view.dispose();
+      available.scene.dispose();
+    }
+  });
+});

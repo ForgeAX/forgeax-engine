@@ -10,6 +10,7 @@ import {
   discardCompiledFrameGraphs,
   ensureCompiledFrameGraph,
   executeCompiledFrameGraph,
+  getRenderFeatureGraphInspection,
   inspectRenderGraphGenerationAllocation,
   type RenderFeatureGraphCandidate,
   retire as retireCompiledGraph,
@@ -646,6 +647,41 @@ it('restores the complete graph projection and retires a failed resize candidate
   harness.accept();
   expect(retireAccepted).toHaveBeenCalledTimes(1);
   await retried?.retire();
+});
+
+it('installs a changed topology once while its frames wait for pipeline preparation', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const harness = createRecoveryGraphHarness();
+  harness.setDevice(device);
+  const accepted = harness.compile();
+  if (accepted === null) throw new Error('initial graph missing');
+  harness.accept();
+  const compiles = () => getRenderFeatureGraphInspection(harness.internals).compileAttempts;
+  const before = compiles();
+  const changed = harness.compile(2);
+  if (changed === null) throw new Error('changed graph missing');
+  const retireChanged = vi.spyOn(changed, 'retire');
+  // Three frames that did not submit (for example, pending pipelines).
+  for (let frame = 0; frame < 3; frame++) {
+    settleCompiledFrameGraphCandidate(harness.frameState, false, true);
+    expect(harness.compile(2)).toBe(changed);
+  }
+  harness.accept();
+  expect(compiles() - before).toBe(1);
+  expect(harness.frameState.compiledFrameGraph?.graph).toBe(changed);
+  expect(harness.frameState.unsubmittedCompiledFrameGraph).toBeUndefined();
+  // A different unsubmitted topology is retired once another graph is accepted.
+  const abandoned = harness.compile(3);
+  if (abandoned === null) throw new Error('abandoned graph missing');
+  const retireAbandoned = vi.spyOn(abandoned, 'retire');
+  settleCompiledFrameGraphCandidate(harness.frameState, false, true);
+  expect(harness.compile(2)).toBe(changed);
+  expect(retireAbandoned).not.toHaveBeenCalled();
+  const replacement = harness.compile(4);
+  expect(retireAbandoned).toHaveBeenCalledTimes(1);
+  harness.accept();
+  expect(retireChanged).toHaveBeenCalledTimes(1);
+  await replacement?.retire();
 });
 
 it('keeps the accepted graph when an unsubmitted candidate is replaced again and the frame fails', async () => {

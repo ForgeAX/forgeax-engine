@@ -87,6 +87,7 @@ reject fixture re-baselining. Separate producer Naga CPU results from physical
 flowchart TD
   CR["createRenderer(canvas, opts?)"] -->|opts.rhi injection| NULL["rhi-null: headless no-op"]
   CR -->|navigator.gpu present| WG["rhi-webgpu: thin browser adapter"]
+  STUB["installWebGpuStub: no-op navigator.gpu"] -.->|optional, per realm| WG
   CR -->|otherwise| WP["rhi-wgpu: thin TS shell"]
   WG --> RHI["engine-rhi: interface authority"]
   WP --> WASM["wgpu-wasm: one WASM artifact, wgpu 30 + naga 30"]
@@ -158,6 +159,27 @@ console.log(renderer.inspect().capabilities.backendKind); // 'null'
 - **Independent instances**: every createRenderer with injected RHI gets its own RhiNullDevice and Bookkeeper.
 
 See `packages/rhi-null/README.md` for API, capabilities, bookkeeping, and differences from Vitest mocks.
+
+## WebGPU stub: CPU diagnostics without GPU work
+
+`installWebGpuStub(profile)` (exported by `@forgeax/engine/rhi-webgpu`) replaces the
+calling realm's `navigator.gpu` and `'webgpu'` canvas contexts with a no-op `GPU`.
+`createApp({ gpuStub })` installs it in the main, Engine Worker and Render Worker
+realms; generated hosts use `?forgeax-gpu-stub=1` with `DEFAULT_WEBGPU_STUB_PROFILE`
+(Chrome 155, Apple M4 Pro). Capture another device with
+`captureWebGpuStubProfile(navigator.gpu, name)` on that device.
+
+| Question | RhiNull | WebGPU stub |
+|:--|:--|:--|
+| Purpose | Structural unit tests in Node | CPU cost of the real browser path without a GPU |
+| `backendKind` / caps | `'null'`, fixed caps and limits | `'webgpu'`, the profile's features and limits |
+| Engine path | `backendKind === 'null'` branches; no `rhi-webgpu` translation | Unchanged `rhi-webgpu` and render branches |
+| Validation | Handle ownership and lifetime bookkeeping | None; every call succeeds |
+| Selection | Explicit `opts.rhi` injection | Ambient `navigator.gpu`, per realm |
+
+Submissions complete immediately and mapped ranges are zero-filled, so GPU-driven
+feedback reads empty results. Never use it for pixels, GPU timing, FPS or
+compatibility; a real GPU or Dawn remains the rendering authority.
 
 ## Vertex layout aliases: multi-UV clamp-to-last
 

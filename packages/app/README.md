@@ -446,6 +446,16 @@ App owns only the optional capture capability. Replay, readback, PNG output,
 and artifact/file handling remain in the RHI-debug core and DevKit shells, so
 the live App surface does not grow a second replay cache or inspection API.
 
+## WebGPU stub
+
+`createApp(canvas, { gpuStub: profile })` installs the `rhi-webgpu` WebGPU stub
+in the main realm before capability probing and forwards the same profile to the
+Engine and Render Worker realms, which install it before creating a Renderer.
+Execution selection treats Worker WebGPU as available. The App keeps the ordinary
+WebGPU backend and Worker topology without GPU work, so CPU diagnostics stay
+comparable across GPU-less hosts; pixels, GPU timing and FPS are not evidence.
+Generated hosts enable the default profile with `?forgeax-gpu-stub=1`.
+
 ## Worker execution
 
 `execution.workers` selects Engine, Render, and Kernel Workers independently.

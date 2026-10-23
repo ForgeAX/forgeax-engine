@@ -712,6 +712,7 @@ change. Localized ordinary README files remain permitted.
 
 | Symptom | Likely cause | Reference |
 |:--|:--|:--|
+| CPU profiling needed on a Linux/CI host without a GPU; `requestAdapter()` returns null or only a software adapter | No usable GPU; software WebGPU would spend the measured CPU on emulation. | [WebGPU stub](../forgeax-engine-rhi/SKILL.md#webgpu-stub-cpu-diagnostics-without-gpu-work) |
 | Textured demo shows a white square without texture or lighting gradient | Texture paramValues contain unresolved GUID strings instead of Handles. | [White textures](references/assets-and-ci.md#white-textures) |
 | spawn-data-unknown-field or invisible/gray entities | Misspelled/stale data field, such as MeshRenderer.material instead of materials. | [Spawn fields](references/assets-and-ci.md#misspelled-spawn-data-fields) |
 | register MaterialAsset reports shader not registered | Stale shader identifier in pack.json. | [Shader identifiers](references/assets-and-ci.md#stale-shader-identifiers) |

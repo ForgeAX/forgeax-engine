@@ -6,7 +6,10 @@ import {
   FixedUpdate,
   Time,
   type CommandBuffer,
+  type Component,
   type EntityHandle,
+  type Query,
+  type QueryRow,
   type World,
   Update,
 } from '@forgeax/engine-ecs';
@@ -561,6 +564,338 @@ function installInputSystem(
     .unwrap();
 }
 
+type CombatPlayers = Query<readonly [typeof BrotatoInput], readonly [typeof Transform, typeof BrotatoStats]>;
+type CombatWeapons = Query<readonly Component[], readonly [typeof Transform]>;
+type CombatEnemies = Query<readonly Component[], readonly [typeof Transform, typeof BrotatoEnemyStats]>;
+type CombatEnemyRow = QueryRow<readonly Component[], readonly [typeof Transform, typeof BrotatoEnemyStats]>;
+type CombatProjectiles = Query<readonly Component[], readonly [typeof Transform, typeof BrotatoProjectileMotion]>;
+type CombatProjectileRow = QueryRow<readonly Component[], readonly [typeof Transform, typeof BrotatoProjectileMotion]>;
+type CombatPickups = Query<readonly Component[], readonly [typeof Transform, typeof BrotatoPickupMotion]>;
+// Structural views of the BrotatoStats / Transform / BrotatoInput rows, as setYaw does for Transform.
+type PlayerStatsRow = { health: number; maxHealth: number; invulnerability: number };
+
+// One FixedUpdate combat step. Per-step facts live in reused fields so the step allocates
+// only what the original system allocated (the player row spread and spawned entities).
+class BrotatoCombat {
+  private readonly deadEnemies: EntityHandle[] = [];
+  private readonly fireTargetEntities: EntityHandle[] = [];
+  private readonly fireTargetXs: number[] = [];
+  private readonly fireTargetZs: number[] = [];
+  private dt = 0;
+  private playerX = 0;
+  private playerZ = 0;
+  private nearestDistance = Number.POSITIVE_INFINITY;
+  private targetX = 0;
+  private targetZ = 0;
+  private directionX = 0;
+  private directionZ = 0;
+
+  constructor(
+    private readonly player: EntityHandle,
+    private readonly state: BrotatoState,
+    private readonly materials: BrotatoMaterials,
+    private readonly meshes: BrotatoMeshes,
+    private readonly impact: BrotatoVfx['impact'],
+    private readonly survivalMode: boolean,
+    private readonly disablePickupDrops: boolean,
+  ) {}
+
+  step(
+    world: World,
+    [players, weapons, enemies, projectiles, pickups]: readonly [CombatPlayers, CombatWeapons, CombatEnemies, CombatProjectiles, CombatPickups],
+    commands: CommandBuffer,
+  ): void {
+    const state = this.state;
+    const dt = world.getResource(FixedTime).delta;
+    this.dt = dt;
+    state.elapsed += dt;
+    state.wave = 1 + Math.floor(state.elapsed / 18);
+    state.hitFlash = Math.max(0, state.hitFlash - dt);
+    if (state.phase !== 'playing') return;
+    const playerRow = [...players][0];
+    if (playerRow === undefined) return;
+    const playerTransform = playerRow.mut(Transform);
+    const playerStats = playerRow.mut(BrotatoStats);
+    const input = playerRow.get(BrotatoInput);
+    this.movePlayer(playerTransform, playerStats, input);
+
+    const enemyCount = this.advanceEnemies(enemies, playerStats);
+    state.enemyCount = enemyCount;
+    if (state.phase !== 'playing') {
+      this.showDefeatedPlayer(world);
+      return;
+    }
+    this.updatePlayerHitVisual(world);
+
+    this.aimAtFireTarget();
+    this.placeWeapon(weapons);
+    const recycledProjectile = this.fire(projectiles, commands, input.fire, enemyCount);
+    this.advanceProjectiles(projectiles, enemies, commands, recycledProjectile);
+    this.collectPickups(pickups, playerStats, commands);
+    this.spawnEnemies(commands, enemyCount);
+  }
+
+  private movePlayer(
+    playerTransform: { pos: Float32Array },
+    playerStats: PlayerStatsRow,
+    input: { readonly moveX: number; readonly moveZ: number },
+  ): void {
+    const dt = this.dt;
+    playerStats.invulnerability = Math.max(0, playerStats.invulnerability - dt);
+    playerTransform.pos[0] = Math.max(-ARENA_LIMIT, Math.min(ARENA_LIMIT, (playerTransform.pos[0] ?? 0) + input.moveX * PLAYER_SPEED * dt));
+    playerTransform.pos[2] = Math.max(-ARENA_LIMIT, Math.min(ARENA_LIMIT, (playerTransform.pos[2] ?? 0) + input.moveZ * PLAYER_SPEED * dt));
+    playerTransform.pos[1] = 0.72;
+    this.playerX = playerTransform.pos[0] ?? 0;
+    this.playerZ = playerTransform.pos[2] ?? 0;
+  }
+
+  private advanceEnemies(enemies: CombatEnemies, playerStats: PlayerStatsRow): number {
+    let enemyCount = 0;
+    this.nearestDistance = Number.POSITIVE_INFINITY;
+    this.targetX = this.playerX;
+    this.targetZ = this.playerZ - 1;
+    this.fireTargetEntities.length = 0;
+    this.fireTargetXs.length = 0;
+    this.fireTargetZs.length = 0;
+    for (const enemyRow of enemies) {
+      enemyCount += 1;
+      this.advanceEnemy(enemyRow, playerStats);
+    }
+    return enemyCount;
+  }
+
+  private advanceEnemy(enemyRow: CombatEnemyRow, playerStats: PlayerStatsRow): void {
+    const { state, dt, playerX, playerZ } = this;
+    const enemyTransform = enemyRow.mut(Transform);
+    const enemyStats = enemyRow.mut(BrotatoEnemyStats);
+    enemyStats.attackCooldown = Math.max(0, enemyStats.attackCooldown - dt);
+    const enemyX = enemyTransform.pos[0] ?? 0;
+    const enemyZ = enemyTransform.pos[2] ?? 0;
+    const dx = playerX - enemyX;
+    const dz = playerZ - enemyZ;
+    const distance = Math.hypot(dx, dz);
+    if (distance > 0.001) {
+      const step = enemyStats.speed * dt / distance;
+      enemyTransform.pos[0] = enemyX + dx * step;
+      enemyTransform.pos[2] = enemyZ + dz * step;
+      setYaw(enemyTransform, state.elapsed * (enemyStats.speed * 0.4));
+    }
+    const movedEnemyX = enemyTransform.pos[0] ?? 0;
+    const movedEnemyZ = enemyTransform.pos[2] ?? 0;
+    const movedDx = playerX - movedEnemyX;
+    const movedDz = playerZ - movedEnemyZ;
+    const movedDistance = Math.hypot(movedDx, movedDz);
+    this.fireTargetEntities.push(enemyRow.entity);
+    this.fireTargetXs.push(movedEnemyX);
+    this.fireTargetZs.push(movedEnemyZ);
+    if (movedDistance < this.nearestDistance) {
+      this.nearestDistance = movedDistance;
+      this.targetX = movedEnemyX;
+      this.targetZ = movedEnemyZ;
+    }
+    if (!this.survivalMode && movedDistance < 1.15 && enemyStats.attackCooldown <= 0 && playerStats.invulnerability <= 0) {
+      playerStats.health = Math.max(0, playerStats.health - 1);
+      playerStats.invulnerability = 0.95;
+      enemyStats.attackCooldown = 1.1;
+      state.hitFlash = 0.22;
+      if (playerStats.health <= 0) state.phase = 'defeated';
+    }
+  }
+
+  private showDefeatedPlayer(world: World): void {
+    if (this.state.playerHitVisual) return;
+    world.set(this.player, MeshRenderer, { materials: [this.materials.playerHit, this.materials.weapon] });
+    this.state.playerHitVisual = true;
+  }
+
+  private updatePlayerHitVisual(world: World): void {
+    const { state, materials } = this;
+    const playerHitVisual = state.hitFlash > 0;
+    if (state.playerHitVisual === playerHitVisual) return;
+    world.set(this.player, MeshRenderer, {
+      materials: [playerHitVisual ? materials.playerHit : materials.player, materials.weapon],
+    });
+    state.playerHitVisual = playerHitVisual;
+  }
+
+  private aimAtFireTarget(): void {
+    const { fireTargetEntities, targetX, targetZ } = this;
+    const fireTargetIndex = fireTargetEntities.length > 0 ? this.state.fireTargetCursor % fireTargetEntities.length : -1;
+    const aimX = fireTargetIndex >= 0 ? (this.fireTargetXs[fireTargetIndex] ?? targetX) : targetX;
+    const aimZ = fireTargetIndex >= 0 ? (this.fireTargetZs[fireTargetIndex] ?? targetZ) : targetZ;
+    const dx = aimX - this.playerX;
+    const dz = aimZ - this.playerZ;
+    const distance = Math.hypot(dx, dz) || 1;
+    this.directionX = dx / distance;
+    this.directionZ = dz / distance;
+  }
+
+  private placeWeapon(weapons: CombatWeapons): void {
+    const { directionX, directionZ } = this;
+    for (const row of weapons) {
+      const weaponTransform = row.mut(Transform);
+      weaponTransform.pos[0] = this.playerX + directionX * 1.05;
+      weaponTransform.pos[1] = 1.16 + Math.sin(this.state.elapsed * 6) * 0.08;
+      weaponTransform.pos[2] = this.playerZ + directionZ * 1.05;
+      setYaw(weaponTransform, Math.atan2(directionX, directionZ));
+      break;
+    }
+  }
+
+  private fire(
+    projectiles: CombatProjectiles,
+    commands: CommandBuffer,
+    fireInput: number,
+    enemyCount: number,
+  ): EntityHandle | undefined {
+    const { state, materials, directionX, directionZ } = this;
+    const oldestProjectile = findOldestProjectile(projectiles);
+    let recycledProjectile: EntityHandle | undefined;
+    state.fireTimer -= this.dt;
+    if (!(state.fireTimer <= 0 && enemyCount > 0)) return recycledProjectile;
+    const cadence = this.survivalMode
+      ? (fireInput > 0.5 ? 0.05 : 0.08)
+      : fireInput > 0.5
+        ? 0.12
+        : 0.24;
+    // Attack speed is this cooldown. Projectile travel speed stays independent.
+    const projectileSpeed = 14;
+    state.fireTimer = cadence;
+    state.fireTargetCursor = (state.fireTargetCursor + 1) % this.fireTargetEntities.length;
+    if (state.projectileCount >= MAX_PROJECTILES && oldestProjectile !== undefined) {
+      recycledProjectile = oldestProjectile;
+      commands.despawn(recycledProjectile);
+    }
+    commands.spawn(
+      {
+        component: Transform,
+        data: {
+          pos: [this.playerX + directionX * 0.9, 0.76, this.playerZ + directionZ * 0.9],
+          scale: [0.42, 0.42, 0.42],
+          quat: yawQuaternion(Math.atan2(directionX, directionZ)),
+        },
+      },
+      { component: MeshFilter, data: { assetHandle: this.meshes.projectile } },
+      { component: MeshRenderer, data: { materials: [materials.projectile, materials.weaponAccent] } },
+      { component: BrotatoProjectileTag, data: {} },
+      {
+        component: BrotatoProjectileMotion,
+        data: {
+          vx: directionX * projectileSpeed,
+          vz: directionZ * projectileSpeed,
+          damage: 1,
+          lifetime: 2.2,
+        },
+      },
+    );
+    return recycledProjectile;
+  }
+
+  private advanceProjectiles(
+    projectiles: CombatProjectiles,
+    enemies: CombatEnemies,
+    commands: CommandBuffer,
+    recycledProjectile: EntityHandle | undefined,
+  ): void {
+    this.deadEnemies.length = 0;
+    let activeProjectileCount = 0;
+    for (const projectileRow of projectiles) {
+      if (projectileRow.entity === recycledProjectile) continue;
+      if (this.advanceProjectile(projectileRow, enemies, commands)) activeProjectileCount += 1;
+    }
+    for (const enemy of this.deadEnemies) commands.despawn(enemy);
+    this.state.projectileCount = activeProjectileCount;
+  }
+
+  /** Returns whether the projectile is still in flight after this step. */
+  private advanceProjectile(projectileRow: CombatProjectileRow, enemies: CombatEnemies, commands: CommandBuffer): boolean {
+    const dt = this.dt;
+    const projectileTransform = projectileRow.mut(Transform);
+    const projectile = projectileRow.mut(BrotatoProjectileMotion);
+    projectileTransform.pos[0] = (projectileTransform.pos[0] ?? 0) + projectile.vx * dt;
+    projectileTransform.pos[2] = (projectileTransform.pos[2] ?? 0) + projectile.vz * dt;
+    projectile.lifetime -= dt;
+    const projectileX = projectileTransform.pos[0] ?? 0;
+    const projectileZ = projectileTransform.pos[2] ?? 0;
+    if (projectile.lifetime <= 0 || Math.abs(projectileX) > 13 || Math.abs(projectileZ) > 13) {
+      commands.despawn(projectileRow.entity);
+      return false;
+    }
+    for (const enemyRow of enemies) {
+      if (this.deadEnemies.includes(enemyRow.entity)) continue;
+      const enemyTransform = enemyRow.mut(Transform);
+      const enemyStats = enemyRow.mut(BrotatoEnemyStats);
+      const enemyX = enemyTransform.pos[0] ?? 0;
+      const enemyZ = enemyTransform.pos[2] ?? 0;
+      const projectileDx = projectileX - enemyX;
+      const projectileDz = projectileZ - enemyZ;
+      if (projectileDx * projectileDx + projectileDz * projectileDz > 0.78 * 0.78) continue;
+      enemyStats.health -= projectile.damage;
+      this.impact([enemyX, 0.55, enemyZ], commands);
+      commands.despawn(projectileRow.entity);
+      if (enemyStats.health <= 0) this.killEnemy(enemyRow.entity, enemyStats.maxHealth, enemyX, enemyZ, commands);
+      return false;
+    }
+    return true;
+  }
+
+  private killEnemy(enemy: EntityHandle, maxHealth: number, enemyX: number, enemyZ: number, commands: CommandBuffer): void {
+    const { state } = this;
+    this.deadEnemies.push(enemy);
+    state.kills += 1;
+    state.score += maxHealth >= 4 ? 30 : 10;
+    if (!this.disablePickupDrops && nextRandom(state) > 0.48) {
+      spawnPickup(commands, this.materials, this.meshes, enemyX, enemyZ);
+    }
+  }
+
+  private collectPickups(pickups: CombatPickups, playerStats: PlayerStatsRow, commands: CommandBuffer): void {
+    const { state, dt, playerX, playerZ } = this;
+    for (const pickupRow of pickups) {
+      const pickupTransform = pickupRow.mut(Transform);
+      const pickup = pickupRow.mut(BrotatoPickupMotion);
+      pickup.spin += dt * 3.2;
+      setYaw(pickupTransform, pickup.spin);
+      pickupTransform.pos[1] = 0.38 + Math.sin(state.elapsed * 4 + pickup.spin) * 0.08;
+      if (Math.hypot((pickupTransform.pos[0] ?? 0) - playerX, (pickupTransform.pos[2] ?? 0) - playerZ) < 1.1) {
+        state.score += pickup.value;
+        playerStats.health = Math.min(playerStats.maxHealth, playerStats.health + 1);
+        commands.despawn(pickupRow.entity);
+      }
+    }
+  }
+
+  private spawnEnemies(commands: CommandBuffer, enemyCount: number): void {
+    const { state } = this;
+    state.spawnTimer -= this.dt;
+    if (!(state.spawnTimer <= 0 && enemyCount < MAX_ENEMIES)) return;
+    const spawnCount = Math.min(MAX_ENEMIES - enemyCount, state.wave >= 4 && nextRandom(state) > 0.65 ? 2 : 1);
+    for (let index = 0; index < spawnCount; index += 1) {
+      const angle = nextRandom(state) * Math.PI * 2;
+      const radius = ENEMY_SPAWN_RADIUS + nextRandom(state) * 2.1;
+      const elite = state.wave >= 2 && nextRandom(state) > 0.84;
+      spawnEnemyDeferred(commands, this.materials, this.meshes, angle, radius, elite);
+    }
+    const spawnCadence = this.survivalMode
+      ? Math.max(0.18, 0.42 - state.wave * 0.025)
+      : Math.max(0.24, 0.72 - state.wave * 0.045);
+    state.spawnTimer = spawnCadence;
+  }
+}
+
+function findOldestProjectile(projectiles: CombatProjectiles): EntityHandle | undefined {
+  let oldestProjectile: EntityHandle | undefined;
+  let oldestProjectileLifetime = Number.POSITIVE_INFINITY;
+  for (const projectileRow of projectiles) {
+    const lifetime = projectileRow.get(BrotatoProjectileMotion).lifetime;
+    if (lifetime < oldestProjectileLifetime) {
+      oldestProjectileLifetime = lifetime;
+      oldestProjectile = projectileRow.entity;
+    }
+  }
+  return oldestProjectile;
+}
+
 function installCombatSystem(
   world: World,
   player: EntityHandle,
@@ -571,10 +906,7 @@ function installCombatSystem(
   survivalMode: boolean,
   disablePickupDrops: boolean,
 ): void {
-  const deadEnemies: EntityHandle[] = [];
-  const fireTargetEntities: EntityHandle[] = [];
-  const fireTargetXs: number[] = [];
-  const fireTargetZs: number[] = [];
+  const combat = new BrotatoCombat(player, state, materials, meshes, impact, survivalMode, disablePickupDrops);
   world
     .addSystem(FixedUpdate, {
       name: COMBAT_SYSTEM_NAME,
@@ -585,222 +917,7 @@ function installCombatSystem(
         { write: [Transform, BrotatoProjectileMotion], with: [BrotatoProjectileTag] },
         { write: [Transform, BrotatoPickupMotion], with: [BrotatoPickupTag] },
       ],
-      fn: (world, [players, weapons, enemies, projectiles, pickups], commands) => {
-        const dt = world.getResource(FixedTime).delta;
-        state.elapsed += dt;
-        state.wave = 1 + Math.floor(state.elapsed / 18);
-        state.hitFlash = Math.max(0, state.hitFlash - dt);
-        if (state.phase !== 'playing') return;
-        const playerRow = [...players][0];
-        if (playerRow === undefined) return;
-        const playerTransform = playerRow.mut(Transform);
-        const playerStats = playerRow.mut(BrotatoStats);
-        const input = playerRow.get(BrotatoInput);
-        playerStats.invulnerability = Math.max(0, playerStats.invulnerability - dt);
-        playerTransform.pos[0] = Math.max(-ARENA_LIMIT, Math.min(ARENA_LIMIT, (playerTransform.pos[0] ?? 0) + input.moveX * PLAYER_SPEED * dt));
-        playerTransform.pos[2] = Math.max(-ARENA_LIMIT, Math.min(ARENA_LIMIT, (playerTransform.pos[2] ?? 0) + input.moveZ * PLAYER_SPEED * dt));
-        playerTransform.pos[1] = 0.72;
-
-        let enemyCount = 0;
-        let nearestDistance = Number.POSITIVE_INFINITY;
-        const playerX = playerTransform.pos[0] ?? 0;
-        const playerZ = playerTransform.pos[2] ?? 0;
-        let targetX = playerX;
-        let targetZ = playerZ - 1;
-        fireTargetEntities.length = 0;
-        fireTargetXs.length = 0;
-        fireTargetZs.length = 0;
-        for (const enemyRow of enemies) {
-          enemyCount += 1;
-          const enemyTransform = enemyRow.mut(Transform);
-          const enemyStats = enemyRow.mut(BrotatoEnemyStats);
-          enemyStats.attackCooldown = Math.max(0, enemyStats.attackCooldown - dt);
-          const enemyX = enemyTransform.pos[0] ?? 0;
-          const enemyZ = enemyTransform.pos[2] ?? 0;
-          const dx = playerX - enemyX;
-          const dz = playerZ - enemyZ;
-          const distance = Math.hypot(dx, dz);
-          if (distance > 0.001) {
-            const step = enemyStats.speed * dt / distance;
-            enemyTransform.pos[0] = enemyX + dx * step;
-            enemyTransform.pos[2] = enemyZ + dz * step;
-            setYaw(enemyTransform, state.elapsed * (enemyStats.speed * 0.4));
-          }
-          const movedEnemyX = enemyTransform.pos[0] ?? 0;
-          const movedEnemyZ = enemyTransform.pos[2] ?? 0;
-          const movedDx = playerX - movedEnemyX;
-          const movedDz = playerZ - movedEnemyZ;
-          const movedDistance = Math.hypot(movedDx, movedDz);
-          fireTargetEntities.push(enemyRow.entity);
-          fireTargetXs.push(movedEnemyX);
-          fireTargetZs.push(movedEnemyZ);
-          if (movedDistance < nearestDistance) {
-            nearestDistance = movedDistance;
-            targetX = movedEnemyX;
-            targetZ = movedEnemyZ;
-          }
-          if (!survivalMode && movedDistance < 1.15 && enemyStats.attackCooldown <= 0 && playerStats.invulnerability <= 0) {
-            playerStats.health = Math.max(0, playerStats.health - 1);
-            playerStats.invulnerability = 0.95;
-            enemyStats.attackCooldown = 1.1;
-            state.hitFlash = 0.22;
-            if (playerStats.health <= 0) state.phase = 'defeated';
-          }
-        }
-        state.enemyCount = enemyCount;
-        if (state.phase !== 'playing') {
-          if (!state.playerHitVisual) {
-            world.set(player, MeshRenderer, { materials: [materials.playerHit, materials.weapon] });
-            state.playerHitVisual = true;
-          }
-          return;
-        }
-        const playerHitVisual = state.hitFlash > 0;
-        if (state.playerHitVisual !== playerHitVisual) {
-          world.set(player, MeshRenderer, {
-            materials: [playerHitVisual ? materials.playerHit : materials.player, materials.weapon],
-          });
-          state.playerHitVisual = playerHitVisual;
-        }
-
-        const fireTargetIndex = fireTargetEntities.length > 0 ? state.fireTargetCursor % fireTargetEntities.length : -1;
-        const aimX = fireTargetIndex >= 0 ? (fireTargetXs[fireTargetIndex] ?? targetX) : targetX;
-        const aimZ = fireTargetIndex >= 0 ? (fireTargetZs[fireTargetIndex] ?? targetZ) : targetZ;
-        const dx = aimX - playerX;
-        const dz = aimZ - playerZ;
-        const distance = Math.hypot(dx, dz) || 1;
-        const directionX = dx / distance;
-        const directionZ = dz / distance;
-        for (const row of weapons) {
-          const weaponTransform = row.mut(Transform);
-          weaponTransform.pos[0] = playerX + directionX * 1.05;
-          weaponTransform.pos[1] = 1.16 + Math.sin(state.elapsed * 6) * 0.08;
-          weaponTransform.pos[2] = playerZ + directionZ * 1.05;
-          setYaw(weaponTransform, Math.atan2(directionX, directionZ));
-          break;
-        }
-
-        let oldestProjectile: EntityHandle | undefined;
-        let oldestProjectileLifetime = Number.POSITIVE_INFINITY;
-        for (const projectileRow of projectiles) {
-          const lifetime = projectileRow.get(BrotatoProjectileMotion).lifetime;
-          if (lifetime < oldestProjectileLifetime) {
-            oldestProjectileLifetime = lifetime;
-            oldestProjectile = projectileRow.entity;
-          }
-        }
-        let recycledProjectile: EntityHandle | undefined;
-        state.fireTimer -= dt;
-        if (state.fireTimer <= 0 && enemyCount > 0) {
-          const cadence = survivalMode
-            ? (input.fire > 0.5 ? 0.05 : 0.08)
-            : input.fire > 0.5
-              ? 0.12
-              : 0.24;
-          // Attack speed is this cooldown. Projectile travel speed stays independent.
-          const projectileSpeed = 14;
-          state.fireTimer = cadence;
-          state.fireTargetCursor = (state.fireTargetCursor + 1) % fireTargetEntities.length;
-          if (state.projectileCount >= MAX_PROJECTILES && oldestProjectile !== undefined) {
-            recycledProjectile = oldestProjectile;
-            commands.despawn(recycledProjectile);
-          }
-          commands.spawn(
-            {
-              component: Transform,
-              data: {
-                pos: [playerX + directionX * 0.9, 0.76, playerZ + directionZ * 0.9],
-                scale: [0.42, 0.42, 0.42],
-                quat: yawQuaternion(Math.atan2(directionX, directionZ)),
-              },
-            },
-            { component: MeshFilter, data: { assetHandle: meshes.projectile } },
-            { component: MeshRenderer, data: { materials: [materials.projectile, materials.weaponAccent] } },
-            { component: BrotatoProjectileTag, data: {} },
-            {
-              component: BrotatoProjectileMotion,
-              data: {
-                vx: directionX * projectileSpeed,
-                vz: directionZ * projectileSpeed,
-                damage: 1,
-                lifetime: 2.2,
-              },
-            },
-          );
-        }
-
-        deadEnemies.length = 0;
-        let activeProjectileCount = 0;
-        for (const projectileRow of projectiles) {
-          if (projectileRow.entity === recycledProjectile) continue;
-          const projectileTransform = projectileRow.mut(Transform);
-          const projectile = projectileRow.mut(BrotatoProjectileMotion);
-          projectileTransform.pos[0] = (projectileTransform.pos[0] ?? 0) + projectile.vx * dt;
-          projectileTransform.pos[2] = (projectileTransform.pos[2] ?? 0) + projectile.vz * dt;
-          projectile.lifetime -= dt;
-          const projectileX = projectileTransform.pos[0] ?? 0;
-          const projectileZ = projectileTransform.pos[2] ?? 0;
-          if (projectile.lifetime <= 0 || Math.abs(projectileX) > 13 || Math.abs(projectileZ) > 13) {
-            commands.despawn(projectileRow.entity);
-            continue;
-          }
-          let consumed = false;
-          for (const enemyRow of enemies) {
-            if (deadEnemies.includes(enemyRow.entity)) continue;
-            const enemyTransform = enemyRow.mut(Transform);
-            const enemyStats = enemyRow.mut(BrotatoEnemyStats);
-            const enemyX = enemyTransform.pos[0] ?? 0;
-            const enemyZ = enemyTransform.pos[2] ?? 0;
-            const projectileDx = projectileX - enemyX;
-            const projectileDz = projectileZ - enemyZ;
-            if (projectileDx * projectileDx + projectileDz * projectileDz > 0.78 * 0.78) continue;
-            enemyStats.health -= projectile.damage;
-            impact([enemyX, 0.55, enemyZ], commands);
-            commands.despawn(projectileRow.entity);
-            consumed = true;
-            if (enemyStats.health <= 0) {
-              deadEnemies.push(enemyRow.entity);
-              state.kills += 1;
-              state.score += enemyStats.maxHealth >= 4 ? 30 : 10;
-              if (!disablePickupDrops && nextRandom(state) > 0.48) {
-                spawnPickup(commands, materials, meshes, enemyX, enemyZ);
-              }
-            }
-            break;
-          }
-          if (!consumed) activeProjectileCount += 1;
-        }
-        for (const enemy of deadEnemies) commands.despawn(enemy);
-        state.projectileCount = activeProjectileCount;
-
-        for (const pickupRow of pickups) {
-          const pickupTransform = pickupRow.mut(Transform);
-          const pickup = pickupRow.mut(BrotatoPickupMotion);
-          pickup.spin += dt * 3.2;
-          setYaw(pickupTransform, pickup.spin);
-          pickupTransform.pos[1] = 0.38 + Math.sin(state.elapsed * 4 + pickup.spin) * 0.08;
-          if (Math.hypot((pickupTransform.pos[0] ?? 0) - playerX, (pickupTransform.pos[2] ?? 0) - playerZ) < 1.1) {
-            state.score += pickup.value;
-            playerStats.health = Math.min(playerStats.maxHealth, playerStats.health + 1);
-            commands.despawn(pickupRow.entity);
-          }
-        }
-
-        state.spawnTimer -= dt;
-        if (state.spawnTimer <= 0 && enemyCount < MAX_ENEMIES) {
-          const spawnCount = Math.min(MAX_ENEMIES - enemyCount, state.wave >= 4 && nextRandom(state) > 0.65 ? 2 : 1);
-          for (let index = 0; index < spawnCount; index += 1) {
-            const angle = nextRandom(state) * Math.PI * 2;
-            const radius = ENEMY_SPAWN_RADIUS + nextRandom(state) * 2.1;
-            const elite = state.wave >= 2 && nextRandom(state) > 0.84;
-            spawnEnemyDeferred(commands, materials, meshes, angle, radius, elite);
-          }
-          const spawnCadence = survivalMode
-            ? Math.max(0.18, 0.42 - state.wave * 0.025)
-            : Math.max(0.24, 0.72 - state.wave * 0.045);
-          state.spawnTimer = spawnCadence;
-        }
-      },
+      fn: (world, queries, commands) => combat.step(world, queries, commands),
     })
     .unwrap();
 }

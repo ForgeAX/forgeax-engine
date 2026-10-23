@@ -51,6 +51,7 @@ import {
   type PreparedExecutionBootstrap,
   prepareBootstrapEntry,
 } from './bootstrap-entry';
+import { installCarriedGpuStub } from './gpu-stub';
 import { createKernelPool, type KernelPool } from './kernel-pool';
 import type {
   EngineToHostMessage,
@@ -665,7 +666,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
         nextWorld,
         assets,
         init,
-        (message) => scope.postMessage(message),
+        (message, transfer) => scope.postMessage(message, transfer ?? []),
         sourceFeatures,
         candidate.publicationTargets,
       );
@@ -824,6 +825,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
 
 async function initialize(message: ExecutionInitMessage): Promise<void> {
   try {
+    installCarriedGpuStub(message);
     if (!(await createRealm(message))) return;
     scope.postMessage({
       kind: 'ready',
@@ -880,6 +882,12 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
   if (activeRealm.renderWorker !== undefined && !(await activeRealm.renderWorker.waitUntilReady()))
     return;
   if (realm !== activeRealm) return;
+  // Host credit returns from the Render Worker directly; its completion may still be
+  // queued here. Wait for that completion instead of rejecting a correctly paced frame.
+  if (activeRealm.renderWorker?.hasPublicationCapacity === false) {
+    await activeRealm.renderWorker.waitForPublicationCapacity();
+    if (realm !== activeRealm || message.frameId <= lastFrameId) return;
+  }
   // Reject an invalid request before even input/camera writes can advance its World.
   if (activeRealm.renderWorker?.hasPublicationCapacity === false) {
     postFault(

@@ -25,6 +25,8 @@ class Numbers {
 type V = [number, number, number];
 type RoofForm = 'hip' | 'gable-hip' | 'pyramid';
 type HallOptions = { front?: readonly ('window'|'door')[]; detailed?: boolean; roof?: RoofForm; bays?: [number,number]; doubleEave?: boolean; eaveHeight?: number; overhang?: number; roofRise?: number; plaque?: string };
+/** Proportions every part of one hall derives from its footprint and options. */
+type HallFrame = { w:number; d:number; base:number; h:number; scale:number; timberScale:number; lower:number; eave:number; detailed:boolean; bays:number; depthBays:number; doubleEave:boolean };
 const add = (a: V, b: V): V => [a[0]+b[0],a[1]+b[1],a[2]+b[2]];
 const sub = (a: V, b: V): V => [a[0]-b[0],a[1]-b[1],a[2]-b[2]];
 const mul = (a: V, s: number): V => [a[0]*s,a[1]*s,a[2]*s];
@@ -267,8 +269,26 @@ export class Architecture {
     const {detailed=false,roof='hip',bays:[bays,depthBays]=detailed?[11,5]:[9,5],doubleEave=true,eaveHeight,overhang,roofRise,plaque,front}=options;
     if(front && front.length!==bays)throw Error('Front elevation must describe every bay: '+name);
     this.subject=name;this.offset=pos;
-    const scale=w/64,h=eaveHeight??7.9*scale,lower=base+h+1.5*scale;
-    const timberScale=Math.max(.75,scale),eave=overhang??3.5*scale;
+    const scale=w/64,h=eaveHeight??7.9*scale;
+    const frame:HallFrame={w,d,base,h,scale,lower:base+h+1.5*scale,timberScale:Math.max(.75,scale),eave:overhang??3.5*scale,detailed,bays,depthBays,doubleEave};
+    this.hallBody(frame);
+    for(let i=0;i<bays;i++)for(const side of [-1,1]){
+      const x=((i+.5)/bays-.5)*w,bw=w/bays-.8*scale,z=side*(d*.457+.08);
+      const opening=side===1?front?.[i]:undefined;
+      if(opening)this.hallOpening(frame,x,bw,z,opening);
+      else this.hallPanels(frame,x,bw,z,side);
+    }
+    // Side elevations consume the same declared bay counts as the front.
+    for(const side of [-1,1]){
+      this.hallSideElevation(frame,side);
+      for(const upper of (doubleEave?[false,true]:[false]))this.hallSideEave(frame,side,upper);
+    }
+    for(const side of [-1,1])for(const upper of (doubleEave?[false,true]:[false]))this.hallFrontEave(frame,side,upper);
+    this.hallRoofs(frame,roof,roofRise);
+    if(detailed)this.hallPlaque(frame,plaque);
+  }
+  /** Walls, plinth and the front/back column rows of one hall. */
+  private hallBody({w,d,base,h,scale,timberScale,bays}:HallFrame) {
     this.box('red',0,base+h*.45,0,w*.94,h*.9,d*.91);
     this.box('stone',0,base+.14,0,w+1,.28,d+1);
     for(let i=0;i<=bays;i++)for(const s of [-1,1]){
@@ -276,102 +296,106 @@ export class Architecture {
       this.column('red',x,base,s*d/2,h,.47*timberScale);
       this.box('green',x,base+h-.3*scale,s*(d/2+.1),1.4*scale,.4*scale,1.6*scale);
     }
-    for(let i=0;i<bays;i++)for(const side of [-1,1]){
-      const x=((i+.5)/bays-.5)*w,bw=w/bays-.8*scale,z=side*(d*.457+.08);
-      const opening=side===1?front?.[i]:undefined;
-      if(opening){
-        const lo=base+h*(opening==='door'?.03:.34),hi=base+h*.81;
-        this.box('dark-red',x,(lo+hi)/2,z,bw,hi-lo,.15);
-        for(const edge of [-1,1])this.box('red',x+edge*bw/2,(lo+hi)/2,z+.16,.11,hi-lo+.18,.18);
-        for(const Y of [lo,hi])this.box('red',x,Y,z+.16,bw,.13,.18);
-        if(opening==='window'){
-          // Straight mullions above a solid apron, instead of full-height lattice doors.
-          const n=Math.max(4,Math.round(bw/.18));
-          for(let j=1;j<n;j++)this.box('red',x+(j/n-.5)*bw,(lo+hi)/2,z+.19,.055,hi-lo,.08);
-          this.box('red',x,lo+(hi-lo)*.53,z+.19,bw,.09,.08);
-          this.box('red',x,lo-.1,z+.25,bw+.18,.16,.4);
-        }else{
-          for(const side of [-1,1]){
-            this.box('red',x+side*bw/4,(lo+hi)/2,z+.1,bw/2-.045,hi-lo-.12,.09);
-            this.box('gold',x+side*.13,lo+(hi-lo)*.47,z+.22,.09,.17,.1);
-          }
-        }
-        continue;
+  }
+  /** One declared front door or window bay. */
+  private hallOpening({base,h}:HallFrame,x:number,bw:number,z:number,opening:'window'|'door') {
+    const lo=base+h*(opening==='door'?.03:.34),hi=base+h*.81;
+    this.box('dark-red',x,(lo+hi)/2,z,bw,hi-lo,.15);
+    for(const edge of [-1,1])this.box('red',x+edge*bw/2,(lo+hi)/2,z+.16,.11,hi-lo+.18,.18);
+    for(const Y of [lo,hi])this.box('red',x,Y,z+.16,bw,.13,.18);
+    if(opening==='window'){
+      // Straight mullions above a solid apron, instead of full-height lattice doors.
+      const n=Math.max(4,Math.round(bw/.18));
+      for(let j=1;j<n;j++)this.box('red',x+(j/n-.5)*bw,(lo+hi)/2,z+.19,.055,hi-lo,.08);
+      this.box('red',x,lo+(hi-lo)*.53,z+.19,bw,.09,.08);
+      this.box('red',x,lo-.1,z+.25,bw+.18,.16,.4);
+    }else{
+      for(const side of [-1,1]){
+        this.box('red',x+side*bw/4,(lo+hi)/2,z+.1,bw/2-.045,hi-lo-.12,.09);
+        this.box('gold',x+side*.13,lo+(hi-lo)*.47,z+.22,.09,.17,.1);
       }
-      this.box('dark-red',x,base+h*.47,z,bw,h*.73,.15);
-      const panels=detailed?6:3;
-      for(let j=0;j<panels;j++){
-        const X=x+(j/(panels-1)-.5)*(bw-.22);
-        this.box('red',X,base+h*.48,z+side*.12,.09*scale,h*.70,.12);
+    }
+  }
+  /** One front/back lattice bay without a declared opening. */
+  private hallPanels({base,h,scale,timberScale,detailed}:HallFrame,x:number,bw:number,z:number,side:number) {
+    this.box('dark-red',x,base+h*.47,z,bw,h*.73,.15);
+    const panels=detailed?6:3;
+    for(let j=0;j<panels;j++){
+      const X=x+(j/(panels-1)-.5)*(bw-.22);
+      this.box('red',X,base+h*.48,z+side*.12,.09*scale,h*.70,.12);
+      if(detailed){
+        const pw=(bw-.22)/(panels-1)*.88,lo=base+h*.32,hi=base+h*.83;
+        for(const edge of [-1,1])this.box('red',X+edge*pw/2,(lo+hi)/2,z+side*.15,.055*timberScale,hi-lo,.10);
+        for(let k=0;k<=7;k++)this.box('red',X,lo+(hi-lo)*k/7,z+side*.17,pw,.055*timberScale,.10);
+        for(const u of [-1/6,1/6])this.box('red',X+pw*u,(lo+hi)/2,z+side*.17,.045*timberScale,hi-lo,.10);
+        for(const Y of [base+h*.13,base+h*.28])this.box('gold',X,Y,z+side*.17,pw,.035*timberScale,.08);
+      }
+    }
+    for(const Y of [base+1.4*scale,base+h*.76])this.box('gold',x,Y,z+side*.2,bw,.05*scale,.09);
+  }
+  /** Columns and lattice bays of one side elevation. */
+  private hallSideElevation({w,d,base,h,timberScale,detailed,depthBays}:HallFrame,side:number) {
+    for(let i=1;i<depthBays;i++)this.column('red',side*w/2,base,(i/depthBays-.5)*d,h,.47*timberScale);
+    for(let i=0;i<depthBays;i++){
+      const z=((i+.5)/depthBays-.5)*d,bw=d/depthBays-.9;
+      this.box('dark-red',side*(w*.471+.1),base+h*.47,z,.18,h*.73,bw);
+      for(let j=0;j<6;j++){
+        const Z=z+(j/5-.5)*(bw-.25),X=side*(w*.471+.24);
+        this.box('red',X,base+h*.48,Z,.12,h*.70,.09);
         if(detailed){
-          const pw=(bw-.22)/(panels-1)*.88,lo=base+h*.32,hi=base+h*.83;
-          for(const edge of [-1,1])this.box('red',X+edge*pw/2,(lo+hi)/2,z+side*.15,.055*timberScale,hi-lo,.10);
-          for(let k=0;k<=7;k++)this.box('red',X,lo+(hi-lo)*k/7,z+side*.17,pw,.055*timberScale,.10);
-          for(const u of [-1/6,1/6])this.box('red',X+pw*u,(lo+hi)/2,z+side*.17,.045*timberScale,hi-lo,.10);
-          for(const Y of [base+h*.13,base+h*.28])this.box('gold',X,Y,z+side*.17,pw,.035*timberScale,.08);
-        }
-      }
-      for(const Y of [base+1.4*scale,base+h*.76])this.box('gold',x,Y,z+side*.2,bw,.05*scale,.09);
-    }
-    // Side elevations consume the same declared bay counts as the front.
-    for(const side of [-1,1]){
-      for(let i=1;i<depthBays;i++)this.column('red',side*w/2,base,(i/depthBays-.5)*d,h,.47*timberScale);
-      for(let i=0;i<depthBays;i++){
-        const z=((i+.5)/depthBays-.5)*d,bw=d/depthBays-.9;
-        this.box('dark-red',side*(w*.471+.1),base+h*.47,z,.18,h*.73,bw);
-        for(let j=0;j<6;j++){
-          const Z=z+(j/5-.5)*(bw-.25),X=side*(w*.471+.24);
-          this.box('red',X,base+h*.48,Z,.12,h*.70,.09);
-          if(detailed){
-            const pw=(bw-.25)/5*.88,lo=base+h*.32,hi=base+h*.83;
-            for(const edge of [-1,1])this.box('red',X,(lo+hi)/2,Z+edge*pw/2,.10,hi-lo,.055*timberScale);
-            for(let k=0;k<=7;k++)this.box('red',X,lo+(hi-lo)*k/7,Z,.10,.055*timberScale,pw);
-            for(const u of [-1/6,1/6])this.box('red',X,(lo+hi)/2,Z+pw*u,.10,hi-lo,.045*timberScale);
-          }
-        }
-      }
-      for(const upper of (doubleEave?[false,true]:[false])){
-        const y=(upper?lower+4.7*scale:lower)-1.15*timberScale;
-        const bx=side*(upper?w*.45:w/2),bd=upper?d*.65:d;
-        this.box('caihua',bx,y,0,.75*scale,1.15*timberScale,bd+scale);
-        for(const dy of [-.49,.49])this.box('gold',bx+side*.4*scale,y+dy*scale,0,.08*scale,.07*scale,bd+scale);
-        for(let j=0;j<32;j++){
-          const z=(j/31-.5)*bd;
-          this.box('green',bx+side*.5*scale,y+.4*scale,z,1.6*scale,.25*scale,.62*scale);
-          this.box('blue',bx+side*.8*scale,y+.73*scale,z,1.8*scale,.3*scale,.4*scale);
+          const pw=(bw-.25)/5*.88,lo=base+h*.32,hi=base+h*.83;
+          for(const edge of [-1,1])this.box('red',X,(lo+hi)/2,Z+edge*pw/2,.10,hi-lo,.055*timberScale);
+          for(let k=0;k<=7;k++)this.box('red',X,lo+(hi-lo)*k/7,Z,.10,.055*timberScale,pw);
+          for(const u of [-1/6,1/6])this.box('red',X,(lo+hi)/2,Z+pw*u,.10,hi-lo,.045*timberScale);
         }
       }
     }
-    for(const side of [-1,1])for(const upper of (doubleEave?[false,true]:[false])){
-      const y=(upper?lower+4.7*scale:lower)-1.15*timberScale;
-      const beamDepth=upper?d*.65/2:d/2;
-      const beamWidth=upper?w*.90:w;
-      this.box('caihua',0,y,side*(beamDepth+.4),beamWidth+1,1.15*timberScale,.7*scale);
-      for(const dy of [-.49,.49])this.box('gold',0,y+dy*scale,side*(beamDepth+.79),beamWidth+1,.07*scale,.08);
-      const count=detailed?66:24;
-      for(let j=0;j<count;j++){
-        const x=(j/(count-1)-.5)*beamWidth;
-        this.box('green',x,y+.4*scale,side*(beamDepth+.9*scale),.62*scale,.25*scale,1.6*scale);
-        this.box('blue',x,y+.73*scale,side*(beamDepth+1.12*scale),.4*scale,.3*scale,1.8*scale);
-        if(detailed)this.tube('gold',[[x-.26,y-.2,side*(beamDepth+.78)],[x,y+.17,side*(beamDepth+.8)],[x+.26,y-.2,side*(beamDepth+.78)]],.03,4);
-      }
+  }
+  /** Painted beam and bracket set under one side eave. */
+  private hallSideEave({w,d,scale,timberScale,lower}:HallFrame,side:number,upper:boolean) {
+    const y=(upper?lower+4.7*scale:lower)-1.15*timberScale;
+    const bx=side*(upper?w*.45:w/2),bd=upper?d*.65:d;
+    this.box('caihua',bx,y,0,.75*scale,1.15*timberScale,bd+scale);
+    for(const dy of [-.49,.49])this.box('gold',bx+side*.4*scale,y+dy*scale,0,.08*scale,.07*scale,bd+scale);
+    for(let j=0;j<32;j++){
+      const z=(j/31-.5)*bd;
+      this.box('green',bx+side*.5*scale,y+.4*scale,z,1.6*scale,.25*scale,.62*scale);
+      this.box('blue',bx+side*.8*scale,y+.73*scale,z,1.8*scale,.3*scale,.4*scale);
     }
+  }
+  /** Painted beam and bracket set under one front/back eave. */
+  private hallFrontEave({w,d,scale,timberScale,lower,detailed}:HallFrame,side:number,upper:boolean) {
+    const y=(upper?lower+4.7*scale:lower)-1.15*timberScale;
+    const beamDepth=upper?d*.65/2:d/2;
+    const beamWidth=upper?w*.90:w;
+    this.box('caihua',0,y,side*(beamDepth+.4),beamWidth+1,1.15*timberScale,.7*scale);
+    for(const dy of [-.49,.49])this.box('gold',0,y+dy*scale,side*(beamDepth+.79),beamWidth+1,.07*scale,.08);
+    const count=detailed?66:24;
+    for(let j=0;j<count;j++){
+      const x=(j/(count-1)-.5)*beamWidth;
+      this.box('green',x,y+.4*scale,side*(beamDepth+.9*scale),.62*scale,.25*scale,1.6*scale);
+      this.box('blue',x,y+.73*scale,side*(beamDepth+1.12*scale),.4*scale,.3*scale,1.8*scale);
+      if(detailed)this.tube('gold',[[x-.26,y-.2,side*(beamDepth+.78)],[x,y+.17,side*(beamDepth+.8)],[x+.26,y-.2,side*(beamDepth+.78)]],.03,4);
+    }
+  }
+  private hallRoofs({w,d,scale,lower,eave,doubleEave}:HallFrame,roof:RoofForm,roofRise:number|undefined) {
     if(doubleEave){
       this.roof(w+2*eave,d+2*eave,lower,11*scale,.58);
       this.box('dark-red',0,lower+2.4*scale,0,w*.90,3.5*scale,d*.65);
       this.roof(w*.90+3*scale,d*.65+3*scale,lower+4.7*scale,10.8*scale,0,roof);
     } else this.roof(w+2*eave,d+2*eave,lower,roofRise??Math.max(6.5,11*scale),0,roof);
-    if(detailed){
-      const pz=doubleEave?(d*.65+3*scale)/2+.7*scale:d/2+.7;
-      const floor=lower+roofRiseAt(11*scale,2*(pz+.16)/(d+2*eave));
-      const ceiling=lower+4.7*scale-.15;
-      const ph=doubleEave?Math.min(2.6,(ceiling-floor)*.84):1.3;
-      const py=doubleEave?(floor+ceiling)/2:base+h-.35,pw=doubleEave?Math.min(1.9,ph*.73):.95;
-      this.box('blue',0,py,pz,pw,ph,.3);
-      if(plaque)this.quad(plaque,[-pw/2,py-ph/2,pz+.16],[pw/2,py-ph/2,pz+.16],[pw/2,py+ph/2,pz+.16],[-pw/2,py+ph/2,pz+.16],[0,0,1],undefined,p=>[(p[0]+pw/2)/pw,1-(p[1]-py+ph/2)/ph]);
-      for(const x of [-1,1])this.box('gold',x*(pw/2+.05),py,pz+.18,.1,ph+.2,.08);
-      for(const yy of [-1,1])this.box('gold',0,py+yy*(ph/2+.05),pz+.18,pw+.2,.1,.08);
-    }
+  }
+  /** Name board between the eaves of a detailed hall. */
+  private hallPlaque({d,base,h,scale,lower,eave,doubleEave}:HallFrame,plaque:string|undefined) {
+    const pz=doubleEave?(d*.65+3*scale)/2+.7*scale:d/2+.7;
+    const floor=lower+roofRiseAt(11*scale,2*(pz+.16)/(d+2*eave));
+    const ceiling=lower+4.7*scale-.15;
+    const ph=doubleEave?Math.min(2.6,(ceiling-floor)*.84):1.3;
+    const py=doubleEave?(floor+ceiling)/2:base+h-.35,pw=doubleEave?Math.min(1.9,ph*.73):.95;
+    this.box('blue',0,py,pz,pw,ph,.3);
+    if(plaque)this.quad(plaque,[-pw/2,py-ph/2,pz+.16],[pw/2,py-ph/2,pz+.16],[pw/2,py+ph/2,pz+.16],[-pw/2,py+ph/2,pz+.16],[0,0,1],undefined,p=>[(p[0]+pw/2)/pw,1-(p[1]-py+ph/2)/ph]);
+    for(const x of [-1,1])this.box('gold',x*(pw/2+.05),py,pz+.18,.1,ph+.2,.08);
+    for(const yy of [-1,1])this.box('gold',0,py+yy*(ph/2+.05),pz+.18,pw+.2,.1,.08);
   }
   cornerTower(pos:V) {
     this.subject=`Corner tower ${pos[0]} ${pos[2]}`;this.offset=pos;this.yaw=0;

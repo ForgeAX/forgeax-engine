@@ -164,12 +164,17 @@ import { createTargetCoverageAttachment } from '../temporal/target-coverage-atta
 import type { TransmissionDemand } from '../transmission/projection';
 import { hasVolumetricFogCapability } from '../volume/capability';
 import { deriveVolumetricFogExtent, deriveVolumetricFogResolvedExtent } from '../volume/resources';
-import { frameGraphChangedDependencies, frameGraphTopologyIdentity } from './frame-graph-identity';
+import {
+  frameGraphChangedDependencies,
+  frameGraphChangedValues,
+  frameGraphTopologyIdentity,
+} from './frame-graph-identity';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import {
   type GraphTargetPassReplayPrefixReceipt,
   type GraphTargetPassReplayReceipt,
   getTextureIdentity,
+  type InstalledFrameGraph,
   type RenderFrameState,
 } from './frame-snapshot';
 import { createPassTimingInstrumentation } from './gpu-pass-timing/instrumentation';
@@ -1238,6 +1243,11 @@ interface MutableRenderFeatureGraphInspection {
   buildCpuMs: number;
   compilePrimaryCauses: Record<string, number>;
   compileChangedDependencies: Record<string, number>;
+  unsubmittedGraphReuses: number;
+  recentCompileChanges: {
+    readonly frame: number;
+    readonly changes: ReturnType<typeof frameGraphChangedValues>;
+  }[];
   candidatesWithPreparedBatches: number;
   preparedKeyChanges: number;
   accepted: number;
@@ -1279,6 +1289,8 @@ function mutableFeatureGraphInspection(
     buildCpuMs: 0,
     compilePrimaryCauses: {},
     compileChangedDependencies: {},
+    recentCompileChanges: [],
+    unsubmittedGraphReuses: 0,
     candidatesWithPreparedBatches: 0,
     preparedKeyChanges: 0,
     accepted: 0,
@@ -1317,6 +1329,8 @@ export function getRenderFeatureGraphInspection(
     buildCpuMs: metrics.buildCpuMs,
     compilePrimaryCauses: Object.freeze({ ...metrics.compilePrimaryCauses }),
     compileChangedDependencies: Object.freeze({ ...metrics.compileChangedDependencies }),
+    recentCompileChanges: Object.freeze([...metrics.recentCompileChanges]),
+    unsubmittedGraphReuses: metrics.unsubmittedGraphReuses,
     candidatesWithPreparedBatches: metrics.candidatesWithPreparedBatches,
     preparedKeyChanges: metrics.preparedKeyChanges,
     accepted: metrics.accepted,
@@ -2290,6 +2304,8 @@ export function retire(
 export function settleCompiledFrameGraphCandidate(
   frameState: RenderFrameState,
   submitted: boolean,
+  /** The frame stopped only because pipeline preparation was still pending. */
+  awaitingPreparation = false,
 ): void {
   const candidate = frameState.compiledFrameGraphCandidate;
   if (candidate === undefined) return;
@@ -2299,9 +2315,33 @@ export function settleCompiledFrameGraphCandidate(
     const previousGraph = previous.installed?.graph;
     if (previousGraph !== undefined && previousGraph !== candidate.graph)
       retire(frameState, previousGraph);
+    // A stashed graph may alias resources of the graph it was compiled
+    // against; once another graph is accepted it can never be promoted.
+    const stashed = frameState.unsubmittedCompiledFrameGraph;
+    frameState.unsubmittedCompiledFrameGraph = undefined;
+    if (stashed !== undefined && stashed.installed.graph !== candidate.graph)
+      retire(frameState, stashed.installed.graph);
     return;
   }
-  if (candidate.graph !== previous.installed?.graph) retire(frameState, candidate.graph);
+  const candidateInstalled = frameState.compiledFrameGraph;
+  if (candidate.graph !== previous.installed?.graph) {
+    // Keep one compiled-but-unsubmitted graph for its topology key. A frame
+    // that only waited for pipeline preparation must not recompile the same
+    // graph on every following frame.
+    const stashed = frameState.unsubmittedCompiledFrameGraph;
+    if (stashed !== undefined && stashed.installed.graph !== candidate.graph)
+      retire(frameState, stashed.installed.graph);
+    frameState.unsubmittedCompiledFrameGraph =
+      awaitingPreparation &&
+      candidateInstalled !== null &&
+      candidateInstalled.graph === candidate.graph
+        ? {
+            installed: candidateInstalled,
+            deviceGeneration: graphDeviceGenerations.get(candidate.graph),
+          }
+        : undefined;
+    if (frameState.unsubmittedCompiledFrameGraph === undefined) retire(frameState, candidate.graph);
+  }
   frameState.compiledFrameGraph = previous.installed;
   frameState.graphGeneration = previous.graphGeneration;
   frameState.compiledFrameGraphGeneration = previous.compiledGeneration;
@@ -2311,12 +2351,69 @@ export function settleCompiledFrameGraphCandidate(
 }
 
 /**
+ * Stage an already compiled graph for this frame as the transactional
+ * candidate, exactly as a fresh compile with the same topology key would.
+ */
+function promoteCompiledFrameGraph(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  graph: CompiledRenderGraph<RenderPipelineFrame>,
+  compiled: InstalledFrameGraph,
+  installed: InstalledFrameGraph | null,
+  lightingSignature: string,
+  gpuDriven: PreparedGpuDrivenFrame | undefined,
+  featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
+  postProcessPending: boolean,
+  cloudHistoryDemand: boolean,
+  key: string,
+): CompiledRenderGraph<RenderPipelineFrame> {
+  const featureMetrics = mutableFeatureGraphInspection(internals);
+  featureMetrics.unsubmittedGraphReuses += 1;
+  featureMetrics.lastTopologyKey = key;
+  trackGraphGeneration(frameState, graph);
+  const superseded = frameState.compiledFrameGraphCandidate;
+  frameState.compiledFrameGraphCandidate = {
+    graph,
+    previous: superseded?.previous ?? {
+      installed,
+      graphGeneration: frameState.graphGeneration ?? 0,
+      compiledGeneration: frameState.compiledFrameGraphGeneration ?? 0,
+      lightingSignature: frameState.standardLightingGraphSignature ?? '',
+    },
+  };
+  if (superseded !== undefined && superseded.graph !== graph) retire(frameState, superseded.graph);
+  frameState.barrelDistortionGraphResolution = 'accepted';
+  frameState.standardLightingGraphSignature = lightingSignature;
+  frameState.compiledFrameGraphGeneration += 1;
+  frameState.graphGeneration += 1;
+  frameState.compiledFrameGraph = {
+    ...compiled,
+    targets: { ...compiled.targets, graphGeneration: frameState.graphGeneration },
+  };
+  if (gpuDriven?._commitGpuResourceReplacement !== undefined) {
+    gpuDriven._commitGpuResourceReplacement();
+  } else {
+    gpuDriven?._commitResourceReplacement();
+  }
+  if (featureGraphCandidate !== undefined && !postProcessPending) {
+    commitFeatureCandidate(internals, featureGraphCandidate);
+  } else if (featureGraphCandidate !== undefined) {
+    recordRenderFeatureCandidateEvent(internals, featureGraphCandidate, 'abandoned');
+  }
+  frameState.pendingCloudHistoryActive = cloudHistoryDemand;
+  return graph;
+}
+
+/**
  * Drop every compiled graph this frame state owns at a renderer generation cut
  * (dispose or device recovery): roll back an unsubmitted candidate, retire the
  * installed graph, and forget graphs whose retirement is already in flight.
  */
 export function discardCompiledFrameGraphs(frameState: RenderFrameState): void {
   settleCompiledFrameGraphCandidate(frameState, false);
+  const stashed = frameState.unsubmittedCompiledFrameGraph;
+  frameState.unsubmittedCompiledFrameGraph = undefined;
+  if (stashed !== undefined) retire(frameState, stashed.installed.graph);
   const installed = frameState.compiledFrameGraph;
   frameState.compiledFrameGraph = null;
   if (installed !== null) retire(frameState, installed.graph);
@@ -2635,6 +2732,28 @@ export function ensureCompiledFrameGraph(
     return installed.graph;
   }
 
+  const stashed = frameState.unsubmittedCompiledFrameGraph;
+  if (stashed !== undefined) {
+    frameState.unsubmittedCompiledFrameGraph = undefined;
+    if (
+      stashed.installed.topologyKey === key &&
+      stashed.deviceGeneration === internals.deviceScope?.generation
+    )
+      return promoteCompiledFrameGraph(
+        internals,
+        frameState,
+        stashed.installed.graph,
+        stashed.installed,
+        installed,
+        requestedStandardLightingSignature,
+        gpuDriven,
+        featureGraphCandidate,
+        postProcessAdmission.pending,
+        cloudHistoryDemand,
+        key,
+      );
+    retire(frameState, stashed.installed.graph);
+  }
   featureMetrics.rebuildAttempts += 1;
   featureMetrics.lastTopologyKey = key;
   const buildStarted = typeof performance === 'undefined' ? Date.now() : performance.now();
@@ -3014,6 +3133,12 @@ export function ensureCompiledFrameGraph(
     featureMetrics.compileChangedDependencies[dependency] =
       (featureMetrics.compileChangedDependencies[dependency] ?? 0) + 1;
   }
+  // Bounded detached evidence of what changed; compiles are already rare and costly.
+  featureMetrics.recentCompileChanges.push({
+    frame: frameState.frameNumber,
+    changes: frameGraphChangedValues(installed?.topologyKey, key, changedDependencies),
+  });
+  if (featureMetrics.recentCompileChanges.length > 32) featureMetrics.recentCompileChanges.shift();
   const compileStarted = typeof performance === 'undefined' ? Date.now() : performance.now();
   const compiled = builder.compile({
     device: internals.device,

@@ -1033,13 +1033,13 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     for (let i = 0; i <= oldCapacity / 8; i++)
       availability.scene.inputs.arena.allocateDescriptor(2);
     current = prepare(replacement);
-    // Arena capacity replacement is a real graph dependency even when the
-    // independently retained vertex/index allocation is unchanged.
-    expect(production.inspect().resourceGeneration).toBeGreaterThan(resourceGeneration ?? 0);
-    expect(current.topologySignature).not.toBe(beforeSignature);
+    // Graph passes resolve the current member-input arena when they execute,
+    // so its capacity replacement alone keeps the compiled graph.
+    expect(production.inspect().resourceGeneration).toBe(resourceGeneration);
+    expect(current.topologySignature).toBe(beforeSignature);
     const replacementGraph = compile();
     if (replacementGraph === null) throw Error('missing replacement graph');
-    expect(replacementGraph).not.toBe(graph);
+    expect(replacementGraph).toBe(graph);
     store.invalidateMesh(first.handle, worldRenderResources(world));
     const released = lease.release(false);
     expect(store.getMeshGpuHandles(first.handle, worldRenderResources(world))).toBeUndefined();
@@ -1047,7 +1047,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     expect(replacement.mesh.indexBuffer?.isDestroyed).toBe(false);
     encode(replacementGraph);
     store.trackMeshSubmission(newCompleted);
-    expect(state.compiledFrameGraphGeneration).toBe(2);
+    expect(state.compiledFrameGraphGeneration).toBe(1);
     expect(replacementGraph.inspect().passes.map((pass) => pass.name)).toEqual(
       beforeInfo.passes.map((pass) => pass.name),
     );

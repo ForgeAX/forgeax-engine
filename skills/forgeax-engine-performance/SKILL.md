@@ -18,6 +18,7 @@ and reusable analysis, rather than another delivery state machine.
 | Current question | Read |
 | --- | --- |
 | Establish a baseline, qualify fresh product defaults, separate CPU/GPU clocks or compare captures | [Measurement](references/measurement.md) |
+| Measure CPU-side cost on a host without a usable GPU | [WebGPU stub](references/measurement.md#cpu-only-measurement-with-the-webgpu-stub) |
 | Measure cache hit/miss, invalidation, rebuild and maintenance populations | [Cache measurement](references/measurement.md#cache-populations-and-window-deltas) |
 | Extreme picture intervals, Worker task costs, completion waits or catch-up bursts | [Slow frames and scheduling](references/slow-frames.md) |
 | Native physics phases, contact complexity, wake costs or redundant Game submissions | [Physics pressure](references/physics.md) |

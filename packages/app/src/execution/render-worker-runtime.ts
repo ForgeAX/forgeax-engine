@@ -22,6 +22,7 @@ import {
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
 import { prepareBootstrapEntry } from './bootstrap-entry';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
+import { installCarriedGpuStub } from './gpu-stub';
 import type { SerializedRenderError } from './protocol';
 import { ownReceivedPublicationMaterials } from './received-publication-materials';
 import { RenderMeshResidency } from './render-mesh-residency';
@@ -44,6 +45,8 @@ const scope = globalThis as unknown as {
 let renderer: Renderer | undefined;
 let meshResidency: RenderMeshResidency | undefined;
 let publicationIdentity: RenderPublicationIdentity | undefined;
+/** Host port for render-submitted / render-complete; Host credit bypasses the Engine tick. */
+let hostPort: MessagePort | undefined;
 let inspectionWorldIdentity: string | undefined;
 let unsubscribeRenderer: (() => void) | undefined;
 let readyAnnounced = false;
@@ -324,6 +327,25 @@ async function completeFrame(
     if (failed) return;
     const gpuPassTiming = timingResult?.ok === true ? timingResult.value.timings : undefined;
     const buffers = renderPublicationTransfers(message.publication);
+    const frame = {
+      kind: 'frame-complete',
+      worldIdentity: message.worldIdentity,
+      frameId: message.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+      ...(receipt.graphGeneration === undefined
+        ? {}
+        : { graphGeneration: receipt.graphGeneration }),
+      ...(receipt.barrelDistortion === undefined
+        ? {}
+        : { barrelDistortion: receipt.barrelDistortion }),
+      presentation: receipt.presentation,
+      ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
+        ? {}
+        : { presentationPendingReason: receipt.presentationPendingReason }),
+      engineUpdateMs: 0,
+      kernelWaitMs: 0,
+    } as const;
     scope.postMessage(
       {
         kind: 'completed',
@@ -331,32 +353,13 @@ async function completeFrame(
         buffers,
         ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
         ...(meshConsumption === undefined ? {} : { meshConsumption }),
-        frame: {
-          kind: 'frame-complete',
-          worldIdentity: message.worldIdentity,
-          frameId: message.frameId,
-          deviceGeneration: receipt.deviceGeneration,
-          ...(receipt.shadowWorkload === undefined
-            ? {}
-            : { shadowWorkload: receipt.shadowWorkload }),
-          ...(receipt.graphGeneration === undefined
-            ? {}
-            : { graphGeneration: receipt.graphGeneration }),
-          ...(receipt.barrelDistortion === undefined
-            ? {}
-            : { barrelDistortion: receipt.barrelDistortion }),
-          presentation: receipt.presentation,
-          ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
-            ? {}
-            : { presentationPendingReason: receipt.presentationPendingReason }),
-          engineUpdateMs: 0,
-          kernelWaitMs: 0,
-        },
+        frame,
       },
       meshConsumption?.bindings.buffer instanceof ArrayBuffer
         ? [...buffers, meshConsumption.bindings.buffer]
         : buffers,
     );
+    hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
   } catch (cause) {
     // A failed successor must stop admission even while an older receipt waits.
     fail(message, cause);
@@ -595,7 +598,9 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     if (message.kind === 'init') {
       if (renderer !== undefined || busy) throw new Error('Duplicate Render Worker initialization');
       busy = true;
+      installCarriedGpuStub(message);
       canvas = message.canvas;
+      hostPort = message.hostPort;
       geometryLane = message.geometryLane;
       renderTaskYield = message.renderTaskYield ?? 'none';
       renderPipelineCapacity =
@@ -866,23 +871,29 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       captureDraw,
     );
     if (failed) return;
+    const submittedFrame = {
+      kind: 'frame-submitted',
+      worldIdentity: message.worldIdentity,
+      frameId: message.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+      ...(receipt.graphGeneration === undefined
+        ? {}
+        : { graphGeneration: receipt.graphGeneration }),
+      ...(receipt.barrelDistortion === undefined
+        ? {}
+        : { barrelDistortion: receipt.barrelDistortion }),
+    } as const;
     scope.postMessage({
       kind: 'submitted',
       revision: message.publication.revision,
       features,
-      frame: {
-        kind: 'frame-submitted',
-        worldIdentity: message.worldIdentity,
-        frameId: message.frameId,
-        deviceGeneration: receipt.deviceGeneration,
-        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
-        ...(receipt.graphGeneration === undefined
-          ? {}
-          : { graphGeneration: receipt.graphGeneration }),
-        ...(receipt.barrelDistortion === undefined
-          ? {}
-          : { barrelDistortion: receipt.barrelDistortion }),
-      },
+      frame: submittedFrame,
+    });
+    hostPort?.postMessage({
+      kind: 'render-submitted',
+      epoch: message.publication.epoch,
+      frame: submittedFrame,
     });
     // Keep the source's submitted-before-completed order and existing credits,
     // while freezing GPU resources until the frame-header snapshot is complete.

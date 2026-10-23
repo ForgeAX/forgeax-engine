@@ -96,6 +96,11 @@ interface Work {
   readonly pass: Pass;
   readonly groups: Node<Node<Binding>>;
 }
+interface QueryWork {
+  members: Node<Node<Binding>> | undefined;
+  casters: Node<Node<Binding>> | undefined;
+  passes: readonly Pass[];
+}
 
 export interface AcceptedMaterial {
   readonly resource: MaterialResource;
@@ -467,6 +472,16 @@ export class MaterialDispatch {
   private meshFrame: MeshFrame | undefined;
   private queryRoot: Node<Work> | undefined;
   private queryDirty = true;
+  /**
+   * Retained query projection for change-driven Pass queries: per-resource
+   * member/caster roots, the Passes they were published under, and each
+   * group's effective resources. Only groups whose membership changed are
+   * re-projected; untouched Work objects (and their consumed draw order) stay.
+   */
+  private queryWork = new Map<MaterialResource, QueryWork>();
+  private groupResources = new Map<BindingGroup, readonly MaterialResource[]>();
+  private readonly dirtyGroups = new Set<BindingGroup>();
+  private fullQuery = true;
   private previous: FrameDispatch | undefined;
   private revision = 0;
   private sourceMaterials = new MaterialFrame(undefined);
@@ -476,6 +491,15 @@ export class MaterialDispatch {
     this.queryDirty = true;
     this.queryRoot = undefined;
     this.previous = undefined;
+    this.fullQuery = true;
+    this.dirtyGroups.clear();
+  }
+
+  /** Membership edit of one group; the next query re-projects only that group. */
+  private invalidateGroup(group: BindingGroup): void {
+    this.queryDirty = true;
+    this.previous = undefined;
+    if (!this.fullQuery) this.dirtyGroups.add(group);
   }
 
   materials(): MaterialFrame {
@@ -642,7 +666,7 @@ export class MaterialDispatch {
       }
       this.bindings.set(slot, { group, binding });
       this.revision++;
-      this.invalidateQuery();
+      this.invalidateGroup(group);
     } catch (error) {
       this.clearEmptyMaterialRoots();
       throw error;
@@ -668,13 +692,14 @@ export class MaterialDispatch {
       for (const resource of group.held) this.release(resource);
     }
     this.bindings.delete(slot);
-    this.invalidateQuery();
+    this.invalidateGroup(group);
     this.revision++;
     this.clearEmptyMaterialRoots();
   }
 
   private clearEmptyMaterialRoots(): void {
     if (this.bindings.size === 0) {
+      this.invalidateQuery();
       this.sourceMaterials = new MaterialFrame(undefined);
       this.materialFrame = this.sourceMaterials;
       this.unpublished.clear();
@@ -693,18 +718,15 @@ export class MaterialDispatch {
       validate?.();
       if (meshes !== this.meshFrame)
         throw new Error('Pass query requires the current adopted MeshFrame');
+      if (this.queryDirty && !this.fullQuery && this.queryIncrementally(meshes, validate))
+        this.queryDirty = false;
       if (this.queryDirty) {
         const revision = this.revision;
         const sources = this.sourceMaterials;
         const resolve = this.resolveMaterial;
         const pendingBindings: MeshMaterialBindingWrite[] = [];
-        const work = new Map<
-          MaterialResource,
-          {
-            members: Node<Node<Binding>> | undefined;
-            casters: Node<Node<Binding>> | undefined;
-          }
-        >();
+        const work = new Map<MaterialResource, QueryWork>();
+        const groupResources = new Map<BindingGroup, readonly MaterialResource[]>();
         let materials = this.sourceMaterials;
         for (const group of this.groups.values()) {
           if (group.members === undefined) continue;
@@ -730,10 +752,11 @@ export class MaterialDispatch {
           const resources = new Set(
             effective.materials.length === 0 ? [effective.material] : effective.materials,
           );
+          groupResources.set(group, [...resources]);
           for (const resource of resources) {
             let value = work.get(resource);
             if (value === undefined) {
-              value = { members: undefined, casters: undefined };
+              value = { members: undefined, casters: undefined, passes: [] };
               work.set(resource, value);
               const accepted = this.materialFrame.get(resource) ?? materials.get(resource);
               materials =
@@ -766,6 +789,7 @@ export class MaterialDispatch {
           const accepted = materials.get(resource);
           if (accepted === undefined) throw new Error('Pass query has no accepted material');
           materials = materials.withAccepted(accepted, value.members?.count ?? 0);
+          value.passes = accepted.passes;
           for (const pass of accepted.passes) {
             const members = pass.tags.LightMode === 'ShadowCaster' ? value.casters : value.members;
             if (members !== undefined)
@@ -789,6 +813,10 @@ export class MaterialDispatch {
         for (const { contexts, geometry, value } of pendingBindings) contexts.set(geometry, value);
         this.queryRoot = root;
         this.materialFrame = materials;
+        this.queryWork = work;
+        this.groupResources = groupResources;
+        this.dirtyGroups.clear();
+        this.fullQuery = false;
         this.queryDirty = false;
         this.previous = undefined;
       }
@@ -803,6 +831,123 @@ export class MaterialDispatch {
     } finally {
       this.querying = false;
     }
+  }
+
+  /**
+   * Re-project only groups whose membership changed since the last query.
+   * Equivalent to a complete query: same effective resources (including Mesh
+   * expression bindings), member roots, Pass roots and binding counts.
+   */
+  private queryIncrementally(meshes: MeshFrame | undefined, validate?: () => void): boolean {
+    const dirty = [...this.dirtyGroups];
+    const revision = this.revision;
+    const sources = this.sourceMaterials;
+    const resolve = this.resolveMaterial;
+    const pendingBindings: MeshMaterialBindingWrite[] = [];
+    const work = new Map(this.queryWork);
+    const groupResources = new Map(this.groupResources);
+    const affected = new Map<MaterialResource, readonly Pass[]>();
+    let materials = this.materialFrame;
+    for (const group of dirty) {
+      for (const resource of groupResources.get(group) ?? []) {
+        const value = work.get(resource);
+        if (value === undefined) continue;
+        if (!affected.has(resource)) affected.set(resource, value.passes);
+        work.set(resource, {
+          ...value,
+          members: remove(value.members, 0, group.identity),
+          casters: remove(value.casters, 0, group.identity),
+        });
+      }
+      groupResources.delete(group);
+      if (this.groups.get(group.key) !== group || group.members === undefined) continue;
+      const mesh =
+        group.mesh === undefined ? undefined : meshes?.get(group.mesh.worldId, group.mesh.handle);
+      if (group.mesh !== undefined && mesh === undefined)
+        throw new Error('Mesh Pass query requires accepted geometry');
+      const effective =
+        mesh === undefined
+          ? group.source
+          : resolve === undefined
+            ? effectiveMeshMaterials(group.source, mesh, group.geometry)
+            : prepareMeshMaterialBindings(
+                group.source,
+                mesh,
+                group.geometry,
+                resolve,
+                pendingBindings,
+              );
+      const resources = [
+        ...new Set(effective.materials.length === 0 ? [effective.material] : effective.materials),
+      ];
+      groupResources.set(group, resources);
+      for (const resource of resources) {
+        let value = work.get(resource);
+        if (value === undefined) {
+          const accepted = this.materialFrame.get(resource) ?? materials.get(resource);
+          materials =
+            accepted === undefined ||
+            (mesh !== undefined && resolve !== undefined && accepted.snapshot !== resource.snapshot)
+              ? materials.with(resource, 0)
+              : materials.withAccepted(accepted, 0);
+          value = { members: undefined, casters: undefined, passes: [] };
+        }
+        if (!affected.has(resource)) affected.set(resource, value.passes);
+        work.set(resource, {
+          ...value,
+          members: put(value.members, group.members, 0, group.identity, group.members.count),
+          casters:
+            group.casters === undefined
+              ? value.casters
+              : put(value.casters, group.casters, 0, group.identity, group.casters.count),
+        });
+      }
+    }
+    let root = this.queryRoot;
+    for (const [resource, previousPasses] of affected) {
+      for (const pass of previousPasses)
+        root = remove(root, pass.queue, getOpaqueResourceIdentity(pass));
+      const value = work.get(resource);
+      if (value === undefined) continue;
+      if (value.members === undefined && value.casters === undefined) {
+        work.delete(resource);
+        const source = sources.get(resource);
+        materials =
+          source === undefined ? materials.without(resource) : materials.withAccepted(source, 0);
+        continue;
+      }
+      const accepted = materials.get(resource);
+      if (accepted === undefined) throw new Error('Pass query has no accepted material');
+      materials = materials.withAccepted(accepted, value.members?.count ?? 0);
+      work.set(resource, { ...value, passes: accepted.passes });
+      for (const pass of accepted.passes) {
+        const members = pass.tags.LightMode === 'ShadowCaster' ? value.casters : value.members;
+        if (members !== undefined)
+          root = put(
+            root,
+            { pass, groups: members },
+            pass.queue,
+            getOpaqueResourceIdentity(pass),
+            members.count,
+          );
+      }
+    }
+    if (
+      this.revision !== revision ||
+      this.sourceMaterials !== sources ||
+      this.meshFrame !== meshes ||
+      this.resolveMaterial !== resolve
+    )
+      throw new Error('Pass sources changed during material query');
+    validate?.();
+    for (const { contexts, geometry, value } of pendingBindings) contexts.set(geometry, value);
+    this.queryRoot = root;
+    this.materialFrame = materials;
+    this.queryWork = work;
+    this.groupResources = groupResources;
+    this.dirtyGroups.clear();
+    this.previous = undefined;
+    return true;
   }
 
   revisionValue(): number {

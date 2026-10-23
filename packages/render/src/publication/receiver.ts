@@ -68,6 +68,9 @@ function finiteFloats(values: Float32Array): boolean {
 }
 
 /** Assets live for this source session; the Renderer owns all retained scene/GPU state. */
+/** Accepted revisions a released prepared payload stays adoptable (covers in-flight draws). */
+const RELEASED_PREPARED_MESH_REVISIONS = 8;
+
 export class RenderPublicationReceiver {
   private revision = 0;
   private readonly skinJoints = new SkinJointReferences();
@@ -90,6 +93,26 @@ export class RenderPublicationReceiver {
       readonly leases: Set<{ retire(): void; published(): void }>;
     }
   >();
+  /**
+   * Payloads of released or superseded preparations stay adoptable for a few
+   * revisions, keyed by handle and revision: a release, or a newer revision's
+   * mesh-prepare, may be handled before a queued draw that references the
+   * older payload.
+   */
+  private readonly releasedPreparedMeshes = new Map<
+    string,
+    { readonly mesh: MeshAsset; readonly revision: number; readonly until: number }
+  >();
+  private keepReleasedPrepared(
+    handle: number,
+    entry: { readonly mesh: MeshAsset; readonly revision: number },
+  ): void {
+    this.releasedPreparedMeshes.set(`${handle}:${entry.revision}`, {
+      mesh: entry.mesh,
+      revision: entry.revision,
+      until: this.revision + RELEASED_PREPARED_MESH_REVISIONS,
+    });
+  }
   private readonly canvases = new CanvasFrameReceiver();
   private videoFrames = new Map<string, VideoFrame>();
   private readonly entities = new Map<
@@ -212,7 +235,10 @@ export class RenderPublicationReceiver {
     const lease = { retire: onRetire, published: onPublished };
     entry.leases.add(lease);
     this.preparedMeshes.set(input.meshHandle, entry);
-    if (prior !== undefined && prior !== entry) for (const lease of prior.leases) lease.retire();
+    if (prior !== undefined && prior !== entry) {
+      this.keepReleasedPrepared(input.meshHandle, prior);
+      for (const lease of prior.leases) lease.retire();
+    }
     let released = false;
     return ok({
       resources: this.resources,
@@ -226,8 +252,10 @@ export class RenderPublicationReceiver {
         if (released) return;
         released = true;
         entry.leases.delete(lease);
-        if (entry.leases.size === 0 && this.preparedMeshes.get(input.meshHandle) === entry)
+        if (entry.leases.size === 0 && this.preparedMeshes.get(input.meshHandle) === entry) {
           this.preparedMeshes.delete(input.meshHandle);
+          this.keepReleasedPrepared(input.meshHandle, entry);
+        }
       },
     });
   }
@@ -269,6 +297,30 @@ export class RenderPublicationReceiver {
       return reject('base', 'accepted revision');
     if (!Number.isSafeInteger(packet.revision) || packet.revision !== this.revision + 1)
       return reject('revision', 'next revision');
+    if (packet.preparedAssets !== undefined) {
+      if (!Array.isArray(packet.preparedAssets) || !Array.isArray(packet.assets))
+        return reject('shape', 'prepared asset rows');
+      // The payload crossed once with its residency preparation, which the
+      // source keeps until this adoption; restore the ordinary asset row.
+      const adopted: RenderPublication['assets'][number][] = [];
+      for (const row of packet.preparedAssets) {
+        const live = this.preparedMeshes.get(row?.handle);
+        const prepared =
+          live?.revision === row?.revision
+            ? live
+            : this.releasedPreparedMeshes.get(`${row?.handle}:${row?.revision}`);
+        if (prepared === undefined || prepared.revision !== row.revision)
+          return reject('revision', 'prepared mesh reference without receiver residency');
+        adopted.push({
+          handle: row.handle,
+          revision: row.revision,
+          ...(row.guid === undefined ? {} : { guid: row.guid }),
+          ...(row.sourceKey === undefined ? {} : { sourceKey: row.sourceKey }),
+          value: prepared.mesh,
+        });
+      }
+      packet = { ...packet, assets: [...packet.assets, ...adopted] };
+    }
     if (
       !(packet.upserts instanceof Uint32Array) ||
       packet.upserts.length % 2 !== 0 ||
@@ -805,7 +857,7 @@ export class RenderPublicationReceiver {
                 (key) =>
                   packetPrograms.has(key) ||
                   this.acceptedPrograms.has(key) ||
-                  materialAssets?.shaderRegistry.findMaterialArtifact(key).ok === true,
+                  materialAssets?.shaderRegistry.materialArtifact(key) !== undefined,
                 projectionAliases,
               )
             : undefined;
@@ -1045,6 +1097,8 @@ export class RenderPublicationReceiver {
         this.assets.delete(handle);
         for (const lease of this.preparedMeshes.get(handle)?.leases ?? []) lease.retire();
         this.preparedMeshes.delete(handle);
+        for (const key of [...this.releasedPreparedMeshes.keys()])
+          if (key.startsWith(`${handle}:`)) this.releasedPreparedMeshes.delete(key);
       }
       for (const row of admittedAssets) {
         this.assets.set(row.handle, row);
@@ -1063,6 +1117,7 @@ export class RenderPublicationReceiver {
       }
       for (const handle of stalePreparations) {
         const entry = this.preparedMeshes.get(handle);
+        if (entry !== undefined) this.keepReleasedPrepared(handle, entry);
         this.preparedMeshes.delete(handle);
         for (const lease of entry?.leases ?? []) lease.retire();
       }
@@ -1085,6 +1140,8 @@ export class RenderPublicationReceiver {
           matrix[lane] = packet.transforms[index * 16 + lane] as number;
       }
       this.revision = packet.revision;
+      for (const [key, released] of this.releasedPreparedMeshes)
+        if (released.until < this.revision) this.releasedPreparedMeshes.delete(key);
       for (const entity of removed) this.entities.delete(entity);
       const dispatchByEntity = new Map<number, DispatchEntry[]>();
       for (const item of prepared.frame.dispatch) {
@@ -1227,6 +1284,7 @@ export class RenderPublicationReceiver {
     for (const entry of this.preparedMeshes.values())
       for (const lease of entry.leases) lease.retire();
     this.preparedMeshes.clear();
+    this.releasedPreparedMeshes.clear();
     this.canvases.dispose();
     this.releaseVideoFrames();
     this.assets.clear();

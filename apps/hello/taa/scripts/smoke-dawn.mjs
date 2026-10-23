@@ -306,35 +306,42 @@ const assets = await import('@forgeax/engine-assets-runtime');
 const render = await import('@forgeax/engine-render');
 const scene = await import('@forgeax/engine-scene');
 
-/**
- * Execute one Dawn feature workload through the real Runtime host. This path is
- * intentionally separate from the legacy TAA carrier below: the carrier is a
- * correctness smoke, while this branch owns the auto-exposure/LUT fixture and
- * renderer receipt-bound raw observations. It never derives a feature pass.
- */
-async function runDawnFeatureWorkload(kind) {
-  const sourcePath = resolve(appRoot, 'src', 'main.ts');
-  const buildPath = resolve(appRoot, 'dist', 'index.html');
+function featureSourceIdentity() {
+  return {
+    source: { path: 'apps/hello/taa/src/main.ts', sha256: sha256File(resolve(appRoot, 'src', 'main.ts')) },
+    build: { path: 'apps/hello/taa/dist/index.html', sha256: sha256File(resolve(appRoot, 'dist', 'index.html')) },
+  };
+}
+
+function readFeatureFixtureIdentity() {
   const fixturePath = resolve(appRoot, 'fixtures', 'auto-exposure', 'scene-identity.json');
-  const lutMetaPath = resolve(appRoot, 'assets', 'auto-exposure-positive-lut.cube.meta.json');
-  const sourceSha = sha256File(sourcePath);
-  const buildSha = sha256File(buildPath);
   const fixtureIdentity = JSON.parse(readFileSync(fixturePath, 'utf8'));
   if (JSON.stringify(fixtureIdentity) !== JSON.stringify(AUTO_EXPOSURE_TAA_FIXTURE_IDENTITY)) {
     throw new Error('hello-taa: scene-identity.json is not the shared auto-exposure fixture identity');
   }
+  return fixtureIdentity;
+}
+
+async function readAuthoritativeLutSidecar() {
+  const lutMetaPath = resolve(appRoot, 'assets', 'auto-exposure-positive-lut.cube.meta.json');
   const lutMeta = JSON.parse(readFileSync(lutMetaPath, 'utf8'));
-  const lutSubAsset = lutMeta.subAssets?.find((entry) => entry.kind === 'texture');
-  if (lutSubAsset === undefined || typeof lutSubAsset.guid !== 'string') {
+  const subAsset = lutMeta.subAssets?.find((entry) => entry.kind === 'texture');
+  if (subAsset === undefined || typeof subAsset.guid !== 'string') {
     throw new Error('hello-taa: authoritative LUT sidecar has no texture GUID');
   }
   const { AssetGuid } = await import('@forgeax/engine-pack/guid');
-  const parsedLutGuid = AssetGuid.parse(lutSubAsset.guid);
-  if (!parsedLutGuid.ok) throw parsedLutGuid.error;
+  const parsedGuid = AssetGuid.parse(subAsset.guid);
+  if (!parsedGuid.ok) throw parsedGuid.error;
+  return { subAsset, guid: parsedGuid.value };
+}
 
-  // The Runtime AssetRegistry must traverse the same pack-index transport as a
-  // browser build. Dawn has no dev server, so map only this fixture's explicit
-  // local origin into the built dist tree and leave every other fetch untouched.
+/**
+ * The Runtime AssetRegistry must traverse the same pack-index transport as a
+ * browser build. Dawn has no dev server, so map only this fixture's explicit
+ * local origin into the built dist tree and leave every other fetch untouched.
+ * Returns the original fetch so the caller restores it on disposal.
+ */
+function installFixtureFetch() {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const rawUrl = typeof input === 'string' ? input : input?.url;
@@ -352,6 +359,346 @@ async function runDawnFeatureWorkload(kind) {
     }
     return originalFetch(input, init);
   };
+  return originalFetch;
+}
+
+async function loadAuthoritativeLut(assetRegistry, lutSidecar) {
+  assetRegistry.configurePackIndex('http://forgeax.local/pack-index.json');
+  const loadedLut = await assetRegistry.load(lutSidecar.guid, 'texture');
+  if (!loadedLut.ok) throw loadedLut.error;
+  const asset = loadedLut.value;
+  const guid = assetRegistry.guidOf(asset);
+  const sourceKey = assetRegistry.catalogEntry(guid)?.sourceKey;
+  if (guid === undefined || sourceKey !== lutSidecar.subAsset.sourceKey) {
+    throw new Error('hello-taa: loaded LUT is missing its authoritative Catalog sourceKey');
+  }
+  return { asset, guid, sourceKey };
+}
+
+function featureExposure(kind) {
+  return kind === 'auto'
+    ? { kind: 'auto', fallback: 1, compensationEv: 0, rangeEv: [-8, 8], rates: [3, 1] }
+    : { kind: 'manual', multiplier: 1 };
+}
+
+function spawnFeatureBars(world, assetRegistry) {
+  const primitiveCube = assetRegistry.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  for (const { offset, color } of AUTO_EXPOSURE_TAA_FIXTURE.asset.barLayout) {
+    const material = world.assets.create(render.Materials.unlit(color)).unwrap();
+    world
+      .spawn(
+        {
+          component: scene.Transform,
+          data: {
+            pos: [offset, AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.y, AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.z],
+            quat: [0, 0, 0, 1],
+            scale: AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.scale,
+          },
+        },
+        { component: render.MeshFilter, data: { assetHandle: primitiveCube } },
+        { component: render.MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
+  }
+}
+
+function spawnFeatureLight(world) {
+  world
+    .spawn({
+      component: render.DirectionalLight,
+      data: {
+        direction: AUTO_EXPOSURE_TAA_FIXTURE.light.direction,
+        color: AUTO_EXPOSURE_TAA_FIXTURE.light.color,
+        intensity: AUTO_EXPOSURE_TAA_FIXTURE.light.intensity,
+        castShadow: true,
+        ...(falsifierLightweight ? { cascadeCount: 1, mapSize: 64 } : {}),
+      },
+    })
+    .unwrap();
+}
+
+function spawnFeatureCamera(world, kind, exposure, lutHandle) {
+  world
+    .spawn(
+      {
+        component: scene.Transform,
+        data: {
+          pos: AUTO_EXPOSURE_TAA_FIXTURE.camera.position,
+          quat: AUTO_EXPOSURE_TAA_FIXTURE.camera.rotation,
+          scale: [1, 1, 1],
+        },
+      },
+      {
+        component: render.Camera,
+        data: {
+          ...render.perspective({
+            fov: AUTO_EXPOSURE_TAA_FIXTURE.camera.fov,
+            aspect: AUTO_EXPOSURE_TAA_FIXTURE.camera.aspect,
+            near: AUTO_EXPOSURE_TAA_FIXTURE.camera.near,
+            far: AUTO_EXPOSURE_TAA_FIXTURE.camera.far,
+            exposure,
+            colorLutStrength: kind === 'positive-lut' ? 0.75 : 0,
+            ...(lutHandle === undefined ? {} : { colorLut: lutHandle }),
+          }),
+          antialias: render.ANTIALIAS_TAA,
+        },
+      },
+      { component: render.MotionBlur, data: { shutterAngle: 180, maxRadiusPixels: motionBlurMaxRadiusPixels, sampleCount: motionBlurSampleCount } },
+    )
+    .unwrap();
+}
+
+function spawnFeatureFixture(world, assetRegistry, kind, exposure, lutAsset) {
+  spawnFeatureBars(world, assetRegistry);
+  spawnFeatureLight(world);
+  spawnFeatureCamera(world, kind, exposure, kind === 'positive-lut' ? lutAsset : undefined);
+}
+
+function dawnRunnerRecord() {
+  return {
+    kind: 'dawn',
+    id: runnerProvenance.runnerName ?? 'smoke-dawn',
+    channel: 'dawn-node',
+    version: process.version,
+    os: `${process.platform}-${process.arch}`,
+    headless: true,
+    launchArgs: process.execArgv,
+  };
+}
+
+function writeTimingOutput(report) {
+  if (typeof process.env.SMOKE_TIMING_OUTPUT === 'string' && process.env.SMOKE_TIMING_OUTPUT.length > 0) {
+    mkdirSync(resolve(process.env.SMOKE_TIMING_OUTPUT, '..'), { recursive: true });
+    writeFileSync(process.env.SMOKE_TIMING_OUTPUT, `${JSON.stringify(report, null, 2)}\n`);
+  }
+}
+
+function timestampTimingAvailable(capabilities) {
+  return (
+    capabilities.timestampQuery === true &&
+    typeof capabilities.timestampPeriodNanoseconds === 'number' &&
+    capabilities.timestampPeriodNanoseconds > 0
+  );
+}
+
+function timingObservationReport(kind, status, capabilities, sources, fixtureIdentity, timingFrames) {
+  return {
+    schemaVersion: 'forgeax-auto-exposure-gpu-pass-timing-observation/1',
+    featureId: 'feat-20260827-auto-exposure-hdr-color-grading',
+    testedRevision: performanceIdentity.testedRevision,
+    status,
+    workload: kind,
+    resolution: timingResolution,
+    source: sources.source,
+    build: sources.build,
+    runner: dawnRunnerRecord(),
+    backend: {
+      kind: capabilities.backendKind,
+      physicalGpu: adapterFacts.physicalGpu === true,
+      timestampQuery: capabilities.timestampQuery === true,
+      timestampPeriodNanoseconds: capabilities.timestampPeriodNanoseconds ?? null,
+      adapter: shim.adapterInfo?.device ?? shim.adapterInfo?.description ?? '',
+      driver: shim.adapterInfo?.driver || 'dawn-node',
+      browser: 'dawn-node',
+    },
+    fixture: fixtureIdentity,
+    frame: timingFrames.at(-1) ?? null,
+    frames: timingFrames,
+  };
+}
+
+function timingReportStatus(kind, run) {
+  if (kind === 'manual') return 'ready';
+  return run.timingError === undefined && run.timingFrames.length === timingFrameCount ? 'ready' : 'blocked';
+}
+
+function sampleFootprint(renderer, footprintSamples, frameId) {
+  const stats = renderer.inspect().observation?.resourceStats;
+  if (stats === undefined) return;
+  footprintSamples.push({
+    frameId,
+    liveByteLength: stats.liveByteLength,
+    liveResourceCount: stats.liveCount,
+    allocationCount: stats.allocationCount,
+    peakLiveCount: stats.peakLiveCount,
+    mapCount: stats.mapCount,
+    readbackCount: stats.readbackCount,
+  });
+}
+
+function requestFinalObservation(renderer) {
+  const requested = renderer.requestObservation?.(['linear-hdr', 'linear-ldr', 'final-display']);
+  if (requested === undefined) return 'observation-request-unavailable';
+  return requested.ok ? undefined : requested.error.code;
+}
+
+async function observeFrameTiming(renderer, receipt) {
+  const timingCompleted = await receipt.completed;
+  if (!timingCompleted.ok) return { error: timingCompleted.error.code };
+  const observedTiming = await renderer.observe(receipt, { include: ['timings'] });
+  if (!observedTiming.ok) return { error: observedTiming.error.code };
+  const timing = observedTiming.value.timings;
+  if (timing === undefined || timing.status !== 'complete') {
+    return { error: timing?.status ?? 'renderer-timing-unavailable' };
+  }
+  return { frame: timing.frame };
+}
+
+function featureDrawRequest(lease, kind, index) {
+  return {
+    leases: [lease],
+    camera: { lease },
+    environment: { lease },
+    ...(timingCaptureEnabled
+      ? { profileFrame: { captureId: `auto-exposure-${kind}-${timingResolution.id}`, frameId: index + 1 } }
+      : {}),
+  };
+}
+
+async function runFeatureFrames(renderer, world, lease, kind, frameCount, rendererErrors, footprintSamples) {
+  const run = { finalReceipt: undefined, submittedFrameIds: [], timingFrames: [], timingError: undefined, observationError: undefined };
+  for (let index = 0; index < frameCount; index += 1) {
+    world.update(1 / 60).unwrap();
+    if (index === frameCount - 1 && kind !== 'manual' && !timingMode) {
+      run.observationError = requestFinalObservation(renderer);
+    }
+    const drawn = renderer.draw(featureDrawRequest(lease, kind, index));
+    if (!drawn.ok) {
+      rendererErrors.push({ code: drawn.error.code, hint: drawn.error.hint });
+      continue;
+    }
+    run.finalReceipt = drawn.value;
+    run.submittedFrameIds.push(drawn.value.frameId);
+    sampleFootprint(renderer, footprintSamples, drawn.value.frameId);
+    if (timingCaptureEnabled) {
+      const timing = await observeFrameTiming(renderer, drawn.value);
+      if (timing.error !== undefined) {
+        run.timingError = timing.error;
+        break;
+      }
+      run.timingFrames.push(timing.frame);
+    }
+  }
+  return run;
+}
+
+async function observeFinalStages(renderer, kind, finalReceipt, requestError) {
+  let observationError = requestError;
+  const completed = await finalReceipt.completed;
+  if (!completed.ok) observationError = completed.error.code;
+  if (kind === 'manual' || observationError !== undefined) return { observationError, stageObservations: [] };
+  const observed = await renderer.observe(finalReceipt, {
+    include: ['linear-hdr', 'linear-ldr', 'final-display'],
+  });
+  if (!observed.ok) return { observationError: observed.error.code, stageObservations: [] };
+  return { observationError, stageObservations: observed.value.observations ?? [] };
+}
+
+function featureFrameIdentity(submittedFrameIds, frameCount) {
+  return {
+    first: submittedFrameIds[0] ?? -1,
+    last: submittedFrameIds.at(-1) ?? -1,
+    count: submittedFrameIds.length,
+    contiguous:
+      submittedFrameIds.length === frameCount &&
+      submittedFrameIds.every((frameId, index) => index === 0 || frameId === submittedFrameIds[index - 1] + 1),
+    sequenceSha256: createHash('sha256').update(JSON.stringify(submittedFrameIds)).digest('hex'),
+  };
+}
+
+function featureResourceGrowth(footprintSamples, frameCount) {
+  const growthFirst = footprintSamples[0];
+  const growthLast = footprintSamples.at(-1);
+  if (growthFirst === undefined || growthLast === undefined) {
+    return {
+      stableFrames: footprintSamples.length,
+      byteLengthDelta: 0,
+      bindGroupDelta: 0,
+      resourceCountDelta: 0,
+      liveResourceDelta: 0,
+      allocationCount: 0,
+      peakLiveCount: 0,
+      mapCount: 0,
+      readbackCount: 0,
+    };
+  }
+  return {
+    stableFrames: Math.min(frameCount, footprintSamples.length),
+    byteLengthDelta: growthLast.liveByteLength - growthFirst.liveByteLength,
+    bindGroupDelta: 0,
+    resourceCountDelta: growthLast.liveResourceCount - growthFirst.liveResourceCount,
+    liveResourceDelta: growthLast.liveResourceCount - growthFirst.liveResourceCount,
+    allocationCount: growthLast.allocationCount,
+    peakLiveCount: growthLast.peakLiveCount,
+    mapCount: growthLast.mapCount,
+    readbackCount: growthLast.readbackCount,
+  };
+}
+
+function featureStages(stageObservations) {
+  const stageDomains = {
+    'linear-hdr': 'linear-HDR',
+    'linear-ldr': 'linear-LDR',
+    'final-display': 'final-sRGB',
+  };
+  return Promise.all(
+    stageObservations.map(async (observation) => ({
+      id: observation.domain,
+      domain: stageDomains[observation.domain] ?? observation.domain,
+      readback: {
+        rawHash: createHash('sha256').update(new Uint8Array(observation.bytes)).digest('hex'),
+        frame: observation.metadata.frameId,
+      },
+      metadata: observation.metadata,
+    })),
+  );
+}
+
+function featureLutReceipt(kind, standardLut) {
+  if (kind !== 'positive-lut' || standardLut?.resident === null) return null;
+  return {
+    generation: standardLut.targetGeneration,
+    deviceEpoch: standardLut.deviceEpoch,
+    frameId: standardLut.receipt.frameId,
+    committed: standardLut.receipt.committed,
+    resident: standardLut.resident,
+    sourceKey: standardLut.sourceKey,
+  };
+}
+
+function featureProvenance(sources, frameIdentity, backendKind) {
+  return {
+    source: sources.source,
+    build: sources.build,
+    fixture: 'apps/hello/taa/fixtures/auto-exposure/scene-identity.json',
+    frame: frameIdentity,
+    backend: backendKind,
+    adapter: {
+      ...shim.adapterInfo,
+      physicalGpu: physicalAdapterFacts.physicalGpu === true,
+      fallbackAdapter: shim.isFallbackAdapter === true,
+      isFallbackAdapter: shim.isFallbackAdapter === true,
+    },
+    runner: dawnRunnerRecord(),
+  };
+}
+
+function featureFrameCount() {
+  if (timingCaptureEnabled) return timingFrameCount;
+  return timingMode ? 1 : frames;
+}
+
+/**
+ * Execute one Dawn feature workload through the real Runtime host. This path is
+ * intentionally separate from the legacy TAA carrier below: the carrier is a
+ * correctness smoke, while this branch owns the auto-exposure/LUT fixture and
+ * renderer receipt-bound raw observations. It never derives a feature pass.
+ */
+async function runDawnFeatureWorkload(kind) {
+  const sources = featureSourceIdentity();
+  const fixtureIdentity = readFeatureFixtureIdentity();
+  const lutSidecar = await readAuthoritativeLutSidecar();
+  const originalFetch = installFixtureFetch();
 
   const hostResult = await constructRuntimeRendererHost(
     shim.mockCanvas,
@@ -368,344 +715,51 @@ async function runDawnFeatureWorkload(kind) {
     if (event.kind === 'error') rendererErrors.push({ code: event.error.code, hint: event.error.hint });
   });
 
-  const frameCount = timingCaptureEnabled ? timingFrameCount : timingMode ? 1 : frames;
-  const timingFrames = [];
-  let timingError;
-  const submittedFrameIds = [];
+  const frameCount = featureFrameCount();
   const footprintSamples = [];
-  let finalReceipt;
-  let stageObservations = [];
-  let observationError;
-  let assetGuid;
-  let lutSourceKey;
-  let lutAsset;
-  let lutHandle;
-  const exposure = kind === 'auto'
-    ? { kind: 'auto', fallback: 1, compensationEv: 0, rangeEv: [-8, 8], rates: [3, 1] }
-    : { kind: 'manual', multiplier: 1 };
+  const exposure = featureExposure(kind);
 
   try {
-    assetRegistry.configurePackIndex('http://forgeax.local/pack-index.json');
-    const loadedLut = await assetRegistry.load(parsedLutGuid.value, 'texture');
-    if (!loadedLut.ok) throw loadedLut.error;
-    lutAsset = loadedLut.value;
-    assetGuid = assetRegistry.guidOf(lutAsset);
-    const catalogEntry = assetRegistry.catalogEntry(assetGuid);
-    lutSourceKey = catalogEntry?.sourceKey;
-    if (assetGuid === undefined || lutSourceKey !== lutSubAsset.sourceKey) {
-      throw new Error('hello-taa: loaded LUT is missing its authoritative Catalog sourceKey');
-    }
+    const lut = await loadAuthoritativeLut(assetRegistry, lutSidecar);
     const world = new World({ assets: assetRegistry });
-    const primitiveCube = assetRegistry.create(createPrimitiveMesh('cube').unwrap()).unwrap();
-    for (const { offset, color } of AUTO_EXPOSURE_TAA_FIXTURE.asset.barLayout) {
-      const material = world.assets.create(render.Materials.unlit(color)).unwrap();
-      world
-        .spawn(
-          {
-            component: scene.Transform,
-            data: {
-              pos: [offset, AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.y, AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.z],
-              quat: [0, 0, 0, 1],
-              scale: AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.scale,
-            },
-          },
-          { component: render.MeshFilter, data: { assetHandle: primitiveCube } },
-          { component: render.MeshRenderer, data: { materials: [material] } },
-        )
-        .unwrap();
-    }
-    if (kind === 'positive-lut') {
-      lutHandle = lutAsset;
-    }
-    world
-      .spawn({
-        component: render.DirectionalLight,
-        data: {
-          direction: AUTO_EXPOSURE_TAA_FIXTURE.light.direction,
-          color: AUTO_EXPOSURE_TAA_FIXTURE.light.color,
-          intensity: AUTO_EXPOSURE_TAA_FIXTURE.light.intensity,
-          castShadow: true,
-          ...(falsifierLightweight ? { cascadeCount: 1, mapSize: 64 } : {}),
-        },
-      })
-      .unwrap();
-    const camera = world
-      .spawn(
-        {
-          component: scene.Transform,
-          data: {
-            pos: AUTO_EXPOSURE_TAA_FIXTURE.camera.position,
-            quat: AUTO_EXPOSURE_TAA_FIXTURE.camera.rotation,
-            scale: [1, 1, 1],
-          },
-        },
-        {
-          component: render.Camera,
-          data: {
-            ...render.perspective({
-              fov: AUTO_EXPOSURE_TAA_FIXTURE.camera.fov,
-              aspect: AUTO_EXPOSURE_TAA_FIXTURE.camera.aspect,
-              near: AUTO_EXPOSURE_TAA_FIXTURE.camera.near,
-              far: AUTO_EXPOSURE_TAA_FIXTURE.camera.far,
-              exposure,
-              colorLutStrength: kind === 'positive-lut' ? 0.75 : 0,
-              ...(lutHandle === undefined ? {} : { colorLut: lutHandle }),
-            }),
-            antialias: render.ANTIALIAS_TAA,
-          },
-        },
-        { component: render.MotionBlur, data: { shutterAngle: 180, maxRadiusPixels: motionBlurMaxRadiusPixels, sampleCount: motionBlurSampleCount } },
-      )
-      .unwrap();
+    spawnFeatureFixture(world, assetRegistry, kind, exposure, lut.asset);
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     const timingCapability = renderer.inspect().capabilities;
-    if (
-      timingCaptureEnabled &&
-      (timingCapability.timestampQuery !== true ||
-        typeof timingCapability.timestampPeriodNanoseconds !== 'number' ||
-        timingCapability.timestampPeriodNanoseconds <= 0)
-    ) {
+    if (timingCaptureEnabled && !timestampTimingAvailable(timingCapability)) {
       const blockedReport = {
-        schemaVersion: 'forgeax-auto-exposure-gpu-pass-timing-observation/1',
-        featureId: 'feat-20260827-auto-exposure-hdr-color-grading',
-        testedRevision: performanceIdentity.testedRevision,
-        status: 'blocked',
-        workload: kind,
-        resolution: timingResolution,
-        source: { path: 'apps/hello/taa/src/main.ts', sha256: sourceSha },
-        build: { path: 'apps/hello/taa/dist/index.html', sha256: buildSha },
-        runner: {
-          kind: 'dawn',
-          id: runnerProvenance.runnerName ?? 'smoke-dawn',
-          channel: 'dawn-node',
-          version: process.version,
-          os: `${process.platform}-${process.arch}`,
-          headless: true,
-          launchArgs: process.execArgv,
-        },
-        backend: {
-          kind: timingCapability.backendKind,
-          physicalGpu: adapterFacts.physicalGpu === true,
-          timestampQuery: timingCapability.timestampQuery === true,
-          timestampPeriodNanoseconds: timingCapability.timestampPeriodNanoseconds ?? null,
-          adapter: shim.adapterInfo?.device ?? shim.adapterInfo?.description ?? '',
-          driver: shim.adapterInfo?.driver || 'dawn-node',
-          browser: 'dawn-node',
-        },
-        fixture: fixtureIdentity,
-        frame: null,
-        frames: [],
+        ...timingObservationReport(kind, 'blocked', timingCapability, sources, fixtureIdentity, []),
         error: 'renderer timestamp-query capability is unavailable on the active Dawn device',
       };
-      if (typeof process.env.SMOKE_TIMING_OUTPUT === 'string' && process.env.SMOKE_TIMING_OUTPUT.length > 0) {
-        mkdirSync(resolve(process.env.SMOKE_TIMING_OUTPUT, '..'), { recursive: true });
-        writeFileSync(process.env.SMOKE_TIMING_OUTPUT, `${JSON.stringify(blockedReport, null, 2)}\n`);
-      }
+      writeTimingOutput(blockedReport);
       return blockedReport;
     }
-    const sampleFootprint = (frameId) => {
-      const stats = renderer.inspect().observation?.resourceStats;
-      if (stats === undefined) return;
-      footprintSamples.push({
-        frameId,
-        liveByteLength: stats.liveByteLength,
-        liveResourceCount: stats.liveCount,
-        allocationCount: stats.allocationCount,
-        peakLiveCount: stats.peakLiveCount,
-        mapCount: stats.mapCount,
-        readbackCount: stats.readbackCount,
-      });
-    };
-    for (let index = 0; index < frameCount; index += 1) {
-      world.update(1 / 60).unwrap();
-      if (index === frameCount - 1 && kind !== 'manual' && !timingMode) {
-        const requested = renderer.requestObservation?.(['linear-hdr', 'linear-ldr', 'final-display']);
-        if (requested === undefined || !requested.ok) {
-          observationError = requested === undefined ? 'observation-request-unavailable' : requested.error.code;
-        }
-      }
-      const drawn = renderer.draw({
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-        ...(timingCaptureEnabled
-          ? { profileFrame: { captureId: `auto-exposure-${kind}-${timingResolution.id}`, frameId: index + 1 } }
-          : {}),
-      });
-      if (!drawn.ok) {
-        rendererErrors.push({ code: drawn.error.code, hint: drawn.error.hint });
-        continue;
-      }
-      finalReceipt = drawn.value;
-      submittedFrameIds.push(drawn.value.frameId);
-      sampleFootprint(drawn.value.frameId);
-      if (timingCaptureEnabled) {
-        const timingCompleted = await drawn.value.completed;
-        if (!timingCompleted.ok) {
-          timingError = timingCompleted.error.code;
-          break;
-        }
-        const observedTiming = await renderer.observe(drawn.value, { include: ['timings'] });
-        if (!observedTiming.ok) {
-          timingError = observedTiming.error.code;
-          break;
-        }
-        const timing = observedTiming.value.timings;
-        if (timing === undefined || timing.status !== 'complete') {
-          timingError = timing?.status ?? 'renderer-timing-unavailable';
-          break;
-        }
-        timingFrames.push(timing.frame);
-      }
-    }
+    const run = await runFeatureFrames(renderer, world, attachment.value, kind, frameCount, rendererErrors, footprintSamples);
+    const finalReceipt = run.finalReceipt;
     if (finalReceipt === undefined) throw new Error('hello-taa: feature workload submitted no renderer receipt');
     if (timingMode) {
-      const inspection = renderer.inspect();
       const timingReport = {
-        schemaVersion: 'forgeax-auto-exposure-gpu-pass-timing-observation/1',
-        featureId: 'feat-20260827-auto-exposure-hdr-color-grading',
-        testedRevision: performanceIdentity.testedRevision,
-        status:
-          kind === 'manual'
-            ? 'ready'
-            : timingError === undefined && timingFrames.length === timingFrameCount
-              ? 'ready'
-              : 'blocked',
-        workload: kind,
-        resolution: timingResolution,
-        source: { path: 'apps/hello/taa/src/main.ts', sha256: sourceSha },
-        build: { path: 'apps/hello/taa/dist/index.html', sha256: buildSha },
-        runner: {
-          kind: 'dawn',
-          id: runnerProvenance.runnerName ?? 'smoke-dawn',
-          channel: 'dawn-node',
-          version: process.version,
-          os: `${process.platform}-${process.arch}`,
-          headless: true,
-          launchArgs: process.execArgv,
-        },
-        backend: {
-          kind: inspection.capabilities.backendKind,
-          physicalGpu: adapterFacts.physicalGpu === true,
-          timestampQuery: inspection.capabilities.timestampQuery === true,
-          timestampPeriodNanoseconds: inspection.capabilities.timestampPeriodNanoseconds ?? null,
-          adapter: shim.adapterInfo?.device ?? shim.adapterInfo?.description ?? '',
-          driver: shim.adapterInfo?.driver || 'dawn-node',
-          browser: 'dawn-node',
-        },
-        fixture: fixtureIdentity,
-        frame: timingFrames.at(-1) ?? null,
-        frames: timingFrames,
+        ...timingObservationReport(kind, timingReportStatus(kind, run), renderer.inspect().capabilities, sources, fixtureIdentity, run.timingFrames),
         ...(kind === 'manual'
           ? { manual: { executed: true, zeroCost: true, timestampSlots: 0, receipt: { frameId: finalReceipt.frameId } } }
           : {}),
-        ...(timingError === undefined ? {} : { error: timingError }),
+        ...(run.timingError === undefined ? {} : { error: run.timingError }),
       };
-      if (typeof process.env.SMOKE_TIMING_OUTPUT === 'string' && process.env.SMOKE_TIMING_OUTPUT.length > 0) {
-        mkdirSync(resolve(process.env.SMOKE_TIMING_OUTPUT, '..'), { recursive: true });
-        writeFileSync(process.env.SMOKE_TIMING_OUTPUT, `${JSON.stringify(timingReport, null, 2)}\n`);
-      }
+      writeTimingOutput(timingReport);
       return timingReport;
     }
-    const completed = await finalReceipt.completed;
-    if (!completed.ok) observationError = completed.error.code;
-    if (kind !== 'manual' && observationError === undefined) {
-      const observed = await renderer.observe(finalReceipt, {
-        include: ['linear-hdr', 'linear-ldr', 'final-display'],
-      });
-      if (!observed.ok) observationError = observed.error.code;
-      else stageObservations = observed.value.observations ?? [];
-    }
+    const { observationError, stageObservations } = await observeFinalStages(renderer, kind, finalReceipt, run.observationError);
     // Observation readback resources are renderer-owned and should be sampled
     // after the final receipt has completed.  Sampling before observe() would
     // count the three deliberate final-frame readbacks as leaked growth.
-    sampleFootprint(finalReceipt.frameId);
-    const frameIdentity = {
-      first: submittedFrameIds[0] ?? -1,
-      last: submittedFrameIds.at(-1) ?? -1,
-      count: submittedFrameIds.length,
-      contiguous:
-        submittedFrameIds.length === frameCount &&
-        submittedFrameIds.every((frameId, index) => index === 0 || frameId === submittedFrameIds[index - 1] + 1),
-      sequenceSha256: createHash('sha256').update(JSON.stringify(submittedFrameIds)).digest('hex'),
-    };
+    sampleFootprint(renderer, footprintSamples, finalReceipt.frameId);
+    const frameIdentity = featureFrameIdentity(run.submittedFrameIds, frameCount);
     const inspection = renderer.inspect();
-    const growthFirst = footprintSamples[0];
-    const growthLast = footprintSamples.at(-1);
-    const resourceGrowth = growthFirst === undefined || growthLast === undefined
-      ? {
-          stableFrames: footprintSamples.length,
-          byteLengthDelta: 0,
-          bindGroupDelta: 0,
-          resourceCountDelta: 0,
-          liveResourceDelta: 0,
-          allocationCount: 0,
-          peakLiveCount: 0,
-          mapCount: 0,
-          readbackCount: 0,
-        }
-      : {
-          stableFrames: Math.min(frameCount, footprintSamples.length),
-          byteLengthDelta: growthLast.liveByteLength - growthFirst.liveByteLength,
-          bindGroupDelta: 0,
-          resourceCountDelta: growthLast.liveResourceCount - growthFirst.liveResourceCount,
-          liveResourceDelta: growthLast.liveResourceCount - growthFirst.liveResourceCount,
-          allocationCount: growthLast.allocationCount,
-          peakLiveCount: growthLast.peakLiveCount,
-          mapCount: growthLast.mapCount,
-          readbackCount: growthLast.readbackCount,
-        };
-    const stageDomains = {
-      'linear-hdr': 'linear-HDR',
-      'linear-ldr': 'linear-LDR',
-      'final-display': 'final-sRGB',
-    };
-    const stages = await Promise.all(
-      stageObservations.map(async (observation) => ({
-        id: observation.domain,
-        domain: stageDomains[observation.domain] ?? observation.domain,
-        readback: {
-          rawHash: createHash('sha256').update(new Uint8Array(observation.bytes)).digest('hex'),
-          frame: observation.metadata.frameId,
-        },
-        metadata: observation.metadata,
-      })),
-    );
+    const resourceGrowth = featureResourceGrowth(footprintSamples, frameCount);
+    const stages = await featureStages(stageObservations);
     const autoExposure = inspection.output.autoExposure ?? null;
-    const standardLut = inspection.output.standardLut ?? null;
-    const lutReceipt = kind === 'positive-lut' && standardLut?.resident !== null
-      ? {
-          generation: standardLut.targetGeneration,
-          deviceEpoch: standardLut.deviceEpoch,
-          frameId: standardLut.receipt.frameId,
-          committed: standardLut.receipt.committed,
-          resident: standardLut.resident,
-          sourceKey: standardLut.sourceKey,
-        }
-      : null;
-    const provenance = {
-      source: { path: 'apps/hello/taa/src/main.ts', sha256: sourceSha },
-      build: { path: 'apps/hello/taa/dist/index.html', sha256: buildSha },
-      fixture: 'apps/hello/taa/fixtures/auto-exposure/scene-identity.json',
-      frame: frameIdentity,
-      backend: inspection.capabilities.backendKind,
-      adapter: {
-        ...shim.adapterInfo,
-        physicalGpu: physicalAdapterFacts.physicalGpu === true,
-        fallbackAdapter: shim.isFallbackAdapter === true,
-        isFallbackAdapter: shim.isFallbackAdapter === true,
-      },
-      runner: {
-        kind: 'dawn',
-        id: runnerProvenance.runnerName ?? 'smoke-dawn',
-        channel: 'dawn-node',
-        version: process.version,
-        os: `${process.platform}-${process.arch}`,
-        headless: true,
-        launchArgs: process.execArgv,
-      },
-    };
+    const lutReceipt = featureLutReceipt(kind, inspection.output.standardLut ?? null);
+    const provenance = featureProvenance(sources, frameIdentity, inspection.capabilities.backendKind);
     const { createDawnFeatureObservation } = await import('./feature-evidence-producer.mjs');
     const featureEvidence = createDawnFeatureObservation({
       workloadKind: kind,
@@ -716,7 +770,7 @@ async function runDawnFeatureWorkload(kind) {
           executed: true,
           exposureMode: exposure.kind,
           colorLutStrength: kind === 'positive-lut' ? 0.75 : 0,
-          sourceKey: lutSourceKey,
+          sourceKey: lut.sourceKey,
           autoExposure,
           lutReceipt,
         },
@@ -724,8 +778,8 @@ async function runDawnFeatureWorkload(kind) {
       backend: 'dawn-node',
       runner: { kind: 'dawn', id: runnerProvenance.runnerName ?? 'smoke-dawn' },
       resolution: { width, height },
-      source: { path: 'apps/hello/taa/src/main.ts', sha256: sourceSha },
-      build: { path: 'apps/hello/taa/dist/index.html', sha256: buildSha },
+      source: sources.source,
+      build: sources.build,
       frames: frameCount,
       frameIdentity,
       fixtureIdentity,
@@ -741,8 +795,8 @@ async function runDawnFeatureWorkload(kind) {
       workloadKind: kind,
       testedRevision: performanceIdentity.testedRevision,
       sourceRevision: performanceIdentity.sourceRevision,
-      source: { path: 'apps/hello/taa/src/main.ts', sha256: sourceSha },
-      build: { path: 'apps/hello/taa/dist/index.html', sha256: buildSha },
+      source: sources.source,
+      build: sources.build,
       fixtureIdentity,
       frameIdentity,
       resolution: { width, height },
@@ -751,7 +805,7 @@ async function runDawnFeatureWorkload(kind) {
       adapter: provenance.adapter,
       passes: [...inspection.perFramePassNames],
       autoExposure,
-      lut: { guid: assetGuid, sourceKey: lutSourceKey, receipt: lutReceipt },
+      lut: { guid: lut.guid, sourceKey: lut.sourceKey, receipt: lutReceipt },
       resourceGrowth,
       rendererErrors,
       observationError: observationError ?? null,
@@ -775,10 +829,7 @@ if (workloadKind !== 'none') {
       featureReport.status = 'blocked';
       featureReport.error ??= featureReport.rendererErrors[0].code;
     }
-    if (typeof process.env.SMOKE_TIMING_OUTPUT === 'string' && process.env.SMOKE_TIMING_OUTPUT.length > 0) {
-      mkdirSync(resolve(process.env.SMOKE_TIMING_OUTPUT, '..'), { recursive: true });
-      writeFileSync(process.env.SMOKE_TIMING_OUTPUT, `${JSON.stringify(featureReport, null, 2)}\n`);
-    }
+    writeTimingOutput(featureReport);
     console.log(`[hello-taa] timingSummary=${JSON.stringify(featureReport)}`);
     process.exitCode = featureReport.status === 'ready' ? 0 : 2;
     process.exit();

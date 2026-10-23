@@ -193,44 +193,60 @@ export function runComposedInheritancePipelineFalsifierRepeatability({ msaa, sta
   );
 }
 
-export function runComposedInheritancePostRepeatability({ msaa, startVariant, post = 'depth', falsifierKind = 'texture' }) {
+const composedResizeHistory = '640x360>480x270>720x405>640x360>480x270>720x405>640x360';
+
+// Derived facts of one inherited-material post scenario; every phase below
+// reads the same description instead of re-deriving it from `falsifierKind`.
+function describePostScenario({ msaa, startVariant, post, falsifierKind }) {
   const mode = msaa ? 'msaa' : 'no-msaa';
-  const depthPost = post === 'depth';
-  const pipelineFalsifier =
-    falsifierKind === 'pipeline' ||
-    falsifierKind === 'pipeline-texture' ||
-    falsifierKind === 'reverse-pipeline' ||
-    falsifierKind === 'reverse-pipeline-texture';
   const reversePipelineFalsifier =
     falsifierKind === 'reverse-pipeline' || falsifierKind === 'reverse-pipeline-texture';
-  const textureSlotFalsifier =
-    falsifierKind === 'texture' ||
-    falsifierKind === 'pipeline-texture' ||
-    falsifierKind === 'reverse-pipeline-texture';
-  const parameterFalsifier = falsifierKind === 'param';
-  const expectedPipeline = reversePipelineFalsifier ? 'standard' : 'custom';
-  const passLabel = falsifierKind === 'texture' ? mode : `${mode} ${falsifierKind} falsifier`;
-  const artifactSuffix = falsifierKind === 'texture' ? '' : `-${falsifierKind}-falsifier`;
-  const artifactRoot = resolve(
+  return {
+    msaa,
+    startVariant,
+    post,
+    falsifierKind,
+    mode,
+    depthPost: post === 'depth',
+    pipelineFalsifier:
+      falsifierKind === 'pipeline' || falsifierKind === 'pipeline-texture' || reversePipelineFalsifier,
+    textureSlotFalsifier:
+      falsifierKind === 'texture' ||
+      falsifierKind === 'pipeline-texture' ||
+      falsifierKind === 'reverse-pipeline-texture',
+    parameterFalsifier: falsifierKind === 'param',
+    expectedPipeline: reversePipelineFalsifier ? 'standard' : 'custom',
+    passLabel: falsifierKind === 'texture' ? mode : `${mode} ${falsifierKind} falsifier`,
+  };
+}
+
+function postScenarioArtifactRoot(scenario) {
+  const artifactSuffix = scenario.falsifierKind === 'texture' ? '' : `-${scenario.falsifierKind}-falsifier`;
+  const postSegment = scenario.depthPost ? 'depth-post' : `${scenario.post}-post`;
+  return resolve(
     process.env.FORGEAX_M3_ARTIFACT_DIR ?? resolve(repoRoot, '.forgeax-gauntlet', 'hello-m3-programmable-rendering'),
-    `inheritance-${depthPost ? 'depth-post' : `${post}-post`}-composed-${mode}-start-${startVariant}${artifactSuffix}-repeatability`,
+    `inheritance-${postSegment}-composed-${scenario.mode}-start-${scenario.startVariant}${artifactSuffix}-repeatability`,
   );
+}
+
+function runPostScenarioPasses(scenario) {
+  const artifactRoot = postScenarioArtifactRoot(scenario);
   const runs = [];
   for (const pass of ['first', 'second']) {
     const artifactDir = resolve(artifactRoot, pass);
     runs.push({
       pass,
       result: run(
-        `browser inherited material ${post} post ${mode} startup-${startVariant} ${pass}`,
+        `browser inherited material ${scenario.post} post ${scenario.mode} startup-${scenario.startVariant} ${pass}`,
         ['--filter', '@forgeax/hello-multi-uv', 'run', 'smoke:browser-composed'],
         {
           FORGEAX_M3_INHERITANCE_LIVE_MATERIAL: '1',
-          FORGEAX_M3_INHERITANCE_POST: post,
-          FORGEAX_M3_INHERITANCE_DEPTH_POST: depthPost ? '1' : '0',
-          FORGEAX_M3_INHERITANCE_FALSIFIER_KIND: falsifierKind,
+          FORGEAX_M3_INHERITANCE_POST: scenario.post,
+          FORGEAX_M3_INHERITANCE_DEPTH_POST: scenario.depthPost ? '1' : '0',
+          FORGEAX_M3_INHERITANCE_FALSIFIER_KIND: scenario.falsifierKind,
           FORGEAX_M3_LIVE_VARIANT_SWITCH: '1',
-          FORGEAX_M3_MSAA: msaa ? '1' : '0',
-          FORGEAX_M3_START_VARIANT: startVariant,
+          FORGEAX_M3_MSAA: scenario.msaa ? '1' : '0',
+          FORGEAX_M3_START_VARIANT: scenario.startVariant,
           FORGEAX_M3_RESIZE_CHURN: '1',
           FORGEAX_M3_DOUBLE_RESIZE_CHURN: '1',
           FORGEAX_M3_ARTIFACT_DIR: artifactDir,
@@ -239,109 +255,147 @@ export function runComposedInheritancePostRepeatability({ msaa, startVariant, po
       snapshot: readLiveMaterialSnapshotIfAvailable(artifactDir),
     });
   }
+  return runs;
+}
+
+function postPassOutputHolds(runResult, scenario) {
+  const { output } = runResult.result;
+  const { parameterFalsifier } = scenario;
+  return (
+    runResult.result.status === 0 &&
+    runResult.snapshot !== undefined &&
+    output.includes(
+      `[m3-live-material] PASS pipeline=${scenario.expectedPipeline} post=${scenario.post} msaa=${scenario.msaa} startVariant=${scenario.startVariant} variantSwitch=true falsifier=${scenario.falsifierKind}`,
+    ) &&
+    output.includes(`normalSlots=${parameterFalsifier ? 'false/false' : 'true/true'}`) &&
+    output.includes(
+      `falsifierSlots=${parameterFalsifier || scenario.textureSlotFalsifier ? 'false/false' : 'true/true'}`,
+    ) &&
+    (!parameterFalsifier || output.includes('normalParams=true/true falsifierParams=false/false')) &&
+    output.includes(`resizeHistory=${composedResizeHistory}`)
+  );
+}
+
+function requirePostPassOutputs(runs, scenario) {
   for (const runResult of runs) {
-    if (
-      runResult.result.status !== 0 ||
-      runResult.snapshot === undefined ||
-      !runResult.result.output.includes(
-        `[m3-live-material] PASS pipeline=${expectedPipeline} post=${post} msaa=${msaa} startVariant=${startVariant} variantSwitch=true falsifier=${falsifierKind}`,
-      ) ||
-      !runResult.result.output.includes(
-        `normalSlots=${parameterFalsifier ? 'false/false' : 'true/true'}`,
-      ) ||
-      !runResult.result.output.includes(
-        `falsifierSlots=${parameterFalsifier || textureSlotFalsifier ? 'false/false' : 'true/true'}`,
-      ) ||
-      (parameterFalsifier && !runResult.result.output.includes('normalParams=true/true falsifierParams=false/false')) ||
-      !runResult.result.output.includes('resizeHistory=640x360>480x270>720x405>640x360>480x270>720x405>640x360')
-    ) {
-      console.error(`[m3-programmable] inherited material ${post} post ${passLabel} startup-${startVariant} ${runResult.pass}: FAIL`);
+    if (!postPassOutputHolds(runResult, scenario)) {
+      console.error(
+        `[m3-programmable] inherited material ${scenario.post} post ${scenario.passLabel} startup-${scenario.startVariant} ${runResult.pass}: FAIL`,
+      );
       failSmoke();
     }
   }
-  const first = runs[0].snapshot;
-  const second = runs[1].snapshot;
-  if (repeatabilityDiff(first, second) !== undefined) {
-    console.error(`[m3-programmable] inherited material ${post} post ${passLabel} repeatability: FAIL - ${JSON.stringify({ first, second })}`);
-    failSmoke();
-  }
-  const expectedRenderedVariant = `M3_MULTI_UV_VARIANT=${startVariant === 'true' ? 'false' : 'true'}`;
+}
+
+function postLegTopologyHolds(leg, value, scenario) {
+  const { msaa, pipelineFalsifier } = scenario;
+  const expectedRenderedVariant = `M3_MULTI_UV_VARIANT=${scenario.startVariant === 'true' ? 'false' : 'true'}`;
+  return (
+    value.before.variant === expectedRenderedVariant &&
+    value.after.variant === expectedRenderedVariant &&
+    value.after.pipeline === `M3_PIPELINE=${scenario.expectedPipeline}` &&
+    value.after.post === `M3_POST_EFFECT=${scenario.post}` &&
+    value.afterEvidence.resizeHistory.join('>') === composedResizeHistory &&
+    value.rhiTopology.msaaTextureResourceCount === (msaa ? 2 : 0) &&
+    value.rhiTopology.resolveTargetCount === (msaa ? 1 : 0) &&
+    value.rhiTopology.hasDepthBinding === (scenario.depthPost && (pipelineFalsifier ? leg === 'normal' : true)) &&
+    value.draws === (pipelineFalsifier && leg === 'falsifier' ? 2 : 3) &&
+    value.inspectedWork !== undefined &&
+    value.dawn.nonBlackPixelCount !== 0
+  );
+}
+
+function requirePostTopology(first, scenario) {
   for (const [leg, value] of Object.entries(first)) {
-    if (
-      value.before.variant !== expectedRenderedVariant ||
-      value.after.variant !== expectedRenderedVariant ||
-      value.after.pipeline !== `M3_PIPELINE=${expectedPipeline}` ||
-      value.after.post !== `M3_POST_EFFECT=${post}` ||
-      value.afterEvidence.resizeHistory.join('>') !== '640x360>480x270>720x405>640x360>480x270>720x405>640x360' ||
-      value.rhiTopology.msaaTextureResourceCount !== (msaa ? 2 : 0) ||
-      value.rhiTopology.resolveTargetCount !== (msaa ? 1 : 0) ||
-      value.rhiTopology.hasDepthBinding !== (depthPost && (pipelineFalsifier ? leg === 'normal' : true)) ||
-      value.draws !== (pipelineFalsifier && leg === 'falsifier' ? 2 : 3) ||
-      value.inspectedWork === undefined ||
-      value.dawn.nonBlackPixelCount === 0
-    ) {
-      console.error(`[m3-programmable] inherited material ${post} post ${passLabel} ${leg} topology: FAIL - ${JSON.stringify(value)}`);
+    if (!postLegTopologyHolds(leg, value, scenario)) {
+      console.error(
+        `[m3-programmable] inherited material ${scenario.post} post ${scenario.passLabel} ${leg} topology: FAIL - ${JSON.stringify(value)}`,
+      );
       failSmoke();
     }
   }
-  const normal = first.normal;
-  const falsifier = first.falsifier;
-  const textureFalsifierOracle =
+}
+
+function normalRebindHolds(normal, parameterFalsifier) {
+  const evidence = normal.afterEvidence;
+  const rebound = parameterFalsifier
+    ? evidence.baseColorParameterChanged === true && evidence.baseColorUvTransformChanged === true
+    : evidence.baseColorSlotChanged === true && evidence.detailSlotChanged === true;
+  return (
+    evidence.inheritanceBacked === true &&
+    rebound &&
+    evidence.afterComponentMaterialMatchesAfter === true &&
+    normal.delta.changed >= 1000
+  );
+}
+
+function textureRebindRejected(falsifier) {
+  return (
     falsifier.afterEvidence.baseColorSlotChanged === false &&
     falsifier.afterEvidence.detailSlotChanged === false &&
     falsifier.afterEvidence.falsifierMarker === 'FALSIFY_EXPECTED_FAILURE:live-inheritance-rebind' &&
-    falsifier.delta.changed === 0;
-  const reversePipelineTextureFalsifierOracle =
-    falsifier.afterEvidence.baseColorSlotChanged === false &&
-    falsifier.afterEvidence.detailSlotChanged === false &&
-    falsifier.afterEvidence.falsifierMarker === 'FALSIFY_EXPECTED_FAILURE:live-inheritance-rebind' &&
-    falsifier.delta.changed === 0 &&
-    normal.dawn.sha256 !== falsifier.dawn.sha256 &&
-    normal.rhiTopology.passCount !== falsifier.rhiTopology.passCount;
-  const pipelineTextureFalsifierOracle =
-    falsifier.afterEvidence.baseColorSlotChanged === false &&
-    falsifier.afterEvidence.detailSlotChanged === false &&
-    falsifier.afterEvidence.falsifierMarker === 'FALSIFY_EXPECTED_FAILURE:live-inheritance-rebind' &&
-    falsifier.delta.changed === 0 &&
-    normal.dawn.sha256 !== falsifier.dawn.sha256 &&
-    normal.rhiTopology.passCount !== falsifier.rhiTopology.passCount;
-  const parameterFalsifierOracle =
+    falsifier.delta.changed === 0
+  );
+}
+
+function parameterRebindRejected(normal, falsifier) {
+  return (
     falsifier.afterEvidence.baseColorParameterChanged === false &&
     falsifier.afterEvidence.baseColorUvTransformChanged === false &&
     falsifier.afterEvidence.falsifierMarker === 'FALSIFY_EXPECTED_FAILURE:live-inheritance-parameters' &&
     falsifier.delta.changed === 0 &&
-    normal.draws === falsifier.draws;
-  const pipelineFalsifierOracle =
+    normal.draws === falsifier.draws
+  );
+}
+
+function pipelineRebindDiverges(normal, falsifier, post) {
+  return (
     falsifier.afterEvidence.baseColorSlotChanged === true &&
     falsifier.afterEvidence.detailSlotChanged === true &&
     falsifier.afterEvidence.falsifierMarker === null &&
     falsifier.delta.changed >= 1000 &&
     normal.rhiTopology.passCount !== falsifier.rhiTopology.passCount &&
-    (post === 'passthrough' || normal.dawn.sha256 !== falsifier.dawn.sha256);
+    (post === 'passthrough' || normal.dawn.sha256 !== falsifier.dawn.sha256)
+  );
+}
+
+// `pipeline-texture` and `reverse-pipeline-texture` reject the texture rebind
+// while their adjacent pipeline still changes the rendered passes and pixels.
+function falsifierOracleHolds(normal, falsifier, scenario) {
+  if (scenario.parameterFalsifier) return parameterRebindRejected(normal, falsifier);
+  if (scenario.pipelineFalsifier && scenario.textureSlotFalsifier) {
+    return (
+      textureRebindRejected(falsifier) &&
+      normal.dawn.sha256 !== falsifier.dawn.sha256 &&
+      normal.rhiTopology.passCount !== falsifier.rhiTopology.passCount
+    );
+  }
+  if (scenario.pipelineFalsifier) return pipelineRebindDiverges(normal, falsifier, scenario.post);
+  return textureRebindRejected(falsifier);
+}
+
+export function runComposedInheritancePostRepeatability({ msaa, startVariant, post = 'depth', falsifierKind = 'texture' }) {
+  const scenario = describePostScenario({ msaa, startVariant, post, falsifierKind });
+  const runs = runPostScenarioPasses(scenario);
+  requirePostPassOutputs(runs, scenario);
+  const first = runs[0].snapshot;
+  const second = runs[1].snapshot;
+  if (repeatabilityDiff(first, second) !== undefined) {
+    console.error(`[m3-programmable] inherited material ${post} post ${scenario.passLabel} repeatability: FAIL - ${JSON.stringify({ first, second })}`);
+    failSmoke();
+  }
+  requirePostTopology(first, scenario);
+  const normal = first.normal;
+  const falsifier = first.falsifier;
   if (
-    normal.afterEvidence.inheritanceBacked !== true ||
-    (parameterFalsifier
-      ? normal.afterEvidence.baseColorParameterChanged !== true ||
-        normal.afterEvidence.baseColorUvTransformChanged !== true
-      : normal.afterEvidence.baseColorSlotChanged !== true ||
-        normal.afterEvidence.detailSlotChanged !== true) ||
-    normal.afterEvidence.afterComponentMaterialMatchesAfter !== true ||
-    normal.delta.changed < 1000 ||
+    !normalRebindHolds(normal, scenario.parameterFalsifier) ||
     falsifier.afterEvidence.inheritanceBacked !== true ||
-    (falsifierKind === 'param'
-      ? !parameterFalsifierOracle
-      : falsifierKind === 'pipeline-texture'
-      ? !pipelineTextureFalsifierOracle
-      : falsifierKind === 'reverse-pipeline-texture'
-        ? !reversePipelineTextureFalsifierOracle
-      : pipelineFalsifier
-        ? !pipelineFalsifierOracle
-        : !textureFalsifierOracle)
+    !falsifierOracleHolds(normal, falsifier, scenario)
   ) {
-    console.error(`[m3-programmable] inherited material ${post} post ${passLabel} oracle: FAIL - ${JSON.stringify(first)}`);
+    console.error(`[m3-programmable] inherited material ${post} post ${scenario.passLabel} oracle: FAIL - ${JSON.stringify(first)}`);
     failSmoke();
   }
   console.log(
-    `[m3-programmable] inherited material ${post} post ${passLabel} startup-${startVariant} repeatability: PASS normalChanged=${normal.delta.changed} falsifierChanged=${falsifier.delta.changed} dawnSha=${normal.dawn.sha256}`,
+    `[m3-programmable] inherited material ${post} post ${scenario.passLabel} startup-${startVariant} repeatability: PASS normalChanged=${normal.delta.changed} falsifierChanged=${falsifier.delta.changed} dawnSha=${normal.dawn.sha256}`,
   );
 }

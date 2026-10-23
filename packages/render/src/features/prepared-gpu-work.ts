@@ -412,6 +412,32 @@ function failure(
   );
 }
 
+const bufferUsageSignatures = new WeakMap<readonly RenderFeatureGpuBufferUsage[], string>();
+/**
+ * The exact spelling of `stable({ size, usage: sorted usage })`, built
+ * directly: buffers are prepared every frame, and the generic canonical walk
+ * dominated steady particle planning. Frozen usage arrays memoize their part.
+ */
+export function bufferSignature(
+  size: number,
+  usage: readonly RenderFeatureGpuBufferUsage[],
+): string {
+  let usageText = Object.isFrozen(usage) ? bufferUsageSignatures.get(usage) : undefined;
+  if (usageText === undefined) {
+    const sorted = [...usage].sort();
+    usageText = '[';
+    for (let index = 0; index < sorted.length; index += 1)
+      usageText += (index === 0 ? '' : ',') + JSON.stringify(sorted[index]);
+    usageText += ']';
+    if (Object.isFrozen(usage)) bufferUsageSignatures.set(usage, usageText);
+  }
+  return `{size:${JSON.stringify(size)},usage:${usageText}}`;
+}
+
+export function stableRenderFeatureValue(value: unknown): string {
+  return stable(value);
+}
+
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value !== null && typeof value === 'object') {
@@ -1328,7 +1354,7 @@ function createRenderFeatureGpuWorkSession(input: {
           return uploadFailure('upload-range-invalid');
       }
     }
-    const signature = stable({ size: descriptor.size, usage: [...descriptor.usage].sort() });
+    const signature = bufferSignature(descriptor.size, descriptor.usage);
     let item = buffers.get(name) ?? parkedBuffers.get(name)?.item;
     if (item !== undefined && (item.signature !== signature || !item.owned)) item = undefined;
     if (item === undefined) {

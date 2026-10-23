@@ -85,7 +85,7 @@ import { projectDrawDispatch } from './draw-dispatch';
 import { type FrameList, FrameProjection, RetainedFrameProjection } from './frame-list';
 import { FrameSet } from './frame-set';
 import { MaterialDispatch, type MaterialFrame } from './material-dispatch';
-import { meshDrawSnapshot } from './mesh-draw';
+import { meshDrawMaterials, meshDrawSnapshot } from './mesh-draw';
 import { MeshFrame, type MeshGeometry } from './mesh-frame';
 import type { MeshMaterialGeometry } from './mesh-materials';
 import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
@@ -1080,7 +1080,7 @@ export class RenderScene {
     resetHistory = false,
     submittedFrame = this.lastSubmittedFrame,
     visible = this.lastSubmittedVisible,
-    displacementSource = hasDisplacementSource(meshDrawSnapshot(slot.snapshot, this.meshes)),
+    displacementSource = hasDisplacementSource(meshDrawMaterials(slot.snapshot, this.meshes)),
   ): RenderableTemporalSnapshot {
     return createTemporalSnapshot(slot, resetHistory, submittedFrame, visible, displacementSource);
   }

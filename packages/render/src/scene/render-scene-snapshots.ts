@@ -106,7 +106,7 @@ function materialHasDisplacement(resource: MaterialResource, materials?: Materia
 const displacementByFrame = new WeakMap<MaterialFrame, WeakMap<object, boolean>>();
 
 export function hasDisplacementSource(
-  snapshot: RenderableSnapshot,
+  snapshot: Pick<RenderableSnapshot, 'material' | 'materials'>,
   materials?: MaterialFrame,
 ): boolean {
   let answers: WeakMap<object, boolean> | undefined;

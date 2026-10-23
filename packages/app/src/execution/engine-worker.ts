@@ -1,6 +1,7 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
+import { forwardGpuStub } from './gpu-stub';
 import type {
   EngineToHostMessage,
   ExecutionFaultMessage,
@@ -61,8 +62,17 @@ export async function startEngineWorker(
     retired = true;
     for (const cleanup of kernelCleanups.values()) cleanup();
   };
+  // Render notices arrive on a per-session port; a replacement session closes the old one.
+  let renderHostPort: MessagePort | undefined;
+  const closeRenderHostPort = (): void => {
+    if (renderHostPort === undefined) return;
+    renderHostPort.onmessage = null;
+    renderHostPort.close();
+    renderHostPort = undefined;
+  };
   const terminate = (): void => {
     retireKernels();
+    closeRenderHostPort();
     worker.terminate();
   };
   const listeners = new Set<(message: EngineToHostMessage) => void>();
@@ -129,6 +139,21 @@ export async function startEngineWorker(
     }
     if (message.kind === 'kernel-retire') {
       kernelCleanups.get(message.workerId)?.();
+      return;
+    }
+    if (message.kind === 'render-host-port') {
+      closeRenderHostPort();
+      const port = message.port;
+      if (retired) {
+        port.close();
+        return;
+      }
+      renderHostPort = port;
+      port.onmessage = (event: MessageEvent<EngineToHostMessage>) => {
+        const notice = event.data;
+        if (notice.kind !== 'render-submitted' && notice.kind !== 'render-complete') return;
+        for (const listener of listeners) listener(notice);
+      };
       return;
     }
     if (listeners.size === 0 && message.kind === 'render-ready')
@@ -231,6 +256,7 @@ export async function startEngineWorker(
     ...(options.time !== undefined ? { time: options.time } : {}),
     ...(options.animation === undefined ? {} : { animation: options.animation }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+    ...forwardGpuStub(options),
     ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
     ...(options.outputColorSpace === undefined
       ? {}

@@ -204,6 +204,12 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly platform?: Platform;
   /** Opt into realm-local engine execution. Omission preserves the existing local assembly path. */
   readonly execution?: ExecutionOptions;
+  /**
+   * Replace WebGPU with the no-op `installWebGpuStub` in the main realm and every
+   * execution Worker realm. The Engine keeps its WebGPU path and the profile's
+   * caps without GPU work, validation or readback contents; CPU diagnostics only.
+   */
+  readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
   /** One realm-owned Registry; omitted reuses the Registry created by createRenderer. */
   readonly assets?: AssetRegistry;
   /** Explicit catalog projection for this Registry. */

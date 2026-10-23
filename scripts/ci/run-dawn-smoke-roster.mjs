@@ -342,6 +342,23 @@ export function partitionRunnableEntries(
 
 export function validateShardReport(report, { frames = SMOKE_MIN_FRAMES, scope = 'sharded' } = {}) {
   frames = parseSmokeFrameBudget(frames);
+  validateShardReportHeader(report, frames, scope);
+  const closure = resolveShardGateClosure(report, scope);
+  const assignedEntryKeys = collectAssignedEntryKeys(report.assignedEntries, closure.assigned);
+  const keys = new Set();
+  for (const result of report.runnableEntries)
+    validateShardResult(result, keys, report.shardIndex, closure, frames);
+  if (stable(report.runnableEntries.map(gateKey).sort()) !== stable([...assignedEntryKeys].sort()))
+    throw new Error('assigned result closure drift');
+  if (
+    stable([...closure.assigned].sort()) !==
+    stable(report.assignedEntries.map((entry) => entry.gateId).sort())
+  )
+    throw new Error('assigned gate ledger drift');
+  return report;
+}
+
+function validateShardReportHeader(report, frames, scope) {
   if ((report.scope ?? 'sharded') !== scope) throw new Error('shard scope drift');
   if (report?.schemaVersion !== ROSTER_SCHEMA_VERSION || report.kind !== 'dawn-smoke-shard')
     throw new Error('invalid Dawn shard report schema');
@@ -369,6 +386,9 @@ export function validateShardReport(report, { frames = SMOKE_MIN_FRAMES, scope =
   ]) {
     if (!Array.isArray(report[field])) throw new Error(`shard report requires ${field}`);
   }
+}
+
+function resolveShardGateClosure(report, scope) {
   const declaredGateIds = requireUniqueStrings(report.declaredGateIds, 'declaredGateIds');
   const runnableGateIds = requireUniqueStrings(report.runnableGateIds, 'runnableGateIds');
   const independentGateIds = requireUniqueStrings(
@@ -392,8 +412,12 @@ export function validateShardReport(report, { frames = SMOKE_MIN_FRAMES, scope =
     throw new Error('declared gate closure drift');
   if (![...assigned].every((gateId) => executable.has(gateId)))
     throw new Error('assigned gate is outside runnable closure');
+  return { assigned, executable, oracleByGate };
+}
+
+function collectAssignedEntryKeys(assignedEntries, assigned) {
   const assignedEntryKeys = new Set();
-  for (const entry of report.assignedEntries) {
+  for (const entry of assignedEntries) {
     if (typeof entry?.gateId !== 'string' || typeof entry.commandId !== 'string')
       throw new Error('assigned entry requires gateId and commandId');
     const key = gateKey(entry);
@@ -401,101 +425,117 @@ export function validateShardReport(report, { frames = SMOKE_MIN_FRAMES, scope =
     if (!assigned.has(entry.gateId)) throw new Error(`assigned entry outside gate closure: ${key}`);
     assignedEntryKeys.add(key);
   }
-  const keys = new Set();
-  for (const result of report.runnableEntries) {
-    if (typeof result?.package !== 'string' || typeof result.path !== 'string')
-      throw new Error('shard result requires package and path');
-    if (typeof result.gateId !== 'string' || typeof result.commandId !== 'string')
-      throw new Error('shard result requires gateId and commandId');
-    const key = gateKey(result);
-    if (keys.has(key)) throw new Error(`duplicate shard result: ${result.path}`);
-    if (result.shardIndex !== report.shardIndex)
-      throw new Error(`shard result index drift: ${result.path}`);
-    if (!executable.has(result.gateId)) throw new Error(`result outside runnable closure: ${key}`);
-    const frameReceipt = (oracleByGate.get(result.gateId) ?? 'frameReceipt') === 'frameReceipt';
-    if (typeof result.command !== 'string' || result.command.trim() === '')
-      throw new Error(`missing command: ${key}`);
-    if (!Number.isInteger(result.exitCode) && result.exitCode !== null)
-      throw new Error(`invalid exitCode: ${key}`);
-    if (result.signal !== null && typeof result.signal !== 'string')
-      throw new Error(`invalid signal: ${key}`);
-    for (const field of ['timedOut', 'unavailable', 'skipped', 'unavailableOrSkipped']) {
-      if (typeof result[field] !== 'boolean') throw new Error(`missing ${field}: ${key}`);
-    }
-    if (!Number.isInteger(result.framesExpected) || result.framesExpected !== frames)
-      throw new Error(`shard result frame expectation drift: ${result.path}`);
-    if (result.framesObserved !== null && !Number.isInteger(result.framesObserved))
-      throw new Error(`invalid frame evidence: ${result.path}`);
-    if (!['pass', 'fail', 'blocked'].includes(result.status))
-      throw new Error(`unknown result status: ${key}`);
-    if (!['pass', 'fail', 'blocked'].includes(result.result))
-      throw new Error(`unknown result token: ${key}`);
-    if (result.failureReason !== null && typeof result.failureReason !== 'string')
-      throw new Error(`invalid failureReason: ${key}`);
-    if (typeof result.logPath !== 'string' || result.logPath.trim() === '')
-      throw new Error(`missing logPath: ${key}`);
-    if (!/^[0-9a-f]{64}$/.test(result.logSha256)) throw new Error(`missing logSha256: ${key}`);
-    if (!Number.isInteger(result.logBytes) || result.logBytes < 0)
-      throw new Error(`invalid logBytes: ${key}`);
-    if (!Array.isArray(result.commandResults) || result.commandResults.length === 0)
-      throw new Error(`missing commandResults: ${key}`);
-    if (
-      result.commandResults.length !== 1 ||
-      result.commandResults.some(
-        (command) =>
-          command.commandId !== result.commandId ||
-          command.command !== result.command ||
-          command.exitCode !== result.exitCode ||
-          command.status !== result.status,
-      )
-    )
-      throw new Error(`command result drift: ${key}`);
-    if (!('receipt' in result)) throw new Error(`missing receipt field: ${key}`);
-    if (result.receipt !== null) {
-      if (typeof result.receipt !== 'object') throw new Error(`invalid receipt: ${key}`);
-      validateObservedReceipt(result.receipt, {
-        gateId: result.gateId,
-        commandId: result.commandId,
-        frames,
-      });
-      if (result.receipt.framesObserved !== result.framesObserved)
-        throw new Error(`receipt frame mismatch: ${key}`);
-    }
-    if (result.status === 'blocked') {
-      if (result.result !== 'blocked') throw new Error(`blocked result token drift: ${key}`);
-      if (result.framesObserved !== null || result.receipt !== null)
-        throw new Error(`blocked result carries frame evidence: ${key}`);
-      if (result.failureReason === null)
-        throw new Error(`blocked result requires a failureReason: ${key}`);
-    }
-    if (!frameReceipt && (result.receipt !== null || result.framesObserved !== null))
-      throw new Error(`assertion/composite must not fabricate frame evidence: ${key}`);
-    if (
-      result.status === 'pass' &&
-      (result.exitCode !== 0 ||
-        result.signal !== null ||
-        result.timedOut ||
-        result.unavailableOrSkipped ||
-        result.unavailable ||
-        result.skipped ||
-        result.result !== 'pass' ||
-        result.failureReason !== null)
-    )
-      throw new Error(`passing result has failed execution: ${key}`);
-    if (result.status === 'pass' && frameReceipt && result.receipt === null)
-      throw new Error(`passing result requires receipt: ${key}`);
-    if (result.status === 'pass' && frameReceipt && result.framesObserved < frames)
-      throw new Error(`passing result has short frame evidence: ${key}`);
-    keys.add(key);
+  return assignedEntryKeys;
+}
+
+function validateShardResult(result, keys, shardIndex, closure, frames) {
+  if (typeof result?.package !== 'string' || typeof result.path !== 'string')
+    throw new Error('shard result requires package and path');
+  if (typeof result.gateId !== 'string' || typeof result.commandId !== 'string')
+    throw new Error('shard result requires gateId and commandId');
+  const key = gateKey(result);
+  if (keys.has(key)) throw new Error(`duplicate shard result: ${result.path}`);
+  if (result.shardIndex !== shardIndex) throw new Error(`shard result index drift: ${result.path}`);
+  if (!closure.executable.has(result.gateId))
+    throw new Error(`result outside runnable closure: ${key}`);
+  const frameReceipt =
+    (closure.oracleByGate.get(result.gateId) ?? 'frameReceipt') === 'frameReceipt';
+  validateShardResultExecution(result, key, frames);
+  validateShardResultLog(result, key);
+  validateShardResultCommand(result, key);
+  validateShardResultReceipt(result, key, frames);
+  validateBlockedShardResult(result, key);
+  if (!frameReceipt && (result.receipt !== null || result.framesObserved !== null))
+    throw new Error(`assertion/composite must not fabricate frame evidence: ${key}`);
+  validatePassingShardResult(result, key, frameReceipt, frames);
+  keys.add(key);
+}
+
+function validateShardResultExecution(result, key, frames) {
+  if (typeof result.command !== 'string' || result.command.trim() === '')
+    throw new Error(`missing command: ${key}`);
+  if (!Number.isInteger(result.exitCode) && result.exitCode !== null)
+    throw new Error(`invalid exitCode: ${key}`);
+  if (result.signal !== null && typeof result.signal !== 'string')
+    throw new Error(`invalid signal: ${key}`);
+  for (const field of ['timedOut', 'unavailable', 'skipped', 'unavailableOrSkipped']) {
+    if (typeof result[field] !== 'boolean') throw new Error(`missing ${field}: ${key}`);
   }
-  if (stable(report.runnableEntries.map(gateKey).sort()) !== stable([...assignedEntryKeys].sort()))
-    throw new Error('assigned result closure drift');
+  if (!Number.isInteger(result.framesExpected) || result.framesExpected !== frames)
+    throw new Error(`shard result frame expectation drift: ${result.path}`);
+  if (result.framesObserved !== null && !Number.isInteger(result.framesObserved))
+    throw new Error(`invalid frame evidence: ${result.path}`);
+  if (!['pass', 'fail', 'blocked'].includes(result.status))
+    throw new Error(`unknown result status: ${key}`);
+  if (!['pass', 'fail', 'blocked'].includes(result.result))
+    throw new Error(`unknown result token: ${key}`);
+  if (result.failureReason !== null && typeof result.failureReason !== 'string')
+    throw new Error(`invalid failureReason: ${key}`);
+}
+
+function validateShardResultLog(result, key) {
+  if (typeof result.logPath !== 'string' || result.logPath.trim() === '')
+    throw new Error(`missing logPath: ${key}`);
+  if (!/^[0-9a-f]{64}$/.test(result.logSha256)) throw new Error(`missing logSha256: ${key}`);
+  if (!Number.isInteger(result.logBytes) || result.logBytes < 0)
+    throw new Error(`invalid logBytes: ${key}`);
+}
+
+function validateShardResultCommand(result, key) {
+  if (!Array.isArray(result.commandResults) || result.commandResults.length === 0)
+    throw new Error(`missing commandResults: ${key}`);
   if (
-    stable([...assigned].sort()) !==
-    stable(report.assignedEntries.map((entry) => entry.gateId).sort())
+    result.commandResults.length !== 1 ||
+    result.commandResults.some(
+      (command) =>
+        command.commandId !== result.commandId ||
+        command.command !== result.command ||
+        command.exitCode !== result.exitCode ||
+        command.status !== result.status,
+    )
   )
-    throw new Error('assigned gate ledger drift');
-  return report;
+    throw new Error(`command result drift: ${key}`);
+}
+
+function validateShardResultReceipt(result, key, frames) {
+  if (!('receipt' in result)) throw new Error(`missing receipt field: ${key}`);
+  if (result.receipt === null) return;
+  if (typeof result.receipt !== 'object') throw new Error(`invalid receipt: ${key}`);
+  validateObservedReceipt(result.receipt, {
+    gateId: result.gateId,
+    commandId: result.commandId,
+    frames,
+  });
+  if (result.receipt.framesObserved !== result.framesObserved)
+    throw new Error(`receipt frame mismatch: ${key}`);
+}
+
+function validateBlockedShardResult(result, key) {
+  if (result.status !== 'blocked') return;
+  if (result.result !== 'blocked') throw new Error(`blocked result token drift: ${key}`);
+  if (result.framesObserved !== null || result.receipt !== null)
+    throw new Error(`blocked result carries frame evidence: ${key}`);
+  if (result.failureReason === null)
+    throw new Error(`blocked result requires a failureReason: ${key}`);
+}
+
+function validatePassingShardResult(result, key, frameReceipt, frames) {
+  if (result.status !== 'pass') return;
+  if (
+    result.exitCode !== 0 ||
+    result.signal !== null ||
+    result.timedOut ||
+    result.unavailableOrSkipped ||
+    result.unavailable ||
+    result.skipped ||
+    result.result !== 'pass' ||
+    result.failureReason !== null
+  )
+    throw new Error(`passing result has failed execution: ${key}`);
+  if (frameReceipt && result.receipt === null)
+    throw new Error(`passing result requires receipt: ${key}`);
+  if (frameReceipt && result.framesObserved < frames)
+    throw new Error(`passing result has short frame evidence: ${key}`);
 }
 
 function requireUniqueStrings(value, field) {
@@ -763,20 +803,7 @@ export function aggregateReports({
     throw new Error('aggregate actual head does not match external expected product sha');
   if (!Array.isArray(reports) || reports.length !== shardCount)
     throw new Error(`missing shard report: expected ${shardCount}`);
-  const declaredGateIds =
-    resolved.declaredGateIds ?? resolved.declared?.map((entry) => entry.gateId);
-  const runnableGateIds =
-    resolved.runnableGateIds ?? resolved.runnable?.map((entry) => entry.gateId);
-  const independentGateIds =
-    resolved.independentGateIds ?? resolved.independent?.map((entry) => entry.gateId) ?? [];
-  const excludedGateIds =
-    resolved.excludedGateIds ?? resolved.exclusions?.map((entry) => entry.gateId);
-  if (
-    !Array.isArray(declaredGateIds) ||
-    !Array.isArray(runnableGateIds) ||
-    !Array.isArray(excludedGateIds)
-  )
-    throw new Error('gate-level resolved roster is required for aggregation');
+  const gateIds = resolveAggregateGateIds(resolved);
   const expectedRunnable = selectSmokeEntries(resolved, scope);
   const expectedDeclared = resolved.declared ?? [];
   const expectedExclusions = resolved.exclusions ?? [];
@@ -787,23 +814,8 @@ export function aggregateReports({
     validateLogFiles(report, reportDirectory);
     if (report.shardCount !== shardCount) throw new Error('shard count drift');
     if (byIndex.has(report.shardIndex)) throw new Error(`duplicate shard: ${report.shardIndex}`);
-    if (report.head !== head) throw new Error(`head drift in shard ${report.shardIndex}`);
-    if (expectedProductSha !== undefined && report.expectedProductSha !== expectedProductSha)
-      throw new Error(`expected product sha drift in shard ${report.shardIndex}`);
-    if (report.rosterDigest !== digest)
-      throw new Error(`roster digest drift in shard ${report.shardIndex}`);
-    if (stable(report.declaredGateIds) !== stable(declaredGateIds))
-      throw new Error(`declared gate set drift in shard ${report.shardIndex}`);
-    if (stable(report.runnableGateIds) !== stable(runnableGateIds))
-      throw new Error(`runnable gate set drift in shard ${report.shardIndex}`);
-    if (stable(report.independentGateIds ?? []) !== stable(independentGateIds))
-      throw new Error(`independent gate set drift in shard ${report.shardIndex}`);
-    if (stable(report.excludedGateIds) !== stable(excludedGateIds))
-      throw new Error(`excluded gate set drift in shard ${report.shardIndex}`);
-    if (stable(report.declaredEntries) !== stable(expectedDeclared))
-      throw new Error(`declared set drift in shard ${report.shardIndex}`);
-    if (stable(report.exclusions) !== stable(expectedExclusions))
-      throw new Error(`exclusion set drift in shard ${report.shardIndex}`);
+    validateShardIdentity(report, head, expectedProductSha, digest);
+    validateShardRosterSets(report, gateIds, expectedDeclared, expectedExclusions);
     byIndex.set(report.shardIndex, report);
   }
   for (let index = 0; index < shardCount; index += 1)
@@ -820,46 +832,124 @@ export function aggregateReports({
     });
     for (const entry of expected) assignedByKey.set(gateKey(entry), index);
     const report = byIndex.get(index);
-    const expectedKeys = new Set(expected.map(gateKey));
-    const actualKeys = new Set(report.runnableEntries.map(gateKey));
-    for (const key of expectedKeys)
-      if (!actualKeys.has(key)) throw new Error(`missing entry: ${key}`);
-    for (const key of actualKeys)
-      if (!expectedKeys.has(key)) throw new Error(`extra entry: ${key}`);
+    validateShardEntryClosure(expected, report.runnableEntries);
     for (const result of report.runnableEntries) {
-      const key = gateKey(result);
-      if (!expectedByKey.has(key)) throw new Error(`extra runnable entry: ${key}`);
-      if (result.command !== expectedByKey.get(key).command)
-        throw new Error(`command drift: ${key}`);
-      if (
-        result.package !== expectedByKey.get(key).package ||
-        result.path !== expectedByKey.get(key).path
-      )
-        throw new Error(`owner identity drift: ${key}`);
-      if (result.exitCode !== 0 || result.signal !== null) throw new Error(`entry failure: ${key}`);
-      if (result.unavailableOrSkipped === true && !(allowBlocked && result.status === 'blocked'))
-        throw new Error(`entry unavailable or skipped: ${key}`);
-      if (result.status === 'blocked' || result.result === 'blocked') {
-        if (!allowBlocked) throw new Error(`entry is blocked: ${key}`);
-        if (result.receipt !== null) throw new Error(`blocked entry has observed receipt: ${key}`);
-        results.push(result);
-        continue;
-      }
-      if (result.status !== 'pass' || result.result !== 'pass')
-        throw new Error(`entry result is not pass: ${key}`);
-      if ((expectedByKey.get(key).oracle ?? 'frameReceipt') === 'frameReceipt') {
-        if (result.receipt === null) throw new Error(`entry is missing observed receipt: ${key}`);
-        if (result.framesObserved < frames) throw new Error(`short frame evidence: ${key}`);
-      } else if (result.receipt !== null || result.framesObserved !== null)
-        throw new Error(`assertion/composite carries fabricated frames: ${key}`);
+      validateAggregatedResult(result, expectedByKey, allowBlocked, frames);
       results.push(result);
     }
   }
+  validateRunnableCoverage(results, expectedByKey);
+  const expectedAssigned = validateCompleteShardLedger(reports, assignedByKey);
+  return {
+    schemaVersion: ROSTER_SCHEMA_VERSION,
+    kind: 'dawn-smoke-aggregate',
+    status: results.some((result) => result.status === 'blocked') ? 'blocked' : 'pass',
+    head,
+    expectedProductSha: expectedProductSha ?? reports[0].expectedProductSha,
+    rosterDigest: digest,
+    shardCount,
+    framesExpected: frames,
+    scope,
+    declaredGateIds: gateIds.declaredGateIds,
+    runnableGateIds: gateIds.runnableGateIds,
+    excludedGateIds: gateIds.excludedGateIds,
+    declaredEntries: expectedDeclared,
+    runnableResults: results,
+    exclusions: expectedExclusions,
+    assignedEntries: expectedAssigned,
+  };
+}
+
+function resolveAggregateGateIds(resolved) {
+  const declaredGateIds =
+    resolved.declaredGateIds ?? resolved.declared?.map((entry) => entry.gateId);
+  const runnableGateIds =
+    resolved.runnableGateIds ?? resolved.runnable?.map((entry) => entry.gateId);
+  const independentGateIds =
+    resolved.independentGateIds ?? resolved.independent?.map((entry) => entry.gateId) ?? [];
+  const excludedGateIds =
+    resolved.excludedGateIds ?? resolved.exclusions?.map((entry) => entry.gateId);
+  if (
+    !Array.isArray(declaredGateIds) ||
+    !Array.isArray(runnableGateIds) ||
+    !Array.isArray(excludedGateIds)
+  )
+    throw new Error('gate-level resolved roster is required for aggregation');
+  return { declaredGateIds, runnableGateIds, independentGateIds, excludedGateIds };
+}
+
+function validateShardIdentity(report, head, expectedProductSha, digest) {
+  if (report.head !== head) throw new Error(`head drift in shard ${report.shardIndex}`);
+  if (expectedProductSha !== undefined && report.expectedProductSha !== expectedProductSha)
+    throw new Error(`expected product sha drift in shard ${report.shardIndex}`);
+  if (report.rosterDigest !== digest)
+    throw new Error(`roster digest drift in shard ${report.shardIndex}`);
+}
+
+function validateShardRosterSets(report, gateIds, expectedDeclared, expectedExclusions) {
+  if (stable(report.declaredGateIds) !== stable(gateIds.declaredGateIds))
+    throw new Error(`declared gate set drift in shard ${report.shardIndex}`);
+  if (stable(report.runnableGateIds) !== stable(gateIds.runnableGateIds))
+    throw new Error(`runnable gate set drift in shard ${report.shardIndex}`);
+  if (stable(report.independentGateIds ?? []) !== stable(gateIds.independentGateIds))
+    throw new Error(`independent gate set drift in shard ${report.shardIndex}`);
+  if (stable(report.excludedGateIds) !== stable(gateIds.excludedGateIds))
+    throw new Error(`excluded gate set drift in shard ${report.shardIndex}`);
+  if (stable(report.declaredEntries) !== stable(expectedDeclared))
+    throw new Error(`declared set drift in shard ${report.shardIndex}`);
+  if (stable(report.exclusions) !== stable(expectedExclusions))
+    throw new Error(`exclusion set drift in shard ${report.shardIndex}`);
+}
+
+function validateShardEntryClosure(expected, runnableEntries) {
+  const expectedKeys = new Set(expected.map(gateKey));
+  const actualKeys = new Set(runnableEntries.map(gateKey));
+  for (const key of expectedKeys)
+    if (!actualKeys.has(key)) throw new Error(`missing entry: ${key}`);
+  for (const key of actualKeys) if (!expectedKeys.has(key)) throw new Error(`extra entry: ${key}`);
+}
+
+function validateAggregatedResult(result, expectedByKey, allowBlocked, frames) {
+  const key = gateKey(result);
+  if (!expectedByKey.has(key)) throw new Error(`extra runnable entry: ${key}`);
+  const expected = expectedByKey.get(key);
+  if (result.command !== expected.command) throw new Error(`command drift: ${key}`);
+  if (result.package !== expected.package || result.path !== expected.path)
+    throw new Error(`owner identity drift: ${key}`);
+  if (result.exitCode !== 0 || result.signal !== null) throw new Error(`entry failure: ${key}`);
+  if (result.unavailableOrSkipped === true && !(allowBlocked && result.status === 'blocked'))
+    throw new Error(`entry unavailable or skipped: ${key}`);
+  if (result.status === 'blocked' || result.result === 'blocked') {
+    validateBlockedAggregatedResult(result, key, allowBlocked);
+    return;
+  }
+  validatePassingAggregatedResult(result, key, expected, frames);
+}
+
+function validateBlockedAggregatedResult(result, key, allowBlocked) {
+  if (!allowBlocked) throw new Error(`entry is blocked: ${key}`);
+  if (result.receipt !== null) throw new Error(`blocked entry has observed receipt: ${key}`);
+}
+
+function validatePassingAggregatedResult(result, key, expected, frames) {
+  if (result.status !== 'pass' || result.result !== 'pass')
+    throw new Error(`entry result is not pass: ${key}`);
+  if ((expected.oracle ?? 'frameReceipt') === 'frameReceipt') {
+    if (result.receipt === null) throw new Error(`entry is missing observed receipt: ${key}`);
+    if (result.framesObserved < frames) throw new Error(`short frame evidence: ${key}`);
+  } else if (result.receipt !== null || result.framesObserved !== null)
+    throw new Error(`assertion/composite carries fabricated frames: ${key}`);
+}
+
+function validateRunnableCoverage(results, expectedByKey) {
   if (
     results.length !== expectedByKey.size ||
     new Set(results.map(gateKey)).size !== results.length
   )
     throw new Error('duplicate or missing runnable coverage');
+}
+
+function validateCompleteShardLedger(reports, assignedByKey) {
   const expectedAssigned = [...assignedByKey].map(([key, shardIndex]) => ({ key, shardIndex }));
   const actualAssigned = reports
     .flatMap((report) =>
@@ -873,24 +963,7 @@ export function aggregateReports({
     stable(actualAssigned) !== stable(expectedAssigned.sort((a, b) => a.key.localeCompare(b.key)))
   )
     throw new Error('complete shard ledger drift');
-  return {
-    schemaVersion: ROSTER_SCHEMA_VERSION,
-    kind: 'dawn-smoke-aggregate',
-    status: results.some((result) => result.status === 'blocked') ? 'blocked' : 'pass',
-    head,
-    expectedProductSha: expectedProductSha ?? reports[0].expectedProductSha,
-    rosterDigest: digest,
-    shardCount,
-    framesExpected: frames,
-    scope,
-    declaredGateIds,
-    runnableGateIds,
-    excludedGateIds,
-    declaredEntries: expectedDeclared,
-    runnableResults: results,
-    exclusions: expectedExclusions,
-    assignedEntries: expectedAssigned,
-  };
+  return expectedAssigned;
 }
 
 export function preflightRunEntries(

@@ -419,6 +419,8 @@ async function captureDirectEvidence(
   };
 }
 
+type ForgeaxCaptureContext = Awaited<ReturnType<typeof createForgeaxCaptureContext>>;
+
 async function createForgeaxCaptureContext(
   rendererKind: 'webgpu' | 'webgl',
   initialSceneCase: SceneCase,
@@ -465,7 +467,7 @@ async function createForgeaxCaptureContext(
 }
 
 async function disposeForgeaxCaptureContext(
-  context: Awaited<ReturnType<typeof createForgeaxCaptureContext>>,
+  context: ForgeaxCaptureContext,
 ): Promise<void> {
   const { canvas, renderer, rendererKind } = context;
   if (rendererKind === 'webgl') {
@@ -533,7 +535,7 @@ function countNonBlackPixels(pixels: Uint8Array): number {
 }
 
 async function captureWebkitLifecycleStage(
-  context: Awaited<ReturnType<typeof createForgeaxCaptureContext>>,
+  context: ForgeaxCaptureContext,
   stageCase: SceneCase,
   stage: WebkitLifecycleStageEvidence['stage'],
 ): Promise<WebkitLifecycleStageEvidence> {
@@ -618,7 +620,7 @@ async function captureWebkitLifecycleStage(
 async function runWebkitLifecycleRegression(): Promise<WebkitLifecycleEvidence> {
   const stages: WebkitLifecycleStageEvidence[] = [];
   const disposals: WebkitLifecycleDisposalEvidence[] = [];
-  let firstContext: Awaited<ReturnType<typeof createForgeaxCaptureContext>> | undefined;
+  let firstContext: ForgeaxCaptureContext | undefined;
   try {
     firstContext = await createForgeaxCaptureContext('webgl', webkitLifecycleCase);
     stages.push(await captureWebkitLifecycleStage(
@@ -688,8 +690,244 @@ async function runWebkitLifecycleRegression(): Promise<WebkitLifecycleEvidence> 
   };
 }
 
+type CaptureDrawResult = Awaited<ReturnType<typeof drawFirstCaptureFrame>>;
+
+function spotShadowSceneFor(caseId: string | undefined) {
+  if (caseId === SPOT_SHADOW_SCENES.urp.caseId) return SPOT_SHADOW_SCENES.urp;
+  if (caseId === SPOT_SHADOW_SCENES.hdrp.caseId) return SPOT_SHADOW_SCENES.hdrp;
+  return undefined;
+}
+
+function isIblCaptureCase(sceneCase: SceneCase): boolean {
+  return sceneCase.caseId === constantEnvironment.caseId;
+}
+
+function ensureCaptureRenderPath(
+  renderer: Renderer,
+  sceneCase: SceneCase,
+  expectedRenderPath: Parameters<Renderer['setProfile']>[0]['renderPath'],
+): void {
+  if (renderer.inspect().profile.renderPath === expectedRenderPath) return;
+  const profileResult = renderer.setProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: expectedRenderPath });
+  if (!profileResult.ok) throw new Error(`ForgeaX ${sceneCase.caseId} profile failed: ${profileResult.error.code}`);
+}
+
+function captureCameraTone(sceneCase: SceneCase, rendererKind: 'webgpu' | 'webgl') {
+  const toneCase = TONE_CASES_BY_ID.get(sceneCase.caseId);
+  if (toneCase !== undefined) {
+    return { tonemap: tonemapToU32(toneCase.tone.mode), exposure: toneCase.tone.exposure };
+  }
+  if (isIblCaptureCase(sceneCase)) return { tonemap: tonemapToU32('reinhard') };
+  // A linear-HDR fixture explicitly opts into the float scene producer. The
+  // no-tone/no-FXAA camera fast path intentionally renders straight to the
+  // display surface and does not publish an HDR observation attachment.
+  const directCase = m4DirectLightCasesById.get(sceneCase.caseId);
+  return directCase === undefined || rendererKind !== 'webgpu'
+    ? {}
+    : { tonemap: tonemapToU32('linear') };
+}
+
+function spawnCaptureCamera(world: World, sceneCase: SceneCase, rendererKind: 'webgpu' | 'webgl'): void {
+  const spotScene = spotShadowSceneFor(m4DirectLightCasesById.get(sceneCase.caseId)?.caseId);
+  world.spawn(
+    {
+      component: Transform,
+      data: {
+        pos: spotScene?.camera.position ?? [0, 0, 3],
+        quat: spotScene?.camera.rotation ?? [0, 0, 0, 1],
+      },
+    },
+    {
+      component: Camera,
+      data: {
+        ...perspective({
+          fov: ((spotScene?.camera.fovDeg ?? 45) * Math.PI) / 180,
+          aspect: (spotScene?.scene.width ?? sceneCase.scene.width) / (spotScene?.scene.height ?? sceneCase.scene.height),
+          near: 0.1,
+          far: 100,
+        }),
+        clearColor: sceneCase.scene.background,
+        ...captureCameraTone(sceneCase, rendererKind),
+      },
+    },
+  ).unwrap();
+}
+
+async function spawnCaptureScene(
+  world: World,
+  sceneCase: SceneCase,
+  rendererKind: 'webgpu' | 'webgl',
+  spotShadowFalsifier: SpotShadowFalsifierId | undefined,
+  spotShadowReceiver: SpotShadowReceiverVariant,
+): Promise<void> {
+  const input = m1CaptureInputs[sceneCase.caseId];
+  const m1Case = sceneCase.caseId.startsWith('default-') || sceneCase.caseId.startsWith('falsify-');
+  const m2Case = m2AlphaCasesById.get(sceneCase.caseId);
+  const toneCase = TONE_CASES_BY_ID.get(sceneCase.caseId);
+  const directCase = m4DirectLightCasesById.get(sceneCase.caseId);
+  const iblCase = isIblCaptureCase(sceneCase);
+  if (!m1Case && m2Case === undefined && toneCase === undefined && directCase === undefined && !iblCase) return;
+  spawnCaptureCamera(world, sceneCase, rendererKind);
+  if (input !== undefined) await spawnM1Primitive(world, input);
+  if (m2Case !== undefined) await spawnM2AlphaPrimitive(world, m2Case);
+  if (toneCase !== undefined) await spawnTonePrimitive(world, toneCase.tone.color);
+  if (directCase !== undefined) {
+    await spawnDirectLightPrimitive(world, directCase, spotShadowFalsifier, spotShadowReceiver);
+  }
+  if (iblCase) spawnIblPrimitive(world);
+  if (m2Case !== undefined) {
+    world.spawn({
+      component: DirectionalLight,
+      data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
+    });
+  }
+}
+
+async function drawFirstCaptureFrame(context: ForgeaxCaptureContext, world: World, lease: RenderWorldLease) {
+  world.update().unwrap();
+  return context.rendererKind === 'webgpu'
+    ? ok(await drawReadyFrame(context.renderer, { leases: [lease], camera: { lease }, environment: { lease } }))
+    : context.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+}
+
+function recordDrawDiagnostics(
+  renderer: Renderer,
+  drawResult: CaptureDrawResult,
+  diagnostics: AlphaCaptureDiagnostics | undefined,
+): void {
+  if (diagnostics === undefined) return;
+  diagnostics.draw = {
+    ok: drawResult.ok,
+    ...(drawResult.ok
+      ? { frameId: drawResult.value.frameId, deviceGeneration: drawResult.value.deviceGeneration }
+      : { error: drawResult.error }),
+  };
+  diagnostics.inspection = renderer.inspect() as unknown as Record<string, unknown>;
+}
+
+async function awaitCaptureCompletion(sceneCase: SceneCase, receipt: FrameReceipt): Promise<void> {
+  const completed = await receipt.completed;
+  if (!completed.ok) throw new Error(`ForgeaX ${sceneCase.caseId} completion failed: ${completed.error.code}`);
+}
+
+async function recordLinearHdrDiagnostics(
+  context: ForgeaxCaptureContext,
+  sceneCase: SceneCase,
+  diagnostics: AlphaCaptureDiagnostics,
+): Promise<void> {
+  const { legacyHost, debugDrawHost } = context;
+  const observation = await legacyHost.observeCurrentFrame({
+    semantic: 'linear-hdr',
+    readback: (lease) => readbackRgba16float(debugDrawHost.device, lease),
+  });
+  if (!observation.ok) return;
+  const offset = (Math.floor(sceneCase.scene.height / 2) * sceneCase.scene.width + Math.floor(sceneCase.scene.width / 2)) * 8;
+  diagnostics.linearHdr = {
+    centerBytes: Array.from(observation.value.bytes.slice(offset, offset + 8)),
+    nonZeroBytes: observation.value.bytes.reduce((count, byte) => count + (byte === 0 ? 0 : 1), 0),
+  };
+}
+
+async function settleCaptureFrames(
+  context: ForgeaxCaptureContext,
+  sceneCase: SceneCase,
+  world: World,
+  lease: RenderWorldLease,
+  receipt: FrameReceipt,
+  spotShadowCaptureFrames: number,
+  diagnostics: AlphaCaptureDiagnostics | undefined,
+): Promise<void> {
+  const webgpu = context.rendererKind === 'webgpu';
+  if (m2AlphaCasesById.has(sceneCase.caseId) && webgpu) {
+    await awaitCaptureCompletion(sceneCase, receipt);
+    await waitForAnimationFrameOrTimeout();
+    if (diagnostics !== undefined) await recordLinearHdrDiagnostics(context, sceneCase, diagnostics);
+  }
+  if (m4DirectLightCasesById.has(sceneCase.caseId) && webgpu) {
+    await awaitCaptureCompletion(sceneCase, receipt);
+    await drawSubmittedFrames(
+      context.renderer,
+      world,
+      lease,
+      Math.max(0, spotShadowCaptureFrames - 1),
+      `ForgeaX ${sceneCase.caseId} warmup`,
+    );
+  }
+  if (context.rendererKind === 'webgl') {
+    // The WebGL2 fallback has no browser GPU-queue completion event under
+    // headed Xvfb; compositor frames are its completion boundary.
+    await waitForAnimationFrameOrTimeout();
+    world.update().unwrap();
+    const warmedDraw = context.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    if (!warmedDraw.ok) throw new Error(`ForgeaX warmed draw failed: ${warmedDraw.error.code}`);
+    await waitForAnimationFrameOrTimeout();
+  }
+}
+
+function assertNoCaseRenderErrors(sceneCase: SceneCase, renderErrors: readonly string[]): void {
+  if (m2AlphaCasesById.has(sceneCase.caseId) && renderErrors.length > 0) {
+    throw new Error(`ForgeaX M2 render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
+  }
+  if (isIblCaptureCase(sceneCase) && renderErrors.length > 0) {
+    throw new Error(`ForgeaX IBL visual render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
+  }
+}
+
+async function readCaptureCanvas(
+  context: ForgeaxCaptureContext,
+  sceneCase: SceneCase,
+  diagnostics: AlphaCaptureDiagnostics | undefined,
+): Promise<Uint8Array> {
+  const { canvas, rendererKind, useWebkitCompositorReadback } = context;
+  if (isIblCaptureCase(sceneCase) && rendererKind === 'webgpu') await waitForAnimationFrameOrTimeout();
+  const pixels = await readCanvasPixels(canvas, useWebkitCompositorReadback);
+  if (diagnostics !== undefined) {
+    const centerOffset = (Math.floor(sceneCase.scene.height / 2) * sceneCase.scene.width + Math.floor(sceneCase.scene.width / 2)) * 4;
+    diagnostics.centerRgba = Array.from(pixels.slice(centerOffset, centerOffset + 4));
+    await waitForAnimationFrameOrTimeout();
+    const postFencePixels = await readCanvasPixels(canvas, useWebkitCompositorReadback);
+    diagnostics.postFenceRgba = Array.from(postFencePixels.slice(centerOffset, centerOffset + 4));
+  }
+  return pixels;
+}
+
+async function canvasCaptureResult(
+  context: ForgeaxCaptureContext,
+  sceneCase: SceneCase,
+  pixels: Uint8Array,
+  fallbackBackendId: 'webkit-webgl2' | 'chromium-webgl2' | undefined,
+) {
+  const { renderer, rendererKind } = context;
+  const surfaceEvidence = rendererKind === 'webgl' && fallbackBackendId !== undefined
+    ? await projectForgeaxSurfaceEvidence({
+        inspection: renderer.inspect(),
+        backendId: fallbackBackendId,
+        caseId: sceneCase.caseId,
+        pixels,
+        width: sceneCase.scene.width,
+        height: sceneCase.scene.height,
+      })
+    : undefined;
+  return {
+    linear: Array.from(pixels),
+    final: Array.from(pixels),
+    config: rendererKind === 'webgpu'
+      ? blackConfig(sceneCase)
+      : {
+          ...blackConfig(sceneCase),
+          readback: probeReadback({
+            finalReadbackAvailable: true,
+            linearReadbackAvailable: false,
+            namedAttachmentAvailable: false,
+            rawHashAvailable: true,
+          }),
+        },
+    ...(surfaceEvidence === undefined ? {} : { surfaceEvidence }),
+  };
+}
+
 async function captureForgeaxInContext(
-  context: Awaited<ReturnType<typeof createForgeaxCaptureContext>>,
+  context: ForgeaxCaptureContext,
   sceneCase: SceneCase,
   spotShadowFalsifier?: SpotShadowFalsifierId,
   spotShadowReceiver: SpotShadowReceiverVariant = 'base',
@@ -697,15 +935,12 @@ async function captureForgeaxInContext(
   fallbackBackendId?: 'webkit-webgl2' | 'chromium-webgl2',
   diagnostics?: AlphaCaptureDiagnostics,
 ) {
-  const { canvas, renderer, legacyHost, debugDrawHost, rendererKind, useWebkitCompositorReadback } = context;
+  const { canvas, renderer, legacyHost, debugDrawHost, rendererKind } = context;
   canvas.width = sceneCase.scene.width;
   canvas.height = sceneCase.scene.height;
   const directCase = m4DirectLightCasesById.get(sceneCase.caseId);
   const expectedRenderPath = directCase?.pipeline?.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
-  if (renderer.inspect().profile.renderPath !== expectedRenderPath) {
-    const profileResult = renderer.setProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: expectedRenderPath });
-    if (!profileResult.ok) throw new Error(`ForgeaX ${sceneCase.caseId} profile failed: ${profileResult.error.code}`);
-  }
+  ensureCaptureRenderPath(renderer, sceneCase, expectedRenderPath);
   const renderErrors: string[] = [];
   const events: Array<Record<string, unknown>> = [];
   const removeRenderErrorListener = renderer.subscribe((event) => {
@@ -721,171 +956,25 @@ async function captureForgeaxInContext(
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     attachedLease = worldAttachment1.value;
-    const input = m1CaptureInputs[sceneCase.caseId];
-    const m1Case = sceneCase.caseId.startsWith('default-') || sceneCase.caseId.startsWith('falsify-');
-    const m2Case = m2AlphaCasesById.get(sceneCase.caseId);
-    const toneCase = TONE_CASES_BY_ID.get(sceneCase.caseId);
     if (renderer.inspect().profile.renderPath !== expectedRenderPath) {
       throw new Error(`ForgeaX ${sceneCase.caseId} selected ${renderer.inspect().profile.renderPath} instead of ${expectedRenderPath}`);
     }
-    // A linear-HDR fixture explicitly opts into the float scene producer. The
-    // no-tone/no-FXAA camera fast path intentionally renders straight to the
-    // display surface and does not publish an HDR observation attachment.
-    const directTone = directCase === undefined || rendererKind !== 'webgpu'
-      ? {}
-      : { tonemap: tonemapToU32('linear') };
-    const iblCase = sceneCase.caseId === constantEnvironment.caseId;
-    const spotScene = directCase?.caseId === SPOT_SHADOW_SCENES.urp.caseId
-      ? SPOT_SHADOW_SCENES.urp
-      : directCase?.caseId === SPOT_SHADOW_SCENES.hdrp.caseId
-        ? SPOT_SHADOW_SCENES.hdrp
-        : undefined;
-    if (m1Case || m2Case !== undefined || toneCase !== undefined || directCase !== undefined || iblCase) {
-      world.spawn(
-        {
-          component: Transform,
-          data: {
-            pos: spotScene?.camera.position ?? [0, 0, 3],
-            quat: spotScene?.camera.rotation ?? [0, 0, 0, 1],
-          },
-        },
-        {
-          component: Camera,
-          data: {
-            ...perspective({
-              fov: ((spotScene?.camera.fovDeg ?? 45) * Math.PI) / 180,
-              aspect: (spotScene?.scene.width ?? sceneCase.scene.width) / (spotScene?.scene.height ?? sceneCase.scene.height),
-              near: 0.1,
-              far: 100,
-            }),
-            clearColor: sceneCase.scene.background,
-            ...(toneCase === undefined && !iblCase
-              ? directTone
-              : toneCase === undefined
-                ? { tonemap: tonemapToU32('reinhard') }
-                : { tonemap: tonemapToU32(toneCase.tone.mode), exposure: toneCase.tone.exposure }),
-          },
-        },
-      ).unwrap();
-      if (input !== undefined) await spawnM1Primitive(world, input);
-      if (m2Case !== undefined) await spawnM2AlphaPrimitive(world, m2Case);
-      if (toneCase !== undefined) await spawnTonePrimitive(world, toneCase.tone.color);
-      if (directCase !== undefined) {
-        await spawnDirectLightPrimitive(world, directCase, spotShadowFalsifier, spotShadowReceiver);
-      }
-      if (iblCase) spawnIblPrimitive(world);
-      if (m2Case !== undefined) {
-        world.spawn({
-          component: DirectionalLight,
-          data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
-        });
-      }
-    }
+    await spawnCaptureScene(world, sceneCase, rendererKind, spotShadowFalsifier, spotShadowReceiver);
     const lease = worldAttachment1.value;
-    const drawFrame = () => renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
-    world.update().unwrap();
-    const drawResult = rendererKind === 'webgpu'
-      ? ok(await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } }))
-      : drawFrame();
-    if (diagnostics !== undefined) {
-      diagnostics.draw = {
-        ok: drawResult.ok,
-        ...(drawResult.ok
-          ? { frameId: drawResult.value.frameId, deviceGeneration: drawResult.value.deviceGeneration }
-          : { error: drawResult.error }),
-      };
-      diagnostics.inspection = renderer.inspect() as unknown as Record<string, unknown>;
-    }
+    const drawResult = await drawFirstCaptureFrame(context, world, lease);
+    recordDrawDiagnostics(renderer, drawResult, diagnostics);
     if (!drawResult.ok) throw new Error(`ForgeaX draw failed: ${drawResult.error.code}`);
-    if (m2Case !== undefined && rendererKind === 'webgpu') {
-      const completed = await drawResult.value.completed;
-      if (!completed.ok) throw new Error(`ForgeaX ${sceneCase.caseId} completion failed: ${completed.error.code}`);
-      await waitForAnimationFrameOrTimeout();
-      if (diagnostics !== undefined) {
-        const observation = await legacyHost.observeCurrentFrame({
-          semantic: 'linear-hdr',
-          readback: (lease) => readbackRgba16float(debugDrawHost.device, lease),
-        });
-        if (observation.ok) {
-          const offset = (Math.floor(sceneCase.scene.height / 2) * sceneCase.scene.width + Math.floor(sceneCase.scene.width / 2)) * 8;
-          diagnostics.linearHdr = {
-            centerBytes: Array.from(observation.value.bytes.slice(offset, offset + 8)),
-            nonZeroBytes: observation.value.bytes.reduce((count, byte) => count + (byte === 0 ? 0 : 1), 0),
-          };
-        }
-      }
-    }
-    if (directCase !== undefined && rendererKind === 'webgpu') {
-      const completed = await drawResult.value.completed;
-      if (!completed.ok) throw new Error(`ForgeaX ${sceneCase.caseId} completion failed: ${completed.error.code}`);
-      await drawSubmittedFrames(
-        renderer,
-        world,
-        lease,
-        Math.max(0, spotShadowCaptureFrames - 1),
-        `ForgeaX ${sceneCase.caseId} warmup`,
-      );
-    }
-    if (rendererKind === 'webgl') {
-      // The WebGL2 fallback has no browser GPU-queue completion event under
-      // headed Xvfb; compositor frames are its completion boundary.
-      await waitForAnimationFrameOrTimeout();
-      world.update().unwrap();
-      const warmedDraw = drawFrame();
-      if (!warmedDraw.ok) throw new Error(`ForgeaX warmed draw failed: ${warmedDraw.error.code}`);
-      await waitForAnimationFrameOrTimeout();
-    }
-    if (m2Case !== undefined && renderErrors.length > 0) {
-      throw new Error(`ForgeaX M2 render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
-    }
-    if (iblCase && renderErrors.length > 0) {
-      throw new Error(`ForgeaX IBL visual render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
-    }
-    if (iblCase && rendererKind === 'webgpu') await waitForAnimationFrameOrTimeout();
-    const pixels = await readCanvasPixels(canvas, useWebkitCompositorReadback);
-    if (diagnostics !== undefined) {
-      const centerOffset = (Math.floor(sceneCase.scene.height / 2) * sceneCase.scene.width + Math.floor(sceneCase.scene.width / 2)) * 4;
-      diagnostics.centerRgba = Array.from(pixels.slice(centerOffset, centerOffset + 4));
-      await waitForAnimationFrameOrTimeout();
-      const postFencePixels = await readCanvasPixels(canvas, useWebkitCompositorReadback);
-      diagnostics.postFenceRgba = Array.from(postFencePixels.slice(centerOffset, centerOffset + 4));
-    }
+    await settleCaptureFrames(context, sceneCase, world, lease, drawResult.value, spotShadowCaptureFrames, diagnostics);
+    assertNoCaseRenderErrors(sceneCase, renderErrors);
+    const pixels = await readCaptureCanvas(context, sceneCase, diagnostics);
+    const m2Case = m2AlphaCasesById.get(sceneCase.caseId);
     if (m2Case !== undefined) assertM2AlphaReadback(m2Case, pixels);
     if (directCase !== undefined && rendererKind === 'webgpu') {
       const capture = await captureDirectEvidence(legacyHost, debugDrawHost.device, sceneCase, pixels, renderErrors);
       directProducerMetadata.set(sceneCase.caseId, capture.metadata);
       return { linear: [], final: Array.from(pixels), config: directReadbackConfig(sceneCase), observations: capture.evidence };
     }
-    const surfaceEvidence = rendererKind === 'webgl' && fallbackBackendId !== undefined
-      ? await projectForgeaxSurfaceEvidence({
-          inspection: renderer.inspect(),
-          backendId: fallbackBackendId,
-          caseId: sceneCase.caseId,
-          pixels,
-          width: sceneCase.scene.width,
-          height: sceneCase.scene.height,
-        })
-      : undefined;
-    return {
-      linear: Array.from(pixels),
-      final: Array.from(pixels),
-      config: rendererKind === 'webgpu'
-        ? blackConfig(sceneCase)
-        : {
-            ...blackConfig(sceneCase),
-            readback: probeReadback({
-              finalReadbackAvailable: true,
-              linearReadbackAvailable: false,
-              namedAttachmentAvailable: false,
-              rawHashAvailable: true,
-            }),
-          },
-      ...(surfaceEvidence === undefined ? {} : { surfaceEvidence }),
-    };
+    return await canvasCaptureResult(context, sceneCase, pixels, fallbackBackendId);
   } finally {
     if (diagnostics !== undefined) {
       diagnostics.events.push(...events);
@@ -919,7 +1008,7 @@ export async function captureForgeax(
 }
 
 export async function createForgeaxCaptureSession(initialSceneCase: SceneCase) {
-  let context: Awaited<ReturnType<typeof createForgeaxCaptureContext>> | undefined =
+  let context: ForgeaxCaptureContext | undefined =
     await createForgeaxCaptureContext('webgpu', initialSceneCase);
   let disposed = false;
   return {
@@ -972,11 +1061,7 @@ async function spawnDirectLightPrimitive(
 const sceneAssets = world.assets;
 if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
 
-    const spotShadowScene = sceneCase.caseId === SPOT_SHADOW_SCENES.urp.caseId
-    ? SPOT_SHADOW_SCENES.urp
-    : sceneCase.caseId === SPOT_SHADOW_SCENES.hdrp.caseId
-      ? SPOT_SHADOW_SCENES.hdrp
-      : undefined;
+  const spotShadowScene = spotShadowSceneFor(sceneCase.caseId);
   if (spotShadowScene !== undefined) {
     await spawnBrowserSpotShadowPrimitive(world, spotShadowScene, spotShadowFalsifier, spotShadowReceiver);
     return;

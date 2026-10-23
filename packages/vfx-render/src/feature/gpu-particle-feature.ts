@@ -316,11 +316,24 @@ type PublishedWorld = Omit<ExtractedWorld, 'emitterState' | 'intents' | 'retaine
   readonly meshes: ReadonlyMap<string | number, MeshAsset | number>;
   readonly emitterState: ReadonlyMap<string, PublishedEmitterState>;
   readonly intents: readonly PublishedIntent[];
+  /**
+   * A retained row carries its intent only until a submitted frame proved the
+   * receiver adopted that sequence; afterwards it names the sequence and the
+   * plan reuses its cached copy. A missing copy is reported and resent.
+   */
   readonly retained: readonly (Omit<RetainedEmitter, 'emitter' | 'intent'> & {
     readonly emitter: PublishedEmitter;
-    readonly intent: PublishedIntent;
+    readonly intentSequence: number;
+    readonly intent?: PublishedIntent;
   })[];
 };
+/** Stream identity shared by the source adoption ledger and the receiver cache. */
+const retainedStreamKey = (
+  runtime: number,
+  generation: number,
+  player: EntityHandle,
+  emitter: string,
+): string => `${runtime}:${generation}:${Number(player)}:${emitter}`;
 interface PublishedFrame {
   readonly worlds: readonly PublishedWorld[];
   readonly frameNumber: number;
@@ -873,6 +886,8 @@ export function gpuParticleRenderFeature(
     readonly outcomes: readonly IntentOutcome[];
     readonly observation: VfxRenderObservation;
     readonly requiredPasses: readonly string[];
+    /** False when a retained stream was missing, so its device state was not rebuilt. */
+    readonly rebuilt: boolean;
   }
   const pendingFrames = new Map<
     number,
@@ -1142,6 +1157,13 @@ export function gpuParticleRenderFeature(
     return state;
   };
   const sourceRuntimes = new Map<number, VfxGpuRuntime>();
+  /** Source ledger: retained intent sequence the receiver adopted, per stream. */
+  const adoptedRetained = new Map<string, number>();
+  /** Receiver cache: last published retained intent, per stream. */
+  const receivedRetained = new Map<
+    string,
+    { readonly sequence: number; readonly intent: PublishedIntent }
+  >();
   let lastObservation: VfxRenderObservation = Object.freeze({
     frameNumber: -1,
     dispatches: 0,
@@ -1582,10 +1604,23 @@ export function gpuParticleRenderFeature(
             if (intent !== undefined && !preparationPlayers.has(player)) {
               // Retained queued work owns its previous geometry and material leases.
               if (intent.emitter !== emitter) captureResources(player, intent.emitter);
+              // Field texture versions stay referenced even when the receiver
+              // already holds this exact intent.
+              const published = publishIntent(intent);
+              const adopted =
+                adoptedRetained.get(
+                  retainedStreamKey(
+                    runtimeId(runtime),
+                    runtime.renderGeneration ?? 0,
+                    player,
+                    intent.emitter.id,
+                  ),
+                ) === intent.sequence;
               retained.push({
                 player,
                 ...emitterReference(intent.effect, intent.emitter),
-                intent: publishIntent(intent),
+                intentSequence: intent.sequence,
+                ...(adopted ? {} : { intent: published }),
                 localToWorld: new Float32Array(localToWorld),
                 visible,
               });
@@ -1651,6 +1686,8 @@ export function gpuParticleRenderFeature(
       const emitterVisible = createEmitterVisibility();
       packArenas?.discardRetainedFrame();
       planSerial += 1;
+      const liveRetained = new Set<string>();
+      const missingRetained = new Map<number, string[]>();
       const entryKeys = new Map<ExtractedWorld, ReturnType<typeof streamKeys>>();
       const keysOf = (entry: ExtractedWorld) => {
         const keys = entryKeys.get(entry);
@@ -1737,7 +1774,34 @@ export function gpuParticleRenderFeature(
             const retained = new Map<string, RetainedEmitter>();
             for (const row of entry.retained) {
               if (preparationPlayers.has(row.player)) continue;
-              const intent = resolver.intent(row.intent);
+              const streamKey = retainedStreamKey(
+                entry.runtimeId,
+                entry.renderGeneration,
+                row.player,
+                row.emitter.id,
+              );
+              liveRetained.add(streamKey);
+              let published = row.intent;
+              if (published !== undefined)
+                receivedRetained.set(streamKey, {
+                  sequence: row.intentSequence ?? published.sequence,
+                  intent: published,
+                });
+              else {
+                const cached = receivedRetained.get(streamKey);
+                if (cached === undefined || cached.sequence !== row.intentSequence) {
+                  // Not drawable this frame; the source resends it next frame.
+                  let missing = missingRetained.get(entry.runtimeId);
+                  if (missing === undefined) {
+                    missing = [];
+                    missingRetained.set(entry.runtimeId, missing);
+                  }
+                  missing.push(streamKey);
+                  continue;
+                }
+                published = cached.intent;
+              }
+              const intent = resolver.intent(published);
               retained.set(keys.stream(row.player, intent.emitter.id).stateKey, {
                 player: row.player,
                 localToWorld: row.localToWorld,
@@ -3598,6 +3662,7 @@ export function gpuParticleRenderFeature(
             entry.intents.map((intent) => ({ intent, state: 'deferred' as const })),
           observation,
           requiredPasses: passes.filter((pass) => pass.enabled !== false).map((pass) => pass.name),
+          rebuilt: !missingRetained.has(entry.runtimeId),
         })),
         fields: [...fieldNames],
         generation: context.generation,
@@ -3618,7 +3683,10 @@ export function gpuParticleRenderFeature(
         published: (outcomesByEntry.get(entry) ?? [])
           .filter((row) => row.state === 'dispatched')
           .map((row) => row.intent.sequence),
+        missingRetained: missingRetained.get(entry.runtimeId) ?? [],
       }));
+      for (const key of receivedRetained.keys())
+        if (!liveRetained.has(key)) receivedRetained.delete(key);
       // Bound templates to the current successful producer roster. A removed
       // player or replaced program cannot keep its layouts alive indefinitely.
       bindingLayouts = nextBindingLayouts;
@@ -3703,7 +3771,9 @@ export function gpuParticleRenderFeature(
       for (const name of pending.fields) uploadedFields.set(name, pending.generation);
       for (const entry of pending.entries) {
         const state = runtimeState(entry.source.runtimeId);
-        state.submittedDeviceGeneration = entry.generation;
+        // Device rebuild replays every retained stream at once. Keep rebuilding
+        // until a submitted frame planned the full roster, including resends.
+        if (entry.rebuilt) state.submittedDeviceGeneration = entry.generation;
         // A deferred provider or target is an ordered barrier for its own
         // player/emitter stream. Other streams may still have terminal work in
         // this frame, so acknowledge those exact sequences without dropping
@@ -3770,8 +3840,39 @@ export function gpuParticleRenderFeature(
         acknowledged: number[];
         published: number[];
         visibility: { player: EntityHandle; emitter: string; visible: boolean }[];
+        missingRetained?: string[];
       }[]) {
         const source = frame.worlds.find((entry) => entry.runtimeId === row.runtimeId);
+        if (source !== undefined) {
+          // This submitted frame was planned by the receiver: every intent it
+          // carried is now cached there, and only reported misses are not.
+          for (const retained of source.retained)
+            if (retained.intent !== undefined)
+              adoptedRetained.set(
+                retainedStreamKey(
+                  source.runtimeId,
+                  source.renderGeneration,
+                  retained.player,
+                  retained.emitter.id,
+                ),
+                retained.intentSequence,
+              );
+          for (const key of row.missingRetained ?? []) adoptedRetained.delete(key);
+          // Bound the ledger to streams this runtime still retains.
+          const live = new Set(
+            source.retained.map((retained) =>
+              retainedStreamKey(
+                source.runtimeId,
+                source.renderGeneration,
+                retained.player,
+                retained.emitter.id,
+              ),
+            ),
+          );
+          const prefix = `${source.runtimeId}:`;
+          for (const key of adoptedRetained.keys())
+            if (key.startsWith(prefix) && !live.has(key)) adoptedRetained.delete(key);
+        }
         const runtime = sourceRuntimes.get(row.runtimeId);
         if (
           source === undefined ||

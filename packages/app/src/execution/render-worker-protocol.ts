@@ -89,8 +89,11 @@ export type RenderWorkerInput =
     > & {
       readonly kind: 'init';
       readonly identity: RenderPublicationIdentity;
+      /** Direct Host port for render-submitted / render-complete notices. */
+      readonly hostPort?: MessagePort;
       readonly worldIdentity: string;
       readonly rhiCapture?: boolean;
+      readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
       readonly gpuPassTiming?: GpuPassTimingOptions;
       /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
       readonly shadowWorkload?: boolean;

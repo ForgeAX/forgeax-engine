@@ -120,6 +120,17 @@ export interface RenderPublication extends RenderPublicationIdentity {
       | import('@forgeax/engine-assets-runtime').MaterialRenderProjection
       | null;
   }[];
+  /**
+   * Mesh asset rows whose exact payload the receiver already holds from a
+   * ready `mesh-prepare` residency for the same handle and revision. The
+   * receiver adopts that prepared payload, so the bytes cross once.
+   */
+  readonly preparedAssets?: readonly {
+    readonly handle: number;
+    readonly revision: number;
+    readonly guid?: string;
+    readonly sourceKey?: string;
+  }[];
   /** Fixed versions used by queued work, independent of the current asset rows. */
   readonly assetVersions?: readonly {
     readonly handle: number;

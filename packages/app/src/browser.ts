@@ -63,6 +63,7 @@ import {
 } from './execution';
 import { normalizeExecutionBootstrapUrl } from './execution/bootstrap-url';
 import { createLocalExecutionControl } from './execution/control';
+import { installCarriedGpuStub } from './execution/gpu-stub';
 import { createWorkerExecutionApp } from './execution/host-controller';
 import { attachInputAuto } from './internal/input-attach';
 import { mainEngineProfile } from './internal/main-engine-profile';
@@ -175,6 +176,9 @@ export async function createApp(
   // resize remains visible to both rendering and camera policy.
   // Programmer configuration: reject before any realm creates an AssetRegistry.
   if (opts?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(opts.assetBudgetBytes);
+  // Before capability probing and backend selection, so every ambient WebGPU
+  // reader in this realm observes the same stub.
+  installCarriedGpuStub(opts);
   resetCanvasDeviceLimit(canvas);
   syncCanvasDrawingBuffer(canvas);
 
@@ -224,7 +228,11 @@ export async function createApp(
     | undefined;
   let preparedExecutionBootstrap: PreparedExecutionBootstrap | undefined;
   if (opts?.execution !== undefined) {
-    const capabilities = await probeExecutionCapabilities(canvas, opts.execution.startupTimeoutMs);
+    const capabilities = await probeExecutionCapabilities(
+      canvas,
+      opts.execution.startupTimeoutMs,
+      opts.gpuStub !== undefined,
+    );
     const selected = selectExecutionWorkers({
       workers: opts.execution.workers ?? {},
       capabilities,

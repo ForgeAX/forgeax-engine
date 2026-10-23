@@ -604,20 +604,10 @@ it.each([
     },
   });
   expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation });
-  expect(messages).toContainEqual(
-    expect.objectContaining({
-      kind: 'render-complete',
-      frame: expect.objectContaining({
-        frameId: 7,
-        presentation: 'pending',
-        presentationPendingReason: {
-          code: 'scene-pipeline-preparation',
-          pass: 'fs_gbuffer',
-          shader: 'test::opaque',
-        },
-      }),
-    }),
-  );
+  // Render notices bypass the Engine; it only hands the Host the session port.
+  expect(messages.some((message) => message.kind === 'render-complete')).toBe(false);
+  expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-host-port', epoch: 1 }));
+  expect(worker.init?.hostPort).toBeDefined();
   await source.dispose();
 });
 

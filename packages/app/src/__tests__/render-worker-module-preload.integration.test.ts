@@ -173,7 +173,10 @@ class CpuModuleWorker {
     // Node transport with ownership transfer, as they do in the browser.
     this.thread.postMessage(
       message,
-      transfer.filter((value): value is ArrayBuffer => value instanceof ArrayBuffer),
+      transfer.filter(
+        (value): value is ArrayBuffer | MessagePort =>
+          value instanceof ArrayBuffer || value instanceof MessagePort,
+      ),
     );
   }
   submit(frameId: number): void {
@@ -305,61 +308,57 @@ it('bounds World updates by sealed publications, including pictures not yet subm
     child.posts.filter((message) => message.kind === 'draw').map((message) => message.frameId);
   const faults = () => state.posts.filter((message) => message.kind === 'fault');
   const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+  // Render notices reach the Host on the session port, not through the Engine.
+  const hostPort = state.posts.find((message) => message.kind === 'render-host-port');
+  if (hostPort?.kind !== 'render-host-port') throw new Error('Missing Render Host port');
+  const notices: EngineToHostMessage[] = [];
+  hostPort.port.onmessage = (event: MessageEvent<EngineToHostMessage>) =>
+    void notices.push(event.data);
+  const noticed = (kind: 'render-submitted' | 'render-complete', frameId: number) =>
+    notices.some(
+      (message) =>
+        message.kind === kind && message.epoch === 1 && message.frame.frameId === frameId,
+    );
   send(1);
   await vi.waitFor(() => expect(completions()).toHaveLength(1));
   send(2);
   await vi.waitFor(() => expect(completions()).toHaveLength(2));
   expect(pictures()).toEqual([1, 2]);
-  expect(state.posts.some((message) => message.kind === 'render-submitted')).toBe(false);
+  expect(notices).toEqual([]);
   const elapsed = world.getResource(Time).elapsed;
   const fixedTick = world.getResource(FixedTime).tick;
 
-  // A correctly paced Host never issues this request with two sealed publications.
-  // The Engine owner must still guard World mutation before preparing a third
-  // publication, rather than update and silently skip its picture.
+  // Host credit can return before this Engine processes the completion it
+  // carries. A third request with two sealed publications waits for that
+  // completion instead of updating the World or faulting a correctly paced Host.
   send(3);
   await drain();
   expect(updates).toBe(2);
   expect(world.getResource(Time).elapsed).toBe(elapsed);
   expect(world.getResource(FixedTime).tick).toBe(fixedTick);
   expect(completions()).toHaveLength(2);
-  expect(faults()).toMatchObject([
-    {
-      source: 'runtime',
-      code: 'app-frame-step-invalid',
-      detail: { reason: 'credit' },
-      partialWrite: false,
-    },
-  ]);
-  expect(completions()).toMatchObject([{ frameId: 1 }, { frameId: 2 }]);
+  expect(faults()).toEqual([]);
 
   child.submit(1);
-  await vi.waitFor(() =>
-    expect(state.posts.some((message) => message.kind === 'render-submitted')).toBe(true),
-  );
-  send(3);
+  await vi.waitFor(() => expect(noticed('render-submitted', 1)).toBe(true));
   await drain();
   expect(updates).toBe(2);
-  expect(pictures()).toEqual([1, 2]);
-  expect(faults()).toHaveLength(2);
+  expect(state.posts.some((message) => message.kind === 'render-submitted')).toBe(false);
 
-  child.complete(1);
-  await vi.waitFor(() =>
-    expect(state.posts.some((message) => message.kind === 'render-complete')).toBe(true),
-  );
+  // A duplicate request while the first waits is still ignored once capacity returns.
   send(3);
+  child.complete(1);
+  await vi.waitFor(() => expect(noticed('render-complete', 1)).toBe(true));
   await vi.waitFor(() => expect(completions()).toHaveLength(3));
+  await drain();
   expect(updates).toBe(3);
   expect(world.getResource(FixedTime).tick).toBe(fixedTick + 1);
   expect(pictures()).toEqual([1, 2, 3]);
   expect(completions().at(-1)).toMatchObject({
     frameId: 3,
   });
-  send(3);
-  await drain();
-  expect(updates).toBe(3);
-  expect(pictures()).toEqual([1, 2, 3]);
-  expect(faults()).toHaveLength(2);
+  expect(state.posts.some((message) => message.kind === 'render-complete')).toBe(false);
+  expect(faults()).toEqual([]);
   expect(world.execution.health).toBe('healthy');
 });
 

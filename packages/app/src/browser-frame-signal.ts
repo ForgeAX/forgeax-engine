@@ -2,16 +2,13 @@
  * Browser-visible render progress owned by the App frame loop.
  *
  * The Renderer already emits `frame-submitted` after its sole queue-submit
- * boundary. This adapter projects that event onto the document without
- * exposing a renderer handle or creating a second readiness registry. DevKit
- * capture waits on the same projection, then verifies compositor pixels.
+ * boundary. The canvas snapshot retains the latest submitted and completed
+ * facts for late readers; events only notify current subscribers.
  */
 
 import { freezeBarrelDistortionMapping } from '@forgeax/engine-render';
 
-export const FORGEAX_FRAME_SUBMITTED_DATASET = 'forgeaxFrameSubmitted';
 export const FORGEAX_FRAME_SUBMITTED_EVENT = 'forgeax:frame-submitted';
-export const FORGEAX_FRAME_COMPLETED_DATASET = 'forgeaxFrameCompleted';
 export const FORGEAX_FRAME_COMPLETED_EVENT = 'forgeax:frame-completed';
 
 export interface BrowserFrameSubmitted {
@@ -61,23 +58,25 @@ export interface BrowserFrameCompleted {
   readonly renderSubmitToCompleteMs?: number;
 }
 
-const submittedFrame = Symbol('forgeax.submitted-frame');
-type FrameCanvas = HTMLCanvasElement & { [submittedFrame]?: BrowserFrameSubmitted };
+export interface BrowserFrameProgress {
+  readonly submitted?: BrowserFrameSubmitted;
+  readonly completed?: BrowserFrameCompleted;
+}
 
-/** Read the canvas owner's accepted frame; reset invalidates this baseline. */
+declare global {
+  interface HTMLCanvasElement {
+    forgeaxFrameProgress?: BrowserFrameProgress;
+  }
+}
+
 export function readBrowserFrameSubmitted(
   canvas: HTMLCanvasElement,
 ): BrowserFrameSubmitted | undefined {
-  return (canvas as FrameCanvas)[submittedFrame];
+  return canvas.forgeaxFrameProgress?.submitted;
 }
 
-export function resetBrowserFrameSubmitted(canvas: HTMLCanvasElement): void {
-  delete (canvas as FrameCanvas)[submittedFrame];
-  const documentElement = canvas.ownerDocument?.documentElement;
-  if (documentElement !== undefined) {
-    delete documentElement.dataset[FORGEAX_FRAME_SUBMITTED_DATASET];
-    delete documentElement.dataset[FORGEAX_FRAME_COMPLETED_DATASET];
-  }
+export function resetBrowserFrameProgress(canvas: HTMLCanvasElement): void {
+  delete canvas.forgeaxFrameProgress;
 }
 
 export function publishBrowserFrameSubmitted(
@@ -91,15 +90,12 @@ export function publishBrowserFrameSubmitted(
       ? {}
       : { barrelDistortion: freezeBarrelDistortionMapping(event.barrelDistortion) }),
   });
-  (canvas as FrameCanvas)[submittedFrame] = published;
-  const documentElement = canvas.ownerDocument?.documentElement;
-  if (documentElement !== undefined) {
-    documentElement.dataset[FORGEAX_FRAME_SUBMITTED_DATASET] = String(published.frameId);
-  }
-  // Dawn-node smoke canvases intentionally expose only the drawing-buffer
-  // surface; they are not DOM EventTargets. Keep the document projection
-  // above useful for those hosts, while dispatching the browser event only
-  // when the host actually provides the optional EventTarget capability.
+  canvas.forgeaxFrameProgress = Object.freeze({
+    ...canvas.forgeaxFrameProgress,
+    submitted: published,
+  });
+  // Dawn-node smoke canvases expose only the drawing-buffer surface; browser
+  // event dispatch is optional there, while the internal snapshot remains.
   if (typeof CustomEvent === 'function' && typeof canvas.dispatchEvent === 'function') {
     canvas.dispatchEvent(
       new CustomEvent(FORGEAX_FRAME_SUBMITTED_EVENT, {
@@ -129,14 +125,15 @@ export function publishBrowserFrameCompleted(
   canvas: HTMLCanvasElement,
   event: BrowserFrameCompleted,
 ): void {
-  const documentElement = canvas.ownerDocument?.documentElement;
-  if (documentElement !== undefined) {
-    documentElement.dataset[FORGEAX_FRAME_COMPLETED_DATASET] = String(event.frameId);
-  }
+  const published = Object.freeze({ ...event });
+  canvas.forgeaxFrameProgress = Object.freeze({
+    ...canvas.forgeaxFrameProgress,
+    completed: published,
+  });
   if (typeof CustomEvent === 'function' && typeof canvas.dispatchEvent === 'function') {
     canvas.dispatchEvent(
       new CustomEvent(FORGEAX_FRAME_COMPLETED_EVENT, {
-        detail: Object.freeze({ ...event }),
+        detail: published,
       }),
     );
   }

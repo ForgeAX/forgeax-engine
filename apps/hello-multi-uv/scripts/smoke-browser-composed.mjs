@@ -333,12 +333,12 @@ async function captureRhiOnce(page, label) {
   // before arming the recorder, so the tape describes one topology rather than
   // a resize transition carrying retired and replacement MSAA targets.
   await page.waitForTimeout(RHI_CAPTURE_SETTLE_MS);
-  const frameIdBeforeCapture = await page.evaluate(() =>
-    Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0),
+  const frameIdBeforeCapture = await page.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
   );
   await page.waitForFunction(
     ({ previousFrameId, stableFrames }) =>
-      Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) >=
+      (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >=
       previousFrameId + stableFrames,
     { previousFrameId: frameIdBeforeCapture, stableFrames: RHI_CAPTURE_STABLE_FRAMES },
     { timeout: 10_000 },
@@ -640,14 +640,15 @@ async function applyLiveMaterialResizes(page) {
 }
 
 async function rebindLiveMaterial(page, label) {
-  const frameIdBeforeRebind = await page.evaluate(() =>
-    Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0),
+  const frameIdBeforeRebind = await page.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
   );
   const mutation = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.applyLiveMaterialRebind());
   if (mutation?.ok !== true) throw new Error(`${label} live material rebind failed: ${JSON.stringify(mutation)}`);
   await page.waitForFunction(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial.applied === true, null, { timeout: 10_000 });
   await page.waitForFunction(
-    (previousFrameId) => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) > previousFrameId,
+    (previousFrameId) =>
+      (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > previousFrameId,
     frameIdBeforeRebind,
     { timeout: 10_000 },
   );

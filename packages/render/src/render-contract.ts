@@ -399,13 +399,14 @@ export interface RenderPipelineContext {
   readonly pipelineState: RenderPipelineStateView;
   readonly runtime: RenderPipelineRuntime;
   readonly encoder: RhiCommandEncoder;
-  readonly view: TextureView;
+  /** Acquire presentation resources only when recording executable passes.
+   * Pipeline preparation may copy this context without touching the surface. */
+  readonly outputTarget: () => { readonly texture: Texture; readonly view: TextureView };
   readonly clear: readonly [number, number, number, number] | number[];
   readonly targetW: number;
   readonly targetH: number;
   /** Renderer-owned output/internal dimensions shared by Standard consumers. */
   readonly extent?: RenderExtent;
-  readonly currentTexture: Texture;
   readonly camera: CameraSnapshot;
   /** Per-frame post-process parameter bytes keyed by shader id. */
   readonly postProcessParams: ReadonlyMap<string, Uint8Array>;

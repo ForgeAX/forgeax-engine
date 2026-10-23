@@ -28,6 +28,23 @@ function fixture() {
   return { transport, broker, cli: connect('cli'), frontend: () => connect('frontend', 'view-frontend') };
 }
 
+it('serializes panel placement with its page or Shell dock owner', () => {
+  const input = snapshot();
+  input.panels = [
+    { id: 'content-browser', title: 'Content Browser', mounted: true, visible: true, active: true,
+      placement: { kind: 'shell-bottom', location: 'grid' } },
+    { id: 'inspector', title: 'Inspector', mounted: true, visible: true, active: false,
+      placement: { kind: 'page', pageId: 'material-1', pageType: 'material', location: 'edge' } },
+  ];
+  assert.deepEqual(serializePresentation(input).panels.map(panel => panel.placement), [
+    { kind: 'shell-bottom', location: 'grid' },
+    { kind: 'page', pageId: 'material-1', pageType: 'material', location: 'edge' },
+  ]);
+  assert.throws(() => serializePresentation({ ...input, panels: [
+    { ...input.panels[0], placement: { kind: 'page', pageId: 'material-1', pageType: 'material', location: 'left' } },
+  ] }), error => error.code === 'view-presentation-invalid');
+});
+
 it('queries the native PageHost lease freshly through the real Host workspace service', async () => {
   const { cli, frontend } = fixture();
   await assert.rejects(cli.call('presentation.get'), error => error.code === 'view-page-unavailable');

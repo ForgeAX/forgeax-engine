@@ -326,6 +326,9 @@ describe('Worker ExecutionApp terminal stop', () => {
     if (!result.ok) return;
     try {
       const before = result.value.execution.report();
+      canvas.forgeaxFrameProgress = {
+        submitted: { frameId: 7, deviceGeneration: 1 },
+      };
       probes.sessionListeners[0]?.({
         kind: 'surface-request',
         requestId: 1,
@@ -350,6 +353,7 @@ describe('Worker ExecutionApp terminal stop', () => {
       expect(canvas.replaceWith).toHaveBeenCalledExactlyOnceWith(replacement);
       expect(replacement.transferControlToOffscreen).toHaveBeenCalledTimes(1);
       expect(clear).toHaveBeenCalledTimes(1);
+      expect(canvas.forgeaxFrameProgress).toBeUndefined();
       expect(result.value.canvas).toBe(replacement);
       expect(result.value.execution.report()).toEqual(before);
       expect(probes.sessionPost).toHaveBeenLastCalledWith(
@@ -528,7 +532,11 @@ describe('Worker ExecutionApp terminal stop', () => {
     expect(result.value.pause().ok).toBe(true);
     expect(cancelRaf).toHaveBeenCalledTimes(1);
 
+    result.value.canvas.forgeaxFrameProgress = {
+      submitted: { frameId: 7, deviceGeneration: 1 },
+    };
     expect(result.value.stop().ok).toBe(true);
+    expect(result.value.canvas.forgeaxFrameProgress).toBeUndefined();
     expect(probes.inputDetach).toHaveBeenCalledTimes(1);
     expect(probes.audioDispose).toHaveBeenCalledTimes(1);
     expect(probes.sessionDispose).toHaveBeenCalledTimes(1);
@@ -555,6 +563,9 @@ describe('Worker ExecutionApp terminal stop', () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    result.value.canvas.forgeaxFrameProgress = {
+      submitted: { frameId: 1, deviceGeneration: 1 },
+    };
     let observed: unknown;
     result.value.onError((error) => {
       observed = error;
@@ -579,5 +590,6 @@ describe('Worker ExecutionApp terminal stop', () => {
       code: 'app-system-update-failed',
       detail: { cause: { cause: 'worker boom' } },
     });
+    expect(result.value.canvas.forgeaxFrameProgress).toBeUndefined();
   });
 });

@@ -1,5 +1,7 @@
 {
   "mesh": {
+    "uvFrameAll": "\u5b8c\u6574\u53d6\u666f",
+    "uv": "UV", "uvDescription": "\u53ea\u8bfb\u67e5\u770b\u7f51\u683c UV \u901a\u9053\u3002", "uvChannel": "UV \u901a\u9053 {{channel}}", "uvBindingChanged": "\u7f51\u683c UV \u7ed1\u5b9a\u5df2\u53d8\u5316\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9\u901a\u9053\u3002", "noUv": "\u6b64\u7f51\u683c\u6ca1\u6709 UV \u901a\u9053\u3002",
     "empty": "打开网格资产",
     "unavailable": "网格检查不可用",
     "inspectFailed": "Engine asset.inspect 没有返回该 GUID 的网格事实。",

@@ -12,6 +12,7 @@ import {
   type EngineWorkspaceRuntime,
 } from './workspace';
 import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
+import type { EngineWorkspacePickGranularity } from './workspace-target-tools';
 
 export const ENGINE_WORKSPACE_TOOL_SOURCE = 'engine-workspace';
 export const ENGINE_WORKSPACE_STATE_TOPIC = 'engine.workspace.state';
@@ -121,6 +122,15 @@ export function createEngineWorkspaceTools(
     }
     return current;
   };
+  const materialPreview = (args: Args) => {
+    const control = preview(args).material;
+    if (!control)
+      throw new EngineWorkspaceError(
+        'engine-workspace-capability-unavailable',
+        'A material preview target',
+      );
+    return control;
+  };
   const cameraInput = (args: Args, context: ToolExecutionContext): EngineWorkspaceCameraInput => ({
     targetId: string(args, 'targetId'),
     clientId: context.caller?.sourceId ?? string(args, 'clientId'),
@@ -143,7 +153,11 @@ export function createEngineWorkspaceTools(
     }
   > = {
     'target.pick': {
-      summary: 'Pick against the actual submitted display mapping and current entity bounds.',
+      summary:
+        'Pick against the actual submitted display mapping using bounds or exact triangle geometry.',
+      properties: {
+        granularity: { type: 'string', enum: ['bounds', 'triangle'] },
+      },
       async run(args) {
         const owner = preview(args);
         if (!owner.tools?.pick)
@@ -153,7 +167,13 @@ export function createEngineWorkspaceTools(
           );
         if (typeof args.x !== 'number' || typeof args.y !== 'number')
           throw new TypeError('Picking requires output pixels');
-        const result = await owner.tools.pick({ x: args.x, y: args.y });
+        const result = await owner.tools.pick({
+          x: args.x,
+          y: args.y,
+          ...(args.granularity === undefined
+            ? {}
+            : { granularity: args.granularity as EngineWorkspacePickGranularity }),
+        });
         if (owner !== preview(args))
           throw new EngineWorkspaceError('engine-workspace-target-stale', 'The same target');
         return result;
@@ -367,6 +387,39 @@ export function createEngineWorkspaceTools(
         return snapshotEngineWorkspace(runtime);
       },
     },
+    'preview.material.get': {
+      summary: 'Read the exact material preview mesh, rotation and center.',
+      run(args) {
+        return materialPreview(args).get();
+      },
+    },
+    'preview.material.set': {
+      summary:
+        'Select the primitive on the exact material preview without changing the material or camera.',
+      properties: { mesh: { type: 'string', enum: ['sphere', 'cylinder', 'plane', 'cube'] } },
+      run(args) {
+        return materialPreview(args).set(
+          args.mesh as import('./workspace-material-preview').MaterialPreviewMesh,
+        );
+      },
+    },
+    'preview.material.rotate': {
+      summary: 'Rotate only the exact material preview object by yaw and pitch in radians.',
+      properties: { yaw: { type: 'number' }, pitch: { type: 'number' } },
+      run(args) {
+        return materialPreview(args).rotate({
+          yaw: args.yaw as number,
+          pitch: args.pitch as number,
+        });
+      },
+    },
+    'preview.material.reset': {
+      summary:
+        'Restore the exact material preview object orientation, retaining its mesh and camera.',
+      run(args) {
+        return materialPreview(args).reset();
+      },
+    },
     'preview.texture.get': {
       summary: 'Read the bound texture dimensions, mip levels and display settings.',
       run(args) {
@@ -420,6 +473,7 @@ export function createEngineWorkspaceTools(
     },
     'preview.display.get': {
       summary: 'Read the identified resource preview display capabilities and current settings.',
+      properties: { uvChannel: { type: 'integer', minimum: 0, maximum: 7 } },
       async run(args, context) {
         const owner = preview(args);
         if (!owner.display)
@@ -427,7 +481,18 @@ export function createEngineWorkspaceTools(
             'engine-workspace-capability-unavailable',
             'A resource preview display plugin',
           );
-        const result = await owner.display.get({ signal: context.signal });
+        if (
+          args.uvChannel !== undefined &&
+          (typeof args.uvChannel !== 'number' ||
+            !Number.isInteger(args.uvChannel) ||
+            args.uvChannel < 0 ||
+            args.uvChannel > 7)
+        )
+          throw new TypeError('uvChannel must be an integer from 0 to 7');
+        const result = await owner.display.get({
+          signal: context.signal,
+          ...(typeof args.uvChannel === 'number' ? { uvChannel: args.uvChannel } : {}),
+        });
         if (owner !== preview(args))
           throw new EngineWorkspaceError(
             'engine-workspace-target-stale',
@@ -855,6 +920,7 @@ export function createEngineWorkspaceTools(
               'target.pick',
               'camera.get',
               'preview.display.get',
+              'preview.material.get',
               'preview.capture',
               'runtime-pack.inspect',
               'runtime-pack.snapshot',

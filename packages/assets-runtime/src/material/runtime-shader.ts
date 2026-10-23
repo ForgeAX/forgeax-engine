@@ -321,6 +321,7 @@ export function installMaterialReadyShaders(
     const { default: _default, ...parameter } = entry;
     return parameter;
   });
+  const paramSchemaText = JSON.stringify(paramSchema);
   const entries = readiness.record.programs.map((program) => {
     const source = decodeProgram(program.artifact.bytes);
     if (source.length === 0)
@@ -350,24 +351,26 @@ export function installMaterialReadyShaders(
     const checked = validation.register(artifact);
     if (!checked.ok) throw conflictError(checked.error);
     const shader = shaderRegistry.findMaterialArtifact(artifact.key);
-    if (
-      shader.ok &&
-      (shader.value.source !== source ||
-        JSON.stringify(shader.value.paramSchema) !== JSON.stringify(paramSchema) ||
-        JSON.stringify(shader.value.receipt) !== JSON.stringify(abi))
-    ) {
+    if (!shader.ok) continue;
+    // Identical values need no serialization; the shared ABI usually is the same object.
+    const dimension =
+      shader.value.source !== source
+        ? 'bytes'
+        : shader.value.paramSchema !== paramSchema &&
+            JSON.stringify(shader.value.paramSchema) !== paramSchemaText
+          ? 'param-schema'
+          : shader.value.receipt !== abi &&
+              JSON.stringify(shader.value.receipt) !== JSON.stringify(abi)
+            ? 'receipt'
+            : undefined;
+    if (dimension !== undefined) {
       throw conflictError({
         code: 'material-artifact-conflict',
         expected: 'one immutable source, interface, and ABI receipt per program key',
         hint: 're-cook the conflicting program',
         detail: {
           key: artifact.key,
-          dimension:
-            shader.value.source !== source
-              ? 'bytes'
-              : JSON.stringify(shader.value.paramSchema) !== JSON.stringify(paramSchema)
-                ? 'param-schema'
-                : 'receipt',
+          dimension,
         },
       });
     }

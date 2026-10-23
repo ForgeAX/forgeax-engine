@@ -35,6 +35,7 @@ export type {
   ExecutionOptions,
   ExecutionRenderCapabilities,
   ExecutionRendererInspectionContext,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
   ExecutionRenderLimits,
   ExecutionReport,

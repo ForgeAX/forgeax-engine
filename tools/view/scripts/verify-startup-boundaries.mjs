@@ -21,6 +21,7 @@ const command = async (...args) => {
 let browser;
 let page;
 let client;
+let stage = 'fixture';
 const errors = [];
 try {
   await mkdir(join(root, 'assets'));
@@ -53,7 +54,12 @@ try {
   assert.equal((await command('backend', 'status')).phase, 'stopped');
   const previousBrowserPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
   const previousExecutable = process.env.FORGEAX_BROWSER_EXECUTABLE;
+  const previousCi = process.env.CI;
   try {
+    // The detached backend has no stdin. Vite's interactive EOF handler would
+    // otherwise exit the process when the first project server is created.
+    process.env.CI = 'true';
+    console.error('Detached backend mode', JSON.stringify({ inheritedCI: previousCi ?? null, CI: process.env.CI }));
     process.env.PLAYWRIGHT_BROWSERS_PATH = join(root, 'uninstalled-browser-cache');
     process.env.FORGEAX_BROWSER_EXECUTABLE = '/uninstalled/chromium';
     const starts = await Promise.all([
@@ -64,6 +70,8 @@ try {
     assert.equal((await command('backend', 'status')).phase, 'ready');
     assert.equal((await command('view', 'start', '--input', viewStartInput)).phase, 'ready');
   } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
     if (previousBrowserPath === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
     else process.env.PLAYWRIGHT_BROWSERS_PATH = previousBrowserPath;
     if (previousExecutable === undefined) delete process.env.FORGEAX_BROWSER_EXECUTABLE;
@@ -74,10 +82,12 @@ try {
   client = await connectViewWorkspace({ endpoint: bootstrap.endpoint, token: bootstrap.token, clientId: 'startup-proof' });
   assert.equal((await client.getState()).project ?? null, null);
   console.error('Backend and View ready without a browser installation or project');
+  stage = 'partial-project-open';
   const partialOpenStarted = Date.now();
   const partial = await client.openProject(brokenRoot);
   assert.equal(partial.project.root, await realpath(brokenRoot), 'bad sources must not block project admission');
   assert.ok(Date.now() - partialOpenStarted < 30_000, 'partial admission must not spend another catalog deadline');
+  stage = 'partial-project-inventory';
   const inventory = await client.transport.request(VIEW_PACK_SOURCES_SERVICE, { projectId: partial.project.id });
   const bad = inventory.sources.find(source => source.sourcePath === 'assets/broken.pack.json');
   assert.equal(bad?.diagnostic?.code, 'pack-malformed-pack', 'the bad source must retain its own diagnostic');
@@ -86,9 +96,11 @@ try {
   assert.ok(healthy, 'healthy siblings must remain visible');
   assert.equal(healthy.diagnostic, undefined);
   assert.equal((await command('view', 'status')).phase, 'ready');
+  stage = 'partial-project-close';
   await client.closeProject(partial.project.id);
   console.error('bad Packs preserve source diagnostics and healthy siblings without blocking project admission');
   assert.equal((await client.getState()).project ?? null, null);
+  stage = 'browser-start';
   browser = await chromium.launch({
     ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
     headless: true, args: ['--disable-gpu', '--disable-webgpu'],
@@ -123,6 +135,7 @@ try {
   await page.screenshot({ path: '/tmp/view-startup-empty.png' });
   assert.deepEqual(errors, [], 'empty Shell must not produce page errors');
   await page.getByLabel('Project path', { exact: true }).fill(root);
+  stage = 'renderer-failure';
   await page.getByRole('button', { name: 'Open project', exact: true }).click();
   await page.waitForURL(url => url.searchParams.has('forgeaxWorkspaceTarget'), { timeout: 30_000 });
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 60_000 });
@@ -164,6 +177,7 @@ try {
   await page.screenshot({ path: '/tmp/view-startup-renderer-failure.png' });
   await client.call('display.bind', { root: null });
   assert.equal((await client.call('display.status')).binding, null);
+  stage = 'view-restart';
   assert.equal((await command('view', 'stop')).phase, 'stopped');
   assert.equal((await command('backend', 'status')).phase, 'ready');
   const restarted = await command('view', 'start', '--input', viewStartInput);
@@ -173,6 +187,9 @@ try {
   await page.getByRole('button', { name: 'Reconnect', exact: true }).waitFor();
   console.error('PASS: empty UI, exact observation binding, renderer failure isolation, independent View stop/restart');
 } catch (error) {
+  console.error('STARTUP-FAILURE', JSON.stringify({ stage,
+    backend: await command('backend', 'status').catch(cause => ({ error: cause.message })),
+  }));
   if (page && !page.isClosed()) {
     await page.screenshot({ path: '/tmp/view-startup-failure.png' }).catch(() => {});
     console.error('URL', page.url());

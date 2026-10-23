@@ -2,56 +2,79 @@ import type { PanelClaim, PanelLayout } from '@forgeax/view-workspace-core/front
 const PANEL_DOCKS = new Set(['fill', 'top', 'bottom', 'left', 'right', 'right-bottom']);
 const PANEL_STACKS = new Set(['tabs', 'split']);
 
-function normalizeLayout(layout: PanelLayout | undefined) {
+function slotElementId(slot: string) {
+  return `forgeax-view-slot-${slot}`;
+}
+
+function normalizeLayout(layout: unknown, home: PanelClaim['home']): PanelClaim['layout'] {
   if (!layout || typeof layout !== 'object' || Array.isArray(layout)) {
     throw new TypeError('panel claim requires layout');
   }
+  const value = layout as Record<string, unknown>;
+  const fields = home.kind === 'page' ? ['dock', 'size', 'stack', 'order'] : ['order'];
   for (const field of Object.keys(layout)) {
-    if (!['dock', 'size', 'stack', 'order'].includes(field)) {
+    if (!fields.includes(field)) {
+      if (home.kind === 'shell-bottom') {
+        throw new TypeError(`shell-bottom panel layout supports only order; unknown field: ${field}`);
+      }
       throw new TypeError(`Unknown panel layout field: ${field}`);
     }
   }
-  if (!PANEL_DOCKS.has(layout.dock)) {
+
+  if (!Number.isFinite(value.order)) throw new TypeError('panel layout requires numeric order');
+  if (home.kind === 'shell-bottom') return Object.freeze({ order: value.order as number });
+
+  const pageLayout = value as unknown as PanelLayout;
+  const dock = pageLayout.dock;
+  if (!PANEL_DOCKS.has(dock ?? '')) {
     throw new TypeError('panel layout dock must be fill, top, bottom, left, right, or right-bottom');
   }
-  if (!PANEL_STACKS.has(layout.stack)) {
+  if (!PANEL_STACKS.has(pageLayout.stack)) {
     throw new TypeError('panel layout stack must be tabs or split');
   }
-  if (!Number.isFinite(layout.order)) throw new TypeError('panel layout requires numeric order');
   let size: PanelLayout['size'];
-  if (layout.size !== undefined) {
-    if (!layout.size || typeof layout.size !== 'object' || Array.isArray(layout.size)) {
+  if (pageLayout.size !== undefined) {
+    if (!pageLayout.size || typeof pageLayout.size !== 'object' || Array.isArray(pageLayout.size)) {
       throw new TypeError('panel layout size must be an object');
     }
-    for (const field of Object.keys(layout.size)) {
+    for (const field of Object.keys(pageLayout.size)) {
       if (!['value', 'unit', 'additionalPx'].includes(field)) {
         throw new TypeError(`Unknown panel layout size field: ${field}`);
       }
     }
-    if (!Number.isFinite(layout.size.value) || layout.size.value <= 0) {
+    if (!Number.isFinite(pageLayout.size.value) || pageLayout.size.value <= 0) {
       throw new TypeError('panel layout size value must be positive');
     }
-    if (layout.size.unit !== 'px' && layout.size.unit !== 'fraction') {
+    if (pageLayout.size.unit !== 'px' && pageLayout.size.unit !== 'fraction') {
       throw new TypeError('panel layout size unit must be px or fraction');
     }
-    if (layout.size.unit === 'fraction' && layout.size.value > 1) {
+    if (pageLayout.size.unit === 'fraction' && pageLayout.size.value > 1) {
       throw new TypeError('panel layout fraction must not exceed 1');
     }
-    if (layout.size.additionalPx !== undefined && (layout.size.unit !== 'fraction' || !Number.isFinite(layout.size.additionalPx) || layout.size.additionalPx < 0)) {
+    if (pageLayout.size.additionalPx !== undefined && (pageLayout.size.unit !== 'fraction' || !Number.isFinite(pageLayout.size.additionalPx) || pageLayout.size.additionalPx < 0)) {
       throw new TypeError('panel layout additionalPx must be a nonnegative fraction offset');
     }
-    size = Object.freeze({ value: layout.size.value, unit: layout.size.unit, ...(layout.size.additionalPx === undefined ? {} : { additionalPx: layout.size.additionalPx }) });
+    size = Object.freeze({ value: pageLayout.size.value, unit: pageLayout.size.unit, ...(pageLayout.size.additionalPx === undefined ? {} : { additionalPx: pageLayout.size.additionalPx }) });
   }
   return Object.freeze({
-    dock: layout.dock,
+    dock,
     ...(size === undefined ? {} : { size }),
-    stack: layout.stack,
-    order: layout.order,
+    stack: pageLayout.stack,
+    order: pageLayout.order,
   });
 }
 
-function slotElementId(slot: string) {
-  return `forgeax-view-slot-${slot}`;
+function normalizeHome(home: unknown) {
+  if (!home || typeof home !== 'object' || Array.isArray(home)) throw new TypeError('panel claim requires home');
+  const value = home as Record<string, unknown>;
+  if (value.kind === 'page' && Object.keys(value).every(field => ['kind', 'pageType'].includes(field))
+      && typeof value.pageType === 'string' && value.pageType.trim() !== '') {
+    return Object.freeze({ kind: 'page' as const, pageType: value.pageType });
+  }
+  if (value.kind === 'shell-bottom' && Object.keys(value).every(field => field === 'kind')) {
+    return Object.freeze({ kind: 'shell-bottom' as const });
+  }
+  throw new TypeError('panel home must be a page with pageType or shell-bottom');
 }
 
 export function createViewSlotRegistry(document = globalThis.document, { onChange }: { onChange?: (claims: readonly PanelClaim[]) => void } = {}) {
@@ -63,7 +86,9 @@ export function createViewSlotRegistry(document = globalThis.document, { onChang
   const notify = () => {
     snapshot = Object.freeze(
       [...claims.values()].sort((a, b) => {
-        const pageDelta = a.pageType.localeCompare(b.pageType);
+        const pageA = a.home.kind === 'page' ? a.home.pageType : 'workspace';
+        const pageB = b.home.kind === 'page' ? b.home.pageType : 'workspace';
+        const pageDelta = pageA.localeCompare(pageB);
         return pageDelta || a.layout.order - b.layout.order || a.id.localeCompare(b.id);
       }),
     );
@@ -73,7 +98,7 @@ export function createViewSlotRegistry(document = globalThis.document, { onChang
       new CustomEvent('forgeax-view-slot-layout', { detail: { claims: snapshot } }),
     );
   };
-  const ensureMountHost = (id: string) => {
+  const ensureMountHost = (id: string, anchor?: HTMLElement) => {
     const claim = claims.get(id);
     if (!claim) throw new Error(`View panel is not claimed: ${id}`);
     let host = mountHosts.get(id);
@@ -83,8 +108,8 @@ export function createViewSlotRegistry(document = globalThis.document, { onChang
       host.dataset.forgeaxViewMountHost = id;
       mountHosts.set(id, host);
     }
-    const anchor = document.getElementById(slotElementId(id));
-    if (anchor && host.parentNode !== anchor) anchor.replaceChildren(host);
+    const target = anchor ?? document.getElementById(slotElementId(id));
+    if (target && host.parentNode !== target) target.replaceChildren(host);
     return host;
   };
   const resolveWhenReady = (id: string) => Promise.resolve(ensureMountHost(id));
@@ -94,12 +119,13 @@ export function createViewSlotRegistry(document = globalThis.document, { onChang
       listener(snapshot);
       return () => listeners.delete(listener);
     },
-    claim({ id, slot, pageType, titleKey, activity, layout, closable, dockTitleHidden }: Partial<PanelClaim> = {}) {
+    claim(input: PanelClaim) {
+      let { id, slot, titleKey, activity, layout, closable, dockTitleHidden } = input as PanelClaim;
+      const { home } = input as PanelClaim;
       id ??= slot!;
       if (!id) throw new TypeError('panel claim requires id');
-      if (typeof pageType !== 'string' || pageType.trim() === '') {
-        throw new TypeError('panel claim requires pageType');
-      }
+      const normalizedHome = normalizeHome(home);
+      const normalizedLayout = normalizeLayout(layout, normalizedHome);
       if (closable !== undefined && typeof closable !== 'boolean') {
         throw new TypeError('panel claim closable must be a boolean');
       }
@@ -108,13 +134,13 @@ export function createViewSlotRegistry(document = globalThis.document, { onChang
       }
       const claim = Object.freeze({
         id,
-        pageType,
+        home: normalizedHome,
         titleKey,
         ...(activity === undefined ? {} : { activity: Object.freeze({ ...activity }) }),
-        layout: normalizeLayout(layout),
+        layout: normalizedLayout,
         ...(closable === undefined ? {} : { closable }),
         ...(dockTitleHidden === undefined ? {} : { dockTitleHidden }),
-      });
+      }) as PanelClaim;
       claims.set(id, claim);
       notify();
       return () => {

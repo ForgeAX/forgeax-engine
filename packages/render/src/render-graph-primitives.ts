@@ -492,7 +492,7 @@ export function recordSsaoBlurPass(
  *   `buildFullscreenPostProcessPass`, composes the per-frame bind group
  *   via `createFullscreenBindGroup`, opens a render pass writing the
  *   declared `color` (resolved through the graph's color-target view, or
- *   the swap-chain `ctx.view` when the graph has not allocated a target),
+ *   the swap-chain `ctx.outputTarget().view` when the graph has not allocated a target),
  *   binds the input bind group at slot 1 (the 0 slot is reserved for
  *   future view bind groups), and calls `handle.draw(pass)` which
  *   internally does `setPipeline(pipeline)` + `draw(3, 1, 0, 0)` over the
@@ -561,7 +561,7 @@ function dispatchFullscreenPass(
       });
     }
     ctx.encoder.copyTextureToTexture(
-      { texture: ctx.currentTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+      { texture: ctx.outputTarget().texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
       { texture: scratchTex as Texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
       { width: ctx.targetW, height: ctx.targetH, depthOrArrayLayers: 1 },
     );
@@ -569,7 +569,7 @@ function dispatchFullscreenPass(
   } else if (reads.length === 0) {
     // reads === [] preserves the legacy swap-chain sample path (used by
     // tonemap-style passes that read the framebuffer directly).
-    inputView = ctx.view;
+    inputView = ctx.outputTarget().view;
   } else {
     // reads with a key MUST resolve through the graph compile output, otherwise
     // the dispatcher throws fullscreen-input-not-found (charter P3 fail-fast).
@@ -633,7 +633,7 @@ function dispatchFullscreenPass(
   // NON-srgb storage view (R-COLORSPACE — the scratch holds an already-sRGB-
   // encoded copy, so writing through the srgb view would double-encode; mirrors
   // recordFxaaPass). Otherwise resolve the declared color through the graph and
-  // fall back to ctx.view (swap-chain srgb view) for normal post passes.
+  // fall back to ctx.outputTarget().view (swap-chain srgb view) for normal post passes.
   let writeView: TextureView | null | undefined;
   // The attachment format follows the actual write target. Graph-owned
   // targets may be linear HDR/LDR textures (for example rgba16float), while
@@ -643,10 +643,10 @@ function dispatchFullscreenPass(
     // Typed graph passes must write their declared output target. The frame
     // surface view is only the fallback for legacy passes; using it here
     // leaves a typed output target cleared while the next pass samples it.
-    writeView = (resolveCtx?.resolve(color) as TextureView | undefined) ?? ctx.view;
+    writeView = (resolveCtx?.resolve(color) as TextureView | undefined) ?? ctx.outputTarget().view;
     writeFormat = graphOutputFormats?.[0] ?? writeFormat;
   } else if (rawSwapchainOutput && color === 'swapchain') {
-    const rawViewRes = ctx.runtime.device.createTextureView(ctx.currentTexture, {});
+    const rawViewRes = ctx.runtime.device.createTextureView(ctx.outputTarget().texture, {});
     if (!rawViewRes.ok) {
       ctx.runtime.errorRegistry.fire(rawViewRes.error);
       return;
@@ -654,7 +654,7 @@ function dispatchFullscreenPass(
     writeView = rawViewRes.value;
     writeFormat = ctx.pipelineState?.format ?? 'rgba8unorm';
   } else if (compositeOverSwapchain) {
-    const storageViewRes = ctx.runtime.device.createTextureView(ctx.currentTexture, {});
+    const storageViewRes = ctx.runtime.device.createTextureView(ctx.outputTarget().texture, {});
     if (!storageViewRes.ok) {
       ctx.runtime.errorRegistry.fire(storageViewRes.error);
       return;
@@ -666,7 +666,7 @@ function dispatchFullscreenPass(
     const graphColorFormat = legacyGraph?.getColorTargetDescriptor(color)?.format;
     if (graphColorFormat !== undefined) writeFormat = graphColorFormat;
     const resolvedColor = (resolveCtx?.resolve(color) as TextureView | undefined) ?? null;
-    writeView = legacyGraph?.getColorTargetView(color) ?? resolvedColor ?? ctx.view;
+    writeView = legacyGraph?.getColorTargetView(color) ?? resolvedColor ?? ctx.outputTarget().view;
   }
   if (writeView === null || writeView === undefined) return;
 

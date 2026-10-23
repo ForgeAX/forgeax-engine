@@ -203,7 +203,7 @@ await page.waitForSelector('#canvas', { timeout: 10000 });
 // completed-frame projection before sending input or sampling the canvas.
 await page.waitForFunction(
   () => typeof globalThis.__forgeax_video_cutscene__?.playCutscene === 'function' &&
-    Number(document.documentElement.dataset.forgeaxFrameCompleted) > 0,
+    (document.querySelector('canvas')?.forgeaxFrameProgress?.completed?.frameId ?? 0) > 0,
   undefined,
   { timeout: 30000 },
 );
@@ -235,7 +235,9 @@ console.log('[smoke-browser] STRUCTURAL: overlay visible after trigger');
 // Let the video paint a frame, then capture during the overlay period.
 await page.waitForTimeout(400);
 const overlayStats = await shootAndDecode('during-cutscene');
-const pausedFrame = await page.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameCompleted));
+const pausedFrame = await page.evaluate(
+  () => document.querySelector('canvas')?.forgeaxFrameProgress?.completed?.frameId ?? 0,
+);
 
 // VISUAL GATE: the overlay frame must differ from the canvas-only frame.
 // The cutscene video is full-screen and animated, so its mean color differs
@@ -272,9 +274,10 @@ try {
 }
 console.log('[smoke-browser] STRUCTURAL: overlay hidden again after video ended (resume)');
 await page.waitForFunction(
-  (previous) => Number(document.documentElement.dataset.forgeaxFrameCompleted) > previous,
+  (previousFrameId) =>
+    (document.querySelector('canvas')?.forgeaxFrameProgress?.completed?.frameId ?? 0) > previousFrameId,
   pausedFrame,
-  { timeout: 10000 },
+  { timeout: 10_000 },
 );
 const afterStats = await shootAndDecode('after-cutscene');
 

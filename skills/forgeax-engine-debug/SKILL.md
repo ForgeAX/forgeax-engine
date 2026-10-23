@@ -39,10 +39,25 @@ Pack path and the existing exact-target capture. One-level Equirect sources do
 not expose Renderer-owned IBL roughness mips. Follow RHI Debug first for an
 unexplained rendering failure; see the [View texture gate](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
 
+For View UV layouts or material primitive/navigation failures, run
+`tools/view/scripts/verify-resource-preview-lifecycle.mjs` and inspect its UV and
+material PNGs plus exact target diagnostics. The maintained workspace shard owns
+this real-browser journey. A script syntax error routes to the View probe owner;
+preserve its runtime assertions while repairing startup. Follow RHI Debug first
+for unexplained rendered output.
+
 For a blank MCP View with React error #527, run its emitted frontend startup gate
 through the View contracts owner. The MCP builder resolves React and React DOM
 from View's installed dependencies; inspect that owner before changing startup
 deadlines. Continue through the full game-3d/Play/Stop gate after repair.
+
+For a View shard reaching its job deadline, inspect emitted stage seconds before
+changing a timeout. Keep Game 3D's stdio and native workspace journeys together
+in its own lane; contracts/plugin/TS share another. Preserve complete JS/TS
+live/cold chains, four actual jobs and all assertions; see the
+[Engine/View integration roster](../../scripts/ci/README.md#failure-recovery).
+An artifact-only transport failure requires a same-source rerun, not a weaker
+success aggregate.
 
 For a View startup Host disconnect, read the failed probe's Backend diagnostics
 under `artifacts/view-integration/<probe>/` before assigning a renderer cause.

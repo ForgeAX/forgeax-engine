@@ -4,6 +4,7 @@ import type {
   GpuPassTimingOptions,
   MeshResidencyError,
   PublishedMeshPreparation,
+  RenderInspection,
   RenderPublication,
   RenderPublicationError,
   RenderPublicationIdentity,
@@ -128,6 +129,7 @@ export type RenderWorkerInput =
   | {
       readonly kind: 'inspect';
       readonly pipelineLibrary?: boolean;
+      readonly fields?: readonly (keyof RenderInspection)[];
       readonly requestId: number;
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
@@ -147,7 +149,7 @@ export type RenderWorkerOutput =
       readonly requestId: number;
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
-      readonly result: ExecutionRendererInspectionResult;
+      readonly result: ExecutionRendererInspectionResult<Partial<RenderInspection>>;
     }
   | {
       readonly kind: 'renderer-error';

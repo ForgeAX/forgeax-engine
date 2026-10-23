@@ -18,8 +18,8 @@ const htmlUiPlugin = {
     ctx.effect(() => async () => { unsubscribe(); for (const dispose of [...disposers].reverse()) await dispose(); unregister(); state.dispose(); });
     try {
       const client = ctx.get('viewOperationClient');
-      disposers.push(await panelHost.mountPanel({ id: 'html-ui-preview', pageType: HTML_UI_PAGE_TYPE, titleKey: 'view.slots.htmlPreview', dockTitleHidden: true, activity: { labelKey: 'view.slots.htmlPreview', icon: 'monitor' }, layout: { dock: 'fill', stack: 'tabs', order: 0 }, panel: 'HtmlUiPreview', props: { client, state } }));
-      disposers.push(await panelHost.mountPanel({ id: 'html-ui-inspector', pageType: HTML_UI_PAGE_TYPE, titleKey: 'view.slots.htmlInspector', activity: { labelKey: 'view.slots.htmlInspector', icon: 'sliders' }, layout: { dock: 'right', size: { value: 0.32, unit: 'fraction' }, stack: 'tabs', order: 1 }, panel: 'HtmlUiInspector', props: { client, state } }));
+      disposers.push(await panelHost.mountPanel({ id: 'html-ui-preview', home: { kind: 'page', pageType: HTML_UI_PAGE_TYPE }, titleKey: 'view.slots.htmlPreview', dockTitleHidden: true, activity: { labelKey: 'view.slots.htmlPreview', icon: 'monitor' }, layout: { dock: 'fill', stack: 'tabs', order: 0 }, panel: 'HtmlUiPreview', props: { client, state } }));
+      disposers.push(await panelHost.mountPanel({ id: 'html-ui-inspector', home: { kind: 'page', pageType: HTML_UI_PAGE_TYPE }, titleKey: 'view.slots.htmlInspector', activity: { labelKey: 'view.slots.htmlInspector', icon: 'sliders' }, layout: { dock: 'right', size: { value: 0.32, unit: 'fraction' }, stack: 'tabs', order: 1 }, panel: 'HtmlUiInspector', props: { client, state } }));
     } catch (error) { for (const dispose of [...disposers].reverse()) await dispose(); unsubscribe(); unregister(); state.dispose(); throw error; }
   },
 };

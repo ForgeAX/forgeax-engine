@@ -27,6 +27,11 @@ never the reverse.
   vertex queries take a World only for candidate geometry. The submitted mapping is mandatory, including its
   identity case; absent, retired, lost, or zero-size frame contexts return a
   miss. Legacy `pick` and `viewportToWorld` remain unwarped APIs.
+- **`pickTriangleDisplay`** — exact CPU triangle picking through the accepted
+  display mapping. It shares the same distortion correction, physical extent
+  checks and submitted camera matrices as `pickDisplay`, then tests all
+  ray-intersecting mesh bounds and returns the nearest supported current-pose
+  triangle. An untestable potentially occluding pose returns `unavailable`.
 - **`pickVertexDisplay` / `pickVertexOnEntityDisplay`** — display-space vertex
   queries. They project each candidate back through the same scene-to-display
   inverse before applying the optional physical-pixel radius and sorting, so a
@@ -117,6 +122,15 @@ const hit = pickDisplay(
   outputHeight,
 );
 ```
+
+Use `pickTriangleDisplay` when geometric coverage and through-hole occlusion
+matter. `pickDisplay` retains its inexpensive bounds semantics. Both APIs use
+the accepted frame mapping; neither substitutes the World camera.
+
+`node packages/picking/scripts/bench-scene-picking.mjs` measures both queries
+against one submitted mapping on the same static World. It reports p50/p95/p99
+for a Game3D-like ring, 128 off-ray meshes, and 16 overlapping ring candidates;
+the harness is diagnostic and does not define a performance budget.
 
 Coordinates are continuous physical output pixels. The host first converts the
 CSS pointer through the actual canvas/viewport rectangle and output extent; it

@@ -107,10 +107,14 @@ function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
-      (frame) => frame.currentTexture,
+      (frame) => frame.outputTarget().texture,
     );
     if (!texture.ok) throw texture.error;
-    const view = graph.importView(texture.value, { label: `${label}.view` }, (frame) => frame.view);
+    const view = graph.importView(
+      texture.value,
+      { label: `${label}.view` },
+      (frame) => frame.outputTarget().view,
+    );
     if (!view.ok) throw view.error;
     return { texture: texture.value, view: view.value, format, sampleCount: 1 as const };
   };
@@ -216,10 +220,12 @@ it('retains fog bindings until physical resources change and retries failed repl
     .importTexture(
       'depth',
       { format: 'depth32float', size: 'surface', usage: 20 },
-      (frame) => frame.currentTexture,
+      (frame) => frame.outputTarget().texture,
     )
     .unwrap();
-  const view = graph.importView(depth, { aspect: 'depth-only' }, (frame) => frame.view).unwrap();
+  const view = graph
+    .importView(depth, { aspect: 'depth-only' }, (frame) => frame.outputTarget().view)
+    .unwrap();
   graph
     .addRasterPass('clear', {
       accesses: [{ resource: color.view, usage: 'color-attachment' }],
@@ -254,8 +260,7 @@ it('retains fog bindings until physical resources change and retries failed repl
   const execute = () =>
     compiled.execute({
       encoder: localDevice.createCommandEncoder().unwrap(),
-      currentTexture: currentDepth.texture,
-      view: currentDepth.view,
+      outputTarget: () => ({ texture: currentDepth.texture, view: currentDepth.view }),
       runtime: {
         device: localDevice,
         lookupPostProcess: () => ({ source: 'synthetic' }),

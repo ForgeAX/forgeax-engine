@@ -1061,7 +1061,7 @@ describe('SDK verifier template contract', () => {
     expect(frameDiagnostics).toContain('values.length < MAX_DIAGNOSTIC_ITEMS');
     expect(frameDiagnostics).toContain('value.slice(-DIAGNOSTIC_TEXT_LIMIT)');
     expect(frameDiagnostics).toContain("document.querySelector('#forgeax-fatal')");
-    expect(frameDiagnostics).toContain('forgeaxFrameSubmitted');
+    expect(frameDiagnostics).toContain('forgeaxFrameProgress');
     expect(frameDiagnostics).toContain('__forgeaxGameInspection');
     expect(frameDiagnostics).toContain('serverOutput: diagnostics.serverOutput()');
     expect(source).toContain(

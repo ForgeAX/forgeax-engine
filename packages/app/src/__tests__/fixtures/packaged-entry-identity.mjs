@@ -8,8 +8,9 @@ import { createApp } from '../../../dist/browser.mjs';
 import {
   AppError,
   engineWorkspaceTargetToolsPlugin,
+  FORGEAX_FRAME_SUBMITTED_EVENT,
   isAppError,
-  resetBrowserFrameSubmitted,
+  resetBrowserFrameProgress,
 } from '../../../dist/index.mjs';
 
 if (process.argv[2] === 'errors') {
@@ -27,6 +28,10 @@ if (process.argv[2] === 'errors') {
     height: 64,
     getContext: () => null,
     ownerDocument: { documentElement: { dataset: {} } },
+  });
+  let submittedFrameId;
+  canvas.addEventListener(FORGEAX_FRAME_SUBMITTED_EVENT, (event) => {
+    submittedFrameId = event.detail.frameId;
   });
   const platform = {
     now: () => ok(performance.now()),
@@ -73,7 +78,7 @@ if (process.argv[2] === 'errors') {
     app.start().unwrap();
     app.pause().unwrap();
     app.stepFrame(1 / 60).unwrap();
-    assert.equal(canvas.ownerDocument.documentElement.dataset.forgeaxFrameSubmitted, '1');
+    assert.equal(submittedFrameId, 1);
     const pick = () => app.pluginContext.engineWorkspaceTargetTools.pick({ x: 32, y: 32 });
     assert.deepEqual(pick(), {
       targetId: 'target',
@@ -81,7 +86,7 @@ if (process.argv[2] === 'errors') {
       entityId: null,
       granularity: 'bounds',
     });
-    resetBrowserFrameSubmitted(canvas);
+    resetBrowserFrameProgress(canvas);
     assert.throws(
       pick,
       (error) =>

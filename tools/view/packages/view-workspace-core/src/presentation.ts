@@ -5,12 +5,17 @@ import type { ViewFileOpenRequest } from './frontend-contract.ts';
 import { VIEW_WORKSPACE_CORE_OPERATION_EFFECTS, workspaceError } from './contract.ts';
 
 export type PresentationResource = { asset: { guid: string; kind: string } } | { file: ViewFileOpenRequest['file'] };
+export type PanelDockLocation = 'grid' | 'floating' | 'popout' | 'edge';
+export type PanelPlacement =
+  | { kind: 'unmounted' }
+  | { kind: 'page'; pageId: string; pageType: string; location: PanelDockLocation }
+  | { kind: 'shell-bottom'; location: PanelDockLocation };
 export type PresentationSnapshot = {
   shellState: 'mounted' | 'project-restoring';
   activePageId: string | null;
   pages: readonly { id: string; typeId: string; title: string; closable: boolean; resource?: PresentationResource }[];
   pageTypes: readonly { typeId: string; title: string; openable: boolean }[];
-  panels: readonly { id: string; title: string; mounted: boolean; visible: boolean; active: boolean; placement: string }[];
+  panels: readonly { id: string; title: string; mounted: boolean; visible: boolean; active: boolean; placement: PanelPlacement }[];
   hasMorePages: boolean; hasMorePageTypes: boolean; hasMorePanels: boolean;
   appearance: { theme: string; preference: string; language: string };
 };
@@ -36,12 +41,30 @@ function diagnostic(error: unknown): Failure {
   };
 }
 
+const PANEL_DOCK_LOCATIONS = new Set<PanelDockLocation>(['grid', 'floating', 'popout', 'edge']);
+
 /** A result projection, never a second page or panel store. */
 export function serializePresentation(input: PresentationSnapshot): PresentationSnapshot {
   const invalid = (): never => { throw failure('view-presentation-invalid', 'a committed View presentation snapshot with valid field types', 'Reconnect the View frontend.'); };
   const text = (value: unknown) => typeof value === 'string' ? value.slice(0, 512) : invalid();
   const identity = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : invalid();
   const flag = (value: unknown) => typeof value === 'boolean' ? value : invalid();
+  const placement = (value: unknown): PanelPlacement => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid();
+    const row = value as Record<string, unknown>;
+    if (row.kind === 'unmounted' && Object.keys(row).every(field => field === 'kind')) return { kind: 'unmounted' };
+    if (row.kind === 'shell-bottom' && Object.keys(row).every(field => ['kind', 'location'].includes(field))
+        && typeof row.location === 'string' && PANEL_DOCK_LOCATIONS.has(row.location as PanelDockLocation)) {
+      return { kind: 'shell-bottom', location: row.location as PanelDockLocation };
+    }
+    if (row.kind === 'page' && Object.keys(row).every(field => ['kind', 'pageId', 'pageType', 'location'].includes(field))
+        && typeof row.pageId === 'string' && row.pageId.length > 0 && row.pageId.length <= 256
+        && typeof row.pageType === 'string' && row.pageType.length > 0 && row.pageType.length <= 256
+        && typeof row.location === 'string' && PANEL_DOCK_LOCATIONS.has(row.location as PanelDockLocation)) {
+      return { kind: 'page', pageId: row.pageId, pageType: row.pageType, location: row.location as PanelDockLocation };
+    }
+    return invalid();
+  };
   const resource = (value: PresentationResource | undefined): PresentationResource | undefined => {
     if (value === undefined) return;
     if (value && 'asset' in value) return { asset: { guid: identity(value.asset?.guid), kind: identity(value.asset?.kind) } };
@@ -56,7 +79,7 @@ export function serializePresentation(input: PresentationSnapshot): Presentation
     activePageId: input.activePageId === null ? null : identity(input.activePageId),
     pages: input.pages.slice(0, 64).map(row => ({ id: identity(row?.id), typeId: identity(row?.typeId), title: text(row?.title), closable: flag(row?.closable), ...(row?.resource === undefined ? {} : { resource: resource(row.resource) }) })),
     pageTypes: input.pageTypes.slice(0, 64).map(row => ({ typeId: identity(row?.typeId), title: text(row?.title), openable: flag(row?.openable) })),
-    panels: input.panels.slice(0, 128).map(row => ({ id: identity(row?.id), title: text(row?.title), mounted: flag(row?.mounted), visible: flag(row?.visible), active: flag(row?.active), placement: text(row?.placement) })),
+    panels: input.panels.slice(0, 128).map(row => ({ id: identity(row?.id), title: text(row?.title), mounted: flag(row?.mounted), visible: flag(row?.visible), active: flag(row?.active), placement: placement(row?.placement) })),
     hasMorePages: flag(input.hasMorePages) || input.pages.length > 64,
     hasMorePageTypes: flag(input.hasMorePageTypes) || input.pageTypes.length > 64,
     hasMorePanels: flag(input.hasMorePanels) || input.panels.length > 128,

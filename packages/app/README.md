@@ -1,5 +1,23 @@
 # @forgeax/engine-app
 
+## Interactive material previews
+
+The optional native `workspaceMaterialPreviewPlugin` owns one preview object's
+generated mesh and quaternion. `createWorkspaceMaterialPreview(app, entity)`
+isolates its service per preview App. Removal restores the borrowed MeshFilter
+and orientation before releasing owned resources; reinstall starts at Sphere.
+`engine.preview.material.get/set/rotate/reset` use the existing exact target and
+generation guards. Set selects sphere/cylinder/plane/cube, rotate accepts finite
+yaw/pitch radians, and reset restores orientation while retaining the selected
+mesh. Replies return mesh, rotation, center and radius. The four geometry
+factories share a unit bounding sphere; Registry replacement retains the handle.
+The material, assetBinding publication, camera, lighting and game state remain
+with their existing owners. View owns mouse bindings, sensitivity and camera
+reset policy and consumes ordinary camera transactions for pan/dolly.
+
+The consuming View plugin and accepted browser/native evidence are documented
+in the paired material preview design.
+
 ## Optional Pack author preview capabilities
 
 Workspace previews expose `writeAssetField`, `prepareAssetContent` and
@@ -176,6 +194,21 @@ display capability.
 UI labels, defaults and statistics visibility remain consumer policy. Scene,
 Play and independent run owners do not acquire resource display behavior.
 
+Mesh display queries also return optional `uv.channels`, containing the actual
+base-LOD UV channel indices (`uv` is channel 0, followed by `uv1` through `uv7`).
+`engine.preview.display.get({ targetId, targetGeneration, uvChannel })` returns
+that channel's optional `uv.layout`: finite UV coordinates, triangle-list indices,
+`channel`, `lod: 0`, and the preview owner's captured `assetBinding`. The display
+owner decodes canonical vertex storage through Geometry and traverses the same
+declared triangles as its other mesh projections. Missing channels fail instead
+of adopting a shader's UV fallback. Ordinary reads and all display writes omit
+the layout; no UV data is retained in workspace snapshots. Layout responses are
+limited to 8 MiB of UTF-8 JSON and fail explicitly rather than truncating geometry.
+The operation is a read: it changes no asset, material, camera or display setting.
+Consumers own channel selection and 2D presentation, including showing UVs outside
+the unit square without wrapping them. Hidden consumers cancel reads; target
+generation and captured publication identity still govern result admission.
+
 `createEngineWorkspaceTools(runtime)` supplies the domain Tool contributions;
 `snapshotEngineWorkspace(runtime)` projects current owners without surface handles.
 Register these tools once with the existing ToolApi. No View plugin, tab, or
@@ -224,6 +257,15 @@ workspace plugin installs no selection click listener and publishes no pick
 events. Presentation consumers own clicks, selection, cancellation and error
 display; a query does not choose a UI target or alter its selection. These
 tools remain callable with the presentation plugin absent.
+
+`engine.target.pick` accepts `granularity: 'bounds' | 'triangle'`. Omitting it
+keeps the existing bounds query; triangle mode uses the accepted display frame
+and the exact current CPU mesh surface. It tests every intersecting bounds
+candidate and returns the nearest triangle hit, so an empty foreground mesh does
+not occlude a rear entity. If any potentially occluding candidate has no
+supported current CPU geometry or pose, triangle mode returns a normal capability
+failure instead of a bounds hit. Direct queries remain read-only; View's Scene
+selection workflow consumes the returned entity identity.
 
 | Operation family | Explicit identity / owner |
 |:--|:--|
@@ -392,13 +434,14 @@ Browser consumers can subscribe to `subscribeBrowserFrameSubmitted(canvas,
 listener)` to receive the accepted `frameId`, device/graph generations, output
 extent, and deeply frozen barrel mapping. The event is the worker-safe
 publication of the submitted frame context, so display picking and overlays use
-the same picture. The built root and browser entries share one runtime module
-identity for canvas frame state and App errors; publication, picking and reset
-must remain coherent when consumers import both entries. Remove the subscription
-when the canvas is retired; ignore stale events after device loss or zero-size
-output, then follow the existing
-`Renderer.state() -> inspect() -> recover()` route before accepting a new
-context.
+the same picture. The canvas retains the latest accepted submitted and completed
+facts in `canvas.forgeaxFrameProgress`; subscriptions remain future-only, with
+events notifying new frames. App clears this snapshot when its execution retires.
+The built root and browser entries share one runtime module identity for canvas
+frame state and App errors; publication, picking and reset must remain coherent
+when consumers import both entries. Remove the subscription when the canvas is
+retired. Ignore stale events after device loss or zero-size output and follow
+`Renderer.state() -> inspect() -> recover()` before accepting a new context.
 
 Use `renderer.inspect().barrelDistortion` to inspect the matching
 `effectiveMapping`, `extent`, `frameId`, `deviceGeneration`, `graphGeneration`,
@@ -1502,7 +1545,7 @@ complete WeChat project/RHI/UI/Worker target is qualified. See
 ## Renderer inspection through public App eval
 
 `app.remoteEval` executes in the selected Engine realm. Its `execution` root
-exposes `inspectRenderer({ signal? })` (type `ExecutionRendererInspectionContext`):
+exposes `inspectRenderer({ signal?, fields?, pipelineLibrary? })` (type `ExecutionRendererInspectionContext`):
 
 ```js
 return await execution.inspectRenderer();
@@ -1514,6 +1557,11 @@ its existing child transport with request, World, source and epoch fences.
 Unavailable, cancelled, lost or disposed sessions fail explicitly. Reading does
 not draw, release credit, enable recording or change execution placement. Clone
 failure is returned, never filtered into a partial successful inspection.
+An explicit `fields: ['state', 'frame', 'pipelineLibrary']` selects those actual
+owner fields before structured cloning and child transport. The return type is
+the corresponding `Pick<RenderInspection, K>`; omission keeps the complete
+snapshot. Use this bounded counter read for whole-session pipeline diagnostics
+instead of repeatedly cloning unrelated scene and resource inventories.
 Failures use the closed AppError `app-renderer-inspection-unavailable` with
 canonical guidance and `detail.reason`/`cause`; they are returned to the observer,
 not dispatched as an App frame fault. The child read has a new 30-second upper

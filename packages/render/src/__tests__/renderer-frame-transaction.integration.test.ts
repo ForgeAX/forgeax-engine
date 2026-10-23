@@ -81,11 +81,10 @@ function temporalResolveFrame(
       getPostProcessPipeline: () => pipeline as never,
     },
     frameState,
-    view: undefined as never,
+    outputTarget: () => ({ texture: undefined as never, view: undefined as never }),
     clear: [0, 0, 0, 1],
     targetW: 8,
     targetH: 8,
-    currentTexture: undefined as never,
     camera: {
       position: [0, 0, 2] as never,
       world: new Float32Array(16),

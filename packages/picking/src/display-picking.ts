@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-render';
 import { type PickHit, pickWithScreenRay } from './pick';
 import { computeScreenRayFromMatrices, type ScreenRay } from './pick-core';
+import { pickTriangleWithScreenRay, type TrianglePickResult } from './pick-triangle';
 import {
   pickVertexOnEntityWithScreenRay,
   pickVertexWithScreenRay,
@@ -103,6 +104,21 @@ export function pickDisplay(
 ): PickHit | undefined {
   const query = displayQuery(displayX, displayY, mapping, viewportWidth, viewportHeight);
   return query === undefined ? undefined : pickWithScreenRay(world, query.screenRay);
+}
+
+/** Exact triangle pick through the camera and distortion mapping of a submitted frame. */
+export function pickTriangleDisplay(
+  world: World,
+  displayX: number,
+  displayY: number,
+  mapping: BarrelDistortionMapping | undefined,
+  viewportWidth: number,
+  viewportHeight: number,
+): TrianglePickResult {
+  const query = displayQuery(displayX, displayY, mapping, viewportWidth, viewportHeight);
+  return query === undefined
+    ? { status: 'miss', precision: 'triangle' }
+    : pickTriangleWithScreenRay(world, query.screenRay);
 }
 
 function remapVertexHits(

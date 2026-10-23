@@ -853,9 +853,9 @@ export function ContentBrowserPanel({
                   loading={Boolean(previewItem && openingKeys.has(viewItemKey(previewItem)))}
                   title={t('contentBrowser.openHint')}
                   onClick={() => { if (previewItem) activateItem(previewItem); }}>{t('contentBrowser.menu.open')}</Button>
-                <Button ref={filterButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setFilter} className={activeFilterCount ? 'is-active' : undefined} leadingIcon={<Filter size={14} />} onClick={() => openToolbarMenu('filter')}>{filterLabel}</Button>
+                <Button ref={filterButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setFilter} className={activeFilterCount ? 'is-active' : undefined} leadingIcon={<Filter size={14} />} title={t('contentBrowser.filterByType')} aria-label={filterLabel} onClick={() => openToolbarMenu('filter')}>{filterLabel}</Button>
                 <SearchField className="cb-search-box" data-action={CONTENT_BROWSER_ACTIONS.search} value={query} onChange={(event) => { cancelReveal(); setQuery(event.target.value); }} onClear={() => { cancelReveal(); setQuery(''); }} placeholder={t('contentBrowser.searchPlaceholder')} label={t('contentBrowser.search')} />
-                <Button ref={sortButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setSort} leadingIcon={<ArrowUpDown size={14} />} onClick={() => openToolbarMenu('sort')}>{sortLabels[sortState.key]}</Button>
+                <Button ref={sortButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setSort} leadingIcon={<ArrowUpDown size={14} />} title={t('contentBrowser.sortBy')} aria-label={`${t('contentBrowser.sortBy')}: ${sortLabels[sortState.key]}`} onClick={() => openToolbarMenu('sort')}>{sortLabels[sortState.key]}</Button>
               </Toolbar>
 
               {loading ? <div role="status">Loading assets...</div> : null}

@@ -1,5 +1,7 @@
 {
   "mesh": {
+    "uvFrameAll": "Frame all UVs",
+    "uv": "UV", "uvDescription": "View a mesh UV channel without changing the asset.", "uvChannel": "UV channel {{channel}}", "uvBindingChanged": "The mesh UV binding changed. Select the channel again.", "noUv": "This mesh has no UV channels.",
     "empty": "Open a mesh asset",
     "unavailable": "Mesh inspection unavailable",
     "inspectFailed": "Engine asset.inspect did not return mesh facts for this GUID.",

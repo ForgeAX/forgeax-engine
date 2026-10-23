@@ -11,6 +11,7 @@ export {
   computeDisplayScreenRay,
   displayToScenePixel,
   pickDisplay,
+  pickTriangleDisplay,
   pickVertexDisplay,
   pickVertexOnEntityDisplay,
 } from './display-picking';

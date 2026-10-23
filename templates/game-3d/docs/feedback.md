@@ -3,6 +3,15 @@
 记录开发期间确认的 Engine、SDK、模板、构建、资产、运行时或浏览器问题。该文件会和根
 `README.md` 一起原样进入 Web ZIP；不要写入 token、密码、私有 URL 或其他敏感信息。
 
+### 2026-10-21 — Local worktree project check cannot resolve template lockfile
+
+- Scope: local template dependency verification
+- Reproduction: run `node packages/devkit/dist/cli.mjs project check --root templates/game-3d --json` from the mesh-uv-preview Engine worktree.
+- Expected: verify the installed Game 3D dependency closure.
+- Actual: `project-pnpm-record-unreadable` reports a missing `templates/pnpm-lock.yaml`; the verifier selects the containing templates directory for its pnpm record.
+- Evidence: the same project's TypeScript check and all 44 tests pass; the native View Catalog publishes all three `uv-primitives.pack.ts` outputs and renders the half-cylinder with its UV0 layout.
+- Status: open — local project-check environment limitation; no dependency files or verification policy were changed to bypass it.
+
 ### 2026-10-20 — Showcase contact shadows lost after inheriting camera-wide CSM coverage
 
 - Scope: template

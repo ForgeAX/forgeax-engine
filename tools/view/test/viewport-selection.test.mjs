@@ -12,7 +12,8 @@ function fixture(query) {
     run(id, args) {
       calls.push([id, args]);
       return { terminal: Promise.resolve().then(() => query(id, args)).then(
-        result => ({ outcome: 'succeeded', result }),
+        result => ({ outcome: 'succeeded', result: id === 'engine.target.pick' && result && result.granularity === undefined
+          ? { ...result, granularity: args.granularity } : result }),
         failure => ({ outcome: 'failed', failure }),
       ) };
     },
@@ -25,12 +26,28 @@ it('selects and clears through the same request path with exact target identity'
   const { broker, calls } = fixture((id, args) => id === 'engine.target.pick' ? { entityId } : { entityId: args.entityId });
   await broker.pickSceneEntity({ ...identity, x: 32, y: 64 });
   assert.equal(broker.snapshot().sceneSelection.primary.entityId, 'cube');
+  assert.equal(calls[0][1].granularity, 'triangle');
   assert.deepEqual(calls.map(([id]) => id), ['engine.target.pick', 'engine.entity.inspect', 'engine.entity.highlight']);
   entityId = null;
   await broker.pickSceneEntity({ ...identity, x: 0, y: 0 });
   assert.equal(broker.snapshot().sceneSelection, null);
   assert.equal(calls.at(-1)[0], 'engine.entity.highlight');
   assert.equal(calls.at(-1)[1].entityId, undefined);
+});
+
+it('fails closed when the paired Engine does not honor exact triangle picking', async () => {
+  const { broker, calls } = fixture((id, args) => id === 'engine.target.pick'
+    ? { entityId: 'bounds-only-entity', granularity: 'bounds' }
+    : { entityId: args.entityId });
+  await broker.selectSceneEntity({ ...identity, entityId: 'existing-selection' });
+  const count = calls.length;
+  await assert.rejects(
+    broker.pickSceneEntity({ ...identity, x: 32, y: 64 }),
+    /triangle-picking capability/,
+  );
+  assert.equal(calls[count]?.[1].granularity, 'triangle');
+  assert.equal(calls.slice(count).some(([id]) => id === 'engine.entity.inspect' || id === 'engine.entity.highlight'), false);
+  assert.equal(broker.snapshot().sceneSelection.primary.entityId, 'existing-selection');
 });
 
 it('keeps selection and target health on a pick error, and reports clear failures', async () => {
@@ -46,6 +63,10 @@ it('keeps selection and target health on a pick error, and reports clear failure
   assert.equal(broker.snapshot().workspaceTargetLost, false);
   await assert.rejects(broker.clearSceneSelection(identity), /frame-unavailable/);
   assert.equal(broker.snapshot().sceneSelection.primary.entityId, 'cube');
+  failure = { code: 'engine-workspace-capability-unavailable', expected: 'CPU triangle geometry', hint: 'Wait for geometry' };
+  await assert.rejects(broker.pickSceneEntity({ ...identity, x: 1, y: 1 }), /capability-unavailable/);
+  assert.equal(broker.snapshot().sceneSelection.primary.entityId, 'cube');
+  assert.equal(broker.snapshot().workspaceTargetLost, false);
 });
 
 it('rejects late picks after a tree selection, clear, cancellation or target replacement', async () => {

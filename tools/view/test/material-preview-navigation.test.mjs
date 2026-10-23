@@ -21,6 +21,17 @@ const initial = {
 };
 
 describe('material preview navigation', () => {
+  it('aborts a restore transaction cancelled after begin without committing a retired target', async () => {
+    const controller = new AbortController(), calls = [];
+    const api = {
+      async getCamera() { return { version: 4 }; },
+      async beginCamera() { calls.push('begin'); controller.abort(); },
+      async commitCamera() { calls.push('commit'); },
+      async abortCamera(value) { calls.push(value.reason); },
+    };
+    await assert.rejects(restorePreviewCamera(api, target, initial, { signal: controller.signal }), { name: 'AbortError' });
+    assert.deepEqual(calls, ['begin', 'preview-restore-ended']);
+  });
   it('keeps the first camera pose and commits it without aspect', async () => {
     const calls = [];
     let reads = 0;

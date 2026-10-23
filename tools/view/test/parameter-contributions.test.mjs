@@ -7,9 +7,11 @@ import { mountDetailTabContribution } from '../packages/view-plugin-content-brow
 import { createViewPanelHost } from '../packages/viewer/src/host/panel-bridge.ts';
 import { createViewProductPlan, VIEW_WORKSPACE_CORE } from '../packages/viewer/src/catalog-shared.ts';
 import * as contentBrowserIdentity from '../packages/view-plugin-content-browser/src/identity.ts';
+import contentBrowserFrontendPlugin from '../packages/view-plugin-content-browser/src/frontend.ts';
 import { PARAMETERS_FRONTEND_MODULE } from '../packages/view-plugin-parameters/src/identity.ts';
 import parametersFrontendPlugin from '../packages/view-plugin-parameters/src/frontend.ts';
 import { generationPreviewTargetId, partitionPackFields, resolveAssetPageBinding } from '../packages/view-plugin-parameters/src/field-partition.ts';
+import { VIEW_PAGE_TYPES } from '../packages/view-workspace-core/src/contract.ts';
 
 function pageRegistry() {
   const types = new Map();
@@ -88,11 +90,35 @@ test('workspace-core owns the registry while Content Browser and Parameters acti
   await ctx.fiber.dispose();
 });
 
-test('the Parameters capability stays active when the Content Browser page is disabled', () => {
-  const plan = createViewProductPlan({ disabledPages: [contentBrowserIdentity.PAGE_TYPE] });
-  assert.equal(plan.frontend.some(plugin => plugin.module === contentBrowserIdentity.FRONTEND_MODULE), false);
+test('the Parameters capability and Content Browser stay active when a page is disabled', () => {
+  const plan = createViewProductPlan({ disabledPages: [VIEW_PAGE_TYPES.scene] });
+  assert.equal(plan.frontend.some(plugin => plugin.module === contentBrowserIdentity.FRONTEND_MODULE), true);
   assert.equal(plan.frontend.some(plugin => plugin.module === PARAMETERS_FRONTEND_MODULE), true);
   assert.equal(plan.frontend.some(plugin => plugin.module === VIEW_WORKSPACE_CORE.FRONTEND_MODULE), true);
+});
+
+test('Content Browser claims a Shell-bottom home', async () => {
+  const claims = [];
+  const cleanup = [];
+  const context = {
+    get: name => name === 'contentBrowserDetailTabs' ? createContentBrowserDetailTabs() : {},
+    provide() {},
+    effect(factory) { cleanup.push(factory()); },
+  };
+  const document = {
+    createElement() { return { dataset: {}, append() {} }; },
+  };
+  const panelHost = {
+    claim(claim) { claims.push(claim); return () => {}; },
+    waitForSlot: async () => {},
+    mount: () => () => {},
+    mountPanelInto: async () => () => {},
+  };
+  await contentBrowserFrontendPlugin.apply(context, { document, panelHost });
+  assert.deepEqual(claims.map(({ id, home, layout }) => [id, home, layout]), [
+    [contentBrowserIdentity.SLOT, { kind: 'shell-bottom' }, { order: 0 }],
+  ]);
+  for (const dispose of cleanup) await dispose();
 });
 
 test('Parameters registers its detail tab without a panel host', async () => {

@@ -511,7 +511,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     const state = await page
       ?.evaluate(() => ({
         fatal: document.querySelector('#forgeax-fatal-details')?.textContent,
-        frame: document.documentElement.dataset.forgeaxFrameSubmitted,
+        frame: document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId,
         execution: globalThis.__forgeaxGameInspection?.renderer().execution,
         workerEvents: globalThis.__forgeaxWorkerEvents,
         workerPresentation: globalThis.__forgeaxWorkerPresentation,

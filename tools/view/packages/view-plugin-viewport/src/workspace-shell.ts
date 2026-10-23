@@ -13,6 +13,7 @@ export type WorkspaceInputBindings = 'scene' | 'orbit';
 export type WorkspaceInputOptions = {
   api: ViewWorkspaceClient; targetId: string; targetGeneration?: number; tabId?: string;
   bindings?: WorkspaceInputBindings;
+  dollyStepLimit?: number;
   interactionIdFactory?: () => string; shouldCapture?: (event: Event) => boolean;
   onError?: (error: unknown) => void; onFocusSelection?: () => unknown;
   selectOnClick?: boolean;
@@ -187,6 +188,7 @@ export class ViewWorkspaceInputController {
   declare api: ViewWorkspaceClient;
   declare targetId: string;
   declare bindings: WorkspaceInputBindings;
+  declare dollyStepLimit: number;
   declare targetGeneration: number | undefined;
   declare tabId: string;
   declare interactionIdFactory: () => string;
@@ -221,6 +223,7 @@ export class ViewWorkspaceInputController {
     api,
     targetId,
     bindings = 'scene',
+    dollyStepLimit = 4,
     targetGeneration,
     tabId = VIEW_WORKSPACE_TAB_ID,
     interactionIdFactory = () => createWorkspaceId('interaction'),
@@ -235,6 +238,7 @@ export class ViewWorkspaceInputController {
     this.api = api;
     this.targetId = requireWorkspaceString(targetId, 'targetId');
     this.bindings = bindings === 'orbit' ? 'orbit' : 'scene';
+    this.dollyStepLimit = Number.isFinite(dollyStepLimit) && dollyStepLimit > 0 ? dollyStepLimit : 4;
     this.targetGeneration = targetGeneration;
     this.tabId = tabId;
     this.interactionIdFactory = interactionIdFactory;
@@ -503,7 +507,7 @@ export class ViewWorkspaceInputController {
       this.speed = Math.max(0.05, Math.min(1024, this.speed * Math.exp(-input.deltaY * 0.002)));
       motion = movement();
     } else if (input.type === 'wheel' || input.mode === 'dolly') {
-      motion = { type: 'dolly', amount: Math.max(-4, Math.min(4,
+      motion = { type: 'dolly', amount: Math.max(-this.dollyStepLimit, Math.min(this.dollyStepLimit,
         (input.type === 'wheel' ? input.deltaY : ('movementY' in input ? input.movementY : 0) * 4) * 0.001)), distance: 5 };
     } else if (input.mode === 'pan') {
       motion = { type: 'pan', x: -(('movementX' in input ? input.movementX : 0)) * 0.002,

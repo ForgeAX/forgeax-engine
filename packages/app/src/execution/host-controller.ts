@@ -11,7 +11,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
-  resetBrowserFrameSubmitted,
+  resetBrowserFrameProgress,
 } from '../browser-frame-signal';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { ErrorFanoutRegistry } from '../internal/error-fanout';
@@ -144,7 +144,7 @@ export async function createWorkerExecutionApp(
   let lastSurfaceRequestId = 0;
   let started: Awaited<ReturnType<typeof startEngineWorker>>;
   try {
-    resetBrowserFrameSubmitted(canvas);
+    resetBrowserFrameProgress(canvas);
     started = await startEngineWorker({
       canvas: canvas,
       bootstrapUrl,
@@ -453,6 +453,7 @@ export async function createWorkerExecutionApp(
 
   let disposal: ReturnType<EngineWorkerSession['dispose']> | undefined;
   const disposeSession = () => {
+    resetBrowserFrameProgress(canvas);
     rebuildResolve?.(err(lifecycleError('app-not-started')));
     rebuildResolve = undefined;
     rebuildInFlight = undefined;
@@ -479,6 +480,7 @@ export async function createWorkerExecutionApp(
 
   const terminalFault = (message: ExecutionFaultMessage): void => {
     cancelFrame();
+    if (message.partialWrite) resetBrowserFrameProgress(canvas);
     resumeAfterHostShow = false;
     clearFrameAdmissionWatchdog();
     const error = runtimeError(message);
@@ -755,6 +757,7 @@ export async function createWorkerExecutionApp(
     clearHostInjectedInput();
     inputHandle?.();
     canvas.replaceWith(replacement);
+    resetBrowserFrameProgress(canvas);
     canvas = replacement;
     const nextPlatform = createBrowserPlatform(canvas).unwrap();
     try {
@@ -766,7 +769,6 @@ export async function createWorkerExecutionApp(
       throw cause;
     }
     inputHandle = attachGatedInput();
-    resetBrowserFrameSubmitted(canvas);
     return canvas.transferControlToOffscreen();
   };
   // Every Worker reply for a request is fenced to the World the request was

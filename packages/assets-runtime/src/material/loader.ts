@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-pack/material-cook';
 import type { MaterialProgramAddress } from '@forgeax/engine-types';
 import { isRetainedMaterialAbi } from '../internal/retained-material-facts.js';
+import { findVerifiedArtifactBytes } from '../internal/shared-immutable.js';
 
 export interface MaterialLoadRequest {
   readonly guid: string;
@@ -289,13 +290,31 @@ function materialArtifactData(
   }
 }
 
+/** The realm's verified view when `bytes` has its exact content; equal content proves the digest. */
+function verifiedArtifactBytes(
+  bytes: Uint8Array,
+  digest: string,
+): Uint8Array<ArrayBuffer> | undefined {
+  const verified = findVerifiedArtifactBytes(digest);
+  return verified !== undefined && sameBytes(verified, bytes) ? verified : undefined;
+}
+
 function copyMaterialArtifacts(
   artifacts: readonly { readonly bytes: Uint8Array; readonly digest: string | undefined }[],
+  record: CookedMaterialRecord,
 ):
   | readonly { readonly bytes: Uint8Array<ArrayBuffer>; readonly digest: string | undefined }[]
   | undefined {
   try {
-    return artifacts.map(({ bytes, digest }) => ({ bytes: immutableBytes(bytes), digest }));
+    // A realm-verified view is immutable by contract and never aliases publisher storage.
+    return artifacts.map(({ bytes, digest }, index) => ({
+      bytes:
+        verifiedArtifactBytes(
+          bytes,
+          (record.programs[index] as CookedMaterialRecord['programs'][number]).artifact.digest,
+        ) ?? immutableBytes(bytes),
+      digest,
+    }));
   } catch {
     // An ordered old-path body error must not preempt an earlier integrity failure.
     return undefined;
@@ -316,7 +335,25 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (length !== right.byteLength) return false;
   // Preserve TypedArray.every's detached/out-of-bounds validation without a byte callback.
   Uint8Array.prototype.values.call(left);
-  for (let index = 0; index < length; index += 1) {
+  if (left === right) return true;
+  let index = 0;
+  // Callers pass plain admitted views; aligned ordinary storage compares one word at a time.
+  if (
+    length >= 64 &&
+    left.byteOffset % 4 === 0 &&
+    right.byteOffset % 4 === 0 &&
+    left.buffer instanceof ArrayBuffer &&
+    right.buffer instanceof ArrayBuffer
+  ) {
+    const words = length >>> 2;
+    const leftWords = new Uint32Array(left.buffer, left.byteOffset, words);
+    const rightWords = new Uint32Array(right.buffer, right.byteOffset, words);
+    for (let word = 0; word < words; word += 1) {
+      if (leftWords[word] !== rightWords[word]) return false;
+    }
+    index = words * 4;
+  }
+  for (; index < length; index += 1) {
     if (left[index] !== right[index]) return false;
   }
   return true;
@@ -451,7 +488,7 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
       const capturedArtifacts =
         snapshot === undefined || artifacts === undefined
           ? undefined
-          : copyMaterialArtifacts(artifacts);
+          : copyMaterialArtifacts(artifacts, record);
       if (snapshot === undefined || capturedArtifacts === undefined) digest = undefined;
       else record = snapshot;
       const readySourceClosure =
@@ -467,7 +504,7 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
       const programs: CookedMaterialRecord['programs'][number][] = [];
       for (const [programIndex, program] of record.programs.entries()) {
         const artifact = program.artifact;
-        const captured = digest === undefined ? undefined : capturedArtifacts?.[programIndex];
+        const captured = capturedArtifacts?.[programIndex];
         const published = captured ?? publication.artifacts?.[artifact.path];
         if (published === undefined)
           return materialError(
@@ -479,8 +516,13 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
             true,
           );
         const bytes = captured?.bytes ?? immutableBytes(published.bytes);
+        // Content equal to the realm's verified view needs no second hash.
         const actualDigest =
-          digest === undefined ? createMaterialArtifactDigest(bytes) : await digest(bytes);
+          verifiedArtifactBytes(bytes, artifact.digest) !== undefined
+            ? artifact.digest
+            : digest === undefined
+              ? createMaterialArtifactDigest(bytes)
+              : await digest(bytes);
         if (
           actualDigest !== artifact.digest ||
           (published.digest !== undefined && published.digest !== actualDigest)

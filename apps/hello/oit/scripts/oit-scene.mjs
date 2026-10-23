@@ -8,6 +8,7 @@
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
+  Layer,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -111,12 +112,15 @@ export function spawnOitScene(world, assets, { order = [0, 1, 2] } = {}) {
       })).unwrap(),
   );
   let layers = [];
+  // Entity storage and material batching do not promise spawn order. Layer is
+  // the native explicit order for the sorted falsifier; OIT output must remain invariant.
   const spawnLayers = (nextOrder) => {
     for (const entity of layers) world.despawn(entity).unwrap();
-    layers = nextOrder.map((index) => {
+    layers = nextOrder.map((index, sortOrder) => {
       const layer = OIT_LAYERS[index];
       return world
         .spawn(
+          { component: Layer, data: { value: sortOrder } },
           {
             component: Transform,
             data: {

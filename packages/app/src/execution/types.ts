@@ -225,9 +225,9 @@ export interface ExecutionControl {
   rebuild(): Promise<Result<ExecutionReport, AppError>>;
 }
 
-/** Full detached facts from the actual selected Renderer, never execution-counter projections. */
-export type ExecutionRendererInspectionResult =
-  | { readonly ok: true; readonly value: RenderInspection }
+/** Detached facts from the actual selected Renderer; fields may be selected before transport. */
+export type ExecutionRendererInspectionResult<T = RenderInspection> =
+  | { readonly ok: true; readonly value: T }
   | {
       readonly ok: false;
       readonly error: Pick<
@@ -240,14 +240,22 @@ export type ExecutionGeometryObservationResult =
   | { readonly ok: true; readonly value: import('@forgeax/engine-render').GeometryObservation }
   | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
 
+export interface ExecutionRendererInspectionOptions<
+  K extends keyof RenderInspection = keyof RenderInspection,
+> {
+  readonly pipelineLibrary?: boolean;
+  readonly signal?: AbortSignal;
+  /** Select owner fields before structured cloning; omission preserves the full snapshot. */
+  readonly fields?: readonly K[];
+}
+
 /** Public `execution` root injected into App.remoteEval/executeScript in the Engine realm. */
 export interface ExecutionRendererInspectionContext {
   /** One intrusive diagnostic frame; not ordinary FPS acceptance. */
   observeNextGeometry(options?: {
     readonly signal?: AbortSignal;
   }): Promise<ExecutionGeometryObservationResult>;
-  inspectRenderer(options?: {
-    readonly pipelineLibrary?: boolean;
-    readonly signal?: AbortSignal;
-  }): Promise<ExecutionRendererInspectionResult>;
+  inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
+    options?: ExecutionRendererInspectionOptions<K>,
+  ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>>;
 }

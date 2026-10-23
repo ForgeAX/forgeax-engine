@@ -233,8 +233,11 @@ export function extractTilemapSources(
       ...(visible ? {} : { authorVisible: false }),
     });
   };
-  if (selected !== undefined) for (const entity of selected) append(entity as EntityHandle);
-  else
+  // The changed set spans every renderable kind; a component miss would allocate an error per entity.
+  if (selected !== undefined) {
+    for (const entity of selected)
+      if (world.hasComponent(entity as EntityHandle, Tilemap)) append(entity as EntityHandle);
+  } else
     for (const row of world.query({ read: [Tilemap, Transform, GlobalTransform] }).unwrap())
       append(row.entity);
 }

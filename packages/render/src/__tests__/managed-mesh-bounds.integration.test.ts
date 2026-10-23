@@ -82,6 +82,7 @@ it.each([
     assert(originalSlot);
     work = 0;
     const topologyBefore = scene.inspect().topology;
+    assert(topologyBefore.contentPatches !== undefined);
     assets
       .writeRange(mesh, { attribute: 'position', first: 0, values: new Float32Array([-100, 0, 0]) })
       .unwrap();

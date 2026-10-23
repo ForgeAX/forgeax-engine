@@ -1,7 +1,7 @@
 import type { WorkspaceAsset, WorkspaceOpenRequest } from './contract.ts';
 import type { AssetReferenceService } from './asset-references.ts';
 import type { PresentationOwner, PresentationResource } from './presentation.ts';
-export type { PresentationOwner, PresentationSnapshot } from './presentation.ts';
+export type { PanelDockLocation, PanelPlacement, PresentationOwner, PresentationSnapshot } from './presentation.ts';
 export type ViewFileOpenRequest = { requestId: string; sequence: number; file: { path: string; extension: string; projectId: string } };
 export type PageResourceOpenRequest = WorkspaceOpenRequest | ViewFileOpenRequest;
 
@@ -11,12 +11,15 @@ export type PanelLayout = {
   size?: { value: number; unit: 'px' | 'fraction'; additionalPx?: number };
   stack: 'tabs' | 'split'; order: number;
 };
-export type PanelClaim = {
-  id: string; slot?: string; pageType: string; titleKey?: string; closable?: boolean; dockTitleHidden?: boolean;
-  activity?: { labelKey?: string; icon?: string }; layout: PanelLayout;
+type PanelClaimFields = {
+  id: string; slot?: string; titleKey?: string; closable?: boolean; dockTitleHidden?: boolean;
+  activity?: { labelKey?: string; icon?: string };
 };
+export type PanelClaim =
+  | (PanelClaimFields & { home: { kind: 'page'; pageType: string }; layout: PanelLayout })
+  | (PanelClaimFields & { home: { kind: 'shell-bottom' }; layout: { order: number } });
 export type PanelMount = PanelClaim & { panel: string; props?: Record<string, unknown> };
-export type AssetPanelMount = Omit<PanelMount, 'pageType' | 'id' | 'slot'> & { id: string; kinds: readonly string[] };
+export type AssetPanelMount = Omit<PanelClaimFields, 'id' | 'slot'> & { layout: PanelLayout; id: string; kinds: readonly string[]; panel: string; props?: Record<string, unknown> };
 export type PageController = {
   beforeClose?: (signal: AbortSignal) => void | Promise<void>;
   getStatus?: () => { phase: 'opening' | 'failed'; message?: string } | undefined;
@@ -51,7 +54,7 @@ export type SlotRegistry = {
   subscribe(listener: (claims: readonly PanelClaim[]) => void): () => void;
   getClaims(): readonly PanelClaim[];
   claim(claim: PanelClaim): () => void;
-  resolve(id: string): HTMLElement;
+  resolve(id: string, anchor?: HTMLElement): HTMLElement;
   resolveWhenReady(id: string): Promise<HTMLElement>;
   mount(id: string, child: HTMLElement): () => void;
 };

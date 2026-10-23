@@ -312,8 +312,10 @@ import {
 } from './frame-submission';
 import {
   acquireSwapChainTarget,
+  frameTargetExtent,
   graphExecutionPhase,
   hasShadowViewDemand,
+  requireFrameTarget,
   resolveShadowMapSize,
   resolveSpotShadowMapSize,
 } from './frame-targets';
@@ -1904,7 +1906,7 @@ function captureSwapTarget(
   const capture = cubeCaptureWork[0];
   if (capture === undefined) return null;
   return {
-    currentTexture: capture.physical.texture,
+    texture: capture.physical.texture,
     view: capture.physical.view,
     targetW: capture.physical.descriptor.width,
     targetH: capture.physical.descriptor.height,
@@ -2925,19 +2927,15 @@ export function* prepareFrameRecording(
       return false;
     }
 
-    // Acquire the swap-chain texture + colour view + target dimensions (with
-    // one reconfigure-and-retry on surface-outdated); null on unrecoverable
-    // failure, in which case the frame bails after the settlement advance.
-    const swapTarget = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
-      captureOnly
-        ? captureSwapTarget(cubeCaptureWork)
-        : acquireSwapChainTarget(internals, pipelineState),
+    // Acquiring a canvas texture can replace its displayed picture even when
+    // no raster work follows. Preparation needs only the target extent; keep
+    // the surface untouched until the scene's native pipelines are ready.
+    let swapTarget: ReturnType<typeof acquireSwapChainTarget> | undefined;
+    const { targetW, targetH } = frameTargetExtent(
+      internals,
+      captureOnly,
+      cubeCaptureWork[0]?.physical.descriptor,
     );
-    if (swapTarget === null) {
-      abortPreparedGpuDriven(attempt);
-      return false;
-    }
-    const { currentTexture, view, targetW, targetH } = swapTarget;
     const submittedBarrelMapping = captureOnly
       ? undefined
       : resolveSubmittedBarrelMapping(frameState, preflightGraph, camera, targetW, targetH);
@@ -3251,12 +3249,11 @@ export function* prepareFrameRecording(
       bloomResources: pipelineState.perPassResources.getBloomResources?.() ?? null,
       runtime: internals,
       encoder,
-      view,
+      outputTarget: () => requireFrameTarget(swapTarget),
       clear,
       targetW,
       targetH,
       ...(renderExtent === undefined ? {} : { extent: renderExtent }),
-      currentTexture,
       camera: temporal.recordCamera,
       tonemapActive,
       geometryDepthKey,
@@ -3345,6 +3342,15 @@ export function* prepareFrameRecording(
       abortPreparedGpuDriven(attempt);
       featureGraphCandidate?.onRejected?.();
       return pending;
+    }
+    swapTarget = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
+      captureOnly
+        ? captureSwapTarget(cubeCaptureWork)
+        : acquireSwapChainTarget(internals, pipelineState),
+    );
+    if (swapTarget === null) {
+      abortPreparedGpuDriven(attempt);
+      return false;
     }
     executeCaptureFrames(
       internals,

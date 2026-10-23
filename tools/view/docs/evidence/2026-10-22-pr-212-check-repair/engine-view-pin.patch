@@ -1,0 +1,12 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -7,7 +7,7 @@ concurrency:
+   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+   cancel-in-progress: true
+ env:
+-  FORGEAX_ENGINE_COMMIT: 635e6bce68445fc4a22c9fa9dbd8a92b5c9fa778
++  FORGEAX_ENGINE_COMMIT: dde5e9c7a45612334000c7cc87390a26bb0146e8
+   FORGEAX_SKIP_HARNESS_SYNC: '1'
+   FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1'
+ jobs:

@@ -4,10 +4,12 @@ import { applySidebarLayout } from './apply-sidebar-layout.ts';
 import type { EdgeDrawerController } from './edge-drawer.ts';
 import { applyStageMigration } from './grid-layout-migration.ts';
 import {
+  WORKBENCH_EDGES,
   resolveTargetSides,
   stageFromTargetSides,
   targetSidesEqual,
 } from './constants.ts';
+import type { WorkbenchEdge } from './types.ts';
 import {
   createWorkbenchSidebarState,
   reduceWorkbenchSidebar,
@@ -28,8 +30,9 @@ function profileMatchesResolvedSize(
   current: WorkbenchSidebarState,
   width: number,
   height: number,
+  edges: readonly WorkbenchEdge[],
 ) {
-  const targetSides = resolveTargetSides(width, height, current.targetSides);
+  const targetSides = resolveTargetSides(width, height, current.targetSides, edges);
   const stage = stageFromTargetSides(targetSides);
   return targetSidesEqual(targetSides, current.targetSides) && stage === current.stage;
 }
@@ -44,6 +47,7 @@ export function useWorkbenchSidebar({
   primaryPanelIds,
   panelTopologyRevision,
   responsiveAutoTuck = true,
+  edges = WORKBENCH_EDGES,
 }: {
   workbenchRef: RefObject<HTMLElement | null>;
   dockHostRef: RefObject<HTMLElement | null>;
@@ -55,6 +59,7 @@ export function useWorkbenchSidebar({
   primaryPanelIds: ReadonlySet<string>;
   panelTopologyRevision: number;
   responsiveAutoTuck?: boolean;
+  edges?: readonly WorkbenchEdge[];
 }) {
   const [state, setState] = useState<WorkbenchSidebarState>(() => asState(createWorkbenchSidebarState()));
   const stateRef = useRef(state);
@@ -88,11 +93,11 @@ export function useWorkbenchSidebar({
 
     const current = stateRef.current;
 
-    if (validHostSize(width, height) && profileMatchesResolvedSize(current, width, height)) {
+    if (validHostSize(width, height) && profileMatchesResolvedSize(current, width, height, edges)) {
       migrationRetryPendingRef.current = false;
     }
 
-    const resolved = resolveWorkbenchStage(width, height, current);
+    const resolved = resolveWorkbenchStage(width, height, current, edges);
 
     const api = apiRef.current;
     const host = dockHostRef.current ?? workbenchRef.current;
@@ -112,6 +117,7 @@ export function useWorkbenchSidebar({
         null,
         {},
         primaryPanelIds,
+        edges,
       );
       if (!outcome.applied) {
         migrationRetryPendingRef.current = true;
@@ -139,6 +145,7 @@ export function useWorkbenchSidebar({
       current.baselineSnapshot,
       current.autoTucked,
       primaryPanelIds,
+      edges,
     );
 
     if (!outcome.applied) {
@@ -156,7 +163,7 @@ export function useWorkbenchSidebar({
       baselineSnapshot: outcome.baseline,
       autoTucked: outcome.autoTucked,
     });
-  }, [apiRef, responsiveAutoTuck, dispatch, dockHostRef, edgeDrawerRef, panelTopologyRevision, primaryPanelIds, workbenchRef]);
+  }, [apiRef, responsiveAutoTuck, dispatch, dockHostRef, edgeDrawerRef, edges, panelTopologyRevision, primaryPanelIds, workbenchRef]);
 
   const runStageMigrationAtLatestSize = useCallback(() => {
     const rect = measureHost();
@@ -215,11 +222,11 @@ export function useWorkbenchSidebar({
     if (applyingRef.current) return;
     applyingRef.current = true;
     try {
-      applySidebarLayout(apiRef.current);
+      applySidebarLayout(apiRef.current, edges);
     } finally {
       applyingRef.current = false;
     }
-  }, [apiRef]);
+  }, [apiRef, edges]);
 
   useLayoutEffect(() => {
     if (!layoutReady) return;

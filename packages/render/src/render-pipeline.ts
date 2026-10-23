@@ -437,7 +437,7 @@ export function importRenderPipelineSurface(
             : [topology.surface.viewFormat])),
       ],
     },
-    (frame) => frame.currentTexture,
+    (frame) => frame.outputTarget().texture,
   );
   if (!texture.ok) return texture;
   const display =
@@ -446,15 +446,16 @@ export function importRenderPipelineSurface(
       : graph.importView(
           texture.value,
           { label: 'surface.display', format: topology.surface.viewFormat },
-          (frame) => frame.view,
+          (frame) => frame.outputTarget().view,
         );
   if (display !== undefined && !display.ok) return display;
   const storage = graph.importView(
     texture.value,
     { label: 'surface.storage', format: topology.surface.storageFormat },
     (frame) => {
-      if (topology.surface.storageFormat === topology.surface.viewFormat) return frame.view;
-      const resolved = frame.runtime.device.createTextureView(frame.currentTexture, {
+      if (topology.surface.storageFormat === topology.surface.viewFormat)
+        return frame.outputTarget().view;
+      const resolved = frame.runtime.device.createTextureView(frame.outputTarget().texture, {
         format: topology.surface.storageFormat,
       });
       if (!resolved.ok) throw resolved.error;

@@ -22,6 +22,8 @@ import {
   isPanelClosable,
   reconcileDockPanels,
 } from '../packages/viewer/src/shell/panel-reconciler.ts';
+import { applyStageMigration } from '../packages/viewer/src/shell/workbench-layout/grid-layout-migration.ts';
+import { canTransferPanelBetweenDocks, panelPlacementFor, shellHomeClaimForPanel, transferDockPanel, transferSourceFor } from '../packages/viewer/src/shell/panel-transfer.ts';
 import { createBrowserPagePlatform } from '../src/platform/browser-page.ts';
 import { mountViewViewer } from '../packages/viewer/src/host/frontend.ts';
 
@@ -45,16 +47,32 @@ it('preserves missing Viewer connection input diagnostics with the default docum
 
 function fakeDockApi() {
   const panels = [];
-  return {
+  const groups = [];
+  const api = {
     panels,
+    groups,
     getPanel(id) {
       return panels.find((panel) => panel.id === id);
     },
+    addGroup() {
+      const group = { panels: [], api: { location: { type: 'grid' }, height: 300 } };
+      groups.push(group);
+      return group;
+    },
+    addEdgeGroup(position) {
+      const group = { panels: [], api: { location: { type: 'edge', position }, height: 300 } };
+      groups.push(group);
+      return group;
+    },
     addPanel(options) {
+      const referencePanel = typeof options.position?.referencePanel === 'string'
+        ? api.getPanel(options.position.referencePanel)
+        : undefined;
+      const group = options.position?.referenceGroup ?? referencePanel?.group ?? groups.find(candidate => candidate.api.location.type === 'grid') ?? api.addGroup();
       const panel = {
         id: options.id,
         options,
-        group: { api: { location: { type: 'grid' } } },
+        group,
         api: {
           title: options.title,
           renderer: undefined,
@@ -68,6 +86,8 @@ function fakeDockApi() {
           close() {
             const index = panels.indexOf(panel);
             if (index >= 0) panels.splice(index, 1);
+            const groupIndex = group.panels.indexOf(panel);
+            if (groupIndex >= 0) group.panels.splice(groupIndex, 1);
           },
           updateParameters(next) {
             this.parameters = next;
@@ -76,7 +96,90 @@ function fakeDockApi() {
         },
       };
       panels.push(panel);
+      group.panels.push(panel);
       return panel;
+    },
+  };
+  return api;
+}
+
+function fakeTransferDock(id, { failAfterAdd = false } = {}) {
+  const panels = [];
+  const groups = [];
+  const api = {
+    id,
+    panels,
+    groups,
+    getPanel(panelId) { return panels.find(panel => panel.id === panelId); },
+    addGroup() {
+      const group = {
+        id: `${id}-group-${groups.length}`,
+        panels: [],
+        element: node('div'),
+        api: { location: { type: 'grid' }, height: 300 },
+      };
+      groups.push(group);
+      return group;
+    },
+    addEdgeGroup(position = 'bottom') {
+      const group = {
+        id: `${id}-edge-${position}`,
+        panels: [],
+        element: node('div'),
+        api: { location: { type: 'edge', position }, height: 300 },
+      };
+      groups.push(group);
+      return group;
+    },
+    addPanel(options) {
+      const group = options.position?.referenceGroup
+        ?? groups.find(candidate => candidate.api.location.type === 'grid')
+        ?? api.addGroup();
+      const anchor = node('div');
+      anchor.dataset.forgeaxViewSlot = options.id;
+      group.element.append(anchor);
+      const panel = {
+        id: options.id,
+        title: options.title,
+        group,
+        api: {
+          isActive: true,
+          isVisible: true,
+          location: group.api.location,
+          getParameters: () => options.params,
+          setActive() { this.isActive = true; },
+          close() {
+            panels.splice(panels.indexOf(panel), 1);
+            group.panels.splice(group.panels.indexOf(panel), 1);
+            anchor.remove();
+            if (!group.panels.length && group.api.location.type === 'grid') groups.splice(groups.indexOf(group), 1);
+          },
+        },
+      };
+      panels.push(panel);
+      group.panels.push(panel);
+      options.params.attach(options.id, anchor);
+      if (failAfterAdd) throw new Error('forced destination failure');
+      return panel;
+    },
+  };
+  return api;
+}
+
+function fakeTransferRegistry() {
+  const hosts = new Map();
+  return {
+    resolve(id, anchor) {
+      let host = hosts.get(id);
+      if (!host) {
+        host = node('div');
+        hosts.set(id, host);
+      }
+      if (anchor && host.parentNode !== anchor) {
+        host.parentNode?.replaceChildren();
+        anchor.replaceChildren(host);
+      }
+      return host;
     },
   };
 }
@@ -115,6 +218,10 @@ function node(tag) {
     children: [],
     parentNode: null,
     isConnected: true, closest() { return null; }, getClientRects() { return [{}]; },
+    querySelectorAll(selector) {
+      if (selector === '[data-forgeax-view-slot]') return walk(this).slice(1).filter(element => element.dataset.forgeaxViewSlot);
+      return [];
+    },
     addEventListener() {},
     removeEventListener() {},
     attributes: new Map(),
@@ -299,24 +406,195 @@ describe('dynamic Viewer panel contributions', () => {
     disposeScene();
   });
 
-  it('requires pageType and filters claims for the active page', async () => {
+  it('requires a panel home and filters claims for the active page', async () => {
     const { document } = fakeDocument();
     const registry = createViewSlotRegistry(document);
-    assert.throws(() => registry.claim({ id: 'missing-page' }), /requires pageType/);
+    assert.throws(() => registry.claim({ id: 'missing-page' }), /requires home/);
     assert.throws(
-      () => registry.claim({ id: 'missing-layout', pageType: 'scene' }),
+      () => registry.claim({ id: 'missing-layout', home: { kind: 'page', pageType: 'scene' } }),
       /requires layout/,
     );
     await assert.rejects(
       mountViewReactPanel({ registry, id: 'missing-page', panel: 'Example' }),
-      /requires pageType/,
+      /requires home/,
     );
     const claims = [
-      { id: 'scene-panel', pageType: 'scene' },
-      { id: 'plugins-panel', pageType: 'plugins' },
+      { id: 'scene-panel', home: { kind: 'page', pageType: 'scene' } },
+      { id: 'plugins-panel', home: { kind: 'page', pageType: 'plugins' } },
     ];
     assert.deepEqual(claimsForPage(claims, 'plugins'), [claims[1]]);
     assert.deepEqual(claimsForPage(claims, null), []);
+  });
+
+  it('limits Shell-home panel layout to order', () => {
+    const { document } = fakeDocument();
+    const registry = createViewSlotRegistry(document);
+    for (const layout of [
+      { order: 0, stack: 'tabs' },
+      { order: 0, size: { value: 240, unit: 'px' } },
+    ]) {
+      assert.throws(
+        () => registry.claim({ id: 'shell-panel', home: { kind: 'shell-bottom' }, layout }),
+        /shell-bottom panel layout supports only order/,
+      );
+    }
+    registry.claim({ id: 'shell-panel', home: { kind: 'shell-bottom' }, layout: { order: 0 } });
+    assert.deepEqual(registry.getClaims()[0].layout, { order: 0 });
+  });
+
+  it('routes only Shell-home panels through native cross-dock transfer', async () => {
+    const registry = fakeTransferRegistry();
+    const sourceApi = fakeTransferDock('shell-dock');
+    const targetApi = fakeTransferDock('page-dock');
+    const claim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    sourceApi.addPanel({ id: claim.id, params: { attach: registry.resolve } });
+    const instances = new Map([[sourceApi.id, { api: sourceApi, owner: { kind: 'shell-bottom' } }]]);
+    assert.equal(transferSourceFor({ panelId: claim.id, viewId: sourceApi.id }, targetApi, instances, [claim])?.source, sourceApi);
+
+    const pageApi = fakeTransferDock('other-page-dock');
+    const pageClaim = { id: 'page-owned', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } };
+    pageApi.addPanel({ id: pageClaim.id, params: { attach: registry.resolve } });
+    instances.set(pageApi.id, { api: pageApi, owner: { kind: 'page', pageId: 'scene-1', pageType: 'scene' } });
+    assert.equal(transferSourceFor({ panelId: pageClaim.id, viewId: pageApi.id }, targetApi, instances, [pageClaim]), undefined);
+  });
+
+  it('allows cross-dock targets only for Shell-home panels between page and Shell', () => {
+    const shellOwner = { kind: 'shell-bottom' };
+    const pageOwner = { kind: 'page', pageId: 'scene-1', pageType: 'scene' };
+    const shellClaim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    const pageClaim = { id: 'page-owned', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } };
+
+    assert.equal(canTransferPanelBetweenDocks(shellOwner, pageOwner, shellClaim), true);
+    assert.equal(canTransferPanelBetweenDocks(pageOwner, shellOwner, shellClaim), true);
+    assert.equal(canTransferPanelBetweenDocks(pageOwner, shellOwner, pageClaim), false);
+    assert.equal(canTransferPanelBetweenDocks(shellOwner, shellOwner, shellClaim), false);
+  });
+
+  it('returns migrated auto-tuck state when a later stage migration must retry', () => {
+    const edgeGroup = { id: 'right-edge', panels: [], api: { location: { type: 'edge', position: 'right' } } };
+    const panel = {
+      id: 'auto-tucked',
+      group: edgeGroup,
+      api: {
+        location: edgeGroup.api.location,
+        moveTo({ group }) {
+          const index = panel.group.panels.indexOf(panel);
+          if (index >= 0) panel.group.panels.splice(index, 1);
+          panel.group = group;
+          group.panels.push(panel);
+          this.location = group.api.location;
+        },
+      },
+    };
+    edgeGroup.panels.push(panel);
+    const api = {
+      panels: [panel],
+      groups: [edgeGroup],
+      getPanel(id) { return this.panels.find(candidate => candidate.id === id); },
+      addGroup() {
+        const group = { id: 'grid', panels: [], api: { location: { type: 'grid' } } };
+        this.groups.push(group);
+        return group;
+      },
+    };
+    const autoTucked = {
+      [panel.id]: { panelId: panel.id, groupId: 'removed-grid', index: 0, locationType: 'grid', tuckedToEdge: 'right' },
+    };
+    const result = applyStageMigration(
+      api,
+      { getBoundingClientRect: () => ({ width: 0, height: 0 }) },
+      ['right'],
+      ['bottom'],
+      null,
+      autoTucked,
+      new Set(),
+      ['bottom'],
+    );
+
+    assert.equal(result.applied, false);
+    assert.deepEqual(result.autoTucked, {});
+    assert.equal(panel.api.location.type, 'grid');
+  });
+
+  it('classifies panels against the current home claim', () => {
+    let claims = [];
+    assert.equal(shellHomeClaimForPanel('shared', claims), undefined);
+
+    const sharedClaim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    claims = [sharedClaim];
+    assert.equal(shellHomeClaimForPanel(sharedClaim.id, claims), sharedClaim);
+
+    claims = [{ id: 'shared', home: { kind: 'page', pageType: 'material' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } }];
+    assert.equal(shellHomeClaimForPanel('shared', claims), undefined);
+  });
+
+  it('projects presentation placement from the owning Dockview and panel location', () => {
+    assert.deepEqual(
+      panelPlacementFor({ kind: 'page', pageId: 'material-1', pageType: 'material' }, 'edge'),
+      { kind: 'page', pageId: 'material-1', pageType: 'material', location: 'edge' },
+    );
+    assert.deepEqual(
+      panelPlacementFor({ kind: 'shell-bottom' }, 'edge'),
+      { kind: 'shell-bottom', location: 'edge' },
+    );
+    assert.deepEqual(panelPlacementFor(undefined, undefined), { kind: 'unmounted' });
+  });
+
+  it('moves the existing mount host between Dockviews and restores an empty source grid', async () => {
+    const registry = fakeTransferRegistry();
+    const sourceApi = fakeTransferDock('source-dock');
+    const targetApi = fakeTransferDock('target-dock');
+    const claim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    sourceApi.addPanel({ id: claim.id, params: { attach: registry.resolve } });
+    const host = registry.resolve(claim.id);
+
+    assert.equal(await transferDockPanel({ sourceApi, targetApi, id: claim.id, claim, registry, title: 'Shared' }), true);
+    assert.equal(sourceApi.getPanel(claim.id), undefined);
+    const destination = targetApi.getPanel(claim.id);
+    const destinationAnchor = destination.group.element.querySelectorAll('[data-forgeax-view-slot]')[0];
+    assert.equal(registry.resolve(claim.id, destinationAnchor), host);
+    assert.equal(host.parentNode, destinationAnchor);
+    assert.equal(sourceApi.groups.some(group => group.api.location.type === 'grid'), true);
+  });
+
+  it('returns Shell-home panels to the bottom edge without adding a Shell grid', async () => {
+    const registry = fakeTransferRegistry();
+    const sourceApi = fakeTransferDock('page-dock');
+    const shellApi = fakeTransferDock('shell-dock');
+    const edgeGroup = shellApi.addEdgeGroup('bottom');
+    const claim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    sourceApi.addPanel({ id: claim.id, params: { attach: registry.resolve } });
+
+    assert.equal(await transferDockPanel({
+      sourceApi,
+      targetApi: shellApi,
+      id: claim.id,
+      claim,
+      registry,
+      title: 'Shared',
+      position: { direction: 'within', referenceGroup: edgeGroup },
+    }), true);
+    assert.equal(shellApi.getPanel(claim.id).api.location.type, 'edge');
+    assert.equal(shellApi.getPanel(claim.id).group, edgeGroup);
+    assert.equal(shellApi.groups.some(group => group.api.location.type === 'grid'), false);
+    assert.equal(sourceApi.groups.some(group => group.api.location.type === 'grid'), true);
+  });
+
+  it('rolls a failed destination add back to the original mount host', async () => {
+    const registry = fakeTransferRegistry();
+    const sourceApi = fakeTransferDock('source-dock');
+    const targetApi = fakeTransferDock('target-dock', { failAfterAdd: true });
+    const claim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    sourceApi.addPanel({ id: claim.id, params: { attach: registry.resolve } });
+    const sourceAnchor = sourceApi.getPanel(claim.id).group.element.querySelectorAll('[data-forgeax-view-slot]')[0];
+    const host = registry.resolve(claim.id);
+    await assert.rejects(transferDockPanel({
+      sourceApi, targetApi, id: claim.id, claim, registry, title: 'Shared',
+    }), /forced destination failure/);
+    assert.equal(sourceApi.getPanel(claim.id) !== undefined, true);
+    assert.equal(targetApi.getPanel(claim.id), undefined);
+    assert.equal(host.parentNode, sourceAnchor);
+    assert.equal(targetApi.groups.some(group => group.api.location.type === 'grid'), true);
   });
 
   it('starts empty and preserves generic claim metadata through unclaim', () => {
@@ -325,7 +603,7 @@ describe('dynamic Viewer panel contributions', () => {
     assert.deepEqual(registry.getClaims(), []);
     const unclaim = registry.claim({
       id: 'example',
-      pageType: 'scene',
+      home: { kind: 'page', pageType: 'scene' },
       titleKey: 'example.title',
       activity: { icon: 'box' },
       layout: { dock: 'left', size: { value: 0.2, unit: 'fraction' }, stack: 'tabs', order: 7 },
@@ -341,7 +619,7 @@ describe('dynamic Viewer panel contributions', () => {
     const registry = createViewSlotRegistry(document);
     registry.claim({
       id: 'example',
-      pageType: 'scene',
+      home: { kind: 'page', pageType: 'scene' },
       layout: { dock: 'fill', stack: 'tabs', order: 0 },
     });
     const child = node('span');
@@ -366,7 +644,7 @@ describe('dynamic Viewer panel contributions', () => {
   it('reattaches a retained panel when Dock replaces its slot anchor', () => {
     const { document, root } = fakeDocument();
     const registry = createViewSlotRegistry(document);
-    const claim = { id: 'inspector', pageType: 'scene', layout: { dock: 'right', stack: 'tabs', order: 0 } };
+    const claim = { id: 'inspector', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'right', stack: 'tabs', order: 0 } };
     const unclaim = registry.claim(claim);
     const api = fakeDockApi();
     const firstAnchor = node('div');
@@ -389,23 +667,20 @@ describe('dynamic Viewer panel contributions', () => {
   it('solves a generic grid-docked layout from independent panel claims', () => {
     const api = fakeDockApi();
     const claims = [
-      { id: 'scene-tree', titleKey: 'scene', layout: { dock: 'left', size: { value: 0.17, unit: 'fraction' }, stack: 'tabs', order: 0 } },
-      { id: 'viewport', titleKey: 'viewport', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
-      { id: 'inspector', titleKey: 'inspector', layout: { dock: 'right', size: { value: 0.25, unit: 'fraction' }, stack: 'tabs', order: 0 } },
-      { id: 'content-browser', titleKey: 'content', layout: { dock: 'bottom', size: { value: 0.34, unit: 'fraction', additionalPx: 200 }, stack: 'tabs', order: 0 } },
+      { id: 'scene-tree', home: { kind: 'page', pageType: 'scene' }, titleKey: 'scene', layout: { dock: 'left', size: { value: 0.17, unit: 'fraction' }, stack: 'tabs', order: 0 } },
+      { id: 'viewport', home: { kind: 'page', pageType: 'scene' }, titleKey: 'viewport', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'inspector', home: { kind: 'page', pageType: 'scene' }, titleKey: 'inspector', layout: { dock: 'right', size: { value: 0.25, unit: 'fraction' }, stack: 'tabs', order: 0 } },
+      { id: 'content-browser', home: { kind: 'shell-bottom' }, titleKey: 'content', layout: { order: 0 } },
     ];
-    reconcileDockPanels(api, [claims[3]]);
-    assert.deepEqual(api.panels.map(({ id }) => id), ['content-browser']);
-    reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
+    const shellApi = fakeDockApi();
+    reconcileDockPanels(shellApi, [claims[3]], { availableWidth: 1000, availableHeight: 240 });
+    assert.deepEqual(shellApi.panels.map(({ id }) => id), ['content-browser']);
+    assert.equal(shellApi.getPanel('content-browser').options.position, undefined);
+    reconcileDockPanels(api, claims.slice(0, 3), { availableWidth: 1000, availableHeight: 600 });
     assert.deepEqual(
       api.panels.map(({ id }) => id),
-      ['viewport', 'content-browser', 'scene-tree', 'inspector'],
+      ['viewport', 'scene-tree', 'inspector'],
     );
-    assert.deepEqual(api.getPanel('content-browser').options.position, {
-      direction: 'below',
-      referencePanel: 'viewport',
-    });
-    assert.equal(api.getPanel('content-browser').options.initialHeight, 404);
     assert.deepEqual(api.getPanel('scene-tree').options.position, {
       direction: 'left',
       referencePanel: 'viewport',
@@ -420,12 +695,52 @@ describe('dynamic Viewer panel contributions', () => {
     assert.deepEqual(api.panels.map(({ id }) => id), ['viewport']);
   });
 
+  it('places the first Shell panel into the bottom edge group', () => {
+    const api = fakeDockApi();
+    const edgeGroup = api.addEdgeGroup('bottom');
+    const claim = { id: 'content-browser', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+
+    reconcileDockPanels(api, [claim], { shellBottom: true, availableWidth: 1200, availableHeight: 240 });
+
+    const panel = api.getPanel(claim.id);
+    assert.deepEqual(panel.options.position, { direction: 'within', referenceGroup: edgeGroup });
+    assert.equal(panel.group.api.location.type, 'edge');
+    assert.equal(panel.options.inactive, undefined);
+    assert.equal(api.groups.some(group => group.api.location.type === 'grid'), false);
+  });
+
+  it('requires the Shell bottom edge group before reconciling Shell-home panels', () => {
+    const api = fakeDockApi();
+    const claim = { id: 'content-browser', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    assert.throws(
+      () => reconcileDockPanels(api, [claim], { shellBottom: true, availableWidth: 1200, availableHeight: 240 }),
+      /bottom edge drawer is not initialized/,
+    );
+  });
+
+  it('keeps a Shell-home panel mounted when page topology is rebuilt', () => {
+    const api = fakeDockApi();
+    const pageClaim = { id: 'viewport', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } };
+    const sharedClaim = { id: 'content-browser', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+    reconcileDockPanels(api, [pageClaim, sharedClaim], { availableWidth: 1000, availableHeight: 600 });
+    const pagePanel = api.getPanel(pageClaim.id);
+    const sharedPanel = api.getPanel(sharedClaim.id);
+
+    reconcileDockPanels(api, [
+      { ...pageClaim, layout: { ...pageClaim.layout, order: 1 } },
+      sharedClaim,
+    ], { availableWidth: 1000, availableHeight: 600 });
+
+    assert.notEqual(api.getPanel(pageClaim.id), pagePanel, 'page-home panels are rebuilt for the new topology');
+    assert.equal(api.getPanel(sharedClaim.id), sharedPanel, 'the shared panel survives page topology changes');
+  });
+
   it('keeps the existing tab active when a contributed panel joins its group', () => {
     const api = fakeDockApi();
     const claims = [
-      { id: 'viewport', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
-      { id: 'inspector', layout: { dock: 'right', stack: 'tabs', order: 0 } },
-      { id: 'parameters', layout: { dock: 'right', stack: 'tabs', order: 900 } },
+      { id: 'viewport', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'inspector', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'right', stack: 'tabs', order: 0 } },
+      { id: 'parameters', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'right', stack: 'tabs', order: 900 } },
     ];
     reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
     assert.equal(api.getPanel('inspector').options.inactive, undefined);
@@ -438,21 +753,21 @@ describe('dynamic Viewer panel contributions', () => {
   it('places a right-bottom group below any right group at half its height', () => {
     const api = fakeDockApi();
     const claims = [
-      { id: 'preview', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
-      { id: 'properties', layout: { dock: 'right', stack: 'tabs', order: 0 } },
-      { id: 'statistics', layout: { dock: 'right-bottom', stack: 'tabs', order: 2 } },
+      { id: 'preview', home: { kind: 'page', pageType: 'material' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'properties', home: { kind: 'page', pageType: 'material' }, layout: { dock: 'right', stack: 'tabs', order: 0 } },
+      { id: 'statistics', home: { kind: 'page', pageType: 'material' }, layout: { dock: 'right-bottom', stack: 'tabs', order: 2 } },
     ];
     reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
     assert.deepEqual(api.panels.map(panel => panel.id), ['preview', 'properties', 'statistics']);
     assert.deepEqual(api.getPanel('statistics').options.position, { direction: 'below', referencePanel: 'properties' });
-    assert.equal(api.getPanel('statistics').options.initialHeight, 300);
+    assert.equal(api.getPanel('statistics').options.initialHeight, 150);
   });
 
   it('lets a right-bottom group occupy the right side alone', () => {
     const api = fakeDockApi();
     const claims = [
-      { id: 'preview', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
-      { id: 'statistics', layout: { dock: 'right-bottom', stack: 'tabs', order: 2 } },
+      { id: 'preview', home: { kind: 'page', pageType: 'material' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'statistics', home: { kind: 'page', pageType: 'material' }, layout: { dock: 'right-bottom', stack: 'tabs', order: 2 } },
     ];
     reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
     assert.deepEqual(api.getPanel('statistics').options.position, { direction: 'right', referencePanel: 'preview' });
@@ -462,7 +777,7 @@ describe('dynamic Viewer panel contributions', () => {
   it('accepts the right-bottom zone during claim registration', () => {
     const { document } = fakeDocument();
     const registry = createViewSlotRegistry(document);
-    registry.claim({ id: 'statistics', pageType: 'material', layout: {
+    registry.claim({ id: 'statistics', home: { kind: 'page', pageType: 'material' }, layout: {
       dock: 'right-bottom', stack: 'tabs', order: 2,
     } });
     assert.equal(registry.getClaims()[0].layout.dock, 'right-bottom');
@@ -471,8 +786,8 @@ describe('dynamic Viewer panel contributions', () => {
   it('passes panel closable=false into dock params for pinned slots', () => {
     const api = fakeDockApi();
     const claims = [
-      { id: 'viewport', titleKey: 'viewport', closable: false, layout: { dock: 'fill', stack: 'tabs', order: 0 } },
-      { id: 'inspector', titleKey: 'inspector', layout: { dock: 'right', size: { value: 0.25, unit: 'fraction' }, stack: 'tabs', order: 0 } },
+      { id: 'viewport', home: { kind: 'page', pageType: 'scene' }, titleKey: 'viewport', closable: false, layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+      { id: 'inspector', home: { kind: 'page', pageType: 'scene' }, titleKey: 'inspector', layout: { dock: 'right', size: { value: 0.25, unit: 'fraction' }, stack: 'tabs', order: 0 } },
     ];
     reconcileDockPanels(api, claims, { availableWidth: 1000, availableHeight: 600 });
     assert.equal(isPanelClosable(claims[0]), false);
@@ -580,7 +895,7 @@ describe('display Frontend Fiber surface ownership', () => {
     const fiber = context.plugin(viewportFrontendPlugin, { document, panelHost });
     await Promise.resolve();
     assert.equal(claims[0]?.id, 'viewport');
-    assert.equal(claims[0]?.pageType, 'scene');
+    assert.equal(claims[0]?.home.pageType, 'scene');
     assert.equal(context.get('viewWorkspaceShell', false), undefined);
     await context.plugin(viewPlayPresentationPlugin, { document });
     await fiber.await();
@@ -607,7 +922,7 @@ describe('display Frontend Fiber surface ownership', () => {
     registry.resolve('viewport');
     const surface = document.getElementById('forgeax-view-workspace');
 
-    assert.equal(registry.getClaims()[0].pageType, 'scene');
+    assert.equal(registry.getClaims()[0].home.pageType, 'scene');
     assert.equal(surface?.tagName, 'DIV');
     assert.equal(walk(root).filter(element => element.tagName === 'IFRAME').length, 0);
     await context.fiber.dispose();
@@ -830,8 +1145,8 @@ describe('display Frontend Fiber surface ownership', () => {
 it('defers hidden panel creation, retires removed claims immediately, and preserves resized layout', () => {
   const api = fakeDockApi();
   const claims = [
-    { id: 'scene', layout: { dock: 'fill', stack: 'tabs', order: 0 } },
-    { id: 'content', layout: { dock: 'bottom', size: { value: 0.34, unit: 'fraction' }, stack: 'tabs', order: 0 } },
+    { id: 'scene', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'fill', stack: 'tabs', order: 0 } },
+    { id: 'content', home: { kind: 'page', pageType: 'scene' }, layout: { dock: 'bottom', size: { value: 0.34, unit: 'fraction' }, stack: 'tabs', order: 0 } },
   ];
   reconcileDockPanels(api, claims, { availableWidth: 0, availableHeight: 0 });
   assert.equal(api.panels.length, 0, 'hidden initial layout must wait for its real extent');
@@ -845,4 +1160,18 @@ it('defers hidden panel creation, retires removed claims immediately, and preser
   assert.equal(content.options.initialHeight, 170, 'revealing a page must preserve user sizing');
   reconcileDockPanels(api, [claims[0]], { availableWidth: 0, availableHeight: 0 });
   assert.equal(api.getPanel('content'), undefined, 'hidden claim retirement remains immediate');
+});
+
+it('preserves dock panels while a cross-dock transfer awaits its settled claims', () => {
+  const api = fakeDockApi();
+  const claim = { id: 'shared', home: { kind: 'shell-bottom' }, layout: { order: 0 } };
+  reconcileDockPanels(api, [claim], { availableWidth: 1200, availableHeight: 900 });
+  const pending = new Map([[claim.id, Promise.resolve()]]);
+
+  reconcileDockPanels(api, [], { availableWidth: 1200, availableHeight: 900, preservePanelIds: pending });
+  assert.ok(api.getPanel(claim.id), 'stale claim reconciliation must retain a transferring panel');
+
+  pending.clear();
+  reconcileDockPanels(api, [], { availableWidth: 1200, availableHeight: 900, preservePanelIds: pending });
+  assert.equal(api.getPanel(claim.id), undefined, 'the settled empty claim list retires the panel');
 });

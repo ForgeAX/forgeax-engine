@@ -1422,12 +1422,52 @@ export function createDevKitWorkspaceProvider(
           },
           ...(previewAsset ? { asset: previewAsset } : {}),
           ...(value.assetBinding === undefined ? {} : { assetBinding: value.assetBinding }),
+          ...(previewAsset?.kind !== 'material'
+            ? {}
+            : {
+                material: {
+                  get() {
+                    assertPreviewOpen();
+                    return command('preview.material.get', {
+                      targetId: previewTargetId,
+                      previewOwner,
+                    }) as Promise<import('@forgeax/engine-app').MaterialPreviewState>;
+                  },
+                  set(mesh: import('@forgeax/engine-app').MaterialPreviewMesh) {
+                    assertPreviewOpen();
+                    return command('preview.material.set', {
+                      targetId: previewTargetId,
+                      previewOwner,
+                      mesh,
+                    }) as Promise<import('@forgeax/engine-app').MaterialPreviewState>;
+                  },
+                  rotate(input: { readonly yaw: number; readonly pitch: number }) {
+                    assertPreviewOpen();
+                    return command('preview.material.rotate', {
+                      targetId: previewTargetId,
+                      previewOwner,
+                      ...input,
+                    }) as Promise<import('@forgeax/engine-app').MaterialPreviewState>;
+                  },
+                  reset() {
+                    assertPreviewOpen();
+                    return command('preview.material.reset', {
+                      targetId: previewTargetId,
+                      previewOwner,
+                    }) as Promise<import('@forgeax/engine-app').MaterialPreviewState>;
+                  },
+                },
+              }),
           display: {
             get(options) {
               assertPreviewOpen();
               return command(
                 'preview.display.get',
-                { targetId: previewTargetId, previewOwner },
+                {
+                  targetId: previewTargetId,
+                  previewOwner,
+                  ...(options?.uvChannel === undefined ? {} : { uvChannel: options.uvChannel }),
+                },
                 options?.signal,
               ) as Promise<import('@forgeax/engine-app').EngineWorkspacePreviewDisplay>;
             },

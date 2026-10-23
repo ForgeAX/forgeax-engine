@@ -37,11 +37,12 @@ export async function mountMaterialPropertiesPanel(props: MountProps) {
 
 export async function mountMaterialPreviewPanel(props: MountProps) {
   return mount(
-    <MaterialPreviewPanel
+    <PanelVisibilityProvider element={props.mountElement}><MaterialPreviewPanel
       client={props.client}
       presentation={props.presentation}
       owner={props.owner}
-    />,
+      inputControllerFactory={props.inputControllerFactory}
+    /></PanelVisibilityProvider>,
     props,
   );
 }

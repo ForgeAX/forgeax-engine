@@ -1,5 +1,5 @@
-import type { UePosition } from './geometry';
-import { previewRect } from './geometry';
+import type { UePosition } from './geometry.ts';
+import { previewRect } from './geometry.ts';
 
 export type DropRect = { x: number; y: number; width: number; height: number };
 

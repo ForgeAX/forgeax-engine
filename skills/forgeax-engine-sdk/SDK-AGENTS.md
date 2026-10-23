@@ -134,10 +134,10 @@ pnpm exec forgeax project capture --headless true --backend software --require-u
 
 This uses source-development assets and browser compositor screenshots; retain adapter/error sidecar evidence.
 For cross-machine comparison, add --deterministic and pin game state in forgeaxCapture mode.
-App's actual frame-submitted event projects to
-document.documentElement.dataset.forgeaxFrameSubmitted and the Canvas
-forgeax:frame-submitted event. Capture waits for Engine submission and non-flat Canvas pixels,
-then the game's forgeaxCaptureReady checkpoint. Elapsed waiting is
+App retains submitted and completed facts on `canvas.forgeaxFrameProgress` and dispatches
+the Canvas `forgeax:frame-submitted` event as a future-only notification. Capture reads the
+snapshot and waits for non-flat Canvas pixels, then the game's forgeaxCaptureReady checkpoint.
+Elapsed waiting is
 only extra settling, not a deterministic frame or substitute for pixel evidence.
 Use a Node/Bun SDK command-client scenario for input, assertions, and multiple checkpoints in one session.
 Open browser once, drive native session.page, and call session.capture(name)

@@ -28,6 +28,7 @@ import type { PackError } from '@forgeax/engine-pack/errors';
 import {
   declaredPackAssets,
   type ScanInventory,
+  STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
   scanInventory,
 } from '@forgeax/engine-pack/scanner';
 import { projectScriptablePackSceneComponents } from '@forgeax/engine-pack/source';
@@ -826,7 +827,7 @@ function hostSource(
       : JSON.stringify(facts.startupTimeoutMs);
   return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\nimport { decodeDocumentText } from '@forgeax/engine/codec';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
 import { DEFAULT_WEBGPU_STUB_PROFILE } from '@forgeax/engine/rhi-webgpu';
 import { inspectUi } from '@forgeax/engine/ui';
@@ -1595,7 +1596,7 @@ const appBootstrapPlugin = {
           },
           openResourcePreview: async ({ app: previewApp, asset, canvas: previewCanvas }) => {
             const owner = await prepareResourcePreview(previewApp, { kind: asset.kind, guid: asset.guid }, previewCanvas);
-            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.texture === undefined ? {} : { texture: owner.texture }), ...(owner.display === undefined ? {} : { display: owner.display }) };
+            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.material === undefined ? {} : { material: owner.material }), ...(owner.texture === undefined ? {} : { texture: owner.texture }), ...(owner.display === undefined ? {} : { display: owner.display }) };
           },
         });
         await fiber.await();
@@ -2775,7 +2776,11 @@ export async function createViteConfig(
             owningAssetLibrary(facts.assetLibraries, path)?.root ?? facts.root,
             path,
           ),
-        scriptablePack: { metadataOnly: true, sourceSnapshot },
+        scriptablePack: {
+          ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
+          metadataOnly: true,
+          sourceSnapshot,
+        },
         ...previewSourceFailureOptions(serving && workspacePreview, failedSources),
       }),
       createEngineWorkspaceResolver(facts.root),

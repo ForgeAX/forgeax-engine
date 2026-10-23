@@ -592,7 +592,10 @@ export class MaterialDispatch {
     for (const resource of this.unpublished)
       if (!this.holds.has(resource)) {
         this.sourceMaterials = this.sourceMaterials.without(resource);
-        if (this.materialFrame.get(resource)?.bindings === 0)
+        if (
+          this.materialFrame.get(resource)?.bindings === 0 &&
+          this.queryWork.get(resource)?.prepared === undefined
+        )
           this.materialFrame = this.materialFrame.without(resource);
       }
     this.unpublished.clear();
@@ -977,7 +980,10 @@ export class MaterialDispatch {
     }
     this.holds.delete(resource);
     this.sourceMaterials = this.sourceMaterials.without(resource);
-    if (this.materialFrame.get(resource)?.bindings === 0)
+    if (
+      this.materialFrame.get(resource)?.bindings === 0 &&
+      this.queryWork.get(resource)?.prepared === undefined
+    )
       this.materialFrame = this.materialFrame.without(resource);
   }
 }

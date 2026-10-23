@@ -76,6 +76,7 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (length !== right.length) return false;
   // Preserve TypedArray.every's detached/out-of-bounds validation without a byte callback.
   Uint8Array.prototype.values.call(left);
+  if (left === right) return true;
   let index = 0;
   if (Number.isSafeInteger(length) && length >= 256) {
     // Preserve cheap ordered early conflicts before allocating any word views.
@@ -94,14 +95,21 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+// One value is equal to itself; distinct values keep the canonical JSON comparison.
 function equalParamSchema(left: MaterialRuntimeArtifact, right: MaterialRuntimeArtifact): boolean {
-  return JSON.stringify(left.metadata?.paramSchema) === JSON.stringify(right.metadata?.paramSchema);
+  const leftSchema = left.metadata?.paramSchema;
+  const rightSchema = right.metadata?.paramSchema;
+  return leftSchema === rightSchema || JSON.stringify(leftSchema) === JSON.stringify(rightSchema);
 }
 
 function equalReceipt(left: MaterialRuntimeArtifact, right: MaterialRuntimeArtifact): boolean {
+  const leftAbi = left.metadata?.abi;
+  const leftReceipt = left.metadata?.receipt;
+  const rightAbi = right.metadata?.abi;
+  const rightReceipt = right.metadata?.receipt;
   return (
-    JSON.stringify([left.metadata?.abi, left.metadata?.receipt]) ===
-    JSON.stringify([right.metadata?.abi, right.metadata?.receipt])
+    (leftAbi === rightAbi && leftReceipt === rightReceipt) ||
+    JSON.stringify([leftAbi, leftReceipt]) === JSON.stringify([rightAbi, rightReceipt])
   );
 }
 

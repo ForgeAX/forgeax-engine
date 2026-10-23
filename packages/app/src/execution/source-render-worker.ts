@@ -6,6 +6,7 @@ import {
   DynamicGeometryError,
   type GpuPassTimingObservation,
   type RenderFeature,
+  type RenderInspection,
   type RenderPublicationTargetOwner,
   type RenderSceneBounds,
   renderPublicationAssetTransfers,
@@ -33,6 +34,7 @@ import { rendererInspectionFailure } from './renderer-inspection';
 import { SourceMeshResidency } from './source-mesh-residency';
 import type {
   ExecutionGeometryObservationResult,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
 } from './types';
 import { workerError } from './worker-error';
@@ -57,7 +59,7 @@ export class SourceRenderWorker {
   private inspectionReady = false;
   private readonly inspectionRequests = new Map<
     number,
-    { finish(result: ExecutionRendererInspectionResult): void }
+    { finish(result: ExecutionRendererInspectionResult<Partial<RenderInspection>>): void }
   >();
   private disposal: Promise<void> | undefined;
   private readyWait: Promise<void> = Promise.resolve();
@@ -749,9 +751,9 @@ export class SourceRenderWorker {
     });
   }
   /** This read never consumes publication credit or starts another Renderer. */
-  inspectRenderer(
-    options: { readonly signal?: AbortSignal; readonly pipelineLibrary?: boolean } = {},
-  ): Promise<ExecutionRendererInspectionResult> {
+  inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
+    options: ExecutionRendererInspectionOptions<K> = {},
+  ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>> {
     const worker = this.worker,
       epoch = this.epoch,
       worldIdentity = this.world.identity;
@@ -762,7 +764,7 @@ export class SourceRenderWorker {
       return Promise.resolve(rendererInspectionFailure('request-limit'));
     const requestId = ++this.nextRequestId;
     return new Promise((resolve) => {
-      const finish = (result: ExecutionRendererInspectionResult) => {
+      const finish = (result: ExecutionRendererInspectionResult<Partial<RenderInspection>>) => {
         if (!this.inspectionRequests.has(requestId)) return;
         this.inspectionRequests.delete(requestId);
         clearTimeout(timer);
@@ -772,7 +774,12 @@ export class SourceRenderWorker {
           this.epoch === epoch &&
           this.world.identity === worldIdentity &&
           !this.disposed;
-        resolve(result.ok && !current ? rendererInspectionFailure('stale-session') : result);
+        // The child projects the requested fields before transport; the request owns K.
+        resolve(
+          (result.ok && !current
+            ? rendererInspectionFailure('stale-session')
+            : result) as ExecutionRendererInspectionResult<Pick<RenderInspection, K>>,
+        );
       };
       const cancel = () => finish(rendererInspectionFailure('cancelled'));
       // New inspection read bound follows existing child-read policy; caller abort may close sooner.
@@ -782,6 +789,7 @@ export class SourceRenderWorker {
       try {
         worker.postMessage({
           kind: 'inspect',
+          ...(options.fields === undefined ? {} : { fields: options.fields }),
           ...(options.pipelineLibrary === undefined
             ? {}
             : { pipelineLibrary: options.pipelineLibrary }),

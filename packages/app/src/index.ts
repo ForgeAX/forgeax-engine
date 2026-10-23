@@ -33,14 +33,13 @@ export {
 } from './assets-runtime-assembly';
 export {
   type BrowserFrameCompleted,
+  type BrowserFrameProgress,
   type BrowserFrameSubmitted,
-  FORGEAX_FRAME_COMPLETED_DATASET,
   FORGEAX_FRAME_COMPLETED_EVENT,
-  FORGEAX_FRAME_SUBMITTED_DATASET,
   FORGEAX_FRAME_SUBMITTED_EVENT,
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
-  resetBrowserFrameSubmitted,
+  resetBrowserFrameProgress,
   subscribeBrowserFrameSubmitted,
 } from './browser-frame-signal';
 export { canvasAspectPlugin } from './canvas-policy';
@@ -85,6 +84,7 @@ export type {
   ExecutionOptions,
   ExecutionRenderCapabilities,
   ExecutionRendererInspectionContext,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
   ExecutionRenderLimits,
   ExecutionReport,
@@ -278,6 +278,15 @@ export {
   engineWorkspaceBrowserPlugin,
   engineWorkspaceInputPlugin,
 } from './workspace-browser';
+export type {
+  MaterialPreviewControl,
+  MaterialPreviewMesh,
+  MaterialPreviewState,
+} from './workspace-material-preview';
+export {
+  createWorkspaceMaterialPreview,
+  workspaceMaterialPreviewPlugin,
+} from './workspace-material-preview';
 export {
   createEngineWorkspaceTools,
   ENGINE_WORKSPACE_STATE_TOPIC,

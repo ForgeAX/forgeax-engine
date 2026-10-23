@@ -34,6 +34,7 @@ import {
   inventoryScriptablePackSource,
   type LoadScriptablePackOptions,
   loadScriptablePack,
+  SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
 } from './scriptable-pack-node.js';
 import {
   createScriptablePackSourceSnapshot,
@@ -75,7 +76,7 @@ export const STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS = Object.freeze({
   // the authored source closure before it can return metadata. Keep the bound
   // finite while allowing a heavy character/scene closure to complete on a
   // busy host.
-  timeoutMs: 120_000,
+  timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
 }) satisfies ScriptablePackScanOptions;
 
 export interface InventoryDeclaration

@@ -92,8 +92,9 @@ Bundle the same Web fonts; do not rely on matching system fonts.
 For cross-machine color regression, use --deterministic and ?forgeaxCapture=1. Games pin random
 seed/logical frame/fonts and set readiness only after Canvas/UI stabilize:
 document.documentElement.dataset.forgeaxCaptureReady = 'true'. App also publishes
-forgeaxFrameSubmitted after actual Renderer submission and dispatches
-forgeax:frame-submitted. The CLI waits for Engine submission/non-flat output before the game marker.
+`canvas.forgeaxFrameProgress.submitted` after actual Renderer submission and dispatches
+`forgeax:frame-submitted` as a future-only notification. The CLI reads the canvas snapshot and
+waits for non-flat output before the game marker.
 wait-ms adds settling after these handshakes; it does not identify a deterministic frame.
 
 For continuous captures, keep one Vite/Xvfb/Chrome/Page/World session and use named ready markers

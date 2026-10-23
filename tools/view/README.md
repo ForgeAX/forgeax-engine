@@ -786,6 +786,19 @@ The resident `@forgeax/view/plugin` also accepts `config.disabledPages`.
 | Asset | `forgeax.view.page.asset.frontend` | Fallback resource properties |
 | HTML UI | `forgeax.view.page.html.frontend` | Standalone file preview and viewport settings |
 
+Panel claims declare one home: a page (`pageType`) or the Shell bottom edge
+drawer. Page homes require a `layout.dock`; Shell-bottom homes support only
+`layout.order` because the Shell owns placement, sizing and tab stacking. The
+Shell drawer starts as a 32px bottom tab strip and opens a panel flyout when
+selected. A Shell-home panel may move into a page and keeps its claim and
+mounted content there; closing that page returns it to the Shell bottom edge.
+Page-home panels remain owned by their page. Unregistering the owning page type
+also reconciles the surviving Shell claim and reattaches its existing mount
+host after the page Dockview retires.
+`presentation.get` reports placement from the live Dockview owner and location,
+including the page ID/type or Shell bottom edge, grid, floating or popout
+location.
+
 Use `forgeax.view.<role>.<feature>.<side>` for native runtime names:
 `page` for pages, `panel` for scene panels, `service` for API clients,
 providers and target presentation, and `shell` for UI hosting. For example,
@@ -928,12 +941,14 @@ when a camera gesture must keep one authenticated client connection. A
 single-operation invocation closes its connection after the Engine API reply.
 
 Viewport clicks use View's `scene.pick` selection workflow with physical output
-pixels (`x`, `y`) and the exact `targetId` / `targetGeneration`. It calls Engine's
-existing `target.pick` query; direct `target.pick` calls do not change View
-selection. `scene.select`, `scene.pick` and `scene.clear` share cancellation and
-target guards, so a late result cannot replace a newer selection. Clearing also
-requires the exact target identity. Query or highlight failures preserve the
-last confirmed selection and use the ordinary workspace error channel.
+pixels (`x`, `y`) and the exact `targetId` / `targetGeneration`. It requests
+triangle granularity from Engine's `target.pick`; direct calls keep bounds
+granularity unless explicitly overridden. `scene.select`, `scene.pick` and
+`scene.clear` share cancellation and target guards, so a late result cannot
+replace a newer selection. An Engine that does not confirm triangle granularity
+fails closed without changing the current selection. Query or highlight failures
+preserve the last confirmed selection and use the ordinary workspace error
+channel.
 
 ## Custom workspace embedding
 

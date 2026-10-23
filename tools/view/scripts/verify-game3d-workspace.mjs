@@ -164,10 +164,8 @@ try {
   console.error('default backend -> View URL -> automatic project opening passed');
   const content = page.getByTestId('panel-content-browser');
   await content.waitFor({ state: 'attached' });
-  if (!(await content.isVisible())) {
-    await page.locator('.fx-view-workspace-row.is-active .dv-groupview-edge .dv-tab')
-      .filter({ hasText: /^Content Browser$/ }).click();
-  }
+  const revealed = await workspace.call('presentation.panel.reveal', { panelId: 'content-browser' });
+  assert.equal(revealed.panels.find(panel => panel.id === 'content-browser')?.visible, true);
   await content.waitFor({ state: 'visible' });
   // The initial folder is assets; explicitly exercise root-to-assets navigation.
   await content.locator('.cb-address-crumb > [data-action="content-browser.navigate"]').click();
@@ -257,9 +255,10 @@ try {
     throw error;
   } finally { clearInterval(progress); }
   console.error('game tools ready', { waitMs: Math.round(performance.now() - waitingSince) });
-  const sceneFrame = await page.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted);
+  const sceneFrame = await page.evaluate(() => document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null);
+  assert.ok(Number.isSafeInteger(sceneFrame) && sceneFrame > 0, 'the hidden Scene must have submitted a frame before checking that rendering stopped');
   await page.waitForTimeout(400);
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted), sceneFrame, 'hidden scene preview must release continuous rendering');
+  assert.equal(await page.evaluate(() => document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null), sceneFrame, 'hidden scene preview must release continuous rendering');
   const hiddenCapture = await workspace.capture(args);
   assert.match(hiddenCapture.png, /^data:image\/png/);
   assert.equal((await workspace.getSceneTree(args)).worldId, target.worldId);
@@ -267,10 +266,10 @@ try {
   const game = page.frames().find(frame => frame.url().includes(playArgs.targetId));
   assert.ok(game);
   try {
-    await game.waitForFunction(() => Number(document.documentElement.dataset.forgeaxFrameCompleted ?? 0) >= 60, undefined, { timeout: 180_000 });
+    await game.waitForFunction(() => (document.querySelector('canvas#app')?.forgeaxFrameProgress?.completed?.frameId ?? 0) >= 60, undefined, { timeout: 180_000 });
   } catch (error) {
     console.error('game frame failure', JSON.stringify(await game.evaluate(() => ({
-      submitted: document.documentElement.dataset.forgeaxFrameSubmitted,
+      submitted: document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? null,
       visibility: document.visibilityState,
       gpu: globalThis.__gpuProof,
       renderer: globalThis.__forgeaxGameInspection?.renderer(),
@@ -292,7 +291,7 @@ try {
       globalThis.__inputTrace.push({ type, code: event.code, target: event.target.tagName, focused: document.hasFocus() });
     }, { capture: true });
   });
-  const canvas = game.locator('canvas');
+  const canvas = game.locator('canvas#app');
   const bounds = await canvas.boundingBox();
   assert.ok(bounds?.width && bounds?.height);
   const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
@@ -303,9 +302,9 @@ try {
   await page.mouse.click(center.x, center.y);
   await game.waitForFunction(() => document.hasFocus());
   const walk = async () => {
-    const frame = await game.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted));
+    const frame = await game.evaluate(() => document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? 0);
     await page.keyboard.down('w');
-    try { await game.waitForFunction(before => Number(document.documentElement.dataset.forgeaxFrameSubmitted) >= before + 4, frame, { timeout: 30_000 }); }
+    try { await game.waitForFunction(before => (document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= before + 4, frame, { timeout: 30_000 }); }
     finally { await page.keyboard.up('w'); }
     await page.waitForTimeout(100);
   };
@@ -350,12 +349,16 @@ try {
   await page?.screenshot({ path: '/tmp/view-game3d-failure.png' }).catch(() => {});
   console.error('Game 3D failure documents', JSON.stringify(await Promise.all((page?.frames() ?? []).map(async frame => ({
     url: frame.url().replace(/forgeaxWorkspaceToken=[^&]+/, 'forgeaxWorkspaceToken=REDACTED'),
-    state: await frame.evaluate(() => JSON.parse(JSON.stringify({
-      gpu: globalThis.__gpuProof, submitted: document.documentElement.dataset.forgeaxFrameSubmitted,
-      completed: document.documentElement.dataset.forgeaxFrameCompleted,
-      bootstrap: globalThis.__forgeaxRendererBootstrap, execution: globalThis.__forgeaxGameInspection?.renderer(),
-      canvases: Array.from(document.querySelectorAll('canvas'), canvas => ({ width: canvas.width, height: canvas.height, visible: canvas.checkVisibility() })),
-    }, (_key, value) => value instanceof Error ? { ...value, message: value.message } : value))).catch(() => null),
+    state: await frame.evaluate(() => {
+      const canvas = document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')
+        ?? document.querySelector('canvas#app');
+      return JSON.parse(JSON.stringify({
+        gpu: globalThis.__gpuProof, submitted: canvas?.forgeaxFrameProgress?.submitted?.frameId ?? null,
+        completed: canvas?.forgeaxFrameProgress?.completed?.frameId ?? null,
+        bootstrap: globalThis.__forgeaxRendererBootstrap, execution: globalThis.__forgeaxGameInspection?.renderer(),
+        canvases: Array.from(document.querySelectorAll('canvas'), canvas => ({ width: canvas.width, height: canvas.height, visible: canvas.checkVisibility() })),
+      }, (_key, value) => value instanceof Error ? { ...value, message: value.message } : value));
+    }).catch(() => null),
   }))), null, 2));
   console.error('View failure state', await page?.locator('body').innerText().catch(() => 'Page unavailable'));
   // [ci-diag] the detached backend writes to its own log file, not the job log.

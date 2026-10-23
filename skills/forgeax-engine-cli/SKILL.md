@@ -198,9 +198,10 @@ document.fonts.ready. Projects must bundle the same Web fonts; system font fallb
 parity.
 
 Use --deterministic for local/remote pixel or color comparisons. The CLI opens ?forgeaxCapture=1;
-App publishes document.documentElement.dataset.forgeaxFrameSubmitted after an actual renderer submission
-and dispatches forgeax:frame-submitted on Canvas. The CLI waits for that signal and non-flat canvas crop, then
-for document.documentElement.dataset.forgeaxCaptureReady = 'true'. Before readiness, the game must pin
+App retains the submitted frame facts on canvas.forgeaxFrameProgress after an actual renderer submission
+and dispatches forgeax:frame-submitted on Canvas as a future-only notification. The CLI reads the snapshot
+and waits for a non-flat canvas crop before accepting the game's
+`document.documentElement.dataset.forgeaxCaptureReady = 'true'` checkpoint. Before readiness, the game must pin
 random seed, logical frame, state, and project fonts. Viewport, DPR, and elapsed time alone do not establish parity.
 
 For continuous playthroughs, reuse one session; repeated one-shot capture restarts the page and World:

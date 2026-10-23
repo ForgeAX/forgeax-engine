@@ -22,6 +22,7 @@ import {
   type Renderer,
   type RendererOptions,
   type RenderFeature,
+  type RenderInspection,
   RenderPublicationError,
   RenderPublicationTargetOwner,
 } from '@forgeax/engine-render';
@@ -76,7 +77,7 @@ import { readRendererInspection, rendererInspectionFailure } from './renderer-in
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
 import { SourceRenderWorker } from './source-render-worker';
 import type {
-  ExecutionRendererInspectionContext,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
 } from './types';
 import { serializableDetail } from './worker-error';
@@ -261,9 +262,9 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
             ? result
             : rendererInspectionFailure('stale-session');
         },
-        inspectRenderer: async (
-          options?: Parameters<ExecutionRendererInspectionContext['inspectRenderer']>[0],
-        ): Promise<ExecutionRendererInspectionResult> => {
+        inspectRenderer: async <K extends keyof RenderInspection = keyof RenderInspection>(
+          options?: ExecutionRendererInspectionOptions<K>,
+        ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>> => {
           if (realm !== target || realmTransitions > 0 || inspectionsClosed)
             return rendererInspectionFailure('stale-session');
           const result =

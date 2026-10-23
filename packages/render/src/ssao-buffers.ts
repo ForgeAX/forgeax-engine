@@ -11,8 +11,8 @@
 //
 // plan-strategy D-1: uniform carries view + projection + inverseProjection.
 // plan-strategy D-C: intensity, radius, and bias are carried at offset 192
-//   (the existing vec4 slot), so the lighting shader can mix(1.0, ssao*ao,
-//   intensity) without a new UBO.
+//   (the existing vec4 slot); the calc pass applies the intensity exponent
+//   once, without a new UBO.
 // The kernel uses a uniform buffer on every backend. 1024 B is below the
 // WebGL2 minimum fragment UBO size, so SSAO does not need a storage-buffer
 // capability gate.
@@ -89,8 +89,7 @@ const BYTES_PER_KERNEL_ELEMENT = 16;
 // texture_2d<f32>. When SSAO is disabled (or its resources are not yet
 // allocated), the bind group binds this 1x1 r8unorm texture filled with
 // 0xFF. r8unorm normalizes 255 -> 1.0, so the lighting shader reads
-// `ssaoFactor = 1.0`, and `mix(1.0, ssao*ao, intensity) = ao` collapses
-// back to the round-1 baseline (ambient = baked-AO only). No shader
+// `ssaoFactor = 1.0`, so ambient keeps only baked material AO. No shader
 // recompile across enable/disable.
 
 interface SsaoFallbackResources {

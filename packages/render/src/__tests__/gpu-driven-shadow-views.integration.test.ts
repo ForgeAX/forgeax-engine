@@ -130,8 +130,8 @@ describe('GPU-driven shadow view graph integration', () => {
   });
 
   it.each([
-    ['point cube face', 'if (topology.shadow.pointCount > 0)', 'const spot ='],
-    ['spot atlas', 'const spot =', 'return ok({ directional, spot'],
+    ['point cube face', 'function addPointShadowFacePass(', 'function addPointShadowPasses('],
+    ['spot atlas', 'function addSpotShadowPass(', 'function addSpotShadowPasses('],
   ])('%s carries an explicit cache predicate', (_name, start, end) => {
     const region = sourceRegion(typedShadowSource, start, end);
     expect(region).toMatch(/shadowViewRaster\(/);

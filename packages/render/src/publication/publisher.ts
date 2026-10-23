@@ -49,6 +49,7 @@ import {
   type RenderPublicationTemplate,
 } from './contract';
 import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
+import { PublishedMaterialProjections } from './material-projections';
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
 import { publicationMaterialProgramKeys } from './programs';
 import { worldRenderResources } from './resource-scope';
@@ -156,12 +157,9 @@ export function createRenderPublisher(
   const caches: MaterialSnapshotCachesByWorld = new WeakMap();
   const members = new Set<number>();
   const publishedPrograms = new Set<string>();
-  const publishedMaterialProjections = new Map<
-    number,
-    ReturnType<AssetRegistry['getMaterialProjectionForPayload']>
-  >();
+  const publishedMaterialProjections = new PublishedMaterialProjections();
   // An accepted projection is an immutable program contract: a reload installs
-  // a new object, which is also what the omission check above compares. One
+  // a new object, which is also what the residency identity compares. One
   // frozen detached copy serves every row and packet, so copied materials do
   // not clone shared program rows and ABIs again, and a Worker structured clone
   // carries each shared projection once per packet.
@@ -554,7 +552,7 @@ export function createRenderPublisher(
         retiredJoints: this.retiredJointColumn(),
         ...(preparedRows.length === 0 ? {} : { preparedAssets: preparedRows }),
         assets: sentAssetRows.map(([handle, value, revision]) =>
-          this.packetAsset(handle, value, revision, materialProjections),
+          this.packetAsset(handle, value, revision, materialProjections, retired),
         ),
         retiredAssets: retired as number[],
         assetPatches: this.assetPatches(),
@@ -997,6 +995,7 @@ export function createRenderPublisher(
         number,
         ReturnType<AssetRegistry['getMaterialProjectionForPayload']>
       >,
+      retired: readonly number[],
     ): RenderPublication['assets'][number] {
       // Runtime content is a projection, so GUID identity stays with the
       // underlying catalogued payload rather than the projected object.
@@ -1016,13 +1015,14 @@ export function createRenderPublisher(
         // detached packet copy so its large buffers can move to Render
         // without another receiver-side structured-clone allocation.
         value: packetValue,
-        ...(value.kind !== 'material' ||
-        (publishedMaterialProjections.has(handle) &&
-          publishedMaterialProjections.get(handle) === materialProjections.get(handle))
-          ? {}
-          : {
-              materialProjection: detachMaterialProjection(materialProjections.get(handle)),
-            }),
+        ...(value.kind === 'material'
+          ? publishedMaterialProjections.row(
+              handle,
+              materialProjections.get(handle),
+              retired,
+              detachMaterialProjection,
+            )
+          : {}),
         ...(guid === undefined ? {} : { guid }),
         ...(sourceKey === undefined ? {} : { sourceKey }),
       };
@@ -1101,9 +1101,7 @@ export function createRenderPublisher(
       ReturnType<AssetRegistry['getMaterialProjectionForPayload']>
     >,
   ): void => {
-    for (const handle of retired) publishedMaterialProjections.delete(handle);
-    for (const [handle, projection] of materialProjections)
-      publishedMaterialProjections.set(handle, projection);
+    publishedMaterialProjections.accept(retired, materialProjections);
   };
   const commitMaterialRecords = (publishedMaterials: RenderPublication['materials']): void => {
     for (const [id, holds] of materialHolds) {

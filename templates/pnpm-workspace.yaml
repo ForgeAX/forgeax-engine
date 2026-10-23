@@ -3,8 +3,6 @@ allowBuilds:
   '@forgeax/engine-codec': true
   '@forgeax/engine-fbx': true
   '@forgeax/engine-wgpu-wasm': true
-  # Its postinstall only prints a funding notice.
-  core-js-pure: false
   esbuild: true
   webgpu: true
 

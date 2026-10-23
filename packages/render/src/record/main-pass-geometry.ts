@@ -102,6 +102,7 @@ import {
   selectMaterialGroup2,
 } from './main-pass-material';
 import {
+  type FoldBucket,
   getOrCreateFromChain,
   INSTANCE_STORAGE_STRIDE_FLOATS,
   INSTANCE_UBO_FULL_ARRAY_BYTES,
@@ -662,32 +663,7 @@ export function recordGeometryDraws(
     viewBindGroup,
     viewBindGroupDynamicOffset = 0,
   } = c;
-  // A material usually selects one pass. Keep that dispatch directly and
-  // allocate a pass list only when another distinct draw actually exists.
-  const materialPasses = new Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>();
-  for (const dispatch of selectedDispatch ?? EMPTY_MATERIAL_DRAWS) {
-    let byMaterial = materialPasses.get(dispatch.renderableIndex);
-    if (byMaterial === undefined) {
-      byMaterial = new FirstEntryMap();
-      materialPasses.set(dispatch.renderableIndex, byMaterial);
-    }
-    const passes = byMaterial.get(dispatch.materialHandle);
-    if (passes === undefined) byMaterial.set(dispatch.materialHandle, dispatch);
-    else if (Array.isArray(passes)) {
-      let duplicate = false;
-      if (passKind === 'temporal') {
-        for (const previous of passes) {
-          if (sameOpaqueTemporalDraw(previous, dispatch)) {
-            duplicate = true;
-            break;
-          }
-        }
-      }
-      if (!duplicate) passes.push(dispatch);
-    } else if (passKind !== 'temporal' || !sameOpaqueTemporalDraw(passes, dispatch)) {
-      byMaterial.set(dispatch.materialHandle, [passes, dispatch]);
-    }
-  }
+  const materialPasses = groupSelectedMaterialPasses(selectedDispatch, passKind);
   const diagnosticsEnabled = materialDiagnosticsEnabled();
   const colorFormatOverride = c.transparentColorFormat as GPUTextureFormat | undefined;
   // The prepared Standard topology is the frame authority. A bind-group
@@ -1173,7 +1149,57 @@ export function recordGeometryDraws(
     return true;
   };
 
-  if (preparationPassMatches !== undefined) {
+  // Explicit preparation shares the exact draw resolver for one prepared pass.
+  const preparePass = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    topology: PrimitiveTopology,
+    material: MaterialSnapshot,
+    selectedPass: Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>,
+    authoredVariantSet: string | undefined,
+  ): void => {
+    let fragmentEntry =
+      passKind === 'temporal' ? undefined : (fragmentEntryPoint ?? selectedPass.fragmentEntry);
+    let accumulate = false;
+    if (oit !== undefined) {
+      const eligibility = classifyOitDraw({
+        materialShaderId: selectedPass.materialShaderId,
+        skinned: entry.source.skinBinding !== undefined,
+        renderState: selectedPass.renderState,
+        fragmentEntry,
+      });
+      if (eligibility.eligible !== (oit === 'accumulate')) return;
+      accumulate = eligibility.eligible;
+      if (eligibility.eligible)
+        fragmentEntry = eligibility.premultiplied
+          ? OIT_PREMULTIPLIED_FRAGMENT_ENTRY
+          : OIT_FRAGMENT_ENTRY;
+    }
+    const resolved = resolveDrawPipeline(
+      entry,
+      topology,
+      material,
+      selectedPass,
+      selectedPass.materialShaderId,
+      selectedPass.renderState,
+      passKind === 'temporal' ? undefined : selectedPass.vertexEntry,
+      fragmentEntry,
+      accumulate,
+      authoredVariantSet,
+      true,
+    );
+    // A fallback visible pipeline does not qualify an explicitly requested authored PSO.
+    if (!resolved || pipelineSelection.material === null)
+      markPipelinePreparationPending(frameState, {
+        code: 'material-pipeline-preparation',
+        worldId: entry.source.worldId,
+        entity: entry.source.entityKey,
+        pass: passKind,
+        ...(selectedPass.materialShaderId === undefined
+          ? {}
+          : { shader: selectedPass.materialShaderId.slice(0, 256) }),
+      });
+  };
+  const preparePipelines = (passMatches: NonNullable<typeof preparationPassMatches>): void => {
     for (const entry of c.pipelinePreparationEntries ?? []) {
       const passes = entry.source.pipelinePreparation ?? [];
       const authoredVariantSet = variantSetFromDefines(passes.at(-1)?.defines);
@@ -1184,60 +1210,18 @@ export function recordGeometryDraws(
         )?.snapshot;
         if (material === undefined)
           throw new Error('Pipeline preparation has no accepted material');
-        for (const preparedPass of entry.source.pipelinePreparation ?? []) {
-          const selectedPass = preparedPass;
+        for (const preparedPass of passes) {
           if (
-            selectedPass.materialHandle !== (material.materialHandle ?? 0) ||
-            !preparationPassMatches(selectedPass, material)
+            preparedPass.materialHandle !== (material.materialHandle ?? 0) ||
+            !passMatches(preparedPass, material)
           )
             continue;
-          let fragmentEntry =
-            passKind === 'temporal'
-              ? undefined
-              : (fragmentEntryPoint ?? selectedPass.fragmentEntry);
-          let accumulate = false;
-          if (oit !== undefined) {
-            const eligibility = classifyOitDraw({
-              materialShaderId: selectedPass.materialShaderId,
-              skinned: entry.source.skinBinding !== undefined,
-              renderState: selectedPass.renderState,
-              fragmentEntry,
-            });
-            if (eligibility.eligible !== (oit === 'accumulate')) continue;
-            accumulate = eligibility.eligible;
-            if (eligibility.eligible)
-              fragmentEntry = eligibility.premultiplied
-                ? OIT_PREMULTIPLIED_FRAGMENT_ENTRY
-                : OIT_FRAGMENT_ENTRY;
-          }
-          const resolved = resolveDrawPipeline(
-            entry,
-            sm.topology,
-            material,
-            selectedPass,
-            selectedPass.materialShaderId,
-            selectedPass.renderState,
-            passKind === 'temporal' ? undefined : selectedPass.vertexEntry,
-            fragmentEntry,
-            accumulate,
-            authoredVariantSet,
-            true,
-          );
-          // A fallback visible pipeline does not qualify an explicitly requested authored PSO.
-          if (!resolved || pipelineSelection.material === null)
-            markPipelinePreparationPending(frameState, {
-              code: 'material-pipeline-preparation',
-              worldId: entry.source.worldId,
-              entity: entry.source.entityKey,
-              pass: passKind,
-              ...(selectedPass.materialShaderId === undefined
-                ? {}
-                : { shader: selectedPass.materialShaderId.slice(0, 256) }),
-            });
+          preparePass(entry, sm.topology, material, preparedPass, authoredVariantSet);
         }
       }
     }
-  }
+  };
+  if (preparationPassMatches !== undefined) preparePipelines(preparationPassMatches);
 
   // Preparation shares the exact resolver but never opens or binds a raster pass.
   if (pass === undefined) return;
@@ -1250,641 +1234,736 @@ export function recordGeometryDraws(
 
   // Rebuilt per source and owned by this invocation, including nested recording.
   const drawIndicesScratch: (number | undefined)[] = [];
-  // A capture may sort against a different camera. Follow its selected dispatch
-  // while retaining the original row index for material slots and GPU payloads.
-  let drawOrder: number[] | undefined;
-  if (selectedDispatch !== undefined && c.foldDispatchPlan == null) {
-    const remaining = new Map(
-      validatedOrdered.map((entry, index) => [entry.renderableIndex, index]),
+  // Per-entity draw state: the entity's physical mesh address and fold, plus
+  // the mesh binding and base instance draws its first surviving draw
+  // prepares for every later submesh pass of the same entity.
+  let entityMeshSlot = 0;
+  let entityFold: FoldBucket | undefined;
+  let entityDrawIndices: readonly (number | undefined)[] | undefined;
+  let entityMeshBinding: ReturnType<typeof meshSsboBufferBinding> | undefined;
+  let entityInstanceDraws: readonly GeometryInstanceDraw[] | undefined;
+  let entityDirectMeshGroup = meshBindGroup;
+  let entitySkinTask: SkinTaskBinding | undefined;
+  let group2DynamicOffsets: readonly number[] = meshGroup2DynamicOffsets;
+
+  const bindStencilReference = (stencilReference: number): void => {
+    if (stencilReference === lastStencilReference) return;
+    pass.setStencilReference(stencilReference);
+    lastStencilReference = stencilReference;
+  };
+
+  // Points/Lines share the Standard geometry pass. Their retained source is
+  // prepared once by the renderer owner, while this loop remains the sole
+  // pass/draw submission owner and preserves the authored topology.
+  const recordPointsLines = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    i: number,
+    submission: NonNullable<ReturnType<NonNullable<typeof c.pointsLines>['prepare']>>,
+    style: NonNullable<RenderableSnapshot['pointsLines']>['style'],
+  ): void => {
+    bindStencilReference(entry.stencilReference ?? 0);
+    // Like a transparent submesh, a blended point/line draw belongs to the
+    // LDR blend sub-pass only; drawing it here too would blend it twice.
+    const pointsLinesMaterial = drawMaterial(c, i);
+    if (
+      splitLdrSprite &&
+      (pointsLinesMaterial.transparent === true ||
+        pointsLinesMaterial.renderState?.blend !== undefined)
+    )
+      return;
+    const pointsLinesBindGroup = resolveMaterialBindGroup(
+      materialSlotIndices[i]?.[0] ?? 0,
+      pointsLinesMaterial,
+      entry.source.entityKey,
+      entry.world ?? c.world,
+      POINTS_LINES_MATERIAL_SHADER_ID,
     );
-    drawOrder = [];
-    for (const renderableIndex of materialPasses.keys()) {
-      const index = remaining.get(renderableIndex);
-      if (index === undefined) continue;
-      drawOrder.push(index);
-      remaining.delete(renderableIndex);
+    const pointsLinesPipelineEntry = resolveMaterialPipeline(
+      POINTS_LINES_MATERIAL_SHADER_ID,
+      geometryRenderStateForTopology('line-list', {
+        ...pointsLinesMaterial.renderState,
+        cullMode: 'none',
+      }),
+      'triangle-list',
+      'uint32',
+      undefined,
+      colorFormatOverride,
+      submission.layoutProjection,
+      undefined,
+      pointsLinesFragmentEntry(style),
+    );
+    if (pointsLinesPipelineEntry === null) return;
+    const pointsLinesPipeline = pointsLinesPipelineEntry.pipeline;
+    if (pipelineState.pointsLinesViewBuffer === undefined) return;
+    writePointsLinesViewUbo(
+      runtime.device.queue,
+      pipelineState.pointsLinesViewBuffer,
+      c.camera,
+      c.targetW,
+      c.targetH,
+      entry.source.transform.world,
+      style,
+      entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
+    );
+    pass.setBindGroup(
+      0,
+      viewBindGroup as BindGroup,
+      new Uint32Array([
+        viewOffsetForBlend(pointsLinesMaterial.renderState?.blend),
+        entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
+      ]),
+      0,
+      2,
+    );
+    pass.setPipeline(pointsLinesPipeline);
+    bindingState.pipeline = pointsLinesPipeline;
+    pass.setVertexBuffer(0, submission.vertexBuffer);
+    pass.setIndexBuffer(submission.indexBuffer, 'uint32');
+    // Expanded geometry owns different buffers from the source mesh.
+    // Keep the ordinary draw state honest for the next CPU survivor.
+    lastVertexBuffer = null;
+    lastIndexBuffer = null;
+    materialGroup1DynamicOffsets[0] = meshSsboBufferBinding(
+      pipelineState.materialUniformBuffer,
+      materialUniformSlot(c.runtime, pointsLinesMaterial) * MATERIAL_PER_ENTITY_STRIDE,
+    ).byteOffset;
+    pass.setBindGroup(1, pointsLinesBindGroup, materialGroup1DynamicOffsets, 0, 1);
+    const pointsLinesMeshGroup =
+      pipelineState.meshStorageBuffer.pages === undefined
+        ? (meshBindGroup ?? meshGroup2)
+        : meshSlotBindGroup(
+            runtime.device,
+            c.frameState,
+            pipelineState,
+            c.bindGroupCounts,
+            entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+          );
+    meshGroup2DynamicOffsets[0] = meshSsboBufferBinding(
+      pipelineState.meshStorageBuffer,
+      entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+    ).byteOffset;
+    if (pointsLinesMeshGroup === null) return;
+    prepareMeshDraw(c, entry, entityFold !== undefined);
+    pass.setBindGroup(2, pointsLinesMeshGroup, meshGroup2DynamicOffsets);
+    const pointsLinesInstancesBg =
+      resolveIdentityInstanceDraws()[0]?.instanceBindGroup ??
+      resolveGeometryInstancesBindGroup(c, identityInstanceBuffer, undefined);
+    pass.setBindGroup(3, pointsLinesInstancesBg);
+    bindingState.instancesBuffer = identityInstanceBuffer;
+    bindingState.instanceBindGroup = pointsLinesInstancesBg;
+    bindingState.probeOffset = -1;
+    recordOcclusionCandidate(() => recordPointsLinesDraw(pass, submission.plan));
+    c.onRenderableDraw?.(entry);
+    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
+    lastViewOffset = viewBindGroupDynamicOffset;
+  };
+
+  // GPU ownership is per submesh. Prepare CPU buffers only after the exact
+  // claim, material-pass and transparency filters leave a draw.
+  const entityMeshSsboBinding = (): ReturnType<typeof meshSsboBufferBinding> =>
+    (entityMeshBinding ??= meshSsboBufferBinding(
+      pipelineState.meshStorageBuffer,
+      entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+    ));
+
+  /** Bind the entity's vertex/index buffers and prepare its base instance draws. */
+  const bindEntityGeometry = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    meshBinding: ReturnType<typeof meshSsboBufferBinding>,
+  ): boolean => {
+    entityDirectMeshGroup =
+      pipelineState.meshStorageBuffer.pages === undefined
+        ? meshBindGroup
+        : meshSlotBindGroup(
+            runtime.device,
+            c.frameState,
+            pipelineState,
+            c.bindGroupCounts,
+            entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+          );
+    meshGroup2DynamicOffsets[0] = meshBinding.byteOffset;
+    if (entry.mesh.vertexBuffer !== lastVertexBuffer) {
+      pass.setVertexBuffer(0, entry.mesh.vertexBuffer.handle);
+      lastVertexBuffer = entry.mesh.vertexBuffer;
     }
-    for (const index of remaining.values()) drawOrder.push(index);
-  }
-  entries: for (let ordinal = 0; ordinal < validatedOrdered.length; ordinal++) {
-    const i = drawOrder?.[ordinal] ?? ordinal;
+    // feat-20260604 M4 / w11: vertex-only meshes (indexed === false) carry no
+    // index buffer; skip setIndexBuffer entirely and dispatch via pass.draw
+    // below. Indexed meshes keep the existing setIndexBuffer path unchanged.
+    if (
+      entry.mesh.indexed &&
+      entry.mesh.indexBuffer !== lastIndexBuffer &&
+      entry.mesh.indexBuffer !== null
+    ) {
+      pass.setIndexBuffer(entry.mesh.indexBuffer.handle, entry.mesh.indexFormat);
+      lastIndexBuffer = entry.mesh.indexBuffer;
+    }
+    const prepared =
+      entityFold === undefined
+        ? resolveGeometryInstanceBuffer(c, entry, resolveIdentityInstanceDraws(), false)
+        : foldInstanceDraws(c, entityFold, entry.renderableIndex);
+    if (prepared === null) return false;
+    entityInstanceDraws = prepared;
+    return true;
+  };
+
+  /**
+   * Per-submesh material bind group (group 1). Texture views resolve from the
+   * submesh's own material slot; identical-texture-set submeshes, on the same
+   * or different entities, share one group via the shaderId-outer
+   * `materialBgShared` cache.
+   */
+  const bindSubmeshMaterial = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    i: number,
+    sourceSlot: number,
+    submeshMaterial: MaterialSnapshot,
+    selectedShaderId: string | undefined,
+  ): BindGroup => {
+    const materialSlot = materialSlotIndices[i]?.[sourceSlot] ?? materialSlotIndices[i]?.[0] ?? 0;
+    logMaterialPipelineDrawReceipt(entry, materialSlot, submeshMaterial);
+    const perSubmeshBg = profileGeometrySegment(c, passKind, 'material-bind-groups', () =>
+      resolveMaterialBindGroup(
+        materialSlot,
+        submeshMaterial,
+        entry.source.entityKey,
+        entry.world ?? c.world,
+        selectedShaderId,
+      ),
+    );
+    materialGroup1DynamicOffsets[0] = meshSsboBufferBinding(
+      pipelineState.materialUniformBuffer,
+      materialUniformSlot(c.runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
+    ).byteOffset;
+    pass.setBindGroup(1, perSubmeshBg, materialGroup1DynamicOffsets, 0, 1);
+    return perSubmeshBg;
+  };
+
+  /**
+   * Standard and authored Surface share the ProbeBlend ABI. Resolve this per
+   * submesh so mixed unlit/lit meshes cannot cross layouts.
+   */
+  const submeshInstanceDraws = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    smIdx: number,
+    submeshMaterial: MaterialSnapshot,
+    probeBlendAvailable: boolean,
+  ): readonly GeometryInstanceDraw[] | null => {
+    const resolvedInstanceDraws = probeBlendAvailable
+      ? resolveGeometryInstanceBuffer(c, entry, resolveIdentityInstanceDraws(), true)
+      : entityInstanceDraws;
+    if (resolvedInstanceDraws == null) return null;
+    const compactDrawIndex = submeshDrawIndex(entityDrawIndices, smIdx);
+    const compactDraw =
+      compactDrawIndex === undefined ? undefined : entry.source.gpuDrivenDraws?.[compactDrawIndex];
+    const sourceDrawItemIndex =
+      compactDrawIndex === undefined || compactDraw === undefined
+        ? smIdx
+        : gpuDrivenSourceDrawItemIndex(compactDraw, compactDrawIndex);
+    const instanceDraws =
+      submeshMaterial.surfaceModel === 'single-layer-medium' && passKind === 'forward'
+        ? resolveSurfaceDirectInstanceDraws(c, entry, sourceDrawItemIndex, resolvedInstanceDraws)
+        : resolvedInstanceDraws;
+    if (instanceDraws === null) return null;
+    if (passKind !== 'deferred' || c.visibleSurface === undefined) return instanceDraws;
+    return instanceDraws.map((draw) => ({
+      ...draw,
+      firstInstance:
+        sourceDrawItemIndex * (entry.source.instances?.instanceCount ?? 1) +
+        (draw.firstInstanceOrdinal ?? 0),
+    }));
+  };
+
+  /**
+   * The selected submesh Pass owns its group(2) contract. Rigid Passes on the
+   * same Mesh do not demand Skin or borrow another Pass's task binding.
+   */
+  const selectSubmeshGroup2 = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    group2Contract: NonNullable<MaterialShaderPipelineEntry['group2Contract']>,
+    meshBinding: ReturnType<typeof meshSsboBufferBinding>,
+  ): BindGroup | null => {
+    if (group2Contract !== 'skin' && group2Contract !== 'skin-cluster') {
+      const entryMeshGroup2 =
+        group2Contract === 'cluster' && pipelineState.meshStorageBuffer.pages !== undefined
+          ? clusteredMeshSlotBindGroup(c, entityMeshSlot * MESH_PER_ENTITY_STRIDE)
+          : meshGroup2;
+      group2DynamicOffsets = meshGroup2DynamicOffsets;
+      return selectMaterialGroup2(entryMeshGroup2, entityDirectMeshGroup, group2Contract);
+    }
+    if (entry.source.skinBinding === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'a Skin Binding for the selected material Skin contract',
+        hint: 'bind a complete Skin source before recording a Skin-input material',
+      });
+    entitySkinTask ??= runtime.demandSkinTask?.(entry.source);
+    const skinTask = entitySkinTask;
+    if (skinTask === undefined) return null;
+    const selectedGroup = geometrySkinBindGroup(c, skinTask, meshBinding, group2Contract);
+    if (selectedGroup === null) return null;
+    group2DynamicOffsets = pbrSkinMeshDynamicOffsets(
+      meshBinding.byteOffset,
+      skinTask,
+      runtime.device.caps.storageBuffer,
+    );
+    return selectedGroup;
+  };
+
+  const logSubmittedDraw = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    submeshMaterial: MaterialSnapshot,
+    textureHandles: NonNullable<MaterialSnapshot['textureHandles']>,
+    group2Contract: NonNullable<MaterialShaderPipelineEntry['group2Contract']>,
+  ): void => {
+    console.error(
+      `[render-material] draw submitted: ${JSON.stringify({
+        entityKey: entry.source.entityKey,
+        materialHandle: submeshMaterial.materialHandle,
+        shader: pipelineSelection.shader,
+        textureHandles: [...textureHandles.entries()].map(([field, handle]) => ({
+          field,
+          handle,
+        })),
+        skin:
+          group2Contract === 'skin' || group2Contract === 'skin-cluster'
+            ? {
+                group2Contract,
+                taskReady: entitySkinTask !== undefined,
+                taskByteOffset: entitySkinTask?.dataOffset,
+                dynamicOffsets: [...group2DynamicOffsets],
+              }
+            : undefined,
+        pipelineReady: true,
+      })}`,
+    );
+  };
+
+  /** Bind the resolved pipeline's groups and submit one submesh pass's draws. */
+  const submitSubmeshPass = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    smIdx: number,
+    submeshMaterial: MaterialSnapshot,
+    selectedPass: DispatchEntry | undefined,
+    perSubmeshBg: BindGroup,
+    meshBinding: ReturnType<typeof meshSsboBufferBinding>,
+  ): void => {
+    const {
+      pipeline: smPipelineHandle,
+      material: materialPipelineEntry,
+      probeBlend: probeBlendAvailable,
+      viewOffset,
+      shader: smMaterialShaderId,
+    } = pipelineSelection;
+    if (viewOffset !== lastViewOffset) {
+      pass.setBindGroup(0, viewBindGroup as BindGroup, [viewOffset, 0]);
+      lastViewOffset = viewOffset;
+    }
+    if (smPipelineHandle === null) {
+      if (diagnosticsEnabled)
+        console.error(
+          `[render-material] draw skipped: ${JSON.stringify({
+            entityKey: entry.source.entityKey,
+            materialHandle: submeshMaterial.materialHandle,
+            shader: smMaterialShaderId,
+            reason: 'pipeline-unavailable',
+          })}`,
+        );
+      return;
+    }
+    const instanceDraws = submeshInstanceDraws(entry, smIdx, submeshMaterial, probeBlendAvailable);
+    if (instanceDraws === null) return;
+    const materialGroup2Contract = materialPipelineEntry?.group2Contract;
+    if (materialGroup2Contract === undefined) return;
+    const group2BindGroup = selectSubmeshGroup2(entry, materialGroup2Contract, meshBinding);
+    if (group2BindGroup === null) return;
+    if (diagnosticsEnabled && submeshMaterial.textureHandles !== undefined)
+      logSubmittedDraw(
+        entry,
+        submeshMaterial,
+        submeshMaterial.textureHandles,
+        materialGroup2Contract,
+      );
+    const fold = entityFold;
+    prepareMeshDraw(c, entry, fold !== undefined);
+    pass.setBindGroup(2, group2BindGroup, group2DynamicOffsets);
+    const range = submeshRange(entry.mesh, smIdx);
+
+    profileGeometrySegment(c, passKind, 'draw-submit', () =>
+      recordOcclusionCandidate(() =>
+        submitSubmeshDraws(
+          pass,
+          bindingState,
+          smPipelineHandle,
+          instanceDraws,
+          entry.mesh.indexed,
+          range.count,
+          range.first,
+          range.baseVertex,
+          (draw, command) => {
+            recordPresented(
+              entry,
+              smIdx,
+              {
+                lane: 'cpu',
+                ready: true,
+                pipeline: smPipelineHandle,
+                material: submeshMaterial,
+                ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
+                unsupportedLineage:
+                  passKind !== 'forward' ||
+                  fold !== undefined ||
+                  entry.source.instances !== undefined ||
+                  entry.source.skinBinding !== undefined ||
+                  draw.instanceCount !== 1,
+                ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
+              },
+              fold,
+            );
+            if (surfacePass === undefined || draw.surfaceFrameBase === undefined) return;
+            c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
+              kind: command,
+              count: range.count,
+              first: range.first,
+              instanceCount: draw.instanceCount,
+              firstInstance: 0,
+              surfaceFrameBase: draw.surfaceFrameBase,
+              memberIds: draw.surfaceMemberIds ?? [],
+              pipelineIdentity: getOpaqueResourceIdentity(smPipelineHandle as object),
+              ...(materialPipelineEntry?.receipt === undefined
+                ? {}
+                : {
+                    receiptIdentity: materialPipelineEntry.receipt.identity,
+                    receiptGeneration: materialPipelineEntry.receipt.generation,
+                  }),
+            });
+          },
+        ),
+      ),
+    );
+    if (diagnosticsEnabled) {
+      recordIblPipelineBinding(c, submeshMaterial, smPipelineHandle, perSubmeshBg);
+    }
+  };
+
+  /** Record one selected material pass of a submesh; false aborts the entity. */
+  const recordSubmeshPass = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    i: number,
+    smIdx: number,
+    sm: import('./frame-snapshot').ValidatedRenderable['mesh']['submeshes'][number],
+    submeshMaterial: MaterialSnapshot,
+    selectedPass: DispatchEntry | undefined,
+  ): boolean => {
+    // Temporal projects the selected material's alpha/motion contract,
+    // not its authored Forward entry points or color outputs.
+    const vertexEntry = passKind === 'temporal' ? undefined : selectedPass?.vertexEntry;
+    let fragmentEntry =
+      passKind === 'temporal' ? undefined : (fragmentEntryPoint ?? selectedPass?.fragmentEntry);
+    const selectedShaderId =
+      selectedPass === undefined ? submeshMaterial.materialShaderId : selectedPass.materialShaderId;
+    const selectedRenderState =
+      selectedPass === undefined ? submeshMaterial.renderState : selectedPass.renderState;
+    // Weighted blended OIT splits one transparent set into the eligible
+    // accumulation draws and the residual sorted draws. Both passes use
+    // the same classifier as the frame's inspection facts.
+    let oitAccumulateDraw = false;
+    if (oit !== undefined) {
+      const eligibility = classifyOitDraw({
+        materialShaderId: selectedShaderId,
+        skinned: entry.source.skinBinding !== undefined,
+        renderState: selectedRenderState,
+        fragmentEntry,
+      });
+      if (eligibility.eligible !== (oit === 'accumulate')) return true;
+      if (eligibility.eligible) {
+        oitAccumulateDraw = true;
+        fragmentEntry = eligibility.premultiplied
+          ? OIT_PREMULTIPLIED_FRAGMENT_ENTRY
+          : OIT_FRAGMENT_ENTRY;
+      }
+    }
+    bindStencilReference(
+      (selectedPass === undefined ? entry.stencilReference : selectedPass.stencilReference) ?? 0,
+    );
+    // feat-city-glb Bug 5 (per-submesh transparency): in the LDR split, a
+    // transparent submesh is drawn in the blend sub-pass (non-sRGB view),
+    // NOT here in the sRGB geometry pass. Opaque submeshes of the same
+    // (mixed) mesh still draw here.
+    if (
+      splitLdrSprite &&
+      (selectedPass === undefined
+        ? submeshMaterial.transparent === true
+        : selectedRenderState?.blend !== undefined)
+    )
+      return true;
+    const meshBinding = entityMeshSsboBinding();
+    if (entityInstanceDraws === undefined && !bindEntityGeometry(entry, meshBinding)) return false;
+    const perSubmeshBg = bindSubmeshMaterial(
+      entry,
+      i,
+      sm.materialSlot,
+      submeshMaterial,
+      selectedShaderId,
+    );
+    const resolvedPipeline = resolveDrawPipeline(
+      entry,
+      sm.topology,
+      submeshMaterial,
+      selectedPass,
+      selectedShaderId,
+      selectedRenderState,
+      vertexEntry,
+      fragmentEntry,
+      oitAccumulateDraw,
+      entry.variantSet,
+    );
+    if (resolvedPipeline)
+      submitSubmeshPass(entry, smIdx, submeshMaterial, selectedPass, perSubmeshBg, meshBinding);
+    return true;
+  };
+
+  /** Record every selected material pass of one submesh; false aborts the entity. */
+  const recordSubmesh = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    i: number,
+    smIdx: number,
+  ): boolean => {
+    const sm = entry.mesh.submeshes[smIdx];
+    if (sm === undefined) return true;
+    const submeshMaterial = drawMaterial(c, i, sm.materialSlot);
+    if (!rendersSelectedMaterial(matchedMaterials, entry.renderableIndex, submeshMaterial))
+      return true;
+    if (gpuDrivenOwnsSubmesh(c, entry, submeshDrawIndex(entityDrawIndices, smIdx), passKind))
+      return true;
+    const draws = submeshMaterialDraws(
+      selectedDispatch,
+      materialPasses.get(entry.renderableIndex),
+      submeshMaterial,
+      matchedMaterials?.get(entry.renderableIndex),
+    );
+    if (!isMaterialDrawList(draws))
+      return recordSubmeshPass(entry, i, smIdx, sm, submeshMaterial, draws);
+    for (const selectedPass of draws) {
+      if (!recordSubmeshPass(entry, i, smIdx, sm, submeshMaterial, selectedPass)) return false;
+    }
+    return true;
+  };
+
+  const recordEntry = (i: number): void => {
     const entry = validatedOrdered[i];
-    if (entry === undefined) continue;
-    const folded = c.foldDispatchPlan?.headBuckets.has(i) === true;
-    const meshSlot = meshDrawSlot(entry, folded);
+    if (entry === undefined) return;
+    const fold = c.foldDispatchPlan?.headBuckets.get(i);
+    const meshSlot = meshDrawSlot(entry, fold !== undefined);
     // The typed transparent pass uses this common draw owner. Consume the
     // same fold plan as the legacy sprite pass, including coverage/depth draws.
-    if (c.foldDispatchPlan?.skipIndices.has(i) === true) continue;
-    // Points/Lines share the Standard geometry pass. Their retained source
-    // is prepared once by the renderer owner, while this loop remains the
-    // sole pass/draw submission owner and preserves the authored topology.
+    if (c.foldDispatchPlan?.skipIndices.has(i) === true) return;
     const pointsLinesSubmission = c.pointsLines?.prepare(entry, clusteredLighting);
-    if (entry.source.pointsLines !== undefined && pointsLinesSubmission?.plan.drawCount !== 1)
-      continue;
-
+    const pointsLines = entry.source.pointsLines;
+    if (pointsLines !== undefined && pointsLinesSubmission?.plan.drawCount !== 1) return;
     // feat-20260609 M2: skip entities that don't match the pass selector.
-    if (matchedMaterials !== null && !matchedMaterials.has(entry.renderableIndex)) continue;
-
-    // D-2 generalised feat-20260625 M2 / w7: transparent entities are
-    // dispatched in the separate sub-pass (bgra8unorm unorm view,
-    // loadOp=load) so they must NOT be drawn here in the geometry pass
-    // (bgra8unorm-srgb sRGB view, loadOp=clear). In the HDR path
-    // (tonemapActive=true) or when there are no transparent entries,
-    // splitLdrSprite=false and this guard is a no-op. Post-w13 the
-    // legacy shadingModel arm is gone; transparent is the single SSOT
-    // mirrored on `computeSplitLdrSprite`.
-    //
-    // feat-city-glb Bug 5 (per-submesh transparency): only skip the WHOLE
-    // entity here when EVERY submesh is transparent (the sprite / fully-
-    // transparent-mesh fast path, byte-identical to the pre-fix behavior for
-    // single-material entities). A mixed mesh (opaque road submesh + BLEND
-    // decal submesh) is NOT skipped at the entity level; its opaque submeshes
-    // draw here and the per-submesh loop below skips the transparent ones
-    // (they are drawn in the blend sub-pass instead).
+    if (matchedMaterials !== null && !matchedMaterials.has(entry.renderableIndex)) return;
+    // D-2 generalised feat-20260625 M2 / w7: entities whose EVERY submesh is
+    // transparent draw in the separate LDR blend sub-pass, never here. A
+    // mixed mesh draws its opaque submeshes here; the per-submesh filter
+    // skips the transparent ones.
     if (
       selectedDispatch === undefined &&
       splitLdrSprite &&
-      (materialSlotIndices[i] ?? []).every((slot) => c.materialSlots[slot]?.transparent === true)
+      everyMaterialSlotTransparent(c, materialSlotIndices[i])
     )
-      continue;
-
-    const pipelineTag: 'unlit' = 'unlit';
-
-    if (pointsLinesSubmission !== undefined && entry.source.pointsLines !== undefined) {
-      const stencilReference = entry.stencilReference ?? 0;
-      if (stencilReference !== lastStencilReference) {
-        pass.setStencilReference(stencilReference);
-        lastStencilReference = stencilReference;
-      }
-      // Like a transparent submesh, a blended point/line draw belongs to the
-      // LDR blend sub-pass only; drawing it here too would blend it twice.
-      if (
-        splitLdrSprite &&
-        (drawMaterial(c, i).transparent === true ||
-          drawMaterial(c, i).renderState?.blend !== undefined)
-      )
-        continue;
-      const pointsLinesMaterial = drawMaterial(c, i);
-      const materialSlot = materialSlotIndices[i]?.[0] ?? 0;
-      const pointsLinesBindGroup = resolveMaterialBindGroup(
-        materialSlot,
-        pointsLinesMaterial,
-        entry.source.entityKey,
-        entry.world ?? c.world,
-        POINTS_LINES_MATERIAL_SHADER_ID,
-      );
-      const pointsLinesPipelineEntry = resolveMaterialPipeline(
-        POINTS_LINES_MATERIAL_SHADER_ID,
-        geometryRenderStateForTopology('line-list', {
-          ...pointsLinesMaterial.renderState,
-          cullMode: 'none',
-        }),
-        'triangle-list',
-        'uint32',
-        undefined,
-        colorFormatOverride,
-        pointsLinesSubmission.layoutProjection,
-        undefined,
-        pointsLinesFragmentEntry(entry.source.pointsLines.style),
-      );
-      if (pointsLinesPipelineEntry === null) continue;
-      const pointsLinesPipeline = pointsLinesPipelineEntry.pipeline;
-      if (pipelineState.pointsLinesViewBuffer === undefined) continue;
-      writePointsLinesViewUbo(
-        runtime.device.queue,
-        pipelineState.pointsLinesViewBuffer,
-        c.camera,
-        c.targetW,
-        c.targetH,
-        entry.source.transform.world,
-        entry.source.pointsLines.style,
-        entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
-      );
-      pass.setBindGroup(
-        0,
-        viewBindGroup as BindGroup,
-        new Uint32Array([
-          viewOffsetForBlend(pointsLinesMaterial.renderState?.blend),
-          entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
-        ]),
-        0,
-        2,
-      );
-      pass.setPipeline(pointsLinesPipeline);
-      bindingState.pipeline = pointsLinesPipeline;
-      pass.setVertexBuffer(0, pointsLinesSubmission.vertexBuffer);
-      pass.setIndexBuffer(pointsLinesSubmission.indexBuffer, 'uint32');
-      // Expanded geometry owns different buffers from the source mesh.
-      // Keep the ordinary draw state honest for the next CPU survivor.
-      lastVertexBuffer = null;
-      lastIndexBuffer = null;
-      materialGroup1DynamicOffsets[0] = meshSsboBufferBinding(
-        pipelineState.materialUniformBuffer,
-        materialUniformSlot(c.runtime, pointsLinesMaterial) * MATERIAL_PER_ENTITY_STRIDE,
-      ).byteOffset;
-      pass.setBindGroup(1, pointsLinesBindGroup, materialGroup1DynamicOffsets, 0, 1);
-      const pointsLinesMeshGroup =
-        pipelineState.meshStorageBuffer.pages === undefined
-          ? (meshBindGroup ?? meshGroup2)
-          : meshSlotBindGroup(
-              runtime.device,
-              c.frameState,
-              pipelineState,
-              c.bindGroupCounts,
-              meshSlot * MESH_PER_ENTITY_STRIDE,
-            );
-      meshGroup2DynamicOffsets[0] = meshSsboBufferBinding(
-        pipelineState.meshStorageBuffer,
-        meshSlot * MESH_PER_ENTITY_STRIDE,
-      ).byteOffset;
-      if (pointsLinesMeshGroup === null) continue;
-      prepareMeshDraw(c, entry, folded);
-      pass.setBindGroup(2, pointsLinesMeshGroup, meshGroup2DynamicOffsets);
-      const pointsLinesInstancesBg =
-        resolveIdentityInstanceDraws()[0]?.instanceBindGroup ??
-        resolveGeometryInstancesBindGroup(c, identityInstanceBuffer, undefined);
-      pass.setBindGroup(3, pointsLinesInstancesBg);
-      bindingState.instancesBuffer = identityInstanceBuffer;
-      bindingState.instanceBindGroup = pointsLinesInstancesBg;
-      bindingState.probeOffset = -1;
-      recordOcclusionCandidate(() => recordPointsLinesDraw(pass, pointsLinesSubmission.plan));
-      c.onRenderableDraw?.(entry);
-      pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
-      lastViewOffset = viewBindGroupDynamicOffset;
-      continue;
+      return;
+    entityMeshSlot = meshSlot;
+    entityFold = fold;
+    entityMeshBinding = undefined;
+    entityInstanceDraws = undefined;
+    entityDirectMeshGroup = meshBindGroup;
+    entitySkinTask = undefined;
+    if (pointsLinesSubmission !== undefined && pointsLines !== undefined) {
+      recordPointsLines(entry, i, pointsLinesSubmission, pointsLines.style);
+      return;
     }
-
-    // Dispatch counter bump — sprite folds into the same 2-bucket
-    // surface for now (`pipelineDispatchCounts.{unlit, standard}`
-    // mirror the original 2-pipeline scope; sprite-bucket counters
-    // can land in a follow-up if AI users need them separately).
-    // sprite entries do not bump either counter — the bench (M-4)
-    // can read sprite render counts via the transparent bucket
-    // length instead.
-    if (pipelineTag === 'unlit') dispatchCounts.unlit += 1;
-
-    const fold = c.foldDispatchPlan?.headBuckets.get(i);
-    let baseInstanceDraws: readonly GeometryInstanceDraw[] | undefined;
-
-    // feat-20260611 R2 / M8 / w28 (IS-14): skin entries need a 3-binding
-    // group(2) BG matching `pbr-skin-pl` (binding 0 mesh-array UBO +
-    // The selected submesh Pass owns its group(2) contract. Rigid Passes on
-    // the same Mesh do not demand Skin or borrow another Pass's task binding.
-    let group2BindGroup: BindGroup = meshGroup2 as BindGroup;
-    let meshBinding: ReturnType<typeof meshSsboBufferBinding> | undefined;
-    let directMeshGroup = meshBindGroup;
-    let group2DynamicOffsets: readonly number[] = meshGroup2DynamicOffsets;
-    const isSkinEntry = entry.source.skinBinding !== undefined;
-    let skinTask: SkinTaskBinding | undefined;
-
-    // feat-20260520-2d-sprite-layer-mvp M-3 / w25 (@fallback sprite
-    // bucket): sprite entries get a per-entity material BindGroup so
-    // each sprite carries its own texture binding at @group(1) @binding(2).
-    // Bindings 3..6 (metallicRoughness sampler/texture + normal
-    // sampler/texture) bind `pipelineState.defaultSampler` +
-    // `pipelineState.defaultWhiteTextureView` placeholders (D-1
-    // candidate b — zero new GPU resource; the 1x1 white view was
-    // already provisioned for unlit / standard fallback so the sprite
-    // path adds 4 binding references, no new resource code).
-    //
-    // Missing-texture fallback (AC-18 path 4 + R7 isolation): when the
-    // sprite texture has no GPU view, the binding uses
-    // `defaultWhiteTextureView` as the fallback texture and the
-    // material UBO upload above wrote debug-pink colorTint so the
-    // sprite is visually distinct. The warn-once + RhiError surface
-    // fires inside the upload loop. R7 isolation: this does NOT change
-    // the existing unlit / standard bucket missing-texture handling —
-    // those keep their silent-white fallback (a future
-    // `feat-future-pbr-missing-texture-fallback-explicit` will retrofit).
-    // bug-20260610 layer 7d: BG is per-submesh — each iteration of
-    // the submesh draw loop below builds (or cache-hits) a BG with
-    // matsForRebind[smIdx]'s 5 textureViews (baseColor / MR / normal /
-    // emissive / occlusion). Cache key is 14-handle-id only (entityKey
-    // dropped) so identical-material submeshes / entities dedup
-    // globally. Sprite path is unchanged (single spriteBg, sprite
-    // per-submesh OOS-1). The non-sprite branch leaves perSubmeshBg
-    // declared but null; the submesh loop reassigns it per iteration
-    // and the source-grep gate in skylight-fallback-path.test.ts /
-    // systems.unit.test.ts continues to match
-    // `setBindGroup\s*\(\s*1\s*,\s*perSubmeshBg\b` on the in-loop call.
-    // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w13 (D-1
-    // candidate b): the sprite-specific BG construction is gone — sprite
-    // materials reuse the same per-submesh BG path PBR / unlit use. The
-    // 7-entry BGL is byte-for-byte shared (binding 0 = Material UBO,
-    // 1 = baseColorSampler, 2 = baseColorTexture, 3-6 = filler samplers /
-    // textureViews). Sprite's "no metallic/normal/emissive/occlusion
-    // texture" simply falls through to `defaultWhite` / `defaultNormal`
-    // — the same placeholders the unlit path already used. The generic
-    // branch below builds the per-submesh BG.
-    let perSubmeshBg: BindGroup | null = null;
-    const gpuDrivenDrawIndices = gpuDrivenDrawIndicesBySubmesh(
-      entry.source,
-      entry.mesh,
-      drawIndicesScratch,
-    );
+    // Dispatch counter bump — sprite folds into the same unlit bucket; the
+    // bench reads sprite render counts via the transparent bucket length.
+    dispatchCounts.unlit += 1;
+    entityDrawIndices = gpuDrivenDrawIndicesBySubmesh(entry.source, entry.mesh, drawIndicesScratch);
     // feat-20260608 M4 / w16: per-submesh pipeline selection + draw loop.
-    // Each submesh carries its own topology, so pipeline selection is per-submesh.
-    // Vertex/index buffers and bind groups are set once (shared across all submeshes).
-    // feat-20260608 M5 amend / w16-a: the material UBO bind (group=1)
-    // ALSO moves into the loop -- the j-th submesh sees the j-th
-    // material slot via dynamic offset (entitySlotStart + j) * 256.
+    // Each submesh carries its own topology and material slot.
     for (const smIdx of entry.submeshIndices ?? entry.mesh.submeshes.keys()) {
-      const sm = entry.mesh.submeshes[smIdx];
-      if (sm === undefined) continue;
-      const matSlotIdx = sm.materialSlot;
-      const submeshMaterial = drawMaterial(c, i, matSlotIdx);
-      const compactDrawIndex =
-        gpuDrivenDrawIndices !== undefined && Object.hasOwn(gpuDrivenDrawIndices, smIdx)
-          ? gpuDrivenDrawIndices[smIdx]
-          : undefined;
-      const sourceDraw =
-        compactDrawIndex === undefined
-          ? undefined
-          : entry.source.gpuDrivenDraws?.[compactDrawIndex];
-      if (matchedMaterials !== null) {
-        const materialHandles = matchedMaterials.get(entry.renderableIndex);
-        const materialHandle = submeshMaterial.materialHandle ?? 0;
-        if (materialHandles === undefined || !materialHandles.has(materialHandle)) continue;
-      }
-      if (
-        (passKind === 'forward' || passKind === 'deferred' || passKind === 'temporal') &&
-        sourceDraw !== undefined &&
-        compactDrawIndex !== undefined &&
-        c.gpuDrivenSelection?.owns(entry.source, sourceDraw, compactDrawIndex, passKind) === true
-      ) {
-        continue;
-      }
-      const selectedMaterialPasses = materialPasses
-        .get(entry.renderableIndex)
-        ?.get(submeshMaterial.materialHandle ?? 0);
-      const draws: DispatchEntry | readonly (DispatchEntry | undefined)[] =
-        selectedDispatch === undefined ||
-        (selectedMaterialPasses === undefined &&
-          submeshMaterial.surfaceModel === 'single-layer-medium' &&
-          matchedMaterials?.get(entry.renderableIndex)?.has(submeshMaterial.materialHandle ?? 0))
-          ? DEFAULT_MATERIAL_DRAWS
-          : (selectedMaterialPasses ?? EMPTY_MATERIAL_DRAWS);
-      const drawList: readonly (DispatchEntry | undefined)[] | undefined = Array.isArray(draws)
-        ? draws
-        : undefined;
-      const singleDraw = drawList === undefined ? (draws as DispatchEntry) : undefined;
-      for (let drawIndex = 0; drawIndex < (drawList?.length ?? 1); drawIndex++) {
-        const selectedPass = drawList === undefined ? singleDraw : drawList[drawIndex];
-        // Temporal projects the selected material's alpha/motion contract,
-        // not its authored Forward entry points or color outputs.
-        const vertexEntry = passKind === 'temporal' ? undefined : selectedPass?.vertexEntry;
-        let fragmentEntry =
-          passKind === 'temporal' ? undefined : (fragmentEntryPoint ?? selectedPass?.fragmentEntry);
-        const selectedShaderId =
-          selectedPass === undefined
-            ? submeshMaterial.materialShaderId
-            : selectedPass.materialShaderId;
-        const selectedRenderState =
-          selectedPass === undefined ? submeshMaterial.renderState : selectedPass.renderState;
-        // Weighted blended OIT splits one transparent set into the eligible
-        // accumulation draws and the residual sorted draws. Both passes use
-        // the same classifier as the frame's inspection facts.
-        let oitAccumulateDraw = false;
-        if (oit !== undefined) {
-          const eligibility = classifyOitDraw({
-            materialShaderId: selectedShaderId,
-            skinned: isSkinEntry,
-            renderState: selectedRenderState,
-            fragmentEntry,
-          });
-          if (eligibility.eligible !== (oit === 'accumulate')) continue;
-          if (eligibility.eligible) {
-            oitAccumulateDraw = true;
-            fragmentEntry = eligibility.premultiplied
-              ? OIT_PREMULTIPLIED_FRAGMENT_ENTRY
-              : OIT_FRAGMENT_ENTRY;
-          }
-        }
-        const selectedStencil =
-          (selectedPass === undefined ? entry.stencilReference : selectedPass.stencilReference) ??
-          0;
-        if (selectedStencil !== lastStencilReference) {
-          pass.setStencilReference(selectedStencil);
-          lastStencilReference = selectedStencil;
-        }
-        // feat-city-glb Bug 5 (per-submesh transparency): in the LDR split, a
-        // transparent submesh is drawn in the blend sub-pass (non-sRGB view),
-        // NOT here in the sRGB geometry pass. Skip it. Opaque submeshes of the
-        // same (mixed) mesh still draw here. Single-material / fully-opaque
-        // meshes are unaffected (their submesh materials are not transparent).
-        if (
-          splitLdrSprite &&
-          (selectedPass === undefined
-            ? submeshMaterial.transparent === true
-            : selectedRenderState?.blend !== undefined)
-        ) {
-          continue;
-        }
-        // GPU ownership is per submesh. Prepare CPU buffers only after the
-        // exact claim, material-pass and transparency filters leave a draw.
-        meshBinding ??= meshSsboBufferBinding(
-          pipelineState.meshStorageBuffer,
-          meshSlot * MESH_PER_ENTITY_STRIDE,
-        );
-        const drawMeshBinding = meshBinding;
-        if (baseInstanceDraws === undefined) {
-          directMeshGroup =
-            pipelineState.meshStorageBuffer.pages === undefined
-              ? meshBindGroup
-              : meshSlotBindGroup(
-                  runtime.device,
-                  c.frameState,
-                  pipelineState,
-                  c.bindGroupCounts,
-                  meshSlot * MESH_PER_ENTITY_STRIDE,
-                );
-          meshGroup2DynamicOffsets[0] = drawMeshBinding.byteOffset;
-          if (entry.mesh.vertexBuffer !== lastVertexBuffer) {
-            pass.setVertexBuffer(0, entry.mesh.vertexBuffer.handle);
-            lastVertexBuffer = entry.mesh.vertexBuffer;
-          }
-          // feat-20260604 M4 / w11: vertex-only meshes (indexed === false) carry no
-          // index buffer; skip setIndexBuffer entirely and dispatch via pass.draw
-          // below. Indexed meshes keep the existing setIndexBuffer path unchanged.
-          if (entry.mesh.indexed && entry.mesh.indexBuffer !== lastIndexBuffer) {
-            if (entry.mesh.indexBuffer !== null) {
-              pass.setIndexBuffer(entry.mesh.indexBuffer.handle, entry.mesh.indexFormat);
-              lastIndexBuffer = entry.mesh.indexBuffer;
-            }
-          }
+      if (!recordSubmesh(entry, i, smIdx)) return;
+    }
+  };
 
-          const foldBuffer =
-            fold === undefined ? null : resolveFoldInstanceBuffer(c, fold, entry.renderableIndex);
-          const prepared =
-            fold === undefined
-              ? resolveGeometryInstanceBuffer(c, entry, resolveIdentityInstanceDraws(), false)
-              : foldBuffer === null
-                ? null
-                : [
-                    {
-                      instanceBuffer: foldBuffer,
-                      instanceBindGroup: resolveGeometryInstancesBindGroup(
-                        c,
-                        foldBuffer,
-                        undefined,
-                      ),
-                      probeOffset: -1,
-                      instanceCount: fold.bucketSize,
-                    },
-                  ];
-          if (prepared === null) continue entries;
-          baseInstanceDraws = prepared;
-        }
-        // bug-20260610 layer 7d: per-submesh BG construction. Texture
-        // views resolve from `matsForRebind[smIdx]` so the j-th submesh
-        // sees its own materials[j] textures (baseColor / MR / normal /
-        // emissive / occlusion). Pick slot j when materials.length covers
-        // smIdx; otherwise fall back to slot 0 (count-mismatch already
-        // filtered by extract; this guard handles the materials.length=1
-        // single-material path mapped over multi-submesh meshes safely).
-        // This BG drops entityKey: identical-texture-set submeshes
-        // (whether on the same entity or different ones) share one BG via
-        // the shaderId-outer `materialBgShared` cache. The 14 handle
-        // objects form the WeakMap chain and fully discriminate the
-        // binding state since sampler/textureView/buffer handle identities
-        // are stable across frames.
-        //
-        // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w13:
-        // sprite materials now use the same per-submesh BG construction
-        // (the sprite-specific BG branch above is deleted; sprite per-
-        // submesh single-slot is still enforced via materialSlotIndices
-        // and the sprite-shaped paramSnapshot fills the PBR-shaped BGL
-        // bindings via fallback textures for the 4 unused slots).
-        // feat-city-glb Bug 5: per-submesh material BG assembly extracted to
-        // the shared `buildPerSubmeshMaterialBg` closure (also called by the
-        // LDR blend sub-pass). Resolves the shader's user-region textures
-        // (baseColor/MR/normal + a custom Nth texture), emissive/occlusion
-        // injection, and Skylight merge; deduped cross-entity via the
-        // shaderId-outer `materialBgShared` cache.
-        const materialSlot =
-          materialSlotIndices[i]?.[matSlotIdx] ?? materialSlotIndices[i]?.[0] ?? 0;
-        const processValue = (
-          globalThis as {
-            process?: { env?: Record<string, string | undefined> };
-          }
-        ).process;
-        if (
-          processValue?.env?.FORGEAX_MATERIAL_PIPELINE_DIAGNOSTICS === '1' &&
-          (submeshMaterial.materialShaderId === 'forgeax::default-standard-pbr' ||
-            submeshMaterial.materialShaderId === 'forgeax::pbr-skin')
-        ) {
-          console.error(
-            `[render-material] draw receipt: ${JSON.stringify({
-              entityIndex: entry.renderableIndex,
-              materialSlot,
-              materialHandle: submeshMaterial.materialHandle,
-              clearcoat: submeshMaterial.paramSnapshot?.clearcoat,
-              shader: submeshMaterial.materialShaderId,
-            })}`,
-          );
-        }
-        perSubmeshBg = profileGeometrySegment(c, passKind, 'material-bind-groups', () =>
-          resolveMaterialBindGroup(
-            materialSlot,
-            submeshMaterial,
-            entry.source.entityKey,
-            entry.world ?? c.world,
-            selectedShaderId,
-          ),
-        );
-        materialGroup1DynamicOffsets[0] = meshSsboBufferBinding(
-          pipelineState.materialUniformBuffer,
-          materialUniformSlot(c.runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
-        ).byteOffset;
-        pass.setBindGroup(1, perSubmeshBg, materialGroup1DynamicOffsets, 0, 1);
-        const smTopology = sm.topology;
-        const resolvedPipeline = resolveDrawPipeline(
-          entry,
-          smTopology,
-          submeshMaterial,
-          selectedPass,
-          selectedShaderId,
-          selectedRenderState,
-          vertexEntry,
-          fragmentEntry,
-          oitAccumulateDraw,
-          entry.variantSet,
-        );
-        if (!resolvedPipeline) continue;
-        const {
-          pipeline: smPipelineHandle,
-          material: materialPipelineEntry,
-          probeBlend: probeBlendAvailable,
-          viewOffset,
-          shader: smMaterialShaderId,
-        } = pipelineSelection;
-        if (viewOffset !== lastViewOffset) {
-          pass.setBindGroup(0, viewBindGroup as BindGroup, [viewOffset, 0]);
-          lastViewOffset = viewOffset;
-        }
+  // A capture may sort against a different camera. Follow its selected dispatch
+  // while retaining the original row index for material slots and GPU payloads.
+  const drawOrder =
+    selectedDispatch !== undefined && c.foldDispatchPlan == null
+      ? dispatchDrawOrder(validatedOrdered, materialPasses)
+      : undefined;
+  for (let ordinal = 0; ordinal < validatedOrdered.length; ordinal++) {
+    recordEntry(drawOrder?.[ordinal] ?? ordinal);
+  }
+}
 
-        if (smPipelineHandle === null) {
-          if (diagnosticsEnabled) {
-            console.error(
-              `[render-material] draw skipped: ${JSON.stringify({
-                entityKey: entry.source.entityKey,
-                materialHandle: submeshMaterial.materialHandle,
-                shader: smMaterialShaderId,
-                reason: 'pipeline-unavailable',
-              })}`,
-            );
-          }
-          continue;
-        }
-        // Standard and authored Surface share the ProbeBlend ABI. Resolve
-        // this per submesh so mixed unlit/lit meshes cannot cross layouts.
-        const resolvedInstanceDraws = probeBlendAvailable
-          ? resolveGeometryInstanceBuffer(c, entry, resolveIdentityInstanceDraws(), true)
-          : baseInstanceDraws;
-        if (resolvedInstanceDraws === null) continue;
-        const compactDraw =
-          compactDrawIndex === undefined
-            ? undefined
-            : entry.source.gpuDrivenDraws?.[compactDrawIndex];
-        const sourceDrawItemIndex =
-          compactDrawIndex === undefined || compactDraw === undefined
-            ? smIdx
-            : gpuDrivenSourceDrawItemIndex(compactDraw, compactDrawIndex);
-        let instanceDraws =
-          submeshMaterial.surfaceModel === 'single-layer-medium' && passKind === 'forward'
-            ? resolveSurfaceDirectInstanceDraws(
-                c,
-                entry,
-                sourceDrawItemIndex,
-                resolvedInstanceDraws,
-              )
-            : resolvedInstanceDraws;
-        if (instanceDraws === null) continue;
-        if (passKind === 'deferred' && c.visibleSurface !== undefined) {
-          instanceDraws = instanceDraws.map((draw) => ({
-            ...draw,
-            firstInstance:
-              sourceDrawItemIndex * (entry.source.instances?.instanceCount ?? 1) +
-              (draw.firstInstanceOrdinal ?? 0),
-          }));
-        }
-        const materialGroup2Contract = materialPipelineEntry?.group2Contract;
-        if (materialGroup2Contract === undefined) continue;
-        const entryMeshGroup2 =
-          materialGroup2Contract === 'cluster' &&
-          pipelineState.meshStorageBuffer.pages !== undefined
-            ? clusteredMeshSlotBindGroup(c, meshSlot * MESH_PER_ENTITY_STRIDE)
-            : meshGroup2;
-        const requiresSkin =
-          materialGroup2Contract === 'skin' || materialGroup2Contract === 'skin-cluster';
-        if (requiresSkin) {
-          if (!isSkinEntry)
-            throw new RhiError({
-              code: 'rhi-descriptor-invalid',
-              expected: 'a Skin Binding for the selected material Skin contract',
-              hint: 'bind a complete Skin source before recording a Skin-input material',
-            });
-          skinTask ??= runtime.demandSkinTask?.(entry.source);
-          if (skinTask === undefined) continue;
-        }
-        const selectedGroup = requiresSkin
-          ? geometrySkinBindGroup(c, skinTask, drawMeshBinding, materialGroup2Contract)
-          : selectMaterialGroup2(entryMeshGroup2, directMeshGroup, materialGroup2Contract);
-        if (selectedGroup === null) continue;
-        group2BindGroup = selectedGroup;
-        group2DynamicOffsets = requiresSkin
-          ? pbrSkinMeshDynamicOffsets(
-              drawMeshBinding.byteOffset,
-              skinTask as SkinTaskBinding,
-              runtime.device.caps.storageBuffer,
-            )
-          : meshGroup2DynamicOffsets;
-        if (diagnosticsEnabled && submeshMaterial.textureHandles !== undefined) {
-          console.error(
-            `[render-material] draw submitted: ${JSON.stringify({
-              entityKey: entry.source.entityKey,
-              materialHandle: submeshMaterial.materialHandle,
-              shader: smMaterialShaderId,
-              textureHandles: [...submeshMaterial.textureHandles.entries()].map(
-                ([field, handle]) => ({
-                  field,
-                  handle,
-                }),
-              ),
-              skin: requiresSkin
-                ? {
-                    group2Contract: materialGroup2Contract,
-                    taskReady: skinTask !== undefined,
-                    taskByteOffset: skinTask?.dataOffset,
-                    dynamicOffsets: [...group2DynamicOffsets],
-                  }
-                : undefined,
-              pipelineReady: true,
-            })}`,
-          );
-        }
-        prepareMeshDraw(c, entry, folded);
-        pass.setBindGroup(2, group2BindGroup, group2DynamicOffsets);
-        const range = submeshRange(entry.mesh, smIdx);
-
-        profileGeometrySegment(c, passKind, 'draw-submit', () =>
-          recordOcclusionCandidate(() =>
-            submitSubmeshDraws(
-              pass,
-              bindingState,
-              smPipelineHandle,
-              instanceDraws,
-              entry.mesh.indexed,
-              range.count,
-              range.first,
-              range.baseVertex,
-              (draw, command) => {
-                recordPresented(
-                  entry,
-                  smIdx,
-                  {
-                    lane: 'cpu',
-                    ready: true,
-                    pipeline: smPipelineHandle,
-                    material: submeshMaterial,
-                    ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
-                    unsupportedLineage:
-                      passKind !== 'forward' ||
-                      fold !== undefined ||
-                      entry.source.instances !== undefined ||
-                      entry.source.skinBinding !== undefined ||
-                      draw.instanceCount !== 1,
-                    ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
-                  },
-                  fold,
-                );
-                if (surfacePass === undefined || draw.surfaceFrameBase === undefined) return;
-                c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
-                  kind: command,
-                  count: range.count,
-                  first: range.first,
-                  instanceCount: draw.instanceCount,
-                  firstInstance: 0,
-                  surfaceFrameBase: draw.surfaceFrameBase,
-                  memberIds: draw.surfaceMemberIds ?? [],
-                  pipelineIdentity: getOpaqueResourceIdentity(smPipelineHandle as object),
-                  ...(materialPipelineEntry?.receipt === undefined
-                    ? {}
-                    : {
-                        receiptIdentity: materialPipelineEntry.receipt.identity,
-                        receiptGeneration: materialPipelineEntry.receipt.generation,
-                      }),
-                });
-              },
-            ),
-          ),
-        );
-        if (diagnosticsEnabled && perSubmeshBg !== null) {
-          recordIblPipelineBinding(c, submeshMaterial, smPipelineHandle, perSubmeshBg);
-        }
-      }
+/**
+ * A material usually selects one pass. Keep that dispatch directly and
+ * allocate a pass list only when another distinct draw actually exists.
+ */
+function groupSelectedMaterialPasses(
+  selectedDispatch: DispatchList | undefined,
+  passKind: PassKind,
+): Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>> {
+  const materialPasses = new Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>();
+  for (const dispatch of selectedDispatch ?? EMPTY_MATERIAL_DRAWS) {
+    let byMaterial = materialPasses.get(dispatch.renderableIndex);
+    if (byMaterial === undefined) {
+      byMaterial = new FirstEntryMap();
+      materialPasses.set(dispatch.renderableIndex, byMaterial);
+    }
+    const passes = byMaterial.get(dispatch.materialHandle);
+    if (passes === undefined) byMaterial.set(dispatch.materialHandle, dispatch);
+    else if (Array.isArray(passes)) {
+      if (passKind !== 'temporal' || !hasSameOpaqueTemporalDraw(passes, dispatch))
+        passes.push(dispatch);
+    } else if (passKind !== 'temporal' || !sameOpaqueTemporalDraw(passes, dispatch)) {
+      byMaterial.set(dispatch.materialHandle, [passes, dispatch]);
     }
   }
+  return materialPasses;
+}
+
+function hasSameOpaqueTemporalDraw(
+  passes: readonly DispatchEntry[],
+  dispatch: DispatchEntry,
+): boolean {
+  for (const previous of passes) {
+    if (sameOpaqueTemporalDraw(previous, dispatch)) return true;
+  }
+  return false;
+}
+
+/** Selected-dispatch order first, then the remaining rows in validated order. */
+function dispatchDrawOrder(
+  validatedOrdered: readonly ValidatedRenderable[],
+  materialPasses: ReadonlyMap<number, unknown>,
+): number[] {
+  const remaining = new Map(validatedOrdered.map((entry, index) => [entry.renderableIndex, index]));
+  const drawOrder: number[] = [];
+  for (const renderableIndex of materialPasses.keys()) {
+    const index = remaining.get(renderableIndex);
+    if (index === undefined) continue;
+    drawOrder.push(index);
+    remaining.delete(renderableIndex);
+  }
+  for (const index of remaining.values()) drawOrder.push(index);
+  return drawOrder;
+}
+
+function everyMaterialSlotTransparent(
+  c: Pick<_InternalRenderPipelineContext, 'materialSlots'>,
+  slots: readonly number[] | undefined,
+): boolean {
+  return (slots ?? []).every((slot) => c.materialSlots[slot]?.transparent === true);
+}
+
+function rendersSelectedMaterial(
+  matchedMaterials: ReadonlyMap<number, ReadonlySet<number>> | null,
+  renderableIndex: number,
+  material: MaterialSnapshot,
+): boolean {
+  if (matchedMaterials === null) return true;
+  return matchedMaterials.get(renderableIndex)?.has(material.materialHandle ?? 0) === true;
+}
+
+function submeshDrawIndex(
+  drawIndices: readonly (number | undefined)[] | undefined,
+  smIdx: number,
+): number | undefined {
+  return drawIndices !== undefined && Object.hasOwn(drawIndices, smIdx)
+    ? drawIndices[smIdx]
+    : undefined;
+}
+
+/** A GPU-driven lane that claimed this exact submesh draw records it instead. */
+function gpuDrivenOwnsSubmesh(
+  c: _InternalRenderPipelineContext,
+  entry: ValidatedRenderable,
+  compactDrawIndex: number | undefined,
+  passKind: PassKind,
+): boolean {
+  if (passKind !== 'forward' && passKind !== 'deferred' && passKind !== 'temporal') return false;
+  if (compactDrawIndex === undefined) return false;
+  const sourceDraw = entry.source.gpuDrivenDraws?.[compactDrawIndex];
+  return (
+    sourceDraw !== undefined &&
+    c.gpuDrivenSelection?.owns(entry.source, sourceDraw, compactDrawIndex, passKind) === true
+  );
+}
+
+/**
+ * The material passes one submesh records: every material's default pass
+ * without a selected dispatch (or for a matched single-layer medium that
+ * selected no pass of its own), else its selected passes.
+ */
+function submeshMaterialDraws(
+  selectedDispatch: DispatchList | undefined,
+  byMaterial: FirstEntryMap<number, DispatchEntry | DispatchEntry[]> | undefined,
+  material: MaterialSnapshot,
+  matchedHandles: ReadonlySet<number> | undefined,
+): DispatchEntry | readonly (DispatchEntry | undefined)[] {
+  if (selectedDispatch === undefined) return DEFAULT_MATERIAL_DRAWS;
+  const handle = material.materialHandle ?? 0;
+  const selected = byMaterial?.get(handle);
+  if (
+    selected === undefined &&
+    material.surfaceModel === 'single-layer-medium' &&
+    matchedHandles?.has(handle) === true
+  )
+    return DEFAULT_MATERIAL_DRAWS;
+  return selected ?? EMPTY_MATERIAL_DRAWS;
+}
+
+function isMaterialDrawList(
+  draws: DispatchEntry | readonly (DispatchEntry | undefined)[],
+): draws is readonly (DispatchEntry | undefined)[] {
+  return Array.isArray(draws);
+}
+
+/** One instanced draw of a fold bucket's head over its renderer-owned transforms. */
+function foldInstanceDraws(
+  c: _InternalRenderPipelineContext,
+  fold: FoldBucket,
+  renderableIndex: number,
+): readonly GeometryInstanceDraw[] | null {
+  const foldBuffer = resolveFoldInstanceBuffer(c, fold, renderableIndex);
+  if (foldBuffer === null) return null;
+  return [probeBoundInstanceDraw(c, foldBuffer, undefined, fold.bucketSize)];
+}
+
+function logMaterialPipelineDrawReceipt(
+  entry: ValidatedRenderable,
+  materialSlot: number,
+  material: MaterialSnapshot,
+): void {
+  const processValue = (
+    globalThis as {
+      process?: { env?: Record<string, string | undefined> };
+    }
+  ).process;
+  if (
+    processValue?.env?.FORGEAX_MATERIAL_PIPELINE_DIAGNOSTICS !== '1' ||
+    (material.materialShaderId !== 'forgeax::default-standard-pbr' &&
+      material.materialShaderId !== 'forgeax::pbr-skin')
+  )
+    return;
+  console.error(
+    `[render-material] draw receipt: ${JSON.stringify({
+      entityIndex: entry.renderableIndex,
+      materialSlot,
+      materialHandle: material.materialHandle,
+      clearcoat: material.paramSnapshot?.clearcoat,
+      shader: material.materialShaderId,
+    })}`,
+  );
 }
 
 /**
@@ -2216,36 +2295,9 @@ export function resolveGeometryInstanceBuffer(
   identityInstanceDraws: readonly GeometryInstanceDraw[],
   useProbeBlend: boolean,
 ): readonly GeometryInstanceDraw[] | null {
-  const { runtime, pipelineState, frameState } = c;
   const inst = entry.source.instances;
-  if (entry.source.spriteInstances !== undefined) {
-    const { buffer, count } = resolveSpriteInstancesBuffer(
-      c,
-      entry,
-      pipelineState.identityInstanceBuffer,
-      0,
-    );
-    return count === 0
-      ? []
-      : [
-          {
-            instanceBuffer: buffer,
-            instanceBindGroup: resolveGeometryInstancesBindGroup(c, buffer, undefined),
-            probeOffset: -1,
-            instanceCount: count,
-          },
-        ];
-  }
-  const probeBinding =
-    !useProbeBlend || !runtime.device.caps.storageBuffer
-      ? undefined
-      : entry.source.probeBlendRecord === undefined
-        ? { buffer: ensureProbeBlendRecordBuffer(runtime.device, frameState, undefined), offset: 0 }
-        : resolveProbeBlendBuffer(
-            c,
-            entry.source.probeBlendRecord,
-            worldEntityKey(entry.source.worldId, entry.source.entityKey),
-          );
+  if (entry.source.spriteInstances !== undefined) return spriteInstanceDraws(c, entry);
+  const probeBinding = resolveInstanceProbeBinding(c, entry, useProbeBlend);
   if (inst === undefined) {
     const identity = identityInstanceDraws[0];
     if (identity === undefined) return null;
@@ -2254,7 +2306,7 @@ export function resolveGeometryInstanceBuffer(
         ...identity,
         instanceBindGroup: resolveGeometryInstancesBindGroup(
           c,
-          pipelineState.identityInstanceBuffer,
+          c.pipelineState.identityInstanceBuffer,
           probeBinding?.buffer,
         ),
         ...(probeBinding?.buffer === undefined ? {} : { probeBuffer: probeBinding.buffer }),
@@ -2265,301 +2317,403 @@ export function resolveGeometryInstanceBuffer(
   // A present, empty Instances array means zero draws. Do not fall back to
   // the shared identity buffer, which would silently render one instance.
   if (inst.instanceCount === 0) return [];
-  const entityCacheKey = instanceCollectionCacheKey(entry.source.worldId, inst);
-  const revision = inst.revision;
-  const sameRevision = (cached: InstanceBufferCacheEntry): boolean =>
-    revision === undefined
-      ? cached.uploadedRevision === undefined
-      : cached.uploadedRevision === revision;
-  const fullRange = [{ start: 0, end: inst.instanceCount }] as const;
-  let instanceBuffer: Buffer = pipelineState.identityInstanceBuffer;
-  let instanceCount = 1;
-  {
-    // feat-20260526-pbr-uniform-fallback-no-storage-buffer M3 / w13:
-    // caps.storageBuffer===false -> uniform fallback with 128-instance
-    // cap (128 * 64B = 8192B < WebGL2 min 16384B UBO limit).
-    // caps.storageBuffer===true -> existing storage buffer path unchanged.
-    const uniformFallback = runtime.device.caps.storageBuffer === false;
-    let instanceBufferUsage = GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST;
+  // feat-20260526-pbr-uniform-fallback-no-storage-buffer M3 / w13:
+  // caps.storageBuffer===false -> uniform fallback with 128-instance
+  // cap (128 * 64B = 8192B < WebGL2 min 16384B UBO limit).
+  // caps.storageBuffer===true -> existing storage buffer path unchanged.
+  if (c.runtime.device.caps.storageBuffer === false && inst.instanceCount > MAX_UNIFORM_INSTANCES)
+    return resolveChunkedUniformInstanceDraws(c, entry, inst, probeBinding);
+  return resolveDirectInstanceDraws(c, entry, inst, probeBinding);
+}
 
-    if (uniformFallback && inst.instanceCount > MAX_UNIFORM_INSTANCES) {
-      const ownerKey = instanceCollectionCacheKey(entry.source.worldId, inst);
-      const chunks = instanceChunksForOwner(c, ownerKey);
-      const activeKeys = new Set<number>();
-      const draws: GeometryInstanceDraw[] = [];
-      const uniformStrideBytes = 16 * Float32Array.BYTES_PER_ELEMENT;
-      const uploadedRanges: { start: number; end: number }[] = [];
-      let uploadedBytes = 0;
-      for (let start = 0; start < inst.instanceCount; start += MAX_UNIFORM_INSTANCES) {
-        const count = Math.min(MAX_UNIFORM_INSTANCES, inst.instanceCount - start);
-        activeKeys.add(start);
-        const payloadBytes = count * uniformStrideBytes;
-        const previous = chunks?.get(start);
-        let active =
-          previous !== undefined &&
-          previous.uploadedArchVersion === inst.archVersion &&
-          previous.uploadedByteLength === payloadBytes
-            ? previous
-            : undefined;
-        let activeIsNew = false;
-        if (active === undefined) {
-          const created = runtime.device.createBuffer({
-            size: INSTANCE_UBO_FULL_ARRAY_BYTES,
-            usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-            mappedAtCreation: false,
-          });
-          if (!created.ok) {
-            runtime.errorRegistry.fire(created.error);
-            reportInstanceFailure(
-              c,
-              inst,
-              created.error,
-              inst.instanceCount * uniformStrideBytes,
-              MAX_UNIFORM_INSTANCES * uniformStrideBytes,
-            );
-            return null;
-          }
-          if (previous !== undefined && !previous.buffer.isDestroyed) {
-            const destroyed = previous.buffer.destroy();
-            if (!destroyed.ok) runtime.errorRegistry.fire(destroyed.error);
-          }
-          active = {
-            buffer: new GpuBuffer(runtime.device, created.value),
-            uploadedArchVersion: inst.archVersion,
-            uploadedByteLength: payloadBytes,
-          };
-          activeIsNew = true;
-          chunks?.set(start, active);
-          if (chunks === undefined) frameState.transientInstanceBuffers.push(active);
-        }
-        const needsUpload = activeIsNew || !sameRevision(active);
-        const plan = planInstanceUpload({
-          activeIsNew,
-          resident: active,
-          current: inst,
-          pairing: 'no-previous-lane',
-          window: { start, end: start + count },
-        });
-        if (needsUpload && plan.ranges.length > 0) {
-          const upload = uploadInstanceRanges(
-            c,
-            inst,
-            active.buffer.handle,
-            plan.ranges,
-            false,
-            start,
-            entry.source.temporal?.previousInstances,
-          );
-          for (const range of upload.ranges) {
-            uploadedRanges.push({ start: range.start + start, end: range.end + start });
-          }
-          uploadedBytes += upload.bytes;
-          if (!upload.ok) {
-            reportInstanceFailure(
-              c,
-              inst,
-              {
-                code: 'queue-write-buffer-failed',
-                expected: 'the renderer-owned instance uniform buffer accepts the dirty range',
-                hint: 'retry after the active device is healthy or recover the renderer',
-              },
-              inst.instanceCount * uniformStrideBytes,
-              MAX_UNIFORM_INSTANCES * uniformStrideBytes,
-            );
-            return null;
-          }
-        }
-        if (needsUpload) {
-          const published =
-            revision === undefined
-              ? active
-              : withUploadedRevision(active, revision, plan.motionRows);
-          active = published;
-          chunks?.set(start, published);
-        }
-        draws.push({
-          instanceBuffer: active.buffer.handle,
-          instanceBindGroup: resolveGeometryInstancesBindGroup(
-            c,
-            active.buffer.handle,
-            probeBinding?.buffer,
-          ),
-          ...(probeBinding?.buffer === undefined ? {} : { probeBuffer: probeBinding.buffer }),
-          probeOffset: probeBinding?.offset ?? -1,
-          instanceCount: count,
-          firstInstanceOrdinal: start,
-        });
-      }
-      if (chunks !== undefined) {
-        for (const [key, stale] of chunks.entries()) {
-          if (activeKeys.has(key)) continue;
-          if (!stale.buffer.isDestroyed) {
-            const destroyed = stale.buffer.destroy();
-            if (!destroyed.ok) runtime.errorRegistry.fire(destroyed.error);
-          }
-          chunks.delete(key);
-        }
-      }
-      reportInstanceResidency(c, inst, {
-        lane: 'chunked-uniform',
-        requestedBytes: inst.instanceCount * uniformStrideBytes,
-        supportedBytes: MAX_UNIFORM_INSTANCES * uniformStrideBytes,
-        uploadRanges: uploadedRanges,
-        uploadedBytes,
-      });
-      return draws;
-    }
-    if (uniformFallback) {
-      instanceBufferUsage = GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST;
-    }
+type InstanceProbeBinding = ReturnType<typeof resolveProbeBlendBuffer> | undefined;
 
-    {
-      // Cap-gate (LimitExceededDetail single emit point — feat-20260514
-      // M3 / w15 anchor): `requestedBytes <= maxStorageBufferBindingSize`.
-      // Derive the size from the authoring count; storage packing is deferred
-      // until uploadInstanceRanges confirms a new or dirty resident.
-      const requestedBytes =
-        inst.instanceCount *
-        (uniformFallback ? 16 : INSTANCE_STORAGE_STRIDE_FLOATS) *
-        Float32Array.BYTES_PER_ELEMENT;
-      const cap = runtime.device.limits.maxStorageBufferBindingSize;
-      if (!uniformFallback && typeof cap === 'number' && cap > 0 && requestedBytes > cap) {
-        const chunked = resolveStorageInstanceChunks(
-          c,
-          entry,
-          inst,
-          cap,
-          probeBinding?.buffer,
-          probeBinding?.offset ?? -1,
-        );
-        return chunked;
-      } else {
-        // Look up the cached GPU buffer or create a fresh one when the
-        // archetype version bumped or the byte length changed.
-        // entityCacheKey is the worldEntityKey + collectionId namespace.
-        const cached = frameState.instanceBuffers.get(entityCacheKey);
-        let active: InstanceBufferCacheEntry | null = null;
-        let activeIsNew = false;
-        if (
-          cached !== undefined &&
-          cached.uploadedArchVersion === inst.archVersion &&
-          cached.uploadedByteLength === requestedBytes
-        ) {
-          active = cached;
-        } else if (requestedBytes > 0) {
-          const bufRes = runtime.device.createBuffer({
-            size: uniformFallback ? INSTANCE_UBO_FULL_ARRAY_BYTES : requestedBytes,
-            usage: instanceBufferUsage,
-            mappedAtCreation: false,
-          });
-          if (!bufRes.ok) {
-            runtime.errorRegistry.fire(bufRes.error);
-            reportInstanceFailure(c, inst, bufRes.error, requestedBytes, cap);
-            return null;
-          } else {
-            // feat-20260619 M4 / F12: destroy the old cached buffer
-            // before replacing it with the new one (D-6).
-            if (cached !== undefined && !cached.buffer.isDestroyed) {
-              const r = cached.buffer.destroy();
-              if (!r.ok) runtime.errorRegistry.fire(r.error);
-            }
-            const newBuffer = new GpuBuffer(runtime.device, bufRes.value);
-            active = {
-              buffer: newBuffer,
-              uploadedArchVersion: inst.archVersion,
-              uploadedByteLength: requestedBytes,
-            };
-            activeIsNew = true;
-            if (active !== null) {
-              // Keep the collection identity in the worldEntityKey namespace.
-              frameState.instanceBuffers.set(entityCacheKey, active);
-            }
-          }
-        }
-        if (active !== null) {
-          const previousInstances = entry.source.temporal?.previousInstances;
-          const pairing = uniformFallback
-            ? 'no-previous-lane'
-            : instancePreviousPairing(inst, previousInstances);
-          const needsUpload =
-            activeIsNew ||
-            !sameRevision(active) ||
-            (pairing === 'none' && active.uploadedMotionRows?.length !== 0);
-          const plan = planInstanceUpload({
-            activeIsNew,
-            resident: active,
-            current: inst,
-            pairing,
-            window: fullRange[0],
-          });
-          const ranges = plan.ranges;
-          let uploadRanges: readonly { readonly start: number; readonly end: number }[] = [];
-          let uploadedBytes = 0;
-          if (needsUpload && ranges.length > 0) {
-            const upload = uploadInstanceRanges(
-              c,
-              inst,
-              active.buffer.handle,
-              ranges,
-              !uniformFallback,
-              0,
-              previousInstances,
-            );
-            uploadRanges = upload.ranges;
-            uploadedBytes = upload.bytes;
-            if (!upload.ok) {
-              reportInstanceFailure(
-                c,
-                inst,
-                {
-                  code: 'queue-write-buffer-failed',
-                  expected: 'the renderer-owned instance buffer accepts the dirty ranges',
-                  hint: 'retry after the active device is healthy or recover the renderer',
-                },
-                requestedBytes,
-                uniformFallback
-                  ? MAX_UNIFORM_INSTANCES * Float32Array.BYTES_PER_ELEMENT * 16
-                  : typeof cap === 'number'
-                    ? cap
-                    : undefined,
-              );
-              return null;
-            }
-          }
-          if (needsUpload) {
-            const published = withUploadedRevision(active, revision, plan.motionRows);
-            frameState.instanceBuffers.set(entityCacheKey, published);
-            active = published;
-          }
-          instanceBuffer = active.buffer.handle;
-          instanceCount = Math.max(1, inst.instanceCount);
-          reportInstanceResidency(c, inst, {
-            lane: uniformFallback ? 'direct-uniform' : 'direct-storage',
-            requestedBytes,
-            supportedBytes: uniformFallback
-              ? MAX_UNIFORM_INSTANCES * Float32Array.BYTES_PER_ELEMENT * 16
-              : typeof cap === 'number'
-                ? cap
-                : undefined,
-            uploadRanges,
-            uploadedBytes,
-          });
-          clearInstanceChunksForOwner(c, entityCacheKey);
-        }
-      }
-      // The cache write above is keyed by worldEntityKey(worldId, cacheKey)
-      // so separate worlds cannot alias their instance buffers.
+/** One instanced draw over `instanceBuffer`, carrying the entity's probe binding. */
+function probeBoundInstanceDraw(
+  c: InstanceBufferContext,
+  instanceBuffer: Buffer,
+  probeBinding: InstanceProbeBinding,
+  instanceCount: number,
+  firstInstanceOrdinal?: number,
+): GeometryInstanceDraw {
+  return {
+    instanceBuffer,
+    instanceBindGroup: resolveGeometryInstancesBindGroup(c, instanceBuffer, probeBinding?.buffer),
+    ...(probeBinding?.buffer === undefined ? {} : { probeBuffer: probeBinding.buffer }),
+    probeOffset: probeBinding?.offset ?? -1,
+    instanceCount,
+    ...(firstInstanceOrdinal === undefined ? {} : { firstInstanceOrdinal }),
+  };
+}
+
+function spriteInstanceDraws(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+): readonly GeometryInstanceDraw[] {
+  const { buffer, count } = resolveSpriteInstancesBuffer(
+    c,
+    entry,
+    c.pipelineState.identityInstanceBuffer,
+    0,
+  );
+  return count === 0 ? [] : [probeBoundInstanceDraw(c, buffer, undefined, count)];
+}
+
+function resolveInstanceProbeBinding(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  useProbeBlend: boolean,
+): InstanceProbeBinding {
+  if (!useProbeBlend || !c.runtime.device.caps.storageBuffer) return undefined;
+  const record = entry.source.probeBlendRecord;
+  if (record === undefined)
+    return {
+      buffer: ensureProbeBlendRecordBuffer(c.runtime.device, c.frameState, undefined),
+      offset: 0,
+    };
+  return resolveProbeBlendBuffer(
+    c,
+    record,
+    worldEntityKey(entry.source.worldId, entry.source.entityKey),
+  );
+}
+
+function uploadedRevisionMatches(
+  cached: InstanceBufferCacheEntry,
+  revision: number | undefined,
+): boolean {
+  return revision === undefined
+    ? cached.uploadedRevision === undefined
+    : cached.uploadedRevision === revision;
+}
+
+function destroyInstanceBuffer(c: InstanceBufferContext, buffer: GpuBuffer): void {
+  if (buffer.isDestroyed) return;
+  const destroyed = buffer.destroy();
+  if (!destroyed.ok) c.runtime.errorRegistry.fire(destroyed.error);
+}
+
+const UNIFORM_INSTANCE_STRIDE_BYTES = 16 * Float32Array.BYTES_PER_ELEMENT;
+
+/** Uniform-only devices split a large collection into 128-instance uniform chunks. */
+function resolveChunkedUniformInstanceDraws(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  probeBinding: InstanceProbeBinding,
+): readonly GeometryInstanceDraw[] | null {
+  const chunks = instanceChunksForOwner(c, instanceCollectionCacheKey(entry.source.worldId, inst));
+  const activeKeys = new Set<number>();
+  const draws: GeometryInstanceDraw[] = [];
+  const uploaded: { ranges: { start: number; end: number }[]; bytes: number } = {
+    ranges: [],
+    bytes: 0,
+  };
+  for (let start = 0; start < inst.instanceCount; start += MAX_UNIFORM_INSTANCES) {
+    const count = Math.min(MAX_UNIFORM_INSTANCES, inst.instanceCount - start);
+    activeKeys.add(start);
+    const active = resolveUniformInstanceChunk(c, entry, inst, chunks, start, uploaded);
+    if (active === null) return null;
+    draws.push(probeBoundInstanceDraw(c, active.buffer.handle, probeBinding, count, start));
+  }
+  if (chunks !== undefined) {
+    for (const [key, stale] of chunks.entries()) {
+      if (activeKeys.has(key)) continue;
+      destroyInstanceBuffer(c, stale.buffer);
+      chunks.delete(key);
     }
   }
+  reportInstanceResidency(c, inst, {
+    lane: 'chunked-uniform',
+    requestedBytes: inst.instanceCount * UNIFORM_INSTANCE_STRIDE_BYTES,
+    supportedBytes: MAX_UNIFORM_INSTANCES * UNIFORM_INSTANCE_STRIDE_BYTES,
+    uploadRanges: uploaded.ranges,
+    uploadedBytes: uploaded.bytes,
+  });
+  return draws;
+}
+
+/** Resident, uploaded uniform chunk starting at `start`; null after a reported failure. */
+function resolveUniformInstanceChunk(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  chunks: Map<number, InstanceBufferCacheEntry> | undefined,
+  start: number,
+  uploaded: { ranges: { start: number; end: number }[]; bytes: number },
+): InstanceBufferCacheEntry | null {
+  const count = Math.min(MAX_UNIFORM_INSTANCES, inst.instanceCount - start);
+  const previous = chunks?.get(start);
+  const active = acquireUniformInstanceChunk(c, inst, chunks, start, previous);
+  if (active === null) return null;
+  const activeIsNew = active !== previous;
+  const revision = inst.revision;
+  const needsUpload = activeIsNew || !uploadedRevisionMatches(active, revision);
+  const plan = planInstanceUpload({
+    activeIsNew,
+    resident: active,
+    current: inst,
+    pairing: 'no-previous-lane',
+    window: { start, end: start + count },
+  });
+  if (!needsUpload) return active;
+  if (plan.ranges.length > 0) {
+    const upload = uploadInstanceRanges(
+      c,
+      inst,
+      active.buffer.handle,
+      plan.ranges,
+      false,
+      start,
+      entry.source.temporal?.previousInstances,
+    );
+    for (const range of upload.ranges) {
+      uploaded.ranges.push({ start: range.start + start, end: range.end + start });
+    }
+    uploaded.bytes += upload.bytes;
+    if (!upload.ok) {
+      reportInstanceFailure(
+        c,
+        inst,
+        {
+          code: 'queue-write-buffer-failed',
+          expected: 'the renderer-owned instance uniform buffer accepts the dirty range',
+          hint: 'retry after the active device is healthy or recover the renderer',
+        },
+        inst.instanceCount * UNIFORM_INSTANCE_STRIDE_BYTES,
+        MAX_UNIFORM_INSTANCES * UNIFORM_INSTANCE_STRIDE_BYTES,
+      );
+      return null;
+    }
+  }
+  const published =
+    revision === undefined ? active : withUploadedRevision(active, revision, plan.motionRows);
+  chunks?.set(start, published);
+  return published;
+}
+
+/** Reuse the chunk's buffer while its layout version and size hold; else replace it. */
+function acquireUniformInstanceChunk(
+  c: InstanceBufferContext,
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  chunks: Map<number, InstanceBufferCacheEntry> | undefined,
+  start: number,
+  previous: InstanceBufferCacheEntry | undefined,
+): InstanceBufferCacheEntry | null {
+  const { runtime, frameState } = c;
+  const payloadBytes =
+    Math.min(MAX_UNIFORM_INSTANCES, inst.instanceCount - start) * UNIFORM_INSTANCE_STRIDE_BYTES;
+  if (
+    previous !== undefined &&
+    previous.uploadedArchVersion === inst.archVersion &&
+    previous.uploadedByteLength === payloadBytes
+  )
+    return previous;
+  const created = runtime.device.createBuffer({
+    size: INSTANCE_UBO_FULL_ARRAY_BYTES,
+    usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    mappedAtCreation: false,
+  });
+  if (!created.ok) {
+    runtime.errorRegistry.fire(created.error);
+    reportInstanceFailure(
+      c,
+      inst,
+      created.error,
+      inst.instanceCount * UNIFORM_INSTANCE_STRIDE_BYTES,
+      MAX_UNIFORM_INSTANCES * UNIFORM_INSTANCE_STRIDE_BYTES,
+    );
+    return null;
+  }
+  if (previous !== undefined) destroyInstanceBuffer(c, previous.buffer);
+  const active: InstanceBufferCacheEntry = {
+    buffer: new GpuBuffer(runtime.device, created.value),
+    uploadedArchVersion: inst.archVersion,
+    uploadedByteLength: payloadBytes,
+  };
+  chunks?.set(start, active);
+  if (chunks === undefined) frameState.transientInstanceBuffers.push(active);
+  return active;
+}
+
+/**
+ * One storage (or uniform-fallback) buffer for the whole collection. Cap-gate
+ * (LimitExceededDetail single emit point — feat-20260514 M3 / w15 anchor):
+ * `requestedBytes <= maxStorageBufferBindingSize`. Derive the size from the
+ * authoring count; storage packing is deferred until uploadInstanceRanges
+ * confirms a new or dirty resident.
+ */
+function resolveDirectInstanceDraws(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  probeBinding: InstanceProbeBinding,
+): readonly GeometryInstanceDraw[] | null {
+  const { runtime, frameState } = c;
+  const uniformFallback = runtime.device.caps.storageBuffer === false;
+  const requestedBytes =
+    inst.instanceCount *
+    (uniformFallback ? 16 : INSTANCE_STORAGE_STRIDE_FLOATS) *
+    Float32Array.BYTES_PER_ELEMENT;
+  const cap = runtime.device.limits.maxStorageBufferBindingSize;
+  if (!uniformFallback && typeof cap === 'number' && cap > 0 && requestedBytes > cap)
+    return resolveStorageInstanceChunks(
+      c,
+      entry,
+      inst,
+      cap,
+      probeBinding?.buffer,
+      probeBinding?.offset ?? -1,
+    );
+  // The cache is keyed by worldEntityKey(worldId, cacheKey) + collectionId so
+  // separate worlds cannot alias their instance buffers.
+  const entityCacheKey = instanceCollectionCacheKey(entry.source.worldId, inst);
+  const cached = frameState.instanceBuffers.get(entityCacheKey);
+  const acquired = acquireDirectInstanceBuffer(c, inst, entityCacheKey, cached, requestedBytes);
+  if (acquired === null) return null;
+  if (acquired === undefined)
+    return [probeBoundInstanceDraw(c, c.pipelineState.identityInstanceBuffer, probeBinding, 1)];
+  const active = uploadDirectInstances(
+    c,
+    entry,
+    inst,
+    acquired,
+    acquired !== cached,
+    requestedBytes,
+  );
+  if (active === null) return null;
   return [
-    {
-      instanceBuffer,
-      instanceBindGroup: resolveGeometryInstancesBindGroup(c, instanceBuffer, probeBinding?.buffer),
-      ...(probeBinding?.buffer === undefined ? {} : { probeBuffer: probeBinding.buffer }),
-      probeOffset: probeBinding?.offset ?? -1,
-      instanceCount,
-    },
+    probeBoundInstanceDraw(c, active.buffer.handle, probeBinding, Math.max(1, inst.instanceCount)),
   ];
+}
+
+/**
+ * Reuse the cached buffer while the archetype version and byte length hold,
+ * else create (and cache) a fresh one. Undefined when no bytes are requested;
+ * null after a reported creation failure.
+ */
+function acquireDirectInstanceBuffer(
+  c: InstanceBufferContext,
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  entityCacheKey: number,
+  cached: InstanceBufferCacheEntry | undefined,
+  requestedBytes: number,
+): InstanceBufferCacheEntry | null | undefined {
+  const { runtime, frameState } = c;
+  if (
+    cached !== undefined &&
+    cached.uploadedArchVersion === inst.archVersion &&
+    cached.uploadedByteLength === requestedBytes
+  )
+    return cached;
+  if (!(requestedBytes > 0)) return undefined;
+  const uniformFallback = runtime.device.caps.storageBuffer === false;
+  const created = runtime.device.createBuffer({
+    size: uniformFallback ? INSTANCE_UBO_FULL_ARRAY_BYTES : requestedBytes,
+    usage: uniformFallback
+      ? GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST
+      : GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    mappedAtCreation: false,
+  });
+  if (!created.ok) {
+    runtime.errorRegistry.fire(created.error);
+    reportInstanceFailure(
+      c,
+      inst,
+      created.error,
+      requestedBytes,
+      runtime.device.limits.maxStorageBufferBindingSize,
+    );
+    return null;
+  }
+  // feat-20260619 M4 / F12: destroy the old cached buffer before replacing it
+  // with the new one (D-6).
+  if (cached !== undefined) destroyInstanceBuffer(c, cached.buffer);
+  const active: InstanceBufferCacheEntry = {
+    buffer: new GpuBuffer(runtime.device, created.value),
+    uploadedArchVersion: inst.archVersion,
+    uploadedByteLength: requestedBytes,
+  };
+  frameState.instanceBuffers.set(entityCacheKey, active);
+  return active;
+}
+
+/** Upload the dirty rows of a direct instance buffer and publish its revision. */
+function uploadDirectInstances(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  active: InstanceBufferCacheEntry,
+  activeIsNew: boolean,
+  requestedBytes: number,
+): InstanceBufferCacheEntry | null {
+  const { runtime, frameState } = c;
+  const uniformFallback = runtime.device.caps.storageBuffer === false;
+  const entityCacheKey = instanceCollectionCacheKey(entry.source.worldId, inst);
+  const cap = runtime.device.limits.maxStorageBufferBindingSize;
+  const supportedBytes = uniformFallback
+    ? MAX_UNIFORM_INSTANCES * UNIFORM_INSTANCE_STRIDE_BYTES
+    : typeof cap === 'number'
+      ? cap
+      : undefined;
+  const previousInstances = entry.source.temporal?.previousInstances;
+  const pairing = uniformFallback
+    ? 'no-previous-lane'
+    : instancePreviousPairing(inst, previousInstances);
+  const needsUpload =
+    activeIsNew ||
+    !uploadedRevisionMatches(active, inst.revision) ||
+    (pairing === 'none' && active.uploadedMotionRows?.length !== 0);
+  const plan = planInstanceUpload({
+    activeIsNew,
+    resident: active,
+    current: inst,
+    pairing,
+    window: { start: 0, end: inst.instanceCount },
+  });
+  let uploadRanges: readonly { readonly start: number; readonly end: number }[] = [];
+  let uploadedBytes = 0;
+  if (needsUpload && plan.ranges.length > 0) {
+    const upload = uploadInstanceRanges(
+      c,
+      inst,
+      active.buffer.handle,
+      plan.ranges,
+      !uniformFallback,
+      0,
+      previousInstances,
+    );
+    uploadRanges = upload.ranges;
+    uploadedBytes = upload.bytes;
+    if (!upload.ok) {
+      reportInstanceFailure(
+        c,
+        inst,
+        {
+          code: 'queue-write-buffer-failed',
+          expected: 'the renderer-owned instance buffer accepts the dirty ranges',
+          hint: 'retry after the active device is healthy or recover the renderer',
+        },
+        requestedBytes,
+        supportedBytes,
+      );
+      return null;
+    }
+  }
+  let published = active;
+  if (needsUpload) {
+    published = withUploadedRevision(active, inst.revision, plan.motionRows);
+    frameState.instanceBuffers.set(entityCacheKey, published);
+  }
+  reportInstanceResidency(c, inst, {
+    lane: uniformFallback ? 'direct-uniform' : 'direct-storage',
+    requestedBytes,
+    supportedBytes,
+    uploadRanges,
+    uploadedBytes,
+  });
+  clearInstanceChunksForOwner(c, entityCacheKey);
+  return published;
 }
 
 function resolveSurfaceDirectInstanceDraws(

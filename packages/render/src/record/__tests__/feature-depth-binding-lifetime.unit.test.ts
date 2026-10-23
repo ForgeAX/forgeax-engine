@@ -3,7 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../device/device-scope';
-import { resolveTargetBindings } from '../typed-frame-graph';
+import { resolveTargetBindings } from '../typed-frame-graph-bindings';
 
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();

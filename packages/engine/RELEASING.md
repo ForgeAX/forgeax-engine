@@ -16,8 +16,11 @@
 standard npm package. It bundles only what a registry cannot supply again: every
 `@forgeax/engine-*` owner (bytes from its normalized archive), patched packages and
 packages whose resolution depends on a patch (for example peers of patched Cordis),
-and linked non-registry packages. Every other package that a bundled package reaches
-becomes one exact-version root `dependencies` entry under its import spelling, so
+linked non-registry packages, and registry packages with an install lifecycle
+script, which a consumer's package manager would otherwise have to approve (pnpm
+fails with `ERR_PNPM_IGNORED_BUILDS`) while bundled scripts never run. Every other
+package that a bundled package reaches becomes one exact-version root
+`dependencies` entry under its import spelling, so
 npm aliases keep their name. When bundled packages reach different versions under
 one name, the most-referenced version takes the root dependency and the others stay
 bundled at ordinary nested placement. A registry package reached only through

@@ -1,7 +1,9 @@
 import { deriveVertexCount } from '@forgeax/engine-geometry';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
+import type { MeshSsboCapacity } from '../assembly/mesh-ssbo-grow';
 import type { MeshGpuHandles } from '../device/gpu-residency';
+import type { GpuDrivenMaterialBinding } from '../gpu-driven/production-raster';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
 import { disposeTransientInstanceBuffers } from '../instance-buffer-cache';
@@ -10,8 +12,10 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import { renderAsset } from '../publication/resource-scope';
 import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import type { MeshFrame } from '../scene/mesh-frame';
+import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
@@ -385,12 +389,8 @@ export function buildDispatchPlan(
   shadowValidated: readonly ValidatedRenderable[] = [],
   materialBindingClasses?: ReadonlyMap<string, string>,
   shadowGeometryGpuOwned = false,
-  sharedMaterials?: {
-    readonly bindings: readonly import('../gpu-driven/production-raster').GpuDrivenMaterialBinding[];
-    readonly worlds: readonly RenderResourceScope[];
-    readonly frame: import('../scene/material-dispatch').MaterialFrame;
-  },
-  meshDraws?: import('../scene/render-scene').PersistentShadowCasterProjection['meshDraws'],
+  sharedMaterials?: SharedMaterialFrame,
+  meshDraws?: MeshDrawRoster,
 ): {
   validatedOrdered: readonly ValidatedRenderable[];
   shadowValidatedOrdered: readonly ValidatedRenderable[];
@@ -405,16 +405,13 @@ export function buildDispatchPlan(
     sharedMaterials === undefined
       ? undefined
       : prepareMaterialUniformFrame(internals, sharedMaterials.frame);
+  const sharedBindingCount = sharedMaterials?.bindings.length ?? 0;
   // A production GPU-owned frame has no CPU validated rows by design. The
   // dispatch list can still contain one entry per authored entity, but no
   // CPU plan, material table, or fold bucket is consumed in that lane. Return
   // the empty plan without walking that list so a steady 100k scene remains
   // bounded by the persistent GPU batches rather than per-entity record work.
-  if (
-    validated.length === 0 &&
-    shadowValidated.length === 0 &&
-    (sharedMaterials?.bindings.length ?? 0) === 0
-  ) {
+  if (validated.length === 0 && shadowValidated.length === 0 && sharedBindingCount === 0) {
     return {
       validatedOrdered: [],
       shadowValidatedOrdered: [],
@@ -425,84 +422,204 @@ export function buildDispatchPlan(
       materialSlotCount: 0,
     };
   }
-  // M3 / w26: dispatch-ordered render. The dispatch list is pre-sorted
-  // by queue (ascending, stable) by the extract stage per plan-strategy D-3.
-  // Reorder validated renderables to follow the dispatch order, falling
-  // back to extract order for renderables with no matching dispatch entry.
-  // ShadowCaster entries order the shadow plan only: every caster pass sits in
-  // the opaque queue, so letting it place a row would pin blended draws to
-  // spawn order ahead of their sorted view entries.
-  let dispatchOrderMatchesValidated = true;
-  let viewEntries = 0;
-  for (const de of validated.length === 0 ? [] : transparentDispatch) {
-    if (de.tags.LightMode === 'ShadowCaster') continue;
-    if (de.renderableIndex !== validated[viewEntries]?.renderableIndex) {
-      dispatchOrderMatchesValidated = false;
-      break;
-    }
-    viewEntries += 1;
-  }
-  if (viewEntries !== validated.length) dispatchOrderMatchesValidated = false;
-  let validatedOrdered: readonly ValidatedRenderable[] = dispatchOrderMatchesValidated
-    ? validated
-    : [...validated];
-  if (validated.length > 0 && transparentDispatch.length > 0 && !dispatchOrderMatchesValidated) {
-    const validatedByRenderableIdx = new Map<number, ValidatedRenderable>();
-    const seen = new Set<number>();
-    for (const v of validated) {
-      validatedByRenderableIdx.set(v.renderableIndex, v);
-    }
-    const ordered: ValidatedRenderable[] = [];
-    for (const de of transparentDispatch) {
-      if (de.renderableIndex === undefined || de.tags.LightMode === 'ShadowCaster') continue;
-      const v = validatedByRenderableIdx.get(de.renderableIndex);
-      if (v !== undefined && !seen.has(de.renderableIndex)) {
-        seen.add(de.renderableIndex);
-        ordered.push(v);
-      }
-    }
-    // Append renderables not in the dispatch list (e.g. default-material entities)
-    for (const v of validated) {
-      if (!seen.has(v.renderableIndex)) {
-        ordered.push(v);
-      }
-    }
-    validatedOrdered = ordered;
-  }
-
-  const snapshot = (material: MaterialResource): MaterialSnapshot => {
-    if (sharedMaterials === undefined) return material.snapshot;
-    const accepted = sharedMaterials.frame.get(material);
-    if (accepted === undefined)
-      throw new RhiError({
-        code: 'rhi-descriptor-invalid',
-        expected: 'a fixed material version for every prepared binding',
-        hint: 'prepare materials and geometry from the same accepted Scene publication',
-      });
-    return accepted.snapshot;
-  };
-
+  let validatedOrdered = dispatchOrderedRenderables(validated, transparentDispatch);
   // Shadow-only/off-camera CPU residuals consume the same material UBO as
   // visible draws. Their preparation must not depend on main-view visibility.
-  const materialRows = [...validatedOrdered, ...shadowValidated];
-  const materialGroups = materialRows.map((entry): readonly MaterialResource[] => {
-    if (materialUsesSpriteGeometry(snapshot(entry.source.material))) {
-      return [entry.source.material];
-    }
-    return entry.source.materials.length > 0 ? entry.source.materials : [entry.source.material];
+  const materials = buildMaterialTable(
+    [...validatedOrdered, ...shadowValidated],
+    materialBindingClasses,
+    sharedMaterials,
+  );
+
+  // Mesh rows include independent shadow transforms; material rows refer to the
+  // interned table. Neither demand is a capacity estimate for the other stream.
+  const shadowMeshRows = shadowGeometryGpuOwned ? [] : shadowValidated;
+  let shadowValidatedOrdered = shadowMeshRows;
+  const meshRowDemand = meshRowDemandOf(validatedOrdered, shadowMeshRows, meshDraws);
+  const uniformSlotCount = sharedUniformSlots ?? materials.slotCount;
+  const capacity = ensureMeshSsboCapacity(internals, meshRowDemand, uniformSlotCount);
+  if (!capacity.ok) {
+    assertCapacityDegradable(capacity.degradedTo, uniformSlotCount, sharedBindingCount, meshDraws);
+    const retained = truncateToDegradedCapacity(
+      materials,
+      capacity.degradedTo,
+      validatedOrdered.length,
+      shadowValidated.length,
+      shadowGeometryGpuOwned,
+      sharedBindingCount,
+    );
+    validatedOrdered = validatedOrdered.slice(0, retained.primaryCount);
+    shadowValidatedOrdered = shadowMeshRows.slice(0, retained.shadowCount);
+  }
+
+  // feat-20260622-chunk-gpu-instancing-sprite-tilemap M1 / w4-record-swap
+  // (D-1): build the fold dispatch plan once `validatedOrdered` is final
+  // (post truncation by mesh-SSBO capacity gate). Empty plan (no fold-eligible
+  // buckets) is a byte-identical no-op for the dispatch loops below.
+  let foldDispatchPlan = buildUniformCappedFoldPlan(internals, foldBuckets, validatedOrdered);
+
+  const addressed = addressPhysicalRows(
+    validatedOrdered,
+    shadowValidatedOrdered,
+    foldDispatchPlan,
+    meshDraws,
+  );
+  validatedOrdered = addressed.validatedOrdered;
+  shadowValidatedOrdered = addressed.shadowValidatedOrdered;
+  const physicalUniformSlots = sharedUniformSlots ?? materials.slotCount;
+  const physicalCapacity = ensureMeshSsboCapacity(
+    internals,
+    addressed.physicalDemand,
+    physicalUniformSlots,
+  );
+  if (!physicalCapacity.ok) {
+    // An optional fold can fall back without moving the ordinary addresses
+    // needed by independent captures; anything else exceeds the budget.
+    if (
+      foldDispatchPlan === null ||
+      addressed.sourceCapacity > physicalCapacity.degradedTo.meshSlotCount ||
+      physicalUniformSlots > physicalCapacity.degradedTo.materialSlotCount
+    )
+      throw physicalDrawCapacityError();
+    foldDispatchPlan = null;
+    validatedOrdered = addressed.ordinaryOrdered;
+    meshDraws?.beginMeshDrawFrame();
+  }
+  if (foldDispatchPlan !== null) incrementFoldedDrawsMetric(foldDispatchPlan, internals.metrics);
+
+  return {
+    validatedOrdered,
+    shadowValidatedOrdered,
+    foldDispatchPlan,
+    materialSlotIndices: materials.slotIndices,
+    materialSlots: materials.slots,
+    materialBindings: materials.bindings,
+    materialSlotCount: materials.slotCount,
+  };
+}
+
+type SharedMaterialFrame = {
+  readonly bindings: readonly GpuDrivenMaterialBinding[];
+  readonly worlds: readonly RenderResourceScope[];
+  readonly frame: MaterialFrame;
+};
+
+type MeshDrawRoster = PersistentShadowCasterProjection['meshDraws'];
+
+/** The frame-local material UBO table, truncated in step with its rows. */
+interface MaterialTable {
+  slotIndices: readonly (readonly number[])[];
+  slots: MaterialSnapshot[];
+  bindings: MaterialBinding[];
+  slotCount: number;
+}
+
+function physicalDrawCapacityError(): RhiError {
+  return new RhiError({
+    code: 'rhi-not-available',
+    expected: 'capacity for every physical draw address in the submission',
+    hint: 'increase the draw buffer budget before submitting independent pass rosters',
   });
+}
+
+/**
+ * M3 / w26: dispatch-ordered render. The dispatch list is pre-sorted by queue
+ * (ascending, stable) by the extract stage per plan-strategy D-3. Reorder
+ * validated renderables to follow the dispatch order, falling back to extract
+ * order for renderables with no matching dispatch entry. ShadowCaster entries
+ * order the shadow plan only: every caster pass sits in the opaque queue, so
+ * letting it place a row would pin blended draws to spawn order ahead of their
+ * sorted view entries.
+ */
+function dispatchOrderedRenderables(
+  validated: readonly ValidatedRenderable[],
+  transparentDispatch: DispatchList,
+): readonly ValidatedRenderable[] {
+  if (dispatchOrderMatches(validated, transparentDispatch)) return validated;
+  if (transparentDispatch.length === 0) return [...validated];
+  const validatedByRenderableIdx = new Map<number, ValidatedRenderable>();
+  const seen = new Set<number>();
+  for (const v of validated) {
+    validatedByRenderableIdx.set(v.renderableIndex, v);
+  }
+  const ordered: ValidatedRenderable[] = [];
+  for (const de of transparentDispatch) {
+    if (de.renderableIndex === undefined || de.tags.LightMode === 'ShadowCaster') continue;
+    const v = validatedByRenderableIdx.get(de.renderableIndex);
+    if (v !== undefined && !seen.has(de.renderableIndex)) {
+      seen.add(de.renderableIndex);
+      ordered.push(v);
+    }
+  }
+  // Append renderables not in the dispatch list (e.g. default-material entities)
+  for (const v of validated) {
+    if (!seen.has(v.renderableIndex)) {
+      ordered.push(v);
+    }
+  }
+  return ordered;
+}
+
+/** Whether the view entries of the dispatch list already follow `validated`. */
+function dispatchOrderMatches(
+  validated: readonly ValidatedRenderable[],
+  transparentDispatch: DispatchList,
+): boolean {
+  if (validated.length === 0) return true;
+  let viewEntries = 0;
+  for (const de of transparentDispatch) {
+    if (de.tags.LightMode === 'ShadowCaster') continue;
+    if (de.renderableIndex !== validated[viewEntries]?.renderableIndex) return false;
+    viewEntries += 1;
+  }
+  return viewEntries === validated.length;
+}
+
+/** The fixed snapshot a prepared binding renders, from the accepted Scene frame when shared. */
+function acceptedMaterialSnapshot(
+  material: MaterialResource,
+  sharedMaterials: SharedMaterialFrame | undefined,
+): MaterialSnapshot {
+  if (sharedMaterials === undefined) return material.snapshot;
+  const accepted = sharedMaterials.frame.get(material);
+  if (accepted === undefined)
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'a fixed material version for every prepared binding',
+      hint: 'prepare materials and geometry from the same accepted Scene publication',
+    });
+  return accepted.snapshot;
+}
+
+function materialGroupOf(
+  entry: ValidatedRenderable,
+  sharedMaterials: SharedMaterialFrame | undefined,
+): readonly MaterialResource[] {
+  if (
+    materialUsesSpriteGeometry(acceptedMaterialSnapshot(entry.source.material, sharedMaterials))
+  ) {
+    return [entry.source.material];
+  }
+  return entry.source.materials.length > 0 ? entry.source.materials : [entry.source.material];
+}
+
+/** Intern the material rows of every CPU draw, then append shared GPU-driven bindings. */
+function buildMaterialTable(
+  materialRows: readonly ValidatedRenderable[],
+  materialBindingClasses: ReadonlyMap<string, string> | undefined,
+  sharedMaterials: SharedMaterialFrame | undefined,
+): MaterialTable {
+  const materialGroups = materialRows.map((entry) => materialGroupOf(entry, sharedMaterials));
   const materialSlotPlan = buildMaterialSlotPlan(materialGroups, (_material, owner) => {
     const source = materialRows[owner]?.source;
-    const resourceClass =
-      source === undefined
-        ? ''
-        : (materialBindingClasses?.get(`${source.worldId}:${source.entityKey}`) ?? '');
-    return resourceClass;
+    return source === undefined
+      ? ''
+      : (materialBindingClasses?.get(`${source.worldId}:${source.entityKey}`) ?? '');
   });
-  let materialSlotIndices = materialSlotPlan.slotIndices;
-  let materialSlots = materialSlotPlan.slots.map(snapshot);
-  let materialSlotCount = materialSlots.length;
-  let materialBindings: MaterialBinding[] = materialSlotPlan.slots.map((material, slot) => {
+  const slots = materialSlotPlan.slots.map((material) =>
+    acceptedMaterialSnapshot(material, sharedMaterials),
+  );
+  const bindings: MaterialBinding[] = materialSlotPlan.slots.map((material, slot) => {
     const owner = materialRows[materialSlotPlan.slotOwners[slot] ?? -1];
     if (owner === undefined) throw new Error('material binding has no resource scope');
     return {
@@ -512,190 +629,236 @@ export function buildDispatchPlan(
       entityKey: owner.source.entityKey,
     };
   });
+  const table = {
+    slotIndices: materialSlotPlan.slotIndices,
+    slots,
+    bindings,
+    slotCount: slots.length,
+  };
+  if (sharedMaterials !== undefined) appendSharedMaterialBindings(table, sharedMaterials);
+  return table;
+}
 
-  if (sharedMaterials !== undefined) {
-    const slots = new Map<MaterialResource, Map<string, number>>();
-    for (let index = 0; index < materialBindings.length; index++) {
-      const binding = materialBindings[index];
-      if (binding === undefined) continue;
-      let classes = slots.get(binding.material);
-      if (classes === undefined) {
-        classes = new Map();
-        slots.set(binding.material, classes);
-      }
-      classes.set(binding.resourceClass, index);
+/** Slot index of each (material, resource class) pair already in the table. */
+function materialSlotsByClass(
+  bindings: readonly MaterialBinding[],
+): Map<MaterialResource, Map<string, number>> {
+  const slots = new Map<MaterialResource, Map<string, number>>();
+  for (let index = 0; index < bindings.length; index++) {
+    const binding = bindings[index];
+    if (binding === undefined) continue;
+    let classes = slots.get(binding.material);
+    if (classes === undefined) {
+      classes = new Map();
+      slots.set(binding.material, classes);
     }
-    for (const binding of sharedMaterials.bindings) {
-      let classes = slots.get(binding.material);
-      if (classes?.has(binding.resourceClass)) continue;
-      if (classes === undefined) {
-        classes = new Map();
-        slots.set(binding.material, classes);
-      }
-      const world = sharedMaterials.worlds[binding.worldId];
-      if (world === undefined)
-        throw new RhiError({
-          code: 'rhi-descriptor-invalid',
-          expected: 'the asset scope for every shared material',
-          hint: 'keep prepared World indices aligned with the frame resource scopes',
-        });
-      classes.set(binding.resourceClass, materialSlots.length);
-      materialSlots.push(snapshot(binding.material));
-      materialBindings.push({
-        material: binding.material,
-        resourceClass: binding.resourceClass,
-        world,
-      });
-    }
-    materialSlotCount = materialSlots.length;
+    classes.set(binding.resourceClass, index);
   }
+  return slots;
+}
 
-  // Mesh rows include independent shadow transforms; material rows refer to the
-  // interned table. Neither demand is a capacity estimate for the other stream.
-  const shadowMeshRows = shadowGeometryGpuOwned ? [] : shadowValidated;
-  let shadowValidatedOrdered = shadowMeshRows;
-  if (meshDraws !== undefined) {
-    for (const entry of validatedOrdered) meshDraws.meshDrawSlot(entry.source);
-    for (const entry of shadowMeshRows) meshDraws.meshDrawSlot(entry.source);
-  }
-  let meshRowDemand = validatedOrdered.length + shadowMeshRows.length;
-  if (meshDraws !== undefined) {
-    meshRowDemand = 0;
-    for (const entry of validatedOrdered)
-      meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
-    for (const entry of shadowMeshRows)
-      meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
-  }
-  const uniformSlotCount = sharedUniformSlots ?? materialSlotCount;
-  const capacity = ensureMeshSsboCapacity(internals, meshRowDemand, uniformSlotCount);
-  if (!capacity.ok) {
-    if (meshDraws !== undefined)
+function appendSharedMaterialBindings(
+  table: MaterialTable,
+  sharedMaterials: SharedMaterialFrame,
+): void {
+  const slots = materialSlotsByClass(table.bindings);
+  for (const binding of sharedMaterials.bindings) {
+    let classes = slots.get(binding.material);
+    if (classes?.has(binding.resourceClass)) continue;
+    if (classes === undefined) {
+      classes = new Map();
+      slots.set(binding.material, classes);
+    }
+    const world = sharedMaterials.worlds[binding.worldId];
+    if (world === undefined)
       throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'capacity for every physical draw address in the submission',
-        hint: 'increase the draw buffer budget before submitting independent pass rosters',
+        code: 'rhi-descriptor-invalid',
+        expected: 'the asset scope for every shared material',
+        hint: 'keep prepared World indices aligned with the frame resource scopes',
       });
-    if (
-      (sharedMaterials?.bindings.length ?? 0) > 0 &&
-      capacity.degradedTo.materialSlotCount < uniformSlotCount
-    )
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'capacity for the complete GPU material binding table',
-        hint: 'increase the material budget or reduce distinct bindings before submitting the scene',
-      });
-    const materialPrefix = findRenderablePrefixForSlotCapacity(
-      materialSlotIndices,
-      capacity.degradedTo.materialSlotCount,
-    );
-    const primaryCount = validatedOrdered.length;
-    const retainedPrimaryCount = Math.min(
-      primaryCount,
-      materialPrefix,
-      capacity.degradedTo.meshSlotCount,
-    );
-    const retainedShadowCount = Math.min(
-      shadowValidated.length,
-      Math.max(0, materialPrefix - primaryCount),
-      shadowGeometryGpuOwned
-        ? Number.POSITIVE_INFINITY
-        : capacity.degradedTo.meshSlotCount - retainedPrimaryCount,
-    );
-    // Shadow material rows follow the retained primary prefix even when the
-    // primary mesh capacity is exhausted. Preserve their original slot values.
-    materialSlotIndices = [
-      ...materialSlotIndices.slice(0, retainedPrimaryCount),
-      ...materialSlotIndices.slice(primaryCount, primaryCount + retainedShadowCount),
-    ];
-    if ((sharedMaterials?.bindings.length ?? 0) === 0)
-      materialSlotCount = materialSlotCountForPrefix(
-        materialSlotIndices,
-        materialSlotIndices.length,
-      );
-    materialSlots = materialSlots.slice(0, materialSlotCount);
-    materialBindings = materialBindings.slice(0, materialSlotCount);
-    validatedOrdered = validatedOrdered.slice(0, retainedPrimaryCount);
-    shadowValidatedOrdered = shadowMeshRows.slice(0, retainedShadowCount);
+    classes.set(binding.resourceClass, table.slots.length);
+    table.slots.push(acceptedMaterialSnapshot(binding.material, sharedMaterials));
+    table.bindings.push({
+      material: binding.material,
+      resourceClass: binding.resourceClass,
+      world,
+    });
   }
+  table.slotCount = table.slots.length;
+}
 
-  // feat-20260622-chunk-gpu-instancing-sprite-tilemap M1 / w4-record-swap
-  // (D-1): build the fold dispatch plan once `validatedOrdered` is final
-  // (post truncation by mesh-SSBO capacity gate). The plan re-keys each
-  // non-singleton bucket from `renderableIndex` to the validated-ordered
-  // index `i` consumed by the dispatch loops; the loops use it to skip
-  // non-head bucket members and emit one instanced drawIndexed per
-  // bucket head. Empty plan (no fold-eligible buckets) is a byte-
-  // identical no-op for the dispatch loops below (charter P3: silent
-  // pass-through, no error path).
-  let renderableToValidatedIdx: Map<number, number> | null = null;
-  let foldDispatchPlan: FoldDispatchPlan | null = null;
-  if (foldBuckets.length > 0) {
-    renderableToValidatedIdx = new Map<number, number>();
-    for (let i = 0; i < validatedOrdered.length; i++) {
-      const e = validatedOrdered[i];
-      if (e === undefined) continue;
-      renderableToValidatedIdx.set(e.renderableIndex, i);
-    }
-    foldDispatchPlan = buildFoldDispatchPlan(foldBuckets, renderableToValidatedIdx);
+/** Mesh-row demand: row count for a compact roster, highest native address otherwise. */
+function meshRowDemandOf(
+  validatedOrdered: readonly ValidatedRenderable[],
+  shadowMeshRows: readonly ValidatedRenderable[],
+  meshDraws: MeshDrawRoster | undefined,
+): number {
+  if (meshDraws === undefined) return validatedOrdered.length + shadowMeshRows.length;
+  for (const entry of validatedOrdered) meshDraws.meshDrawSlot(entry.source);
+  for (const entry of shadowMeshRows) meshDraws.meshDrawSlot(entry.source);
+  let meshRowDemand = 0;
+  for (const entry of validatedOrdered)
+    meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
+  for (const entry of shadowMeshRows)
+    meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
+  return meshRowDemand;
+}
 
-    // feat-20260622 M2 / w11 (D-2 + D-9 + AC-05): WebGL2 uniform-fallback
-    // per-bucket instance-count cap. When caps.storageBuffer===false AND
-    // a fold bucket carries more than FOLD_UNIFORM_INSTANCE_CAP (128)
-    // instances, fire RhiError({code:'instancing-exceeds-uniform-cap'})
-    // AND remove the bucket from the dispatch plan so its members fall
-    // through to the per-entity drawIndexed exit (the same exit the
-    // mode-gate bypass uses — D-9 "shared fallback exit"). The frame
-    // stays visually correct (charter proposition 9 graceful
-    // degradation: no identity-collapse / black screen) while the cap
-    // event surfaces structurally for AI users (proposition 4 explicit
-    // failure on .code).
-    //
-    // Scope discrimination: tilemap-chunk-extract-system encodes
-    // Layer.value = (layerOrder<<20) | (chunkIndex & 0xfffff), so a
-    // bucket whose head entry carries non-zero low-20-bits is
-    // definitively a tilemap-chunk dispatch site. Plain sprite buckets
-    // use SPRITE_LAYER_VALUE = layerOrder<<20 (low-20 zero) by the
-    // documented convention (apps/hello/asi-world main.ts pattern).
-    // The chunkIndex===0 edge case maps to 'sprite' (the helper's
-    // default branch) — a one-bucket ambiguity per layerOrder that is
-    // acceptable for the AI-user affordance level (the error semantics
-    // — "this bucket exceeded the cap" — is the actionable signal;
-    // scope=sprite vs tilemap-chunk only refines the recovery hint).
-    if (foldDispatchPlan.headBuckets.size > 0 && !internals.device.caps.storageBuffer) {
-      const filteredHeads = new Map<number, FoldBucket>(foldDispatchPlan.headBuckets);
-      const filteredSkips = new Set<number>(foldDispatchPlan.skipIndices);
-      let filteredCount = foldDispatchPlan.foldedBucketCount;
-      for (const [headIdx, bucket] of foldDispatchPlan.headBuckets) {
-        const scope: 'sprite' | 'tilemap-chunk' =
-          (bucket.layer & 0xfffff) !== 0 ? 'tilemap-chunk' : 'sprite';
-        const decision = evaluateFoldBucketUniformCap(bucket, internals.device.caps, scope);
-        if (decision.fallback && decision.error !== undefined) {
-          internals.errorRegistry.fire(decision.error);
-          filteredHeads.delete(headIdx);
-          filteredCount -= 1;
-          for (let j = 1; j < bucket.entries.length; j++) {
-            const memberEntry = bucket.entries.at(j);
-            if (memberEntry === undefined) continue;
-            const memberValidatedIdx = renderableToValidatedIdx.get(memberEntry.renderableIndex);
-            if (memberValidatedIdx !== undefined) {
-              filteredSkips.delete(memberValidatedIdx);
-            }
-          }
-        }
-      }
-      if (filteredCount !== foldDispatchPlan.foldedBucketCount) {
-        foldDispatchPlan = {
-          headBuckets: filteredHeads,
-          skipIndices: filteredSkips,
-          foldedBucketCount: filteredCount,
-        };
-      }
+/** Native addresses and complete GPU material tables cannot be truncated. */
+function assertCapacityDegradable(
+  degradedTo: Readonly<MeshSsboCapacity>,
+  uniformSlotCount: number,
+  sharedBindingCount: number,
+  meshDraws: MeshDrawRoster | undefined,
+): void {
+  if (meshDraws !== undefined) throw physicalDrawCapacityError();
+  if (sharedBindingCount > 0 && degradedTo.materialSlotCount < uniformSlotCount)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'capacity for the complete GPU material binding table',
+      hint: 'increase the material budget or reduce distinct bindings before submitting the scene',
+    });
+}
+
+/**
+ * feat-20260608 mesh-SSBO capacity gate: truncate complete primary and shadow
+ * rows against both degraded capacities, shrinking the material table in step.
+ */
+function truncateToDegradedCapacity(
+  materials: MaterialTable,
+  degradedTo: Readonly<MeshSsboCapacity>,
+  primaryCount: number,
+  shadowCount: number,
+  shadowGeometryGpuOwned: boolean,
+  sharedBindingCount: number,
+): { readonly primaryCount: number; readonly shadowCount: number } {
+  const materialPrefix = findRenderablePrefixForSlotCapacity(
+    materials.slotIndices,
+    degradedTo.materialSlotCount,
+  );
+  const retainedPrimaryCount = Math.min(primaryCount, materialPrefix, degradedTo.meshSlotCount);
+  const retainedShadowCount = Math.min(
+    shadowCount,
+    Math.max(0, materialPrefix - primaryCount),
+    shadowGeometryGpuOwned
+      ? Number.POSITIVE_INFINITY
+      : degradedTo.meshSlotCount - retainedPrimaryCount,
+  );
+  // Shadow material rows follow the retained primary prefix even when the
+  // primary mesh capacity is exhausted. Preserve their original slot values.
+  materials.slotIndices = [
+    ...materials.slotIndices.slice(0, retainedPrimaryCount),
+    ...materials.slotIndices.slice(primaryCount, primaryCount + retainedShadowCount),
+  ];
+  if (sharedBindingCount === 0)
+    materials.slotCount = materialSlotCountForPrefix(
+      materials.slotIndices,
+      materials.slotIndices.length,
+    );
+  materials.slots = materials.slots.slice(0, materials.slotCount);
+  materials.bindings = materials.bindings.slice(0, materials.slotCount);
+  return { primaryCount: retainedPrimaryCount, shadowCount: retainedShadowCount };
+}
+
+/**
+ * Re-key each non-singleton fold bucket from `renderableIndex` to the
+ * validated-ordered index consumed by the dispatch loops, which skip non-head
+ * members and emit one instanced drawIndexed per bucket head.
+ */
+function buildUniformCappedFoldPlan(
+  internals: RenderSystemInternals,
+  foldBuckets: readonly FoldBucket[],
+  validatedOrdered: readonly ValidatedRenderable[],
+): FoldDispatchPlan | null {
+  if (foldBuckets.length === 0) return null;
+  const renderableToValidatedIdx = new Map<number, number>();
+  for (let i = 0; i < validatedOrdered.length; i++) {
+    const e = validatedOrdered[i];
+    if (e === undefined) continue;
+    renderableToValidatedIdx.set(e.renderableIndex, i);
+  }
+  const plan = buildFoldDispatchPlan(foldBuckets, renderableToValidatedIdx);
+  if (plan.headBuckets.size === 0 || internals.device.caps.storageBuffer) return plan;
+  return withoutUniformCappedBuckets(internals, plan, renderableToValidatedIdx);
+}
+
+/**
+ * feat-20260622 M2 / w11 (D-2 + D-9 + AC-05): WebGL2 uniform-fallback
+ * per-bucket instance-count cap. When caps.storageBuffer===false AND a fold
+ * bucket carries more than FOLD_UNIFORM_INSTANCE_CAP (128) instances, fire
+ * RhiError({code:'instancing-exceeds-uniform-cap'}) AND remove the bucket from
+ * the dispatch plan so its members fall through to the per-entity drawIndexed
+ * exit (the same exit the mode-gate bypass uses — D-9 "shared fallback exit").
+ * The frame stays visually correct while the cap event surfaces structurally.
+ *
+ * Scope discrimination: tilemap-chunk-extract-system encodes Layer.value =
+ * (layerOrder<<20) | (chunkIndex & 0xfffff), so a bucket whose head entry
+ * carries non-zero low-20-bits is definitively a tilemap-chunk dispatch site.
+ * Plain sprite buckets use SPRITE_LAYER_VALUE = layerOrder<<20 (low-20 zero).
+ * The chunkIndex===0 edge case maps to 'sprite'; scope only refines the
+ * recovery hint.
+ */
+function withoutUniformCappedBuckets(
+  internals: RenderSystemInternals,
+  plan: FoldDispatchPlan,
+  renderableToValidatedIdx: ReadonlyMap<number, number>,
+): FoldDispatchPlan {
+  const filteredHeads = new Map<number, FoldBucket>(plan.headBuckets);
+  const filteredSkips = new Set<number>(plan.skipIndices);
+  let filteredCount = plan.foldedBucketCount;
+  for (const [headIdx, bucket] of plan.headBuckets) {
+    const scope: 'sprite' | 'tilemap-chunk' =
+      (bucket.layer & 0xfffff) !== 0 ? 'tilemap-chunk' : 'sprite';
+    const decision = evaluateFoldBucketUniformCap(bucket, internals.device.caps, scope);
+    if (!decision.fallback || decision.error === undefined) continue;
+    internals.errorRegistry.fire(decision.error);
+    filteredHeads.delete(headIdx);
+    filteredCount -= 1;
+    unskipBucketMembers(bucket, renderableToValidatedIdx, filteredSkips);
+  }
+  if (filteredCount === plan.foldedBucketCount) return plan;
+  return {
+    headBuckets: filteredHeads,
+    skipIndices: filteredSkips,
+    foldedBucketCount: filteredCount,
+  };
+}
+
+/** Return a dropped bucket's non-head members to per-entity draws. */
+function unskipBucketMembers(
+  bucket: FoldBucket,
+  renderableToValidatedIdx: ReadonlyMap<number, number>,
+  skipIndices: Set<number>,
+): void {
+  for (let j = 1; j < bucket.entries.length; j++) {
+    const memberEntry = bucket.entries.at(j);
+    if (memberEntry === undefined) continue;
+    const memberValidatedIdx = renderableToValidatedIdx.get(memberEntry.renderableIndex);
+    if (memberValidatedIdx !== undefined) {
+      skipIndices.delete(memberValidatedIdx);
     }
   }
+}
 
-  // A compact pass roster never owns physical transform addresses. Native
-  // scenes retain their allocations until source retirement; explicit borrowed
-  // frames reserve one submission's source, shadow and folded ranges here.
+/**
+ * A compact pass roster never owns physical transform addresses. Native scenes
+ * retain their allocations until source retirement; explicit borrowed frames
+ * reserve one submission's source, shadow and folded ranges here. All ordinary
+ * rows are allocated first so an optional fold can fall back without moving
+ * the ordinary addresses needed by independent captures.
+ */
+function addressPhysicalRows(
+  validatedOrdered: readonly ValidatedRenderable[],
+  shadowValidatedOrdered: readonly ValidatedRenderable[],
+  foldDispatchPlan: FoldDispatchPlan | null,
+  meshDraws: MeshDrawRoster | undefined,
+): {
+  readonly validatedOrdered: readonly ValidatedRenderable[];
+  readonly shadowValidatedOrdered: readonly ValidatedRenderable[];
+  readonly ordinaryOrdered: readonly ValidatedRenderable[];
+  readonly sourceCapacity: number;
+  readonly physicalDemand: number;
+} {
   let transientSlot = 0;
   let sourceCapacity = 0;
   const sourceAddress = (entry: ValidatedRenderable): ValidatedRenderable => {
@@ -705,52 +868,24 @@ export function buildDispatchPlan(
     const { foldedMeshSlot: _previousFold, ...source } = entry;
     return { ...source, meshSlot };
   };
-  // Allocate all ordinary rows first. An optional fold can then fall back
-  // without moving the ordinary addresses needed by independent captures.
-  validatedOrdered = validatedOrdered.map(sourceAddress);
-  shadowValidatedOrdered = shadowValidatedOrdered.map(sourceAddress);
-  const ordinaryOrdered = validatedOrdered;
+  const ordinaryOrdered = validatedOrdered.map(sourceAddress);
+  const shadowOrdered = shadowValidatedOrdered.map(sourceAddress);
   let physicalDemand = sourceCapacity;
+  let foldedOrdered = ordinaryOrdered;
   if ((foldDispatchPlan?.headBuckets.size ?? 0) > 0) {
-    validatedOrdered = validatedOrdered.map((entry, index) => {
+    foldedOrdered = ordinaryOrdered.map((entry, index) => {
       if (!foldDispatchPlan?.headBuckets.has(index)) return entry;
       const foldedMeshSlot = meshDraws?.meshDrawSlot(entry.source, true) ?? transientSlot++;
       physicalDemand = Math.max(physicalDemand, foldedMeshSlot + 1);
       return { ...entry, foldedMeshSlot };
     });
   }
-  const physicalCapacity = ensureMeshSsboCapacity(
-    internals,
-    physicalDemand,
-    sharedUniformSlots ?? materialSlotCount,
-  );
-  if (!physicalCapacity.ok) {
-    if (
-      foldDispatchPlan !== null &&
-      sourceCapacity <= physicalCapacity.degradedTo.meshSlotCount &&
-      (sharedUniformSlots ?? materialSlotCount) <= physicalCapacity.degradedTo.materialSlotCount
-    ) {
-      foldDispatchPlan = null;
-      validatedOrdered = ordinaryOrdered;
-      meshDraws?.beginMeshDrawFrame();
-    } else {
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'capacity for every physical draw address in the submission',
-        hint: 'increase the draw buffer budget before submitting independent pass rosters',
-      });
-    }
-  }
-  if (foldDispatchPlan !== null) incrementFoldedDrawsMetric(foldDispatchPlan, internals.metrics);
-
   return {
-    validatedOrdered,
-    shadowValidatedOrdered,
-    foldDispatchPlan,
-    materialSlotIndices,
-    materialSlots,
-    materialBindings,
-    materialSlotCount,
+    validatedOrdered: foldedOrdered,
+    shadowValidatedOrdered: shadowOrdered,
+    ordinaryOrdered,
+    sourceCapacity,
+    physicalDemand,
   };
 }
 

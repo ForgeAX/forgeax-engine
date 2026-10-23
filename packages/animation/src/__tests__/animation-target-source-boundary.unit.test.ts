@@ -42,7 +42,7 @@ describe('animation target source boundary', () => {
     );
 
     expect(evaluator).not.toMatch(/\bSkin\.joints\b|world\.get\([^)]*,\s*Skin\b/);
-    expect(membership).toContain('const skinJoints = skin?.joints;');
+    expect(membership).toContain('const skinJoints = skin.joints;');
     expect(jointWiring).toContain('Skin');
     expect(jointWiring).toContain('joints');
   });

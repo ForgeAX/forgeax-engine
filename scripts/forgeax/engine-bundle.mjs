@@ -75,11 +75,17 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     const key = (node) => `${node.manifest.name}@${node.manifest.version}`;
     const ordered = [...graph.values()].sort((a, b) => key(a).localeCompare(key(b)));
     // Only unpatched registry installs can be fetched again by a consumer.
-    // Internal, patched and linked packages have no registry identity.
+    // Internal, patched and linked packages have no registry identity. A
+    // package with an install lifecycle script also stays bundled: a consumer's
+    // package manager would otherwise demand approval for it (pnpm fails with
+    // ERR_PNPM_IGNORED_BUILDS), while bundled scripts never run.
+    const installScript = ({ scripts = {} }) =>
+      ['preinstall', 'install', 'postinstall'].some((name) => scripts[name] !== undefined);
     const fetchable = (node) =>
       !internal.has(node.manifest.name) &&
       node.source.includes('/node_modules/.pnpm/') &&
-      !node.source.includes('patch_hash=');
+      !node.source.includes('patch_hash=') &&
+      !installScript(node.manifest);
     const bundled = new Set(ordered.filter((node) => !fetchable(node)));
     // A registry package becomes one root dependency under its import name.
     // Other physical versions under the same name cannot share that root slot,

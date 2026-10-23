@@ -32,6 +32,10 @@ import { updateShadowView } from './helpers/gpu-input-read-domain';
 const shadowViewsPath = new URL('../gpu-driven/shadow-views.ts', import.meta.url);
 const shadowViewsSource = existsSync(shadowViewsPath) ? readFileSync(shadowViewsPath, 'utf8') : '';
 const recordFrameSource = readFileSync(new URL('../record/frame.ts', import.meta.url), 'utf8');
+const frameGpuDrivenSource = readFileSync(
+  new URL('../record/frame-gpu-driven.ts', import.meta.url),
+  'utf8',
+);
 const viewSource = readFileSync(new URL('../gpu-driven/view-gpu.ts', import.meta.url), 'utf8');
 
 const shadowKinds = [
@@ -850,8 +854,9 @@ describe('GPU-driven shadow view owner contract', () => {
 
   it('fences shadow view cache identity at accepted graph generations', () => {
     expect(recordFrameSource).not.toMatch(/cacheToken|shadowViewToken/);
-    expect(recordFrameSource).toMatch(/targetSize:\s*graphShadowMapSize/);
-    expect(recordFrameSource).toMatch(/graphGeneration:\s*frameState\.graphGeneration/);
+    expect(frameGpuDrivenSource).not.toMatch(/cacheToken|shadowViewToken/);
+    expect(recordFrameSource).toMatch(/graphShadowMapSize,\s*frameState\.graphGeneration,/);
+    expect(frameGpuDrivenSource).toMatch(/targetSize,\s*graphGeneration,/);
     expect(shadowViewsSource).not.toMatch(/cacheToken/);
   });
 

@@ -396,9 +396,14 @@ test('npm and pnpm install the exact platform dependency outside the atomic Engi
 async function registryFixture(root, packages) {
   const archives = new Map();
   for (const [name, versions] of packages) {
-    for (const [version, { source, dependencies = {} }] of versions) {
+    for (const [version, { source, dependencies = {}, scripts }] of versions) {
       const stage = resolve(root, 'registry-stage', `${name.replace('/', '+')}@${version}`);
       await fixture(resolve(stage, 'package'), name, version, source, dependencies);
+      if (scripts !== undefined) {
+        const manifestPath = resolve(stage, 'package/package.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        await writeFile(manifestPath, JSON.stringify({ ...manifest, scripts }));
+      }
       const archive = resolve(root, 'registry', `${name.replace('/', '+')}-${version}.tgz`);
       await mkdir(resolve(root, 'registry'), { recursive: true });
       await writePackageArchive(stage, archive);
@@ -406,6 +411,7 @@ async function registryFixture(root, packages) {
         name,
         version,
         dependencies,
+        ...(scripts === undefined ? {} : { scripts }),
         bytes: await readFile(archive),
       });
     }
@@ -435,6 +441,7 @@ async function registryFixture(root, packages) {
               type: 'module',
               exports: './index.mjs',
               dependencies: item.dependencies,
+              ...(item.scripts === undefined ? {} : { scripts: item.scripts }),
               dist: {
                 tarball: `http://127.0.0.1:${port}/tarballs/${name}@${item.version}.tgz`,
                 integrity: `sha512-${createHash('sha512').update(item.bytes).digest('base64')}`,
@@ -604,6 +611,95 @@ test('registry packages stay exact dependencies while Engine owners, patches and
         '[[10,1,100],2]',
       );
     }
+  } finally {
+    if (server) await new Promise((done) => server.close(done));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('registry packages with install scripts stay bundled so strict pnpm installs need no approval', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'engine-bundle-install-script-'));
+  let server;
+  try {
+    const scripts = { postinstall: 'node -e "console.log(\'funding notice\')"' };
+    const scripted = resolve(
+      root,
+      'workspace/node_modules/.pnpm/scripted@1.0.0/node_modules/scripted',
+    );
+    await fixture(scripted, 'scripted', '1.0.0', 'export default 7;');
+    const scriptedManifest = JSON.parse(await readFile(resolve(scripted, 'package.json')));
+    await writeFile(
+      resolve(scripted, 'package.json'),
+      JSON.stringify({ ...scriptedManifest, scripts }),
+    );
+    const member = resolve(root, 'member/package');
+    await fixture(
+      member,
+      '@forgeax/engine-leaf',
+      '1.2.3',
+      "import scripted from 'scripted'; export const answer = scripted;",
+      { scripted: '1.0.0' },
+    );
+    await mkdir(resolve(member, 'node_modules'));
+    await symlink(scripted, resolve(member, 'node_modules/scripted'));
+    const memberArchive = resolve(root, 'member.tgz');
+    await execute('tar', [
+      '--exclude=node_modules',
+      '-czf',
+      memberArchive,
+      '-C',
+      resolve(root, 'member'),
+      'package',
+    ]);
+    await fixture(
+      resolve(root, 'stage/package'),
+      '@forgeax/engine',
+      '1.2.3',
+      "export {answer} from '@forgeax/engine-leaf';",
+      { '@forgeax/engine-leaf': '1.2.3' },
+    );
+    const archive = resolve(root, 'engine.tgz');
+    await writePackageArchive(resolve(root, 'stage'), archive);
+    const receipt = await bundleEngineArchive({
+      engineArchive: archive,
+      members: [{ name: '@forgeax/engine-leaf', root: member, archive: memberArchive }],
+      version: '1.2.3',
+    });
+    assert.equal(receipt.registryDependencies, 0);
+    const manifest = JSON.parse(
+      (await execute('tar', ['-xOf', archive, 'package/package.json'])).stdout,
+    );
+    assert.ok(manifest.bundledDependencies.includes('scripted'));
+    // The same package on a registry reproduces the consumer path that failed:
+    // pnpm 12 rejects an unapproved dependency build script.
+    ({ server } = await registryFixture(root, [
+      ['scripted', [['1.0.0', { source: 'export default 7;', scripts }]]],
+    ]));
+    const registry = `http://127.0.0.1:${server.address().port}`;
+    const consumer = resolve(root, 'consumer');
+    await mkdir(consumer);
+    await writeFile(resolve(consumer, 'package.json'), '{"private":true,"type":"module"}');
+    const packageManager = JSON.parse(
+      await readFile(new URL('../../../package.json', import.meta.url)),
+    ).packageManager;
+    await execute('corepack', [packageManager, 'add', archive, '--registry', registry], {
+      cwd: consumer,
+      env: { ...process.env, npm_config_registry: registry },
+    });
+    assert.equal(
+      (
+        await execute(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            "import {answer} from '@forgeax/engine'; console.log(answer)",
+          ],
+          { cwd: consumer },
+        )
+      ).stdout.trim(),
+      '7',
+    );
   } finally {
     if (server) await new Promise((done) => server.close(done));
     await rm(root, { recursive: true, force: true });

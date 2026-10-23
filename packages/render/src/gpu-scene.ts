@@ -37,7 +37,7 @@ import type { MaterialResource } from './material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from './material-row';
 import { isCanonicalStandardPbrMaterialShader } from './pbr-pipeline';
 import type { MaterialSnapshot } from './render-system-extract';
-import { MaterialFrame } from './scene/material-dispatch';
+import { type AcceptedMaterial, MaterialFrame } from './scene/material-dispatch';
 import { MeshFrame, type MeshGeometry } from './scene/mesh-frame';
 import type { RenderSceneApplyResult, RenderSceneSlot } from './scene/render-scene-types';
 import { StableRangeAllocator } from './stable-range-allocator';
@@ -733,54 +733,8 @@ export class GpuScene {
   ): Result<GpuSceneSyncResult, RhiError> {
     if (this.failure !== undefined) return err(this.failure);
     try {
-      if (delta.materials !== undefined && delta.materials !== this.materialFrame) {
-        const previous = this.materialFrame ?? new MaterialFrame(undefined);
-        this.materialFrame = delta.materials;
-        delta.materials.changesSince(previous, (before, after) => {
-          if (after === undefined) {
-            const allocation =
-              before === undefined ? undefined : this.sharedMaterials.get(before.resource);
-            if (allocation !== undefined) this.releaseMaterial(allocation, this.writesByTable);
-            return;
-          }
-          if (before?.snapshot === after.snapshot) return;
-          const allocation =
-            before === undefined
-              ? this.acquireMaterial(
-                  after.resource,
-                  this.materialUnits(after.snapshot),
-                  this.writesByTable,
-                )
-              : this.sharedMaterials.get(after.resource);
-          if (allocation === undefined) throw new Error('Accepted GPU material root is missing');
-          this.adoptMaterial(allocation, this.writesByTable);
-          if (!allocation.version.initialized || before?.snapshot !== after.snapshot)
-            this.pendingMaterialRoots.add(allocation);
-        });
-      }
-      if (delta.meshes !== undefined && delta.meshes !== this.meshes) {
-        delta.meshes.changesSince(this.meshes, (_before, geometry) => {
-          if (geometry === undefined) return;
-          const range = this.sharedMeshes.get(`${geometry.worldId}:${geometry.handle}`);
-          if (range !== undefined) {
-            const previous = range.version;
-            const words = meshInputWords(geometry);
-            if (previous.references === 1 && previous.words === words) previous.geometry = geometry;
-            else {
-              range.version = {
-                descriptor: this.inputs.arena.allocateDescriptor(words),
-                words,
-                geometry,
-                references: 1,
-              };
-              this.releaseMeshVersion(previous);
-            }
-            this.inputs.updateResource(range.logicalSlot, range.version.descriptor);
-            this.pendingMeshes.add(range.version);
-          }
-        });
-        this.meshes = delta.meshes;
-      }
+      this.adoptMaterialFrame(delta);
+      this.adoptMeshFrame(delta);
       if (delta.resynced > 0) {
         this.pendingTemporalTransforms.clear();
         this.pendingTemporalUploads.clear();
@@ -789,23 +743,7 @@ export class GpuScene {
       for (const transformIndex of this.pendingTemporalUploads) {
         this.writesByTable.transform.push(transformIndex);
       }
-      const pendingWrites = TABLE_NAMES.some((name) => this.writesByTable[name].length > 0);
-      const contentUpdatedSlots = delta.contentUpdatedSlots;
-      const instanceUpdatedSlots = delta.instanceUpdatedSlots;
-      if (
-        delta.createdSlots.length === 0 &&
-        delta.updatedSlots.length === 0 &&
-        delta.recreatedSlots.length === 0 &&
-        delta.removedSlots.length === 0 &&
-        delta.resynced === 0 &&
-        contentUpdatedSlots.length === 0 &&
-        (delta.materialUpdates?.length ?? 0) === 0 &&
-        instanceUpdatedSlots.length === 0 &&
-        !pendingWrites &&
-        this.pendingMeshes.size === 0 &&
-        this.pendingMaterialRoots.size === 0 &&
-        this.identityUploaded
-      ) {
+      if (this.isUnchangedDelta(delta)) {
         this.noChangeFrames += 1;
         return ok({ ranges: 0, bytes: 0, grew: false, cleared: 0 });
       }
@@ -813,35 +751,7 @@ export class GpuScene {
       if (!this.identityUploaded && !writesByTable.transform.includes(0)) {
         writesByTable.transform.push(0);
       }
-      const contentUpdatedSlotIds = new Set(contentUpdatedSlots.map((record) => record.slot));
-      const instanceUpdatedSlotIds = new Set(instanceUpdatedSlots.map((record) => record.slot));
-      const allocationResets = new Set<number>();
-      if (delta.resynced > 0) {
-        for (const slot of [...this.allocations.keys()]) this.clearSlot(slot, writesByTable);
-      }
-      // RenderScene may recycle a released CPU slot for a different identity in
-      // the same delta. Clear the old GPU allocation before ensuring the new
-      // record; otherwise the later removal pass clears the newly allocated
-      // record and the next transform-only update sees no allocation.
-      for (const record of delta.removedSlots) {
-        this.clearSlot(record.slot, writesByTable);
-      }
-      for (const records of [
-        delta.createdSlots,
-        contentUpdatedSlots,
-        instanceUpdatedSlots,
-        delta.recreatedSlots,
-      ]) {
-        for (const record of records) {
-          const previous = this.allocations.get(record.slot);
-          this.ensureAllocation(record, writesByTable);
-          if (previous !== this.allocations.get(record.slot)) allocationResets.add(record.slot);
-        }
-      }
-      for (const resource of delta.materialUpdates ?? []) {
-        const range = this.sharedMaterials.get(resource);
-        if (range !== undefined) this.adoptMaterial(range, writesByTable);
-      }
+      const allocationResets = this.allocateDeltaSlots(delta, writesByTable);
       const requiredCapacity = Math.max(
         this.records.requiredCapacity(),
         this.instances.requiredCapacity(),
@@ -854,95 +764,18 @@ export class GpuScene {
         const grown = this.grow(requiredCapacity, requiredMaterialCapacity);
         if (!grown.ok) return grown;
       }
-
-      for (const range of this.pendingMeshes) {
-        const envelopes = range.geometry.skinEnvelopes;
-        if ((envelopes?.length ?? 0) !== range.words - GPU_MESH_DESCRIPTOR.words)
-          throw new RhiError({
-            code: 'rhi-descriptor-invalid',
-            expected: 'the complete admitted Skin Mesh envelope within its allocated extent',
-            hint: 'retain immutable Mesh facts until every recorded frame has retired',
-          });
-        const bounds = range.geometry.bounds;
-        this.rowScratchView.setUint32(
-          GPU_MESH_DESCRIPTOR.flags * 4,
-          bounds === undefined ? 0 : PRIMITIVE_HAS_BOUNDS,
-          true,
-        );
-        for (let axis = 0; axis < 3; axis++) {
-          this.rowScratchView.setFloat32(
-            (GPU_MESH_DESCRIPTOR.min + axis) * 4,
-            bounds?.[axis] ?? 0,
-            true,
-          );
-          this.rowScratchView.setFloat32(
-            (GPU_MESH_DESCRIPTOR.max + axis) * 4,
-            bounds?.[axis + 3] ?? 0,
-            true,
-          );
-        }
-        const envelopeAddress =
-          envelopes === undefined ? 0 : range.descriptor + GPU_MESH_DESCRIPTOR.words;
-        this.rowScratchView.setUint32(GPU_MESH_DESCRIPTOR.skinEnvelopes * 4, envelopeAddress, true);
-        for (let word = 0; word < GPU_MESH_DESCRIPTOR.words; word++)
-          this.inputs.arena.writeDescriptorWord(
-            range.descriptor,
-            range.words,
-            word,
-            this.rowScratchView.getUint32(word * 4, true),
-          );
-        if (envelopes !== undefined)
-          this.inputs.arena.writeDescriptor(
-            range.descriptor,
-            new DataView(envelopes.buffer, envelopes.byteOffset, envelopes.byteLength),
-            range.words,
-            GPU_MESH_DESCRIPTOR.words,
-          );
-      }
-
-      // A shared material has one packed value per publication, independent of
-      // how many primitives reference it. Do not retain mutable caller snapshots.
-      const materialRows = new Map<MaterialSnapshot, Uint8Array>();
-      for (const allocation of this.pendingMaterialRoots)
-        this.writeMaterial(allocation.version, writesByTable, materialRows, false);
-      for (const resource of delta.materialUpdates ?? []) {
-        const range = this.sharedMaterials.get(resource);
-        if (range !== undefined)
-          this.writeMaterial(range.version, writesByTable, materialRows, false);
-      }
-      const publications = [...delta.createdSlots, ...delta.updatedSlots, ...delta.recreatedSlots];
-      const newSlots = new Set(
-        [...delta.createdSlots, ...delta.recreatedSlots].map((record) => record.slot),
+      for (const range of this.pendingMeshes) this.writeMeshDescriptor(range);
+      const materialRows = this.writePendingMaterials(delta, writesByTable);
+      this.writeSlotPublications(
+        delta,
+        allocationResets,
+        writesByTable,
+        materialRows,
+        temporalResolver,
       );
-      for (const record of publications) {
-        const reset = newSlots.has(record.slot) || allocationResets.has(record.slot);
-        if (reset || contentUpdatedSlotIds.has(record.slot)) {
-          this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
-          continue;
-        }
-        const temporal = temporalResolver?.(record);
-        if (instanceUpdatedSlotIds.has(record.slot))
-          this.writeInstanceTransforms(record, writesByTable, temporal);
-        this.writeRootTransform(record, false, writesByTable);
-        this.writeTemporalFlags(
-          record.slot,
-          primitiveTemporalFlags(false, temporal),
-          writesByTable,
-        );
-      }
       const uploaded = this.uploadRows(writesByTable);
       if (!uploaded.ok) return uploaded;
-      this.pendingTemporalUploads.clear();
-      for (const version of this.pendingMaterials) version.initialized = true;
-      this.pendingMaterials.clear();
-      this.pendingMaterialRoots.clear();
-      this.pendingMeshes.clear();
-      for (const name of TABLE_NAMES) writesByTable[name].length = 0;
-      this.identityUploaded = true;
-      this.clearedSlots += delta.removedSlots.length;
-      if (delta.resynced > 0) this.fullRebuilds += 1;
-      this.sceneContentRevision += 1;
-      this.changeLog.record(this.sceneContentRevision, delta, boundsOf, rowBoxesOf);
+      this.completeSync(delta, boundsOf, rowBoxesOf);
       return ok({
         ranges: uploaded.value.ranges,
         bytes: uploaded.value.bytes,
@@ -967,6 +800,235 @@ export class GpuScene {
             );
       return err(this.failure);
     }
+  }
+
+  /** Adopt the accepted shared-material frame: release, acquire or re-pack changed roots. */
+  private adoptMaterialFrame(delta: RenderSceneApplyResult): void {
+    if (delta.materials === undefined || delta.materials === this.materialFrame) return;
+    const previous = this.materialFrame ?? new MaterialFrame(undefined);
+    this.materialFrame = delta.materials;
+    delta.materials.changesSince(previous, (before, after) =>
+      this.adoptMaterialChange(before, after),
+    );
+  }
+
+  private adoptMaterialChange(
+    before: AcceptedMaterial | undefined,
+    after: AcceptedMaterial | undefined,
+  ): void {
+    if (after === undefined) {
+      const allocation =
+        before === undefined ? undefined : this.sharedMaterials.get(before.resource);
+      if (allocation !== undefined) this.releaseMaterial(allocation, this.writesByTable);
+      return;
+    }
+    if (before?.snapshot === after.snapshot) return;
+    const allocation =
+      before === undefined
+        ? this.acquireMaterial(
+            after.resource,
+            this.materialUnits(after.snapshot),
+            this.writesByTable,
+          )
+        : this.sharedMaterials.get(after.resource);
+    if (allocation === undefined) throw new Error('Accepted GPU material root is missing');
+    this.adoptMaterial(allocation, this.writesByTable);
+    if (!allocation.version.initialized || before?.snapshot !== after.snapshot)
+      this.pendingMaterialRoots.add(allocation);
+  }
+
+  /** Adopt the accepted mesh frame: changed geometry reuses or replaces its descriptor. */
+  private adoptMeshFrame(delta: RenderSceneApplyResult): void {
+    if (delta.meshes === undefined || delta.meshes === this.meshes) return;
+    delta.meshes.changesSince(this.meshes, (_before, geometry) => {
+      if (geometry !== undefined) this.adoptMeshGeometry(geometry);
+    });
+    this.meshes = delta.meshes;
+  }
+
+  private adoptMeshGeometry(geometry: MeshGeometry): void {
+    const range = this.sharedMeshes.get(`${geometry.worldId}:${geometry.handle}`);
+    if (range === undefined) return;
+    const previous = range.version;
+    const words = meshInputWords(geometry);
+    if (previous.references === 1 && previous.words === words) previous.geometry = geometry;
+    else {
+      range.version = {
+        descriptor: this.inputs.arena.allocateDescriptor(words),
+        words,
+        geometry,
+        references: 1,
+      };
+      this.releaseMeshVersion(previous);
+    }
+    this.inputs.updateResource(range.logicalSlot, range.version.descriptor);
+    this.pendingMeshes.add(range.version);
+  }
+
+  /** True when neither the delta nor retained pending work needs a publication. */
+  private isUnchangedDelta(delta: RenderSceneApplyResult): boolean {
+    return (
+      delta.createdSlots.length === 0 &&
+      delta.updatedSlots.length === 0 &&
+      delta.recreatedSlots.length === 0 &&
+      delta.removedSlots.length === 0 &&
+      delta.resynced === 0 &&
+      delta.contentUpdatedSlots.length === 0 &&
+      (delta.materialUpdates?.length ?? 0) === 0 &&
+      delta.instanceUpdatedSlots.length === 0 &&
+      !TABLE_NAMES.some((name) => this.writesByTable[name].length > 0) &&
+      this.pendingMeshes.size === 0 &&
+      this.pendingMaterialRoots.size === 0 &&
+      this.identityUploaded
+    );
+  }
+
+  /** Clear removed rows, then ensure every published slot's allocation; returns reset slots. */
+  private allocateDeltaSlots(
+    delta: RenderSceneApplyResult,
+    writesByTable: Record<GpuSceneTableName, number[]>,
+  ): Set<number> {
+    const allocationResets = new Set<number>();
+    if (delta.resynced > 0) {
+      for (const slot of [...this.allocations.keys()]) this.clearSlot(slot, writesByTable);
+    }
+    // RenderScene may recycle a released CPU slot for a different identity in
+    // the same delta. Clear the old GPU allocation before ensuring the new
+    // record; otherwise the later removal pass clears the newly allocated
+    // record and the next transform-only update sees no allocation.
+    for (const record of delta.removedSlots) {
+      this.clearSlot(record.slot, writesByTable);
+    }
+    for (const records of [
+      delta.createdSlots,
+      delta.contentUpdatedSlots,
+      delta.instanceUpdatedSlots,
+      delta.recreatedSlots,
+    ]) {
+      for (const record of records) {
+        const previous = this.allocations.get(record.slot);
+        this.ensureAllocation(record, writesByTable);
+        if (previous !== this.allocations.get(record.slot)) allocationResets.add(record.slot);
+      }
+    }
+    for (const resource of delta.materialUpdates ?? []) {
+      const range = this.sharedMaterials.get(resource);
+      if (range !== undefined) this.adoptMaterial(range, writesByTable);
+    }
+    return allocationResets;
+  }
+
+  /** Write one shared mesh descriptor header and its Skin envelope into the input arena. */
+  private writeMeshDescriptor(range: MeshVersion): void {
+    const envelopes = range.geometry.skinEnvelopes;
+    if ((envelopes?.length ?? 0) !== range.words - GPU_MESH_DESCRIPTOR.words)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'the complete admitted Skin Mesh envelope within its allocated extent',
+        hint: 'retain immutable Mesh facts until every recorded frame has retired',
+      });
+    const bounds = range.geometry.bounds;
+    this.rowScratchView.setUint32(
+      GPU_MESH_DESCRIPTOR.flags * 4,
+      bounds === undefined ? 0 : PRIMITIVE_HAS_BOUNDS,
+      true,
+    );
+    for (let axis = 0; axis < 3; axis++) {
+      this.rowScratchView.setFloat32(
+        (GPU_MESH_DESCRIPTOR.min + axis) * 4,
+        bounds?.[axis] ?? 0,
+        true,
+      );
+      this.rowScratchView.setFloat32(
+        (GPU_MESH_DESCRIPTOR.max + axis) * 4,
+        bounds?.[axis + 3] ?? 0,
+        true,
+      );
+    }
+    const envelopeAddress =
+      envelopes === undefined ? 0 : range.descriptor + GPU_MESH_DESCRIPTOR.words;
+    this.rowScratchView.setUint32(GPU_MESH_DESCRIPTOR.skinEnvelopes * 4, envelopeAddress, true);
+    for (let word = 0; word < GPU_MESH_DESCRIPTOR.words; word++)
+      this.inputs.arena.writeDescriptorWord(
+        range.descriptor,
+        range.words,
+        word,
+        this.rowScratchView.getUint32(word * 4, true),
+      );
+    if (envelopes !== undefined)
+      this.inputs.arena.writeDescriptor(
+        range.descriptor,
+        new DataView(envelopes.buffer, envelopes.byteOffset, envelopes.byteLength),
+        range.words,
+        GPU_MESH_DESCRIPTOR.words,
+      );
+  }
+
+  /**
+   * Pack pending shared-material roots and updated resources. A shared material
+   * has one packed value per publication, independent of how many primitives
+   * reference it. Do not retain mutable caller snapshots.
+   */
+  private writePendingMaterials(
+    delta: RenderSceneApplyResult,
+    writesByTable: Record<GpuSceneTableName, number[]>,
+  ): Map<MaterialSnapshot, Uint8Array> {
+    const materialRows = new Map<MaterialSnapshot, Uint8Array>();
+    for (const allocation of this.pendingMaterialRoots)
+      this.writeMaterial(allocation.version, writesByTable, materialRows, false);
+    for (const resource of delta.materialUpdates ?? []) {
+      const range = this.sharedMaterials.get(resource);
+      if (range !== undefined)
+        this.writeMaterial(range.version, writesByTable, materialRows, false);
+    }
+    return materialRows;
+  }
+
+  /** Full rows for new/reset/content slots; transform-only rows for the rest. */
+  private writeSlotPublications(
+    delta: RenderSceneApplyResult,
+    allocationResets: ReadonlySet<number>,
+    writesByTable: Record<GpuSceneTableName, number[]>,
+    materialRows: Map<MaterialSnapshot, Uint8Array>,
+    temporalResolver: GpuSceneTemporalResolver | undefined,
+  ): void {
+    const contentUpdatedSlotIds = new Set(delta.contentUpdatedSlots.map((record) => record.slot));
+    const instanceUpdatedSlotIds = new Set(delta.instanceUpdatedSlots.map((record) => record.slot));
+    const publications = [...delta.createdSlots, ...delta.updatedSlots, ...delta.recreatedSlots];
+    const newSlots = new Set(
+      [...delta.createdSlots, ...delta.recreatedSlots].map((record) => record.slot),
+    );
+    for (const record of publications) {
+      const reset = newSlots.has(record.slot) || allocationResets.has(record.slot);
+      if (reset || contentUpdatedSlotIds.has(record.slot)) {
+        this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
+        continue;
+      }
+      const temporal = temporalResolver?.(record);
+      if (instanceUpdatedSlotIds.has(record.slot))
+        this.writeInstanceTransforms(record, writesByTable, temporal);
+      this.writeRootTransform(record, false, writesByTable);
+      this.writeTemporalFlags(record.slot, primitiveTemporalFlags(false, temporal), writesByTable);
+    }
+  }
+
+  /** Retire pending upload state after a successful row upload and record the content change. */
+  private completeSync(
+    delta: RenderSceneApplyResult,
+    boundsOf: GpuSceneSlotBounds | undefined,
+    rowBoxesOf: GpuSceneSlotRowBoxes | undefined,
+  ): void {
+    this.pendingTemporalUploads.clear();
+    for (const version of this.pendingMaterials) version.initialized = true;
+    this.pendingMaterials.clear();
+    this.pendingMaterialRoots.clear();
+    this.pendingMeshes.clear();
+    for (const name of TABLE_NAMES) this.writesByTable[name].length = 0;
+    this.identityUploaded = true;
+    this.clearedSlots += delta.removedSlots.length;
+    if (delta.resynced > 0) this.fullRebuilds += 1;
+    this.sceneContentRevision += 1;
+    this.changeLog.record(this.sceneContentRevision, delta, boundsOf, rowBoxesOf);
   }
 
   /** Publish current transforms as previous only after a successful submit. */

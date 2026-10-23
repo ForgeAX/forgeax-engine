@@ -1251,22 +1251,14 @@ export class RenderPublicationReceiver {
         return rejectPublication('shape', 'asset payload');
       if (!validAssetSource(row)) return rejectPublication('shape', 'asset source');
       assetHandles.add(row.handle);
-      if (row.materialProjection !== undefined && row.value.kind !== 'material')
-        return rejectPublication('shape', 'material projection on another asset kind');
-      if (row.materialProjection !== undefined && row.materialProjection !== null) {
-        const projection =
-          row.value.kind === 'material'
-            ? this.projections.admit(
-                row.materialProjection,
-                row.value,
-                programKnown,
-                projectionAliases,
-              )
-            : undefined;
-        if (projection === undefined)
-          return rejectPublication('shape', 'material source projection');
-        projections.set(row, projection);
-      }
+      const projection = this.receivedMaterialProjection(
+        row,
+        packet.retiredAssets,
+        programKnown,
+        projectionAliases,
+      );
+      if (!projection.ok) return rejectPublication('shape', projection.error);
+      if (projection.value !== undefined) projections.set(row, projection.value);
       const preparedError = this.preparedMeshRevisionError(row, stalePreparations);
       if (preparedError !== undefined) return err(preparedError);
       changes.push({
@@ -1278,6 +1270,31 @@ export class RenderPublicationReceiver {
       });
     }
     return ok({ assetHandles, changes, stalePreparations, projections });
+  }
+
+  /**
+   * One asset row's admitted projection: carried, adopted from a resident
+   * holder, retained by omission, or cleared by null.
+   */
+  private receivedMaterialProjection(
+    row: RenderPublication['assets'][number],
+    retired: readonly number[],
+    available: (key: string) => boolean,
+    aliases: Map<object, MaterialRenderProjection>,
+  ): Result<MaterialRenderProjection | undefined, string> {
+    const source = row.materialProjectionSource;
+    if (source === undefined && row.materialProjection === undefined)
+      return ok(this.assets.get(row.handle)?.materialProjection ?? undefined);
+    if (row.value.kind !== 'material') return err('material projection on another asset kind');
+    let input: unknown = row.materialProjection;
+    if (source !== undefined) {
+      if (input !== undefined || retired.includes(source)) return err('material projection holder');
+      input = this.assets.get(source)?.materialProjection ?? undefined;
+      if (input === undefined) return err('material projection holder');
+    }
+    if (input === null) return ok(undefined);
+    const projection = this.projections.admit(input, row.value, available, aliases);
+    return projection === undefined ? err('material source projection') : ok(projection);
   }
 
   /** Capture a patch; a prepared candidate at the same revision must equal its result. */
@@ -1422,15 +1439,10 @@ export class RenderPublicationReceiver {
         row.value.kind === 'particle-effect' || row.value.kind === 'material'
           ? ownRenderFeatureProgramData(row.value)
           : row.value;
-      const projection =
-        row.materialProjection === undefined
-          ? this.assets.get(row.handle)?.materialProjection
-          : row.materialProjection === null
-            ? undefined
-            : projections.get(row);
+      const { materialProjectionSource: _source, ...received } = row;
       return {
-        ...row,
-        materialProjection: projection ?? null,
+        ...received,
+        materialProjection: projections.get(row) ?? null,
         // Non-JSON inputs retain their exact payload types and mutable behavior.
         value:
           (this.preparedMeshes.get(row.handle)?.revision === row.revision

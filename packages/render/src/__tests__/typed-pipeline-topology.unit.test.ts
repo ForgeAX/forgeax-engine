@@ -203,10 +203,14 @@ function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
-      (frame) => frame.currentTexture,
+      (frame) => frame.outputTarget().texture,
     );
     if (!texture.ok) throw texture.error;
-    const view = graph.importView(texture.value, { label: `${label}.view` }, (frame) => frame.view);
+    const view = graph.importView(
+      texture.value,
+      { label: `${label}.view` },
+      (frame) => frame.outputTarget().view,
+    );
     if (!view.ok) throw view.error;
     return {
       texture: texture.value,

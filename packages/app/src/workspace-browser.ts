@@ -37,7 +37,10 @@ import {
   executeWorkspaceRuntimePack,
   releaseWorkspacePlugins,
 } from './workspace-runtime-pack';
-import { engineWorkspaceTargetToolsPlugin } from './workspace-target-tools';
+import {
+  type EngineWorkspacePickGranularity,
+  engineWorkspaceTargetToolsPlugin,
+} from './workspace-target-tools';
 
 export interface EngineWorkspaceBrowserOptions {
   readonly input?: CanvasInputBoundary;
@@ -76,6 +79,7 @@ type CommandInput = EngineWorkspaceCameraInput & {
   readonly mode?: 'player' | 'observer';
   readonly x?: number;
   readonly y?: number;
+  readonly granularity?: EngineWorkspacePickGranularity;
   readonly previewOwner?: string;
   readonly options?: unknown;
   readonly previewTargetId?: string;
@@ -87,6 +91,10 @@ type CommandInput = EngineWorkspaceCameraInput & {
   readonly limit?: number;
   readonly revision?: number;
   readonly display?: EngineWorkspacePreviewDisplayOptions;
+  readonly uvChannel?: number;
+  readonly mesh?: import('./workspace-material-preview').MaterialPreviewMesh;
+  readonly yaw?: number;
+  readonly pitch?: number;
 };
 type ExecuteInput = CommandInput & { readonly signal: AbortSignal };
 interface Command {
@@ -95,6 +103,19 @@ interface Command {
   readonly sessionId: string;
   readonly operation: string;
   readonly input: CommandInput;
+}
+
+function isReadOnlyWorkspaceOperation(operation: string): boolean {
+  return (
+    operation === 'describe' ||
+    operation === 'scene.tree.get' ||
+    operation === 'entity.inspect' ||
+    operation === 'preview.texture.get' ||
+    operation === 'preview.material.get' ||
+    operation === 'camera.get' ||
+    operation === 'preview.display.get' ||
+    operation === 'target.pick'
+  );
 }
 
 /** App error events may carry a structured hint at runtime; keep it readable. */
@@ -745,6 +766,15 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         );
       return display;
     };
+    const requireMaterialPreview = (input: ExecuteInput) => {
+      const material = active(input).material;
+      if (!material)
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'A material preview target',
+        );
+      return material;
+    };
     const revokeCameraConnection = (input: ExecuteInput) => {
       if (typeof input.connectionId !== 'string')
         throw new TypeError('A connection identity is required');
@@ -767,7 +797,11 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           'engine-workspace-capability-unavailable',
           'Display picking tools',
         );
-      return pick({ x: input.x, y: input.y });
+      return pick({
+        x: input.x,
+        y: input.y,
+        ...(input.granularity === undefined ? {} : { granularity: input.granularity }),
+      });
     };
     const requireEntityId = (input: ExecuteInput) => {
       if (typeof input.entityId !== 'string')
@@ -802,12 +836,64 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           );
       }
     };
+    /** Resource controls share one active preview owner and frame floor. */
+    const executeResourcePreviewCommand = async (
+      operation: string,
+      input: ExecuteInput,
+    ): Promise<unknown> => {
+      switch (operation) {
+        case 'preview.texture.get':
+          return requireTexturePreview(input).get();
+        case 'preview.texture.set': {
+          const result = await requireTexturePreview(input).set(input.options);
+          frameFloor = submittedFrame;
+          return result;
+        }
+        case 'preview.display.get':
+          return requireDisplay(input).get(
+            input.uvChannel === undefined ? undefined : { uvChannel: input.uvChannel },
+          );
+        case 'preview.material.get':
+          return requireMaterialPreview(input).get();
+        case 'preview.material.set': {
+          const result = await requireMaterialPreview(input).set(
+            input.mesh as import('./workspace-material-preview').MaterialPreviewMesh,
+          );
+          frameFloor = submittedFrame;
+          return result;
+        }
+        case 'preview.material.rotate': {
+          const result = await requireMaterialPreview(input).rotate({
+            yaw: input.yaw as number,
+            pitch: input.pitch as number,
+          });
+          frameFloor = submittedFrame;
+          return result;
+        }
+        case 'preview.material.reset': {
+          const result = await requireMaterialPreview(input).reset();
+          frameFloor = submittedFrame;
+          return result;
+        }
+        case 'preview.display.set': {
+          const result = await requireDisplay(input).set(input.display ?? {});
+          frameFloor = submittedFrame;
+          return result;
+        }
+        default:
+          throw new EngineWorkspaceError(
+            'engine-workspace-operation-unavailable',
+            'An installed workspace operation',
+          );
+      }
+    };
     /** Operations owned by the active preview: authoring, control, output and camera. */
     const executeTargetCommand = async (
       operation: string,
       input: ExecuteInput,
       signal: AbortSignal,
     ): Promise<unknown> => {
+      if (operation.startsWith('preview.')) return executeResourcePreviewCommand(operation, input);
       switch (operation) {
         case 'authoring.write':
           return writeAuthoringField(input);
@@ -821,20 +907,6 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           return resizeTarget(input);
         case 'capture':
           return active(input).capture?.(input);
-        case 'preview.texture.get':
-          return requireTexturePreview(input).get();
-        case 'preview.texture.set': {
-          const result = await requireTexturePreview(input).set(input.options);
-          frameFloor = submittedFrame;
-          return result;
-        }
-        case 'preview.display.get':
-          return requireDisplay(input).get();
-        case 'preview.display.set': {
-          const result = await requireDisplay(input).set(input.display ?? {});
-          frameFloor = submittedFrame;
-          return result;
-        }
         case 'camera.get':
           return active(input).getCamera(input);
         case 'camera.begin':
@@ -965,14 +1037,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
       };
       // Existing synchronous reads observe their live target while an independent
       // preview starts. Lifecycle and writes retain their original ordering.
-      const readOnly =
-        command.operation === 'describe' ||
-        command.operation === 'scene.tree.get' ||
-        command.operation === 'entity.inspect' ||
-        command.operation === 'preview.texture.get' ||
-        command.operation === 'camera.get' ||
-        command.operation === 'preview.display.get' ||
-        command.operation === 'target.pick';
+      const readOnly = isReadOnlyWorkspaceOperation(command.operation);
       const completion = (readOnly ? Promise.resolve() : queue).then(run, run);
       pending.set(command.id, { controller, completion });
       if (!readOnly) queue = completion;

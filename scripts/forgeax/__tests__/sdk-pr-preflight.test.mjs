@@ -610,11 +610,13 @@ test('SDK first-frame polling rejects a visible terminal startup error without w
         assert.equal(options.timeout, 120_000);
         const ready = runInNewContext(`(${predicate.toString()})()`, {
           document: {
-            documentElement: { dataset: { forgeaxFrameSubmitted: String(scenario.frame) } },
-            querySelector: () => ({
-              textContent: 'Renderer construct failed: external Instance lost',
-              getClientRects: () => (scenario.visible ? [{}] : []),
-            }),
+            querySelector: (selector) =>
+              selector === 'canvas'
+                ? { forgeaxFrameProgress: { submitted: { frameId: scenario.frame } } }
+                : {
+                    textContent: 'Renderer construct failed: external Instance lost',
+                    getClientRects: () => (scenario.visible ? [{}] : []),
+                  },
           },
           getComputedStyle: () => ({
             display: scenario.visible ? 'block' : 'none',

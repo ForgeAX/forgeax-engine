@@ -65,6 +65,7 @@ const spawnOwned = (...components) => {
 };
 let resourceVfxAttached = false;
 let meshDisplay;
+let materialPreview;
 let canonicalEnvironment;
 let closed = false;
 let cleanupPromise;
@@ -74,6 +75,7 @@ const cleanup = async () => {
   cleanupPromise = (async () => {
     let failure;
     try { await meshDisplay?.close(); meshDisplay = undefined; } catch (cause) { failure = cause; }
+    try { await materialPreview?.close(); materialPreview = undefined; } catch (cause) { failure ??= cause; }
     previewCameraEntities.delete(app.world);
     previewCameraTargets.delete(app.world);
     for (let index = ownedEntities.length - 1; index >= 0; index -= 1) {
@@ -186,6 +188,7 @@ if (resource !== undefined) {
       materialHandle,
     };
     if (resource.kind === 'mesh' && payload.kind === 'mesh') meshDisplay = await createWorkspaceMeshDisplay(app, payload, previewMeshEntity);
+    if (resource.kind === 'material' && presentation.background !== 'transparent') materialPreview = await createWorkspaceMaterialPreview(app, previewMeshEntity);
   }
   const cameraData = {
         fov: Math.PI / 4,
@@ -232,6 +235,7 @@ if (resource !== undefined) {
     binding: preparedResourceBinding,
     assetBinding,
     display: meshDisplay?.display,
+    material: materialPreview?.material,
     close: cleanup,
   };
 }

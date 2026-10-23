@@ -1,5 +1,6 @@
-import type { DockviewApi } from 'dockview';
+import type { AddPanelOptions, DockviewApi } from 'dockview';
 
+import { WORKBENCH_EDGES } from '../workbench-layout/constants.ts';
 import { syncEdgeEmptyChrome } from '../workbench-layout/dock-edges.ts';
 import {
   capturePresentation,
@@ -8,6 +9,7 @@ import {
   type PresentationSnapshot,
 } from '../workbench-layout/grid-layout-migration.ts';
 import { isWorkbenchEdge } from '../workbench-layout/sidebar-state.ts';
+import type { WorkbenchEdge } from '../workbench-layout/types.ts';
 import {
   clearEdgeDropPreview,
   syncEdgeDropPreview,
@@ -37,10 +39,24 @@ type StripHit = {
 };
 
 type DropTarget =
-  | { mode: 'edge'; group: DockGroup; edgeSide: string; index: number }
-  | { mode: 'tab'; group: DockGroup; index: number }
-  | { mode: 'split'; group: DockGroup; position: Exclude<UePosition, 'center'> }
-  | { mode: 'center'; group: DockGroup };
+  | { api: DockviewApi; mode: 'edge'; group: DockGroup; edgeSide: string; index: number }
+  | { api: DockviewApi; mode: 'tab'; group: DockGroup; index: number }
+  | { api: DockviewApi; mode: 'split'; group: DockGroup; position: Exclude<UePosition, 'center'> }
+  | { api: DockviewApi; mode: 'center'; group: DockGroup };
+
+export type UeDropDock = {
+  api: DockviewApi;
+  host: HTMLElement;
+  edges: readonly WorkbenchEdge[];
+};
+
+export type CrossDockDropRequest = {
+  sourceApi: DockviewApi;
+  targetApi: DockviewApi;
+  panelId: string;
+  position: AddPanelOptions['position'];
+  sourceWasEdge: boolean;
+};
 
 type DragSession = {
   owner: DockviewApi;
@@ -49,6 +65,7 @@ type DragSession = {
   originIndex: number;
   originEntry: PanelRestoreEntry;
   layoutBaseline: PresentationSnapshot;
+  allowedEdges: readonly WorkbenchEdge[];
   start: Point;
   dragging: boolean;
   lifted: boolean;
@@ -56,6 +73,8 @@ type DragSession = {
   parkedParent: Node | null;
   parkedNext: Node | null;
   target: DropTarget | null;
+  previewApi: DockviewApi | null;
+  committing: boolean;
   ghostTitle: string;
 };
 
@@ -99,8 +118,13 @@ function stripHit(
   };
 }
 
-function edgeStripHit(api: DockviewApi, wrapEl: HTMLElement, p: Point): StripHit | null {
-  const hit = resolveEdgeStripHit(api, wrapEl, p, session?.ghostTitle ?? '');
+function edgeStripHit(
+  api: DockviewApi,
+  wrapEl: HTMLElement,
+  p: Point,
+  edges: readonly WorkbenchEdge[],
+): StripHit | null {
+  const hit = resolveEdgeStripHit(api, wrapEl, p, session?.ghostTitle ?? '', edges);
   if (!hit) return null;
   const axis = hit.edgeSide === 'left' || hit.edgeSide === 'right' ? 'y' : 'x';
   const strip = stripHit(hit.group, hit.tabsEl, hit.rect, axis, p, hit.edgeSide);
@@ -204,35 +228,50 @@ function restoreLiftedDom(s: DragSession) {
   s.parkedNext = null;
 }
 
-function updateDrag(api: DockviewApi, wrapEl: HTMLElement, p: Point) {
-  if (!session?.lifted) return;
-  const edge = edgeStripHit(api, wrapEl, p);
+function updateDrag(api: DockviewApi, wrapEl: HTMLElement, p: Point, options: UeDragOptions) {
+  const s = session;
+  if (!s?.lifted || s.committing) return;
+  const resolvedDock = options.resolveDropDock?.(p, api, s.panel.id);
+  if (resolvedDock === null) {
+    if (s.previewApi) clearEdgeDropPreview(s.previewApi);
+    s.previewApi = null;
+    s.target = null;
+    syncGridTabSlot(null, s.ghostTitle);
+    placeLiftedPreview(null);
+    hideUeOverlay();
+    return;
+  }
+  const dock = resolvedDock ?? { api, host: wrapEl, edges: s.allowedEdges };
+  if (s.previewApi && s.previewApi !== dock.api) clearEdgeDropPreview(s.previewApi);
+  s.previewApi = dock.api;
+  const edge = edgeStripHit(dock.api, dock.host, p, dock.edges);
   let active: UePosition | null = null;
   let preview: Rect | null = null;
   let previewKind: 'slab' | 'strip' = 'slab';
   let target: DropTarget | null = null;
   let strip: StripHit | null = edge;
 
-  const hovered = edge ? null : groupFromPoint(api, p);
+  const hovered = edge ? null : groupFromPoint(dock.api, p);
   const director = hovered ? directorLayout(hovered.contentRect) : null;
 
   if (edge) {
     target = {
+      api: dock.api,
       mode: 'edge',
       group: edge.group,
       edgeSide: edge.side ?? 'left',
       index: edge.insertion.index,
     };
-    syncEdgeDropPreview(api, {
+    syncEdgeDropPreview(dock.api, {
       edgeSide: edge.side ?? 'left',
       group: edge.group,
       tabsEl: edge.tabsEl,
       rect: edge.rect,
       pointer: p,
-      title: session.ghostTitle,
+      title: s.ghostTitle,
     });
   } else {
-    clearEdgeDropPreview(api);
+    clearEdgeDropPreview(dock.api);
   }
 
   if (!edge && hovered?.onTabs) {
@@ -240,24 +279,24 @@ function updateDrag(api: DockviewApi, wrapEl: HTMLElement, p: Point) {
     if (strip) {
       preview = strip.rect;
       previewKind = 'strip';
-      target = { mode: 'tab', group: strip.group, index: strip.insertion.index };
+      target = { api: dock.api, mode: 'tab', group: strip.group, index: strip.insertion.index };
     }
   } else if (!edge && hovered && director) {
     const pos = hitDirector(director, p);
     if (pos) {
       active = pos;
       if (pos === 'center') {
-        target = { mode: 'center', group: hovered.group };
+        target = { api: dock.api, mode: 'center', group: hovered.group };
         preview = null;
       } else {
-        target = { mode: 'split', group: hovered.group, position: pos };
+        target = { api: dock.api, mode: 'split', group: hovered.group, position: pos };
         preview = previewRect(hovered.contentRect, pos);
       }
     }
   }
 
-  session.target = target;
-  syncGridTabSlot(edge ? null : strip, session.ghostTitle);
+  s.target = target;
+  syncGridTabSlot(edge ? null : strip, s.ghostTitle);
   placeLiftedPreview(target?.mode === 'split' ? preview : null);
   if (edge) {
     hideUeOverlay();
@@ -268,7 +307,7 @@ function updateDrag(api: DockviewApi, wrapEl: HTMLElement, p: Point) {
       active,
       preview,
       previewKind,
-      title: session.ghostTitle,
+      title: s.ghostTitle,
     });
   }
 }
@@ -290,8 +329,14 @@ function edgePositionOf(panel: DockPanel): string | undefined {
 }
 
 function restoreOrigin(api: DockviewApi, s: DragSession) {
-  restorePanelToOrigin(api, s.panel, s.originEntry, s.layoutBaseline);
+  restorePanelToOrigin(api, s.panel, s.originEntry, s.layoutBaseline, s.allowedEdges);
   syncEdgeEmptyChrome(api);
+}
+
+function clearSessionEdgePreview(api: DockviewApi, s: DragSession) {
+  if (s.previewApi) clearEdgeDropPreview(s.previewApi);
+  if (s.previewApi !== api) clearEdgeDropPreview(api);
+  s.previewApi = null;
 }
 
 function cleanupAfterCancelRestore(api: DockviewApi, s: DragSession) {
@@ -299,7 +344,7 @@ function cleanupAfterCancelRestore(api: DockviewApi, s: DragSession) {
   s.liftedEl?.classList.remove('fx-ue-lifted', 'fx-ue-lifted--hidden');
   slotEl?.remove();
   slotEl = null;
-  clearEdgeDropPreview(api);
+  clearSessionEdgePreview(api, s);
   hideUeOverlay();
   restoreOrigin(api, s);
   /* Drawer stays closed: edge lift calls forceClose; cancel does not reopen (open ≠ pin). */
@@ -345,16 +390,49 @@ function startLift(api: DockviewApi, s: DragSession, closeEdgeDrawer?: () => voi
   return true;
 }
 
-function commit(api: DockviewApi) {
+function positionForTarget(target: DropTarget): AddPanelOptions['position'] {
+  if (target.mode === 'edge' || target.mode === 'tab') {
+    return { direction: 'within', referenceGroup: target.group, index: target.index };
+  }
+  if (target.mode === 'center') {
+    return { direction: 'within', referenceGroup: target.group };
+  }
+  const direction = target.position === 'top'
+    ? 'above'
+    : target.position === 'bottom' ? 'below' : target.position;
+  return { direction, referenceGroup: target.group };
+}
+
+async function commit(api: DockviewApi, options: UeDragOptions) {
   const s = session;
-  if (!s?.lifted) return;
+  if (!s?.lifted || s.committing) return;
+  s.committing = true;
   restoreLiftedDom(s);
   s.liftedEl?.classList.remove('fx-ue-lifted', 'fx-ue-lifted--hidden');
   slotEl?.remove();
   slotEl = null;
-  clearEdgeDropPreview(api);
+  clearSessionEdgePreview(api, s);
+  const target = s.target;
+  if (target && target.api !== api) {
+    try {
+      const moved = options.onCrossDockDrop
+        ? await options.onCrossDockDrop({
+            sourceApi: api,
+            targetApi: target.api,
+            panelId: s.panel.id,
+            position: positionForTarget(target),
+            sourceWasEdge: s.originEntry.locationType === 'edge',
+          })
+        : false;
+      if (!moved) restoreOrigin(api, s);
+    } catch {
+      restoreOrigin(api, s);
+    }
+    syncEdgeEmptyChrome(api);
+    syncEdgeEmptyChrome(target.api);
+    return;
+  }
   try {
-    const target = s.target;
     if (target?.mode === 'edge') {
       dockIntoEdge(s.panel, target.group, target.index);
     } else if (target?.mode === 'tab') {
@@ -373,11 +451,20 @@ function commit(api: DockviewApi) {
   }
 }
 
-type UeDragOptions = {
+export type UeDragOptions = {
   closeEdgeDrawer?: () => void;
+  shouldCapturePanel?: (panel: DockPanel) => boolean;
+  edges?: readonly WorkbenchEdge[];
+  resolveDropDock?: (point: Point, sourceApi: DockviewApi, panelId: string) => UeDropDock | null | undefined;
+  onCrossDockDrop?: (request: CrossDockDropRequest) => Promise<boolean> | boolean;
 };
 
-function beginPendingSession(api: DockviewApi, panel: DockPanel, start: Point) {
+function beginPendingSession(
+  api: DockviewApi,
+  panel: DockPanel,
+  start: Point,
+  allowedEdges: readonly WorkbenchEdge[],
+) {
   const originGroupId = panel.group.id;
   const originIndex = Math.max(0, panel.group.panels.indexOf(panel));
   const layoutBaseline = capturePresentation(api);
@@ -394,6 +481,7 @@ function beginPendingSession(api: DockviewApi, panel: DockPanel, start: Point) {
       ...(edgePositionOf(panel) ? { edgePosition: edgePositionOf(panel) } : {}),
     },
     layoutBaseline,
+    allowedEdges,
     start,
     dragging: false,
     lifted: false,
@@ -401,6 +489,8 @@ function beginPendingSession(api: DockviewApi, panel: DockPanel, start: Point) {
     parkedParent: null,
     parkedNext: null,
     target: null,
+    previewApi: null,
+    committing: false,
     ghostTitle: panel.title ?? panel.id,
   };
 }
@@ -409,13 +499,13 @@ function endSession(api?: DockviewApi) {
   if (session) {
     session.liftedEl?.classList.remove('fx-ue-lifted', 'fx-ue-lifted--hidden');
     restoreLiftedDom(session);
+    if (api) clearSessionEdgePreview(api, session);
   }
   session = null;
   document.documentElement.classList.remove('fx-ue-dragging');
   hideUeOverlay();
   slotEl?.remove();
   slotEl = null;
-  if (api) clearEdgeDropPreview(api);
 }
 
 function panelForTab(group: DockGroup, tab: Element): DockPanel | undefined {
@@ -430,10 +520,12 @@ export function installUeDockDrag(
   options: UeDragOptions = {},
 ): () => void {
   const closeEdgeDrawer = options.closeEdgeDrawer;
+  const shouldCapturePanel = options.shouldCapturePanel ?? (() => true);
+  const allowedEdges = options.edges ?? WORKBENCH_EDGES;
   const wrapEl = host;
 
   const onPointerMove = (event: PointerEvent) => {
-    if (session?.owner !== api) return;
+    if (session?.owner !== api || session.committing) return;
     const point = { x: event.clientX, y: event.clientY };
     if (!session.lifted) {
       if (Math.hypot(point.x - session.start.x, point.y - session.start.y) < DRAG_THRESHOLD) return;
@@ -443,7 +535,7 @@ export function installUeDockDrag(
       }
     }
     event.preventDefault();
-    updateDrag(api, wrapEl, point);
+    updateDrag(api, wrapEl, point, options);
   };
 
   const onPointerUp = () => {
@@ -453,12 +545,12 @@ export function installUeDockDrag(
       endSession(api);
       return;
     }
-    commit(api);
-    endSession(api);
+    if (s.committing) return;
+    void commit(api, options).finally(() => endSession(api));
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape' || session?.owner !== api || !session.lifted) return;
+    if (event.key !== 'Escape' || session?.owner !== api || !session.lifted || session.committing) return;
     event.preventDefault();
     const s = session;
     cleanupAfterCancelRestore(api, s);
@@ -475,13 +567,16 @@ export function installUeDockDrag(
     const group = api.groups.find((candidate) => candidate.element.contains(tab));
     if (!group || (group.api.location.type !== 'grid' && group.api.location.type !== 'edge')) return;
     const panel = panelForTab(group, tab);
-    if (!panel) return;
-    beginPendingSession(api, panel, { x: event.clientX, y: event.clientY });
+    if (!panel || !shouldCapturePanel(panel)) return;
+    beginPendingSession(api, panel, { x: event.clientX, y: event.clientY }, allowedEdges);
   };
 
   const onDragStart = (event: DragEvent) => {
     const tab = (event.target as Element | null)?.closest('.dv-tab');
-    if (tab && host.contains(tab)) event.preventDefault();
+    if (!tab || !host.contains(tab)) return;
+    const group = api.groups.find((candidate) => candidate.element.contains(tab));
+    const panel = group ? panelForTab(group, tab) : undefined;
+    if (!panel || shouldCapturePanel(panel)) event.preventDefault();
   };
 
   host.addEventListener('pointerdown', onPointerDown, true);

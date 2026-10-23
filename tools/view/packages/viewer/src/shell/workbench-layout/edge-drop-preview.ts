@@ -3,6 +3,8 @@ import type { DockviewApi } from 'dockview';
 import { resolveEdgeStripHit } from './edge-strip-hit.ts';
 import { rectOf } from '../ue-drag/drop-target.ts';
 import { stripInsertion, type Point, type Rect } from '../ue-drag/geometry.ts';
+import { WORKBENCH_EDGES } from './constants.ts';
+import type { WorkbenchEdge } from './types.ts';
 
 const PREVIEW_TAB_CLASS = 'fx-edge-preview-tab';
 const PREVIEW_EDGE_CLASS = 'fx-edge-drop-preview';
@@ -23,15 +25,15 @@ function tabElements(tabsEl: Element) {
 
 function revealEdgeForPreview(api: DockviewApi, side: string, group: DockviewApi['groups'][number]) {
   const wasEmpty = group.panels.length === 0;
-  try {
-    api.setEdgeGroupVisible?.(side as 'left' | 'right' | 'bottom' | 'top', true);
-  } catch {
-    /* noop */
-  }
   const el = group.element;
   if (el instanceof HTMLElement) {
     el.classList.remove('fx-edge-empty');
     el.classList.add(PREVIEW_EDGE_CLASS);
+  }
+  try {
+    api.setEdgeGroupVisible?.(side as 'left' | 'right' | 'bottom' | 'top', true);
+  } catch {
+    /* noop */
   }
   return wasEmpty;
 }
@@ -108,8 +110,9 @@ export function edgeStripHitFromPoint(
   root: HTMLElement,
   pointer: Point,
   title: string,
+  edges: readonly WorkbenchEdge[] = WORKBENCH_EDGES,
 ): Parameters<typeof syncEdgeDropPreview>[1] {
-  const hit = resolveEdgeStripHit(api, root, pointer, title);
+  const hit = resolveEdgeStripHit(api, root, pointer, title, edges);
   if (!hit) return null;
   return {
     edgeSide: hit.edgeSide,

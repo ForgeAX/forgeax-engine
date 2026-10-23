@@ -191,7 +191,8 @@ it('publishes a multi-range mesh write as one patch with changed bytes only', ()
     const accepted = f.receiver.accept(packet).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
     expect([...mesh.vertices.subarray((2 * stride) / 4, (4 * stride) / 4)]).toEqual([...rows]);
-    expect([...(mesh.indices ?? []).subarray(3, 6)]).toEqual([0, 0, 0]);
+    assert(mesh.indices);
+    expect([...mesh.indices.subarray(3, 6)]).toEqual([0, 0, 0]);
   } finally {
     f.close();
   }

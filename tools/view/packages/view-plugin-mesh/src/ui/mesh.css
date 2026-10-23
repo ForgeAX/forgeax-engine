@@ -17,7 +17,15 @@
   position: relative;
 }
 
-.fx-mesh-preview .fx-preview-stats { top: 48px; }
+.fx-mesh-preview-hud { position: absolute; top: 48px; bottom: 8px; left: 8px; width: min(280px, calc(100% - 16px)); display: flex; flex-direction: column; gap: 8px; z-index: 2; pointer-events: none; }
+.fx-mesh-preview-hud .fx-preview-stats { position: static; flex: 0 1 auto; min-height: 0; max-width: 100%; overflow: auto; }
+.fx-mesh-uv-overlay { display: flex; flex: 0 1 280px; flex-direction: column; min-height: 0; min-width: 0; margin: 0; padding: 6px; box-sizing: border-box; background: rgb(0 0 0 / 70%); color: white; border-radius: 4px; }
+.fx-mesh-uv-overlay figcaption { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex: none; font-size: 11px; line-height: 16px; }
+.fx-mesh-uv-overlay figcaption > span { min-width: 0; overflow-wrap: anywhere; }
+.fx-mesh-uv-overlay figcaption button { pointer-events: auto; }
+.fx-mesh-uv-overlay canvas { display: block; width: 100%; height: 100%; min-height: 0; flex: 1 1 auto; pointer-events: auto; touch-action: none; cursor: grab; }
+.fx-mesh-uv-overlay canvas:active { cursor: grabbing; }
+.fx-mesh-uv-overlay canvas:focus-visible { outline: 1px solid white; outline-offset: -2px; }
 .fx-mesh-display-error { position: absolute; bottom: 8px; left: 8px; right: 8px; z-index: 2; margin: 0; padding: 6px; background: var(--fx-color-surface-canvas); color: var(--fx-color-text-primary); font-size: 11px; overflow-wrap: anywhere; }
 
 .fx-mesh-restore-error {

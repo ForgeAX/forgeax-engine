@@ -38,8 +38,8 @@ try {
   page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
   const document = hostStartupDocument('Runtime acceptance').replace('</body>', `<script>
     ${hostStartupScript(false)};
-    document.documentElement.dataset.forgeaxFrameCompleted = '60';
     const canvas = document.querySelector('#app'); canvas.width = 128; canvas.height = 128;
+    canvas.forgeaxFrameProgress = { completed: { frameId: 60, deviceGeneration: 1, presentation: 'ready' } };
     const draw = canvas.getContext('2d');
     draw.fillStyle = '#123456'; draw.fillRect(0, 0, 128, 128);
     draw.fillStyle = '#ffee44'; draw.fillRect(16, 16, 96, 96);
@@ -49,20 +49,25 @@ try {
   await assertNoRuntimeFailure(pendingFrame, 'Pending native document', errors, consoleErrors);
   await page.setContent('<iframe sandbox="allow-scripts" style="width:620px;height:460px;border:0"></iframe>');
   await page.locator('iframe').evaluate((element, html) => { element.srcdoc = html; }, document);
-  const frame = page.frameLocator('iframe');
-  await frame.locator('html[data-forgeax-frame-completed="60"]').waitFor({ state: 'attached' });
+  const frameLocator = page.frameLocator('iframe');
+  await frameLocator.locator('canvas#app').waitFor({ state: 'attached' });
+  const frame = page.frames().find(candidate => candidate.parentFrame() === page.mainFrame());
+  assert.ok(frame, 'the sandboxed Engine document must have a Playwright Frame');
+  await frame.waitForFunction(() => document.querySelector('canvas#app')?.forgeaxFrameProgress?.completed?.frameId >= 60);
   await assertNoRuntimeFailure(frame, 'Healthy native document', errors, consoleErrors);
-  const positivePng = await frame.locator('canvas').evaluate(canvas => canvas.toDataURL());
+  const positivePng = await frame.locator('canvas#app').evaluate(canvas => canvas.toDataURL());
   const positive = await assertScenePixels(page, positivePng, 'Positive canvas');
   for (const color of ['#000000', '#ffffff']) {
-    const png = await frame.locator('canvas').evaluate((canvas, color) => {
+    const png = await frame.locator('canvas#app').evaluate((canvas, color) => {
       const draw = canvas.getContext('2d'); draw.fillStyle = color;
       draw.fillRect(0, 0, canvas.width, canvas.height); return canvas.toDataURL();
     }, color);
     await assert.rejects(() => assertScenePixels(page, png, color), /flat canvas/);
   }
   await frame.locator('html').evaluate(() => globalThis.triggerFailure());
-  assert.equal(await frame.locator('html').getAttribute('data-forgeax-frame-completed'), '60');
+  assert.equal(await frame.evaluate(() => document.querySelector('canvas#app')?.forgeaxFrameProgress?.completed?.frameId ?? null), 60);
+  assert.equal(await frame.locator('html').getAttribute('data-forgeax-frame-completed'), null,
+    'the legacy HTML frame attribute must not carry progress');
   assert.deepEqual(errors, []);
   assert.deepEqual(consoleErrors, []);
   await assert.rejects(() => assertNoRuntimeFailure(frame, 'Failed native document', errors, consoleErrors),

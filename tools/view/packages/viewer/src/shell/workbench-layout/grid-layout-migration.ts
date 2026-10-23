@@ -1,5 +1,6 @@
 import type { DockviewApi } from 'dockview';
 
+import { WORKBENCH_EDGES } from './constants.ts';
 import {
   collapseEdgeGroup,
   ensureEdgeGroup,
@@ -78,6 +79,7 @@ export type PresentationSnapshot = {
 export type RestorePresentationOptions = {
   /** Panels to leave at current location (e.g. user-placed edge tabs). */
   skipPanelIds?: ReadonlySet<string>;
+  allowedEdges?: readonly WorkbenchEdge[];
   /** Measured dock host — layout + proportional sizes after topology restore. */
   layoutHost?: HTMLElement;
 };
@@ -699,9 +701,14 @@ export function restorePanelToOrigin(
   panel: DockviewApi['panels'][number],
   entry: PanelRestoreEntry,
   snapshot: PresentationSnapshot,
+  allowedEdges: readonly WorkbenchEdge[] = WORKBENCH_EDGES,
 ): boolean {
+  const allowed = new Set(allowedEdges);
   const originById = api.groups.find((g) => g.id === entry.groupId);
-  if (originById) {
+  const originPosition = originById?.api.location.type === 'edge'
+    ? originById.api.location.position
+    : undefined;
+  if (originById && (!originPosition || allowed.has(originPosition as WorkbenchEdge))) {
     try {
       panel.api.moveTo({ group: originById, position: 'center', index: entry.index });
       const loc = originById.api.location;
@@ -714,7 +721,8 @@ export function restorePanelToOrigin(
     }
   }
 
-  if (entry.locationType === 'edge' && entry.edgePosition && isWorkbenchEdge(entry.edgePosition)) {
+  if (entry.locationType === 'edge' && entry.edgePosition && isWorkbenchEdge(entry.edgePosition)
+    && allowed.has(entry.edgePosition)) {
     const edgeGroup = edgeGroupForRestore(api, entry.edgePosition);
     if (edgeGroup) {
       try {
@@ -724,6 +732,16 @@ export function restorePanelToOrigin(
       } catch {
         /* fall through */
       }
+    }
+  }
+
+  if (entry.locationType === 'edge' && entry.edgePosition && !allowed.has(entry.edgePosition as WorkbenchEdge)) {
+    const gridGroup = api.groups.find((g) => g.api.location.type === 'grid') ?? api.addGroup();
+    try {
+      panel.api.moveTo({ group: gridGroup, position: 'bottom', index: entry.index });
+      return panel.api.location.type === 'grid';
+    } catch {
+      return false;
     }
   }
 
@@ -743,6 +761,9 @@ export function restorePresentation(
 ) {
   if (!snapshot?.panels?.length) return;
   const skip = options?.skipPanelIds ?? new Set<string>();
+  const allowedEdges = options?.allowedEdges ?? WORKBENCH_EDGES;
+  const allowed = new Set(allowedEdges);
+  const migratedEdgeGroups = new Map<string, GridGroup>();
 
   const edgeEntries = snapshot.panels.filter((e) => e.locationType === 'edge');
   for (const entry of edgeEntries) {
@@ -750,7 +771,24 @@ export function restorePresentation(
     if (!entry.edgePosition || !isWorkbenchEdge(entry.edgePosition)) continue;
     const panel = api.getPanel(entry.panelId);
     if (!panel) continue;
-    restorePanelToOrigin(api, panel, entry, snapshot);
+    if (allowed.has(entry.edgePosition)) {
+      restorePanelToOrigin(api, panel, entry, snapshot, allowedEdges);
+      continue;
+    }
+    let gridGroup = migratedEdgeGroups.get(entry.groupId);
+    if (!gridGroup) {
+      const anchor = api.groups.find((g) => g.api.location.type === 'grid');
+      if (anchor) {
+        panel.api.moveTo({ group: anchor, position: 'bottom', index: entry.index });
+        gridGroup = panel.group.api.location.type === 'grid' ? panel.group : anchor;
+      } else {
+        gridGroup = api.addGroup();
+        panel.api.moveTo({ group: gridGroup, position: 'center', index: entry.index });
+      }
+      migratedEdgeGroups.set(entry.groupId, gridGroup);
+    } else {
+      panel.api.moveTo({ group: gridGroup, position: 'center', index: entry.index });
+    }
   }
 
   const session = new GridRestoreSession(api, snapshot, options?.layoutHost);
@@ -900,6 +938,24 @@ export type StageMigrationOutcome = {
   autoTucked: AutoTuckedMap;
 };
 
+function restoreAutoTuckedPanelToGrid(api: DockviewApi, entry: PanelRestoreEntry) {
+  const panel = api.getPanel(entry.panelId);
+  if (!panel) return true;
+  const original = api.groups.find((group) => group.id === entry.groupId
+    && group.api.location.type === 'grid');
+  const grid = original ?? api.groups.find((group) => group.api.location.type === 'grid') ?? api.addGroup();
+  try {
+    panel.api.moveTo({
+      group: grid,
+      position: original ? 'center' : 'bottom',
+      index: entry.index,
+    });
+    return panel.api.location.type === 'grid';
+  } catch {
+    return false;
+  }
+}
+
 export function applyStageMigration(
   api: DockviewApi,
   host: HTMLElement,
@@ -908,33 +964,50 @@ export function applyStageMigration(
   baseline: PresentationSnapshot | null,
   autoTucked: AutoTuckedMap,
   primaryPanelIds: ReadonlySet<string>,
+  allowedEdges: readonly WorkbenchEdge[] = WORKBENCH_EDGES,
 ): StageMigrationOutcome {
-  const from = sidesSet(fromSides);
-  const to = sidesSet(toSides);
+  const allowed = new Set(allowedEdges);
+  const from = sidesSet(fromSides.filter((side) => allowed.has(side)));
+  const to = sidesSet(toSides.filter((side) => allowed.has(side)));
+  let nextBaseline = baseline;
+  let nextAuto = pruneUserRelocatedAutoTucked(api, autoTucked);
+  const disallowedTucked = Object.values(nextAuto).filter(
+    (entry) => entry.tuckedToEdge && !allowed.has(entry.tuckedToEdge),
+  );
+  if (disallowedTucked.length > 0) {
+    const disallowedEdges = [...new Set(disallowedTucked.map((entry) => entry.tuckedToEdge!))];
+    if (nextBaseline) nextAuto = restoreAutoTuckedFromEdges(api, disallowedEdges, nextAuto, nextBaseline);
+    for (const entry of disallowedTucked) {
+      if (!nextAuto[entry.panelId]) continue;
+      if (!restoreAutoTuckedPanelToGrid(api, entry)) {
+        return { applied: false, baseline: nextBaseline, autoTucked: nextAuto };
+      }
+      delete nextAuto[entry.panelId];
+    }
+  }
   if (from.size === to.size && [...from].every((s) => to.has(s))) {
-    return { applied: true, baseline, autoTucked: { ...autoTucked } };
+    return { applied: true, baseline: nextBaseline, autoTucked: nextAuto };
   }
 
   const tuckSides = [...to].filter((s) => !from.has(s));
   const restoreSides = [...from].filter((s) => !to.has(s));
 
   if (tuckSides.length > 0 && !isDockGridSettled(api, host)) {
-    return { applied: false, baseline, autoTucked: { ...autoTucked } };
+    return { applied: false, baseline: nextBaseline, autoTucked: nextAuto };
   }
-
-  let nextBaseline = baseline;
-  let nextAuto = pruneUserRelocatedAutoTucked(api, autoTucked);
 
   if (to.size === 0) {
     if (nextBaseline) {
       const autoTuckedIds = new Set(Object.keys(nextAuto));
       const skipPanelIds = new Set<string>();
       for (const panel of api.panels) {
-        if (panel.api.location.type === 'edge' && !autoTuckedIds.has(panel.id)) {
+        if (panel.api.location.type === 'edge'
+          && allowed.has(panel.api.location.position as WorkbenchEdge)
+          && !autoTuckedIds.has(panel.id)) {
           skipPanelIds.add(panel.id);
         }
       }
-      restorePresentation(api, nextBaseline, { skipPanelIds, layoutHost: host });
+      restorePresentation(api, nextBaseline, { skipPanelIds, allowedEdges, layoutHost: host });
       // Idempotent after restorePresentation (edge sync already ran pre-layout); no grid resize.
       syncEdgeEmptyChrome(api);
     }

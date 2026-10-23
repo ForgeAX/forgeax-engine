@@ -1731,7 +1731,7 @@ index c4d301b..f59d9af 100644
      }
 
 diff --git a/src/dynamics/island_manager/manager.rs b/src/dynamics/island_manager/manager.rs
-index ad440b6..de88dfe 100644
+index ad440b6..6ead21d 100644
 --- a/src/dynamics/island_manager/manager.rs
 +++ b/src/dynamics/island_manager/manager.rs
 @@ -235,17 +235,6 @@ impl IslandManager {
@@ -1752,6 +1752,36 @@ index ad440b6..de88dfe 100644
      /// Number of currently active (non-sleeping) dynamic and kinematic bodies.
      #[inline]
      pub fn num_active_bodies(&self) -> usize {
+@@ -266,8 +255,28 @@ impl IslandManager {
+ 
+         if rb.is_fixed() {
+             // A body turned fixed leaves the persistent islands (fixed bodies
+-            // are never island members).
++            // are never island members) and its active-set chunk: a fixed body
++            // never sleeps, so leaving it there kept it in every step's active
++            // work (integration, CCD and ECS writeback scans) indefinitely.
++            let (chunk, slot) = (rb.ids.active_island_id, rb.ids.active_set_id);
++            rb.ids.active_island_id = u32::MAX;
++            rb.ids.active_set_id = u32::MAX;
+             self.persistent.remove_body(bodies, handle);
++            if let Some(island) = self.islands.get_mut(chunk as usize) {
++                if island.bodies.get(slot as usize) == Some(&handle) {
++                    island.bodies.swap_remove(slot as usize);
++                    if let Some(&moved) = island.bodies.get(slot as usize) {
++                        bodies.index_mut_internal(moved).ids.active_set_id = slot;
++                    }
++                    if island.bodies.is_empty() {
++                        if self.awake_island == Some(chunk as usize) {
++                            self.awake_island = None;
++                        }
++                        self.islands.remove(chunk as usize);
++                        self.free_islands.push(chunk as usize);
++                    }
++                }
++            }
+             return;
+         }
+ 
 diff --git a/src/dynamics/island_manager/sleep.rs b/src/dynamics/island_manager/sleep.rs
 index fe11b6a..eba7ed0 100644
 --- a/src/dynamics/island_manager/sleep.rs
@@ -5720,13 +5750,43 @@ index 832b837..691b17e 100644
          return collider;
      }
 diff --git a/typescript/src.ts/geometry/narrow_phase.ts b/typescript/src.ts/geometry/narrow_phase.ts
-index 6163053..e7e7707 100644
+index 6163053..efd99ee 100644
 --- a/typescript/src.ts/geometry/narrow_phase.ts
 +++ b/typescript/src.ts/geometry/narrow_phase.ts
-@@ -52,6 +52,32 @@ export class NarrowPhase {
+@@ -1,6 +1,7 @@
+ import {RawNarrowPhase, RawContactManifold} from "../raw";
+ import {ColliderHandle} from "./collider";
+-import {RigidBodySet} from "../dynamics";
++import {ColliderSet} from "./collider_set";
++import {RigidBodyHandle, RigidBodySet} from "../dynamics";
+ import {Vector, VectorOps, scratchBuffer} from "../math";
+ 
+ /**
+@@ -52,6 +53,53 @@ export class NarrowPhase {
          this.raw.intersection_pairs_with(collider1, f);
      }
  
++    // #if DIM3
++    /**
++     * Reads every contact pair of a body's enabled, non-sensor colliders in one
++     * native call. Per own collider: `[own, pairs]`, then one row per visited pair
++     * `[other, otherParent | NaN, solverManifolds (-1 when not admitted), touching (1, 0 or -1)]`.
++     */
++    public bodyContactPairs(
++        bodies: RigidBodySet,
++        colliders: ColliderSet,
++        body: RigidBodyHandle,
++        filterMask?: number,
++        direction?: Vector,
++        minimumDot = 0,
++    ): Float64Array {
++        return this.raw.body_contact_pairs(
++            bodies.raw, colliders.raw, body,
++            filterMask !== undefined, filterMask ?? 0,
++            direction !== undefined, direction?.x ?? 0, direction?.y ?? 0, direction?.z ?? 0, minimumDot,
++        );
++    }
++
 +    // #if DIM3
 +    /** Reads only solver adjacency; the caller admits the complete manifold roster budget. */
 +    public contactPairHasSolverContact(
@@ -5756,7 +5816,7 @@ index 6163053..e7e7707 100644
      /**
       * Iterates through all the contact manifolds between the given pair of colliders.
       *
-@@ -59,6 +85,7 @@ export class NarrowPhase {
+@@ -59,6 +107,7 @@ export class NarrowPhase {
       * @param collider2 - The second collider involved in the contact.
       * @param bodies - The set of rigid-bodies the colliders are attached to. Solver contacts are
       *                 anchored in body-local space, so this is needed to read them back in world-space.
@@ -5764,7 +5824,7 @@ index 6163053..e7e7707 100644
       * @param f - Closure that will be called on each contact manifold between the two colliders. If the second argument
       *            passed to this closure is `true`, then the contact manifold data is flipped, i.e., methods like `localNormal1`
       *            actually apply to the `collider2` and fields like `localNormal2` apply to the `collider1`.
-@@ -68,26 +95,27 @@ export class NarrowPhase {
+@@ -68,26 +117,27 @@ export class NarrowPhase {
          collider2: ColliderHandle,
          bodies: RigidBodySet,
          f: (manifold: TempContactManifold, flipped: boolean) => void,
@@ -5805,7 +5865,7 @@ index 6163053..e7e7707 100644
          }
      }
  
-@@ -222,6 +250,11 @@ export class TempContactManifold {
+@@ -222,6 +272,11 @@ export class TempContactManifold {
      }
      // #endif
  
@@ -6797,10 +6857,17 @@ index 14e7152..a9a0458 100644
      pub fn new() -> Self {
          RawColliderSet(ColliderSet::new())
 diff --git a/typescript/src/geometry/narrow_phase.rs b/typescript/src/geometry/narrow_phase.rs
-index fc1cc9d..40bde3d 100644
+index fc1cc9d..bd9aff5 100644
 --- a/typescript/src/geometry/narrow_phase.rs
 +++ b/typescript/src/geometry/narrow_phase.rs
-@@ -14,7 +14,11 @@ impl RawNarrowPhase {
+@@ -1,4 +1,6 @@
+ use crate::dynamics::RawRigidBodySet;
++#[cfg(feature = "dim3")]
++use crate::geometry::RawColliderSet;
+ use crate::utils::{self, FlatHandle};
+ use rapier::geometry::{ContactManifold, ContactPair, NarrowPhase};
+ use rapier::math::Real;
+@@ -14,7 +16,11 @@ impl RawNarrowPhase {
          RawNarrowPhase(NarrowPhase::new())
      }
  
@@ -6813,14 +6880,105 @@ index fc1cc9d..40bde3d 100644
          let this = JsValue::null();
          let handle1 = utils::collider_handle(handle1);
          for pair in self.0.contact_pairs_with(handle1) {
-@@ -24,16 +28,22 @@ impl RawNarrowPhase {
+@@ -24,16 +30,113 @@ impl RawNarrowPhase {
                  utils::flat_handle(pair.collider1.0)
              };
  
 -            let _ = f.call1(&this, &JsValue::from(handle2));
 +            f.call1(&this, &JsValue::from(handle2))?;
-         }
++        }
 +        Ok(())
++    }
++
++    /// One native pass over the contact pairs of every enabled, non-sensor
++    /// collider attached to `body`, replacing a JS callback per pair.
++    ///
++    /// Layout, per own collider: `[own, pairs]` followed by one row per visited
++    /// pair in native order: `[other, otherParent | NaN, solverManifolds, touching]`.
++    /// A pair is admitted when the other collider still exists, is enabled, is not
++    /// a sensor and (with `use_filter`) passes the packed collision-group test;
++    /// other rows carry `solverManifolds = -1`. `touching` is 1 when a solver
++    /// manifold has contacts (and, with `filter_normal`, an own-frame normal whose
++    /// dot exceeds `minimum_dot`), 0 otherwise and -1 when a non-finite normal was
++    /// met before a match.
++    #[cfg(feature = "dim3")]
++    pub fn body_contact_pairs(
++        &self,
++        bodies: &RawRigidBodySet,
++        colliders: &RawColliderSet,
++        body: FlatHandle,
++        use_filter: bool,
++        filter_mask: u32,
++        filter_normal: bool,
++        x: f64,
++        y: f64,
++        z: f64,
++        minimum_dot: f64,
++    ) -> Vec<f64> {
++        let mut out = Vec::new();
++        let Some(rb) = bodies.0.get(utils::body_handle(body)) else {
++            return out;
++        };
++        for &own in rb.colliders() {
++            let Some(co) = colliders.0.get(own) else {
++                continue;
++            };
++            if !co.is_enabled() || co.is_sensor() {
++                continue;
++            }
++            let header = out.len();
++            out.extend_from_slice(&[utils::flat_handle(own.0), 0.0]);
++            let mut visited = 0u32;
++            for pair in self.0.contact_pairs_with(own) {
++                visited += 1;
++                let flipped = pair.collider1 != own;
++                let other = if flipped { pair.collider1 } else { pair.collider2 };
++                let admitted = colliders.0.get(other).filter(|oc| {
++                    oc.is_enabled()
++                        && !oc.is_sensor()
++                        && (!use_filter || {
++                            let groups = super::pack_interaction_groups(oc.collision_groups());
++                            ((groups >> 16) & filter_mask) != 0 && ((filter_mask >> 16) & groups) != 0
++                        })
++                });
++                let Some(oc) = admitted else {
++                    out.extend_from_slice(&[utils::flat_handle(other.0), f64::NAN, -1.0, 0.0]);
++                    continue;
++                };
++                let manifolds = pair.solver_manifolds();
++                let sign = if flipped { -1.0 } else { 1.0 };
++                let mut touching = 0.0;
++                for manifold in manifolds {
++                    if manifold.data.solver_contacts.is_empty() {
++                        continue;
++                    }
++                    if !filter_normal {
++                        touching = 1.0;
++                        break;
++                    }
++                    let normal = manifold.data.normal;
++                    if !normal.is_finite() {
++                        touching = -1.0;
++                        break;
++                    }
++                    // Match the JS full-manifold normal predicate, including f64 arithmetic.
++                    if sign * (normal.x as f64 * x + normal.y as f64 * y + normal.z as f64 * z)
++                        > minimum_dot
++                    {
++                        touching = 1.0;
++                        break;
++                    }
++                }
++                out.extend_from_slice(&[
++                    utils::flat_handle(other.0),
++                    oc.parent().map_or(f64::NAN, |parent| utils::flat_handle(parent.0)),
++                    manifolds.len() as f64,
++                    touching,
++                ]);
++            }
++            out[header + 1] = visited as f64;
+         }
++        out
      }
  
 -    pub fn contact_pair(&self, handle1: FlatHandle, handle2: FlatHandle) -> Option<RawContactPair> {
@@ -6839,7 +6997,7 @@ index fc1cc9d..40bde3d 100644
      }
  
      pub fn intersection_pairs_with(&self, handle1: FlatHandle, f: js_sys::Function) {
-@@ -60,7 +70,7 @@ impl RawNarrowPhase {
+@@ -60,7 +163,7 @@ impl RawNarrowPhase {
  }
  
  #[wasm_bindgen]
@@ -6848,7 +7006,7 @@ index fc1cc9d..40bde3d 100644
  #[wasm_bindgen]
  pub struct RawContactManifold(*const ContactManifold);
  
-@@ -80,11 +90,45 @@ impl RawContactPair {
+@@ -80,11 +183,45 @@ impl RawContactPair {
      }
  
      pub fn numContactManifolds(&self) -> usize {
@@ -6896,7 +7054,7 @@ index fc1cc9d..40bde3d 100644
                  .get(i)
                  .map(|m| RawContactManifold(m as *const ContactManifold))
          }
-@@ -267,6 +311,19 @@ impl RawContactManifold {
+@@ -267,6 +404,19 @@ impl RawContactManifold {
          }
      }
  

@@ -32,12 +32,15 @@ test('template console admission rejects camera-free errors and admits only expl
 test('template readiness bounds startup and GPU completion independently and rejects stalls', async () => {
   for (const outcome of ['completed', 'startup-stalled', 'gpu-stalled']) {
     const waits = [];
-    const dataset = { forgeaxFrameSubmitted: '2' };
+    const canvas = {
+      width: 320,
+      height: 180,
+      forgeaxFrameProgress: { submitted: { frameId: 2 } },
+    };
     const scope = {
       TEMPLATE_SETTLE_FRAMES: 1,
       document: {
-        querySelector: () => ({ width: 320, height: 180 }),
-        documentElement: { dataset },
+        querySelector: () => canvas,
       },
       __forgeaxPreviewInspection:
         outcome === 'startup-stalled'
@@ -50,7 +53,10 @@ test('template readiness bounds startup and GPU completion independently and rej
         waitForFunction: async (predicate, argument, options) => {
           waits.push({ argument, options });
           if (argument.requireCompletedFrame && outcome === 'completed')
-            dataset.forgeaxFrameCompleted = '1';
+            canvas.forgeaxFrameProgress = {
+              ...canvas.forgeaxFrameProgress,
+              completed: { frameId: 1 },
+            };
           if (!predicate(argument)) throw new Error('bounded readiness timeout');
         },
         evaluate: async (operation, argument) => operation(argument),
@@ -806,14 +812,11 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
       },
       isClosed: () => false,
       evaluate: async (fn) => {
-        if (fn.toString().includes('frameProgress')) {
+        if (fn.toString().includes('forgeaxFrameProgress')) {
           return {
             frame: {
               submitted: 7,
               completed: failed ? 6 : 7,
-              inFlight: failed ? 1 : 0,
-              highWater: 2,
-              throttledTicks: 0,
             },
             renderer: { reason: 'alive' },
           };
@@ -893,9 +896,6 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
       frame: {
         submitted: 7,
         completed: failed ? 6 : 7,
-        inFlight: failed ? 1 : 0,
-        highWater: 2,
-        throttledTicks: 0,
       },
       renderer: { reason: 'alive' },
     });

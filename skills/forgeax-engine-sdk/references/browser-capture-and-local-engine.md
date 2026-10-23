@@ -11,14 +11,14 @@ The readiness chain is explicit:
 
 ```mermaid
 flowchart LR
-  A[Renderer submits frame] --> B[data-forgeax-frame-submitted]
+  A[Renderer submits frame] --> B[canvas.forgeaxFrameProgress.submitted]
   B --> C[non-flat Canvas witness]
   C --> D[optional named game checkpoint]
   D --> E[compositor settle]
   E --> F[full viewport PNG and run.json]
 ```
 
-The Engine publishes `data-forgeax-frame-submitted` after a real renderer submission. A deterministic game may additionally set `data-forgeax-capture-ready` to `true` or a checkpoint name. `--wait-ms` is only extra compositor settle time after those signals; it is not the game-readiness authority.
+The Engine retains submitted and completed frame facts on the owner Canvas as `forgeaxFrameProgress`. Its `forgeax:frame-submitted` Canvas event is a future-only notification; it does not replay an earlier submission. A deterministic game may additionally set `data-forgeax-capture-ready` to `true` or a checkpoint name. `--wait-ms` is only extra compositor settle time after those signals; it is not the game-readiness authority.
 
 ```bash
 forgeax project capture --backend auto --require-ui --deterministic \

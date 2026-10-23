@@ -245,7 +245,7 @@ describe('live DevKit borrowed carrier boundary', () => {
       runtime: { engineFrameId: 3 },
       pixels: { width: 2, height: 2, rendered: true },
     };
-    fixtures.page.evaluate.mockResolvedValue('2');
+    fixtures.page.evaluate.mockResolvedValue(2);
     fixtures.session.capture.mockResolvedValue(record);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -368,7 +368,7 @@ describe('live DevKit borrowed carrier boundary', () => {
       failUpload ? err(uploadFailure) : ok({ kind: 'rhi-tape', digest: artifact.digest }),
     );
     const captureFrame = vi.fn(async () => (failCapture ? err(failure) : ok(artifact)));
-    fixtures.page.evaluate.mockResolvedValue('2');
+    fixtures.page.evaluate.mockResolvedValue(2);
     try {
       await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
       bridge = new WebSocket(`ws://127.0.0.1:${port}/bridge`);

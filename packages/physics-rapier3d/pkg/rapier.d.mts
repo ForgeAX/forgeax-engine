@@ -763,6 +763,20 @@ declare class RawMultibodyJointSet {
 declare class RawNarrowPhase {
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * One native pass over the contact pairs of every enabled, non-sensor
+     * collider attached to `body`, replacing a JS callback per pair.
+     *
+     * Layout, per own collider: `[own, pairs]` followed by one row per visited
+     * pair in native order: `[other, otherParent | NaN, solverManifolds, touching]`.
+     * A pair is admitted when the other collider still exists, is enabled, is not
+     * a sensor and (with `use_filter`) passes the packed collision-group test;
+     * other rows carry `solverManifolds = -1`. `touching` is 1 when a solver
+     * manifold has contacts (and, with `filter_normal`, an own-frame normal whose
+     * dot exceeds `minimum_dot`), 0 otherwise and -1 when a non-finite normal was
+     * met before a match.
+     */
+    body_contact_pairs(bodies: RawRigidBodySet, colliders: RawColliderSet, body: number, use_filter: boolean, filter_mask: number, filter_normal: boolean, x: number, y: number, z: number, minimum_dot: number): Float64Array;
     contact_pair(handle1: number, handle2: number, solver: boolean): RawContactPair | undefined;
     contact_pairs_with(handle1: number, f: Function): void;
     intersection_pair(handle1: number, handle2: number): boolean;
@@ -4932,6 +4946,12 @@ declare class NarrowPhase {
      * is a sensor.
      */
     intersectionPairsWith(collider1: ColliderHandle, f: (collider2: ColliderHandle) => void): void;
+    /**
+     * Reads every contact pair of a body's enabled, non-sensor colliders in one
+     * native call. Per own collider: `[own, pairs]`, then one row per visited pair
+     * `[other, otherParent | NaN, solverManifolds (-1 when not admitted), touching (1, 0 or -1)]`.
+     */
+    bodyContactPairs(bodies: RigidBodySet, colliders: ColliderSet, body: RigidBodyHandle, filterMask?: number, direction?: Vector, minimumDot?: number): Float64Array;
     /** Reads only solver adjacency; the caller admits the complete manifold roster budget. */
     contactPairHasSolverContact(collider1: ColliderHandle, collider2: ColliderHandle, maximumManifolds: number, direction?: Vector, minimumDot?: number): {
         manifoldCount: number;

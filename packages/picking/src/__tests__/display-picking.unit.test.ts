@@ -1,5 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry, createTorusGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import {
   attachBarrelDistortionCameraFrame,
@@ -14,11 +15,53 @@ import {
   computeDisplayScreenRay,
   displayToScenePixel,
   pickDisplay,
+  pickTriangleDisplay,
   pickVertexDisplay,
   pickVertexOnEntityDisplay,
 } from '../display-picking';
 
 describe('display picking frame authority', () => {
+  it('picks through a hollow foreground mesh to the nearest rear triangle', () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const torus = assets.create(createTorusGeometry(1, 0.25, 24, 12).unwrap()).unwrap();
+    const box = assets.create(createBoxGeometry(0.8, 0.8, 0.8).unwrap()).unwrap();
+    const ringEntity = world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: torus } },
+        { component: MeshRenderer, data: { materials: [] } },
+      )
+      .unwrap();
+    const cubeEntity = world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, -2] } },
+        { component: MeshFilter, data: { assetHandle: box } },
+        { component: MeshRenderer, data: { materials: [] } },
+      )
+      .unwrap();
+    propagateTransforms(world);
+
+    const viewMatrix = mat4.identity(mat4.create());
+    viewMatrix[14] = -5;
+    const mapping = attachBarrelDistortionCameraFrame(
+      createBarrelDistortionMapping(64, 64, { strength: 0 }).unwrap(),
+      {
+        projection: 'perspective',
+        far: 100,
+        viewMatrix,
+        projectionMatrix: mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 1, 0.1, 100),
+      },
+    );
+
+    expect(pickDisplay(world, 32, 32, mapping, 64, 64)?.entity).toBe(ringEntity);
+    const result = pickTriangleDisplay(world, 32, 32, mapping, 64, 64);
+    expect(result.status).toBe('hit');
+    if (result.status !== 'hit') return;
+    expect(result.hit.entity).toBe(cubeEntity);
+    expect(result.hit.precision).toBe('triangle');
+  });
+
   it('constructs the identity display ray without a live World', () => {
     const mapping = attachBarrelDistortionCameraFrame(
       createBarrelDistortionMapping(640, 360, undefined).unwrap(),
@@ -114,6 +157,10 @@ describe('display picking frame authority', () => {
       },
     } as unknown as World;
     expect(pickDisplay(world, 10, 10, undefined, 640, 360)).toBeUndefined();
+    expect(pickTriangleDisplay(world, 10, 10, undefined, 640, 360)).toMatchObject({
+      status: 'miss',
+      precision: 'triangle',
+    });
     expect(pickVertexDisplay(world, 10, 10, undefined, 640, 360)).toBeUndefined();
     expect(
       pickVertexOnEntityDisplay(world, 10, 10, undefined, 640, 360, 18 as never),

@@ -30,10 +30,10 @@ export async function verifyScenePlay({ page, live, sameRun, cycles = 10 }) {
     const game = frame ?? page.frames().find(value => value.url().includes(target.targetId));
     assert.ok(game, 'the Engine-generated game target must be mounted');
     console.error('Play startup timing', { waitMs: Math.round(performance.now() - waitingSince), renderer: await game.evaluate(() => globalThis.__forgeaxRendererBootstrap) });
-    const progress = setInterval(() => { void game.evaluate(() => ({ frame: document.documentElement.dataset.forgeaxFrameSubmitted, renderer: globalThis.__forgeaxGameInspection?.renderer(), canvas: { width: document.querySelector('canvas')?.width, height: document.querySelector('canvas')?.height } })).then(value => console.error('Play frames', JSON.stringify(value))).catch(() => {}); }, 10_000);
+    const progress = setInterval(() => { void game.evaluate(() => ({ frame: document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? null, renderer: globalThis.__forgeaxGameInspection?.renderer(), canvas: { width: document.querySelector('canvas#app')?.width, height: document.querySelector('canvas#app')?.height } })).then(value => console.error('Play frames', JSON.stringify(value))).catch(() => {}); }, 10_000);
     progress.unref();
     try {
-      await game.waitForFunction(count => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) >= count || globalThis.__forgeaxGameInspection?.renderer().execution.engine.health === 'faulted' || globalThis.__forgeaxGameInspection?.renderer().execution.world.health === 'poisoned', cycle === 0 ? 60 : 3, { timeout: 180_000 });
+      await game.waitForFunction(count => (document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= count || globalThis.__forgeaxGameInspection?.renderer().execution.engine.health === 'faulted' || globalThis.__forgeaxGameInspection?.renderer().execution.world.health === 'poisoned', cycle === 0 ? 60 : 3, { timeout: 180_000 });
     } finally { clearInterval(progress); }
     const execution = await game.evaluate(() => globalThis.__forgeaxGameInspection?.renderer());
     assert.notEqual(execution?.execution.engine.health, 'faulted', JSON.stringify(execution));
@@ -41,7 +41,7 @@ export async function verifyScenePlay({ page, live, sameRun, cycles = 10 }) {
     assert.deepEqual(await page.locator('.fx-error-notice').allTextContents(), [], `Play cycle ${cycle + 1} startup must admit panel queries through first readiness`);
 
     assert.equal(await game.locator('#forgeax-view-root').count(), 0, 'game projection excludes the View shell');
-    assert.equal(await game.locator('canvas').count(), 1);
+    assert.equal(await game.locator('canvas#app').count(), 1);
     assert.equal(await page.locator('iframe[data-forgeax-scene-play]').count(), 1);
     const tree = await workspace.getSceneTree(args);
     assert.equal(tree.targetId, target.targetId);
@@ -79,22 +79,22 @@ export async function verifyScenePlay({ page, live, sameRun, cycles = 10 }) {
     assert.equal(picked.entityId, entity.entityId, 'picking uses the submitted game frame');
     await workspace.invoke('entity.focus', { ...args, entityId: entity.entityId });
     const beforeCamera = await workspace.getCamera(args);
-    const before = await game.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted));
+    const before = await game.evaluate(() => document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? 0);
     await workspace.selectTarget({ targetId: scene.target.targetId });
     assert.equal(workspace.snapshot().preview.target.targetId, scene.target.targetId);
     await workspace.selectTarget({ targetId: target.targetId });
-    await game.waitForFunction(value => Number(document.documentElement.dataset.forgeaxFrameSubmitted) > value, before);
+    await game.waitForFunction(value => (document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > value, before);
     assert.equal((await workspace.getSceneTree(args)).worldId, tree.worldId);
     // Startup owns input until its completed-frame fade has actually retired.
     // Renderer readiness and three submitted frames alone do not admit gestures.
     await game.locator('#forgeax-loading').waitFor({ state: 'hidden' });
-    const camera = game.locator('canvas');
+    const camera = game.locator('canvas#app');
     const box = await camera.boundingBox();
     assert.ok(box?.width);
     await game.evaluate(() => {
       // Game-authored UI may cover the canvas. Keep the same real mouse/key
       // path while making this previously intermittent failure deterministic.
-      const rect = document.querySelector('canvas').getBoundingClientRect();
+      const rect = document.querySelector('canvas#app').getBoundingClientRect();
       const overlay = document.createElement('div');
       overlay.dataset.observerInputProof = 'true';
       Object.assign(overlay.style, { position: 'fixed', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, zIndex: '2147483647', pointerEvents: 'auto' });

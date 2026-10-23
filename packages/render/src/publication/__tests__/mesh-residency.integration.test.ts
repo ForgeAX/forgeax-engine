@@ -4,7 +4,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { createPublishedMeshResidencyHost } from '../../assembly/published-mesh-residency';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
@@ -483,7 +483,9 @@ it('rejects a prepared mesh reference the receiver does not hold', () => {
     .unwrap();
   world.update(0).unwrap();
   const packet = structuredClone(publisher.prepare(0).unwrap().packet);
-  expect(receiver.accept(packet).error?.detail.reason).toBe('revision');
+  const rejected = receiver.accept(packet);
+  assert(!rejected.ok);
+  expect(rejected.error.detail.reason).toBe('revision');
   publisher.dispose();
 });
 

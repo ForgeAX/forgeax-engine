@@ -283,6 +283,73 @@ function jsonValue(value: unknown): unknown {
   return value;
 }
 
+// Deep-frozen data objects cannot change, so their canonical text is computed once.
+const canonicalTexts = new WeakMap<object, string>();
+// Set by canonicalText: whether its last result may be cached by identity.
+let canonicalStable = true;
+// Set when an input would make the legacy serializer call toJSON; it then stays authoritative.
+let canonicalLegacy = false;
+const ARRAY_INDEX = /^\d+$/;
+
+function frozenData(value: object): boolean {
+  if (!Object.isFrozen(value)) return false;
+  for (const key of Object.getOwnPropertyNames(value))
+    if (!('value' in (Object.getOwnPropertyDescriptor(value, key) as PropertyDescriptor)))
+      return false;
+  return true;
+}
+
+/** `JSON.stringify(jsonValue(value))` with identity reuse for deep-frozen data. */
+function canonicalText(value: unknown): string | undefined {
+  if (value === null || typeof value !== 'object') {
+    canonicalStable = true;
+    return JSON.stringify(value);
+  }
+  const cached = canonicalTexts.get(value);
+  if (cached !== undefined) {
+    canonicalStable = true;
+    return cached;
+  }
+  let text: string;
+  let stable: boolean;
+  if (value instanceof Uint8Array) {
+    stable = false;
+    text = `[${value.join(',')}]`;
+  } else if (Array.isArray(value)) {
+    stable = frozenData(value);
+    const parts: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      parts.push(canonicalText(value[index]) ?? 'null');
+      stable &&= canonicalStable;
+    }
+    text = `[${parts.join(',')}]`;
+  } else {
+    stable = frozenData(value);
+    let entries = Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => compareCanonicalStrings(a, b));
+    // Object.fromEntries orders array-index keys numerically before the sorted names.
+    if (entries.some(([key]) => ARRAY_INDEX.test(key))) {
+      const values = new Map(entries);
+      entries = Object.keys(Object.fromEntries(entries)).map((key) => [key, values.get(key)]);
+    }
+    const parts: string[] = [];
+    for (const [key, entry] of entries) {
+      if (key === 'toJSON' && typeof entry === 'function') {
+        canonicalLegacy = true;
+        stable = false;
+      }
+      const child = canonicalText(entry);
+      stable &&= canonicalStable;
+      if (child !== undefined) parts.push(`${JSON.stringify(key)}:${child}`);
+    }
+    text = `{${parts.join(',')}}`;
+  }
+  if (stable) canonicalTexts.set(value, text);
+  canonicalStable = stable;
+  return text;
+}
+
 export function createMaterialCookIdentity(input: MaterialCookIdentityInput): MaterialCookIdentity {
   const cookIdentity = createMaterialArtifactDigest(
     new TextEncoder().encode(
@@ -745,6 +812,21 @@ function validateRasterSelection(
   });
 }
 
+// A deep-frozen ABI cannot change, so one admission covers every selection that shares it.
+const admittedFrozenAbis = new WeakSet<object>();
+function isAdmittedMaterialProgramAbi(value: unknown): value is MaterialProgramAbi {
+  if (value !== null && typeof value === 'object' && admittedFrozenAbis.has(value)) return true;
+  if (!isMaterialProgramAbi(value)) return false;
+  try {
+    // Canonical text is cached only for deep-frozen data; the digest reuses it.
+    canonicalText(value);
+    if (canonicalTexts.has(value)) admittedFrozenAbis.add(value);
+  } catch {
+    // Serialization failures stay with the digest that reports them today.
+  }
+  return true;
+}
+
 /** Validate a modern selection's address/entry/ABI facts and record its submission address. */
 function validateAddressedSelection(
   selection: Record<string, unknown>,
@@ -763,7 +845,8 @@ function validateAddressedSelection(
     );
   if (entry === undefined || entry.length === 0)
     return invalid(`${selectionField}.entry`, rawEntry);
-  if (!isMaterialProgramAbi(selection.abi)) return invalid(`${selectionField}.abi`, selection.abi);
+  if (!isAdmittedMaterialProgramAbi(selection.abi))
+    return invalid(`${selectionField}.abi`, selection.abi);
   const abi = selection.abi;
   const expectedEntry = address === 'direct' ? abi.directEntry : abi.sceneIndexEntry;
   if (entry !== expectedEntry)
@@ -956,8 +1039,37 @@ export function validateMaterialCookProgramContext(
   return ok({ ...context } as unknown as MaterialCookProgramContext);
 }
 
-/** Covers every selection and artifact while excluding transport copies of the bytes. */
-export function createMaterialProgramSetDigest(
+// Materials sharing one program set produce one large manifest; hash each distinct text once.
+const MANIFEST_DIGEST_ENTRIES = 64;
+const MANIFEST_DIGEST_CHARACTERS = 32 * 1024 * 1024;
+const manifestDigests = new Map<string, string>();
+let manifestDigestCharacters = 0;
+
+function manifestDigest(text: string): string {
+  const cached = manifestDigests.get(text);
+  if (cached !== undefined) {
+    manifestDigests.delete(text);
+    manifestDigests.set(text, cached);
+    return cached;
+  }
+  const digest = createMaterialArtifactDigest(new TextEncoder().encode(text));
+  if (text.length > MANIFEST_DIGEST_CHARACTERS) return digest;
+  manifestDigests.set(text, digest);
+  manifestDigestCharacters += text.length;
+  for (const oldest of manifestDigests.keys()) {
+    if (
+      manifestDigests.size <= MANIFEST_DIGEST_ENTRIES &&
+      manifestDigestCharacters <= MANIFEST_DIGEST_CHARACTERS
+    )
+      break;
+    manifestDigests.delete(oldest);
+    manifestDigestCharacters -= oldest.length;
+  }
+  return digest;
+}
+
+/** The exact legacy manifest text, for inputs outside the canonical fast path. */
+function legacyMaterialProgramSetManifest(
   programs: readonly MaterialCookProgram[],
   passes: readonly MaterialPass[],
 ): string {
@@ -979,5 +1091,47 @@ export function createMaterialProgramSetDigest(
       }))
       .sort((a, b) => compareCanonicalStrings(a.specializationKey, b.specializationKey)),
   };
-  return createMaterialArtifactDigest(new TextEncoder().encode(JSON.stringify(manifest)));
+  return JSON.stringify(manifest);
+}
+
+function materialProgramSetManifest(
+  programs: readonly MaterialCookProgram[],
+  passes: readonly MaterialPass[],
+): string {
+  canonicalLegacy = false;
+  const passText = canonicalText(passes);
+  const entries: { readonly key: string; readonly text: string }[] = [];
+  for (const program of programs) {
+    if (typeof program.specializationKey !== 'string') canonicalLegacy = true;
+    const selections: string[] = [];
+    for (const selection of program.selections) {
+      const text = canonicalText(selection);
+      if (text === undefined) canonicalLegacy = true;
+      else selections.push(text);
+    }
+    if (canonicalLegacy) break;
+    selections.sort(compareCanonicalStrings);
+    const artifact = JSON.stringify({
+      digest: program.artifact.digest,
+      mediaType: program.artifact.mediaType,
+      path: program.artifact.path,
+    });
+    entries.push({
+      key: program.specializationKey,
+      text: `{"artifact":${artifact},"selections":[${selections.join(',')}],"specializationKey":${JSON.stringify(program.specializationKey)}}`,
+    });
+  }
+  if (canonicalLegacy) return legacyMaterialProgramSetManifest(programs, passes);
+  entries.sort((a, b) => compareCanonicalStrings(a.key, b.key));
+  return `{${passText === undefined ? '' : `"passes":${passText},`}"programs":[${entries
+    .map((entry) => entry.text)
+    .join(',')}]}`;
+}
+
+/** Covers every selection and artifact while excluding transport copies of the bytes. */
+export function createMaterialProgramSetDigest(
+  programs: readonly MaterialCookProgram[],
+  passes: readonly MaterialPass[],
+): string {
+  return manifestDigest(materialProgramSetManifest(programs, passes));
 }

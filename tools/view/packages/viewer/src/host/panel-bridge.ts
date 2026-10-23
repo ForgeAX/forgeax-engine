@@ -27,13 +27,10 @@ export async function waitForViewSlot(registry: SlotRegistry, slot: string) {
   return registry.resolve(slot);
 }
 
-export async function mountViewReactPanel({ registry, id, slot, pageType, titleKey, dockTitleHidden, activity, layout, panel, props }: PanelMount & { registry: SlotRegistry }) {
+export async function mountViewReactPanel({ registry, id, slot, home, titleKey, dockTitleHidden, activity, layout, panel, props }: PanelMount & { registry: SlotRegistry }) {
   if (!registry) throw new TypeError('mountViewReactPanel requires viewSlotRegistry');
   id ??= slot!;
-  if (typeof pageType !== 'string' || pageType.trim() === '') {
-    throw new TypeError('mountViewReactPanel requires pageType');
-  }
-  const unclaim = registry.claim({ id, pageType, titleKey, dockTitleHidden, activity, layout });
+  const unclaim = registry.claim({ id, home, titleKey, dockTitleHidden, activity, layout } as PanelClaim);
   try {
     const mountElement = await waitForViewSlot(registry, id);
     const panels = await loadViewPanels();
@@ -105,7 +102,7 @@ export function createViewPanelHost({ registry, pageRegistry, overlayRoot, platf
         const id = `${options.id}:${type.typeId}`;
         const state: { dispose?: Dispose; token: object } = { token };
         mounted.set(type.typeId, state);
-        void mountViewReactPanel({ registry, ...options, id, pageType: type.typeId, props: {
+        void mountViewReactPanel({ registry, ...options, id, home: { kind: 'page', pageType: type.typeId }, props: {
           ...options.props,
           assetPage: {
             pageTypeId: type.typeId,

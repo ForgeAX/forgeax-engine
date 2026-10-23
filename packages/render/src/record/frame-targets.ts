@@ -1,4 +1,9 @@
-import type { RhiCanvasContext, Texture, TextureView } from '@forgeax/engine-rhi';
+import {
+  type RhiCanvasContext,
+  RhiError,
+  type Texture,
+  type TextureView,
+} from '@forgeax/engine-rhi';
 import type { RenderGraphExecutionPhase } from '../render-contract';
 import type { ExtractedLights } from '../render-system-extract';
 import {
@@ -69,7 +74,7 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
 export function acquireSwapChainTarget(
   internals: RenderSystemInternals,
   pipelineState: PipelineState,
-): { currentTexture: Texture; view: TextureView; targetW: number; targetH: number } | null {
+): { texture: Texture; view: TextureView; targetW: number; targetH: number } | null {
   const output = internals.viewOutput?.texture ?? internals.presentationOutput;
   if (output !== undefined) {
     const view = internals.device.createTextureView(output, {
@@ -80,7 +85,7 @@ export function acquireSwapChainTarget(
       return null;
     }
     return {
-      currentTexture: output,
+      texture: output,
       view: view.value,
       targetW: internals.viewOutput?.width ?? internals.canvas.width,
       targetH: internals.viewOutput?.height ?? internals.canvas.height,
@@ -141,11 +146,34 @@ export function acquireSwapChainTarget(
     return null;
   }
   return {
-    currentTexture: currentTextureResult.value,
+    texture: currentTextureResult.value,
     view: viewResult.value,
     targetW: internals.canvas.width | 0,
     targetH: internals.canvas.height | 0,
   };
+}
+
+/** Preparation reads dimensions without acquiring the canvas's next texture. */
+export function frameTargetExtent(
+  internals: RenderSystemInternals,
+  captureOnly: boolean,
+  captureTarget?: { readonly width: number; readonly height: number },
+): { targetW: number; targetH: number } {
+  const capture = captureOnly ? captureTarget : undefined;
+  return {
+    targetW: (capture?.width ?? internals.viewOutput?.width ?? internals.canvas.width) | 0,
+    targetH: (capture?.height ?? internals.viewOutput?.height ?? internals.canvas.height) | 0,
+  };
+}
+
+export function requireFrameTarget(target: ReturnType<typeof acquireSwapChainTarget> | undefined) {
+  if (target == null)
+    throw new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'the presentation target is acquired after pipeline preparation',
+      hint: 'resolve surface resources only while executing ready frame passes',
+    });
+  return target;
 }
 
 /** The exact light projections consumed by GPU and raster shadow views. */

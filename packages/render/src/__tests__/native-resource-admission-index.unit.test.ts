@@ -4,10 +4,10 @@ import {
   createNativeResourceAdmission,
   createPreparedResourceMaps,
 } from '../features/native-resource-admission';
+import type { RenderFeatureResourceDeclaration } from '../features/plan';
 import type {
   RenderFeatureGpuBufferRef,
   RenderFeatureGpuPrepareSession,
-  RenderFeatureResourceDeclaration,
 } from '../features/prepared-gpu-work';
 
 const buffer = (name: string): RenderFeatureResourceDeclaration =>

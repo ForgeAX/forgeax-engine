@@ -455,6 +455,9 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
     'packages/render/src/__tests__/managed-basis-versions.dawn.test.ts',
     'packages/render/src/__tests__/managed-material-layout.dawn.test.ts',
     'packages/render/src/__tests__/managed-material-versions.browser.test.ts',
+    // Canvas-retention evidence observes a native validation scope only;
+    // scene recording, pipeline preparation and submission stay on RHI.
+    'packages/render/src/__tests__/pending-surface.browser.test.ts',
     'packages/render/src/__tests__/managed-material-versions.dawn.test.ts',
     'packages/render/src/__tests__/managed-mesh-range.gpu-fixture.ts',
     'packages/render/src/__tests__/managed-mesh-structure.gpu-fixture.ts',

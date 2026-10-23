@@ -3,10 +3,12 @@ import { test } from 'node:test';
 import { startNativePlugin } from '@forgeax/engine-plugin';
 import { presentationFixture as fixture, surfaces, providePresentation as provide } from './support/presentation-fixture.mjs';
 
+// These are lifecycle checks, not startup benchmarks. Keep Engine's normal
+// bounded startup budget while parallel source tests share the event loop.
 test('embedded Shell starts before App and native presentation children follow provider lifetime', async () => {
   const f = fixture();
   try {
-    const started = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config }, { timeoutMs: 120 });
+    const started = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config });
     assert.equal(started.ok, true, JSON.stringify(started.error));
     assert.equal(surfaces(f).length, 0);
     assert.equal(f.pages.size, 0);
@@ -41,12 +43,13 @@ test('embedded Shell starts before App and native presentation children follow p
 test('failed App leaves embedded Shell active with no pending presentation descendants', async () => {
   const f = fixture();
   try {
-    const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config }, { timeoutMs: 120 });
+    const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config });
     assert.equal(shell.ok, true, JSON.stringify(shell.error));
     const app = await startNativePlugin(f.ctx, { name: 'failed-renderer', apply() {
       throw new Error('renderer unavailable');
     } }, {}, { timeoutMs: 120 });
     assert.equal(app.ok, false);
+    assert.equal(app.error.detail.reason, 'failed');
     assert.equal(shell.value.state, 2);
     assert.equal(surfaces(f).length, 0);
     assert.equal(f.pages.size, 0);
@@ -59,7 +62,7 @@ for (const late of [false, true]) {
     f.config.panelHost.mountPanel = async () => { throw new Error('surface mount failed'); };
     try {
       if (!late) await provide(f.ctx, 'app');
-      const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config }, { timeoutMs: 120 });
+      const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config });
       if (!late) {
         assert.equal(shell.ok, false);
         assert.equal(shell.error.detail.reason, 'failed');
@@ -86,7 +89,7 @@ test('a loading presentation provider does not become a Shell startup dependency
       inner.provide('engineWorkspacePresentation', {});
       await gate;
     } });
-    const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config }, { timeoutMs: 120 });
+    const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config });
     assert.equal(shell.ok, true, JSON.stringify(shell.error));
     assert.equal(surfaces(f).length, 0);
     release();
@@ -103,7 +106,7 @@ for (const key of ['presentation', 'targetPresentation']) {
     const f = fixture();
     f.config[key] = {};
     try {
-      const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config }, { timeoutMs: 120 });
+      const shell = await startNativePlugin(f.ctx, f.root, { frontendConfig: f.config });
       assert.equal(shell.ok, true, JSON.stringify(shell.error));
       assert.deepEqual([...f.pages], [f.pageType]);
       assert.equal(surfaces(f).length, 1);
@@ -112,3 +115,22 @@ for (const key of ['presentation', 'targetPresentation']) {
     assert.deepEqual(f.counts(), { mounts: 2, unmounts: 2, claims: 1, releases: 1 });
   });
 }
+
+test('native startup still rejects a required child with no presentation provider', async () => {
+  const f = fixture();
+  try {
+    const result = await startNativePlugin(f.ctx, {
+      name: 'required-presentation-root',
+      apply(ctx) {
+        ctx.plugin({ name: 'required-presentation-child', inject: ['engineWorkspacePresentation'], apply() {} });
+      },
+    }, {}, { timeoutMs: 120 });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.detail.reason, 'timeout');
+    assert.equal(result.error.detail.cleanup, 'completed');
+    assert.ok(result.error.detail.fibers.some(fiber =>
+      fiber.name === 'required-presentation-child'
+        && fiber.state === 'pending'
+        && fiber.missingServices.includes('engineWorkspacePresentation')));
+  } finally { await f.dispose(); }
+});

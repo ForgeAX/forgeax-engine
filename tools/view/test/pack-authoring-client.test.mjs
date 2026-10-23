@@ -111,7 +111,7 @@ test('generation adopts the Pack output into every open same-source preview', as
     await author.open();
     await author.act('generate');
     assert.deepEqual(calls, [
-      ['open', undefined], ['generate', 'scene'], ['generate', 'material'], ['generate', 'mesh'],
+      ['open', 'scene'], ['generate', 'scene'], ['generate', 'material'], ['generate', 'mesh'],
     ]);
   } finally { author.dispose(); }
 });
@@ -147,7 +147,7 @@ test('runtime edits replay the shared draft to every open Pack preview', async (
     assert.deepEqual(previews.get('material'), [0.2, 0.4, 0.8]);
     assert.deepEqual(previews.get('scene'), [0.2, 0.4, 0.8]);
     assert.deepEqual(calls.map(([action, target]) => [action, target]), [
-      ['open', undefined], ['get', 'material'], ['edit', 'material'], ['get', 'material'], ['get', 'scene'],
+      ['open', 'material'], ['get', 'material'], ['edit', 'material'], ['get', 'material'], ['get', 'scene'],
     ]);
     targets.push('mesh');
     await author.syncPreviews();

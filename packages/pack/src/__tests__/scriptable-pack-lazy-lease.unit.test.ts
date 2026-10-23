@@ -203,9 +203,10 @@ it('preserves blocked read errors and reacquires a lease for a later worklist re
 });
 
 it.each([
-  'module-load',
-  'build',
-] as const)('retains the original 15000 ms %s timeout and releases its lease', async (phase) => {
+  // Module initialization uses the busy-host scan bound; author builds keep 15 s.
+  ['module-load', 120_000],
+  ['build', 15_000],
+] as const)('bounds the %s phase at %i ms and releases its lease', async (phase, timeoutMs) => {
   vi.useFakeTimers();
   const f = fixture(
     definePack({
@@ -216,14 +217,14 @@ it.each([
   );
   if (phase === 'module-load') f.load.mockImplementationOnce(() => new Promise<never>(() => {}));
   const pending = f.lazy().build(context as never);
-  await vi.advanceTimersByTimeAsync(14999);
+  await vi.advanceTimersByTimeAsync(timeoutMs - 1);
   expect(f.active()).toBe(1);
   await vi.advanceTimersByTimeAsync(1);
   expect(await pending).toMatchObject({
     ok: false,
     error: {
       code: 'pack-parameter-invalid',
-      detail: { reason: 'timeout', phase, timeoutMs: 15000 },
+      detail: { reason: 'timeout', phase, timeoutMs },
     },
   });
   expect(f.active()).toBe(0);

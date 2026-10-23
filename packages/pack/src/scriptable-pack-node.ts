@@ -508,6 +508,13 @@ export interface LoadScriptablePackOptions {
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
 }
 
+/**
+ * Module-initialization bound for Pack inventory and production. A cold
+ * isolated worker compiles and evaluates the authored closure; heavy closures
+ * (for example generated equipment) need tens of seconds on a busy build host.
+ */
+export const SCRIPTABLE_PACK_MODULE_TIMEOUT_MS = 120_000;
+
 /** Metadata owns no worker; each execution owns one bounded, recyclable lease. */
 export function createLazyScriptablePackDefinition(input: {
   readonly sourcePath: string;
@@ -555,6 +562,7 @@ export function createLazyScriptablePackDefinition(input: {
       const loaded = await loadScriptablePack(input.sourcePath, {
         executor,
         sourceSnapshot: input.sourceSnapshot,
+        timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
       });
       if (!loaded.ok) return loaded;
       if (

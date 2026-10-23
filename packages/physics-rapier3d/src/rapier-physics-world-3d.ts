@@ -888,8 +888,14 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     );
   }
 
-  private readonly currentContactOwner = (collider: RapierCollider) =>
-    currentContactOwner(collider, this.entityMap, this.worldIdentity, this.derivedColliderToShape);
+  private readonly currentContactOwner = (collider: number, parent: RapierRigidBody | null) =>
+    currentContactOwner(
+      collider,
+      parent,
+      this.entityMap,
+      this.worldIdentity,
+      this.derivedColliderToShape,
+    );
 
   getCurrentContacts(
     entity: number,

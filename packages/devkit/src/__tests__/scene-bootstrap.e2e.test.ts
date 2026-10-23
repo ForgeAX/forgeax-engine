@@ -503,7 +503,8 @@ export default {
       try {
         await page.waitForFunction(
           () =>
-            document.documentElement.dataset.forgeaxFrameSubmitted !== undefined &&
+            document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId !==
+              undefined &&
             (globalThis as typeof globalThis & { __hostApp?: unknown }).__hostApp !== undefined &&
             document.querySelector('#host-ui') !== null,
           undefined,
@@ -514,7 +515,7 @@ export default {
           readyState: document.readyState,
           fatal: document.querySelector('#forgeax-fatal')?.textContent,
           diagnostics: document.querySelector('#forgeax-fatal-details')?.textContent,
-          frame: document.documentElement.dataset.forgeaxFrameSubmitted,
+          frame: document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId,
           workers: (globalThis as typeof globalThis & { __workerMessages?: unknown[] })
             .__workerMessages,
         }));

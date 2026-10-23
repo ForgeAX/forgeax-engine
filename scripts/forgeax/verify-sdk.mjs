@@ -1042,7 +1042,7 @@ if (selected('project')) {
       const runtime = await sdkStage('selectedBrowser.runtimeProbe', () =>
         page.evaluate(() => {
           const canvas = document.querySelector('canvas');
-          const frameId = Number(document.documentElement.dataset.forgeaxFrameSubmitted);
+          const frameId = canvas?.forgeaxFrameProgress?.submitted?.frameId;
           return {
             canvas: { width: canvas?.width ?? 0, height: canvas?.height ?? 0 },
             engineFrameId: Number.isSafeInteger(frameId) && frameId > 0 ? frameId : null,
@@ -1296,7 +1296,8 @@ if (selected('project')) {
                   fatal.getClientRects().length > 0,
                 text: fatal?.textContent?.slice(0, 4_000) ?? null,
               },
-              forgeaxFrameSubmitted: document.documentElement.dataset.forgeaxFrameSubmitted ?? null,
+              submittedFrameId:
+                document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null,
               renderer,
               ...(rendererError === undefined ? {} : { rendererError }),
             };
@@ -1374,7 +1375,9 @@ if (selected('project')) {
             ) {
               throw new Error(`sdk-selected-startup-failed: ${fatal.textContent?.slice(0, 4_000)}`);
             }
-            return Number(document.documentElement.dataset.forgeaxFrameSubmitted) > 0;
+            return (
+              (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > 0
+            );
           },
           undefined,
           { timeout: 120_000, polling: 100 },

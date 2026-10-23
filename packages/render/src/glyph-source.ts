@@ -238,7 +238,9 @@ export function extractGlyphSources(
     });
   };
   if (selected !== undefined) {
-    for (const entity of selected) append(entity as EntityHandle);
+    // The changed set spans every renderable kind; a component miss would allocate an error per entity.
+    for (const entity of selected)
+      if (world.hasComponent(entity as EntityHandle, GlyphText)) append(entity as EntityHandle);
   } else
     for (const row of world.query({ read: [GlyphText, Transform, GlobalTransform] }).unwrap())
       append(row.entity);

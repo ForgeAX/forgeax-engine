@@ -80,6 +80,7 @@ const probes = [
   'verify-startup-boundaries.mjs',
   'verify-game3d-workspace.mjs',
   'verify-workspace-experience.mjs',
+  'verify-resource-preview-lifecycle.mjs',
 ];
 for (const probe of probes) {
   const owner =
@@ -87,7 +88,8 @@ for (const probe of probes) {
       ? 'plugin'
       : probe === 'verify-game3d-workspace.mjs'
         ? 'game3d'
-        : probe === 'verify-workspace-experience.mjs'
+        : probe === 'verify-workspace-experience.mjs' ||
+            probe === 'verify-resource-preview-lifecycle.mjs'
           ? 'workspace'
           : 'lifecycle';
   steps.push([
@@ -122,13 +124,14 @@ for (const language of ['js', 'ts'])
     ]);
   }
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
-// Keep complete groups on four processes. The plugin boundary took 664 s in
-// run 38301245268; its independent 151 s TS live/cold journey fits on contracts
-// instead. Each language retains its own saved publication and cold reopening.
+// Keep complete owners and each language's live/cold chain on four processes.
+// Run 39969751546 measured 768 s + 310 s in Game 3D; its former contracts/TS
+// lane hit the 30-minute job bound. Keep Game 3D alone and combine the shorter
+// contracts/TS work with plugin, without changing any command or assertion.
 const shards = [
-  ['contracts', 'game3d', 'runtime-ts'],
+  ['contracts', 'plugin', 'runtime-ts'],
   ['lifecycle', 'workspace', 'engine-only', 'runtime-js'],
-  ['plugin'],
+  ['game3d'],
   ['diagnostics'],
 ];
 if (process.argv.includes('--list-shards')) {

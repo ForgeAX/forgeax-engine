@@ -555,7 +555,7 @@ export class ViewWorkspaceBroker {
       this.previewProjection.cameraVersion = result?.version;
       this.previewProjection.interaction = result?.interaction ?? null;
     }
-    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'preview.texture.get', 'preview.display.get', 'assets.thumbnails'].includes(operation)) this.changed();
+    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'preview.texture.get', 'preview.material.get', 'preview.display.get', 'assets.thumbnails'].includes(operation)) this.changed();
     if (operation === 'asset.open' && !publishOpen) return cloneWorkspaceValue(result);
     if (['project.open', 'project.close', 'project.reopen', 'asset.open', 'preview.close', 'camera.abort', 'play.start', 'play.ready', 'play.stop'].includes(operation)) {
       if (operation === 'project.open' || operation === 'project.reopen') this.workspaceTargetLost = false;
@@ -582,7 +582,16 @@ export class ViewWorkspaceBroker {
   }
   pickSceneEntity(args: Args = {}, context?: WorkspaceCallContext) {
     return this.changeSceneSelection(args, context, async requestContext => {
-      const result = await this.invoke('target.pick', args, requestContext) as { entityId?: string | null };
+      const result = await this.invoke('target.pick', { ...args, granularity: 'triangle' }, requestContext) as {
+        entityId?: string | null;
+        granularity?: string;
+      };
+      if (result?.granularity !== 'triangle') throw workspaceError(
+        'view-workspace-operation-unavailable',
+        'the Engine triangle-picking capability',
+        'Pair this View build with an Engine target that supports triangle granularity.',
+        { operation: 'target.pick', granularity: result?.granularity },
+      );
       if (result?.entityId === null) return null;
       const entityId = requireWorkspaceString(result?.entityId, 'pick.entityId');
       return { entityId };

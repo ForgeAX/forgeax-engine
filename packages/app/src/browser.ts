@@ -40,8 +40,11 @@ import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from './assets-
 import {
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
-  resetBrowserFrameSubmitted,
+  resetBrowserFrameProgress,
 } from './browser-frame-signal';
+
+export type { BrowserFrameProgress } from './browser-frame-signal';
+
 import { canvasAspectPlugin } from './canvas-policy';
 import {
   measureCanvasDrawingBuffer,
@@ -373,7 +376,7 @@ export async function createApp(
 
   // The aspect-sync sidecar belongs to the canvas path because it owns the DOM
   // canvas. It runs as an Update system so it shares World scheduling semantics.
-  resetBrowserFrameSubmitted(canvas);
+  resetBrowserFrameProgress(canvas);
   await installAppPlugin(browserFrameSignalPlugin(canvas, renderer));
   const built = await buildApp(buildArgs);
   if (!built.ok) {
@@ -1142,11 +1145,11 @@ function browserFrameSignalPlugin(canvas: HTMLCanvasElement, renderer: Renderer)
       ctx.effect(() => {
         const unsubscribe = renderer.subscribe((event) => {
           if (event.kind === 'error' && renderer.state() !== 'alive')
-            resetBrowserFrameSubmitted(canvas);
+            resetBrowserFrameProgress(canvas);
         });
         return () => {
           unsubscribe();
-          resetBrowserFrameSubmitted(canvas);
+          resetBrowserFrameProgress(canvas);
         };
       });
     },

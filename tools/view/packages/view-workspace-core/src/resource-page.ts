@@ -57,7 +57,7 @@ export function createResourcePanelClaims(identity: ResourceIdentity, props: { c
     });
     claims.push({
       id: identity.PREVIEW_SLOT,
-      pageType: identity.PAGE_TYPE,
+      home: { kind: 'page', pageType: identity.PAGE_TYPE },
       titleKey: identity.PREVIEW_TITLE_I18N_KEY,
       activity: { labelKey: identity.PREVIEW_TITLE_I18N_KEY, icon: identity.PREVIEW_ICON },
       layout: identity.PREVIEW_LAYOUT ?? RESOURCE_PREVIEW_LAYOUT,
@@ -72,7 +72,7 @@ export function createResourcePanelClaims(identity: ResourceIdentity, props: { c
   }
   claims.push({
     id: identity.PROPERTIES_SLOT,
-    pageType: identity.PAGE_TYPE,
+    home: { kind: 'page', pageType: identity.PAGE_TYPE },
     titleKey: identity.PROPERTIES_TITLE_I18N_KEY,
     activity: { labelKey: identity.PROPERTIES_TITLE_I18N_KEY, icon: identity.PROPERTIES_ICON },
     layout: identity.PROPERTIES_LAYOUT,

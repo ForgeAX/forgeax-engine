@@ -7,7 +7,7 @@ import {
   type RhiDevice,
   RhiError,
 } from '@forgeax/engine-rhi';
-import { RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
+import { RhiNullCanvasContext, RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import {
   createStandardPbrArtifactReceipt,
@@ -343,6 +343,118 @@ async function drawUntil(f: Awaited<ReturnType<typeof fixture>>, condition: () =
     expect((await f.draw()).presentation).toBe('ready');
   expect(condition()).toBe(true);
 }
+
+it.each([
+  false,
+  true,
+])('prepares a hidden mesh-owned material before its first visible weapon selection (publication: %s)', async (published) => {
+  const f = await fixture('color', published);
+  try {
+    f.release();
+    const mesh = f.assets
+      .create({
+        ...f.candidateMesh,
+        materialSlots: [{ slotName: 'secondary', defaultMaterial: f.material }],
+      })
+      .unwrap();
+    const secondary = f.world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [], preparePipelines: true } },
+        { component: Visibility, data: { state: VisibilityStateValue.hidden } },
+      )
+      .unwrap();
+    for (let frame = 0; frame < 12; frame++) await f.draw();
+    expect(
+      f.asyncPipelines.mock.calls.some(
+        ([d]) => newLayout(d) && d.fragment?.entryPoint === 'fs_gbuffer',
+      ),
+    ).toBe(true);
+    f.world.set(secondary, MeshRenderer, { preparePipelines: false }).unwrap();
+    f.world
+      .addComponent(f.entity, {
+        component: Visibility,
+        data: { state: VisibilityStateValue.hidden },
+      })
+      .unwrap();
+    f.world.set(secondary, Visibility, { state: VisibilityStateValue.visible }).unwrap();
+    f.asyncPipelines.mockClear();
+    expect((await f.draw()).presentation).toBe('ready');
+    expect(f.asyncPipelines).not.toHaveBeenCalled();
+  } finally {
+    await f.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('retains an accepted mesh material when a visible rig becomes hidden preparation (publication: %s)', async (published) => {
+  const f = await fixture('color', published);
+  try {
+    f.release();
+    const mesh = f.assets
+      .create({
+        ...f.candidateMesh,
+        materialSlots: [{ slotName: 'role', defaultMaterial: f.material }],
+      })
+      .unwrap();
+    const rig = f.world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [] } },
+        { component: Visibility, data: { state: VisibilityStateValue.visible } },
+      )
+      .unwrap();
+    for (let frame = 0; frame < 12; frame++) await f.draw();
+    f.world.set(rig, MeshRenderer, { preparePipelines: true }).unwrap();
+    f.world.set(rig, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
+    let ready = false;
+    for (let frame = 0; frame < 30 && !ready; frame++)
+      ready = (await f.draw()).presentation === 'ready';
+    expect(ready).toBe(true);
+    f.world.set(rig, MeshRenderer, { preparePipelines: false }).unwrap();
+    expect((await f.draw()).presentation).toBe('ready');
+    f.world.despawn(rig).unwrap();
+    expect((await f.draw()).presentation).toBe('ready');
+  } finally {
+    await f.dispose();
+  }
+});
+
+it.each([
+  'color',
+  'shadow',
+] as const)('retains the displayed surface while a newly visible %s pipeline compiles', async (pass) => {
+  const f = await fixture(pass);
+  const acquire = vi.spyOn(RhiNullCanvasContext.prototype, 'getCurrentTexture');
+  try {
+    f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+    for (let frame = 0; frame < 3; frame++) {
+      const pending = await f.draw();
+      expect(f.held.length).toBeGreaterThan(0);
+      expect(pending.presentation).toBe('pending');
+      expect(['scene-pipeline-preparation', 'shadow-pipeline-preparation']).toContain(
+        pending.presentationPendingReason?.code,
+      );
+      expect(acquire).not.toHaveBeenCalled();
+    }
+    f.release();
+    let ready = false;
+    for (let frame = 0; frame < 60 && !ready; frame++) {
+      const receipt = await f.draw();
+      ready = receipt.presentation === 'ready';
+      if (!ready) expect(acquire).not.toHaveBeenCalled();
+    }
+    expect(ready).toBe(true);
+    expect(acquire).toHaveBeenCalled();
+  } finally {
+    acquire.mockRestore();
+    await f.dispose();
+  }
+});
 
 async function finish<T>(f: Awaited<ReturnType<typeof fixture>>, pending: Promise<T>) {
   let settled = false;

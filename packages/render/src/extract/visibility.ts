@@ -1,5 +1,13 @@
-import type { EntityHandle, Query, World } from '@forgeax/engine-ecs';
 import {
+  ENTITY_NULL_RAW,
+  Entity,
+  type EntityHandle,
+  type Query,
+  type World,
+} from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
+import {
+  ChildOf,
   projectHierarchy,
   type SceneHierarchyDiagnostic,
   type SceneHierarchySnapshot,
@@ -112,22 +120,51 @@ function captureVisibility(world: World): CapturedVisibility {
 /**
  * Resolve author intent against the scene-owned valid parent projection.
  * Diagnostics are preserved for callers to repair hierarchy input before retry.
+ *
+ * Without an explicit hierarchy, parents are read on demand for the entities
+ * actually queried, so a frame pays for its changed renderables instead of
+ * projecting every ChildOf edge of the World. The whole-World projection is
+ * still used for diagnostics, for a detected cycle (cycle members have no
+ * valid parent), and once the ChildOf relationship changed after capture.
  */
 export function resolveVisibility(
   world: World,
-  hierarchy: SceneHierarchySnapshot = projectHierarchy(world),
+  hierarchy?: SceneHierarchySnapshot,
 ): VisibilitySnapshot {
   const captured = captureVisibility(world);
   const { intentCount, hasAnyHiddenIntent, intents } = captured;
+  const read = world[worldRead];
+  const relationshipEpoch = read.getRelationshipEpoch(ChildOf);
+  let projected = hierarchy;
+  const project = (): SceneHierarchySnapshot => {
+    projected ??= projectHierarchy(world);
+    return projected;
+  };
+  const parentOf = (entity: EntityHandle): EntityHandle | undefined => {
+    if (projected === undefined && read.getRelationshipEpoch(ChildOf) !== relationshipEpoch)
+      project();
+    if (projected !== undefined) return projected.getParent(entity);
+    const parent = read.getFieldValue(entity, ChildOf, 'parent');
+    if (parent === undefined || parent === ENTITY_NULL_RAW) return undefined;
+    // A stale edge is a broken-parent diagnostic, never a parent.
+    return world.hasComponent(parent as EntityHandle, Entity)
+      ? (parent as EntityHandle)
+      : undefined;
+  };
   let resolveEntity: ((entity: EntityHandle) => ResolutionState | undefined) | undefined;
   const ensureResolver = (): void => {
     if (resolveEntity !== undefined) return;
-    const resolved = new Map<EntityHandle, ResolutionState>();
+    let resolved = new Map<EntityHandle, ResolutionState>();
     const resolving = new Set<EntityHandle>();
-    resolveEntity = (entity: EntityHandle): ResolutionState | undefined => {
+    const resolveOnce = (entity: EntityHandle): ResolutionState | undefined => {
       const existing = resolved.get(entity);
       if (existing !== undefined) return existing;
-      if (resolving.has(entity)) return undefined;
+      if (resolving.has(entity)) {
+        // Cycle members have no parent in the scene projection. Switch to it
+        // and let the outer call resolve again from a clean cache.
+        if (projected === undefined) throw CYCLE;
+        return undefined;
+      }
 
       const intent = intents.get(entity) ?? 'inherited';
       resolving.add(entity);
@@ -138,8 +175,8 @@ export function resolveVisibility(
       } else if (intent === 'visible') {
         result = { intent, effective: 'visible', source: 'self' };
       } else {
-        const parent = hierarchy.getParent(entity);
-        const parentResult = parent === undefined ? undefined : resolveEntity?.(parent);
+        const parent = parentOf(entity);
+        const parentResult = parent === undefined ? undefined : resolveOnce(parent);
         result =
           parentResult === undefined
             ? { intent, effective: 'visible', source: 'default' }
@@ -150,10 +187,23 @@ export function resolveVisibility(
       resolved.set(entity, result);
       return result;
     };
+    resolveEntity = (entity: EntityHandle): ResolutionState | undefined => {
+      try {
+        return resolveOnce(entity);
+      } catch (cause) {
+        if (cause !== CYCLE) throw cause;
+        resolving.clear();
+        resolved = new Map();
+        project();
+        return resolveOnce(entity);
+      }
+    };
   };
 
   const snapshot: VisibilitySnapshot = {
-    diagnostics: hierarchy.diagnostics,
+    get diagnostics(): readonly SceneHierarchyDiagnostic[] {
+      return project().diagnostics;
+    },
     hasAnyIntent: intentCount > 0,
     hasAnyHiddenIntent,
     get(entity: EntityHandle): VisibilityResolution | undefined {
@@ -161,9 +211,13 @@ export function resolveVisibility(
       return intents.has(entity) ? resolveEntity?.(entity) : undefined;
     },
     effective(entity: EntityHandle): 'hidden' | 'visible' {
+      // Inheritance can only hide below an explicitly hidden entity.
+      if (!hasAnyHiddenIntent) return 'visible';
       ensureResolver();
       return resolveEntity?.(entity)?.effective ?? 'visible';
     },
   };
   return snapshot;
 }
+
+const CYCLE: unique symbol = Symbol('visibility-hierarchy-cycle');

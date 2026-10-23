@@ -133,7 +133,7 @@ try {
   await page.goto(`${baseUrl}/${query}`, { waitUntil: 'networkidle', timeout: 30_000 });
   await page.waitForFunction(
     ({ variant, post, useMsaa: expectedMsaa }) =>
-      Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) > 0 &&
+      (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > 0 &&
       document.querySelector('#variant-status')?.textContent === `M3_MULTI_UV_VARIANT=${variant}` &&
       document.querySelector('#texture-status')?.textContent === 'M3_TEXTURE_BINDING=baseColorTexture+detailTexture' &&
       document.querySelector('#post-status')?.textContent === `M3_POST_EFFECT=${post}` &&
@@ -144,8 +144,8 @@ try {
   await page.waitForTimeout(2500);
   const canvas = page.locator('#app');
   const initialCanvasSize = await canvas.evaluate((element) => ({ width: element.width, height: element.height }));
-  const frameIdBeforeResize = await page.evaluate(() =>
-    Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0),
+  const frameIdBeforeResize = await page.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
   );
   const resizeHistory = [];
   const resizeCanvas = async (width, height) => {
@@ -179,7 +179,8 @@ try {
     }
   }
   await page.waitForFunction(
-    (previousFrameId) => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) > previousFrameId,
+    (previousFrameId) =>
+      (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > previousFrameId,
     frameIdBeforeResize,
     { timeout: 30_000 },
   );
@@ -219,7 +220,7 @@ try {
       selectedPost: `M3_POST_EFFECT=${startupPost}`,
       texture: document.querySelector('#texture-status')?.textContent ?? '',
       antialias: document.querySelector('#antialias-status')?.textContent ?? '',
-      frameSubmitted: Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0),
+      frameSubmitted: document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
       featureIdentity,
       falsifyPipeline: shouldFalsifyPipeline,
       canvas: { width: document.querySelector('#app')?.width ?? 0, height: document.querySelector('#app')?.height ?? 0 },

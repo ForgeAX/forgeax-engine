@@ -219,7 +219,47 @@ export async function sealCandidate({
   return candidate;
 }
 
-export async function validateCandidate({ candidateRoot, expectedVersion, expectedEngineCommit }) {
+/** The sealed SDK ZIP; npm-only consumers may validate without transporting it. */
+export function candidateArchivePath(sdkVersion) {
+  return `forgeax-sdk-v${sdkVersion}.zip`;
+}
+
+/**
+ * Every sealed artifact must exist with its recorded bytes. npm publication
+ * never reads the ZIP: with `withoutArchive` only that exact sealed path may be
+ * absent, and a present copy is still verified.
+ */
+async function verifySealedArtifacts(root, candidate, withoutArchive) {
+  const actualFiles = new Map(
+    (await filesUnder(root)).map((path) => [posixRelative(root, path), path]),
+  );
+  const artifactPaths = new Set(candidate.artifacts.map(({ path }) => path));
+  if (artifactPaths.size !== candidate.artifacts.length)
+    throw new Error('sdk-candidate-artifacts-duplicate');
+  actualFiles.delete('sdk-candidate.json');
+  const archivePath = candidateArchivePath(candidate.sdkVersion);
+  if (!artifactPaths.has(archivePath)) throw new Error('sdk-candidate-archive-unmanifested');
+  const required = candidate.artifacts.filter(
+    ({ path }) => !(withoutArchive && path === archivePath && !actualFiles.has(path)),
+  );
+  if (actualFiles.size !== required.length) throw new Error('sdk-candidate-unmanifested-artifact');
+  for (const entry of required) {
+    const path = actualFiles.get(entry.path);
+    if (path === undefined) throw new Error(`sdk-candidate-artifact-missing: ${entry.path}`);
+    const digest = await digestFile(path);
+    if (digest.bytes !== entry.bytes || digest.sha256 !== entry.sha256) {
+      throw new Error(`sdk-candidate-artifact-mismatch: ${entry.path}`);
+    }
+  }
+  return actualFiles;
+}
+
+export async function validateCandidate({
+  candidateRoot,
+  expectedVersion,
+  expectedEngineCommit,
+  withoutArchive = false,
+}) {
   const root = resolve(candidateRoot);
   const candidate = await readJson(
     resolve(root, 'sdk-candidate.json'),
@@ -247,23 +287,7 @@ export async function validateCandidate({ candidateRoot, expectedVersion, expect
   if (expectedEngineCommit !== undefined && candidate.engineCommit !== expectedEngineCommit) {
     throw new Error('sdk-candidate-engine-commit-mismatch');
   }
-  const actualFiles = new Map(
-    (await filesUnder(root)).map((path) => [posixRelative(root, path), path]),
-  );
-  const artifactPaths = new Set(candidate.artifacts.map(({ path }) => path));
-  if (artifactPaths.size !== candidate.artifacts.length)
-    throw new Error('sdk-candidate-artifacts-duplicate');
-  if (actualFiles.has('sdk-candidate.json')) actualFiles.delete('sdk-candidate.json');
-  if (actualFiles.size !== artifactPaths.size)
-    throw new Error('sdk-candidate-unmanifested-artifact');
-  for (const entry of candidate.artifacts) {
-    const path = actualFiles.get(entry.path);
-    if (path === undefined) throw new Error(`sdk-candidate-artifact-missing: ${entry.path}`);
-    const digest = await digestFile(path);
-    if (digest.bytes !== entry.bytes || digest.sha256 !== entry.sha256) {
-      throw new Error(`sdk-candidate-artifact-mismatch: ${entry.path}`);
-    }
-  }
+  const actualFiles = await verifySealedArtifacts(root, candidate, withoutArchive);
   const buildIdentity = await readJson(
     resolve(root, 'sdk-build-result.json'),
     'sdk-candidate-build-result-missing',
@@ -356,6 +380,7 @@ async function main() {
       candidateRoot,
       expectedVersion: parsed.value('version'),
       expectedEngineCommit: parsed.value('engine-commit'),
+      withoutArchive: parsed.value('without-archive') === true,
     });
     process.stdout.write(`${JSON.stringify({ ok: true, candidateId: candidate.candidateId })}\n`);
     return;

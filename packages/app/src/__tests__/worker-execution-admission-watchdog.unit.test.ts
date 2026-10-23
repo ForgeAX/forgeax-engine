@@ -125,7 +125,7 @@ vi.mock('@forgeax/engine-audio-webaudio', () => ({
 vi.mock('../browser-frame-signal', () => ({
   publishBrowserFrameCompleted: probes.browserCompleted,
   publishBrowserFrameSubmitted: vi.fn(),
-  resetBrowserFrameSubmitted: vi.fn(),
+  resetBrowserFrameProgress: vi.fn(),
 }));
 
 import { createWorkerExecutionApp } from '../execution/host-controller';

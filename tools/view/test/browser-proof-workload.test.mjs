@@ -8,6 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { browserProofWorkload } from '../scripts/browser-proof-workload.mjs';
 
+test('resource preview acceptance compiles before acquiring a browser', () => {
+  execFileSync(process.execPath, ['--check', fileURLToPath(new URL('../scripts/verify-resource-preview-lifecycle.mjs', import.meta.url))]);
+});
+
 test('installed Game3D fixture needs no contributor helper and preserves every light and cascade', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'view-public-game3d-fixture-'));
   try {
@@ -72,7 +76,7 @@ test('both real browser probes retain readiness and retirement assertions with t
   assert.match(runtime, /released\?\.textures, 0/);
   assert.match(runtime, /pixels.count > 1000/);
   assert.match(game, /workspace.capture\(args\)/);
-  assert.match(game, /dataset.forgeaxFrameCompleted \?\? 0\) >= 60, undefined, \{ timeout: 180_000 \}/);
+  assert.match(game, /forgeaxFrameProgress\?\.completed\?\.frameId \?\? 0\) >= 60, undefined, \{ timeout: 180_000 \}/);
 });
 
 test('the workflow uses every Engine-owned shard and rejects invalid matrix IDs', async () => {

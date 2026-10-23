@@ -1,5 +1,12 @@
 # @forgeax/engine-devkit
 
+Interactive Material resource presentations expose App's native material-preview
+Fiber through the existing workspace provider and browser command transport.
+`engine.preview.material.get/set/rotate/reset` preserve authenticated caller and
+exact preview ownership; reads do not enter the ordered mutation queue. Source
+generation only composes the owner, never implements geometry or rotation math.
+Transparent thumbnails retain their canonical sphere and existing cache policy.
+
 ## Pack authoring sessions
 
 `forgeax asset inspect <source.pack.ts> --parameters-only --json` is the quick
@@ -1093,10 +1100,10 @@ session uses the native window and display density. Projects must ship the same
 Web font files on every machine; a system-font fallback is not a colour or layout parity contract.
 
 For local/remote pixel or colour comparison, add `--deterministic`. The command navigates with
-`?forgeaxCapture=1`. The Engine App publishes
-`document.documentElement.dataset.forgeaxFrameSubmitted` (the monotonic frame id) after the Renderer
-crosses its real queue-submit boundary and dispatches `forgeax:frame-submitted` on the canvas. DevKit
-waits for that engine signal and a non-flat canvas crop before consuming the game's
+`?forgeaxCapture=1`. The Engine App retains the submitted and completed frame facts on
+`canvas.forgeaxFrameProgress` after the Renderer crosses its real queue-submit boundary and
+dispatches `forgeax:frame-submitted` on the canvas as a future-only notification. DevKit reads
+the canvas snapshot and waits for a non-flat canvas crop before consuming the game's
 `document.documentElement.dataset.forgeaxCaptureReady` checkpoint; it never guesses startup time. The
 game remains the time authority: in capture mode it must pin its random seed, viewport-independent
 state, local web fonts, and logical time/frame, render that state, then publish the ready marker. A

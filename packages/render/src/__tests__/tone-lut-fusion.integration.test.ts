@@ -97,11 +97,11 @@ async function fixture() {
         .importTexture(
           label,
           { size: 'surface', format, usage: 0x17 },
-          (frame) => frame.currentTexture,
+          (frame) => frame.outputTarget().texture,
         )
         .unwrap();
       const view = graph
-        .importView(texture, { label: `${label}.view` }, (frame) => frame.view)
+        .importView(texture, { label: `${label}.view` }, (frame) => frame.outputTarget().view)
         .unwrap();
       return { texture, view, format, sampleCount: 1 as const };
     };

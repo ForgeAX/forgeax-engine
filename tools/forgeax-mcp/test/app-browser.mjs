@@ -248,9 +248,11 @@ try {
     // Keep the exact admitted frame. Re-resolving the nested iframe every poll
     // makes Playwright preview its multi-megabyte srcdoc on the browser thread.
     const playFrame = playDocument;
-    const playHtml = playFrame.locator('html');
+    const playCanvas = playFrame.locator('canvas#app');
+    const readCompletedFrame = () => playCanvas.evaluate(canvas =>
+      canvas.forgeaxFrameProgress?.completed?.frameId ?? 0);
     const deadline = performance.now() + 180000;
-    while (Number(await playHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
+    while (Number(await readCompletedFrame()) < 60) {
       await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
       assert.ok(performance.now() < deadline, 'The real Play Renderer must complete 60 frames');
       await page.waitForTimeout(50);
@@ -273,7 +275,7 @@ try {
     assert.ok(placement.width > 0 && placement.height > 0);
     await page.screenshot({ path: join(evidence, `play-${cycle}.png`) });
     await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
-    const completedFrames = Number(await playHtml.getAttribute('data-forgeax-frame-completed'));
+    const completedFrames = Number(await readCompletedFrame());
     assert.ok(completedFrames >= 60, 'The current Play document must retain 60 completed frames after capture');
     records.push({ playCycle: cycle, frameId: completedFrames,
       readyMs, placement });
@@ -312,10 +314,10 @@ try {
   assert.ok(targetId);
   const completeFrames = async (frameDeadline = performance.now() + 180000) => {
     const preview = view.frameLocator('iframe[data-forgeax-mcp-preview]');
-    const previewHtml = preview.locator('html');
+    const previewCanvas = preview.locator('canvas#app');
     // Match the maintained game-3d gate: observe completed frames without adding
     // GPU readbacks and multi-megabyte transport to every progress sample.
-    while (Number(await previewHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
+    while (Number(await previewCanvas.evaluate(canvas => canvas.forgeaxFrameProgress?.completed?.frameId ?? 0)) < 60) {
       await assertNoRuntimeFailure(preview, 'Preview', errors, consoleErrors);
       assert.ok(performance.now() < frameDeadline, 'The real Renderer must complete at least 60 frames');
       await page.waitForTimeout(50);

@@ -978,6 +978,22 @@ it('rejects before-ready inspection without starting a child or drawing', async 
     await source.dispose();
   }
 });
+it('carries selected inspection fields to the child without adding frame work', async () => {
+  const { source, canvas } = await inspectionOwner();
+  await source.start(canvas);
+  const worker = CreditWorker.current;
+  try {
+    const pending = source.inspectRenderer({ fields: ['frame', 'pipelineLibrary'] });
+    const request = inspectionRequest(worker);
+    expect(request.fields).toEqual(['frame', 'pipelineLibrary']);
+    const value = { frame: inspectedFacts.frame, pipelineLibrary: undefined };
+    worker.emit({ ...inspectionReply(request), result: { ok: true, value } });
+    expect(await pending).toEqual({ ok: true, value });
+    expect(worker.packets).toEqual([]);
+  } finally {
+    await source.dispose();
+  }
+});
 it('fences child inspection by request, source, epoch and World without touching frame credits', async () => {
   const { source, canvas, world } = await inspectionOwner();
   await source.start(canvas);

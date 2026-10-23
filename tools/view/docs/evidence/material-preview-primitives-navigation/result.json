@@ -1,0 +1,130 @@
+{
+  "passed": true,
+  "engine": "<engine-checkout>/packages/engine",
+  "opens": [
+    {
+      "key": "mesh/box",
+      "elapsedMs": 3132,
+      "target": {
+        "targetId": "target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:e8e5378a-231c-4ed8-b6fd-59a9bcd8be4f",
+        "generation": 2,
+        "sessionId": "workspace-ff0cfd4c-1c19-4863-b3cd-c96d650d261a",
+        "worldId": "world-6a6d1259-3725-48c4-a984-85a07a338917-2",
+        "headed": true,
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "key": "mesh/box",
+      "elapsedMs": 2,
+      "target": {
+        "targetId": "target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:e8e5378a-231c-4ed8-b6fd-59a9bcd8be4f",
+        "generation": 2,
+        "sessionId": "workspace-ff0cfd4c-1c19-4863-b3cd-c96d650d261a",
+        "worldId": "world-6a6d1259-3725-48c4-a984-85a07a338917-2",
+        "headed": true,
+        "width": 1034,
+        "height": 794
+      }
+    },
+    {
+      "key": "mesh/other",
+      "elapsedMs": 7877,
+      "target": {
+        "targetId": "target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:f90b536a-f855-4189-8de5-a59552b92cdd",
+        "generation": 3,
+        "sessionId": "workspace-ff0cfd4c-1c19-4863-b3cd-c96d650d261a",
+        "worldId": "world-6a6d1259-3725-48c4-a984-85a07a338917-3",
+        "headed": true,
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "key": "mesh/other",
+      "elapsedMs": 7878,
+      "target": {
+        "targetId": "target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:f90b536a-f855-4189-8de5-a59552b92cdd",
+        "generation": 3,
+        "sessionId": "workspace-ff0cfd4c-1c19-4863-b3cd-c96d650d261a",
+        "worldId": "world-6a6d1259-3725-48c4-a984-85a07a338917-3",
+        "headed": true,
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "key": "mesh/other",
+      "elapsedMs": 2592,
+      "target": {
+        "targetId": "target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:1951a7c3-32d2-4fc5-b056-1bd533ecf97b",
+        "generation": 5,
+        "sessionId": "workspace-ff0cfd4c-1c19-4863-b3cd-c96d650d261a",
+        "worldId": "world-6a6d1259-3725-48c4-a984-85a07a338917-5",
+        "headed": true,
+        "width": 1280,
+        "height": 720
+      }
+    }
+  ],
+  "pixels": {
+    "center": [
+      213,
+      120,
+      69,
+      255
+    ],
+    "contrast": 145,
+    "width": 1034,
+    "height": 794
+  },
+  "timings": [
+    "[forgeax.view.resource-open] open-request-observer-wired {}",
+    "[forgeax.view.resource-open] open-request-baseline {requestId: null, sequence: 0, asset: null}",
+    "[forgeax.view.resource-open] resource-page-registered {pageType: material, kinds: Array(1)}",
+    "[forgeax.view.resource-open] resource-page-registered {pageType: mesh, kinds: Array(1)}",
+    "[forgeax.view.resource-open] resource-page-registered {pageType: texture, kinds: Array(3)}",
+    "[forgeax.view.resource-open] resource-page-registered {pageType: asset, kinds: null}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:fc4db3f6-d3a6-4ab2-b692-ebcffe2b9904, sequence: 1, asset: Object, hasPreview: false, previewTargetId: null}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:fc4db3f6-d3a6-4ab2-b692-ebcffe2b9904, sequence: 1, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:fc4db3f6-d3a6-4ab2-b692-ebcffe2b9904, sequence: 1, asset: Object, pageType: scene}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: scene, action: focus, pageId: page-scene, openable: false, singleton: true}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:41c3e154-0a39-4057-bc11-759d0a79b343, sequence: 2, asset: Object, hasPreview: false, previewTargetId: null}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:41c3e154-0a39-4057-bc11-759d0a79b343, sequence: 2, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:41c3e154-0a39-4057-bc11-759d0a79b343, sequence: 2, asset: Object, pageType: mesh}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: mesh, action: open, pageId: page-mesh, openable: true, singleton: true}",
+    "[forgeax.view.resource-open] preview-surface-hosted {requestId: open:41c3e154-0a39-4057-bc11-759d0a79b343, at: 1792665893801, pageType: mesh, panelId: mesh-preview, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:e8e5378a-231c-4ed8-b6fd-59a9bcd8be4f}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:f6c002d4-20bd-4061-aaa9-1381cb72f2ce, sequence: 4, asset: Object, hasPreview: true, previewTargetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:e8e5378a-231c-4ed8-b6fd-59a9bcd8be4f}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:f6c002d4-20bd-4061-aaa9-1381cb72f2ce, sequence: 4, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:f6c002d4-20bd-4061-aaa9-1381cb72f2ce, sequence: 4, asset: Object, pageType: mesh}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: mesh, action: focus, pageId: page-mesh, openable: true, singleton: true}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:86fbbba8-56e6-41b0-8830-4600c0283353, sequence: 5, asset: Object, hasPreview: false, previewTargetId: null}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:86fbbba8-56e6-41b0-8830-4600c0283353, sequence: 5, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:86fbbba8-56e6-41b0-8830-4600c0283353, sequence: 5, asset: Object, pageType: mesh}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: mesh, action: focus, pageId: page-mesh, openable: true, singleton: true}",
+    "[forgeax.view.resource-open] timing {requestId: open:41c3e154-0a39-4057-bc11-759d0a79b343, stage: first-ready-frame, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:e8e5378a-231c-4ed8-b6fd-59a9bcd8be4f, frameId: 7, at: 1792665896476}",
+    "[forgeax.view.resource-open] preview-surface-hosted {requestId: open:86fbbba8-56e6-41b0-8830-4600c0283353, at: 1792665901993, pageType: mesh, panelId: mesh-preview, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:f90b536a-f855-4189-8de5-a59552b92cdd}",
+    "[forgeax.view.resource-open] timing {requestId: open:86fbbba8-56e6-41b0-8830-4600c0283353, stage: first-ready-frame, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:f90b536a-f855-4189-8de5-a59552b92cdd, frameId: 7, at: 1792665904105}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:6d19dfea-9769-4d86-97e6-efced56bdd45, sequence: 7, asset: Object, hasPreview: false, previewTargetId: null}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:6d19dfea-9769-4d86-97e6-efced56bdd45, sequence: 7, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:6d19dfea-9769-4d86-97e6-efced56bdd45, sequence: 7, asset: Object, pageType: material}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: material, action: open, pageId: page-material, openable: true, singleton: true}",
+    "[forgeax.view.resource-open] preview-surface-hosted {requestId: open:6d19dfea-9769-4d86-97e6-efced56bdd45, at: 1792665907340, pageType: material, panelId: material-preview, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:cc66ade0-c44e-4ef9-9a01-63524fcb0f0c}",
+    "[forgeax.view.resource-open] timing {requestId: open:6d19dfea-9769-4d86-97e6-efced56bdd45, stage: first-ready-frame, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:cc66ade0-c44e-4ef9-9a01-63524fcb0f0c, frameId: 7, at: 1792665909370}",
+    "[forgeax.view.resource-open] preview-surface-hosted {requestId: open:6d19dfea-9769-4d86-97e6-efced56bdd45, at: 1792665911592, pageType: material, panelId: material-preview, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:cc66ade0-c44e-4ef9-9a01-63524fcb0f0c}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:e2d6fe2e-eddf-415d-bf48-9aabcbf9a77b, sequence: 9, asset: Object, hasPreview: false, previewTargetId: null}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:e2d6fe2e-eddf-415d-bf48-9aabcbf9a77b, sequence: 9, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:e2d6fe2e-eddf-415d-bf48-9aabcbf9a77b, sequence: 9, asset: Object, pageType: mesh}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: mesh, action: open, pageId: page-mesh, openable: true, singleton: true}",
+    "[forgeax.view.resource-open] preview-surface-hosted {requestId: open:e2d6fe2e-eddf-415d-bf48-9aabcbf9a77b, at: 1792665914936, pageType: mesh, panelId: mesh-preview, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:1951a7c3-32d2-4fc5-b056-1bd533ecf97b}",
+    "[forgeax.view.resource-open] open-request-observed {requestId: open:07a913c0-4654-4a09-a53c-4eeeb84009a8, sequence: 11, asset: Object, hasPreview: false, previewTargetId: null}",
+    "[forgeax.view.resource-open] page-host-open-resource {requestId: open:07a913c0-4654-4a09-a53c-4eeeb84009a8, sequence: 11, asset: Object, listenerCount: 2}",
+    "[forgeax.view.resource-open] shell-resolve-ok {requestId: open:07a913c0-4654-4a09-a53c-4eeeb84009a8, sequence: 11, asset: Object, pageType: material}",
+    "[forgeax.view.resource-open] shell-open-page {typeId: material, action: open, pageId: page-material, openable: true, singleton: true}",
+    "[forgeax.view.resource-open] preview-surface-hosted {requestId: open:07a913c0-4654-4a09-a53c-4eeeb84009a8, at: 1792665918143, pageType: material, panelId: material-preview, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:aabef7ba-1245-45d4-9482-816e00a279b1}",
+    "[forgeax.view.resource-open] timing {requestId: open:e2d6fe2e-eddf-415d-bf48-9aabcbf9a77b, stage: first-ready-frame, targetId: target-cc2631bb-244e-4cac-9593-d549711b58a9:preview:1951a7c3-32d2-4fc5-b056-1bd533ecf97b, frameId: 5, at: 1792665920012}"
+  ],
+  "errors": [],
+  "boundary": "Paired Engine native owners; completed-ready capture verifies the exact replacement target."
+}

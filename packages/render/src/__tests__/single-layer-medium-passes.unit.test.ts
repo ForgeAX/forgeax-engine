@@ -228,8 +228,7 @@ describe('single-layer medium graph producer pair', () => {
       msaaActive: false,
       targetW: 1,
       targetH: 1,
-      view: undefined,
-      currentTexture: undefined,
+      outputTarget: () => ({ texture: undefined, view: undefined }),
       clear: [0, 0, 0, 1],
     } as unknown as RenderPipelineFrame;
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } });

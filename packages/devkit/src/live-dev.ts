@@ -264,7 +264,9 @@ export async function waitForFirstFrame(
             fatal.textContent?.trim() ||
             'Engine startup failed'
           ).slice(0, 16_384);
-        return document.documentElement.dataset.forgeaxFrameSubmitted !== undefined;
+        return (
+          (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > 0
+        );
       },
       undefined,
       { timeout: timeoutMs ?? 0 },
@@ -287,10 +289,9 @@ export async function waitForFirstFrame(
 
 async function submittedFrameId(session: BrowserCaptureSession): Promise<number | undefined> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
-  const value = await realm.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted);
-  if (value === undefined) return undefined;
-  const frame = Number(value);
-  return Number.isSafeInteger(frame) ? frame : undefined;
+  return realm.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId,
+  );
 }
 
 async function waitForFrameAfter(
@@ -299,8 +300,13 @@ async function waitForFrameAfter(
 ): Promise<void> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
   await realm.waitForFunction(
-    (before) => Number(document.documentElement.dataset.forgeaxFrameSubmitted) > (before ?? 0),
-    previous,
+    (afterFrameId) => {
+      return (
+        (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >
+        afterFrameId
+      );
+    },
+    previous ?? 0,
     { timeout: 120_000 },
   );
 }

@@ -56,7 +56,9 @@ const gpuScene = `<!doctype html><style>body{margin:0}</style><canvas width="256
     const pass = encoder.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(),
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.1, g: 0.2, b: 0.8, a: 1 } }] });
     pass.setPipeline(pipeline); pass.draw(3); pass.end(); device.queue.submit([encoder.finish()]);
-    document.documentElement.dataset.forgeaxFrameSubmitted = String(++frame);
+    document.querySelector('canvas').forgeaxFrameProgress = {
+      submitted: { frameId: ++frame, deviceGeneration: 1 },
+    };
     requestAnimationFrame(draw);
   }
   draw();
@@ -89,7 +91,7 @@ const server = createServer((request, response) => {
         )
       : request.url?.startsWith('/gpu')
         ? gpuScene
-        : '<canvas width="64"></canvas><div style="position:absolute;inset:0;background:linear-gradient(90deg,red,blue)">UI is not a rendered canvas</div><script>const c=document.querySelector("canvas");c.height=innerHeight+64;const ctx=c.getContext("2d");ctx.fillRect(0,0,64,c.height);ctx.fillStyle="red";ctx.fillRect(0,innerHeight+4,32,32);document.documentElement.dataset.forgeaxFrameSubmitted="1";</script>',
+        : '<canvas width="64"></canvas><div style="position:absolute;inset:0;background:linear-gradient(90deg,red,blue)">UI is not a rendered canvas</div><script>const c=document.querySelector("canvas");c.height=innerHeight+64;const ctx=c.getContext("2d");ctx.fillRect(0,0,64,c.height);ctx.fillStyle="red";ctx.fillRect(0,innerHeight+4,32,32);c.forgeaxFrameProgress={submitted:{frameId:1,deviceGeneration:1}};</script>',
   );
 });
 await once(server.listen(0, '127.0.0.1'), 'listening');

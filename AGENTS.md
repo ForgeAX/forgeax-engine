@@ -1,5 +1,12 @@
 # AGENTS.md
 
+Material resource previews optionally expose App's native
+`engine.preview.material.get/set/rotate/reset`. Their Fiber owns generated
+primitive geometry and object rotation, restoring borrowed bindings on removal.
+Consumers own mouse mappings; camera pan/dolly use existing camera transactions.
+Authored materials, canonical thumbnails and games retain their current owners.
+See App/DevKit READMEs and the paired View material preview design.
+
 AI-first TypeScript game engine. Target: surpass Three.js. **AI is the primary user** — when AI-friendly conflicts with human-friendly, AI wins. See the [AI-first contract below](#design-axiom--compression--intelligence).
 
 ## Public SDK source mode
@@ -186,6 +193,10 @@ assetBinding publication. Exact-target `preview.display.get/set` delegates to
 the optional native mesh display Fiber in its per-preview isolated service
 scope, which owns temporary wireframe, actual
 cooked-collision and bounds geometry and restores borrowed bindings on removal.
+Its optional `preview.display.get` UV channel query reads the exact bound mesh
+and publication, returning real channel indices and on-demand base-LOD UV/index
+data with an 8 MiB JSON limit. View owns the read-only overlay, framing and input;
+it never unwraps assets or infers missing UV channels.
 View owns menus, defaults and asset-specific statistics placement; this capability
 does not write assets or install presentation policy on games or independent runs.
 See `packages/app/README.md` and View Harness's 2026-10-15 asset statistics design.

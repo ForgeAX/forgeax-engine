@@ -5,7 +5,7 @@ import { access, mkdir, stat, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FORGEAX_FRAME_SUBMITTED_DATASET } from '@forgeax/engine-app';
+import type { BrowserFrameProgress } from '@forgeax/engine-app';
 import { parseImage } from '@forgeax/engine-image/parse-image';
 import {
   type Browser,
@@ -646,8 +646,9 @@ async function runtimeWitness(
   probeAdapter = true,
 ): Promise<BrowserCaptureRuntimeWitness> {
   return realm.evaluate(
-    async ({ datasetKey, probeAdapter }) => {
+    async ({ probeAdapter }) => {
       const canvas = document.querySelector('canvas');
+      const progress = canvas?.forgeaxFrameProgress as BrowserFrameProgress | undefined;
       const uiRoot = document.querySelector('#game-ui');
       const shadowHosts = [...(uiRoot?.querySelectorAll('*') ?? [])].filter(
         (element) => element.shadowRoot?.childElementCount !== 0,
@@ -672,7 +673,7 @@ async function runtimeWitness(
           adapterError = String(cause);
         }
       }
-      const frameId = Number(document.documentElement.dataset[datasetKey]);
+      const frameId = progress?.submitted?.frameId;
       const fatal = document.querySelector('#forgeax-fatal');
       const fatalError = fatal?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
         ? (
@@ -719,14 +720,15 @@ async function runtimeWitness(
         },
         adapter,
         adapterError,
-        engineFrameId: Number.isSafeInteger(frameId) && frameId > 0 ? frameId : null,
+        engineFrameId:
+          Number.isSafeInteger(frameId) && frameId !== undefined && frameId > 0 ? frameId : null,
         captureReady: document.documentElement.dataset.forgeaxCaptureReady ?? null,
         fatalError,
         singleHtml: singleHtmlState?.witness?.() ?? null,
         userAgent: navigator.userAgent,
       };
     },
-    { datasetKey: FORGEAX_FRAME_SUBMITTED_DATASET, probeAdapter },
+    { probeAdapter },
   );
 }
 
@@ -1476,13 +1478,17 @@ async function openBrowserCaptureSession(
 
         await withinBudget('a submitted frame', (remaining) =>
           activeRealm.waitForFunction(
-            ({ datasetKey, afterFrameId }) =>
-              Number(document.documentElement.dataset[datasetKey]) > (afterFrameId ?? 0) ||
-              document.querySelector('#forgeax-fatal')?.checkVisibility() === true,
-            {
-              datasetKey: FORGEAX_FRAME_SUBMITTED_DATASET,
-              afterFrameId: captureOptions.afterFrameId,
+            ({ afterFrameId }) => {
+              const frameId =
+                document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId;
+              return (
+                (Number.isSafeInteger(frameId) &&
+                  frameId !== undefined &&
+                  frameId > afterFrameId) ||
+                document.querySelector('#forgeax-fatal')?.checkVisibility() === true
+              );
             },
+            { afterFrameId: captureOptions.afterFrameId ?? 0 },
             { timeout: remaining },
           ),
         );

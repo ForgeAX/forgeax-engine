@@ -88,7 +88,7 @@ export function createPackAuthoringClient(client: ViewWorkspaceClient, input: {
   const call = async (request: PackDraftRequest, options?: { previewTargetId?: string; quiet?: boolean }) => {
     lifetime.signal.throwIfAborted();
     const previewTargetId = options && 'previewTargetId' in options ? options.previewTargetId
-      : ['open', 'save', 'close'].includes(request.action) ? undefined : input.previewTargetId?.();
+      : ['save', 'close'].includes(request.action) ? undefined : input.previewTargetId?.();
     const reply = await client.call<PackDraftReply>('asset.source.draft', {
       projectId: input.projectId, targetId: input.targetId, request, ...(previewTargetId ? { previewTargetId } : {}),
     }, { signal: lifetime.signal, reportError: false });

@@ -21,6 +21,15 @@ interface Program {
 }
 const MAX_ENTRIES = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+/**
+ * Native async compilation runs on the browser's GPU-process task pool. Four
+ * outstanding requests left most cores idle (1,121 game recipes took ~32 s on a
+ * 32-thread host); keep enough in flight to use half the logical processors.
+ */
+export function pipelineWarmupConcurrency(hardwareConcurrency: number | undefined): number {
+  const cores = Number.isSafeInteger(hardwareConcurrency) ? (hardwareConcurrency as number) : 0;
+  return Math.max(4, Math.min(16, Math.floor(cores / 2)));
+}
 
 function entry<T>(rows: readonly T[], index: number): T {
   const value = rows[index];
@@ -484,18 +493,26 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         firstError: unknown;
       // Await every started request, including failures and disposal. Never mark a partial import ready.
       await Promise.all(
-        Array.from({ length: Math.min(4, requests.length) }, async () => {
-          while (cursor < requests.length && !this.closed) {
-            const request = entry(requests, cursor++);
-            try {
-              await request();
-              this.warmup.completed++;
-            } catch (cause) {
-              this.warmup.failed++;
-              firstError ??= cause;
+        Array.from(
+          {
+            length: Math.min(
+              pipelineWarmupConcurrency(globalThis.navigator?.hardwareConcurrency),
+              requests.length,
+            ),
+          },
+          async () => {
+            while (cursor < requests.length && !this.closed) {
+              const request = entry(requests, cursor++);
+              try {
+                await request();
+                this.warmup.completed++;
+              } catch (cause) {
+                this.warmup.failed++;
+                firstError ??= cause;
+              }
             }
-          }
-        }),
+          },
+        ),
       );
       this.active();
       if (firstError !== undefined) throw firstError;

@@ -47,7 +47,7 @@ it.each([
       globalThis.triggerFailure = () => globalThis.__forgeaxStartup.fail(${failure});
       ${
         timing === 'after-frame'
-          ? "document.documentElement.dataset.forgeaxFrameSubmitted = '1';"
+          ? 'canvas.forgeaxFrameProgress = { submitted: { frameId: 1, deviceGeneration: 1 } };'
           : 'globalThis.triggerFailure();'
       }
     </script></body>`,

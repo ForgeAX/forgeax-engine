@@ -104,10 +104,12 @@ export async function rememberInitialPreviewCamera(api: Pick<ViewWorkspaceClient
 
 export async function restorePreviewCamera(api: PreviewCameraApi, target: WorkspaceTarget, pose: unknown, {
   tabId = VIEW_WORKSPACE_TAB_ID,
-}: { tabId?: string } = {}) {
+  signal,
+}: { tabId?: string; signal?: AbortSignal } = {}) {
   const targetId = String(target.targetId);
   const targetGeneration = target.generation;
-  const current = await api.getCamera({ targetId, targetGeneration, tabId });
+  const current = await api.getCamera({ targetId, targetGeneration, tabId, signal });
+  signal?.throwIfAborted();
   const version = current?.version;
   const interactionId = createWorkspaceId('interaction');
   await api.beginCamera({
@@ -116,16 +118,25 @@ export async function restorePreviewCamera(api: PreviewCameraApi, target: Worksp
     tabId,
     baseVersion: version,
     interactionId,
+    signal,
   });
-  await api.commitCamera({
-    targetId,
-    targetGeneration,
-    tabId,
-    interactionId,
-    operationId: createWorkspaceId('operation'),
-    expectedVersion: version,
-    camera: cameraPoseForRestore(pose),
-  });
+  let committed = false;
+  try {
+    signal?.throwIfAborted();
+    await api.commitCamera({
+      targetId,
+      targetGeneration,
+      tabId,
+      interactionId,
+      operationId: createWorkspaceId('operation'),
+      expectedVersion: version,
+      camera: cameraPoseForRestore(pose),
+      signal,
+    });
+    committed = true;
+  } finally {
+    if (!committed) await api.abortCamera?.({ targetId, targetGeneration, tabId, interactionId, reason: 'preview-restore-ended', reportError: false });
+  }
 }
 
 /** One begin/commit that leaves the pose in place and records the orbit pivot. */

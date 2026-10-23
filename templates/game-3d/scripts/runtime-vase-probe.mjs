@@ -5,9 +5,15 @@ import { join } from 'node:path';
 /** Shared by Preview and the generated DevKit project's main/Worker browser gates. */
 export async function probeRuntimeVase(page, read, evidenceDir, capture = options => page.screenshot(options)) {
   const settleRender = async () => {
-    const before = await page.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0));
-    await page.waitForFunction(frame => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) >= frame + 2,
-      before, { timeout: 60_000 });
+    const before = await page.evaluate(
+      () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
+    );
+    await page.waitForFunction(
+      (previousFrameId) =>
+        (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= previousFrameId + 2,
+      before,
+      { timeout: 60_000 },
+    );
   };
   const panel = page.getByRole('region', { name: 'Runtime vase' });
   await panel.waitFor({ timeout: 120_000 });

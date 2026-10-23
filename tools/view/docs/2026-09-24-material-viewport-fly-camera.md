@@ -1,5 +1,11 @@
 # 开发文档：材质页视口的漫游相机与复原视角
 
+> Superseded for the Material page by [2026-10-22 material preview navigation](2026-10-22-material-preview-navigation.md).
+> Material now rotates the object with left drag, pans with middle drag and
+> dollies with right drag/wheel. Scene look/WASD controls below are historical
+> Material policy. Reset uses the existing camera transactions and the native
+> Material orientation reset; no `camera.restore` operation was introduced.
+
 状态：已实现。日期：2026-09-24。修订：复原视角用 View 侧记录的开场姿态加现有 camera.begin/commit 写回，不新增 Engine 操作。
 
 ## 问题

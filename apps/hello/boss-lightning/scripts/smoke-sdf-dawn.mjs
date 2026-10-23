@@ -687,735 +687,745 @@ async function run(collision, depthOnly = false) {
   const label = runLabel(collision, depthOnly);
   let assetAssembly, runtime, unsubscribe;
   const publicationEvents = [];
+  const previousGpu = globalThis.navigator?.gpu;
   const shim = await setupGpuShim({
     width,
     height,
     rerunCmd: 'pnpm --filter @forgeax/hello-boss-lightning smoke:sdf',
   });
-  const recorder = benchmarkCapacity === undefined ? unwrap(attachRecorder(webgpu)) : undefined;
-  const host = createVfxRuntimeHost({
-    camera: {
-      read(currentWorld) {
-        const matrix = currentWorld.get(cameraEntity, GlobalTransform).unwrap().world;
-        return {
-          position: new Float32Array([matrix[12], matrix[13], matrix[14]]),
-          right: mat4.getRight(vec3.create(), matrix),
-          up: mat4.getUp(vec3.create(), matrix),
-          viewProjection: mat4.multiply(
-            mat4.create(),
-            mat4.perspectiveReverseZ(mat4.create(), Math.PI / 3, width / height, 0.1, 50),
-            mat4.invert(mat4.create(), matrix),
-          ),
-        };
-      },
-    },
-    sceneSdf: {
-      read: () => ({
-        origin: [-4, -4, -4],
-        dimensions: [65, 65, 65],
-        spacing: 0.125,
-        maxDistance: 2,
-        maxInstances: 16,
-        maxFieldBytes: 1024 * 1024,
-      }),
-    },
-  });
-  const assembly = unwrap(
-    await constructRuntimeRendererHost(shim.mockCanvas, rendererHostOptions(host, recorder), {
-      shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
-    }),
-  );
-  const { renderer } = assembly;
-  let assets = assembly.assets;
-  let world = new World({ assets });
-  let context = await createWorldContext(world, [scenePlugin()]);
-  const errors = [];
-  renderer.subscribe((event) => {
-    if (event.kind === 'error') errors.push(event.error);
-  });
-  assets.configurePackIndex('/pack-index.json');
-  unwrap(await host.attachWorld({ world, assets }));
-  async function attachLifecycleRuntime() {
-    assetAssembly = unwrap(
-      createAssetRuntimeAssembly(assets, {
-        catalogSource: createCatalogSource({ url: '/pack-index.json' }),
-      }),
-    );
-    runtime = assembleRuntimePacks(context, assetAssembly, { scopeId: `sdf-lifecycle-${label}` });
-    assets.setCatalogSource(runtime.catalog, runtime.fetcher);
-    unsubscribe = runtime.catalog.subscribe((delta) =>
-      publicationEvents.push(structuredClone(delta)),
-    );
-    const row = depthOnly ? prepared.depth : prepared.republication.rows[0];
-    unwrap(await runtime.producer.restore(preparedSnapshot(row)));
-  }
-  if (lifecycle === 'same-guid-republication' || depthOnly) await attachLifecycleRuntime();
-  const meshGuid =
-    lifecycle === 'same-guid-republication'
-      ? prepared.republication.guid
-      : guid(`mesh/${scenario.mesh}`);
-  const totalCapacity = benchmarkCapacity ?? 1024;
-  async function loadWorldAssets(owner) {
-    const sourceMesh = unwrap(await owner.load(owner.parseGuid(meshGuid), 'mesh'));
-    const mesh = owner.read(sourceMesh).unwrap();
-    assert.equal(
-      mesh.distanceField.policy.kind,
-      scenario.mesh === 'plane' ? 'two-sided' : 'signed-solid',
-    );
-    const material = unwrap(await owner.load(owner.parseGuid(guid('material/obstacle')), 'material'));
-    const effectHandle = unwrap(await loadVfxGpuEffect(owner, effectGuidFor(label, depthOnly)));
-    const effect = owner.read(effectHandle).unwrap();
-    if (depthOnly)
-      assert.deepEqual(
-        effect.program.emitters[0].reflection.dataInterfaces.map((row) => row.kind),
-        ['camera', 'scene-depth'],
-      );
-    assertEffectCapacity(effect, totalCapacity);
-    return { sourceMesh, mesh, material, effectHandle, effect };
-  }
-  let { sourceMesh, mesh, material, effectHandle, effect } = await loadWorldAssets(assets);
-  let transforms = structuredClone(scenario.obstacles);
-  function populateWorld(world) {
-    const cameraEntity = spawnPrimaryCamera(world);
-    const secondCamera = lifecycle === 'multi-view' ? spawnSecondaryView(world, cameraEntity) : undefined;
-    const meshHandle = sourceMesh;
-    const materialHandle = material;
-    const obstacles = transforms.map((transform) =>
-      world
-        .spawn(
-          { component: Transform, data: transform },
-          { component: MeshFilter, data: { assetHandle: meshHandle } },
-          { component: MeshRenderer, data: { materials: [materialHandle] } },
-        )
-        .unwrap(),
-    );
-    const player = world
-      .spawn({
-        component: ParticleEffectPlayer,
-        data: {
-          effect: effectHandle,
-          playing: true,
-          seed: 15,
-          timeScale: 1,
+  const ownedGpu = navigator.gpu;
+  try {
+    const recorder = benchmarkCapacity === undefined ? unwrap(attachRecorder(webgpu)) : undefined;
+    const host = createVfxRuntimeHost({
+      camera: {
+        read(currentWorld) {
+          const matrix = currentWorld.get(cameraEntity, GlobalTransform).unwrap().world;
+          return {
+            position: new Float32Array([matrix[12], matrix[13], matrix[14]]),
+            right: mat4.getRight(vec3.create(), matrix),
+            up: mat4.getUp(vec3.create(), matrix),
+            viewProjection: mat4.multiply(
+              mat4.create(),
+              mat4.perspectiveReverseZ(mat4.create(), Math.PI / 3, width / height, 0.1, 50),
+              mat4.invert(mat4.create(), matrix),
+            ),
+          };
         },
-      })
-      .unwrap();
-    world
-      .getResource(VFX_GPU_RUNTIME_RESOURCE_KEY)
-      .attachInstance(
-        player,
-        createParticleEffectInstance(
-          createVfxEffectContract(effect.program.emitters[0].reflection.layout),
-          { initialValues: { ...scenario.parameters, diagnostics: diagnostic ? 1 : 0 } },
+      },
+      sceneSdf: {
+        read: () => ({
+          origin: [-4, -4, -4],
+          dimensions: [65, 65, 65],
+          spacing: 0.125,
+          maxDistance: 2,
+          maxInstances: 16,
+          maxFieldBytes: 1024 * 1024,
+        }),
+      },
+    });
+    const assembly = unwrap(
+      await constructRuntimeRendererHost(shim.mockCanvas, rendererHostOptions(host, recorder), {
+        shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
+      }),
+    );
+    const { renderer } = assembly;
+    let assets = assembly.assets;
+    let world = new World({ assets });
+    let context = await createWorldContext(world, [scenePlugin()]);
+    const errors = [];
+    renderer.subscribe((event) => {
+      if (event.kind === 'error') errors.push(event.error);
+    });
+    assets.configurePackIndex('/pack-index.json');
+    unwrap(await host.attachWorld({ world, assets }));
+    async function attachLifecycleRuntime() {
+      assetAssembly = unwrap(
+        createAssetRuntimeAssembly(assets, {
+          catalogSource: createCatalogSource({ url: '/pack-index.json' }),
+        }),
+      );
+      runtime = assembleRuntimePacks(context, assetAssembly, { scopeId: `sdf-lifecycle-${label}` });
+      assets.setCatalogSource(runtime.catalog, runtime.fetcher);
+      unsubscribe = runtime.catalog.subscribe((delta) =>
+        publicationEvents.push(structuredClone(delta)),
+      );
+      const row = depthOnly ? prepared.depth : prepared.republication.rows[0];
+      unwrap(await runtime.producer.restore(preparedSnapshot(row)));
+    }
+    if (lifecycle === 'same-guid-republication' || depthOnly) await attachLifecycleRuntime();
+    const meshGuid =
+      lifecycle === 'same-guid-republication'
+        ? prepared.republication.guid
+        : guid(`mesh/${scenario.mesh}`);
+    const totalCapacity = benchmarkCapacity ?? 1024;
+    async function loadWorldAssets(owner) {
+      const sourceMesh = unwrap(await owner.load(owner.parseGuid(meshGuid), 'mesh'));
+      const mesh = owner.read(sourceMesh).unwrap();
+      assert.equal(
+        mesh.distanceField.policy.kind,
+        scenario.mesh === 'plane' ? 'two-sided' : 'signed-solid',
+      );
+      const material = unwrap(await owner.load(owner.parseGuid(guid('material/obstacle')), 'material'));
+      const effectHandle = unwrap(await loadVfxGpuEffect(owner, effectGuidFor(label, depthOnly)));
+      const effect = owner.read(effectHandle).unwrap();
+      if (depthOnly)
+        assert.deepEqual(
+          effect.program.emitters[0].reflection.dataInterfaces.map((row) => row.kind),
+          ['camera', 'scene-depth'],
+        );
+      assertEffectCapacity(effect, totalCapacity);
+      return { sourceMesh, mesh, material, effectHandle, effect };
+    }
+    let { sourceMesh, mesh, material, effectHandle, effect } = await loadWorldAssets(assets);
+    let transforms = structuredClone(scenario.obstacles);
+    function populateWorld(world) {
+      const cameraEntity = spawnPrimaryCamera(world);
+      const secondCamera = lifecycle === 'multi-view' ? spawnSecondaryView(world, cameraEntity) : undefined;
+      const meshHandle = sourceMesh;
+      const materialHandle = material;
+      const obstacles = transforms.map((transform) =>
+        world
+          .spawn(
+            { component: Transform, data: transform },
+            { component: MeshFilter, data: { assetHandle: meshHandle } },
+            { component: MeshRenderer, data: { materials: [materialHandle] } },
+          )
+          .unwrap(),
+      );
+      const player = world
+        .spawn({
+          component: ParticleEffectPlayer,
+          data: {
+            effect: effectHandle,
+            playing: true,
+            seed: 15,
+            timeScale: 1,
+          },
+        })
+        .unwrap();
+      world
+        .getResource(VFX_GPU_RUNTIME_RESOURCE_KEY)
+        .attachInstance(
+          player,
+          createParticleEffectInstance(
+            createVfxEffectContract(effect.program.emitters[0].reflection.layout),
+            { initialValues: { ...scenario.parameters, diagnostics: diagnostic ? 1 : 0 } },
+          ),
+        );
+      return { cameraEntity, secondCamera, meshHandle, obstacles, player };
+    }
+    let { cameraEntity, secondCamera, meshHandle, obstacles, player } = populateWorld(world);
+    let lease = unwrap(renderer.attach(world));
+    const captures = new Map();
+    let worldRebuildInitialTapes;
+    const measurements = [];
+    const allocations = [];
+    let liveBytes = 0,
+      peakBytes = 0;
+    const raw = shim.sharedDevice;
+    const createBuffer = raw.createBuffer.bind(raw);
+    const instrumentAllocations = benchmarkCapacity !== undefined || lifecycle !== undefined;
+    function trackedCreateBuffer(descriptor) {
+      const buffer = createBuffer(descriptor);
+      const row = { label: descriptor.label ?? '', size: descriptor.size, destroyed: false };
+      allocations.push(row);
+      liveBytes += row.size;
+      peakBytes = Math.max(peakBytes, liveBytes);
+      const destroy = buffer.destroy.bind(buffer);
+      buffer.destroy = () => {
+        if (!row.destroyed) {
+          row.destroyed = true;
+          liveBytes -= row.size;
+        }
+        return destroy();
+      };
+      return buffer;
+    }
+    if (instrumentAllocations) raw.createBuffer = trackedCreateBuffer;
+    let tapeBytes;
+    let frames = 0;
+
+    async function republishSameGuidMesh() {
+      const publication = prepared.republication;
+      runtime.producer.withdraw(publication.packageId);
+      unwrap(await runtime.producer.restore(preparedSnapshot(publication.rows[1])));
+      const held = assets.snapshot(sourceMesh).unwrap();
+      unwrap(await assets.reload(sourceMesh, {conflict: 'reject'}));
+      const current = assets.snapshot(sourceMesh).unwrap();
+      const replacement = assets.read(sourceMesh).unwrap();
+      assert(current.version(sourceMesh).unwrap() > held.version(sourceMesh).unwrap());
+      assert.equal(replacement.aabb[3], Math.fround(1.2));
+      assert.equal(replacement.distanceField.artifact.integrity.digest, publication.rows[1].field.integrity.digest);
+      for (const entity of obstacles) assert.equal(world.get(entity, MeshFilter).unwrap().assetHandle, sourceMesh);
+      held.dispose();
+      current.dispose();
+      for (const transform of transforms) transform.reimported = true;
+      writeFileSync(
+        resolve(output, `${label}-republication.json`),
+        JSON.stringify(
+          {
+            scope:
+              'Same-GUID validated Runtime Pack withdrawal and republication, not atomic recook',
+            ...publication,
+            events: publicationEvents,
+          },
+          null,
+          2,
         ),
       );
-    return { cameraEntity, secondCamera, meshHandle, obstacles, player };
-  }
-  let { cameraEntity, secondCamera, meshHandle, obstacles, player } = populateWorld(world);
-  let lease = unwrap(renderer.attach(world));
-  const captures = new Map();
-  let worldRebuildInitialTapes;
-  const measurements = [];
-  const allocations = [];
-  let liveBytes = 0,
-    peakBytes = 0;
-  const raw = shim.sharedDevice;
-  const createBuffer = raw.createBuffer.bind(raw);
-  const instrumentAllocations = benchmarkCapacity !== undefined || lifecycle !== undefined;
-  function trackedCreateBuffer(descriptor) {
-    const buffer = createBuffer(descriptor);
-    const row = { label: descriptor.label ?? '', size: descriptor.size, destroyed: false };
-    allocations.push(row);
-    liveBytes += row.size;
-    peakBytes = Math.max(peakBytes, liveBytes);
-    const destroy = buffer.destroy.bind(buffer);
-    buffer.destroy = () => {
-      if (!row.destroyed) {
-        row.destroyed = true;
-        liveBytes -= row.size;
+    }
+
+    async function applyWallChange() {
+      if (lifecycle === 'same-guid-republication') {
+        await republishSameGuidMesh();
+      } else if (lifecycle === 'remove-wall') {
+        world.despawn(obstacles[1]).unwrap();
+        transforms.splice(1, 1);
+      } else {
+        moveWall(world, transforms, obstacles);
       }
-      return destroy();
-    };
-    return buffer;
-  }
-  if (instrumentAllocations) raw.createBuffer = trackedCreateBuffer;
-  let tapeBytes;
-  let frames = 0;
-
-  async function republishSameGuidMesh() {
-    const publication = prepared.republication;
-    runtime.producer.withdraw(publication.packageId);
-    unwrap(await runtime.producer.restore(preparedSnapshot(publication.rows[1])));
-    const held = assets.snapshot(sourceMesh).unwrap();
-    unwrap(await assets.reload(sourceMesh, {conflict: 'reject'}));
-    const current = assets.snapshot(sourceMesh).unwrap();
-    const replacement = assets.read(sourceMesh).unwrap();
-    assert(current.version(sourceMesh).unwrap() > held.version(sourceMesh).unwrap());
-    assert.equal(replacement.aabb[3], Math.fround(1.2));
-    assert.equal(replacement.distanceField.artifact.integrity.digest, publication.rows[1].field.integrity.digest);
-    for (const entity of obstacles) assert.equal(world.get(entity, MeshFilter).unwrap().assetHandle, sourceMesh);
-    held.dispose();
-    current.dispose();
-    for (const transform of transforms) transform.reimported = true;
-    writeFileSync(
-      resolve(output, `${label}-republication.json`),
-      JSON.stringify(
-        {
-          scope:
-            'Same-GUID validated Runtime Pack withdrawal and republication, not atomic recook',
-          ...publication,
-          events: publicationEvents,
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  async function applyWallChange() {
-    if (lifecycle === 'same-guid-republication') {
-      await republishSameGuidMesh();
-    } else if (lifecycle === 'remove-wall') {
-      world.despawn(obstacles[1]).unwrap();
-      transforms.splice(1, 1);
-    } else {
-      moveWall(world, transforms, obstacles);
     }
-  }
 
-  async function runFrame(frame) {
-    if (frame === 24 && scenario.moveWall) await applyWallChange();
-    if (lifecycle === 'multi-view') applyMultiViewChanges(world, frame, cameraEntity, secondCamera);
-    const start = performance.now();
-    const ticks = fixedTicksForFrame(frame);
-    for (let tick = 0; tick < ticks; tick++) world.update(1 / 60).unwrap();
-    const updated = performance.now();
-    const capture =
-      recorder !== undefined && shouldCaptureFrame(frame) ? recorder.captureFrame() : undefined;
-    if (capture !== undefined) unwrap(await recorder.frameBoundary());
-    const receipt = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
-    const recorded = performance.now();
-    unwrap(await receipt.completed);
-    const completed = performance.now();
-    frames++;
-    if (benchmarkCapacity !== undefined) {
-      const observation = unwrap(
-        await renderer.observe(receipt, { include: ['timings'] }),
-      ).timings;
-      assert(observation);
-      measurements.push({
-        frame,
-        hostLoad: { loadAverage: loadavg(), freeMemoryBytes: freemem() },
-        cpu: {
-          updateMs: updated - start,
-          prepareRecordMs: recorded - updated,
-          completionWaitMs: completed - recorded,
-          frameMs: completed - start,
-          timingObservationMs: performance.now() - completed,
-        },
-        timing: observation,
-        intervals: observation.status === 'complete' ? intervals(observation.frame) : null,
-      });
-    }
-    if (capture !== undefined) {
-      unwrap(await recorder.frameBoundary());
-      tapeBytes = unwrap(await capture).bytes;
-      captures.set(frame, tapeBytes);
-      writeFileSync(resolve(output, `${label}-${frame}.rhitape`), tapeBytes);
-      writeFileSync(resolve(output, `${label}.rhitape`), tapeBytes);
-    }
-  }
-
-  function verifyCompletedRun() {
-    const inspected = host.inspect(world);
-    writeFileSync(
-      resolve(output, `${label}-completed.json`),
-      JSON.stringify(
-        {
-          label,
-          scenario,
-          diagnostic,
-          seed: 15,
-          completedFrames: frames,
-          adapter: shim.adapterInfo,
-          errors,
-          captures: [...captures].map(([frame, bytes]) => ({ frame, digest: tapeDigest(bytes) })),
-          sourceMesh: {
-            guid: guid(`mesh/${scenario.mesh}`),
-            artifact: mesh.distanceField.artifact,
-            policy: mesh.distanceField.policy,
-          },
-          host: inspected,
-          ...(benchmarkCapacity === undefined
-            ? {}
-            : { benchmarkCapacity, measurements, memory: { peakBytes, allocations } }),
-        },
-        null,
-        2,
-      ),
-    );
-    assert.equal(frames, frameLimit);
-    assert.deepEqual(errors, []);
-    assert.deepEqual(inspected.diagnostics, []);
-    assert.equal(inspected.players.find((p) => p.player === player)?.queuedIntents, 0);
-  }
-
-  function worldStateSnapshot(fields, completedFrames) {
-    return structuredClone({
-      assetOwner: assets.identity,
-      handles: { mesh: sourceMesh, material, effect: effectHandle },
-      host: host.inspect(world),
-      renderer: renderer.inspect(),
-      fields: fields.map((row) => ({ ...row })),
-      completedFrames,
-    });
-  }
-
-  async function retireOriginalWorld() {
-    const originalInitialTape = captures.get(0);
-    assert(originalInitialTape);
-    const oldControl = unwrap(host.acquireControl(world));
-    const oldPlayer = player;
-    const oldFields = liveSdfFields(allocations);
-    const before = worldStateSnapshot(oldFields, frames);
-    assert(oldFields.length > 0 || !collision);
-    lease.dispose();
-    unwrap(await host.detachWorld({ world }));
-    assert.equal(
-      host.inspect(world),
-      undefined,
-      'Retired World must leave the host attachment map',
-    );
-    await context.fiber.dispose();
-    await Promise.resolve();
-    assert(
-      oldFields.every((row) => row.destroyed),
-      'Retired World must release every accepted SDF buffer',
-    );
-    return { originalInitialTape, oldControl, oldPlayer, oldFields, before };
-  }
-
-  async function attachFreshWorld(before) {
-    assets.dispose();
-    assets = new AssetRegistry({ shaderRegistry: assembly.assets.shaderRegistry });
-    for (const contribution of defaultAssetDecoderContributions)
-      assets.installDecoder(contribution.kind, contribution.decoder);
-    assets.configurePackIndex('/pack-index.json');
-    world = new World({ assets });
-    context = await createWorldContext(world, [scenePlugin()]);
-    unwrap(await host.attachWorld({ world, assets }));
-    ({ sourceMesh, mesh, material, effectHandle, effect } = await loadWorldAssets(assets));
-    assert.notEqual(assets.identity, before.assetOwner);
-    for (const handle of Object.values(before.handles))
-      assert.equal(assets.validate(handle).ok, false, 'Fresh World rejects retired asset handles');
-    // Raise only the floor. The new analytic oracle rejects an old field;
-    // the ordinary frame24 wall update and collision-off control remain.
-    transforms = structuredClone(scenario.obstacles);
-    transforms[0].pos[1] += 1;
-    ({ cameraEntity, secondCamera, meshHandle, obstacles, player } = populateWorld(world));
-    lease = unwrap(renderer.attach(world));
-    captures.clear();
-  }
-
-  async function runRebuiltFrames() {
-    let rebuiltFrames = 0;
-    for (let frame = 0; frame < 60; frame++) {
-      if (frame === 24 && scenario.moveWall) moveWall(world, transforms, obstacles);
-      world.update(1 / 60).unwrap();
-      const capture = [0, 24, 59].includes(frame) ? recorder.captureFrame() : undefined;
+    async function runFrame(frame) {
+      if (frame === 24 && scenario.moveWall) await applyWallChange();
+      if (lifecycle === 'multi-view') applyMultiViewChanges(world, frame, cameraEntity, secondCamera);
+      const start = performance.now();
+      const ticks = fixedTicksForFrame(frame);
+      for (let tick = 0; tick < ticks; tick++) world.update(1 / 60).unwrap();
+      const updated = performance.now();
+      const capture =
+        recorder !== undefined && shouldCaptureFrame(frame) ? recorder.captureFrame() : undefined;
       if (capture !== undefined) unwrap(await recorder.frameBoundary());
       const receipt = unwrap(
         renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
       );
+      const recorded = performance.now();
       unwrap(await receipt.completed);
-      rebuiltFrames++;
+      const completed = performance.now();
+      frames++;
+      if (benchmarkCapacity !== undefined) {
+        const observation = unwrap(
+          await renderer.observe(receipt, { include: ['timings'] }),
+        ).timings;
+        assert(observation);
+        measurements.push({
+          frame,
+          hostLoad: { loadAverage: loadavg(), freeMemoryBytes: freemem() },
+          cpu: {
+            updateMs: updated - start,
+            prepareRecordMs: recorded - updated,
+            completionWaitMs: completed - recorded,
+            frameMs: completed - start,
+            timingObservationMs: performance.now() - completed,
+          },
+          timing: observation,
+          intervals: observation.status === 'complete' ? intervals(observation.frame) : null,
+        });
+      }
       if (capture !== undefined) {
         unwrap(await recorder.frameBoundary());
         tapeBytes = unwrap(await capture).bytes;
         captures.set(frame, tapeBytes);
-        writeFileSync(resolve(output, `${label}-world-rebuild-${frame}.rhitape`), tapeBytes);
+        writeFileSync(resolve(output, `${label}-${frame}.rhitape`), tapeBytes);
+        writeFileSync(resolve(output, `${label}.rhitape`), tapeBytes);
       }
     }
-    return rebuiltFrames;
-  }
 
-  function verifyRebuiltWorld(retired, rebuiltFrames) {
-    const { before, oldControl, oldPlayer, oldFields } = retired;
-    const after = worldStateSnapshot(liveSdfFields(allocations), rebuiltFrames);
-    assert.equal(
-      after.renderer.frame.deviceGeneration,
-      before.renderer.frame.deviceGeneration,
-      'World replacement must preserve the Renderer device generation',
-    );
-    assert(
-      after.host.generation > before.host.generation,
-      'Fresh World must acquire a new host attachment generation',
-    );
-    assert.equal(after.host.players.length, 1);
-    const retiredReplay = oldControl.replay({ player: oldPlayer });
-    assert.equal(retiredReplay.ok, false, 'An old World control must reject after replacement');
-    assert.equal(retiredReplay.error.code, 'vfx-host-control-world-detached');
-    assert.equal(after.host.players[0].queuedIntents, 0);
-    assert(
-      collision ? after.fields.length > 0 : after.fields.length === 0,
-      'Fresh World allocates SDF buffers only for the reflected consumer',
-    );
-    assert.equal(after.host.players[0].lastCommitted.tick, 60);
-    assert.deepEqual(after.host.diagnostics, []);
-    assert.deepEqual(errors, []);
-    writeFileSync(
-      resolve(output, `${label}-world-rebuild.json`),
-      JSON.stringify(
-        {
-          route:
-            'Fresh World, AssetRegistry and Cordis scene context on the same ordinary Renderer/device; no App.execution or driver-reset claim',
-          before,
-          after,
-          raisedFloorWorldUnits: 1,
-          oldFieldsRetired: oldFields.every((row) => row.destroyed),
-          effectiveObstacles: transforms,
-          retiredControlError: retiredReplay.error,
-          finalTapeDigest: tapeDigest(tapeBytes),
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  async function rebuildWorld() {
-    const retired = await retireOriginalWorld();
-    await attachFreshWorld(retired.before);
-    const rebuiltFrames = await runRebuiltFrames();
-    assert.equal(rebuiltFrames, 60);
-    worldRebuildInitialTapes = { before: retired.originalInitialTape, after: captures.get(0) };
-    assert(worldRebuildInitialTapes.after);
-    verifyRebuiltWorld(retired, rebuiltFrames);
-  }
-
-  async function verifyMissingFieldRejection() {
-    const uncooked = unwrap(await assets.load(assets.parseGuid(guid('mesh/no-field')), 'mesh'));
-    assert.equal(assets.read(uncooked).unwrap().distanceField, undefined);
-    const invalidHandle = uncooked;
-    for (const entity of obstacles)
-      world.set(entity, MeshFilter, { assetHandle: invalidHandle }).unwrap();
-    world.update(1 / 60).unwrap();
-    const beforeRejected = host.inspect(world);
-    const rejected = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
-    const completion = rejected.ok ? await rejected.value.completed : undefined;
-    const afterRejected = host.inspect(world);
-    writeFileSync(
-      resolve(output, 'missing-field.json'),
-      JSON.stringify(
-        {
-          meshGuid: guid('mesh/no-field'),
-          beforeRejected,
-          afterRejected,
-          draw: rejected,
-          completion,
-          errors,
-        },
-        null,
-        2,
-      ),
-    );
-    assert(
-      errors.length > 0 &&
-        errors.every(
-          (error) =>
-            sceneSdfCause(error)?.code === 'scene-sdf-unavailable' &&
-            sceneSdfCause(error).detail.reason === 'missing-field',
+    function verifyCompletedRun() {
+      const inspected = host.inspect(world);
+      writeFileSync(
+        resolve(output, `${label}-completed.json`),
+        JSON.stringify(
+          {
+            label,
+            scenario,
+            diagnostic,
+            seed: 15,
+            completedFrames: frames,
+            adapter: shim.adapterInfo,
+            errors,
+            captures: [...captures].map(([frame, bytes]) => ({ frame, digest: tapeDigest(bytes) })),
+            sourceMesh: {
+              guid: guid(`mesh/${scenario.mesh}`),
+              artifact: mesh.distanceField.artifact,
+              policy: mesh.distanceField.policy,
+            },
+            host: inspected,
+            ...(benchmarkCapacity === undefined
+              ? {}
+              : { benchmarkCapacity, measurements, memory: { peakBytes, allocations } }),
+          },
+          null,
+          2,
         ),
-      'Canonical uncooked mesh must fail through its structured scene producer cause',
-    );
-    const queued = queuedIntentsOf(beforeRejected, player);
-    assert(queued > 0);
-    assert.equal(
-      queuedIntentsOf(afterRejected, player),
-      queued,
-      'Rejected preparation must preserve every pending fixed-tick intent',
-    );
-  }
-
-  async function verifyMissingFieldRestoration() {
-    for (const entity of obstacles)
-      world.set(entity, MeshFilter, { assetHandle: meshHandle }).unwrap();
-    errors.length = 0;
-    const restoredTape = await drawCapturedFrame(renderer, recorder, lease);
-    writeFileSync(resolve(output, 'missing-field-restored.rhitape'), restoredTape);
-    assert.equal(queuedIntentsOf(host.inspect(world), player), 0);
-    assert.deepEqual(errors, []);
-    writeFileSync(
-      resolve(output, 'missing-field-restored.json'),
-      JSON.stringify(
-        {
-          host: host.inspect(world),
-          renderer: renderer.inspect(),
-          tapeDigest: tapeDigest(restoredTape),
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  async function releaseSdfDemand() {
-    if (lifecycle === 'player-destroy') {
-      world.despawn(player).unwrap();
-      return;
-    }
-    const replacement = unwrap(await loadVfxGpuEffect(assets, guid('effect/free')));
-    assert(
-      !assets.read(replacement).unwrap().program.emitters[0].reflection.dataInterfaces?.some(
-        (row) => row.kind === 'scene-sdf',
-      ),
-    );
-    world
-      .set(player, ParticleEffectPlayer, {
-        effect: replacement,
-      })
-      .unwrap();
-  }
-
-  async function captureDemandRelease() {
-    const capture = recorder.captureFrame();
-    unwrap(await recorder.frameBoundary());
-    await releaseSdfDemand();
-    world.update(1 / 60).unwrap();
-    const changed = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
-    unwrap(await changed.completed);
-    unwrap(await recorder.frameBoundary());
-    const lifecycleTape = unwrap(await capture).bytes;
-    writeFileSync(resolve(output, `${lifecycle}.rhitape`), lifecycleTape);
-    const updates = buildFrameModel(unwrap(decodeTape(lifecycleTape))).works.filter(isVfxUpdateWork);
-    assert.equal(updates.length, lifecycle === 'player-destroy' ? 0 : 1);
-    assert(updates.every((work) => work.bindings.every((binding) => binding.binding !== 15)));
-    return lifecycleTape;
-  }
-
-  async function verifyDemandRelease() {
-    const before = liveSdfFields(allocations).map((row) => ({ ...row }));
-    assert(before.length > 0, 'Baseline must accept native SDF buffers');
-    let lifecycleTape;
-    if (lifecycle === 'world-detach') {
-      lease.dispose();
-      await Promise.resolve();
-    } else {
-      lifecycleTape = await captureDemandRelease();
-    }
-    const after = liveSdfFields(allocations).map((row) => ({ ...row }));
-    writeFileSync(
-      resolve(output, `${lifecycle}.json`),
-      JSON.stringify(
-        {
-          lifecycle,
-          baselineFrames: frames,
-          additionalCompletedFrames: lifecycle === 'world-detach' ? 0 : 1,
-          before,
-          after,
-          observedAllocations: allocations.filter((row) => row.label.startsWith('scene-sdf.')),
-          tapeDigest: lifecycleTape === undefined ? null : tapeDigest(lifecycleTape),
-        },
-        null,
-        2,
-      ),
-    );
-    assert.equal(
-      after.length,
-      0,
-      'Released demand must retire every SDF buffer after completed submissions',
-    );
-    assert.deepEqual(errors, []);
-  }
-
-  async function verifyLifecycleAfterRun() {
-    if (lifecycle === 'fixed-ticks') {
-      writeFixedTickEvidence(label, captures, frames);
-    } else if (lifecycle === 'multi-view') {
-      writeMultiViewEvidence(label, renderer, captures, frames);
-    } else if (collision && lifecycle === 'missing-field') {
-      await verifyMissingFieldRejection();
-      await verifyMissingFieldRestoration();
-    } else if (
-      collision &&
-      ['player-destroy', 'source-replace', 'world-detach'].includes(lifecycle)
-    ) {
-      await verifyDemandRelease();
-    }
-  }
-
-  async function disposeRun() {
-    unsubscribe?.();
-    lease.dispose();
-    unwrap(await host.detachWorld({ world }));
-    await renderer.dispose();
-    await context.fiber.dispose();
-    assetAssembly?.dispose();
-    assets.dispose();
-    if (recorder !== undefined) unwrap(await recorder.dispose());
-    if (instrumentAllocations) raw.createBuffer = createBuffer;
-    shim.sharedDevice?.destroy();
-  }
-
-  function writeBenchmarkReport() {
-    const sampled = measurements.slice(30);
-    assert.equal(sampled.length, 60);
-    const core = allocations.filter((row) => /\.particles"\]$/.test(row.label));
-    assert.equal(
-      core.reduce((sum, row) => sum + row.size, 0),
-      totalCapacity * VFX_PARTICLE_CORE_LAYOUT.stride,
-    );
-    const fields = allocations.filter((row) => row.label === 'scene-sdf.grid-and-voxels');
-    assert.equal(fields.length, collision ? (scenario.moveWall ? 2 : 1) : 0);
-    const software = isSoftwareAdapter(shim);
-    const cpu = distributionsOf(Object.keys(sampled[0].cpu), (key) =>
-      sampled.map((sample) => sample.cpu[key]),
-    );
-    const complete = sampled.every(isCompleteTimingSample);
-    const report = {
-      label,
-      capacity: totalCapacity,
-      emitterCapacities: effect.program.emitters.map((emitter) => emitter.capacity),
-      seed: 15,
-      completedFrames: frames,
-      warmupFrames: 30,
-      sampleCount: sampled.length,
-      adapter: {
-        info: shim.adapterInfo,
-        requestedBackend: shim.requestedBackend,
-        isFallbackAdapter: shim.isFallbackAdapter,
-        adapterClass: software ? 'software-reference' : 'hardware',
-        virtualized: Boolean(shim.adapterInfo?.runtimeService),
-      },
-      observer: {
-        frameCapture: false,
-        particleReadbackBytes: 0,
-        framebufferReadbackBytes: 0,
-        passTimestampWritesAndReadback: true,
-        queryResponseTiming: 'fused with simulation; no exclusive kernel measurement',
-      },
-      memory: {
-        kind: 'observed native buffer descriptors after Renderer assembly; excludes textures and driver overhead',
-        coreBytes: core.reduce((sum, row) => sum + row.size, 0),
-        peakBytes,
-        allocations,
-      },
-      cpu,
-      gpu: benchmarkGpu(sampled, complete),
-      hardwareFrameBudgetMs: 33.34,
-      hardwareCpuBudgetPassed: software ? null : cpu.frameMs.p95 <= 33.34,
-      phases: {
-        cold: measurements[0],
-        replacement: measurements[24],
-        sampledGpuPassSumsMs: benchmarkPhaseSums(sampled, complete),
-      },
-      measurements,
-      verdict: benchmarkVerdict(complete, software, cpu),
-    };
-    writeFileSync(resolve(output, `${label}-benchmark.json`), JSON.stringify(report, null, 2));
-    return { report };
-  }
-
-  async function analyzeFinalTape() {
-    const located = locateCapturedUpdates(tapeBytes, captures, collision, depthOnly);
-    const { tape, model, update, particle, sdf, changedModel, changedUpdate, changedSdf, fieldWriter, producer } = located;
-    const replayAdapter = unwrap(await webgpu.rhi.requestAdapter());
-    const replayDevice = unwrap(
-      await replayAdapter.requestDevice(
-        replayDeviceRequest(tape, replayAdapter.features, replayAdapter.limits),
-      ),
-    );
-    const replay = unwrap(
-      await openReplay(tape, { device: replayDevice, createShaderModule: webgpu.createShaderModule }),
-    );
-    try {
-      const read = unwrap(await replay.readResourceAtWork(particle, update.workIndex));
-      writeFileSync(resolve(output, `${label}-final-core.bin`), read.bytes);
-      assertBaselineCore(label, read.bytes);
-      const { stride, fingerprint } = VFX_PARTICLE_CORE_LAYOUT;
-      assert.equal(effect.program.emitters[0].reflection.layout.core.fingerprint, fingerprint);
-      assert.equal(read.bytes.byteLength, 1024 * stride);
-      const records = decodeParticleRecords(read.bytes);
-      const green = records.filter((record) => record.color[1] > 0.9 && record.color[0] < 0.3).length;
-      const red = records.filter((record) => record.color[0] > 0.9).length;
-      const radius = scenario.parameters.radius ?? 0.02;
-      const gaps = records.map(
-        (record) =>
-          Math.min(...transforms.map((transform) => geometryDistance(record.position, transform))) -
-          radius,
       );
-      const maxPenetration = Math.max(0, ...gaps.map((gap) => -gap));
+      assert.equal(frames, frameLimit);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(inspected.diagnostics, []);
+      assert.equal(inspected.players.find((p) => p.player === player)?.queuedIntents, 0);
+    }
+
+    function worldStateSnapshot(fields, completedFrames) {
+      return structuredClone({
+        assetOwner: assets.identity,
+        handles: { mesh: sourceMesh, material, effect: effectHandle },
+        host: host.inspect(world),
+        renderer: renderer.inspect(),
+        fields: fields.map((row) => ({ ...row })),
+        completedFrames,
+      });
+    }
+
+    async function retireOriginalWorld() {
+      const originalInitialTape = captures.get(0);
+      assert(originalInitialTape);
+      const oldControl = unwrap(host.acquireControl(world));
+      const oldPlayer = player;
+      const oldFields = liveSdfFields(allocations);
+      const before = worldStateSnapshot(oldFields, frames);
+      assert(oldFields.length > 0 || !collision);
+      lease.dispose();
+      unwrap(await host.detachWorld({ world }));
+      assert.equal(
+        host.inspect(world),
+        undefined,
+        'Retired World must leave the host attachment map',
+      );
+      await context.fiber.dispose();
+      await Promise.resolve();
+      assert(
+        oldFields.every((row) => row.destroyed),
+        'Retired World must release every accepted SDF buffer',
+      );
+      return { originalInitialTape, oldControl, oldPlayer, oldFields, before };
+    }
+
+    async function attachFreshWorld(before) {
+      assets.dispose();
+      assets = new AssetRegistry({ shaderRegistry: assembly.assets.shaderRegistry });
+      for (const contribution of defaultAssetDecoderContributions)
+        assets.installDecoder(contribution.kind, contribution.decoder);
+      assets.configurePackIndex('/pack-index.json');
+      world = new World({ assets });
+      context = await createWorldContext(world, [scenePlugin()]);
+      unwrap(await host.attachWorld({ world, assets }));
+      ({ sourceMesh, mesh, material, effectHandle, effect } = await loadWorldAssets(assets));
+      assert.notEqual(assets.identity, before.assetOwner);
+      for (const handle of Object.values(before.handles))
+        assert.equal(assets.validate(handle).ok, false, 'Fresh World rejects retired asset handles');
+      // Raise only the floor. The new analytic oracle rejects an old field;
+      // the ordinary frame24 wall update and collision-off control remain.
+      transforms = structuredClone(scenario.obstacles);
+      transforms[0].pos[1] += 1;
+      ({ cameraEntity, secondCamera, meshHandle, obstacles, player } = populateWorld(world));
+      lease = unwrap(renderer.attach(world));
+      captures.clear();
+    }
+
+    async function runRebuiltFrames() {
+      let rebuiltFrames = 0;
+      for (let frame = 0; frame < 60; frame++) {
+        if (frame === 24 && scenario.moveWall) moveWall(world, transforms, obstacles);
+        world.update(1 / 60).unwrap();
+        const capture = [0, 24, 59].includes(frame) ? recorder.captureFrame() : undefined;
+        if (capture !== undefined) unwrap(await recorder.frameBoundary());
+        const receipt = unwrap(
+          renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+        );
+        unwrap(await receipt.completed);
+        rebuiltFrames++;
+        if (capture !== undefined) {
+          unwrap(await recorder.frameBoundary());
+          tapeBytes = unwrap(await capture).bytes;
+          captures.set(frame, tapeBytes);
+          writeFileSync(resolve(output, `${label}-world-rebuild-${frame}.rhitape`), tapeBytes);
+        }
+      }
+      return rebuiltFrames;
+    }
+
+    function verifyRebuiltWorld(retired, rebuiltFrames) {
+      const { before, oldControl, oldPlayer, oldFields } = retired;
+      const after = worldStateSnapshot(liveSdfFields(allocations), rebuiltFrames);
+      assert.equal(
+        after.renderer.frame.deviceGeneration,
+        before.renderer.frame.deviceGeneration,
+        'World replacement must preserve the Renderer device generation',
+      );
+      assert(
+        after.host.generation > before.host.generation,
+        'Fresh World must acquire a new host attachment generation',
+      );
+      assert.equal(after.host.players.length, 1);
+      const retiredReplay = oldControl.replay({ player: oldPlayer });
+      assert.equal(retiredReplay.ok, false, 'An old World control must reject after replacement');
+      assert.equal(retiredReplay.error.code, 'vfx-host-control-world-detached');
+      assert.equal(after.host.players[0].queuedIntents, 0);
+      assert(
+        collision ? after.fields.length > 0 : after.fields.length === 0,
+        'Fresh World allocates SDF buffers only for the reflected consumer',
+      );
+      assert.equal(after.host.players[0].lastCommitted.tick, 60);
+      assert.deepEqual(after.host.diagnostics, []);
+      assert.deepEqual(errors, []);
+      writeFileSync(
+        resolve(output, `${label}-world-rebuild.json`),
+        JSON.stringify(
+          {
+            route:
+              'Fresh World, AssetRegistry and Cordis scene context on the same ordinary Renderer/device; no App.execution or driver-reset claim',
+            before,
+            after,
+            raisedFloorWorldUnits: 1,
+            oldFieldsRetired: oldFields.every((row) => row.destroyed),
+            effectiveObstacles: transforms,
+            retiredControlError: retiredReplay.error,
+            finalTapeDigest: tapeDigest(tapeBytes),
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    async function rebuildWorld() {
+      const retired = await retireOriginalWorld();
+      await attachFreshWorld(retired.before);
+      const rebuiltFrames = await runRebuiltFrames();
+      assert.equal(rebuiltFrames, 60);
+      worldRebuildInitialTapes = { before: retired.originalInitialTape, after: captures.get(0) };
+      assert(worldRebuildInitialTapes.after);
+      verifyRebuiltWorld(retired, rebuiltFrames);
+    }
+
+    async function verifyMissingFieldRejection() {
+      const uncooked = unwrap(await assets.load(assets.parseGuid(guid('mesh/no-field')), 'mesh'));
+      assert.equal(assets.read(uncooked).unwrap().distanceField, undefined);
+      const invalidHandle = uncooked;
+      for (const entity of obstacles)
+        world.set(entity, MeshFilter, { assetHandle: invalidHandle }).unwrap();
+      world.update(1 / 60).unwrap();
+      const beforeRejected = host.inspect(world);
+      const rejected = renderer.draw({
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
+      const completion = rejected.ok ? await rejected.value.completed : undefined;
+      const afterRejected = host.inspect(world);
+      writeFileSync(
+        resolve(output, 'missing-field.json'),
+        JSON.stringify(
+          {
+            meshGuid: guid('mesh/no-field'),
+            beforeRejected,
+            afterRejected,
+            draw: rejected,
+            completion,
+            errors,
+          },
+          null,
+          2,
+        ),
+      );
+      assert(
+        errors.length > 0 &&
+          errors.every(
+            (error) =>
+              sceneSdfCause(error)?.code === 'scene-sdf-unavailable' &&
+              sceneSdfCause(error).detail.reason === 'missing-field',
+          ),
+        'Canonical uncooked mesh must fail through its structured scene producer cause',
+      );
+      const queued = queuedIntentsOf(beforeRejected, player);
+      assert(queued > 0);
+      assert.equal(
+        queuedIntentsOf(afterRejected, player),
+        queued,
+        'Rejected preparation must preserve every pending fixed-tick intent',
+      );
+    }
+
+    async function verifyMissingFieldRestoration() {
+      for (const entity of obstacles)
+        world.set(entity, MeshFilter, { assetHandle: meshHandle }).unwrap();
+      errors.length = 0;
+      const restoredTape = await drawCapturedFrame(renderer, recorder, lease);
+      writeFileSync(resolve(output, 'missing-field-restored.rhitape'), restoredTape);
+      assert.equal(queuedIntentsOf(host.inspect(world), player), 0);
+      assert.deepEqual(errors, []);
+      writeFileSync(
+        resolve(output, 'missing-field-restored.json'),
+        JSON.stringify(
+          {
+            host: host.inspect(world),
+            renderer: renderer.inspect(),
+            tapeDigest: tapeDigest(restoredTape),
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    async function releaseSdfDemand() {
+      if (lifecycle === 'player-destroy') {
+        world.despawn(player).unwrap();
+        return;
+      }
+      const replacement = unwrap(await loadVfxGpuEffect(assets, guid('effect/free')));
+      assert(
+        !assets.read(replacement).unwrap().program.emitters[0].reflection.dataInterfaces?.some(
+          (row) => row.kind === 'scene-sdf',
+        ),
+      );
+      world
+        .set(player, ParticleEffectPlayer, {
+          effect: replacement,
+        })
+        .unwrap();
+    }
+
+    async function captureDemandRelease() {
+      const capture = recorder.captureFrame();
+      unwrap(await recorder.frameBoundary());
+      await releaseSdfDemand();
+      world.update(1 / 60).unwrap();
+      const changed = unwrap(
+        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      );
+      unwrap(await changed.completed);
+      unwrap(await recorder.frameBoundary());
+      const lifecycleTape = unwrap(await capture).bytes;
+      writeFileSync(resolve(output, `${lifecycle}.rhitape`), lifecycleTape);
+      const updates = buildFrameModel(unwrap(decodeTape(lifecycleTape))).works.filter(isVfxUpdateWork);
+      assert.equal(updates.length, lifecycle === 'player-destroy' ? 0 : 1);
+      assert(updates.every((work) => work.bindings.every((binding) => binding.binding !== 15)));
+      return lifecycleTape;
+    }
+
+    async function verifyDemandRelease() {
+      const before = liveSdfFields(allocations).map((row) => ({ ...row }));
+      assert(before.length > 0, 'Baseline must accept native SDF buffers');
+      let lifecycleTape;
+      if (lifecycle === 'world-detach') {
+        lease.dispose();
+        await Promise.resolve();
+      } else {
+        lifecycleTape = await captureDemandRelease();
+      }
+      const after = liveSdfFields(allocations).map((row) => ({ ...row }));
+      writeFileSync(
+        resolve(output, `${lifecycle}.json`),
+        JSON.stringify(
+          {
+            lifecycle,
+            baselineFrames: frames,
+            additionalCompletedFrames: lifecycle === 'world-detach' ? 0 : 1,
+            before,
+            after,
+            observedAllocations: allocations.filter((row) => row.label.startsWith('scene-sdf.')),
+            tapeDigest: lifecycleTape === undefined ? null : tapeDigest(lifecycleTape),
+          },
+          null,
+          2,
+        ),
+      );
+      assert.equal(
+        after.length,
+        0,
+        'Released demand must retire every SDF buffer after completed submissions',
+      );
+      assert.deepEqual(errors, []);
+    }
+
+    async function verifyLifecycleAfterRun() {
+      if (lifecycle === 'fixed-ticks') {
+        writeFixedTickEvidence(label, captures, frames);
+      } else if (lifecycle === 'multi-view') {
+        writeMultiViewEvidence(label, renderer, captures, frames);
+      } else if (collision && lifecycle === 'missing-field') {
+        await verifyMissingFieldRejection();
+        await verifyMissingFieldRestoration();
+      } else if (
+        collision &&
+        ['player-destroy', 'source-replace', 'world-detach'].includes(lifecycle)
+      ) {
+        await verifyDemandRelease();
+      }
+    }
+
+    async function disposeRun() {
+      unsubscribe?.();
+      lease.dispose();
+      unwrap(await host.detachWorld({ world }));
+      await renderer.dispose();
+      await context.fiber.dispose();
+      assetAssembly?.dispose();
+      assets.dispose();
+      if (recorder !== undefined) unwrap(await recorder.dispose());
+      if (instrumentAllocations) raw.createBuffer = createBuffer;
+      shim.sharedDevice?.destroy();
+    }
+
+    function writeBenchmarkReport() {
+      const sampled = measurements.slice(30);
+      assert.equal(sampled.length, 60);
+      const core = allocations.filter((row) => /\.particles"\]$/.test(row.label));
+      assert.equal(
+        core.reduce((sum, row) => sum + row.size, 0),
+        totalCapacity * VFX_PARTICLE_CORE_LAYOUT.stride,
+      );
+      const fields = allocations.filter((row) => row.label === 'scene-sdf.grid-and-voxels');
+      assert.equal(fields.length, collision ? (scenario.moveWall ? 2 : 1) : 0);
+      const software = isSoftwareAdapter(shim);
+      const cpu = distributionsOf(Object.keys(sampled[0].cpu), (key) =>
+        sampled.map((sample) => sample.cpu[key]),
+      );
+      const complete = sampled.every(isCompleteTimingSample);
       const report = {
         label,
-        scenario,
-        ...worldRebuildReportFields(transforms, frames),
-        diagnostic,
-        completedFrames: frames,
+        capacity: totalCapacity,
+        emitterCapacities: effect.program.emitters.map((emitter) => emitter.capacity),
         seed: 15,
-        evidenceFrame: frameLimit - 1,
-        adapter: shim.adapterInfo,
-        tapeDigest: tapeDigest(tapeBytes),
-        updateWorkIndex: update.workIndex,
-        particle,
-        sdf,
-        bindings: update.bindings,
-        coreLayout: { stride, fingerprint },
-        green,
-        red,
-        geometry: {
-          radius,
-          maxPenetration,
-          minimumGap: Math.min(...gaps),
-          meanGap: gaps.reduce((sum, value) => sum + value, 0) / gaps.length,
+        completedFrames: frames,
+        warmupFrames: 30,
+        sampleCount: sampled.length,
+        adapter: {
+          info: shim.adapterInfo,
+          requestedBackend: shim.requestedBackend,
+          isFallbackAdapter: shim.isFallbackAdapter,
+          adapterClass: software ? 'software-reference' : 'hardware',
+          virtualized: Boolean(shim.adapterInfo?.runtimeService),
         },
-        samples: diagnostic && collision ? sampleHistogram(records) : null,
-        replacement: {
-          frame: 24,
-          tapeDigest: tapeDigest(captures.get(24)),
-          producerWorkIndex: producer?.workIndex,
-          consumerWorkIndex: changedUpdate.workIndex,
-          resource: changedSdf,
-          hotCompositionSkipped: collision ? fieldWriter(model) === undefined : null,
-          retiredBuffers: retiredBuffers(changedModel),
+        observer: {
+          frameCapture: false,
+          particleReadbackBytes: 0,
+          framebufferReadbackBytes: 0,
+          passTimestampWritesAndReadback: true,
+          queryResponseTiming: 'fused with simulation; no exclusive kernel measurement',
         },
-        records: records.slice(0, 32),
-        originalDestroyedBeforeReplay: true,
+        memory: {
+          kind: 'observed native buffer descriptors after Renderer assembly; excludes textures and driver overhead',
+          coreBytes: core.reduce((sum, row) => sum + row.size, 0),
+          peakBytes,
+          allocations,
+        },
+        cpu,
+        gpu: benchmarkGpu(sampled, complete),
+        hardwareFrameBudgetMs: 33.34,
+        hardwareCpuBudgetPassed: software ? null : cpu.frameMs.p95 <= 33.34,
+        phases: {
+          cold: measurements[0],
+          replacement: measurements[24],
+          sampledGpuPassSumsMs: benchmarkPhaseSums(sampled, complete),
+        },
+        measurements,
+        verdict: benchmarkVerdict(complete, software, cpu),
       };
-      writeFileSync(resolve(output, `${label}.json`), JSON.stringify(report, null, 2));
-      const { rgba, pixels } = await readFinalRasterPixels(replay, model, label);
-      report.pixels = pixels;
-      writeFileSync(resolve(output, `${label}.json`), JSON.stringify(report, null, 2));
-      assert(records.every((record) => record.alive === 1 && record.position.every(Number.isFinite)));
-      assertCollisionResponse(collision, green, maxPenetration, report);
-      assertCoverage(collision, records, red, frames, report);
-      return { report, records, rgba, core: read.bytes };
-    } finally {
-      unwrap(await replay.dispose());
-      webgpu._internal_getRawDevice(replayDevice)?.destroy();
+      writeFileSync(resolve(output, `${label}-benchmark.json`), JSON.stringify(report, null, 2));
+      return { report };
     }
-  }
 
-  try {
-    for (let frame = 0; frame < frameLimit; frame++) await runFrame(frame);
-    verifyCompletedRun();
-    if (lifecycle === 'world-rebuild') await rebuildWorld();
-    await verifyLifecycleAfterRun();
+    async function analyzeFinalTape() {
+      const located = locateCapturedUpdates(tapeBytes, captures, collision, depthOnly);
+      const { tape, model, update, particle, sdf, changedModel, changedUpdate, changedSdf, fieldWriter, producer } = located;
+      const replayAdapter = unwrap(await webgpu.rhi.requestAdapter());
+      const replayDevice = unwrap(
+        await replayAdapter.requestDevice(
+          replayDeviceRequest(tape, replayAdapter.features, replayAdapter.limits),
+        ),
+      );
+      const replay = unwrap(
+        await openReplay(tape, { device: replayDevice, createShaderModule: webgpu.createShaderModule }),
+      );
+      try {
+        const read = unwrap(await replay.readResourceAtWork(particle, update.workIndex));
+        writeFileSync(resolve(output, `${label}-final-core.bin`), read.bytes);
+        assertBaselineCore(label, read.bytes);
+        const { stride, fingerprint } = VFX_PARTICLE_CORE_LAYOUT;
+        assert.equal(effect.program.emitters[0].reflection.layout.core.fingerprint, fingerprint);
+        assert.equal(read.bytes.byteLength, 1024 * stride);
+        const records = decodeParticleRecords(read.bytes);
+        const green = records.filter((record) => record.color[1] > 0.9 && record.color[0] < 0.3).length;
+        const red = records.filter((record) => record.color[0] > 0.9).length;
+        const radius = scenario.parameters.radius ?? 0.02;
+        const gaps = records.map(
+          (record) =>
+            Math.min(...transforms.map((transform) => geometryDistance(record.position, transform))) -
+            radius,
+        );
+        const maxPenetration = Math.max(0, ...gaps.map((gap) => -gap));
+        const report = {
+          label,
+          scenario,
+          ...worldRebuildReportFields(transforms, frames),
+          diagnostic,
+          completedFrames: frames,
+          seed: 15,
+          evidenceFrame: frameLimit - 1,
+          adapter: shim.adapterInfo,
+          tapeDigest: tapeDigest(tapeBytes),
+          updateWorkIndex: update.workIndex,
+          particle,
+          sdf,
+          bindings: update.bindings,
+          coreLayout: { stride, fingerprint },
+          green,
+          red,
+          geometry: {
+            radius,
+            maxPenetration,
+            minimumGap: Math.min(...gaps),
+            meanGap: gaps.reduce((sum, value) => sum + value, 0) / gaps.length,
+          },
+          samples: diagnostic && collision ? sampleHistogram(records) : null,
+          replacement: {
+            frame: 24,
+            tapeDigest: tapeDigest(captures.get(24)),
+            producerWorkIndex: producer?.workIndex,
+            consumerWorkIndex: changedUpdate.workIndex,
+            resource: changedSdf,
+            hotCompositionSkipped: collision ? fieldWriter(model) === undefined : null,
+            retiredBuffers: retiredBuffers(changedModel),
+          },
+          records: records.slice(0, 32),
+          originalDestroyedBeforeReplay: true,
+        };
+        writeFileSync(resolve(output, `${label}.json`), JSON.stringify(report, null, 2));
+        const { rgba, pixels } = await readFinalRasterPixels(replay, model, label);
+        report.pixels = pixels;
+        writeFileSync(resolve(output, `${label}.json`), JSON.stringify(report, null, 2));
+        assert(records.every((record) => record.alive === 1 && record.position.every(Number.isFinite)));
+        assertCollisionResponse(collision, green, maxPenetration, report);
+        assertCoverage(collision, records, red, frames, report);
+        return { report, records, rgba, core: read.bytes };
+      } finally {
+        unwrap(await replay.dispose());
+        webgpu._internal_getRawDevice(replayDevice)?.destroy();
+      }
+    }
+
+    try {
+      for (let frame = 0; frame < frameLimit; frame++) await runFrame(frame);
+      verifyCompletedRun();
+      if (lifecycle === 'world-rebuild') await rebuildWorld();
+      await verifyLifecycleAfterRun();
+    } finally {
+      await disposeRun();
+    }
+    if (lifecycle === 'world-rebuild')
+      await compareWorldRebuildInitialCores(label, worldRebuildInitialTapes);
+    if (benchmarkCapacity !== undefined) return writeBenchmarkReport();
+    assert(tapeBytes);
+    return await analyzeFinalTape();
   } finally {
-    await disposeRun();
+    await teardownDawnInstance(shim.sharedDevice === undefined ? [] : [shim.sharedDevice], () => {
+      if (navigator.gpu !== ownedGpu) return;
+      if (previousGpu === undefined) delete navigator.gpu;
+      else Object.defineProperty(navigator, 'gpu', { value: previousGpu, configurable: true, writable: true });
+    });
   }
-  if (lifecycle === 'world-rebuild')
-    await compareWorldRebuildInitialCores(label, worldRebuildInitialTapes);
-  if (benchmarkCapacity !== undefined) return writeBenchmarkReport();
-  assert(tapeBytes);
-  return analyzeFinalTape();
 }
 
 try {

@@ -113,3 +113,53 @@ it('captures first movement after idle, settles stops and preserves source lifec
     await ctx.fiber.dispose();
   }
 });
+
+it('keeps interpolated motion continuous across a merged fixed catch-up', async () => {
+  const world = new World({
+    time: {
+      fixedDeltaSeconds: 0.05,
+      maxStepsPerUpdate: 2,
+      maxDeltaSeconds: 3 * 0.05,
+      fixedCatchUp: 'merged',
+    },
+  });
+  const ctx = await createWorldContext(world, [scenePlugin()]);
+  const body = world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 0] } },
+      { component: TransformInterpolation, data: {} },
+    )
+    .unwrap();
+  // Constant 10 units/s, integrated with whatever step FixedUpdate receives.
+  world
+    .addSystem(FixedUpdate, {
+      name: 'constant-velocity',
+      queries: [],
+      fn: (world) => {
+        const x = world.get(body, Transform).unwrap().pos[0] ?? 0;
+        world
+          .set(body, Transform, { pos: [x + 10 * world.getResource(FixedTime).delta, 0, 0] })
+          .unwrap();
+      },
+    })
+    .unwrap();
+  let elapsed = 0;
+  const frame = (seconds: number) => {
+    world.update(seconds).unwrap();
+    elapsed += seconds;
+    // Presentation renders one base step behind simulation time.
+    const x = readPresentationWorldMatrix(world, body)?.[12];
+    expect(x).toBeCloseTo(10 * (elapsed - 0.05), 5);
+  };
+  try {
+    for (let index = 0; index < 4; index++) frame(0.05);
+    frame(0.11); // merged: one 0.1 s pass
+    expect(world.getResource(FixedTime).stepDelta).toBeCloseTo(0.1, 9);
+    frame(0.02); // no fixed pass, still inside the merged interval
+    frame(0.03); // ordinary step
+    frame(0.12); // merged again
+    frame(0.05);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});

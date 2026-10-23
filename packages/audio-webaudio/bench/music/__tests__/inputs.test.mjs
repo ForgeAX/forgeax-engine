@@ -33,12 +33,8 @@ describe('Music source input hashes', () => {
       ['packages/audio/dist/index.mjs', 'export const built = true;\n'],
       ['packages/wgpu-wasm/pkg/provenance.json', '{"sourceContentKey":"fixture"}\n'],
       [
-        'packages/vite-plugin-shader/dist/engine-inputs/base-ssao/manifest.json',
-        '{"profile":"base-ssao"}\n',
-      ],
-      [
-        'packages/vite-plugin-shader/dist/engine-inputs/point-ssao/fragment.wgsl',
-        '// point profile fixture\n',
+        'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz',
+        'packaged shader profiles fixture\n',
       ],
     ]);
     const evidence = resolve(

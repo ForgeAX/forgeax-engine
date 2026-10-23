@@ -4,7 +4,13 @@ import {
   MESH_BIN_HEADER_BYTES,
   type MeshBinHeader,
 } from '@forgeax/engine-pack/mesh-bin-contract';
-import { err, ok, type Result, type VertexAttributeMap } from '@forgeax/engine-types';
+import {
+  err,
+  ok,
+  type Result,
+  type ResultErr,
+  type VertexAttributeMap,
+} from '@forgeax/engine-types';
 import { validateMeshCardLayout } from '../mesh-card-artifact';
 import type { MeshCardLayout } from '../mesh-card-layout';
 import {
@@ -33,12 +39,16 @@ export interface UnpackedMeshBin {
   readonly morphTargets?: ReadonlyArray<Record<string, Float32Array>>;
   readonly morphWeights?: Float32Array;
   /** Lower-detail mesh references encoded as indexes into the enclosing pack refs table. */
-  readonly lods?: readonly {
-    readonly meshRef: number;
-    readonly screenCoverage: number;
-  }[];
+  readonly lods?: readonly MeshBinLod[];
   readonly lodHysteresis?: number;
 }
+
+interface MeshBinLod {
+  readonly meshRef: number;
+  readonly screenCoverage: number;
+}
+
+type MeshBinFailure = ResultErr<MeshBinAssetError>;
 
 function fail(
   sourceKey: string,
@@ -48,7 +58,7 @@ function fail(
   reason: import('@forgeax/engine-types').AssetMeshBinContractViolationReason = 'header-invalid',
   expectedFacts?: import('@forgeax/engine-types').AssetMeshBinContractFacts,
   actualFacts?: import('@forgeax/engine-types').AssetMeshBinContractFacts,
-): Result<UnpackedMeshBin, MeshBinAssetError> {
+): MeshBinFailure {
   return err(
     new MeshBinAssetError({
       sourceKey,
@@ -62,44 +72,93 @@ function fail(
   );
 }
 
-export function unpackMeshBin(
+function metadataFailure(
+  sourceKey: string,
+  expected: string,
+  actual: string,
+  header: MeshBinHeader,
+): MeshBinFailure {
+  return fail(
+    sourceKey,
+    expected,
+    actual,
+    header,
+    'metadata-invalid',
+    { field: 'metadata' },
+    { field: 'metadata' },
+  );
+}
+
+interface MeshBinMetadata {
+  submeshes?: ReadonlyArray<Record<string, unknown>>;
+  cardLayout?: MeshCardLayout;
+  collision?: unknown;
+  materialSlots?: UnpackedMeshBin['materialSlots'];
+  aabb?: readonly number[];
+  morphTargets?: ReadonlyArray<Record<string, readonly number[]>>;
+  morphWeights?: readonly number[];
+  morphTargetMasks?: unknown;
+  lods?: readonly {
+    readonly meshRef?: unknown;
+    readonly screenCoverage?: unknown;
+  }[];
+  lodHysteresis?: unknown;
+}
+
+interface MeshBinTables extends MeshBinMetadata {
+  submeshes: ReadonlyArray<Record<string, unknown>>;
+  materialSlots: UnpackedMeshBin['materialSlots'];
+}
+
+interface MeshBinPayload {
+  readonly vertices: Float32Array;
+  readonly morphBytes: Uint8Array;
+  readonly indices: Uint16Array | Uint32Array | undefined;
+  readonly jsonBytes: Uint8Array;
+}
+
+function headerFailure(
   bytes: Uint8Array,
-  sourceKey = '<unknown mesh source>',
-): Result<UnpackedMeshBin, MeshBinAssetError> {
-  const headerResult = decodeMeshBinHeader(bytes, sourceKey);
-  if (!headerResult.ok) {
-    const reason =
-      headerResult.error.code === 'mesh-bin-header-truncated'
-        ? 'header-truncated'
-        : headerResult.error.code === 'mesh-bin-version-unsupported'
-          ? 'version-unsupported'
-          : 'header-invalid';
-    const actualFacts = {
-      byteLength: bytes.byteLength,
-      ...(bytes.byteLength >= 4
-        ? {
-            version: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
-              0,
-              true,
-            ),
-          }
-        : {}),
-    };
-    return fail(
-      sourceKey,
-      headerResult.error.expected,
-      headerResult.error.actual,
-      undefined,
-      reason,
-      reason === 'header-truncated'
-        ? { field: 'byteLength', byteLength: MESH_BIN_HEADER_BYTES }
-        : reason === 'version-unsupported'
-          ? { field: 'version', version: 5 }
-          : undefined,
-      actualFacts,
-    );
-  }
-  const header = headerResult.value;
+  sourceKey: string,
+  error: { readonly code: string; readonly expected: string; readonly actual: string },
+): MeshBinFailure {
+  const reason =
+    error.code === 'mesh-bin-header-truncated'
+      ? 'header-truncated'
+      : error.code === 'mesh-bin-version-unsupported'
+        ? 'version-unsupported'
+        : 'header-invalid';
+  const actualFacts = {
+    byteLength: bytes.byteLength,
+    ...(bytes.byteLength >= 4
+      ? {
+          version: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+            0,
+            true,
+          ),
+        }
+      : {}),
+  };
+  return fail(
+    sourceKey,
+    error.expected,
+    error.actual,
+    undefined,
+    reason,
+    reason === 'header-truncated'
+      ? { field: 'byteLength', byteLength: MESH_BIN_HEADER_BYTES }
+      : reason === 'version-unsupported'
+        ? { field: 'version', version: 5 }
+        : undefined,
+    actualFacts,
+  );
+}
+
+/** The header's vertex projection must be the one geometry derives from its mask. */
+function projectionFor(
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<VertexLayoutProjection, MeshBinAssetError> {
   const projectionResult = deriveVertexLayoutProjectionFromMask(header.mask);
   if (!projectionResult.ok) {
     return fail(
@@ -142,25 +201,36 @@ export function unpackMeshBin(
       },
     );
   }
+  return ok(projection);
+}
+
+function payloadLengthFailure(
+  bytes: Uint8Array,
+  header: MeshBinHeader,
+  sourceKey: string,
+): MeshBinFailure | undefined {
   const payloadBytes =
     header.vertexBytes + header.morphBytes + header.indexBytes + header.jsonBytes;
-  if (MESH_BIN_HEADER_BYTES + payloadBytes !== bytes.byteLength) {
-    return fail(
-      sourceKey,
-      `exactly ${MESH_BIN_HEADER_BYTES + payloadBytes} bytes`,
-      `${bytes.byteLength} bytes`,
-      header,
-      'payload-length-mismatch',
-      { field: 'byteLength', byteLength: MESH_BIN_HEADER_BYTES + payloadBytes },
-      {
-        field: 'byteLength',
-        byteLength: bytes.byteLength,
-        vertexBytes: header.vertexBytes,
-        indexBytes: header.indexBytes,
-        jsonBytes: header.jsonBytes,
-      },
-    );
-  }
+  if (MESH_BIN_HEADER_BYTES + payloadBytes === bytes.byteLength) return undefined;
+  return fail(
+    sourceKey,
+    `exactly ${MESH_BIN_HEADER_BYTES + payloadBytes} bytes`,
+    `${bytes.byteLength} bytes`,
+    header,
+    'payload-length-mismatch',
+    { field: 'byteLength', byteLength: MESH_BIN_HEADER_BYTES + payloadBytes },
+    {
+      field: 'byteLength',
+      byteLength: bytes.byteLength,
+      vertexBytes: header.vertexBytes,
+      indexBytes: header.indexBytes,
+      jsonBytes: header.jsonBytes,
+    },
+  );
+}
+
+/** Copies the length-checked vertex, morph, index and JSON sections out of the container. */
+function splitPayload(bytes: Uint8Array, header: MeshBinHeader): MeshBinPayload {
   let offset = MESH_BIN_HEADER_BYTES;
   const vertexBytes = bytes.subarray(offset, offset + header.vertexBytes);
   const vertices = new Float32Array(vertexBytes.byteLength / 4);
@@ -181,146 +251,135 @@ export function unpackMeshBin(
     offset += header.indexBytes;
   }
   const jsonBytes = bytes.subarray(offset, offset + header.jsonBytes);
-  let meta: {
-    submeshes?: ReadonlyArray<Record<string, unknown>>;
-    cardLayout?: MeshCardLayout;
-    collision?: unknown;
-    materialSlots?: readonly {
-      readonly slotName: string;
-      readonly sourceKey?: string;
-      readonly defaultMaterialRef?: number;
-    }[];
-    aabb?: readonly number[];
-    morphTargets?: ReadonlyArray<Record<string, readonly number[]>>;
-    morphWeights?: readonly number[];
-    morphTargetMasks?: unknown;
-    lods?: readonly {
-      readonly meshRef?: unknown;
-      readonly screenCoverage?: unknown;
-    }[];
-    lodHysteresis?: unknown;
-  };
+  return { vertices, morphBytes, indices, jsonBytes };
+}
+
+function hasMeshBinTables(meta: MeshBinMetadata): meta is MeshBinTables {
+  return (
+    meta !== null &&
+    typeof meta === 'object' &&
+    !Array.isArray(meta) &&
+    Array.isArray(meta.submeshes) &&
+    meta.submeshes.length > 0 &&
+    Array.isArray(meta.materialSlots)
+  );
+}
+
+function parseMetadata(
+  jsonBytes: Uint8Array,
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<MeshBinTables, MeshBinAssetError> {
+  let meta: MeshBinMetadata;
   try {
-    meta = JSON.parse(new TextDecoder().decode(jsonBytes)) as typeof meta;
+    meta = JSON.parse(new TextDecoder().decode(jsonBytes)) as MeshBinMetadata;
   } catch (error) {
-    return fail(
+    return metadataFailure(
       sourceKey,
       'valid mesh-bin JSON metadata',
       error instanceof Error ? error.message : String(error),
       header,
-      'metadata-invalid',
-      { field: 'metadata' },
-      { field: 'metadata' },
     );
   }
-  if (
-    meta === null ||
-    typeof meta !== 'object' ||
-    Array.isArray(meta) ||
-    !Array.isArray(meta.submeshes) ||
-    meta.submeshes.length === 0 ||
-    !Array.isArray(meta.materialSlots)
-  ) {
-    return fail(
+  if (!hasMeshBinTables(meta)) {
+    return metadataFailure(
       sourceKey,
       'non-empty submeshes and materialSlots metadata',
       'metadata table missing',
       header,
-      'metadata-invalid',
-      { field: 'metadata' },
-      { field: 'metadata' },
     );
   }
-  let lods:
-    | readonly {
-        readonly meshRef: number;
-        readonly screenCoverage: number;
-      }[]
-    | undefined;
-  if (meta.lods !== undefined) {
-    if (!Array.isArray(meta.lods) || meta.lods.length > 7) {
-      return fail(
+  return ok(meta);
+}
+
+function isScreenCoverageBelow(value: unknown, previousCoverage: number): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= 1 &&
+    value < previousCoverage
+  );
+}
+
+function decodeLods(
+  raw: MeshBinMetadata['lods'],
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<readonly MeshBinLod[] | undefined, MeshBinAssetError> {
+  if (raw === undefined) return ok(undefined);
+  if (!Array.isArray(raw) || raw.length > 7) {
+    return metadataFailure(
+      sourceKey,
+      'LOD metadata to contain at most seven lower-detail levels',
+      'lods is not an array or exceeds the level limit',
+      header,
+    );
+  }
+  let previousCoverage = 1;
+  const decodedLods: MeshBinLod[] = [];
+  for (const [lodIndex, rawLod] of raw.entries()) {
+    if (rawLod === null || typeof rawLod !== 'object') {
+      return metadataFailure(
         sourceKey,
-        'LOD metadata to contain at most seven lower-detail levels',
-        'lods is not an array or exceeds the level limit',
+        `LOD ${lodIndex} metadata object`,
+        'LOD entry is not an object',
         header,
-        'metadata-invalid',
-        { field: 'metadata' },
-        { field: 'metadata' },
       );
     }
-    let previousCoverage = 1;
-    const decodedLods: {
-      readonly meshRef: number;
-      readonly screenCoverage: number;
-    }[] = [];
-    for (const [lodIndex, rawLod] of meta.lods.entries()) {
-      if (rawLod === null || typeof rawLod !== 'object') {
-        return fail(
-          sourceKey,
-          `LOD ${lodIndex} metadata object`,
-          'LOD entry is not an object',
-          header,
-          'metadata-invalid',
-          { field: 'metadata' },
-          { field: 'metadata' },
-        );
-      }
-      const meshRef = rawLod.meshRef;
-      const screenCoverage = rawLod.screenCoverage;
-      if (!Number.isInteger(meshRef) || (meshRef as number) < 0) {
-        return fail(
-          sourceKey,
-          `LOD ${lodIndex} meshRef to be a non-negative integer`,
-          `meshRef=${String(meshRef)}`,
-          header,
-          'metadata-invalid',
-          { field: 'metadata' },
-          { field: 'metadata' },
-        );
-      }
-      if (
-        typeof screenCoverage !== 'number' ||
-        !Number.isFinite(screenCoverage) ||
-        screenCoverage <= 0 ||
-        screenCoverage > 1 ||
-        screenCoverage >= previousCoverage
-      ) {
-        return fail(
-          sourceKey,
-          `LOD ${lodIndex} screenCoverage to be finite, in (0, 1], and strictly decreasing`,
-          `screenCoverage=${String(screenCoverage)}`,
-          header,
-          'metadata-invalid',
-          { field: 'metadata' },
-          { field: 'metadata' },
-        );
-      }
-      decodedLods.push({ meshRef: meshRef as number, screenCoverage });
-      previousCoverage = screenCoverage;
-    }
-    lods = decodedLods;
-  }
-  let lodHysteresis: number | undefined;
-  if (meta.lodHysteresis !== undefined) {
-    if (
-      typeof meta.lodHysteresis !== 'number' ||
-      !Number.isFinite(meta.lodHysteresis) ||
-      meta.lodHysteresis < 0 ||
-      meta.lodHysteresis >= 1
-    ) {
-      return fail(
+    const meshRef = rawLod.meshRef;
+    const screenCoverage = rawLod.screenCoverage;
+    if (!Number.isInteger(meshRef) || (meshRef as number) < 0) {
+      return metadataFailure(
         sourceKey,
-        'lodHysteresis to be finite and in [0, 1)',
-        `lodHysteresis=${String(meta.lodHysteresis)}`,
+        `LOD ${lodIndex} meshRef to be a non-negative integer`,
+        `meshRef=${String(meshRef)}`,
         header,
-        'metadata-invalid',
-        { field: 'metadata' },
-        { field: 'metadata' },
       );
     }
-    lodHysteresis = meta.lodHysteresis;
+    if (!isScreenCoverageBelow(screenCoverage, previousCoverage)) {
+      return metadataFailure(
+        sourceKey,
+        `LOD ${lodIndex} screenCoverage to be finite, in (0, 1], and strictly decreasing`,
+        `screenCoverage=${String(screenCoverage)}`,
+        header,
+      );
+    }
+    decodedLods.push({ meshRef: meshRef as number, screenCoverage });
+    previousCoverage = screenCoverage;
   }
+  return ok(decodedLods);
+}
+
+function decodeLodHysteresis(
+  value: unknown,
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<number | undefined, MeshBinAssetError> {
+  if (value === undefined) return ok(undefined);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value >= 1) {
+    return metadataFailure(
+      sourceKey,
+      'lodHysteresis to be finite and in [0, 1)',
+      `lodHysteresis=${String(value)}`,
+      header,
+    );
+  }
+  return ok(value);
+}
+
+function nonFiniteKind(component: number): 'nan' | 'positive-infinity' | 'negative-infinity' {
+  if (Number.isNaN(component)) return 'nan';
+  return component === Number.POSITIVE_INFINITY ? 'positive-infinity' : 'negative-infinity';
+}
+
+/** Every projected attribute must decode, and every numeric component must be finite. */
+function decodeAttributes(
+  vertices: Float32Array,
+  projection: VertexLayoutProjection,
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<VertexAttributeMap, MeshBinAssetError> {
   const attributes = unpackInterleavedVertexAttributes(vertices, projection);
   if (attributes === undefined)
     return fail(
@@ -371,30 +430,36 @@ export function unpackMeshBin(
             stride: header.stride,
             vertexCount: header.vertexCount,
             elementIndex,
-            actualValue: Number.isNaN(component)
-              ? 'nan'
-              : component === Number.POSITIVE_INFINITY
-                ? 'positive-infinity'
-                : 'negative-infinity',
+            actualValue: nonFiniteKind(component),
           },
         );
     }
   }
-  let morphTargets: ReadonlyArray<Record<string, Float32Array>> | undefined;
+  return ok(attributes);
+}
+
+/** v5 carries morphs in binary lanes; v4 carries them as JSON number arrays. */
+function decodeMorphTargets(
+  meta: MeshBinMetadata,
+  morphBytes: Uint8Array,
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<ReadonlyArray<Record<string, Float32Array>> | undefined, MeshBinAssetError> {
   try {
     if (header.version === 5) {
       if (meta.morphTargets !== undefined)
         throw new TypeError('v5 morph targets must use binary lanes');
-      morphTargets = decodeMeshBinMorphs(morphBytes, header.vertexCount, meta.morphTargetMasks);
-    } else {
-      if (meta.morphTargetMasks !== undefined)
-        throw new TypeError('v4 cannot declare binary morph lanes');
-      morphTargets = meta.morphTargets?.map((target) =>
+      return ok(decodeMeshBinMorphs(morphBytes, header.vertexCount, meta.morphTargetMasks));
+    }
+    if (meta.morphTargetMasks !== undefined)
+      throw new TypeError('v4 cannot declare binary morph lanes');
+    return ok(
+      meta.morphTargets?.map((target) =>
         Object.fromEntries(
           Object.entries(target).map(([key, value]) => [key, new Float32Array(value)]),
         ),
-      );
-    }
+      ),
+    );
   } catch (error) {
     return fail(
       sourceKey,
@@ -404,14 +469,44 @@ export function unpackMeshBin(
       'metadata-invalid',
     );
   }
-  if (
-    meta.morphWeights !== undefined &&
-    (!Array.isArray(meta.morphWeights) ||
-      !meta.morphWeights.every(
-        (value) => typeof value === 'number' && Number.isFinite(Math.fround(value)),
-      ) ||
-      (morphTargets !== undefined && meta.morphWeights.length !== morphTargets.length))
-  )
+}
+
+function morphWeightsMatch(
+  weights: MeshBinMetadata['morphWeights'],
+  morphTargets: ReadonlyArray<Record<string, Float32Array>> | undefined,
+): boolean {
+  return (
+    weights === undefined ||
+    (Array.isArray(weights) &&
+      weights.every((value) => typeof value === 'number' && Number.isFinite(Math.fround(value))) &&
+      (morphTargets === undefined || weights.length === morphTargets.length))
+  );
+}
+
+export function unpackMeshBin(
+  bytes: Uint8Array,
+  sourceKey = '<unknown mesh source>',
+): Result<UnpackedMeshBin, MeshBinAssetError> {
+  const headerResult = decodeMeshBinHeader(bytes, sourceKey);
+  if (!headerResult.ok) return headerFailure(bytes, sourceKey, headerResult.error);
+  const header = headerResult.value;
+  const projection = projectionFor(header, sourceKey);
+  if (!projection.ok) return projection;
+  const lengthFailure = payloadLengthFailure(bytes, header, sourceKey);
+  if (lengthFailure !== undefined) return lengthFailure;
+  const { vertices, morphBytes, indices, jsonBytes } = splitPayload(bytes, header);
+  const metaResult = parseMetadata(jsonBytes, header, sourceKey);
+  if (!metaResult.ok) return metaResult;
+  const meta = metaResult.value;
+  const lods = decodeLods(meta.lods, header, sourceKey);
+  if (!lods.ok) return lods;
+  const lodHysteresis = decodeLodHysteresis(meta.lodHysteresis, header, sourceKey);
+  if (!lodHysteresis.ok) return lodHysteresis;
+  const attributes = decodeAttributes(vertices, projection.value, header, sourceKey);
+  if (!attributes.ok) return attributes;
+  const morphTargets = decodeMorphTargets(meta, morphBytes, header, sourceKey);
+  if (!morphTargets.ok) return morphTargets;
+  if (!morphWeightsMatch(meta.morphWeights, morphTargets.value))
     return fail(
       sourceKey,
       'finite morph weights matching the target count',
@@ -427,23 +522,22 @@ export function unpackMeshBin(
       header,
       'metadata-invalid',
     );
-  const mesh: UnpackedMeshBin = {
+  return ok({
     version: header.version,
-    projection,
+    projection: projection.value,
     vertices,
-    attributes,
+    attributes: attributes.value,
     ...(indices === undefined ? {} : { indices }),
     submeshes: meta.submeshes,
     ...(meta.cardLayout === undefined ? {} : { cardLayout: meta.cardLayout }),
     ...(meta.collision === undefined ? {} : { collision: meta.collision }),
     materialSlots: meta.materialSlots,
     ...(meta.aabb === undefined ? {} : { aabb: new Float32Array(meta.aabb) }),
-    ...(morphTargets === undefined ? {} : { morphTargets }),
+    ...(morphTargets.value === undefined ? {} : { morphTargets: morphTargets.value }),
     ...(meta.morphWeights === undefined
       ? {}
       : { morphWeights: new Float32Array(meta.morphWeights) }),
-    ...(lods === undefined ? {} : { lods }),
-    ...(lodHysteresis === undefined ? {} : { lodHysteresis }),
-  };
-  return ok(mesh);
+    ...(lods.value === undefined ? {} : { lods: lods.value }),
+    ...(lodHysteresis.value === undefined ? {} : { lodHysteresis: lodHysteresis.value }),
+  });
 }

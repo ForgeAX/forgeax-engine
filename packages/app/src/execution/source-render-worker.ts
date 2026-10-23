@@ -351,9 +351,7 @@ export class SourceRenderWorker {
             this.targets,
             message.limits,
             this.publicationCapacity,
-            // Prepared-mesh references are disabled: a retired-then-reacquired handle
-            // can be referenced after the receiver dropped its prepared payload.
-            // Full asset rows are sent until that ownership is redesigned.
+            (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
           );
           ready = true;
           this.inspectionReady = true;

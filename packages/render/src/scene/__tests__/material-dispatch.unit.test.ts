@@ -580,6 +580,26 @@ it('retains an admitted default across replacing the last old Mesh binding', asy
 
 // Native arrays describe cold fixture input; actual dispatch reads the retained owner.
 
+/** One random-edit row: hidden, Mesh-expression, preparation (hidden or visible) or direct. */
+function randomEditSnapshot(
+  snapshot: RenderableSnapshot,
+  kind: number,
+  edit: number,
+  resources: readonly MaterialResource[],
+): RenderableSnapshot {
+  if (kind === 0) return { ...snapshot, authorVisible: false };
+  if (kind >= 5 && kind < 11) return snapshot;
+  const meshRow = {
+    ...snapshot,
+    assetHandle: 1 + (kind % 2),
+    materialOverrides: [undefined, resources[(kind * 3 + edit) % 9]],
+  };
+  // Preparation rows keep their effective Mesh-default materials accepted
+  // even when hidden; toggling it must match a complete query too.
+  if (kind === 11) return { ...meshRow, authorVisible: false, pipelinePreparation: [] };
+  if (kind === 12) return { ...meshRow, pipelinePreparation: [] };
+  return meshRow;
+}
 function fixedSlots(rows: readonly RenderSceneSlot[]): SceneSlotFrame {
   let frame = slotFrames.get(rows);
   if (frame === undefined) {
@@ -828,17 +848,12 @@ it.each([
         for (const owner of [incremental, complete]) owner.adopt(resource);
       } else {
         const row = slot(target, resource, (state >>> 12) % 3 !== 0);
-        const kind = (state >>> (14 + edit)) % 11;
-        const snapshot: RenderableSnapshot =
-          kind === 0
-            ? { ...row.snapshot, authorVisible: false }
-            : kind < 5
-              ? {
-                  ...row.snapshot,
-                  assetHandle: 1 + (kind % 2),
-                  materialOverrides: [undefined, resources[(kind * 3 + edit) % 9]],
-                }
-              : row.snapshot;
+        const snapshot = randomEditSnapshot(
+          row.snapshot,
+          (state >>> (14 + edit)) % 13,
+          edit,
+          resources,
+        );
         rows.set(target, { ...row, snapshot });
         for (const owner of [incremental, complete]) owner.bind(target, snapshot);
       }

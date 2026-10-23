@@ -1,4 +1,15 @@
-import type { RhiDevice, Texture, TextureView } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  BindGroupLayout,
+  Buffer,
+  ComputePipeline,
+  RhiCommandEncoder,
+  RhiDevice,
+  Sampler,
+  ShaderModule,
+  Texture,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
@@ -250,23 +261,17 @@ async function requestDevice(): Promise<RhiDevice> {
   return device.value;
 }
 
-async function runInjectReadback(
-  options: StageReadbackOptions = {},
-): Promise<VolumeStageReadbacks> {
-  const sceneDepthClear = options.sceneDepthClear ?? 0;
-  const densityByte = options.densityByte ?? 255;
-  const boundsMinZ = options.boundsMinZ ?? VOLUME_BOUNDS_MIN_Z;
-  const boundsMaxZ = options.boundsMaxZ ?? VOLUME_BOUNDS_MAX_Z;
-  const maxDistance = options.maxDistance ?? 2;
-  const viewDepthScale = options.viewDepthScale ?? 1;
-  const extinction = options.extinction ?? 1;
-  const frameIndex = options.frameIndex ?? 0;
-  const shadowDepthClear = options.shadowDepthClear ?? 0;
-  const integratorStepCount = options.integratorStepCount;
-  const owners = options.owners ?? 1;
-  const injectSize = SIZE * (options.injectScale ?? 1);
-  const densityBytesPerTexel = options.densityFormat === 'rgba16float' ? 8 : 4;
-  const device = await requestDevice();
+function requireOk<T>(
+  result:
+    | { readonly ok: true; readonly value: T }
+    | { readonly ok: false; readonly error: unknown },
+): T {
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
+/** Inject, temporal and integrate modules; inject optionally carries native call tracing. */
+async function createStageModules(device: RhiDevice, options: StageReadbackOptions) {
   const moduleResult = await createShaderModule(device, {
     code: injectionShader(options.traceInjection === true),
     label: 'stage-readback.volume-inject',
@@ -277,166 +282,200 @@ async function runInjectReadback(
     label: 'stage-readback.volume-temporal',
   });
   const integrateModule = await createShaderModule(device, {
-    code: productionIntegratorShader(integratorStepCount),
+    code: productionIntegratorShader(options.integratorStepCount),
     label: 'stage-readback.volume-integrate',
   });
   if (!temporalModule.ok) throw temporalModule.error;
   if (!integrateModule.ok) throw integrateModule.error;
+  return {
+    inject: moduleResult.value,
+    temporal: temporalModule.value,
+    integrate: integrateModule.value,
+  };
+}
 
-  const sceneDepthTexture = device.createTexture({
-    label: 'stage-readback.scene-depth',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
+function createStageTexture(
+  device: RhiDevice,
+  label: string,
+  descriptor: Omit<
+    Parameters<RhiDevice['createTexture']>[0],
+    'label' | 'textureBindingViewDimension'
+  >,
+) {
+  return device.createTexture({ label, ...descriptor, textureBindingViewDimension: undefined });
+}
+
+const PLANE = { width: SIZE, height: SIZE, depthOrArrayLayers: 1 };
+const VOLUME = { width: SIZE, height: SIZE, depthOrArrayLayers: SIZE };
+const STORAGE_2D_USAGE = STORAGE_BINDING | TEXTURE_COPY_SRC | TEXTURE_BINDING;
+
+function createStageTextures(
+  device: RhiDevice,
+  options: StageReadbackOptions,
+  injectSize: number,
+  owners: number,
+) {
+  const depthUsage = RENDER_ATTACHMENT | TEXTURE_BINDING;
+  const sceneDepth = createStageTexture(device, 'stage-readback.scene-depth', {
+    size: PLANE,
     format: 'depth32float',
-    usage: RENDER_ATTACHMENT | TEXTURE_BINDING,
-    textureBindingViewDimension: undefined,
+    usage: depthUsage,
   });
-  const shadowTexture = device.createTexture({
-    label: 'stage-readback.shadow-depth',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
+  const shadow = createStageTexture(device, 'stage-readback.shadow-depth', {
+    size: PLANE,
     format: 'depth32float',
-    usage: RENDER_ATTACHMENT | TEXTURE_BINDING,
-    textureBindingViewDimension: undefined,
+    usage: depthUsage,
   });
-  const densityTexture = device.createTexture({
-    label: 'stage-readback.density',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: SIZE },
+  const density = createStageTexture(device, 'stage-readback.density', {
+    size: VOLUME,
     dimension: '3d',
     format: options.densityFormat ?? 'rgba8unorm',
     usage: TEXTURE_BINDING | TEXTURE_COPY_DST,
-    textureBindingViewDimension: undefined,
   });
-  const secondDensityTexture = device.createTexture({
-    label: 'stage-readback.second-density',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: SIZE },
+  const secondDensity = createStageTexture(device, 'stage-readback.second-density', {
+    size: VOLUME,
     dimension: '3d',
     format: 'rgba8unorm',
     usage: TEXTURE_BINDING | TEXTURE_COPY_DST,
-    textureBindingViewDimension: undefined,
   });
-  const outputTexture = device.createTexture({
-    label: 'stage-readback.froxel',
+  const output = createStageTexture(device, 'stage-readback.froxel', {
     size: { width: injectSize, height: injectSize, depthOrArrayLayers: PACKED_LAYERS * owners },
     dimension: '2d',
     format: 'rgba8unorm',
     usage: STORAGE_BINDING | TEXTURE_COPY_SRC | TEXTURE_COPY_DST | TEXTURE_BINDING,
-    textureBindingViewDimension: undefined,
   });
-  const historyTexture = device.createTexture({
-    label: 'stage-readback.history',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
+  const history = createStageTexture(device, 'stage-readback.history', {
+    size: PLANE,
     dimension: '2d',
     format: 'rgba16float',
-    usage: STORAGE_BINDING | TEXTURE_COPY_SRC | TEXTURE_BINDING,
-    textureBindingViewDimension: undefined,
+    usage: STORAGE_2D_USAGE,
   });
-  const temporalTexture = device.createTexture({
-    label: 'stage-readback.temporal',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
+  const temporal = createStageTexture(device, 'stage-readback.temporal', {
+    size: PLANE,
     dimension: '2d',
     format: 'rgba16float',
-    usage: STORAGE_BINDING | TEXTURE_COPY_SRC | TEXTURE_BINDING,
-    textureBindingViewDimension: undefined,
+    usage: STORAGE_2D_USAGE,
   });
-  const resolvedTexture = device.createTexture({
-    label: 'stage-readback.resolved',
-    size: { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
+  const resolved = createStageTexture(device, 'stage-readback.resolved', {
+    size: PLANE,
     dimension: '2d',
     format: 'rgba16float',
-    usage: STORAGE_BINDING | TEXTURE_COPY_SRC | TEXTURE_BINDING,
-    textureBindingViewDimension: undefined,
+    usage: STORAGE_2D_USAGE,
   });
   // The production integrator always declares the shared projector pair. A
   // white 1x1 fallback keeps this no-projector fixture on the same BGL shape
   // while preserving the pre-projector radiance when a light is later added.
-  const projectorTexture = device.createTexture({
-    label: 'stage-readback.projector',
+  const projector = createStageTexture(device, 'stage-readback.projector', {
     size: { width: 1, height: 1, depthOrArrayLayers: 1 },
     dimension: '2d',
     format: 'rgba8unorm',
     usage: TEXTURE_BINDING | TEXTURE_COPY_DST,
-    textureBindingViewDimension: undefined,
   });
   if (
-    !sceneDepthTexture.ok ||
-    !shadowTexture.ok ||
-    !densityTexture.ok ||
-    !secondDensityTexture.ok ||
-    !outputTexture.ok ||
-    !historyTexture.ok ||
-    !temporalTexture.ok ||
-    !resolvedTexture.ok ||
-    !projectorTexture.ok
+    !sceneDepth.ok ||
+    !shadow.ok ||
+    !density.ok ||
+    !secondDensity.ok ||
+    !output.ok ||
+    !history.ok ||
+    !temporal.ok ||
+    !resolved.ok ||
+    !projector.ok
   ) {
     throw new Error('Dawn volume stage readback unavailable: texture allocation failed');
   }
-  const sceneDepthView = device.createTextureView(sceneDepthTexture.value, { dimension: '2d' });
-  const shadowView = device.createTextureView(shadowTexture.value, { dimension: '2d' });
-  const shadowArrayView = device.createTextureView(shadowTexture.value, {
-    dimension: '2d-array',
-  });
+  return {
+    sceneDepth: sceneDepth.value,
+    shadow: shadow.value,
+    density: density.value,
+    secondDensity: secondDensity.value,
+    output: output.value,
+    history: history.value,
+    temporal: temporal.value,
+    resolved: resolved.value,
+    projector: projector.value,
+  };
+}
+
+type StageTextures = ReturnType<typeof createStageTextures>;
+
+function createStageViews(device: RhiDevice, textures: StageTextures) {
+  const sceneDepthView = device.createTextureView(textures.sceneDepth, { dimension: '2d' });
+  const shadowView = device.createTextureView(textures.shadow, { dimension: '2d' });
+  const shadowArrayView = device.createTextureView(textures.shadow, { dimension: '2d-array' });
   if (!sceneDepthView.ok || !shadowView.ok || !shadowArrayView.ok)
     throw new Error('Dawn volume stage readback unavailable: depth view allocation failed');
-  const densityView = createView(device, densityTexture.value, '3d');
-  const secondDensityView = createView(device, secondDensityTexture.value, '3d');
-  const outputView = createView(device, outputTexture.value, '2d-array');
-  const historyView = createView(device, historyTexture.value, '2d');
-  const temporalView = createView(device, temporalTexture.value, '2d');
-  const resolvedView = createView(device, resolvedTexture.value, '2d');
-  const projectorView = createView(device, projectorTexture.value, '2d');
-  const viewBuffer = device.createBuffer({
+  return {
+    sceneDepth: sceneDepthView.value,
+    shadow: shadowView.value,
+    shadowArray: shadowArrayView.value,
+    density: createView(device, textures.density, '3d'),
+    secondDensity: createView(device, textures.secondDensity, '3d'),
+    output: createView(device, textures.output, '2d-array'),
+    history: createView(device, textures.history, '2d'),
+    temporal: createView(device, textures.temporal, '2d'),
+    resolved: createView(device, textures.resolved, '2d'),
+    projector: createView(device, textures.projector, '2d'),
+  };
+}
+
+type StageViews = ReturnType<typeof createStageViews>;
+
+/** Native shadow-call counter and its readback, only for traced injection. */
+function createShadowCallBuffers(device: RhiDevice, traced: boolean) {
+  if (!traced) return undefined;
+  const calls = device.createBuffer({ size: 8, usage: STORAGE_BUFFER | 0x0004 });
+  const readback = device.createBuffer({ size: 8, usage: MAP_READ | BUFFER_COPY_DST });
+  if (!calls.ok) throw calls.error;
+  if (!readback.ok) throw readback.error;
+  return { calls: calls.value, readback: readback.value };
+}
+
+function createStageBuffers(device: RhiDevice) {
+  const view = device.createBuffer({
     label: 'stage-readback.view',
     size: VIEW_UNIFORM_BYTES,
     usage: 0x0040 | BUFFER_COPY_DST,
   });
-  const paramsBuffer = device.createBuffer({
+  const params = device.createBuffer({
     label: 'stage-readback.params',
     size: VOLUMETRIC_FOG_PARAMS_BYTES,
     usage: 0x0040 | BUFFER_COPY_DST,
   });
-  const lightDataBuffer = device.createBuffer({
+  const lightData = device.createBuffer({
     label: 'stage-readback.cluster-light-data',
     size: CLUSTER_LIGHT_DATA_BYTES,
     usage: STORAGE_BUFFER | BUFFER_COPY_DST,
   });
-  const clusterUniformBuffer = device.createBuffer({
+  const clusterUniform = device.createBuffer({
     label: 'stage-readback.cluster-uniform',
     size: CLUSTER_UNIFORM_BYTES,
     usage: 0x0040 | BUFFER_COPY_DST,
   });
-  const shadowCalls = options.traceInjection
-    ? device.createBuffer({ size: 8, usage: STORAGE_BUFFER | 0x0004 })
-    : undefined;
-  const shadowCallsReadback = options.traceInjection
-    ? device.createBuffer({ size: 8, usage: MAP_READ | BUFFER_COPY_DST })
-    : undefined;
-  if (shadowCalls?.ok === false) throw shadowCalls.error;
-  if (shadowCallsReadback?.ok === false) throw shadowCallsReadback.error;
-  const injectReadback = device.createBuffer({
+  return { view, params, lightData, clusterUniform };
+}
+
+function createStageReadbacks(device: RhiDevice, injectSize: number, owners: number) {
+  const inject = device.createBuffer({
     label: 'stage-readback.inject',
     size: BYTES_PER_ROW * injectSize * PACKED_LAYERS * owners,
     usage: MAP_READ | BUFFER_COPY_DST,
   });
-  const temporalReadback = device.createBuffer({
+  const temporal = device.createBuffer({
     label: 'stage-readback.temporal',
     size: BYTES_PER_ROW * SIZE * SIZE,
     usage: MAP_READ | BUFFER_COPY_DST,
   });
-  const integrateReadback = device.createBuffer({
+  const integrate = device.createBuffer({
     label: 'stage-readback.integrate',
     size: BYTES_PER_ROW * SIZE * SIZE,
     usage: MAP_READ | BUFFER_COPY_DST,
   });
-  if (
-    !viewBuffer.ok ||
-    !paramsBuffer.ok ||
-    !lightDataBuffer.ok ||
-    !clusterUniformBuffer.ok ||
-    !injectReadback.ok ||
-    !temporalReadback.ok ||
-    !integrateReadback.ok
-  )
-    throw new Error('Dawn volume stage readback unavailable: readback allocation failed');
+  return { inject, temporal, integrate };
+}
 
+function viewUniformData(options: StageReadbackOptions): Float32Array {
+  const viewDepthScale = options.viewDepthScale ?? 1;
   const viewData = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
   for (const offset of [0, 28, 44, 60, 76, 92, 196, 212]) {
     identityMatrix(viewData, offset);
@@ -458,50 +497,71 @@ async function runInjectReadback(
   viewData[229] = 10;
   viewData[230] = 0;
   viewData[235] = 1;
+  return viewData;
+}
+
+/** The first owner's 36-float volume record before owner replication. */
+function baseVolumeParams(options: StageReadbackOptions): Float32Array {
+  const extinction = options.extinction ?? 1;
+  const boundsOffsetX = options.boundsOffsetX ?? 0;
   const paramsData = new Float32Array(VOLUMETRIC_FOG_PARAMS_BYTES / 4);
-  paramsData.set([-1 + (options.boundsOffsetX ?? 0), -1, boundsMinZ, 0], 0);
-  paramsData.set([1 + (options.boundsOffsetX ?? 0), 1, boundsMaxZ, options.sampling ?? 0], 4);
+  paramsData.set([-1 + boundsOffsetX, -1, options.boundsMinZ ?? VOLUME_BOUNDS_MIN_Z, 0], 0);
+  paramsData.set(
+    [1 + boundsOffsetX, 1, options.boundsMaxZ ?? VOLUME_BOUNDS_MAX_Z, options.sampling ?? 0],
+    4,
+  );
   paramsData.set([extinction, extinction, extinction, 0], 8);
   paramsData.set([1, 1, 1, 0], 12);
   paramsData.set([0, 0, 0, 0], 16);
-  paramsData.set([0, -1, 0, frameIndex], 20);
+  paramsData.set([0, -1, 0, options.frameIndex ?? 0], 20);
   paramsData.set([1, 1, 1, 0], 24);
-  paramsData.set([maxDistance, 0, 0, 0], 28);
+  paramsData.set([options.maxDistance ?? 2, 0, 0, 0], 28);
   // `simulation.w` is the renderer-owned selected-sun cloud transmittance
   // carrier. A fixture without a CloudLayer must retain the unshadowed
   // #3197 baseline instead of reading the typed-array zero value.
   paramsData[35] = 1;
+  return paramsData;
+}
+
+/** Cluster light slot for the optional punctual light; also selects its kind in params. */
+function localLightData(options: StageReadbackOptions, paramsData: Float32Array): Uint8Array {
   const lightData = new Uint8Array(CLUSTER_LIGHT_DATA_BYTES);
-  if (options.localLight !== undefined) {
-    paramsData[30] = options.localLight === 'point' ? 1 : 2;
-    const light = new Float32Array(lightData.buffer);
-    // Point owns the decay lane; Spot uses the same lane for its inner cone.
-    // Keep the Point fixture inverse-square, matching punctualReference.
-    light.set([
-      0,
-      0,
-      5.37,
-      0,
-      1,
-      1,
-      1,
-      options.localLight === 'point' ? 2 : Math.cos(Math.PI / 8),
-      0,
-      0,
-      -1,
-      Math.cos(Math.PI / 6),
-    ]);
-    // Zero shadow intensity makes this a pure punctual-light integral. No
-    // projected image or shadow map can hide an undersampled light peak.
-    new Uint32Array(lightData.buffer).set(
-      [options.localLight === 'point' ? 0 : 1, 0xffffffff, 0xffffffff, 0xffffffff],
-      16,
-    );
-    if (options.spotShadow) {
-      new Uint32Array(lightData.buffer)[17] = 0;
-      light[14] = 1;
-    }
+  if (options.localLight === undefined) return lightData;
+  const point = options.localLight === 'point';
+  paramsData[30] = point ? 1 : 2;
+  const light = new Float32Array(lightData.buffer);
+  // Point owns the decay lane; Spot uses the same lane for its inner cone.
+  // Keep the Point fixture inverse-square, matching punctualReference.
+  light.set([
+    0,
+    0,
+    5.37,
+    0,
+    1,
+    1,
+    1,
+    point ? 2 : Math.cos(Math.PI / 8),
+    0,
+    0,
+    -1,
+    Math.cos(Math.PI / 6),
+  ]);
+  // Zero shadow intensity makes this a pure punctual-light integral. No
+  // projected image or shadow map can hide an undersampled light peak.
+  new Uint32Array(lightData.buffer).set([point ? 0 : 1, 0xffffffff, 0xffffffff, 0xffffffff], 16);
+  if (options.spotShadow) {
+    new Uint32Array(lightData.buffer)[17] = 0;
+    light[14] = 1;
   }
+  return lightData;
+}
+
+/** Replicate the base record per owner, then apply the multi-volume fixture edits. */
+function replicateVolumeOwners(
+  paramsData: Float32Array,
+  options: StageReadbackOptions,
+  owners: number,
+): void {
   for (let index = 0; index < owners; index++)
     paramsData.set(paramsData.slice(0, 36), 36 * (index + 1));
   paramsData[3] = owners;
@@ -520,104 +580,141 @@ async function runInjectReadback(
     paramsData.copyWithin(36, 72, 108);
     paramsData.set(first, 72);
   }
+}
+
+function uploadStageUniforms(
+  device: RhiDevice,
+  buffers: StageBuffers,
+  options: StageReadbackOptions,
+  owners: number,
+): void {
+  const viewData = viewUniformData(options);
+  const paramsData = baseVolumeParams(options);
+  const lightData = localLightData(options, paramsData);
+  replicateVolumeOwners(paramsData, options, owners);
   const clusterUniformData = new Float32Array(8);
   const clusterGrid = new Uint32Array(clusterUniformData.buffer);
   clusterGrid[0] = 1;
   clusterGrid[1] = 1;
   clusterGrid[2] = 1;
   clusterGrid[3] = 1;
-  const viewWrite = device.queue.writeBuffer(viewBuffer.value, 0, viewData);
-  const paramsWrite = device.queue.writeBuffer(paramsBuffer.value, 0, paramsData);
-  const lightDataWrite = device.queue.writeBuffer(lightDataBuffer.value, 0, lightData);
+  const viewWrite = device.queue.writeBuffer(buffers.view, 0, viewData);
+  const paramsWrite = device.queue.writeBuffer(buffers.params, 0, paramsData);
+  const lightDataWrite = device.queue.writeBuffer(buffers.lightData, 0, lightData);
   const clusterUniformWrite = device.queue.writeBuffer(
-    clusterUniformBuffer.value,
+    buffers.clusterUniform,
     0,
     clusterUniformData,
   );
   if (!viewWrite.ok || !paramsWrite.ok || !lightDataWrite.ok || !clusterUniformWrite.ok)
     throw new Error('Dawn volume stage readback unavailable: uniform upload failed');
+}
+
+function uploadStageTextures(
+  device: RhiDevice,
+  textures: StageTextures,
+  options: StageReadbackOptions,
+  injectSize: number,
+  owners: number,
+): void {
+  const densityBytesPerTexel = options.densityFormat === 'rgba16float' ? 8 : 4;
   const densityData =
     options.densityData ?? new Uint8Array((BYTES_PER_PIXEL / 2) * SIZE * SIZE * SIZE);
-  if (options.densityData === undefined) densityData.fill(densityByte);
+  if (options.densityData === undefined) densityData.fill(options.densityByte ?? 255);
   if (densityData.length !== densityBytesPerTexel * SIZE * SIZE * SIZE) {
     throw new Error(`Dawn volume stage readback density field length: ${densityData.length}`);
   }
   const densityWrite = device.queue.writeTexture(
-    { texture: densityTexture.value },
+    { texture: textures.density },
     densityData,
     { offset: 0, bytesPerRow: SIZE * densityBytesPerTexel, rowsPerImage: SIZE },
-    { width: SIZE, height: SIZE, depthOrArrayLayers: SIZE },
+    VOLUME,
   );
   if (!densityWrite.ok)
     throw new Error('Dawn volume stage readback unavailable: density upload failed');
   const secondDensityWrite = device.queue.writeTexture(
-    { texture: secondDensityTexture.value },
+    { texture: textures.secondDensity },
     new Uint8Array(densityData.length).fill(options.secondDensity ?? 255),
     { offset: 0, bytesPerRow: SIZE * 4, rowsPerImage: SIZE },
-    { width: SIZE, height: SIZE, depthOrArrayLayers: SIZE },
+    VOLUME,
   );
   if (!secondDensityWrite.ok) throw secondDensityWrite.error;
   const projectorWrite = device.queue.writeTexture(
-    { texture: projectorTexture.value },
+    { texture: textures.projector },
     new Uint8Array([255, 255, 255, 255]),
     { bytesPerRow: 4, rowsPerImage: 1 },
     { width: 1, height: 1, depthOrArrayLayers: 1 },
   );
   if (!projectorWrite.ok)
     throw new Error('Dawn volume stage readback unavailable: projector upload failed');
-  if (options.traceInjection) {
-    // A miss must overwrite old visibility, not merely leave an unwritten texel.
-    const prefill = device.queue.writeTexture(
-      { texture: outputTexture.value },
-      new Uint8Array(4 * injectSize * injectSize * PACKED_LAYERS * owners).fill(255),
-      { bytesPerRow: 4 * injectSize, rowsPerImage: injectSize },
-      { width: injectSize, height: injectSize, depthOrArrayLayers: PACKED_LAYERS * owners },
-    );
-    if (!prefill.ok) throw prefill.error;
-  }
+  if (!options.traceInjection) return;
+  // A miss must overwrite old visibility, not merely leave an unwritten texel.
+  const prefill = device.queue.writeTexture(
+    { texture: textures.output },
+    new Uint8Array(4 * injectSize * injectSize * PACKED_LAYERS * owners).fill(255),
+    { bytesPerRow: 4 * injectSize, rowsPerImage: injectSize },
+    { width: injectSize, height: injectSize, depthOrArrayLayers: PACKED_LAYERS * owners },
+  );
+  if (!prefill.ok) throw prefill.error;
+}
 
-  const layout = device.createBindGroupLayout({
-    label: 'stage-readback.volume-inject.layout',
-    entries: [
-      { binding: 0, visibility: 4, buffer: { type: 'uniform' } },
-      { binding: 3, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
-      { binding: 4, visibility: 4, sampler: { type: 'comparison' } },
-      { binding: 5, visibility: 4, buffer: { type: 'uniform' } },
-      {
-        binding: 6,
-        visibility: 4,
-        storageTexture: { access: 'write-only', format: 'rgba8unorm', viewDimension: '2d-array' },
-      },
-      { binding: 7, visibility: 4, buffer: { type: 'read-only-storage' } },
-      { binding: 8, visibility: 4, buffer: { type: 'uniform' } },
-      { binding: 9, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
-      ...(shadowCalls === undefined
-        ? []
-        : [{ binding: 10, visibility: 4, buffer: { type: 'storage' as const } }]),
-    ],
-  });
-  if (!layout.ok) throw layout.error;
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
-  if (!pipelineLayout.ok) throw pipelineLayout.error;
-  const pipeline = device.createComputePipeline({
-    label: 'stage-readback.volume-inject',
-    layout: pipelineLayout.value,
-    compute: { module: moduleResult.value, entryPoint: 'volume_inject' },
-  });
-  if (!pipeline.ok) throw pipeline.error;
-  const temporalLayout = device.createBindGroupLayout({
+interface StageBuffers {
+  readonly view: Buffer;
+  readonly params: Buffer;
+  readonly lightData: Buffer;
+  readonly clusterUniform: Buffer;
+}
+
+function createComputePipeline(
+  device: RhiDevice,
+  label: string,
+  layout: BindGroupLayout,
+  module: ShaderModule,
+  entryPoint: string,
+): ComputePipeline {
+  const pipelineLayout = requireOk(device.createPipelineLayout({ bindGroupLayouts: [layout] }));
+  return requireOk(
+    device.createComputePipeline({
+      label,
+      layout: pipelineLayout,
+      compute: { module, entryPoint },
+    }),
+  );
+}
+
+function createInjectLayout(device: RhiDevice, traced: boolean): BindGroupLayout {
+  return requireOk(
+    device.createBindGroupLayout({
+      label: 'stage-readback.volume-inject.layout',
+      entries: [
+        { binding: 0, visibility: 4, buffer: { type: 'uniform' } },
+        { binding: 3, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+        { binding: 4, visibility: 4, sampler: { type: 'comparison' } },
+        { binding: 5, visibility: 4, buffer: { type: 'uniform' } },
+        {
+          binding: 6,
+          visibility: 4,
+          storageTexture: {
+            access: 'write-only',
+            format: 'rgba8unorm',
+            viewDimension: '2d-array',
+          },
+        },
+        { binding: 7, visibility: 4, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: 4, buffer: { type: 'uniform' } },
+        { binding: 9, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+        ...(traced ? [{ binding: 10, visibility: 4, buffer: { type: 'storage' as const } }] : []),
+      ],
+    }),
+  );
+}
+
+function createTemporalLayout(device: RhiDevice) {
+  return device.createBindGroupLayout({
     label: 'stage-readback.volume-temporal.layout',
     entries: [
-      {
-        binding: 0,
-        visibility: 4,
-        texture: { sampleType: 'float', viewDimension: '2d' },
-      },
-      {
-        binding: 1,
-        visibility: 4,
-        texture: { sampleType: 'float', viewDimension: '2d' },
-      },
+      { binding: 0, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
+      { binding: 1, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
       {
         binding: 2,
         visibility: 4,
@@ -627,15 +724,14 @@ async function runInjectReadback(
       { binding: 4, visibility: 4, buffer: { type: 'uniform' } },
     ],
   });
-  const integrateLayout = device.createBindGroupLayout({
+}
+
+function createIntegrateLayout(device: RhiDevice) {
+  return device.createBindGroupLayout({
     label: 'stage-readback.volume-integrate.layout',
     entries: [
       { binding: 0, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d-array' } },
-      {
-        binding: 1,
-        visibility: 4,
-        texture: { sampleType: 'depth', viewDimension: '2d' },
-      },
+      { binding: 1, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d' } },
       {
         binding: 2,
         visibility: 4,
@@ -671,28 +767,9 @@ async function runInjectReadback(
       })),
     ],
   });
-  if (!temporalLayout.ok) throw temporalLayout.error;
-  if (!integrateLayout.ok) throw integrateLayout.error;
-  const temporalPipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [temporalLayout.value],
-  });
-  const integratePipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [integrateLayout.value],
-  });
-  if (!temporalPipelineLayout.ok) throw temporalPipelineLayout.error;
-  if (!integratePipelineLayout.ok) throw integratePipelineLayout.error;
-  const temporalPipeline = device.createComputePipeline({
-    label: 'stage-readback.volume-temporal',
-    layout: temporalPipelineLayout.value,
-    compute: { module: temporalModule.value, entryPoint: 'volume_temporal' },
-  });
-  const integratePipeline = device.createComputePipeline({
-    label: 'stage-readback.volume-integrate',
-    layout: integratePipelineLayout.value,
-    compute: { module: integrateModule.value, entryPoint: 'volume_integrate' },
-  });
-  if (!temporalPipeline.ok) throw temporalPipeline.error;
-  if (!integratePipeline.ok) throw integratePipeline.error;
+}
+
+function createStageSamplers(device: RhiDevice, options: StageReadbackOptions) {
   const comparisonSampler = device.createSampler({ compare: 'greater' });
   const densitySampler = device.createSampler({
     minFilter: 'linear',
@@ -707,180 +784,304 @@ async function runInjectReadback(
   });
   if (!comparisonSampler.ok || !densitySampler.ok)
     throw new Error('Dawn volume stage readback unavailable: sampler allocation failed');
-  const bindings = device.createBindGroup({
-    layout: layout.value,
+  return { comparison: comparisonSampler.value, density: densitySampler.value };
+}
+
+function createInjectBindings(
+  device: RhiDevice,
+  layout: BindGroupLayout,
+  views: StageViews,
+  buffers: StageBuffers,
+  comparison: Sampler,
+  shadowCalls: Buffer | undefined,
+) {
+  return requireOk(
+    device.createBindGroup({
+      layout,
+      entries: [
+        { binding: 0, resource: { kind: 'buffer', value: { buffer: buffers.view } } },
+        { binding: 3, resource: { kind: 'textureView', value: views.shadowArray } },
+        { binding: 4, resource: { kind: 'sampler', value: comparison } },
+        { binding: 5, resource: { kind: 'buffer', value: { buffer: buffers.params } } },
+        { binding: 6, resource: { kind: 'textureView', value: views.output } },
+        { binding: 7, resource: { kind: 'buffer', value: { buffer: buffers.lightData } } },
+        { binding: 8, resource: { kind: 'buffer', value: { buffer: buffers.clusterUniform } } },
+        { binding: 9, resource: { kind: 'textureView', value: views.shadowArray } },
+        ...(shadowCalls === undefined
+          ? []
+          : [
+              {
+                binding: 10,
+                resource: { kind: 'buffer' as const, value: { buffer: shadowCalls } },
+              },
+            ]),
+      ],
+    }),
+  );
+}
+
+function createTemporalBindings(
+  device: RhiDevice,
+  layout: BindGroupLayout,
+  views: StageViews,
+  buffers: StageBuffers,
+) {
+  return device.createBindGroup({
+    layout,
     entries: [
-      { binding: 0, resource: { kind: 'buffer', value: { buffer: viewBuffer.value } } },
-      { binding: 3, resource: { kind: 'textureView', value: shadowArrayView.value } },
-      { binding: 4, resource: { kind: 'sampler', value: comparisonSampler.value } },
-      { binding: 5, resource: { kind: 'buffer', value: { buffer: paramsBuffer.value } } },
-      { binding: 6, resource: { kind: 'textureView', value: outputView } },
-      { binding: 7, resource: { kind: 'buffer', value: { buffer: lightDataBuffer.value } } },
-      { binding: 8, resource: { kind: 'buffer', value: { buffer: clusterUniformBuffer.value } } },
-      { binding: 9, resource: { kind: 'textureView', value: shadowArrayView.value } },
-      ...(shadowCalls === undefined
-        ? []
-        : [
-            {
-              binding: 10,
-              resource: { kind: 'buffer' as const, value: { buffer: shadowCalls.value } },
-            },
-          ]),
+      { binding: 0, resource: { kind: 'textureView', value: views.resolved } },
+      { binding: 1, resource: { kind: 'textureView', value: views.history } },
+      { binding: 2, resource: { kind: 'textureView', value: views.temporal } },
+      { binding: 3, resource: { kind: 'buffer', value: { buffer: buffers.params } } },
+      { binding: 4, resource: { kind: 'buffer', value: { buffer: buffers.view } } },
     ],
   });
-  if (!bindings.ok) throw bindings.error;
-  const temporalBindings = device.createBindGroup({
-    layout: temporalLayout.value,
+}
+
+/** Owner density slots: one owner may read the second field unless the order is reversed. */
+function ownerDensityView(views: StageViews, options: StageReadbackOptions, index: number) {
+  return index === (options.densityOwner ?? 1) - 1 && !options.reverse
+    ? views.secondDensity
+    : views.density;
+}
+
+function createIntegrateBindings(
+  device: RhiDevice,
+  layout: BindGroupLayout,
+  views: StageViews,
+  buffers: StageBuffers,
+  densitySampler: Sampler,
+  options: StageReadbackOptions,
+) {
+  return device.createBindGroup({
+    layout,
     entries: [
-      { binding: 0, resource: { kind: 'textureView', value: resolvedView } },
-      { binding: 1, resource: { kind: 'textureView', value: historyView } },
-      { binding: 2, resource: { kind: 'textureView', value: temporalView } },
-      { binding: 3, resource: { kind: 'buffer', value: { buffer: paramsBuffer.value } } },
-      { binding: 4, resource: { kind: 'buffer', value: { buffer: viewBuffer.value } } },
-    ],
-  });
-  const integrateBindings = device.createBindGroup({
-    layout: integrateLayout.value,
-    entries: [
-      { binding: 0, resource: { kind: 'textureView', value: outputView } },
-      { binding: 1, resource: { kind: 'textureView', value: sceneDepthView.value } },
-      { binding: 2, resource: { kind: 'textureView', value: resolvedView } },
-      { binding: 3, resource: { kind: 'buffer', value: { buffer: paramsBuffer.value } } },
-      { binding: 4, resource: { kind: 'buffer', value: { buffer: viewBuffer.value } } },
-      { binding: 5, resource: { kind: 'sampler', value: densitySampler.value } },
+      { binding: 0, resource: { kind: 'textureView', value: views.output } },
+      { binding: 1, resource: { kind: 'textureView', value: views.sceneDepth } },
+      { binding: 2, resource: { kind: 'textureView', value: views.resolved } },
+      { binding: 3, resource: { kind: 'buffer', value: { buffer: buffers.params } } },
+      { binding: 4, resource: { kind: 'buffer', value: { buffer: buffers.view } } },
+      { binding: 5, resource: { kind: 'sampler', value: densitySampler } },
       {
         binding: 6,
-        resource: { kind: 'textureView', value: options.reverse ? secondDensityView : densityView },
+        resource: {
+          kind: 'textureView',
+          value: options.reverse ? views.secondDensity : views.density,
+        },
       },
-      { binding: 7, resource: { kind: 'sampler', value: densitySampler.value } },
-      { binding: 8, resource: { kind: 'textureView', value: historyView } },
-      { binding: 9, resource: { kind: 'textureView', value: temporalView } },
-      { binding: 10, resource: { kind: 'buffer', value: { buffer: lightDataBuffer.value } } },
-      { binding: 11, resource: { kind: 'buffer', value: { buffer: clusterUniformBuffer.value } } },
-      { binding: 12, resource: { kind: 'textureView', value: projectorView } },
-      { binding: 13, resource: { kind: 'sampler', value: densitySampler.value } },
-      { binding: 16, resource: { kind: 'textureView', value: projectorView } },
-      { binding: 17, resource: { kind: 'sampler', value: densitySampler.value } },
-      { binding: 25, resource: { kind: 'textureView', value: projectorView } },
-      { binding: 26, resource: { kind: 'sampler', value: densitySampler.value } },
+      { binding: 7, resource: { kind: 'sampler', value: densitySampler } },
+      { binding: 8, resource: { kind: 'textureView', value: views.history } },
+      { binding: 9, resource: { kind: 'textureView', value: views.temporal } },
+      { binding: 10, resource: { kind: 'buffer', value: { buffer: buffers.lightData } } },
+      { binding: 11, resource: { kind: 'buffer', value: { buffer: buffers.clusterUniform } } },
+      { binding: 12, resource: { kind: 'textureView', value: views.projector } },
+      { binding: 13, resource: { kind: 'sampler', value: densitySampler } },
+      { binding: 16, resource: { kind: 'textureView', value: views.projector } },
+      { binding: 17, resource: { kind: 'sampler', value: densitySampler } },
+      { binding: 25, resource: { kind: 'textureView', value: views.projector } },
+      { binding: 26, resource: { kind: 'sampler', value: densitySampler } },
       ...Array.from({ length: MAX_VOLUMETRIC_FOG_OWNERS - 1 }, (_, index) => ({
         binding: additionalVolumeDensityBinding(index),
         resource: {
           kind: 'textureView' as const,
-          value:
-            index === (options.densityOwner ?? 1) - 1 && !options.reverse
-              ? secondDensityView
-              : densityView,
+          value: ownerDensityView(views, options, index),
         },
       })),
     ],
   });
-  if (!temporalBindings.ok) throw temporalBindings.error;
-  if (!integrateBindings.ok) throw integrateBindings.error;
-  const encoder = device.createCommandEncoder({ label: 'stage-readback.volume-inject' });
-  if (!encoder.ok) throw encoder.error;
-  for (const [index, view] of [sceneDepthView.value, shadowView.value].entries()) {
-    const pass = encoder.value.beginRenderPass({
+}
+
+async function decodeStageValues(
+  buffer: Buffer,
+  layers: number,
+  bytesPerPixel: number,
+  halfFloat: boolean,
+  size = SIZE,
+): Promise<StageValues> {
+  const mapped = await buffer.mapAsync(MAP_READ);
+  if (!mapped.ok) throw mapped.error;
+  const range = mapped.value.getMappedRange();
+  if (!range.ok) throw range.error;
+  const bytes = new Uint8Array(range.value);
+  const red: number[] = [];
+  const green: number[] = [];
+  const blue: number[] = [];
+  const alpha: number[] = [];
+  for (let z = 0; z < layers; z += 1) {
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const offset = z * BYTES_PER_ROW * size + y * BYTES_PER_ROW + x * bytesPerPixel;
+        const read = (channel: number): number => {
+          if (!halfFloat) return (bytes[offset + channel] ?? 0) / 255;
+          const halfOffset = offset + channel * 2;
+          return halfToFloat((bytes[halfOffset] ?? 0) | ((bytes[halfOffset + 1] ?? 0) << 8));
+        };
+        red.push(read(0));
+        green.push(read(1));
+        blue.push(read(2));
+        alpha.push(read(3));
+      }
+    }
+  }
+  mapped.value.unmap();
+  return { red, green, blue, alpha };
+}
+
+async function readShadowCalls(readback: Buffer): Promise<number[]> {
+  const mapped = await readback.mapAsync(MAP_READ);
+  if (!mapped.ok) throw mapped.error;
+  const range = mapped.value.getMappedRange();
+  if (!range.ok) throw range.error;
+  const calls = Array.from(new Uint32Array(range.value));
+  mapped.value.unmap();
+  return calls;
+}
+
+/** Clear scene depth and the shadow map to their fixture depths. */
+function clearStageDepths(
+  encoder: RhiCommandEncoder,
+  views: StageViews,
+  options: StageReadbackOptions,
+): void {
+  for (const [index, view] of [views.sceneDepth, views.shadow].entries()) {
+    const pass = encoder.beginRenderPass({
       colorAttachments: [],
       depthStencilAttachment: {
         view,
-        depthClearValue: index === 0 ? sceneDepthClear : shadowDepthClear,
+        depthClearValue:
+          index === 0 ? (options.sceneDepthClear ?? 0) : (options.shadowDepthClear ?? 0),
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
       },
     } as never);
     pass.end();
   }
-  const compute = encoder.value.beginComputePass();
-  compute.setPipeline(pipeline.value);
-  compute.setBindGroup(0, bindings.value);
-  compute.dispatchWorkgroups(
-    options.injectScale ?? 1,
-    options.injectScale ?? 1,
-    PACKED_LAYERS * owners,
+}
+
+function dispatchStage(
+  encoder: RhiCommandEncoder,
+  pipeline: ComputePipeline,
+  bindings: BindGroup,
+  workgroups: readonly [number, number, number],
+): void {
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindings);
+  pass.dispatchWorkgroups(...workgroups);
+  pass.end();
+}
+
+function copyPlaneToBuffer(encoder: RhiCommandEncoder, texture: Texture, buffer: Buffer): void {
+  encoder.copyTextureToBuffer(
+    { texture },
+    { buffer, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
+    PLANE,
   );
-  compute.end();
-  if (shadowCalls !== undefined && shadowCallsReadback !== undefined) {
-    encoder.value.copyBufferToBuffer(shadowCalls.value, 0, shadowCallsReadback.value, 0, 8);
-  }
-  encoder.value.copyTextureToBuffer(
-    { texture: outputTexture.value },
-    { buffer: injectReadback.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: injectSize },
+}
+
+async function runInjectReadback(
+  options: StageReadbackOptions = {},
+): Promise<VolumeStageReadbacks> {
+  const owners = options.owners ?? 1;
+  const injectScale = options.injectScale ?? 1;
+  const injectSize = SIZE * injectScale;
+  const device = await requestDevice();
+  const modules = await createStageModules(device, options);
+  const textures = createStageTextures(device, options, injectSize, owners);
+  const views = createStageViews(device, textures);
+  const buffers = createStageBuffers(device);
+  const shadowCalls = createShadowCallBuffers(device, options.traceInjection === true);
+  const readbacks = createStageReadbacks(device, injectSize, owners);
+  if (
+    !buffers.view.ok ||
+    !buffers.params.ok ||
+    !buffers.lightData.ok ||
+    !buffers.clusterUniform.ok ||
+    !readbacks.inject.ok ||
+    !readbacks.temporal.ok ||
+    !readbacks.integrate.ok
+  )
+    throw new Error('Dawn volume stage readback unavailable: readback allocation failed');
+  const uniforms: StageBuffers = {
+    view: buffers.view.value,
+    params: buffers.params.value,
+    lightData: buffers.lightData.value,
+    clusterUniform: buffers.clusterUniform.value,
+  };
+  uploadStageUniforms(device, uniforms, options, owners);
+  uploadStageTextures(device, textures, options, injectSize, owners);
+
+  const injectLayout = createInjectLayout(device, shadowCalls !== undefined);
+  const injectPipeline = createComputePipeline(
+    device,
+    'stage-readback.volume-inject',
+    injectLayout,
+    modules.inject,
+    'volume_inject',
+  );
+  const temporalLayout = requireOk(createTemporalLayout(device));
+  const integrateLayout = requireOk(createIntegrateLayout(device));
+  const temporalPipeline = createComputePipeline(
+    device,
+    'stage-readback.volume-temporal',
+    temporalLayout,
+    modules.temporal,
+    'volume_temporal',
+  );
+  const integratePipeline = createComputePipeline(
+    device,
+    'stage-readback.volume-integrate',
+    integrateLayout,
+    modules.integrate,
+    'volume_integrate',
+  );
+  const samplers = createStageSamplers(device, options);
+  const injectBindings = createInjectBindings(
+    device,
+    injectLayout,
+    views,
+    uniforms,
+    samplers.comparison,
+    shadowCalls?.calls,
+  );
+  const temporalBindings = requireOk(
+    createTemporalBindings(device, temporalLayout, views, uniforms),
+  );
+  const integrateBindings = requireOk(
+    createIntegrateBindings(device, integrateLayout, views, uniforms, samplers.density, options),
+  );
+  const encoder = requireOk(device.createCommandEncoder({ label: 'stage-readback.volume-inject' }));
+  clearStageDepths(encoder, views, options);
+  dispatchStage(encoder, injectPipeline, injectBindings, [
+    injectScale,
+    injectScale,
+    PACKED_LAYERS * owners,
+  ]);
+  if (shadowCalls !== undefined)
+    encoder.copyBufferToBuffer(shadowCalls.calls, 0, shadowCalls.readback, 0, 8);
+  encoder.copyTextureToBuffer(
+    { texture: textures.output },
+    { buffer: readbacks.inject.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: injectSize },
     { width: injectSize, height: injectSize, depthOrArrayLayers: PACKED_LAYERS * owners },
   );
-  const integrateCompute = encoder.value.beginComputePass();
-  integrateCompute.setPipeline(integratePipeline.value);
-  integrateCompute.setBindGroup(0, integrateBindings.value);
-  integrateCompute.dispatchWorkgroups(1, 1, 1);
-  integrateCompute.end();
-  encoder.value.copyTextureToBuffer(
-    { texture: resolvedTexture.value },
-    { buffer: integrateReadback.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
-    { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
-  );
-  const temporalCompute = encoder.value.beginComputePass();
-  temporalCompute.setPipeline(temporalPipeline.value);
-  temporalCompute.setBindGroup(0, temporalBindings.value);
-  temporalCompute.dispatchWorkgroups(1, 1, 1);
-  temporalCompute.end();
-  encoder.value.copyTextureToBuffer(
-    { texture: temporalTexture.value },
-    { buffer: temporalReadback.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
-    { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
-  );
-  const command = encoder.value.finish();
-  if (!command.ok) throw command.error;
-  const submitted = device.queue.submit([command.value]);
-  if (!submitted.ok) throw submitted.error;
+  dispatchStage(encoder, integratePipeline, integrateBindings, [1, 1, 1]);
+  copyPlaneToBuffer(encoder, textures.resolved, readbacks.integrate.value);
+  dispatchStage(encoder, temporalPipeline, temporalBindings, [1, 1, 1]);
+  copyPlaneToBuffer(encoder, textures.temporal, readbacks.temporal.value);
+  const command = requireOk(encoder.finish());
+  requireOk(device.queue.submit([command]));
   await device.queue.onSubmittedWorkDone();
-  const decode = async (
-    buffer: typeof integrateReadback.value,
-    layers: number,
-    bytesPerPixel: number,
-    halfFloat: boolean,
-    size = SIZE,
-  ): Promise<StageValues> => {
-    const mapped = await buffer.mapAsync(MAP_READ);
-    if (!mapped.ok) throw mapped.error;
-    const range = mapped.value.getMappedRange();
-    if (!range.ok) throw range.error;
-    const bytes = new Uint8Array(range.value);
-    const red: number[] = [];
-    const green: number[] = [];
-    const blue: number[] = [];
-    const alpha: number[] = [];
-    for (let z = 0; z < layers; z += 1) {
-      for (let y = 0; y < size; y += 1) {
-        for (let x = 0; x < size; x += 1) {
-          const offset = z * BYTES_PER_ROW * size + y * BYTES_PER_ROW + x * bytesPerPixel;
-          const read = (channel: number): number => {
-            if (!halfFloat) return (bytes[offset + channel] ?? 0) / 255;
-            const halfOffset = offset + channel * 2;
-            return halfToFloat((bytes[halfOffset] ?? 0) | ((bytes[halfOffset + 1] ?? 0) << 8));
-          };
-          red.push(read(0));
-          green.push(read(halfFloat ? 1 : 1));
-          blue.push(read(2));
-          alpha.push(read(halfFloat ? 3 : 3));
-        }
-      }
-    }
-    mapped.value.unmap();
-    return { red, green, blue, alpha };
-  };
-  let calls: number[] | undefined;
-  if (shadowCallsReadback !== undefined) {
-    const mapped = await shadowCallsReadback.value.mapAsync(MAP_READ);
-    if (!mapped.ok) throw mapped.error;
-    const range = mapped.value.getMappedRange();
-    if (!range.ok) throw range.error;
-    calls = Array.from(new Uint32Array(range.value));
-    mapped.value.unmap();
-  }
+  const calls = shadowCalls === undefined ? undefined : await readShadowCalls(shadowCalls.readback);
   return {
-    inject: await decode(injectReadback.value, PACKED_LAYERS * owners, 4, false, injectSize),
-    temporal: await decode(temporalReadback.value, 1, BYTES_PER_PIXEL, true),
-    integrate: await decode(integrateReadback.value, 1, BYTES_PER_PIXEL, true),
+    inject: await decodeStageValues(
+      readbacks.inject.value,
+      PACKED_LAYERS * owners,
+      4,
+      false,
+      injectSize,
+    ),
+    temporal: await decodeStageValues(readbacks.temporal.value, 1, BYTES_PER_PIXEL, true),
+    integrate: await decodeStageValues(readbacks.integrate.value, 1, BYTES_PER_PIXEL, true),
     ...(calls === undefined ? {} : { shadowCalls: calls }),
   };
 }

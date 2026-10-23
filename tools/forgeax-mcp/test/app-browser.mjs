@@ -173,6 +173,9 @@ try {
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.setDefaultTimeout(30000);
+  // Each Play opens its own game session (Vite server, Pack production); on
+  // Lavapipe runners that alone can exceed the 30 s UI default.
+  const playSessionTimeout = { timeout: 120000 };
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('framedetached', frame => records.push({ frameDetached: frame.url().split('?')[0], at: Date.now() }));
   page.on('console', (message) => {
@@ -219,7 +222,7 @@ try {
     await view.getByRole('button', { name: 'Play', exact: true }).click();
     const play = view.locator('iframe[data-forgeax-scene-play]');
     // Presentation stays transparent until native readiness; observe startup while attached.
-    await play.waitFor({ state: 'attached' });
+    await play.waitFor({ state: 'attached', ...playSessionTimeout });
     const playDocument = await (await play.elementHandle()).contentFrame();
     assert.ok(playDocument, 'Play must expose its actual document');
     if (cycle === 0 && process.env.FORGEAX_MCP_PROFILE === '1') {
@@ -277,7 +280,7 @@ try {
     const stopStarted = performance.now();
     await view.getByRole('button', { name: 'Stop', exact: true }).click();
     await play.waitFor({ state: 'detached' });
-    await view.getByRole('button', { name: 'Play', exact: true }).waitFor();
+    await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
     records.push({ stopCycle: cycle, ms: Math.round(performance.now() - stopStarted) });
   };
   // The first retained cycle covers Play before any scene is opened.
@@ -355,7 +358,7 @@ try {
   await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
   await view.getByRole('button', { name: 'Play', exact: true }).click();
   const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
-  await preparingPlay.waitFor({ state: 'attached' });
+  await preparingPlay.waitFor({ state: 'attached', ...playSessionTimeout });
   assert.equal(await preparingPlay.getAttribute('srcdoc'), null, 'The adopted Stop probe holds document delivery');
   // The published target is adopted: its owner retains presentation through
   // initial readiness before native cleanup, within the existing workspace bound.
@@ -364,9 +367,9 @@ try {
   await view.getByRole('button', { name: 'Game', exact: true }).waitFor();
   assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').evaluate(element => element.hidden), true,
     'Preview rendering must stay paused while adopted Play startup is draining');
-  await preparingPlay.waitFor({ state: 'detached', timeout: 120000 });
+  await preparingPlay.waitFor({ state: 'detached', ...playSessionTimeout });
   records.push({ adoptedStopMs: Math.round(performance.now() - preparingStopStarted) });
-  await view.getByRole('button', { name: 'Play', exact: true }).waitFor();
+  await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
   await page.getByRole('button', { name: 'Reopen View', exact: true }).click();
   await page.locator('#opened').filter({ hasText: 'http' }).waitFor();
   assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview'), targetId,

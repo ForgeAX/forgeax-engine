@@ -99,3 +99,28 @@ it('retains the published binary lane encoding in both hash implementations', as
   expect(scriptablePackFingerprint(bytes)).toBe(expected);
   expect(await scriptablePackFingerprintAsync(bytes)).toBe(expected);
 });
+
+it('fingerprints a Pack by its relative layout and bytes, not its checkout location', async () => {
+  const outputs = new AssetOutputProducerRegistry();
+  const definition = definePack({
+    schemaVersion: '2.0.0',
+    packageId: definePackageId('01900000-0000-7000-8000-00000000008a'),
+    build: () => ok({}),
+  });
+  const at = async (root: string, helperDigest = 'sha256:helper') => {
+    const result = await buildScriptablePack({
+      definition,
+      sourcePath: `${root}/assets/scene.pack.ts`,
+      sourceClosure: [
+        { path: `${root}/assets/scene.pack.ts`, digest: 'sha256:scene' },
+        { path: `${root}/shared/helper.ts`, digest: helperDigest },
+      ],
+      outputs,
+    });
+    return result.unwrap().inputFingerprint;
+  };
+  const first = await at('C:/w/game-a');
+  expect(await at('C:/w/game-b')).toBe(first);
+  expect(await at('/srv/game')).toBe(first);
+  expect(await at('C:/w/game-a', 'sha256:edited')).not.toBe(first);
+});

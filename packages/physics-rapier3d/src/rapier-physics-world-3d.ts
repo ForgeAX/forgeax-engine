@@ -6,6 +6,13 @@ import {
   readBodyConstraintCount,
 } from './body-activation.js';
 import { readContactObservation } from './contact-observation.js';
+import { orderDerivedCandidateGroups } from './derived-admission-order.js';
+import {
+  applyDerivedMotion,
+  captureDerivedBodyState,
+  type DerivedAdmissionUndo,
+  derivedBodyStateRestored,
+} from './derived-admission-undo.js';
 import { derivedShapeHandles } from './derived-candidate-records.js';
 import { restoreDerivedDensities } from './derived-density.js';
 import { GroupedContactEvents } from './grouped-contact-events.js';
@@ -77,7 +84,7 @@ import {
 import { ChildOf } from '@forgeax/engine-scene';
 import { err, ok, type Result, type RigidBodyType } from '@forgeax/engine-types';
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
-import { rapierBodyTypeToString } from './body-type.js';
+import { rapierBodyTypeFromString, rapierBodyTypeToString } from './body-type.js';
 import { applyKccTuning } from './character-controller-tuning.js';
 import {
   currentContactOwner,
@@ -2145,64 +2152,21 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   private processDerivedCandidates(): boolean {
     if (this.pendingDerivedCandidates.size === 0) return false;
-    let geometryCommitted = false;
     const pendingRecords = [...this.pendingDerivedCandidates]
       .map((id) => this.derivedCandidates.get(id))
       .filter((record): record is DerivedCandidateRecord => record?.state === 'queued');
-    const pendingByEntity = new Map<number, DerivedCandidateRecord>();
-    for (const record of pendingRecords) {
-      const current = pendingByEntity.get(record.input.entity);
-      if (current === undefined || record.input.revision > current.input.revision) {
-        pendingByEntity.set(record.input.entity, record);
-      }
-    }
-    // A candidate that names a queued endpoint must be processed after that
-    // endpoint. This turns a queue-time source projection into a final
-    // committed-source check: if the endpoint fails natively, its dependent
-    // candidate sees the old source on the next iteration and is rejected.
-    const ordered: (readonly DerivedCandidateRecord[])[] = [];
-    const visiting = new Set<string>();
-    const visited = new Set<string>();
-    const visit = (record: DerivedCandidateRecord): void => {
-      const group = record.batch?.records ?? [record];
-      const key = group[0]?.token.candidateId ?? record.token.candidateId;
-      if (visited.has(key)) return;
-      if (visiting.has(key)) {
-        this.rejectPreparedCandidate(
-          record,
-          new DerivedPhysicsError(
-            'derived-constraint-invalid',
-            'cyclic endpoint updates share one batch',
-            'submit mutually dependent body replacements together',
-            { candidateId: key },
-          ),
-        );
-        return;
-      }
-      visiting.add(key);
-      for (const member of group) {
-        for (const constraint of member.input.constraints ?? []) {
-          for (const [entity, dependency] of [
-            [constraint.bodyA, constraint.bodyASource],
-            [constraint.bodyB, constraint.bodyBSource],
-          ] as const) {
-            const target = pendingByEntity.get(entity);
-            if (
-              target !== undefined &&
-              !group.includes(target) &&
-              target.input.sourceKey === dependency.sourceKey &&
-              target.input.revision === dependency.revision
-            )
-              visit(target);
-          }
-        }
-      }
-      visiting.delete(key);
-      visited.add(key);
-      ordered.push(group);
-    };
-    for (const record of pendingRecords) visit(record);
-
+    const { ordered, cyclic } = orderDerivedCandidateGroups(pendingRecords);
+    for (const { record, key } of cyclic)
+      this.rejectPreparedCandidate(
+        record,
+        new DerivedPhysicsError(
+          'derived-constraint-invalid',
+          'cyclic endpoint updates share one batch',
+          'submit mutually dependent body replacements together',
+          { candidateId: key },
+        ),
+      );
+    let geometryCommitted = false;
     for (const group of ordered) {
       if (this.derivedPoisonedEntities.size > 0) break;
       const first = group[0];
@@ -2216,381 +2180,392 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       )
         continue;
       // Validate the whole final projection before any native body changes.
-      const sources = this.pendingDerivedSources();
-      let rejected: DerivedPhysicsError | undefined;
-      for (const record of group) {
-        const projected = sources.get(record.input.entity);
-        if (projected !== undefined && record.input.revision < projected.revision) {
-          rejected = new DerivedPhysicsError(
-            'derived-candidate-stale',
-            'fixed-step admission publishes the final queued body revisions',
-            'discard the older group and prepare a complete replacement',
-            { entity: record.input.entity },
-          );
-        } else if (
-          (record.retainedGeometry !== undefined || record.sharedGeometry !== undefined) &&
-          !retainedDerivedGeometryCurrent(
-            record,
-            this.derivedBodies.get(record.input.entity),
-            this.raw,
-            this.bodyForEntity(record.input.entity)?.handle,
-          )
-        ) {
-          rejected = new DerivedPhysicsError(
-            'derived-candidate-stale',
-            'admission retains the exact accepted geometry owner',
-            'read its new publication and prepare again',
-            { entity: record.input.entity },
-          );
-        } else if (this.derivedPoisonedEntities.has(record.input.entity)) {
-          rejected = new DerivedPhysicsError(
-            'derived-recovery-invalid',
-            'every batch body has recoverable native state',
-            'rebuild the PhysicsWorld before retrying',
-            { entity: record.input.entity },
-          );
-        } else if (this.bodyForEntity(record.input.entity) === undefined) {
-          rejected = new DerivedPhysicsError(
-            'derived-body-not-found',
-            'every batch body remains live through admission',
-            'reconcile entities and prepare again',
-            { entity: record.input.entity },
-          );
-        } else rejected = this.validateDerivedAdmission(record.input, sources);
-        if (rejected !== undefined) break;
-      }
+      const rejected = this.derivedGroupRejection(group) ?? this.preflightDerivedBatch(group);
       if (rejected !== undefined) {
         this.rejectPreparedCandidate(first, rejected);
         continue;
       }
-      const veto = this.preflightDerivedBatch(group);
-      if (veto !== undefined) {
-        this.rejectPreparedCandidate(first, veto);
-        continue;
-      }
-      const undos: (() => boolean)[] = [];
-      for (const record of group) {
-        const id = record.token.candidateId;
-        const old = this.derivedBodies.get(record.input.entity);
-        const body = this.bodyForEntity(record.input.entity);
-        const oldBodyType = body.bodyType();
-        const oldBodyEnabled = body.isEnabled();
-        const oldVelocity = body.linvel();
-        const oldAngularVelocity = body.angvel();
-        const oldTranslation = body.translation();
-        const oldRotation = body.rotation();
-        const oldCom = body.worldCom();
-        const oldMass = body.mass();
-        const oldAutomaticAdditionalMass =
-          this.entityMap.get(record.input.entity)?.automaticAdditionalMass ?? 0;
-        const oldAutomaticRecordMass = this.entityMap.get(
-          record.input.entity,
-        )?.automaticAdditionalMass;
-        const oldSource = this.derivedBodySources.get(record.input.entity);
-        const oldPublication = this.derivedPublications.get(record.input.entity);
-        const oldDensities = this.bodyColliders(body).map((collider) => ({
-          collider,
-          density: typeof collider.density === 'function' ? collider.density() : undefined,
-          enabled: typeof collider.isEnabled === 'function' ? collider.isEnabled() : true,
-        }));
-        const oldConstraints = new Map(this.derivedConstraints);
-        const stagedConstraints = new Map<string, DerivedConstraintRecord>();
-        let geometryCommitUncertain = false;
-        const rollback = (): boolean => {
-          for (const staged of stagedConstraints.values())
-            this.removeNativeConstraint(staged.handle);
-          // A partial commit may have replaced joints. Recreate old native joints
-          // after restoring bodies instead of retaining stale JS handles.
-          for (const current of this.derivedConstraints.values())
-            this.removeNativeConstraint(current.handle);
-          this.derivedConstraints.clear();
-          if (old !== undefined) {
-            for (const handle of old.shapes.flatMap(derivedShapeHandles)) {
-              const collider = (this.raw as RapierWorld).getCollider(handle);
-              if (collider !== null && collider !== undefined) collider.setEnabled(true);
-            }
-            const retiredIndex = this.retiredDerivedBodies.indexOf(old);
-            if (retiredIndex >= 0) this.retiredDerivedBodies.splice(retiredIndex, 1);
-            this.derivedBodies.set(record.input.entity, old);
-            this.derivedBodySources.set(record.input.entity, {
-              sourceKey: old.sourceKey,
-              revision: old.revision,
-            });
-          }
-          for (const native of record.nativeColliders) {
-            const collider = (this.raw as RapierWorld).getCollider(native.handle);
-            if (collider !== null && collider !== undefined) collider.setEnabled(false);
-          }
-          // Remove staged colliders before Rapier's deferred mass recomputation.
-          for (const native of record.nativeColliders) this.removeNativeCollider(native.handle);
-          for (const { collider, density, enabled } of oldDensities) {
-            if (this.raw.getCollider(collider.handle) === null) continue;
-            if (density !== undefined && typeof collider.setDensity === 'function')
-              collider.setDensity(density);
-            if (typeof collider.setEnabled === 'function') collider.setEnabled(enabled);
-          }
-          let restored = true;
-          try {
-            body.setBodyType(oldBodyType, true);
-            this.restoreCommittedMass(body, old, oldAutomaticAdditionalMass);
-            body.setTranslation(oldTranslation, true);
-            body.setRotation(oldRotation, true);
-            body.setLinvel(oldVelocity, true);
-            body.setAngvel(oldAngularVelocity, true);
-            body.setEnabled(oldBodyEnabled);
-          } catch {
-            restored = false;
-          }
-          if (restored && !this.restoreNativeConstraints(oldConstraints)) restored = false;
-          if (restored) {
-            const currentMass = body.mass();
-            const currentCom = body.worldCom();
-            const currentVelocity = body.linvel();
-            const currentAngularVelocity = body.angvel();
-            const currentRotation = body.rotation();
-            restored =
-              Number.isFinite(currentMass) &&
-              Math.abs(currentMass - oldMass) <= 1e-6 * Math.max(1, Math.abs(oldMass)) &&
-              Math.abs(currentCom.x - oldCom.x) <= 1e-6 &&
-              Math.abs(currentCom.y - oldCom.y) <= 1e-6 &&
-              Math.abs(currentCom.z - oldCom.z) <= 1e-6 &&
-              Math.abs(currentVelocity.x - oldVelocity.x) <= 1e-6 &&
-              Math.abs(currentVelocity.y - oldVelocity.y) <= 1e-6 &&
-              Math.abs(currentVelocity.z - oldVelocity.z) <= 1e-6 &&
-              Math.abs(currentAngularVelocity.x - oldAngularVelocity.x) <= 1e-6 &&
-              Math.abs(currentAngularVelocity.y - oldAngularVelocity.y) <= 1e-6 &&
-              Math.abs(currentAngularVelocity.z - oldAngularVelocity.z) <= 1e-6 &&
-              Math.abs(
-                currentRotation.x * oldRotation.x +
-                  currentRotation.y * oldRotation.y +
-                  currentRotation.z * oldRotation.z +
-                  currentRotation.w * oldRotation.w,
-              ) >=
-                1 - 1e-6 &&
-              body.bodyType() === oldBodyType &&
-              body.isEnabled() === oldBodyEnabled;
-          }
-          if (old === undefined) this.derivedBodies.delete(record.input.entity);
-          else this.derivedBodies.set(record.input.entity, old);
-          if (oldSource === undefined) this.derivedBodySources.delete(record.input.entity);
-          else this.derivedBodySources.set(record.input.entity, oldSource);
-          if (oldPublication === undefined) this.derivedPublications.delete(record.input.entity);
-          else this.derivedPublications.set(record.input.entity, oldPublication);
-          const entityRecord = this.entityMap.get(record.input.entity);
-          if (entityRecord !== undefined && oldAutomaticRecordMass !== undefined)
-            entityRecord.automaticAdditionalMass = oldAutomaticRecordMass;
-          return restored;
-        };
-        const restore = (undo: () => boolean): boolean => {
-          try {
-            return undo();
-          } catch {
-            return false;
-          }
-        };
-        try {
-          primeGroupedContacts(
-            this.raw,
-            old,
-            candidateShapeRecords(record),
-            this.derivedColliderToShape,
-            this.groupedContactEvents,
-          );
-          for (const constraint of record.input.constraints ?? []) {
-            const created = this.createNativeConstraint(constraint);
-            if (!created.ok) throw created.error;
-            stagedConstraints.set(constraint.id, {
-              input: { ...constraint },
-              handle: created.value.handle,
-            });
-          }
-          if (record.input.bodyType !== undefined) {
-            const RAPIER = this.rapierModule as RapierWorld;
-            const bodyType =
-              record.input.bodyType === 'static'
-                ? RAPIER.RigidBodyType.Fixed
-                : record.input.bodyType === 'kinematic'
-                  ? RAPIER.RigidBodyType.KinematicPositionBased
-                  : RAPIER.RigidBodyType.Dynamic;
-            body.setBodyType(bodyType, true);
-          }
-          for (const native of record.nativeColliders) {
-            const collider = (this.raw as RapierWorld).getCollider(native.handle);
-            if (collider === null || collider === undefined)
-              throw new Error('candidate collider disappeared');
-            collider.setEnabled(true);
-          }
-          if (record.input.motion?.rotation !== undefined) {
-            const [x, y, z, w] = record.input.motion.rotation;
-            body.setRotation({ x, y, z, w }, true);
-          }
-          this.applyDerivedMass(
-            body,
-            record.input.massProperties,
-            oldCom,
-            record.input.velocityPolicy ?? 'preserve',
-            this.entityMap.get(record.input.entity)?.additionalMass ?? 0,
-            record.input.entity,
-            record.input.shapes,
-            candidateNativeColliders(record),
-          );
-          if (record.input.motion !== undefined) {
-            const currentCom = body.worldCom();
-            const targetCom = record.input.motion.centerOfMass;
-            const translation = body.translation();
-            body.setTranslation(
-              {
-                x: translation.x + targetCom[0] - currentCom.x,
-                y: translation.y + targetCom[1] - currentCom.y,
-                z: translation.z + targetCom[2] - currentCom.z,
-              },
-              true,
-            );
-            body.setLinvel(
-              {
-                x: record.input.motion.linearVelocity[0],
-                y: record.input.motion.linearVelocity[1],
-                z: record.input.motion.linearVelocity[2],
-              },
-              true,
-            );
-            body.setAngvel(
-              this.entityMap.get(record.input.entity)?.lockRotation
-                ? { x: 0, y: 0, z: 0 }
-                : {
-                    x: record.input.motion.angularVelocity[0],
-                    y: record.input.motion.angularVelocity[1],
-                    z: record.input.motion.angularVelocity[2],
-                  },
-              true,
-            );
-          }
-          // Retire joints against this committed revision only. Other queued
-          // endpoints may still fail and retain their previous joints.
-          if (this.derivedConstraints.size > 0) {
-            // Project this endpoint only; sourceForEntity reads other committed sources.
-            const committedSources = new Map([
-              [
-                record.input.entity,
-                {
-                  sourceKey: record.input.sourceKey,
-                  revision: record.input.revision,
-                },
-              ],
-            ]);
-            const replacementConstraintIds = new Set(
-              (record.input.constraints ?? []).map((constraint) => constraint.id),
-            );
-            for (const [constraintId, current] of [...this.derivedConstraints]) {
-              if (
-                replacementConstraintIds.has(constraintId) ||
-                this.constraintDependenciesMatch(current.input, committedSources)
-              )
-                continue;
-              this.removeNativeConstraint(current.handle);
-              this.derivedConstraints.delete(constraintId);
-            }
-          }
-          if (old !== undefined && record.retainedGeometry === undefined) {
-            const retained = new Set(record.sharedGeometry?.shapes.flatMap(derivedShapeHandles));
-            for (const handle of old.shapes.flatMap(derivedShapeHandles)) {
-              if (retained.has(handle)) continue;
-              const collider = (this.raw as RapierWorld).getCollider(handle);
-              if (collider !== null && collider !== undefined) collider.setEnabled(false);
-            }
-            this.retiredDerivedBodies.push(old);
-          }
-          for (const constraint of record.input.constraints ?? []) {
-            const previous = this.derivedConstraints.get(constraint.id);
-            if (previous !== undefined) this.removeNativeConstraint(previous.handle);
-            const staged = stagedConstraints.get(constraint.id);
-            if (staged !== undefined) this.derivedConstraints.set(constraint.id, staged);
-          }
-          const shapes = candidateShapeRecords(record);
-          const committed: DerivedBodyRecord = {
-            entity: record.input.entity,
-            sourceKey: record.input.sourceKey,
-            generation: this.backendGeneration,
-            revision: record.input.revision,
-            bodyType: record.input.bodyType,
-            velocityPolicy: record.input.velocityPolicy,
-            candidateId: record.token.candidateId,
-            shapes,
-            massProperties: record.input.massProperties,
-            constraints: record.retainedGeometry?.constraints ?? [
-              ...(record.input.constraints ?? []),
-            ],
-          };
-          // No native mutation may follow geometry acceptance before recording ownership.
-          const commitGeometry =
-            record === group[group.length - 1]
-              ? (record.batch?.commitGeometry ?? record.commitGeometry)
-              : undefined;
-          if (commitGeometry !== undefined) {
-            this.activeDerivedAdmission = record;
-            try {
-              geometryCommitUncertain = true;
-              const geometry = commitGeometry();
-              geometryCommitUncertain = false;
-              if (!geometry.ok) throw geometry.error;
-              geometryCommitted = true;
-            } finally {
-              this.activeDerivedAdmission = undefined;
-            }
-            delete record.commitGeometry;
-          }
-          this.derivedBodies.set(record.input.entity, committed);
-          const entityRecord = this.entityMap.get(record.input.entity);
-          if (entityRecord !== undefined) {
-            entityRecord.automaticAdditionalMass =
-              record.input.massProperties?.mode === 'explicit' ? 0 : entityRecord.additionalMass;
-          }
-          this.derivedBodySources.set(record.input.entity, {
-            sourceKey: record.input.sourceKey,
-            revision: record.input.revision,
-          });
-          this.derivedFailures.delete(record.input.entity);
-          record.state = 'queued';
-          this.pendingDerivedCandidates.delete(id);
-          undos.push(rollback);
-        } catch (cause) {
-          let restored = restore(rollback);
-          for (const undo of undos.reverse()) {
-            if (!restore(undo)) restored = false;
-          }
-          const error =
-            cause instanceof DerivedPhysicsError
-              ? cause
-              : new DerivedPhysicsError(
-                  'derived-backend-failed',
-                  'derived admission either commits completely or preserves the prior body state',
-                  'inspect the failure receipt and rebuild the PhysicsWorld if recovery is required',
-                  {
-                    entity: record.input.entity,
-                    candidateId: record.token.candidateId,
-                    reason: cause instanceof Error ? cause.message : String(cause),
-                  },
-                );
-          // A thrown consumer callback can have changed ECS state. Native
-          // rollback alone cannot certify any member of that combined group.
-          if (geometryCommitUncertain) restored = false;
-          for (const member of group) {
-            if (!restored) {
-              this.derivedPoisonedEntities.add(member.input.entity);
-              this.derivedBodies.delete(member.input.entity);
-              this.derivedPublications.delete(member.input.entity);
-            }
-            this.rememberDerivedFailure(
-              member,
-              error,
-              restored ? 'old-state-retained' : 'rebuild-required',
-            );
-          }
-          break;
-        }
+      if (this.admitDerivedGroup(group)) geometryCommitted = true;
+    }
+    return geometryCommitted;
+  }
+
+  private derivedGroupRejection(
+    group: readonly DerivedCandidateRecord[],
+  ): DerivedPhysicsError | undefined {
+    const sources = this.pendingDerivedSources();
+    for (const record of group) {
+      const rejected = this.derivedRecordRejection(record, sources);
+      if (rejected !== undefined) return rejected;
+    }
+    return undefined;
+  }
+
+  private derivedRecordRejection(
+    record: DerivedCandidateRecord,
+    sources: ReadonlyMap<number, DerivedBodySource>,
+  ): DerivedPhysicsError | undefined {
+    const entity = record.input.entity;
+    const projected = sources.get(entity);
+    if (projected !== undefined && record.input.revision < projected.revision)
+      return new DerivedPhysicsError(
+        'derived-candidate-stale',
+        'fixed-step admission publishes the final queued body revisions',
+        'discard the older group and prepare a complete replacement',
+        { entity },
+      );
+    if (
+      (record.retainedGeometry !== undefined || record.sharedGeometry !== undefined) &&
+      !retainedDerivedGeometryCurrent(
+        record,
+        this.derivedBodies.get(entity),
+        this.raw,
+        this.bodyForEntity(entity)?.handle,
+      )
+    )
+      return new DerivedPhysicsError(
+        'derived-candidate-stale',
+        'admission retains the exact accepted geometry owner',
+        'read its new publication and prepare again',
+        { entity },
+      );
+    if (this.derivedPoisonedEntities.has(entity))
+      return new DerivedPhysicsError(
+        'derived-recovery-invalid',
+        'every batch body has recoverable native state',
+        'rebuild the PhysicsWorld before retrying',
+        { entity },
+      );
+    if (this.bodyForEntity(entity) === undefined)
+      return new DerivedPhysicsError(
+        'derived-body-not-found',
+        'every batch body remains live through admission',
+        'reconcile entities and prepare again',
+        { entity },
+      );
+    return this.validateDerivedAdmission(record.input, sources);
+  }
+
+  /** Commits every member or rolls back the whole group; returns whether geometry was accepted. */
+  private admitDerivedGroup(group: readonly DerivedCandidateRecord[]): boolean {
+    let geometryCommitted = false;
+    const undos: DerivedAdmissionUndo[] = [];
+    for (const record of group) {
+      const undo = this.captureDerivedAdmissionUndo(record);
+      try {
+        const committed = this.stageDerivedRecord(undo);
+        if (this.acceptDerivedGeometry(undo, group)) geometryCommitted = true;
+        this.adoptDerivedRecord(record, committed);
+        undos.push(undo);
+      } catch (cause) {
+        this.failDerivedGroup(group, undo, undos, cause);
+        break;
       }
     }
     return geometryCommitted;
+  }
+
+  private captureDerivedAdmissionUndo(record: DerivedCandidateRecord): DerivedAdmissionUndo {
+    const entity = record.input.entity;
+    const old = this.derivedBodies.get(entity);
+    const body = this.bodyForEntity(entity);
+    return {
+      record,
+      body,
+      bodyState: captureDerivedBodyState(body),
+      old,
+      automaticAdditionalMass: this.entityMap.get(entity)?.automaticAdditionalMass ?? 0,
+      automaticRecordMass: this.entityMap.get(entity)?.automaticAdditionalMass,
+      source: this.derivedBodySources.get(entity),
+      publication: this.derivedPublications.get(entity),
+      colliders: this.bodyColliders(body).map((collider) => ({
+        collider,
+        density: typeof collider.density === 'function' ? collider.density() : undefined,
+        enabled: typeof collider.isEnabled === 'function' ? collider.isEnabled() : true,
+      })),
+      constraints: new Map(this.derivedConstraints),
+      stagedConstraints: new Map<string, DerivedConstraintRecord>(),
+      geometryCommitUncertain: false,
+    };
+  }
+
+  /** Applies the candidate natively and returns the body record it will own once accepted. */
+  private stageDerivedRecord(undo: DerivedAdmissionUndo): DerivedBodyRecord {
+    const { record, body, old } = undo;
+    primeGroupedContacts(
+      this.raw,
+      old,
+      candidateShapeRecords(record),
+      this.derivedColliderToShape,
+      this.groupedContactEvents,
+    );
+    this.stageDerivedConstraints(record, undo.stagedConstraints);
+    if (record.input.bodyType !== undefined)
+      body.setBodyType(rapierBodyTypeFromString(this.rapierModule, record.input.bodyType), true);
+    this.enableCandidateColliders(record);
+    if (record.input.motion?.rotation !== undefined) {
+      const [x, y, z, w] = record.input.motion.rotation;
+      body.setRotation({ x, y, z, w }, true);
+    }
+    this.applyDerivedMass(
+      body,
+      record.input.massProperties,
+      undo.bodyState.worldCom,
+      record.input.velocityPolicy ?? 'preserve',
+      this.entityMap.get(record.input.entity)?.additionalMass ?? 0,
+      record.input.entity,
+      record.input.shapes,
+      candidateNativeColliders(record),
+    );
+    if (record.input.motion !== undefined)
+      applyDerivedMotion(
+        body,
+        record.input.motion,
+        this.entityMap.get(record.input.entity)?.lockRotation === true,
+      );
+    // Retire joints against this committed revision only. Other queued
+    // endpoints may still fail and retain their previous joints.
+    if (this.derivedConstraints.size > 0) this.retireSupersededConstraints(record);
+    if (old !== undefined && record.retainedGeometry === undefined)
+      this.retireReplacedDerivedShapes(record, old);
+    this.adoptStagedConstraints(record, undo.stagedConstraints);
+    return {
+      entity: record.input.entity,
+      sourceKey: record.input.sourceKey,
+      generation: this.backendGeneration,
+      revision: record.input.revision,
+      bodyType: record.input.bodyType,
+      velocityPolicy: record.input.velocityPolicy,
+      candidateId: record.token.candidateId,
+      shapes: candidateShapeRecords(record),
+      massProperties: record.input.massProperties,
+      constraints: record.retainedGeometry?.constraints ?? [...(record.input.constraints ?? [])],
+    };
+  }
+
+  private stageDerivedConstraints(
+    record: DerivedCandidateRecord,
+    staged: Map<string, DerivedConstraintRecord>,
+  ): void {
+    for (const constraint of record.input.constraints ?? []) {
+      const created = this.createNativeConstraint(constraint);
+      if (!created.ok) throw created.error;
+      staged.set(constraint.id, { input: { ...constraint }, handle: created.value.handle });
+    }
+  }
+
+  private enableCandidateColliders(record: DerivedCandidateRecord): void {
+    for (const native of record.nativeColliders) {
+      const collider = (this.raw as RapierWorld).getCollider(native.handle);
+      if (collider === null || collider === undefined)
+        throw new Error('candidate collider disappeared');
+      collider.setEnabled(true);
+    }
+  }
+
+  private retireSupersededConstraints(record: DerivedCandidateRecord): void {
+    // Project this endpoint only; sourceForEntity reads other committed sources.
+    const committedSources = new Map([
+      [record.input.entity, { sourceKey: record.input.sourceKey, revision: record.input.revision }],
+    ]);
+    const replacementConstraintIds = new Set(
+      (record.input.constraints ?? []).map((constraint) => constraint.id),
+    );
+    for (const [constraintId, current] of [...this.derivedConstraints]) {
+      if (
+        replacementConstraintIds.has(constraintId) ||
+        this.constraintDependenciesMatch(current.input, committedSources)
+      )
+        continue;
+      this.removeNativeConstraint(current.handle);
+      this.derivedConstraints.delete(constraintId);
+    }
+  }
+
+  private retireReplacedDerivedShapes(
+    record: DerivedCandidateRecord,
+    old: DerivedBodyRecord,
+  ): void {
+    const retained = new Set(record.sharedGeometry?.shapes.flatMap(derivedShapeHandles));
+    for (const handle of old.shapes.flatMap(derivedShapeHandles)) {
+      if (retained.has(handle)) continue;
+      const collider = (this.raw as RapierWorld).getCollider(handle);
+      if (collider !== null && collider !== undefined) collider.setEnabled(false);
+    }
+    this.retiredDerivedBodies.push(old);
+  }
+
+  private adoptStagedConstraints(
+    record: DerivedCandidateRecord,
+    staged: ReadonlyMap<string, DerivedConstraintRecord>,
+  ): void {
+    for (const constraint of record.input.constraints ?? []) {
+      const previous = this.derivedConstraints.get(constraint.id);
+      if (previous !== undefined) this.removeNativeConstraint(previous.handle);
+      const adopted = staged.get(constraint.id);
+      if (adopted !== undefined) this.derivedConstraints.set(constraint.id, adopted);
+    }
+  }
+
+  /** The last group member runs the consumer geometry commit; returns whether it ran. */
+  private acceptDerivedGeometry(
+    undo: DerivedAdmissionUndo,
+    group: readonly DerivedCandidateRecord[],
+  ): boolean {
+    const record = undo.record;
+    // No native mutation may follow geometry acceptance before recording ownership.
+    const commitGeometry =
+      record === group[group.length - 1]
+        ? (record.batch?.commitGeometry ?? record.commitGeometry)
+        : undefined;
+    if (commitGeometry === undefined) return false;
+    this.activeDerivedAdmission = record;
+    try {
+      undo.geometryCommitUncertain = true;
+      const geometry = commitGeometry();
+      undo.geometryCommitUncertain = false;
+      if (!geometry.ok) throw geometry.error;
+    } finally {
+      this.activeDerivedAdmission = undefined;
+    }
+    delete record.commitGeometry;
+    return true;
+  }
+
+  private adoptDerivedRecord(record: DerivedCandidateRecord, committed: DerivedBodyRecord): void {
+    this.derivedBodies.set(record.input.entity, committed);
+    const entityRecord = this.entityMap.get(record.input.entity);
+    if (entityRecord !== undefined) {
+      entityRecord.automaticAdditionalMass =
+        record.input.massProperties?.mode === 'explicit' ? 0 : entityRecord.additionalMass;
+    }
+    this.derivedBodySources.set(record.input.entity, {
+      sourceKey: record.input.sourceKey,
+      revision: record.input.revision,
+    });
+    this.derivedFailures.delete(record.input.entity);
+    record.state = 'queued';
+    this.pendingDerivedCandidates.delete(record.token.candidateId);
+  }
+
+  private failDerivedGroup(
+    group: readonly DerivedCandidateRecord[],
+    failed: DerivedAdmissionUndo,
+    committed: DerivedAdmissionUndo[],
+    cause: unknown,
+  ): void {
+    let restored = this.tryRollbackDerivedAdmission(failed);
+    for (const undo of committed.reverse()) {
+      if (!this.tryRollbackDerivedAdmission(undo)) restored = false;
+    }
+    const error =
+      cause instanceof DerivedPhysicsError
+        ? cause
+        : new DerivedPhysicsError(
+            'derived-backend-failed',
+            'derived admission either commits completely or preserves the prior body state',
+            'inspect the failure receipt and rebuild the PhysicsWorld if recovery is required',
+            {
+              entity: failed.record.input.entity,
+              candidateId: failed.record.token.candidateId,
+              reason: cause instanceof Error ? cause.message : String(cause),
+            },
+          );
+    // A thrown consumer callback can have changed ECS state. Native
+    // rollback alone cannot certify any member of that combined group.
+    if (failed.geometryCommitUncertain) restored = false;
+    for (const member of group) {
+      if (!restored) {
+        this.derivedPoisonedEntities.add(member.input.entity);
+        this.derivedBodies.delete(member.input.entity);
+        this.derivedPublications.delete(member.input.entity);
+      }
+      this.rememberDerivedFailure(
+        member,
+        error,
+        restored ? 'old-state-retained' : 'rebuild-required',
+      );
+    }
+  }
+
+  private tryRollbackDerivedAdmission(undo: DerivedAdmissionUndo): boolean {
+    try {
+      return this.rollbackDerivedAdmission(undo);
+    } catch {
+      return false;
+    }
+  }
+
+  private rollbackDerivedAdmission(undo: DerivedAdmissionUndo): boolean {
+    for (const staged of undo.stagedConstraints.values())
+      this.removeNativeConstraint(staged.handle);
+    // A partial commit may have replaced joints. Recreate old native joints
+    // after restoring bodies instead of retaining stale JS handles.
+    for (const current of this.derivedConstraints.values())
+      this.removeNativeConstraint(current.handle);
+    this.derivedConstraints.clear();
+    if (undo.old !== undefined) this.reinstateDerivedBody(undo.record.input.entity, undo.old);
+    this.discardCandidateColliders(undo);
+    const restored = this.restoreDerivedNativeBody(undo);
+    this.restoreDerivedOwnership(undo);
+    return restored;
+  }
+
+  private reinstateDerivedBody(entity: number, old: DerivedBodyRecord): void {
+    for (const handle of old.shapes.flatMap(derivedShapeHandles)) {
+      const collider = (this.raw as RapierWorld).getCollider(handle);
+      if (collider !== null && collider !== undefined) collider.setEnabled(true);
+    }
+    const retiredIndex = this.retiredDerivedBodies.indexOf(old);
+    if (retiredIndex >= 0) this.retiredDerivedBodies.splice(retiredIndex, 1);
+    this.derivedBodies.set(entity, old);
+    this.derivedBodySources.set(entity, { sourceKey: old.sourceKey, revision: old.revision });
+  }
+
+  /** Removes staged colliders and restores the prior colliders' density and enablement. */
+  private discardCandidateColliders(undo: DerivedAdmissionUndo): void {
+    for (const native of undo.record.nativeColliders) {
+      const collider = (this.raw as RapierWorld).getCollider(native.handle);
+      if (collider !== null && collider !== undefined) collider.setEnabled(false);
+    }
+    // Remove staged colliders before Rapier's deferred mass recomputation.
+    for (const native of undo.record.nativeColliders) this.removeNativeCollider(native.handle);
+    for (const { collider, density, enabled } of undo.colliders) {
+      if (this.raw.getCollider(collider.handle) === null) continue;
+      if (density !== undefined && typeof collider.setDensity === 'function')
+        collider.setDensity(density);
+      if (typeof collider.setEnabled === 'function') collider.setEnabled(enabled);
+    }
+  }
+
+  private restoreDerivedNativeBody(undo: DerivedAdmissionUndo): boolean {
+    const { body, bodyState: state } = undo;
+    try {
+      body.setBodyType(state.bodyType, true);
+      this.restoreCommittedMass(body, undo.old, undo.automaticAdditionalMass);
+      body.setTranslation(state.translation, true);
+      body.setRotation(state.rotation, true);
+      body.setLinvel(state.linearVelocity, true);
+      body.setAngvel(state.angularVelocity, true);
+      body.setEnabled(state.enabled);
+    } catch {
+      return false;
+    }
+    if (!this.restoreNativeConstraints(undo.constraints)) return false;
+    return derivedBodyStateRestored(body, state);
+  }
+
+  private restoreDerivedOwnership(undo: DerivedAdmissionUndo): void {
+    const entity = undo.record.input.entity;
+    if (undo.old === undefined) this.derivedBodies.delete(entity);
+    else this.derivedBodies.set(entity, undo.old);
+    if (undo.source === undefined) this.derivedBodySources.delete(entity);
+    else this.derivedBodySources.set(entity, undo.source);
+    if (undo.publication === undefined) this.derivedPublications.delete(entity);
+    else this.derivedPublications.set(entity, undo.publication);
+    const entityRecord = this.entityMap.get(entity);
+    if (entityRecord !== undefined && undo.automaticRecordMass !== undefined)
+      entityRecord.automaticAdditionalMass = undo.automaticRecordMass;
   }
 
   private publishDerivedCandidates(): void {

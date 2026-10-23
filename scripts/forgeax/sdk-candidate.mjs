@@ -155,7 +155,12 @@ export async function sealCandidate({
   // Offline identity check: branch ancestry (including rc-contains-stable) was
   // proven by release-policy.mjs when the Candidate resolved its source.
   const engineCommit = buildResult.engineCommit;
-  assertReleaseSource(version, engineCommit, engineCommit, () => true, engineCommit);
+  assertReleaseSource(
+    version,
+    engineCommit,
+    { [releasePolicy(version).branch]: engineCommit, stable: engineCommit },
+    () => true,
+  );
   if (!/^[0-9a-f]{40}$/.test(buildResult.viewCommit ?? ''))
     throw new Error('sdk-candidate-view-commit-invalid');
   const runId = Number(sourceWorkflowRunId);
@@ -230,9 +235,11 @@ export async function validateCandidate({ candidateRoot, expectedVersion, expect
   assertReleaseSource(
     candidate.sdkVersion,
     candidate.engineCommit,
-    candidate.engineCommit,
+    {
+      [releasePolicy(candidate.sdkVersion).branch]: candidate.engineCommit,
+      stable: candidate.engineCommit,
+    },
     () => true,
-    candidate.engineCommit,
   );
   if (expectedVersion !== undefined && candidate.sdkVersion !== expectedVersion) {
     throw new Error('sdk-candidate-version-mismatch');

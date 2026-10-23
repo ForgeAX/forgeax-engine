@@ -8,22 +8,29 @@
 
 | Surface | Artifact | Consumer contract |
 |:--|:--|:--|
-| Engine | One `@forgeax/engine` npm tarball | Runtime, CLI, independent ESM facades, declarations, WASM, Workers and locked transitive runtime dependencies |
+| Engine | One `@forgeax/engine` npm tarball | Runtime, CLI, independent ESM facades, declarations, WASM, Workers and source maps; exact-version registry dependencies |
 | View | Independent `@forgeax/view` tool tarball | Exact-version Engine dependency; separate tool ownership |
-| SDK | `@forgeax/engine-sdk` carrier and full ZIP | Same Engine artifact; templates, skills and source; ZIP also supplies offline package store |
+| SDK | `@forgeax/engine-sdk` carrier and full ZIP | Same Engine artifact; templates and skills. The ZIP alone adds the offline package store, bare packages and source snapshot (`SDK_ZIP_ONLY_PATHS`) |
 
-`scripts/forgeax/engine-bundle.mjs` copies the installed lockfile dependency graph
-into a standard npm bundle. Internal package bytes come from their normalized
-archives. Duplicate dependency versions retain ordinary nested package placement.
-Required missing dependencies stop production. Unpatched registry platform
-leaves (`os`/`cpu`) with one locked physical version and exclusively optional
-incoming edges become exact-version root `optionalDependencies`; npm/pnpm select
-the consumer platform. Remove those promoted optional declarations from bundled
-parents as well: npm's nested installer otherwise treats the absent native leaf
-as bundled and skips downloading it. Fresh consumer validation uses the real
-nested install flags and loads the native tools. Patched, internal, non-leaf and multi-version packages stay
-bundled. npm aliases retain their import spelling instead of duplicating their
-canonical package. Unavailable optional peers remain optional. A 128 MiB product
+`scripts/forgeax/engine-bundle.mjs` turns the installed lockfile graph into one
+standard npm package. It bundles only what a registry cannot supply again: every
+`@forgeax/engine-*` owner (bytes from its normalized archive), patched packages and
+packages whose resolution depends on a patch (for example peers of patched Cordis),
+and linked non-registry packages. Every other package that a bundled package reaches
+becomes one exact-version root `dependencies` entry under its import spelling, so
+npm aliases keep their name. When bundled packages reach different versions under
+one name, the most-referenced version takes the root dependency and the others stay
+bundled at ordinary nested placement. A registry package reached only through
+optional edges becomes an exact root `optionalDependencies` entry, and the optional
+edge is removed from its bundled parents: npm's nested installer otherwise treats
+the absent leaf as bundled and skips downloading it. Optional registry peers stay
+the consumer's opt-in and are neither bundled nor declared. Required missing
+dependencies stop production.
+
+Registry dependencies resolve deeper transitive versions at install time; SDK games
+retain exact reproducibility through the SDK template lockfiles and the ZIP's
+offline store. Each release therefore uploads only Engine-owned bytes, and package
+managers reuse cached third-party packages across versions. A 128 MiB product
 tarball budget fails locally before publication; it is not a registry-limit claim.
 Package LICENSE files travel with their bytes. Source and SDK package inventory
 remain modular; focused packages are excluded from the official npm roster.
@@ -36,7 +43,7 @@ products are separate npm publications; their tags are not a registry transactio
 
 | Channel | Source branch | Version | Npm tag | Public mirror branch | Trigger |
 |:--|:--|:--|:--|:--|:--|
-| Stable | `stable` | `x.y.z` | `latest` | `stable` | Explicit Candidate and explicit Promotion |
+| Stable | `stable` | `x.y.z` | `latest` | `stable` | Candidate prepared by each rc Promotion (or explicit); explicit Promotion |
 | Test (rc) | `rc` | `x.y.z-rc.n` | `rc` | none | Explicit Candidate; Promotion follows automatically |
 | Development | `main` | `x.y.z-dev.sequence.sha12` | `next` | `main` | Explicit `engine-development-release.yml` dispatch for one main commit |
 
@@ -155,7 +162,8 @@ the publisher rejects an rc whose core is not above `latest`.
 |:--|:--|:--|
 | Weekly cut | Commit on `rc` with parents `rc` and `main` and the tree of `main` | `0.4.18-rc.1` |
 | Fix found in test | Fix on `main` first, cherry-pick onto `rc` | `0.4.18-rc.2` |
-| Promote | Fast-forward `stable` to the last rc commit; Candidate from that SHA | `0.4.18` |
+| Prepare | Automatic with each rc Promotion: stable Candidate from the same rc SHA | `0.4.18` sealed, unpublished |
+| Promote | Promotion of the last prepared stable Candidate fast-forwards `stable` | `0.4.18` |
 | Urgent hotfix during a cycle | Fix on `stable`, publish, then merge `stable` into `rc` and port to `main` | Hotfix `0.4.18`; the rc line continues as `0.4.19-rc.3` |
 
 A hotfix that takes the rc's number is the only renumbering. It is unavoidable
@@ -176,14 +184,21 @@ cut=$(git commit-tree "origin/main^{tree}" -p origin/rc -p origin/main \
 git push origin "${cut}:refs/heads/rc"  # braces: zsh reads "$cut:r" as a modifier
 gh workflow run sdk-release-candidate.yml --ref main -f version=0.4.18-rc.1
 
-# Promotion: stable fast-forwards to the tested commit.
-git push origin <rc-sha>:stable
-gh workflow run sdk-release-candidate.yml --ref main -f version=0.4.18 -f source_sha=<rc-sha>
-gh workflow run sdk-release-promote.yml --ref main -f candidate_run_id=<candidate-run-id>
+# Promotion: publish the stable Candidate prepared by the last rc's Promotion.
+gh run list --workflow sdk-release-candidate.yml --json databaseId,displayTitle,conclusion
+gh workflow run sdk-release-promote.yml --ref main -f candidate_run_id=<stable-candidate-run-id>
 ```
 
 The stable Candidate rebuilds the tested source because the version is part of
-the published bytes; its gates run again on the same commit.
+the published bytes; its gates run again on the same commit. To keep that rebuild
+off the promotion path, each rc Promotion dispatches the stable Candidate of its
+source beside rc publication; neither run waits for or gates the other. Until
+`stable` moves, policy admits a stable source only when it is the exact `rc` tip
+and contains `stable`, so a superseded rc's prepared Candidate cannot be promoted.
+Its explicit Promotion fast-forwards `stable` to that source before publishing; a
+non-fast-forward push fails without a write. If no prepared Candidate exists
+(expired after 14 days, or a dispatch failure), dispatch
+`sdk-release-candidate.yml -f version=<core> -f source_sha=<rc-sha>` manually.
 
 ## Stable maintenance and recovery
 

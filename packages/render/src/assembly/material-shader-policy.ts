@@ -1,8 +1,10 @@
 import { atmosphereAvailable } from '../environment/capability';
+
 // Material shader policy and async adapter.
 // Variant selection, module caching, and manifest material preparation stay
 // independent from renderer lifetime and generation-scoped ready state.
 
+import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { PipelineLayout, Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
@@ -11,12 +13,18 @@ import {
   type MaterialShaderProgram,
   materialShaderUvSetCount,
   materialShaderVertexInputRequired,
+  type RegisteredMaterialShaderEntry,
   type ShaderCatalog,
   type ShaderCatalogDevice,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardPhysicalTextureFields,
 } from '@forgeax/engine-shader';
-import type { ParamSchemaEntry } from '@forgeax/engine-types';
+import type {
+  ParamSchemaEntry,
+  PassKind,
+  PrimitiveTopology,
+  VertexAttributeMap,
+} from '@forgeax/engine-types';
 import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 import {
   atmosphereMaterialVisibilityLayoutEntries,
@@ -27,6 +35,7 @@ import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage
 import type { RhiErrorListenerRegistry } from '../lifecycle';
 import { assertStorageBufferCap } from '../light-buffer-layout';
 import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
+import { colorFormatsForPassKind, type PipelineSpec, passKindPolicyTable } from '../pipeline-spec';
 import {
   deriveExtendedLightingCapability,
   extendedLightingSampledTextureCapacityAvailable,
@@ -1011,6 +1020,164 @@ export function normalizeMaterialShaderVariantSet(
   return manifestEntry !== undefined && manifestEntry.variants.length === 0
     ? undefined
     : requestedVariantSet;
+}
+
+/**
+ * The pipeline variant key a material PSO compiles. No manifest means a
+ * backend-specific published artifact with no synthesized key; a mesh
+ * without a vertex-color projection selects the no-color axis; custom
+ * shaders keep only the axes their manifest declares.
+ */
+export function resolveMaterialPipelineVariantSet(
+  requestedVariantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry | undefined,
+  pipelineShaderId: string,
+  vertexLayoutProjected: boolean,
+): string | undefined {
+  if (manifestEntry === undefined) return undefined;
+  let variantSet = normalizeMaterialShaderVariantSet(requestedVariantSet, manifestEntry);
+  if (
+    !vertexLayoutProjected &&
+    manifestEntry.variants.some((variant) => 'VERTEX_COLOR_AVAILABLE' in variant.defines)
+  ) {
+    variantSet = withoutVertexColorAxis(variantSet, manifestEntry);
+  }
+  if (pipelineShaderId.startsWith('forgeax::')) return variantSet;
+  return declaredVariantAxesOnly(variantSet, manifestEntry);
+}
+
+function withoutVertexColorAxis(
+  variantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry,
+): string | undefined {
+  if (variantSet !== '') {
+    return variantSet?.replace('VERTEX_COLOR_AVAILABLE=true', 'VERTEX_COLOR_AVAILABLE=false');
+  }
+  const noColorVariant = manifestEntry.variants.find(
+    (variant) =>
+      variant.defines.VERTEX_COLOR_AVAILABLE === false &&
+      Object.entries(variant.defines).every(
+        ([axis, value]) => axis === 'VERTEX_COLOR_AVAILABLE' || value === true,
+      ),
+  );
+  return noColorVariant?.definesKey ?? 'VERTEX_COLOR_AVAILABLE=false';
+}
+
+function declaredVariantAxesOnly(
+  variantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry,
+): string | undefined {
+  if (variantSet === undefined || variantSet === '') return variantSet;
+  const declaredAxes = new Set<string>();
+  for (const variant of manifestEntry.variants) {
+    for (const axis of Object.keys(variant.defines)) declaredAxes.add(axis);
+  }
+  const filteredVariantParts = variantSet
+    .split('+')
+    .filter((part) => declaredAxes.has(part.slice(0, part.indexOf('='))))
+    .sort();
+  return filteredVariantParts.length === 0 ? undefined : filteredVariantParts.join('+');
+}
+
+/**
+ * Substitute the manifest variant's composed WGSL for a registered entry.
+ * `''` is the canonical all-true request and still enters the lookup; the
+ * binding layout stays derived from the registered paramSchema.
+ */
+export function manifestVariantShaderEntry(
+  registry: ShaderCatalog,
+  pipelineShaderId: string,
+  variantSet: string | undefined,
+  entry: RegisteredMaterialShaderEntry,
+): RegisteredMaterialShaderEntry {
+  if (variantSet === undefined) return entry;
+  for (const manifestEntry of registry.materialShaderManifestEntries()) {
+    if (manifestEntry.identifier !== pipelineShaderId) continue;
+    const variant = findVariantByKey(manifestEntry, variantSet);
+    if (!variant) return entry;
+    return {
+      source: variant.composedWgsl,
+      program: registry.materialProgram(
+        variant.composedWgsl,
+        variant.entryPoints ?? variant.receipt?.entryPoints,
+      ),
+      paramSchema: entry.paramSchema,
+      paramSchemaProjection: entry.paramSchemaProjection,
+    };
+  }
+  return entry;
+}
+
+/** Shader axis of a material PSO spec; absent entries and constants stay absent. */
+export function materialPipelineShaderSpec(
+  id: string,
+  passKind: PassKind,
+  variantSet: string | undefined,
+  vertexEntry: string | undefined,
+  fragmentEntry: string | undefined,
+  constants: Readonly<Record<string, number>> | undefined,
+): PipelineSpec['shader'] {
+  return {
+    id,
+    passKind,
+    variantSet,
+    ...(vertexEntry === undefined ? {} : { vertexEntry }),
+    ...(fragmentEntry === undefined ? {} : { fragmentEntry }),
+    ...(constants === undefined ? {} : { constants }),
+  };
+}
+
+/** Attachment axis: declared extra outputs follow the primary color format. */
+export function materialPipelineAttachments(
+  passKind: PassKind,
+  colorFormat: GPUTextureFormat,
+  additionalColorFormats: readonly GPUTextureFormat[] | undefined,
+  depthFormatOverride: GPUTextureFormat | null | undefined,
+  sampleCount: number,
+): PipelineSpec['attachments'] {
+  return {
+    colorFormats:
+      additionalColorFormats === undefined
+        ? colorFormatsForPassKind(passKind, colorFormat)
+        : [colorFormat, ...additionalColorFormats],
+    depthFormat: materialPipelineDepthFormat(passKind, depthFormatOverride),
+    sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
+  };
+}
+
+/** Depth-only passes default to depth32float; `null` requests a color-only pipeline. */
+function materialPipelineDepthFormat(
+  passKind: PassKind,
+  depthFormatOverride: GPUTextureFormat | null | undefined,
+): GPUTextureFormat | undefined {
+  if (passKindPolicyTable[passKind]?.shape === 'depth-only')
+    return depthFormatOverride ?? 'depth32float';
+  return depthFormatOverride === null
+    ? undefined
+    : (depthFormatOverride ?? 'depth32float-stencil8');
+}
+
+/**
+ * Geometry axis. The shader-declared UV count is threaded whenever it is
+ * greater than one: built-in PBR reserves all eight supported UV inputs and
+ * single-UV meshes remain byte-stable because missing sets alias the last.
+ */
+export function materialPipelineGeometry(
+  topology: PrimitiveTopology | undefined,
+  stripIndexFormat: 'uint16' | 'uint32' | undefined,
+  vertexLayout: VertexAttributeMap,
+  shaderUvSetCount: number | undefined,
+  vertexLayoutProjection: VertexLayoutProjection | undefined,
+  vertexBuffers: PipelineSpec['geometry']['vertexBuffers'],
+): PipelineSpec['geometry'] {
+  return {
+    topology: topology ?? 'triangle-list',
+    stripIndexFormat,
+    vertexLayout,
+    ...(shaderUvSetCount !== undefined && shaderUvSetCount > 1 ? { shaderUvSetCount } : {}),
+    ...(vertexLayoutProjection === undefined ? {} : { vertexLayoutProjection }),
+    ...(vertexBuffers === undefined ? {} : { vertexBuffers }),
+  };
 }
 
 /** Feature-owned graphics use the same device admission as ordinary materials. */

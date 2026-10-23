@@ -35,7 +35,7 @@
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "playwright": "1.56.1",
-    "vite": "8.0.16"
+    "vite": "8.3.5"
   },
   "forgeax": {
     "smokeInvocation": "pnpm --filter @forgeax/hello-multithreaded-execution smoke",

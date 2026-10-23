@@ -1,7 +1,7 @@
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import type { GraphBufferAccess, GraphTextureAccess } from '@forgeax/engine-render-graph';
 import type { RhiCaps, TextureFormat } from '@forgeax/engine-rhi';
-import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
+import { type Asset, type BindGroupLayoutEntry, err, ok, type Result } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import { isSceneDataTarget, type SceneDataTarget } from '../temporal/scene-data';
 import {
@@ -590,6 +590,8 @@ function stablePrimitiveToken(
   return token;
 }
 
+type SignatureFrameData = false | 'passes' | 'dispatches' | 'draws' | 'copies';
+
 /**
  * Clone a signature node while reusing an unchanged subtree from the prior
  * detached snapshot.  The prior node is never mutated: a changed parent gets
@@ -600,7 +602,7 @@ function stablePrimitiveToken(
 function cloneSignatureNode(
   value: unknown,
   previous?: RenderFeaturePlanSignatureNode,
-  frameData: false | 'passes' | 'dispatches' | 'draws' | 'copies' = false,
+  frameData: SignatureFrameData = false,
   ownedStringTokens?: OwnedStringTokens,
 ): RenderFeaturePlanSignatureNode {
   if (frameData === false && isOwnedRenderFeatureProgramData(value)) {
@@ -617,142 +619,192 @@ function cloneSignatureNode(
 function cloneSignatureObject(
   value: unknown,
   previous?: RenderFeaturePlanSignatureNode,
-  frameData: false | 'passes' | 'dispatches' | 'draws' | 'copies' = false,
+  frameData: SignatureFrameData = false,
   ownedStringTokens?: OwnedStringTokens,
 ): RenderFeaturePlanSignatureNode {
-  if (ArrayBuffer.isView(value)) {
-    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    if (previous?.kind === 'bytes' && previous.bytes.byteLength === bytes.byteLength) {
-      let equal = true;
-      for (let index = 0; index < bytes.length; index += 1) {
-        if (bytes[index] !== previous.bytes[index]) {
-          equal = false;
-          break;
-        }
-      }
-      if (equal) return previous;
-    }
-    return { kind: 'bytes', bytes: new Uint8Array(bytes) };
-  }
+  if (ArrayBuffer.isView(value)) return cloneSignatureBytes(value, previous);
   if (Array.isArray(value)) {
-    const initialLength = value.length;
-    const previousValues = previous?.kind === 'array' ? previous.values : undefined;
-    let values: (RenderFeaturePlanSignatureNode | undefined)[] | undefined =
-      previousValues === undefined || previousValues.length !== value.length
-        ? new Array(initialLength)
-        : undefined;
-    for (let index = 0; index < value.length; index += 1) {
-      const child = value[index];
-      const prior = previousValues?.[index];
-      const next =
-        child === undefined
-          ? undefined
-          : cloneSignatureNode(child, prior, frameData, ownedStringTokens);
-      if (values === undefined && next !== prior) {
-        values = new Array(initialLength);
-        // The source can shrink from a getter: only visited rows belong to
-        // this projection; its unvisited suffix must remain holes.
-        for (let prefix = 0; prefix < index; prefix += 1) values[prefix] = previousValues?.[prefix];
-      }
-      if (values !== undefined) values[index] = next;
-    }
-    if (values === undefined && previous?.kind === 'array') return previous;
-    return Object.freeze({ kind: 'array', values: Object.freeze(values ?? []) });
+    return cloneSignatureArray(value, previous, frameData, ownedStringTokens);
   }
   if (value !== null && typeof value === 'object') {
-    const source = value as Readonly<Record<string, unknown>>;
-    const payloadKey =
-      frameData === 'passes' || frameData === 'draws' || frameData === 'copies'
-        ? 'enabled'
-        : frameData === 'dispatches' && source.kind === 'direct'
-          ? 'workgroups'
-          : undefined;
-    const previousObject = previous?.kind === 'object' ? previous : undefined;
-    let keys: readonly string[] | undefined;
-    if (previousObject !== undefined) {
-      // Descriptor object shapes are stable across VFX revisions.  Reuse the
-      // detached canonical key order after an allocation-free own-key check;
-      // only an actual add/remove falls back to Object.keys().sort().
-      let ownKeyCount = 0;
-      for (const key in source) {
-        if (key !== payloadKey && Object.hasOwn(source, key)) ownKeyCount += 1;
-      }
-      if (ownKeyCount === previousObject.keys.length) {
-        let sameKeySet = true;
-        for (const key of previousObject.keys) {
-          if (!Object.hasOwn(source, key)) {
-            sameKeySet = false;
-            break;
-          }
-        }
-        if (sameKeySet) {
-          keys = previousObject.keys;
-        }
-      }
-    }
-    if (keys === undefined) {
-      keys = Object.freeze(
-        Object.keys(source)
-          .filter((key) => key !== payloadKey)
-          .sort(compareStableKeys),
-      );
-    }
-    // The key-set proof already establishes the detached field ordinals.
-    // Allocate a new value column only when a child actually changes.
-    const sameKeys = keys === previousObject?.keys;
-    let previousPositions: Map<string, number> | undefined;
-    if (!sameKeys && previousObject !== undefined) {
-      previousPositions = new Map();
-      for (let index = 0; index < previousObject.keys.length; index += 1) {
-        const key = previousObject.keys[index] as string;
-        if (!previousPositions.has(key)) previousPositions.set(key, index);
-      }
-    }
-    let values: RenderFeaturePlanSignatureNode[] | undefined = sameKeys
-      ? undefined
-      : new Array(keys.length);
-    for (let index = 0; index < keys.length; index += 1) {
-      const key = keys[index] as string;
-      const previousIndex = sameKeys ? index : (previousPositions?.get(key) ?? -1);
-      const prior = previousIndex < 0 ? undefined : previousObject?.values[previousIndex];
-      const child = source[key];
-      const passKind = frameData === 'passes' ? source.kind : undefined;
-      const next = cloneSignatureNode(
-        child,
-        prior,
-        passKind === 'copy' && key === 'copies'
-          ? 'copies'
-          : passKind === 'compute' && key === 'dispatches'
-            ? 'dispatches'
-            : (passKind === 'raster' || passKind === 'shadow-caster') && key === 'draws'
-              ? 'draws'
-              : false,
-        ownedStringTokens,
-      );
-      if (values === undefined && next !== prior) {
-        values = new Array(keys.length);
-        for (let prefix = 0; prefix < index; prefix += 1)
-          values[prefix] = previousObject?.values[prefix] as RenderFeaturePlanSignatureNode;
-      }
-      if (values !== undefined) values[index] = next;
-    }
-    if (values === undefined && previousObject !== undefined) return previousObject;
-    return Object.freeze({
-      kind: 'object',
-      keys,
-      values: Object.freeze(values ?? []),
-    });
+    return cloneSignatureRecord(
+      value as Readonly<Record<string, unknown>>,
+      previous?.kind === 'object' ? previous : undefined,
+      frameData,
+      ownedStringTokens,
+    );
   }
+  return cloneSignaturePrimitive(value, previous, ownedStringTokens);
+}
+
+function cloneSignatureBytes(
+  value: ArrayBufferView,
+  previous: RenderFeaturePlanSignatureNode | undefined,
+): RenderFeaturePlanSignatureNode {
+  const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (previous?.kind === 'bytes' && previous.bytes.byteLength === bytes.byteLength) {
+    let equal = true;
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] !== previous.bytes[index]) {
+        equal = false;
+        break;
+      }
+    }
+    if (equal) return previous;
+  }
+  return { kind: 'bytes', bytes: new Uint8Array(bytes) };
+}
+
+function cloneSignatureArray(
+  value: readonly unknown[],
+  previous: RenderFeaturePlanSignatureNode | undefined,
+  frameData: SignatureFrameData,
+  ownedStringTokens: OwnedStringTokens | undefined,
+): RenderFeaturePlanSignatureNode {
+  const initialLength = value.length;
+  const previousValues = previous?.kind === 'array' ? previous.values : undefined;
+  let values: (RenderFeaturePlanSignatureNode | undefined)[] | undefined =
+    previousValues === undefined || previousValues.length !== value.length
+      ? new Array(initialLength)
+      : undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const child = value[index];
+    const prior = previousValues?.[index];
+    const next =
+      child === undefined
+        ? undefined
+        : cloneSignatureNode(child, prior, frameData, ownedStringTokens);
+    if (values === undefined && next !== prior) {
+      values = new Array(initialLength);
+      // The source can shrink from a getter: only visited rows belong to
+      // this projection; its unvisited suffix must remain holes.
+      for (let prefix = 0; prefix < index; prefix += 1) values[prefix] = previousValues?.[prefix];
+    }
+    if (values !== undefined) values[index] = next;
+  }
+  if (values === undefined && previous?.kind === 'array') return previous;
+  return Object.freeze({ kind: 'array', values: Object.freeze(values ?? []) });
+}
+
+/** Frame payload fields that are upload evidence rather than signature topology. */
+function signaturePayloadKey(
+  frameData: SignatureFrameData,
+  source: Readonly<Record<string, unknown>>,
+): string | undefined {
+  if (frameData === 'passes' || frameData === 'draws' || frameData === 'copies') return 'enabled';
+  return frameData === 'dispatches' && source.kind === 'direct' ? 'workgroups' : undefined;
+}
+
+/** Which frame-data command list, if any, a pass field holds. */
+function passChildFrameData(passKind: unknown, key: string): SignatureFrameData {
+  if (passKind === 'copy' && key === 'copies') return 'copies';
+  if (passKind === 'compute' && key === 'dispatches') return 'dispatches';
+  if ((passKind === 'raster' || passKind === 'shadow-caster') && key === 'draws') return 'draws';
+  return false;
+}
+
+/**
+ * Descriptor object shapes are stable across VFX revisions.  Reuse the
+ * detached canonical key order after an allocation-free own-key check; only
+ * an actual add/remove falls back to Object.keys().sort().
+ */
+function signatureRecordKeys(
+  source: Readonly<Record<string, unknown>>,
+  previousObject: Extract<RenderFeaturePlanSignatureNode, { kind: 'object' }> | undefined,
+  payloadKey: string | undefined,
+): readonly string[] {
+  if (previousObject !== undefined && hasSignatureKeySet(source, previousObject.keys, payloadKey)) {
+    return previousObject.keys;
+  }
+  return Object.freeze(
+    Object.keys(source)
+      .filter((key) => key !== payloadKey)
+      .sort(compareStableKeys),
+  );
+}
+
+function hasSignatureKeySet(
+  source: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+  payloadKey: string | undefined,
+): boolean {
+  let ownKeyCount = 0;
+  for (const key in source) {
+    if (key !== payloadKey && Object.hasOwn(source, key)) ownKeyCount += 1;
+  }
+  if (ownKeyCount !== keys.length) return false;
+  for (const key of keys) {
+    if (!Object.hasOwn(source, key)) return false;
+  }
+  return true;
+}
+
+function signatureKeyPositions(keys: readonly string[]): Map<string, number> {
+  const positions = new Map<string, number>();
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index] as string;
+    if (!positions.has(key)) positions.set(key, index);
+  }
+  return positions;
+}
+
+function cloneSignatureRecord(
+  source: Readonly<Record<string, unknown>>,
+  previousObject: Extract<RenderFeaturePlanSignatureNode, { kind: 'object' }> | undefined,
+  frameData: SignatureFrameData,
+  ownedStringTokens: OwnedStringTokens | undefined,
+): RenderFeaturePlanSignatureNode {
+  const keys = signatureRecordKeys(source, previousObject, signaturePayloadKey(frameData, source));
+  // The key-set proof already establishes the detached field ordinals.
+  // Allocate a new value column only when a child actually changes.
+  const sameKeys = keys === previousObject?.keys;
+  const previousPositions =
+    !sameKeys && previousObject !== undefined
+      ? signatureKeyPositions(previousObject.keys)
+      : undefined;
+  let values: RenderFeaturePlanSignatureNode[] | undefined = sameKeys
+    ? undefined
+    : new Array(keys.length);
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index] as string;
+    const previousIndex = sameKeys ? index : (previousPositions?.get(key) ?? -1);
+    const prior = previousIndex < 0 ? undefined : previousObject?.values[previousIndex];
+    const passKind = frameData === 'passes' ? source.kind : undefined;
+    const next = cloneSignatureNode(
+      source[key],
+      prior,
+      passChildFrameData(passKind, key),
+      ownedStringTokens,
+    );
+    if (values === undefined && next !== prior) {
+      values = new Array(keys.length);
+      for (let prefix = 0; prefix < index; prefix += 1)
+        values[prefix] = previousObject?.values[prefix] as RenderFeaturePlanSignatureNode;
+    }
+    if (values !== undefined) values[index] = next;
+  }
+  if (values === undefined && previousObject !== undefined) return previousObject;
+  return Object.freeze({
+    kind: 'object',
+    keys,
+    values: Object.freeze(values ?? []),
+  });
+}
+
+function cloneSignaturePrimitive(
+  value: unknown,
+  previous: RenderFeaturePlanSignatureNode | undefined,
+  ownedStringTokens: OwnedStringTokens | undefined,
+): RenderFeaturePlanSignatureNode {
   const token = stablePrimitiveToken(
     value,
     previous?.kind === 'primitive' ? previous : undefined,
     ownedStringTokens,
   );
-  return previous?.kind === 'primitive' && previous.token === token
-    ? previous
-    : typeof value === 'string'
-      ? { kind: 'primitive', token, stringValue: value }
-      : { kind: 'primitive', token };
+  if (previous?.kind === 'primitive' && previous.token === token) return previous;
+  return typeof value === 'string'
+    ? { kind: 'primitive', token, stringValue: value }
+    : { kind: 'primitive', token };
 }
 
 function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unknown {
@@ -1346,30 +1398,7 @@ export function freezeRenderFeaturePlan(
   const resources = new Map<string, RenderFeatureResourceDeclaration>();
   const targets = new Set(['swapchain', ...logicalTargets.map((target) => target.name)]);
   for (const resource of plan.resources) {
-    if (!validName(resource.name) || resources.has(resource.name))
-      return err(stageFailure(identity));
-    if (
-      resource.kind === 'scene-depth' &&
-      [
-        [resource.camera.position, 3],
-        [resource.camera.right, 3],
-        [resource.camera.up, 3],
-        [resource.camera.viewProjection, 16],
-      ].some(
-        ([data, length]) =>
-          !(data instanceof Float32Array) || data.length !== length || !data.every(Number.isFinite),
-      )
-    )
-      return err(stageFailure(identity));
-    if (
-      resource.kind === 'prepared-gpu-resource' &&
-      resource.logicalTarget !== undefined &&
-      !(typeof resource.logicalTarget === 'string'
-        ? targets.has(resource.logicalTarget)
-        : isSceneDataTarget(resource.logicalTarget))
-    ) {
-      return err(stageFailure(identity));
-    }
+    if (!validPlanResource(resource, resources, targets)) return err(stageFailure(identity));
     resources.set(resource.name, resource);
   }
   const passes = new Set<string>();
@@ -1381,149 +1410,7 @@ export function freezeRenderFeaturePlan(
     )
       return err(stageFailure(identity));
     passes.add(pass.name);
-    if (pass.kind === 'copy') {
-      if (pass.copies.length === 0) return err(stageFailure(identity));
-      for (const copy of pass.copies) {
-        const sourceResource = resources.get(copy.source),
-          destinationResource = resources.get(copy.destination);
-        const source = declaredCopyBuffer(sourceResource),
-          destination = declaredCopyBuffer(destinationResource);
-        const sourceOffset = copy.sourceOffset ?? 0,
-          destinationOffset = copy.destinationOffset ?? 0;
-        if (
-          source === undefined ||
-          destination === undefined ||
-          (copy.enabled !== undefined && typeof copy.enabled !== 'boolean') ||
-          copy.source === copy.destination ||
-          !source.usage?.includes('copy-src') ||
-          !Number.isSafeInteger(copy.size) ||
-          copy.size <= 0 ||
-          copy.size % 4 !== 0 ||
-          !Number.isSafeInteger(sourceOffset) ||
-          sourceOffset < 0 ||
-          sourceOffset % 4 !== 0 ||
-          !Number.isSafeInteger(destinationOffset) ||
-          destinationOffset < 0 ||
-          destinationOffset % 4 !== 0 ||
-          copy.size > source.size - sourceOffset ||
-          copy.size > destination.size - destinationOffset
-        )
-          return err(stageFailure(identity));
-      }
-      continue;
-    }
-    if (pass.kind === 'compute') {
-      const program = resources.get(pass.program);
-      const bindings = resources.get(pass.bindings);
-      if (
-        program?.kind !== 'compute-program' ||
-        bindings?.kind !== 'compute-bindings' ||
-        bindings.program !== pass.program ||
-        pass.dispatches.length === 0
-      ) {
-        return err(stageFailure(identity));
-      }
-      const entryPoints = new Set(program.program.entryPoints);
-      const validated = new Set<object>();
-      const immutableProgram = isOwnedRenderFeatureProgramData(program.program);
-      const validateBindings = (
-        bindings: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-bindings' }>,
-      ): boolean => {
-        if (immutableProgram && validated.has(bindings)) return true;
-        for (const entry of bindings.entries) {
-          const layout = program.program.bindings?.[0]?.entries.find(
-            (candidate) => candidate.binding === entry.binding,
-          );
-          const resource = resources.get(entry.resource);
-          const validBuffer = resource?.kind === 'buffer' && layout?.buffer !== undefined;
-          const validPrepared =
-            resource?.kind === 'prepared-gpu-resource' &&
-            ((resource.resource.kind === 'buffer' && layout?.buffer !== undefined) ||
-              (resource.resource.kind === 'texture-view' &&
-                (layout?.texture !== undefined || layout?.storageTexture !== undefined)) ||
-              (resource.resource.kind === 'sampler' && layout?.sampler !== undefined));
-          const validSceneInput =
-            (resource?.kind === 'scene-depth' && layout?.texture?.sampleType === 'depth') ||
-            (resource?.kind === 'scene-noise' && layout?.texture !== undefined) ||
-            (resource?.kind === 'scene-sdf' && layout?.buffer?.type === 'read-only-storage');
-          if (!validBuffer && !validPrepared && !validSceneInput) {
-            return false;
-          }
-        }
-        if (immutableProgram && isOwnedRenderFeatureProgramData(bindings)) validated.add(bindings);
-        return true;
-      };
-      if (!validateBindings(bindings)) return err(stageFailure(identity));
-      for (const dispatch of pass.dispatches) {
-        if (!entryPoints.has(dispatch.entryPoint)) return err(stageFailure(identity));
-        const override = dispatch.bindings;
-        if (override !== undefined) {
-          const binding = resources.get(override);
-          if (
-            binding?.kind !== 'compute-bindings' ||
-            binding.program !== pass.program ||
-            !validateBindings(binding)
-          )
-            return err(stageFailure(identity));
-        }
-        if (dispatch.kind === 'direct') {
-          if (!validRenderFeatureWorkgroups(dispatch.workgroups)) {
-            return err(stageFailure(identity));
-          }
-        } else {
-          const buffer = resources.get(dispatch.resource);
-          if (
-            buffer?.kind !== 'buffer' ||
-            !buffer.usage.includes('indirect') ||
-            !Number.isInteger(dispatch.offset) ||
-            dispatch.offset < 0 ||
-            dispatch.offset % 4 !== 0
-          ) {
-            return err(stageFailure(identity));
-          }
-        }
-      }
-      continue;
-    }
-
-    if (
-      pass.draws.length === 0 ||
-      (pass.kind === 'raster' &&
-        (pass.colorAttachments.some((attachment) => !targets.has(attachment.target)) ||
-          (pass.depthStencilAttachment !== undefined &&
-            !targets.has(pass.depthStencilAttachment.target)) ||
-          pass.sampledTargets?.some(
-            (target) => typeof target === 'string' && !targets.has(target),
-          ) === true))
-    ) {
-      return err(stageFailure(identity));
-    }
-    for (const draw of pass.draws) {
-      const program = resources.get(draw.program);
-      if (
-        program?.kind !== 'graphics-program' ||
-        (draw.enabled !== undefined && typeof draw.enabled !== 'boolean') ||
-        (pass.kind === 'shadow-caster' &&
-          (program.program.colorFormats.length !== 0 ||
-            program.program.depthFormat !== 'depth32float')) ||
-        draw.bindings.some((name) => {
-          const binding = resources.get(name);
-          return binding?.kind !== 'graphics-bindings' || binding.program !== draw.program;
-        }) ||
-        draw.vertexData.some(
-          (binding) => resources.get(binding.resource)?.kind !== 'vertex-data',
-        ) ||
-        (draw.indexData !== undefined &&
-          resources.get(draw.indexData.resource)?.kind !== 'index-data') ||
-        ((draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect') &&
-          (() => {
-            const buffer = resources.get(draw.draw.resource);
-            return buffer?.kind !== 'buffer' || !buffer.usage.includes('indirect');
-          })())
-      ) {
-        return err(stageFailure(identity));
-      }
-    }
+    if (!validPlanPass(pass, resources, targets)) return err(stageFailure(identity));
   }
 
   const frozen = Object.freeze({
@@ -1535,4 +1422,227 @@ export function freezeRenderFeaturePlan(
     passes: Object.freeze(plan.passes.map((pass) => Object.freeze({ ...pass }))),
   });
   return ok(frozen);
+}
+
+/** Is this resource uniquely named and are its camera and logical target well-formed? */
+function validPlanResource(
+  resource: RenderFeatureResourceDeclaration,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  targets: ReadonlySet<string>,
+): boolean {
+  if (!validName(resource.name) || resources.has(resource.name)) return false;
+  if (resource.kind === 'scene-depth' && !validSceneDepthCamera(resource.camera)) return false;
+  return (
+    resource.kind !== 'prepared-gpu-resource' ||
+    resource.logicalTarget === undefined ||
+    (typeof resource.logicalTarget === 'string'
+      ? targets.has(resource.logicalTarget)
+      : isSceneDataTarget(resource.logicalTarget))
+  );
+}
+
+function validSceneDepthCamera(
+  camera: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'scene-depth' }>['camera'],
+): boolean {
+  return ![
+    [camera.position, 3],
+    [camera.right, 3],
+    [camera.up, 3],
+    [camera.viewProjection, 16],
+  ].some(
+    ([data, length]) =>
+      !(data instanceof Float32Array) || data.length !== length || !data.every(Number.isFinite),
+  );
+}
+
+function validPlanPass(
+  pass: RenderFeaturePassDeclaration,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  targets: ReadonlySet<string>,
+): boolean {
+  if (pass.kind === 'copy') return validCopyPass(pass, resources);
+  if (pass.kind === 'compute') return validComputePass(pass, resources);
+  return validDrawPass(pass, resources, targets);
+}
+
+function validCopyPass(
+  pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'copy' }>,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  if (pass.copies.length === 0) return false;
+  for (const copy of pass.copies) {
+    const source = declaredCopyBuffer(resources.get(copy.source)),
+      destination = declaredCopyBuffer(resources.get(copy.destination));
+    if (
+      source === undefined ||
+      destination === undefined ||
+      (copy.enabled !== undefined && typeof copy.enabled !== 'boolean') ||
+      copy.source === copy.destination ||
+      !source.usage?.includes('copy-src') ||
+      !Number.isSafeInteger(copy.size) ||
+      copy.size <= 0 ||
+      copy.size % 4 !== 0 ||
+      !validCopyRange(copy.size, copy.sourceOffset ?? 0, source.size) ||
+      !validCopyRange(copy.size, copy.destinationOffset ?? 0, destination.size)
+    )
+      return false;
+  }
+  return true;
+}
+
+/** Does a 4-byte-aligned copy of `size` bytes at `offset` fit the buffer? */
+function validCopyRange(size: number, offset: number, bufferSize: number): boolean {
+  return (
+    Number.isSafeInteger(offset) && offset >= 0 && offset % 4 === 0 && size <= bufferSize - offset
+  );
+}
+
+function validComputePass(
+  pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'compute' }>,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  const program = resources.get(pass.program);
+  const bindings = resources.get(pass.bindings);
+  if (
+    program?.kind !== 'compute-program' ||
+    bindings?.kind !== 'compute-bindings' ||
+    bindings.program !== pass.program ||
+    pass.dispatches.length === 0
+  ) {
+    return false;
+  }
+  const entryPoints = new Set(program.program.entryPoints);
+  const validated = new Set<object>();
+  const immutableProgram = isOwnedRenderFeatureProgramData(program.program);
+  const validateBindings = (
+    candidate: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-bindings' }>,
+  ): boolean => {
+    if (immutableProgram && validated.has(candidate)) return true;
+    if (!validComputeBindingEntries(candidate, program, resources)) return false;
+    if (immutableProgram && isOwnedRenderFeatureProgramData(candidate)) validated.add(candidate);
+    return true;
+  };
+  if (!validateBindings(bindings)) return false;
+  for (const dispatch of pass.dispatches) {
+    if (!entryPoints.has(dispatch.entryPoint)) return false;
+    const override = dispatch.bindings;
+    if (override !== undefined) {
+      const binding = resources.get(override);
+      if (
+        binding?.kind !== 'compute-bindings' ||
+        binding.program !== pass.program ||
+        !validateBindings(binding)
+      )
+        return false;
+    }
+    if (!validDispatchSource(dispatch, resources)) return false;
+  }
+  return true;
+}
+
+/** Does every binding entry name a resource whose kind matches its layout slot? */
+function validComputeBindingEntries(
+  bindings: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-bindings' }>,
+  program: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-program' }>,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  for (const entry of bindings.entries) {
+    const layout = program.program.bindings?.[0]?.entries.find(
+      (candidate) => candidate.binding === entry.binding,
+    );
+    if (!computeBindingMatchesLayout(resources.get(entry.resource), layout)) return false;
+  }
+  return true;
+}
+
+function computeBindingMatchesLayout(
+  resource: RenderFeatureResourceDeclaration | undefined,
+  layout: BindGroupLayoutEntry | undefined,
+): boolean {
+  const validBuffer = resource?.kind === 'buffer' && layout?.buffer !== undefined;
+  const validPrepared =
+    resource?.kind === 'prepared-gpu-resource' &&
+    ((resource.resource.kind === 'buffer' && layout?.buffer !== undefined) ||
+      (resource.resource.kind === 'texture-view' &&
+        (layout?.texture !== undefined || layout?.storageTexture !== undefined)) ||
+      (resource.resource.kind === 'sampler' && layout?.sampler !== undefined));
+  const validSceneInput =
+    (resource?.kind === 'scene-depth' && layout?.texture?.sampleType === 'depth') ||
+    (resource?.kind === 'scene-noise' && layout?.texture !== undefined) ||
+    (resource?.kind === 'scene-sdf' && layout?.buffer?.type === 'read-only-storage');
+  return validBuffer || validPrepared || validSceneInput;
+}
+
+/** Are direct workgroups valid, or does an indirect dispatch name an aligned indirect buffer? */
+function validDispatchSource(
+  dispatch: RenderFeatureDispatch,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  if (dispatch.kind === 'direct') return validRenderFeatureWorkgroups(dispatch.workgroups);
+  const buffer = resources.get(dispatch.resource);
+  return (
+    buffer?.kind === 'buffer' &&
+    buffer.usage.includes('indirect') &&
+    Number.isInteger(dispatch.offset) &&
+    dispatch.offset >= 0 &&
+    dispatch.offset % 4 === 0
+  );
+}
+
+function validDrawPass(
+  pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'raster' | 'shadow-caster' }>,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  targets: ReadonlySet<string>,
+): boolean {
+  if (pass.draws.length === 0) return false;
+  if (pass.kind === 'raster' && !rasterTargetsDeclared(pass, targets)) return false;
+  for (const draw of pass.draws) {
+    if (!validDrawDeclaration(draw, pass.kind, resources)) return false;
+  }
+  return true;
+}
+
+function rasterTargetsDeclared(
+  pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'raster' }>,
+  targets: ReadonlySet<string>,
+): boolean {
+  return !(
+    pass.colorAttachments.some((attachment) => !targets.has(attachment.target)) ||
+    (pass.depthStencilAttachment !== undefined &&
+      !targets.has(pass.depthStencilAttachment.target)) ||
+    pass.sampledTargets?.some((target) => typeof target === 'string' && !targets.has(target)) ===
+      true
+  );
+}
+
+function validDrawDeclaration(
+  draw: RenderFeatureDrawDeclaration,
+  passKind: 'raster' | 'shadow-caster',
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  const program = resources.get(draw.program);
+  return !(
+    program?.kind !== 'graphics-program' ||
+    (draw.enabled !== undefined && typeof draw.enabled !== 'boolean') ||
+    (passKind === 'shadow-caster' &&
+      (program.program.colorFormats.length !== 0 ||
+        program.program.depthFormat !== 'depth32float')) ||
+    draw.bindings.some((name) => {
+      const binding = resources.get(name);
+      return binding?.kind !== 'graphics-bindings' || binding.program !== draw.program;
+    }) ||
+    draw.vertexData.some((binding) => resources.get(binding.resource)?.kind !== 'vertex-data') ||
+    (draw.indexData !== undefined &&
+      resources.get(draw.indexData.resource)?.kind !== 'index-data') ||
+    !validIndirectDrawSource(draw.draw, resources)
+  );
+}
+
+function validIndirectDrawSource(
+  draw: RenderFeatureDraw,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  if (draw.kind !== 'draw-indirect' && draw.kind !== 'draw-indexed-indirect') return true;
+  const buffer = resources.get(draw.resource);
+  return buffer?.kind === 'buffer' && buffer.usage.includes('indirect');
 }

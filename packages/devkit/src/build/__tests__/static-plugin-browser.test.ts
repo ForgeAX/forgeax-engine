@@ -233,6 +233,7 @@ it.each([
           name: 'Static',
           roots: { host: guid('backend') },
           assetRoots: ['assets'],
+          assetLibraries: [],
           packageJson: {},
         },
         'host',

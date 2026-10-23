@@ -12,6 +12,7 @@ import {
   assertSuccessfulCandidateRun,
   developmentVersion,
   releasePolicy,
+  stableVersionOf,
 } from '../release-policy.mjs';
 
 test('retained failed or active Candidate artifacts never authorize Promotion', () => {
@@ -76,16 +77,16 @@ test('stable, rc and development identities select disjoint branch, tag and mirr
 test('source membership and development SHA are checked before release', () => {
   const source = `abcdef123456${'a'.repeat(28)}`;
   assert.throws(
-    () => assertReleaseSource('1.2.3', source, 'b'.repeat(40), () => false),
+    () => assertReleaseSource('1.2.3', source, { stable: 'b'.repeat(40) }, () => false),
     /release-source-not-on-stable/,
   );
   assert.throws(
-    () => assertReleaseSource('1.2.3-dev.8.abcdef654321', source, source, () => true),
+    () => assertReleaseSource('1.2.3-dev.8.abcdef654321', source, { main: source }, () => true),
     /release-development-source-mismatch/,
   );
   assert.equal(
-    assertReleaseSource('1.2.3-dev.8.abcdef123456', source, source, () => true).tag,
-    'next',
+    assertReleaseSource('1.2.3-dev.8.abcdef123456', source, { main: source }, () => true),
+    'main',
   );
 });
 
@@ -93,15 +94,43 @@ test('an rc source must contain the current stable so promotion fast-forwards', 
   const source = 'a'.repeat(40);
   const stable = 'b'.repeat(40);
   const contains = (sha, head) => sha === head || (sha === stable && head === source);
-  assert.equal(assertReleaseSource('1.2.4-rc.1', source, source, contains, stable).tag, 'rc');
+  assert.equal(assertReleaseSource('1.2.4-rc.1', source, { rc: source, stable }, contains), 'rc');
   assert.throws(
-    () => assertReleaseSource('1.2.4-rc.1', source, source, (sha, head) => sha === head, stable),
+    () =>
+      assertReleaseSource(
+        '1.2.4-rc.1',
+        source,
+        { rc: source, stable },
+        (sha, head) => sha === head,
+      ),
     /release-rc-missing-stable/,
   );
   assert.throws(
-    () => assertReleaseSource('1.2.4-rc.1', source, source, contains),
+    () => assertReleaseSource('1.2.4-rc.1', source, { rc: source }, contains),
     /release-rc-missing-stable/,
   );
+});
+
+test('a stable version is prepared only from the exact rc tip that contains stable', () => {
+  const tip = 'a'.repeat(40);
+  const older = 'c'.repeat(40);
+  const stable = 'b'.repeat(40);
+  // stable <- older <- tip on rc; stable has not moved yet.
+  const history = { [tip]: [tip, older, stable], [older]: [older, stable], [stable]: [stable] };
+  const contains = (sha, head) => history[head]?.includes(sha) ?? false;
+  assert.equal(assertReleaseSource('1.2.4', tip, { rc: tip, stable }, contains), 'rc');
+  assert.throws(
+    () => assertReleaseSource('1.2.4', older, { rc: tip, stable }, contains),
+    /release-source-not-on-stable/,
+  );
+  assert.throws(
+    () => assertReleaseSource('1.2.4', tip, { rc: tip, stable }, (sha, head) => sha === head),
+    /release-source-not-on-stable/,
+  );
+  // After Promotion fast-forwards stable, the same source is ordinary stable history.
+  assert.equal(assertReleaseSource('1.2.4', tip, { rc: tip, stable: tip }, contains), 'stable');
+  assert.equal(stableVersionOf('1.2.4-rc.3'), '1.2.4');
+  assert.throws(() => stableVersionOf('1.2.4'), /release-version-not-rc/);
 });
 
 test('an rc line stays above the published stable; a hotfix taking its number moves it up', () => {
@@ -204,6 +233,24 @@ test('release CLI proves older source ancestry from a shallow checkout without a
     assert.throws(
       () => runRc(qualified),
       (error) => error.stderr.includes('release-rc-missing-stable'),
+    );
+    const runStable = (sha) =>
+      execFileSync(process.execPath, [script, '0.4.2', sha], {
+        cwd: client,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    assert.match(
+      runStable(cut),
+      new RegExp(`source_sha=${cut}\\nsource_branch=rc\\nchannel=stable\\n`),
+    );
+    assert.match(
+      runStable(qualified),
+      new RegExp(`source_sha=${qualified}\\nsource_branch=stable\\n`),
+    );
+    assert.throws(
+      () => runStable(outsider),
+      (error) => error.stderr.includes('release-source-not-on-stable'),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -473,7 +473,15 @@ it('prepares a native platform before the generated Host connection and drains i
       frontendModule: { specifier, prepare: 'preparePlatform' },
     };
     const config = await createViteConfig(
-      { root, id: 'platform', name: 'Platform', assetRoots: [], packageJson: {}, roots: {} },
+      {
+        root,
+        id: 'platform',
+        name: 'Platform',
+        assetRoots: [],
+        assetLibraries: [],
+        packageJson: {},
+        roots: {},
+      },
       'serve',
       '/',
       { host: binding },

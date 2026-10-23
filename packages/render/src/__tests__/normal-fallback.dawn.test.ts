@@ -16,16 +16,15 @@ it('samples the actual renderer fallback payload as an exactly neutral tangent n
     resolve(process.cwd(), 'packages/render/src/assembly/webgpu-ready.ts'),
     'utf8',
   );
-  const construction = owner.slice(
-    owner.indexOf('const fallbackNormalTextureDescriptor ='),
-    owner.indexOf('const fallbackNormalTextureViewResult ='),
-  );
-  const format = construction.match(/'fallback-normal-1x1',\s*'([^']+)'/)?.[1];
+  const payloadStart = owner.indexOf('const fallbackNormalTexel =');
+  const viewStart = owner.indexOf('const fallbackNormalTextureView =');
+  const construction = owner.slice(payloadStart, owner.indexOf(');', viewStart));
+  const format = construction.match(/'normal',\s*'([^']+)'/)?.[1];
   if (format !== 'rgba8unorm' && format !== 'rgba16float')
     throw new Error('Unexpected normal fallback format');
   const payloadSource = construction.slice(
-    construction.indexOf('const fallbackNormalTexel ='),
-    construction.indexOf('const fallbackNormalWriteResult ='),
+    0,
+    construction.indexOf('const fallbackNormalTextureView ='),
   );
   const texel = new Function(`${payloadSource}; return fallbackNormalTexel;`)() as Uint16Array;
   const source = readFileSync(

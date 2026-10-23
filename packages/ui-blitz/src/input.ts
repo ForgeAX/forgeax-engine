@@ -194,58 +194,7 @@ export class BlitzInput implements BlitzUiInput {
     if (![event.x, event.y].every(Number.isFinite) || !Number.isSafeInteger(event.pointerId))
       throw new TypeError('UI pointer coordinates and identity must be finite');
     const hit = this.hit(event.x, event.y);
-    if (event.phase === 'down') {
-      if (this.contacts.has(event.pointerId)) return true;
-      if (!hit) {
-        this.dom.focus(null);
-        return false;
-      }
-      const contact: Contact = {
-        target: hit,
-        startX: event.x,
-        startY: event.y,
-        panAxes:
-          event.pointerType === 'mouse'
-            ? 0
-            : this.dom.read('input.touchAction', (core) => core.touch_pan_axes(hit.coreId)),
-        x: event.x,
-        y: event.y,
-        scrolling: false,
-        cancelled: false,
-      };
-      this.contacts.set(event.pointerId, contact);
-      this.dom.read('input.active', (core) => core.set_active(hit.coreId));
-      this.dom.read('input.hover', (core) => core.set_hover(hit.coreId));
-      const properties = this.pointerProperties(event);
-      if (
-        dispatch(hit, 'pointerdown', properties) &&
-        !isInert(hit) &&
-        dispatch(hit, 'mousedown', properties) &&
-        !isInert(hit)
-      ) {
-        let focus: UiElement | null = hit;
-        while (focus && focus.tabIndex < 0) focus = parentElement(focus);
-        if (focus && !focus.disabled) focus.focus(undefined, 'pointer');
-        else this.dom.focus(null);
-        if (this.disposed) return true;
-        if (hit.localName === 'input' && hit.type === 'range' && !hit.disabled) {
-          contact.rangeValue = hit.value;
-          this.rangePointer(hit, event.x, event.y);
-        } else if (hit.localName === 'input' && hit.type === 'number' && isEditor(hit)) {
-          const direction = this.dom.read('input.number.hit', (core) =>
-            core.number_stepper_hit(hit.coreId, event.x, event.y),
-          );
-          if (direction) {
-            contact.numberStep = true;
-            this.numberStep(hit, direction);
-          }
-        } else if (hit.localName === 'select' && !hit.disabled) {
-          contact.select = true;
-          this.selectPointer(hit, event.x, event.y, false);
-        }
-      }
-      return true;
-    }
+    if (event.phase === 'down') return this.pointerDown(event, hit);
     const contact = this.contacts.get(event.pointerId);
     if (!contact) {
       if (event.pointerType === 'mouse' && event.phase === 'move')
@@ -254,93 +203,166 @@ export class BlitzInput implements BlitzUiInput {
     }
     const properties = this.pointerProperties(event);
     if (!contact.target.isConnected || isInert(contact.target)) contact.cancelled = true;
-    if (event.phase === 'move') {
-      const dx = contact.x - event.x,
-        dy = contact.y - event.y;
-      contact.x = event.x;
-      contact.y = event.y;
-      if (!contact.cancelled && !contact.scrolling)
-        dispatch(contact.target, 'pointermove', properties);
-      if (this.disposed) return true;
-      if (contact.rangeValue !== undefined) {
-        if (!contact.cancelled && !contact.target.disabled)
-          this.rangePointer(contact.target, event.x, event.y);
-        return true;
-      }
-      if (contact.select || contact.numberStep) return true;
-      const moved = Math.hypot(event.x - contact.startX, event.y - contact.startY) > 6;
-      if (!contact.cancelled && moved && contact.panAxes !== 0) {
-        const changed = this.scroll(
-          contact.target,
-          contact.panAxes & 1 ? dx : 0,
-          contact.panAxes & 2 ? dy : 0,
-        );
-        if (this.disposed) return true;
-        if (changed && !contact.scrolling) {
-          contact.scrolling = true;
-          dispatch(contact.target, 'pointercancel', properties, false);
-          if (this.disposed) return true;
-          this.dom.read('input.active', (core) => core.set_active(0n));
-        }
-      }
-      return true;
+    if (event.phase === 'move') this.pointerMove(event, contact, properties);
+    else this.pointerEnd(event, contact, hit, properties);
+    return true;
+  }
+  private pointerDown(event: UiPointerInput, hit: UiElement | null): boolean {
+    if (this.contacts.has(event.pointerId)) return true;
+    if (!hit) {
+      this.dom.focus(null);
+      return false;
     }
+    const contact: Contact = {
+      target: hit,
+      startX: event.x,
+      startY: event.y,
+      panAxes:
+        event.pointerType === 'mouse'
+          ? 0
+          : this.dom.read('input.touchAction', (core) => core.touch_pan_axes(hit.coreId)),
+      x: event.x,
+      y: event.y,
+      scrolling: false,
+      cancelled: false,
+    };
+    this.contacts.set(event.pointerId, contact);
+    this.dom.read('input.active', (core) => core.set_active(hit.coreId));
+    this.dom.read('input.hover', (core) => core.set_hover(hit.coreId));
+    const properties = this.pointerProperties(event);
+    if (
+      dispatch(hit, 'pointerdown', properties) &&
+      !isInert(hit) &&
+      dispatch(hit, 'mousedown', properties) &&
+      !isInert(hit)
+    )
+      this.pointerActivate(event, contact);
+    return true;
+  }
+  /** Default press action after accepted pointerdown/mousedown: focus, then control state. */
+  private pointerActivate(event: UiPointerInput, contact: Contact): void {
+    const hit = contact.target;
+    let focus: UiElement | null = hit;
+    while (focus && focus.tabIndex < 0) focus = parentElement(focus);
+    if (focus && !focus.disabled) focus.focus(undefined, 'pointer');
+    else this.dom.focus(null);
+    if (this.disposed) return;
+    if (hit.localName === 'input' && hit.type === 'range' && !hit.disabled) {
+      contact.rangeValue = hit.value;
+      this.rangePointer(hit, event.x, event.y);
+    } else if (hit.localName === 'input' && hit.type === 'number' && isEditor(hit)) {
+      const direction = this.dom.read('input.number.hit', (core) =>
+        core.number_stepper_hit(hit.coreId, event.x, event.y),
+      );
+      if (direction) {
+        contact.numberStep = true;
+        this.numberStep(hit, direction);
+      }
+    } else if (hit.localName === 'select' && !hit.disabled) {
+      contact.select = true;
+      this.selectPointer(hit, event.x, event.y, false);
+    }
+  }
+  private pointerMove(event: UiPointerInput, contact: Contact, properties: object): void {
+    const dx = contact.x - event.x,
+      dy = contact.y - event.y;
+    contact.x = event.x;
+    contact.y = event.y;
+    if (!contact.cancelled && !contact.scrolling)
+      dispatch(contact.target, 'pointermove', properties);
+    if (this.disposed) return;
+    if (contact.rangeValue !== undefined) {
+      if (!contact.cancelled && !contact.target.disabled)
+        this.rangePointer(contact.target, event.x, event.y);
+      return;
+    }
+    if (contact.select || contact.numberStep) return;
+    const moved = Math.hypot(event.x - contact.startX, event.y - contact.startY) > 6;
+    if (contact.cancelled || !moved || contact.panAxes === 0) return;
+    const changed = this.scroll(
+      contact.target,
+      contact.panAxes & 1 ? dx : 0,
+      contact.panAxes & 2 ? dy : 0,
+    );
+    if (this.disposed) return;
+    if (changed && !contact.scrolling) {
+      contact.scrolling = true;
+      dispatch(contact.target, 'pointercancel', properties, false);
+      if (this.disposed) return;
+      this.dom.read('input.active', (core) => core.set_active(0n));
+    }
+  }
+  private pointerEnd(
+    event: UiPointerInput,
+    contact: Contact,
+    hit: UiElement | null,
+    properties: object,
+  ): void {
     this.contacts.delete(event.pointerId);
     this.dom.read('input.active', (core) => core.set_active(0n));
     if (event.pointerType !== 'mouse') this.dom.read('input.hover', (core) => core.set_hover(0n));
-    if (!contact.cancelled && !contact.scrolling) {
-      const pointerAccepted = dispatch(
-        contact.target,
-        event.phase === 'cancel' ? 'pointercancel' : 'pointerup',
-        properties,
-        event.phase !== 'cancel',
-      );
-      if (this.disposed) return true;
-      if (event.phase === 'up') {
-        const mouseAccepted = dispatch(contact.target, 'mouseup', properties);
-        if (this.disposed) return true;
-        if (contact.rangeValue !== undefined && contact.target.value !== contact.rangeValue)
-          dispatch(contact.target, 'change', {}, false);
-        if (contact.numberStep) this.commitText();
-        if (this.disposed) return true;
-        let clickAccepted = true;
-        if (
-          hit &&
-          (hit === contact.target || contact.target.contains(hit)) &&
-          Math.hypot(event.x - contact.startX, event.y - contact.startY) <= 6
-        ) {
-          if (!contact.target.closest('button:disabled,input:disabled,select:disabled')) {
-            clickAccepted = dispatch(contact.target, 'click', properties);
-            if (this.disposed) return true;
-            const label = contact.target.closest('label');
-            const editor = isEditor(contact.target) ? contact.target : (label?.control ?? null);
-            if (
-              pointerAccepted &&
-              mouseAccepted &&
-              clickAccepted &&
-              !contact.numberStep &&
-              isEditor(editor) &&
-              this.dom.focused() === editor
-            )
-              for (const listener of [...this.editListeners]) {
-                if (this.disposed) return true;
-                if (this.editListeners.has(listener)) listener();
-              }
-          }
-        }
-        if (
-          contact.select &&
-          !contact.target.disabled &&
-          pointerAccepted &&
-          mouseAccepted &&
-          clickAccepted
-        )
-          this.selectPointer(contact.target, event.x, event.y, true);
-      } else if (contact.select) {
-        this.dom.read('input.select.close', (core) => core.select_close(contact.target.coreId));
-      }
+    if (contact.cancelled || contact.scrolling) return;
+    if (event.phase === 'up') {
+      this.pointerUp(event, contact, hit, properties);
+      return;
     }
-    return true;
+    dispatch(contact.target, 'pointercancel', properties, false);
+    if (this.disposed) return;
+    if (contact.select)
+      this.dom.read('input.select.close', (core) => core.select_close(contact.target.coreId));
+  }
+  private pointerUp(
+    event: UiPointerInput,
+    contact: Contact,
+    hit: UiElement | null,
+    properties: object,
+  ): void {
+    const pointerAccepted = dispatch(contact.target, 'pointerup', properties, true);
+    if (this.disposed) return;
+    const mouseAccepted = dispatch(contact.target, 'mouseup', properties);
+    if (this.disposed) return;
+    if (contact.rangeValue !== undefined && contact.target.value !== contact.rangeValue)
+      dispatch(contact.target, 'change', {}, false);
+    if (contact.numberStep) this.commitText();
+    if (this.disposed) return;
+    let clickAccepted = true;
+    if (
+      hit &&
+      (hit === contact.target || contact.target.contains(hit)) &&
+      Math.hypot(event.x - contact.startX, event.y - contact.startY) <= 6
+    )
+      clickAccepted = this.click(contact, properties, pointerAccepted && mouseAccepted);
+    if (
+      contact.select &&
+      !contact.target.disabled &&
+      pointerAccepted &&
+      mouseAccepted &&
+      clickAccepted
+    )
+      this.selectPointer(contact.target, event.x, event.y, true);
+  }
+  /**
+   * Click an enabled released contact and request a text edit for its accepted editor.
+   * False when the click was cancelled or disposal interrupted it.
+   */
+  private click(contact: Contact, properties: object, pressAccepted: boolean): boolean {
+    if (contact.target.closest('button:disabled,input:disabled,select:disabled')) return true;
+    const clickAccepted = dispatch(contact.target, 'click', properties);
+    if (this.disposed) return false;
+    const label = contact.target.closest('label');
+    const editor = isEditor(contact.target) ? contact.target : (label?.control ?? null);
+    if (
+      pressAccepted &&
+      clickAccepted &&
+      !contact.numberStep &&
+      isEditor(editor) &&
+      this.dom.focused() === editor
+    )
+      for (const listener of [...this.editListeners]) {
+        if (this.disposed) return false;
+        if (this.editListeners.has(listener)) listener();
+      }
+    return clickAccepted;
   }
   private numberStep(target: UiElement, direction: number): void {
     if (!isEditor(target) || !target.isConnected || isInert(target)) return;

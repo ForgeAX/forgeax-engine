@@ -11,9 +11,11 @@ describe('empty template authoring contract', () => {
   it('has a strict project manifest and an entity-free scene source', async () => {
     const manifest = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8')) as {
       schemaVersion?: string;
+      assetLibraries?: readonly string[];
       roots: { engine?: string };
     };
     expect(manifest.schemaVersion).toBe('3.0.0');
+    expect(manifest.assetLibraries).toEqual(['@forgeax/engine/content']);
     expect(manifest.roots.engine).toBe(AssetGuid.format(AssetGuid.derive(sceneOwner.packageId, 'plugin/scene')));
     const scene = JSON.parse(
       await readFile(resolve(root, 'assets/world/world.scene.pack.json'), 'utf8'),

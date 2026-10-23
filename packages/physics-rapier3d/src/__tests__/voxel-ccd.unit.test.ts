@@ -145,3 +145,41 @@ it.each([
     }
   }
 });
+
+it.each([
+  ['grenade', 0.1, 16],
+  ['fast grenade', 0.1, 40],
+  ['debris', 0.25, 25],
+] as const)('keeps a CCD %s out of a thin voxel wall at a merged 100 ms step', async (_kind, half, speed) => {
+  const R = await loadRapier3D();
+  if ('code' in R) throw R;
+  const world = new R.World({ x: 0, y: -9.81, z: 0 });
+  // Two merged 50 ms fixed steps: one native integration over 100 ms.
+  world.timestep = 0.1;
+  const events = new R.EventQueue(true);
+  try {
+    // One 0.1 m voxel layer spanning the path.
+    world.createCollider(
+      R.ColliderDesc.voxelRegions(new Int32Array([0, -16, -16, 1, 16, 16]), {
+        x: 0.1,
+        y: 0.1,
+        z: 0.1,
+      }),
+    );
+    const body = world.createRigidBody(
+      R.RigidBodyDesc.dynamic()
+        .setTranslation(-1.5, 0.5, 0)
+        .setLinvel(speed, 0, 0)
+        .setCcdEnabled(true),
+    );
+    world.createCollider(R.ColliderDesc.cuboid(half, half, half), body);
+    for (let step = 0; step < 10; step++) {
+      world.step(events);
+      // The body never ends a step beyond the wall's far face.
+      expect(body.translation().x).toBeLessThan(0.1 + half);
+    }
+  } finally {
+    events.free();
+    world.free();
+  }
+});

@@ -46,6 +46,7 @@ describe('dist closure', () => {
         name: 'Game',
         roots: {},
         assetRoots: ['assets'],
+        assetLibraries: [],
         packageJson: {},
       };
       readBudget.active = 0;
@@ -85,6 +86,7 @@ describe('dist closure', () => {
       name: 'Game',
       roots: {},
       assetRoots: ['assets'],
+      assetLibraries: [],
       packageJson: {},
     };
     await writeDistManifest(facts, '/');
@@ -111,6 +113,7 @@ describe('dist closure', () => {
       name: 'Game',
       roots: {},
       assetRoots: ['assets'],
+      assetLibraries: [],
       packageJson: {},
     };
     await writeDistManifest(facts, '/');
@@ -136,6 +139,7 @@ describe('dist closure', () => {
       name: 'Game',
       roots: {},
       assetRoots: ['assets'],
+      assetLibraries: [],
       packageJson: {},
     };
     const manifest = await writeDistManifest(facts, '/games/game/', output);
@@ -159,6 +163,7 @@ it('labels partial validation material profiles and rejects unsupported identiti
       name: 'Game',
       roots: {},
       assetRoots: ['assets'],
+      assetLibraries: [],
       packageJson: {},
     };
     const ordinary = await writeDistManifest(facts, '/', dist);
@@ -190,7 +195,15 @@ it('admits dot-prefixed filenames while rejecting actual parent escapes', async 
     for (const path of ['index.html', 'pack-index.json', 'shaders/manifest.json', '..chunk.js'])
       await writeFile(resolve(dist, path), '{}');
     const manifest = await writeDistManifest(
-      { root, id: 'game', name: 'Game', roots: {}, assetRoots: ['assets'], packageJson: {} },
+      {
+        root,
+        id: 'game',
+        name: 'Game',
+        roots: {},
+        assetRoots: ['assets'],
+        assetLibraries: [],
+        packageJson: {},
+      },
       '/',
     );
     expect(await verifyDist(dist)).toMatchObject({ ok: true });

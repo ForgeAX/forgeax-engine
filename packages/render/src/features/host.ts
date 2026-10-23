@@ -25,6 +25,7 @@ import type { CameraSnapshot, FramePresentationPendingReason } from '../render-c
 import { isSceneDataTarget, type SceneDataTarget } from '../temporal/scene-data';
 import { createSceneDataCatalog, type SceneDataCatalog } from '../temporal/scene-data-catalog';
 import {
+  type FeatureWorkResources,
   featureScopeKey,
   resolveFeatureWorkResources,
   resolveNativeFeatureWorkResources,
@@ -42,11 +43,14 @@ import {
   isRenderFeatureSceneResource,
   type RenderFeatureLogicalTarget,
   type RenderFeaturePassDeclaration,
+  type RenderFeaturePlan,
+  type RenderFeaturePlanContext,
   type RenderFeaturePlannedFrame,
   type RenderFeaturePlanSignatureMetrics,
   type RenderFeaturePlanSignatureSnapshot,
   type RenderFeatureResourceDeclaration,
   type RenderFeatureSceneResource,
+  type RenderFeatureWork,
   type RenderFeatureWorkPlan,
   rememberRenderFeaturePlanSignature,
   renderFeaturePlanSignature,
@@ -702,6 +706,12 @@ function targetFormat(
   return (target?.format ?? fallback) as TextureFormat | undefined;
 }
 
+type PreparedResourceMaps = ReturnType<typeof createPreparedResourceMaps>;
+type ResourceOfKind<Kind extends RenderFeatureResourceDeclaration['kind']> = Extract<
+  RenderFeatureResourceDeclaration,
+  { readonly kind: Kind }
+>;
+
 function preparePlanResources(
   slot: FeatureSlot,
   plan: RenderFeatureWorkPlan,
@@ -715,84 +725,169 @@ function preparePlanResources(
     readonly admission?: PreparedPlanResources;
   },
 ): Result<PreparedPlanResources, RenderError> {
-  const {
-    computePrograms,
-    graphicsPrograms,
-    buffers,
-    preparedGpuResources,
-    computeBindings,
-    graphicsBindings,
-    vertexData,
-    indexData,
-  } = createPreparedResourceMaps(
+  const maps = createPreparedResourceMaps(
     native?.admission ?? native?.shared,
     native?.admission === undefined ? undefined : native.shared,
     native?.admission !== undefined,
   );
   const ownerName = (name: string): string => native?.keys.get(name) ?? name;
-  const buckets =
-    native === undefined ? undefined : new Map<string, RenderFeatureResourceDeclaration[]>();
-  if (buckets !== undefined)
-    for (const resource of plan.resources) {
-      const bucket = buckets.get(resource.kind);
-      if (bucket === undefined) buckets.set(resource.kind, [resource]);
-      else bucket.push(resource);
-    }
+  const buckets = native === undefined ? undefined : bucketResourcesByKind(plan.resources);
   const byKind = <Kind extends RenderFeatureResourceDeclaration['kind']>(
     kind: Kind,
-  ): Extract<RenderFeatureResourceDeclaration, { readonly kind: Kind }>[] =>
-    buckets === undefined
-      ? plan.resources.filter(
-          (
-            resource,
-          ): resource is Extract<RenderFeatureResourceDeclaration, { readonly kind: Kind }> =>
-            resource.kind === kind,
-        )
-      : ((buckets.get(kind) ?? []) as Extract<
-          RenderFeatureResourceDeclaration,
-          { readonly kind: Kind }
-        >[]);
+  ): ResourceOfKind<Kind>[] => planResourcesOfKind(plan.resources, buckets, kind);
 
-  if (
-    gpu === undefined &&
-    plan.resources.some(
-      (resource) =>
-        isRenderFeatureSceneResource(resource) ||
-        ['compute-program', 'buffer', 'prepared-gpu-resource', 'compute-bindings'].includes(
-          resource.kind,
-        ),
-    )
-  ) {
-    return err(planFailure(slot));
+  if (gpu === undefined && planRequiresGpuSession(plan)) return err(planFailure(slot));
+  // Lanes run in dependency order: bindings and geometry read the programs,
+  // buffers and prepared resources admitted by earlier lanes.
+  let failure = prepareComputePrograms(slot, byKind('compute-program'), gpu, ownerName, maps);
+  if (failure !== undefined) return err(failure);
+  failure = prepareGraphicsPrograms(byKind('graphics-program'), graphics, ownerName, maps);
+  if (failure !== undefined) return err(failure);
+  failure = prepareBuffers(slot, byKind('buffer'), gpu, ownerName, maps);
+  if (failure !== undefined) return err(failure);
+  failure = preparePreparedGpuResources(
+    slot,
+    byKind('prepared-gpu-resource'),
+    gpu,
+    ownerName,
+    targetsForResource,
+    maps,
+  );
+  if (failure !== undefined) return err(failure);
+  failure = prepareSceneResources(slot, plan.resources, gpu, sceneResources, ownerName, maps);
+  if (failure !== undefined) return err(failure);
+  failure = prepareComputeBindings(
+    slot,
+    byKind('compute-bindings'),
+    gpu,
+    ownerName,
+    native === undefined,
+    maps,
+  );
+  if (failure !== undefined) return err(failure);
+  failure = prepareGraphicsBindings(
+    slot,
+    byKind('graphics-bindings'),
+    graphics,
+    ownerName,
+    targetsForResource,
+    maps,
+  );
+  if (failure !== undefined) return err(failure);
+  failure = prepareVertexData(slot, byKind('vertex-data'), graphics, ownerName, maps);
+  if (failure !== undefined) return err(failure);
+  failure = prepareIndexData(slot, byKind('index-data'), graphics, ownerName, maps);
+  if (failure !== undefined) return err(failure);
+  return ok({
+    computePrograms: maps.computePrograms,
+    graphicsPrograms: maps.graphicsPrograms,
+    buffers: maps.buffers,
+    preparedGpuResources: maps.preparedGpuResources,
+    computeBindings: maps.computeBindings,
+    graphicsBindings: maps.graphicsBindings,
+    vertexData: maps.vertexData,
+    indexData: maps.indexData,
+  });
+}
+
+function bucketResourcesByKind(
+  resources: readonly RenderFeatureResourceDeclaration[],
+): Map<string, RenderFeatureResourceDeclaration[]> {
+  const buckets = new Map<string, RenderFeatureResourceDeclaration[]>();
+  for (const resource of resources) {
+    const bucket = buckets.get(resource.kind);
+    if (bucket === undefined) buckets.set(resource.kind, [resource]);
+    else bucket.push(resource);
   }
-  for (const resource of byKind('compute-program')) {
+  return buckets;
+}
+
+function planResourcesOfKind<Kind extends RenderFeatureResourceDeclaration['kind']>(
+  resources: readonly RenderFeatureResourceDeclaration[],
+  buckets: ReadonlyMap<string, RenderFeatureResourceDeclaration[]> | undefined,
+  kind: Kind,
+): ResourceOfKind<Kind>[] {
+  return buckets === undefined
+    ? resources.filter((resource): resource is ResourceOfKind<Kind> => resource.kind === kind)
+    : ((buckets.get(kind) ?? []) as ResourceOfKind<Kind>[]);
+}
+
+/** Does any declaration need the GPU work session rather than graphics preparation alone? */
+function planRequiresGpuSession(plan: RenderFeatureWorkPlan): boolean {
+  return plan.resources.some(
+    (resource) =>
+      isRenderFeatureSceneResource(resource) ||
+      ['compute-program', 'buffer', 'prepared-gpu-resource', 'compute-bindings'].includes(
+        resource.kind,
+      ),
+  );
+}
+
+function prepareComputePrograms(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'compute-program'>[],
+  gpu: RenderFeatureGpuPrepareSession | undefined,
+  ownerName: (name: string) => string,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
     const prepared = gpu?.prepareProgram(
       ownerName(resource.name),
       resource.program,
       resource.preparePipelines,
     );
-    if (prepared === undefined) return err(planFailure(slot));
-    if (!prepared.ok) return prepared;
-    computePrograms.set(resource.name, prepared.value);
+    if (prepared === undefined) return planFailure(slot);
+    if (!prepared.ok) return prepared.error;
+    maps.computePrograms.set(resource.name, prepared.value);
   }
-  for (const resource of byKind('graphics-program')) {
+  return undefined;
+}
+
+function prepareGraphicsPrograms(
+  resources: readonly ResourceOfKind<'graphics-program'>[],
+  graphics: RenderFeatureGraphicsPrepare,
+  ownerName: (name: string) => string,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
     const prepared = graphics.preparePipeline(ownerName(resource.name), resource.program);
-    if (!prepared.ok) return prepared;
-    graphicsPrograms.set(resource.name, prepared.value);
+    if (!prepared.ok) return prepared.error;
+    maps.graphicsPrograms.set(resource.name, prepared.value);
   }
-  for (const resource of byKind('buffer')) {
+  return undefined;
+}
+
+function prepareBuffers(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'buffer'>[],
+  gpu: RenderFeatureGpuPrepareSession | undefined,
+  ownerName: (name: string) => string,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
     const prepared = gpu?.prepareBuffer(ownerName(resource.name), {
       size: resource.size,
       usage: resource.usage,
       ...(resource.data === undefined ? {} : { data: resource.data }),
       ...(resource.uploads === undefined ? {} : { uploads: resource.uploads }),
     });
-    if (prepared === undefined) return err(planFailure(slot));
-    if (!prepared.ok) return prepared;
-    buffers.set(resource.name, prepared.value);
+    if (prepared === undefined) return planFailure(slot);
+    if (!prepared.ok) return prepared.error;
+    maps.buffers.set(resource.name, prepared.value);
   }
-  for (const resource of byKind('prepared-gpu-resource')) {
-    if (gpu === undefined) return err(planFailure(slot));
+  return undefined;
+}
+
+function preparePreparedGpuResources(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'prepared-gpu-resource'>[],
+  gpu: RenderFeatureGpuPrepareSession | undefined,
+  ownerName: (name: string) => string,
+  targetsForResource: (name: string) => readonly RenderFeatureTargetHandle[],
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
+    if (gpu === undefined) return planFailure(slot);
     if (resource.resource.kind === 'buffer') {
       const prepared = gpu.prepareBufferResource(
         ownerName(resource.name),
@@ -802,66 +897,111 @@ function preparePlanResources(
           usage: resource.resource.usage ?? ['uniform'],
         },
       );
-      if (!prepared.ok) return prepared;
-      preparedGpuResources.set(resource.name, { kind: 'buffer', reference: prepared.value });
+      if (!prepared.ok) return prepared.error;
+      maps.preparedGpuResources.set(resource.name, { kind: 'buffer', reference: prepared.value });
       continue;
     }
     if (resource.resource.kind === 'texture-view') {
-      const logical =
-        resource.logicalTarget === undefined
-          ? undefined
-          : targetHandle(resource.logicalTarget, targetsForResource(ownerName(resource.name)));
-      if (
-        resource.logicalTarget !== undefined &&
-        (logical === undefined ||
-          (typeof logical !== 'string' &&
-            !isRenderFeatureTargetHandle(logical) &&
-            !isSceneDataTarget(logical)))
-      ) {
-        return err(planFailure(slot));
-      }
-      const prepared = gpu.prepareTextureView(
-        ownerName(resource.name),
+      const failure = preparePreparedTextureView(
+        slot,
+        resource,
         resource.resource.value as TextureView | undefined,
-        logical === undefined ? undefined : logical,
+        gpu,
+        ownerName(resource.name),
+        targetsForResource,
+        maps,
       );
-      if (!prepared.ok) return prepared;
-      preparedGpuResources.set(resource.name, {
-        kind: 'texture-view',
-        reference: prepared.value,
-      });
+      if (failure !== undefined) return failure;
       continue;
     }
     const prepared = gpu.prepareSampler(
       ownerName(resource.name),
       resource.resource.value as Sampler,
     );
-    if (!prepared.ok) return prepared;
-    preparedGpuResources.set(resource.name, { kind: 'sampler', reference: prepared.value });
+    if (!prepared.ok) return prepared.error;
+    maps.preparedGpuResources.set(resource.name, { kind: 'sampler', reference: prepared.value });
   }
-  for (const resource of plan.resources) {
+  return undefined;
+}
+
+/** Resolve a prepared texture view's optional logical target, then admit the view. */
+function preparePreparedTextureView(
+  slot: FeatureSlot,
+  resource: ResourceOfKind<'prepared-gpu-resource'>,
+  view: TextureView | undefined,
+  gpu: RenderFeatureGpuPrepareSession,
+  owner: string,
+  targetsForResource: (name: string) => readonly RenderFeatureTargetHandle[],
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  const logical =
+    resource.logicalTarget === undefined
+      ? undefined
+      : targetHandle(resource.logicalTarget, targetsForResource(owner));
+  if (
+    resource.logicalTarget !== undefined &&
+    (logical === undefined ||
+      (typeof logical !== 'string' &&
+        !isRenderFeatureTargetHandle(logical) &&
+        !isSceneDataTarget(logical)))
+  ) {
+    return planFailure(slot);
+  }
+  const prepared = gpu.prepareTextureView(owner, view, logical === undefined ? undefined : logical);
+  if (!prepared.ok) return prepared.error;
+  maps.preparedGpuResources.set(resource.name, {
+    kind: 'texture-view',
+    reference: prepared.value,
+  });
+  return undefined;
+}
+
+function prepareSceneResources(
+  slot: FeatureSlot,
+  resources: readonly RenderFeatureResourceDeclaration[],
+  gpu: RenderFeatureGpuPrepareSession | undefined,
+  sceneResources: RenderFeatureFrameInput['sceneResources'],
+  ownerName: (name: string) => string,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
     if (!isRenderFeatureSceneResource(resource)) continue;
-    if (gpu === undefined || sceneResources === undefined) return err(planFailure(slot));
+    if (gpu === undefined || sceneResources === undefined) return planFailure(slot);
     const scene = sceneResources.prepare(slot.feature.identity, resource);
     if ('buffer' in scene) {
       const prepared = gpu.prepareBufferResource(ownerName(resource.name), scene.buffer, {
         size: scene.size,
         usage: ['storage'],
       });
-      if (!prepared.ok) return prepared;
-      preparedGpuResources.set(resource.name, { kind: 'buffer', reference: prepared.value });
+      if (!prepared.ok) return prepared.error;
+      maps.preparedGpuResources.set(resource.name, { kind: 'buffer', reference: prepared.value });
       continue;
     }
     const prepared = gpu.prepareTextureView(ownerName(resource.name), scene.view, scene.target);
-    if (!prepared.ok) return prepared;
-    preparedGpuResources.set(resource.name, { kind: 'texture-view', reference: prepared.value });
+    if (!prepared.ok) return prepared.error;
+    maps.preparedGpuResources.set(resource.name, {
+      kind: 'texture-view',
+      reference: prepared.value,
+    });
   }
-  const namedBindingResources =
-    native === undefined ? undefined : { buffers, resources: preparedGpuResources };
-  for (const resource of byKind('compute-bindings')) {
-    const program = computePrograms.get(resource.program);
+  return undefined;
+}
+
+function prepareComputeBindings(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'compute-bindings'>[],
+  gpu: RenderFeatureGpuPrepareSession | undefined,
+  ownerName: (name: string) => string,
+  resolveEntries: boolean,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  const namedBindingResources = resolveEntries
+    ? undefined
+    : { buffers: maps.buffers, resources: maps.preparedGpuResources };
+  for (const resource of resources) {
+    const program = maps.computePrograms.get(resource.program);
     if (namedBindingResources !== undefined) {
-      if (program === undefined || gpu === undefined) return err(planFailure(slot));
+      if (program === undefined || gpu === undefined) return planFailure(slot);
       const prepared = gpu.prepareNamedBindings(
         ownerName(resource.name),
         {
@@ -870,95 +1010,123 @@ function preparePlanResources(
         },
         namedBindingResources,
       );
-      if (!prepared.ok) return prepared;
-      computeBindings.set(resource.name, prepared.value);
+      if (!prepared.ok) return prepared.error;
+      maps.computeBindings.set(resource.name, prepared.value);
       continue;
     }
-    const entries = resource.entries.map((entry) => {
-      const buffer = buffers.get(entry.resource);
-      const range = {
-        ...(entry.offset === undefined ? {} : { offset: entry.offset }),
-        ...(entry.size === undefined ? {} : { size: entry.size }),
-      };
-      if (buffer !== undefined) return { binding: entry.binding, buffer, ...range } as const;
-      const prepared = preparedGpuResources.get(entry.resource);
-      return prepared === undefined
-        ? undefined
-        : ({ binding: entry.binding, resource: prepared, ...range } as const);
-    });
+    const entries = resource.entries.map((entry) => resolveComputeBindingEntry(entry, maps));
     if (program === undefined || entries.some((entry) => entry === undefined)) {
-      return err(planFailure(slot));
+      return planFailure(slot);
     }
     const prepared = gpu?.prepareBindings(ownerName(resource.name), {
       program,
       entries: entries as NonNullable<(typeof entries)[number]>[],
     });
-    if (prepared === undefined) return err(planFailure(slot));
-    if (!prepared.ok) return prepared;
-    computeBindings.set(resource.name, prepared.value);
+    if (prepared === undefined) return planFailure(slot);
+    if (!prepared.ok) return prepared.error;
+    maps.computeBindings.set(resource.name, prepared.value);
   }
-  for (const resource of byKind('graphics-bindings')) {
-    const program = graphicsPrograms.get(resource.program);
-    if (program === undefined) return err(planFailure(slot));
+  return undefined;
+}
+
+/** Bind an entry to a declared buffer first, else to a prepared GPU resource. */
+function resolveComputeBindingEntry(
+  entry: ResourceOfKind<'compute-bindings'>['entries'][number],
+  maps: PreparedResourceMaps,
+) {
+  const buffer = maps.buffers.get(entry.resource);
+  const range = {
+    ...(entry.offset === undefined ? {} : { offset: entry.offset }),
+    ...(entry.size === undefined ? {} : { size: entry.size }),
+  };
+  if (buffer !== undefined) return { binding: entry.binding, buffer, ...range } as const;
+  const prepared = maps.preparedGpuResources.get(entry.resource);
+  return prepared === undefined
+    ? undefined
+    : ({ binding: entry.binding, resource: prepared, ...range } as const);
+}
+
+function prepareGraphicsBindings(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'graphics-bindings'>[],
+  graphics: RenderFeatureGraphicsPrepare,
+  ownerName: (name: string) => string,
+  targetsForResource: (name: string) => readonly RenderFeatureTargetHandle[],
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
+    const program = maps.graphicsPrograms.get(resource.program);
+    if (program === undefined) return planFailure(slot);
     const values: Record<string, unknown> = { ...resource.values };
     for (const [key, targetName] of Object.entries(resource.logicalTargets ?? {})) {
       const target = targetHandle(targetName, targetsForResource(ownerName(resource.name)));
-      if (target === undefined || typeof target === 'string') return err(planFailure(slot));
+      if (target === undefined || typeof target === 'string') return planFailure(slot);
       values[key] = target;
     }
     const prepared = graphics.prepareBindings(ownerName(resource.name), {
       pipeline: program,
       values,
     });
-    if (!prepared.ok) return prepared;
-    graphicsBindings.set(resource.name, prepared.value);
+    if (!prepared.ok) return prepared.error;
+    maps.graphicsBindings.set(resource.name, prepared.value);
   }
-  for (const resource of byKind('vertex-data')) {
+  return undefined;
+}
+
+function prepareVertexData(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'vertex-data'>[],
+  graphics: RenderFeatureGraphicsPrepare,
+  ownerName: (name: string) => string,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
     const descriptor =
       resource.buffer === undefined
         ? { layout: resource.layout, data: resource.data }
         : {
             layout: resource.layout,
-            buffer: buffers.get(resource.buffer),
+            buffer: maps.buffers.get(resource.buffer),
             ...(resource.offset === undefined ? {} : { offset: resource.offset }),
             ...(resource.size === undefined ? {} : { size: resource.size }),
           };
-    if ('buffer' in descriptor && descriptor.buffer === undefined) return err(planFailure(slot));
+    if ('buffer' in descriptor && descriptor.buffer === undefined) return planFailure(slot);
     const prepared = graphics.prepareVertexData(
       ownerName(resource.name),
       descriptor as import('./prepared-graphics').RenderFeatureVertexDataDescriptor,
     );
-    if (!prepared.ok) return prepared;
-    vertexData.set(resource.name, prepared.value);
+    if (!prepared.ok) return prepared.error;
+    maps.vertexData.set(resource.name, prepared.value);
   }
-  for (const resource of byKind('index-data')) {
+  return undefined;
+}
+
+function prepareIndexData(
+  slot: FeatureSlot,
+  resources: readonly ResourceOfKind<'index-data'>[],
+  graphics: RenderFeatureGraphicsPrepare,
+  ownerName: (name: string) => string,
+  maps: PreparedResourceMaps,
+): RenderError | undefined {
+  for (const resource of resources) {
     const descriptor =
       resource.buffer === undefined
         ? { format: resource.format, data: resource.data }
         : {
             format: resource.format,
-            buffer: buffers.get(resource.buffer),
+            buffer: maps.buffers.get(resource.buffer),
             ...(resource.offset === undefined ? {} : { offset: resource.offset }),
             ...(resource.size === undefined ? {} : { size: resource.size }),
           };
-    if ('buffer' in descriptor && descriptor.buffer === undefined) return err(planFailure(slot));
+    if ('buffer' in descriptor && descriptor.buffer === undefined) return planFailure(slot);
     const prepared = graphics.prepareIndexData(
       ownerName(resource.name),
       descriptor as import('./prepared-graphics').RenderFeatureIndexDataDescriptor,
     );
-    if (!prepared.ok) return prepared;
-    indexData.set(resource.name, prepared.value);
+    if (!prepared.ok) return prepared.error;
+    maps.indexData.set(resource.name, prepared.value);
   }
-  return ok({
-    computePrograms,
-    graphicsPrograms,
-    buffers,
-    preparedGpuResources,
-    computeBindings,
-    graphicsBindings,
-    vertexData,
-    indexData,
-  });
+  return undefined;
 }
 
 function projectDraw(
@@ -1783,20 +1951,122 @@ export function runRenderFeatureFrame(
     input.featureReadOnlyDepthBatchDiagnostic === true ? input.frameNumber : undefined,
     input.generation ?? 0,
   );
-  let preparationPendingFeatureIdentity: string | undefined;
-  let preparationPendingReason: FramePresentationPendingReason | undefined;
+  const batch = new FeatureFrameBatchBuilder(host, inputs, input);
+  const diagnostics = host.diagnostics();
+  for (const [order, feature] of host.features.entries()) {
+    if (!featureRunsThisFrame(diagnostics[order], feature, input.caps)) continue;
+    const transaction = host.beginPreparedFrame(
+      feature.identity,
+      input.generation ?? host.preparedGeneration,
+    );
+    if (transaction === undefined) continue;
+    new FeatureFramePreparation(batch, feature, order, transaction).run();
+  }
+  return batch.finish();
+}
+
+/** Disposed slots never run; disabled slots retry only once a missing capability appears. */
+function featureRunsThisFrame(
+  diagnostic: RenderFeatureDiagnostics | undefined,
+  feature: RenderFeature<unknown>,
+  caps: Readonly<RhiCaps>,
+): boolean {
+  if (diagnostic?.status === 'disposed') return false;
+  return !(
+    diagnostic?.status === 'disabled' &&
+    (diagnostic.latestError?.code !== 'render-feature-capability-missing' ||
+      missingCapability(feature, caps) === undefined)
+  );
+}
+
+interface FeatureFrameCallbacks {
+  readonly commitResources: () => void;
+  readonly submit: () => void;
+  readonly abort: () => void;
+}
+
+interface FeatureWorkProjection {
+  readonly planned: RenderFeaturePlannedFrame;
+  readonly projected: RenderFeaturePlanExecution;
+  readonly result: RenderFeatureFrameResult;
+  readonly effects: Map<string, PostProcessShaderEntry>;
+  readonly requiresGraphRebuild: boolean;
+}
+
+/** Frame-wide accumulation shared by every Feature in one Renderer frame. */
+class FeatureFrameBatchBuilder {
+  readonly stageEvents: RenderFeatureStageEvent[] = [];
+  readonly errors: RenderError[] = [];
+  readonly preparedResourceBatches: RenderFeaturePreparedResourceBatch[] = [];
+  readonly submittedWorks = new Set<RenderFeaturePlannedFrame>();
+  readonly callbacks: FeatureFrameCallbacks[] = [];
+  readonly results = new Map<string, RenderFeatureFrameResult>();
+  readonly postProcessIdentities = new Set<string>();
+  readonly featureHiddenEntityReports: RenderFeatureHiddenEntityReport[] = [];
+  readonly shared: RenderFeatureFrameResult;
+  private readonly heldResourcePrefixes: readonly string[];
+  private preparationPendingFeatureIdentity: string | undefined;
+  private preparationPendingReason: FramePresentationPendingReason | undefined;
+
+  constructor(
+    readonly host: RenderFeatureHost,
+    readonly inputs: readonly RenderFeatureFrameInput[],
+    readonly input: RenderFeatureFrameInput,
+  ) {
+    this.shared = this.makeResult('frame');
+    for (const view of inputs) {
+      if (this.results.has(featureScopeKey({ view: view.identity })))
+        throw new Error('duplicate render view identity');
+      const result = this.makeResult(featureScopeKey({ view: view.identity }));
+      (result.hiddenEntityReports as RenderFeatureHiddenEntityReport[]).push(
+        ...(view.hiddenEntityReports ?? []),
+      );
+    }
+    this.heldResourcePrefixes = inputs
+      .filter((view) => !view.render)
+      .map((view) => `${JSON.stringify([featureScopeKey({ view: view.identity })]).slice(0, -1)},`);
+  }
+
+  readonly belongsToHeldView = (name: string): boolean =>
+    this.heldResourcePrefixes.some((prefix) => name.startsWith(prefix));
+
+  get preparationPending(): boolean {
+    return this.preparationPendingFeatureIdentity !== undefined;
+  }
+
+  private makeResult(key: string): RenderFeatureFrameResult {
+    const plans: RenderFeaturePlannedFrame[] = [];
+    const submittedWorks = this.submittedWorks;
+    const result: RenderFeatureFrameResult = {
+      stageEvents: this.stageEvents,
+      errors: this.errors,
+      plans,
+      fullscreenEffects: new Map<string, PostProcessShaderEntry>(),
+      hiddenEntityReports: [],
+      postProcessIdentities: [],
+      preparedResourceBatches: [],
+      requiresPreparedResourceKey: false,
+      onSubmitted: () => {
+        for (const plan of plans) submittedWorks.add(plan);
+      },
+      onAborted: () => {},
+    };
+    this.results.set(key, result);
+    return result;
+  }
+
   // Capture only at the existing first blocker. Never consult a later inspection
   // or serialize a complete program/plan to explain a receipt.
-  const markPreparationPending = (
+  markPreparationPending(
     identity: string,
     preparationStage: NonNullable<FramePresentationPendingReason['preparationStage']>,
     error?: unknown,
     graphics?: { readonly pass: string; readonly shader?: string },
-  ) => {
-    if (preparationPendingFeatureIdentity !== undefined) return;
-    preparationPendingFeatureIdentity = identity;
+  ): void {
+    if (this.preparationPendingFeatureIdentity !== undefined) return;
+    this.preparationPendingFeatureIdentity = identity;
     const detail = error instanceof RenderFeaturePreparationFailedError ? error.detail : undefined;
-    preparationPendingReason = Object.freeze({
+    this.preparationPendingReason = Object.freeze({
       code: 'feature-preparation',
       featureIdentity: identity.slice(0, 256),
       preparationStage,
@@ -1814,61 +2084,105 @@ export function runRenderFeatureFrame(
             ...(graphics.shader === undefined ? {} : { shader: graphics.shader.slice(0, 256) }),
           }),
     });
-  };
-  const stageEvents: RenderFeatureStageEvent[] = [];
-  const errors: RenderError[] = [];
-  const preparedResourceBatches: RenderFeaturePreparedResourceBatch[] = [];
-  const submittedWorks = new Set<RenderFeaturePlannedFrame>();
-  const callbacks: { commitResources: () => void; submit: () => void; abort: () => void }[] = [];
-  const results = new Map<string, RenderFeatureFrameResult>();
-  const postProcessIdentities = new Set<string>();
-  const featureHiddenEntityReports: RenderFeatureHiddenEntityReport[] = [];
-  const makeResult = (key: string): RenderFeatureFrameResult => {
-    const plans: RenderFeaturePlannedFrame[] = [];
-    const fullscreenEffects = new Map<string, PostProcessShaderEntry>();
-    const hiddenEntityReports: RenderFeatureHiddenEntityReport[] = [];
-    const result: RenderFeatureFrameResult = {
-      stageEvents,
-      errors,
-      plans,
-      fullscreenEffects,
-      hiddenEntityReports,
-      postProcessIdentities: [],
-      preparedResourceBatches: [],
-      requiresPreparedResourceKey: false,
-      onSubmitted: () => {
-        for (const plan of plans) submittedWorks.add(plan);
-      },
-      onAborted: () => {},
-    };
-    results.set(key, result);
-    return result;
-  };
-  const shared = makeResult('frame');
-  for (const view of inputs) {
-    if (results.has(featureScopeKey({ view: view.identity })))
-      throw new Error('duplicate render view identity');
-    const result = makeResult(featureScopeKey({ view: view.identity }));
-    (result.hiddenEntityReports as RenderFeatureHiddenEntityReport[]).push(
-      ...(view.hiddenEntityReports ?? []),
-    );
   }
-  const heldResourcePrefixes = inputs
-    .filter((view) => !view.render)
-    .map((view) => `${JSON.stringify([featureScopeKey({ view: view.identity })]).slice(0, -1)},`);
-  const belongsToHeldView = (name: string) =>
-    heldResourcePrefixes.some((prefix) => name.startsWith(prefix));
-  const diagnostics = host.diagnostics();
-  for (const [order, feature] of host.features.entries()) {
-    const diagnostic = diagnostics[order];
-    if (diagnostic?.status === 'disposed') continue;
-    if (
-      diagnostic?.status === 'disabled' &&
-      (diagnostic.latestError?.code !== 'render-feature-capability-missing' ||
-        missingCapability(feature, input.caps) === undefined)
-    )
-      continue;
-    const slot: FeatureSlot = {
+
+  finish(): RenderFeatureFrameBatch {
+    this.shareFrameFullscreenEffects();
+    this.publishFrameSummaries();
+    const callbacks = this.callbacks;
+    let closed = false;
+    return {
+      frame: this.shared,
+      views: new Map(
+        this.inputs.map((view) => {
+          const result = this.results.get(featureScopeKey({ view: view.identity }));
+          if (result === undefined) throw new Error('Renderer Feature frame omitted a view');
+          return [view.identity, result];
+        }),
+      ),
+      preparedResourceBatches: this.preparedResourceBatches,
+      commitPreparedResources: () => {
+        if (closed) return;
+        drainFeatureFinalizers(callbacks.map((callback) => callback.commitResources));
+      },
+      onSubmitted: () => {
+        if (closed) return;
+        closed = true;
+        drainFeatureFinalizers([
+          ...callbacks.map((callback) => callback.commitResources),
+          ...callbacks.map((callback) => callback.submit),
+        ]);
+      },
+      onAborted: () => {
+        if (closed) return;
+        closed = true;
+        drainFeatureFinalizers(callbacks.map((callback) => callback.abort));
+      },
+    };
+  }
+
+  // Immutable frame declarations (for example fullscreen shader registrations)
+  // are visible in each view without executing shared passes a second time.
+  private shareFrameFullscreenEffects(): void {
+    for (const result of this.results.values()) {
+      if (result === this.shared) continue;
+      for (const [key, value] of this.shared.fullscreenEffects)
+        if (!result.fullscreenEffects.has(key))
+          (result.fullscreenEffects as Map<string, PostProcessShaderEntry>).set(key, value);
+    }
+  }
+
+  private publishFrameSummaries(): void {
+    for (const result of this.results.values())
+      Object.assign(result, {
+        ...(this.preparationPendingFeatureIdentity === undefined
+          ? {}
+          : {
+              preparationPending: true,
+              preparationPendingFeatureIdentity: this.preparationPendingFeatureIdentity,
+              preparationPendingReason: this.preparationPendingReason,
+            }),
+        postProcessIdentities: Object.freeze([...this.postProcessIdentities]),
+        hiddenEntityReports: mergeHiddenEntityReports([
+          ...result.hiddenEntityReports,
+          ...this.featureHiddenEntityReports,
+        ]),
+      });
+  }
+}
+
+/** One Feature's extract → plan → prepare → project pass within a frame batch. */
+class FeatureFramePreparation {
+  private readonly identity: string;
+  private readonly input: RenderFeatureFrameInput;
+  private readonly slot: FeatureSlot;
+  private readonly gpu: RenderFeatureGpuPrepareSession | undefined;
+  private readonly reports: RenderFeatureHiddenEntityReport[] = [];
+  private readonly resolvers: PreparedGraphicsResolver[] = [];
+  private readonly projections: FeatureWorkProjection[] = [];
+  private readonly nativeAdmissions = new Map<
+    RenderFeatureNativeResourceAdmission,
+    ReturnType<typeof createNativeResourceAdmission>
+  >();
+  /** Producer frame data, assigned once extraction succeeds. */
+  private source: unknown;
+  private requiresPreparation = false;
+  private nativePlanningOpen = true;
+  private nativeWork: readonly RenderFeatureWork[] | undefined;
+  private nativeFailure: unknown;
+  private admittedResources: ReturnType<typeof createNativeResourceAdmission> | undefined;
+  private sharedPrepared: PreparedPlanResources | undefined;
+  private scopeResources: ReturnType<typeof createPreparedResourceScopes> | undefined;
+
+  constructor(
+    private readonly batch: FeatureFrameBatchBuilder,
+    private readonly feature: RenderFeature<unknown>,
+    private readonly order: number,
+    private readonly transaction: PreparedGraphicsTransaction,
+  ) {
+    this.identity = feature.identity;
+    this.input = batch.input;
+    this.slot = {
       feature,
       order,
       preparedResourceBatches: new Set(),
@@ -1876,83 +2190,88 @@ export function runRenderFeatureFrame(
       status: 'active',
       latestError: undefined,
     };
-    const identity = feature.identity;
-    const transaction = host.beginPreparedFrame(
-      identity,
-      input.generation ?? host.preparedGeneration,
-    );
-    if (transaction === undefined) continue;
-    const gpu = input.gpuWork?.beginFeature(
-      identity,
-      input.generation ?? 0,
+    this.gpu = this.input.gpuWork?.beginFeature(
+      this.identity,
+      this.input.generation ?? 0,
       feature.shaderModuleMode,
     );
-    const abortResources = () => {
-      drainFeatureFinalizers([
-        () => transaction.abort(),
-        () => {
-          const aborted = gpu?.abortFrame();
-          if (aborted !== undefined && !aborted.ok) errors.push(aborted.error);
-        },
-      ]);
-    };
-    // A rejected producer must return its failure as data so already prepared
-    // siblings still reach the Renderer submission/abort barrier.
-    const cleanupPreparation = (actions: readonly (() => void)[], stage: 'extract' | 'plan') => {
-      try {
-        drainFeatureFinalizers(actions);
-      } catch (cause) {
-        recordFailure(slot, stage, cause, errors);
-      }
-    };
-    const reports: RenderFeatureHiddenEntityReport[] = [];
+  }
+
+  run(): void {
     const extracted = invokeStage(
-      slot,
+      this.slot,
       'extract',
-      () => {
-        const published = input.publishedFeatures?.find((row) => row.identity === identity);
-        return published === undefined
-          ? feature.extract({
-              worlds: input.worlds,
-              owner: input.owner,
-              frameNumber: input.frameNumber,
-              caps: input.caps,
-              ...renderMaterialContext(input.caps, input.limits),
-              views: inputs.map((view) => ({
-                identity: view.identity,
-                render: view.render,
-                ...(view.selectedCamera === undefined
-                  ? {}
-                  : { selectedCamera: view.selectedCamera }),
-                ...(view.selectedView === undefined ? {} : { selectedView: view.selectedView }),
-                ...(view.frame === undefined ? {} : { frame: view.frame }),
-                ...(view.frameSize === undefined ? {} : { frameSize: view.frameSize }),
-                ...(view.motionBlur === undefined ? {} : { motionBlur: view.motionBlur }),
-              })),
-              ...(input.visibilitySnapshots === undefined
-                ? {}
-                : { visibilitySnapshots: input.visibilitySnapshots }),
-              reportHiddenEntity: (report) => reports.push(report),
-            })
-          : ok(published.data);
-      },
-      stageEvents,
-      errors,
+      () => this.extract(),
+      this.batch.stageEvents,
+      this.batch.errors,
     );
     if (!extracted.ok) {
-      cleanupPreparation([abortResources], 'extract');
-      host.setStatus(identity, 'failed', slot.latestError);
-      continue;
+      this.cleanupPreparation([() => this.abortResources()], 'extract');
+      this.batch.host.setStatus(this.identity, 'failed', this.slot.latestError);
+      return;
     }
-    const publishInspection = () => {
-      if (
-        typeof extracted.value === 'object' &&
-        extracted.value !== null &&
-        'inspection' in extracted.value
-      )
-        host.setInspection(identity, (extracted.value as { inspection?: unknown }).inspection);
-    };
-    const views = inputs.map((view) => ({
+    this.source = extracted.value;
+    const views = this.planViews();
+    let sourceRequiresPreparation: boolean;
+    try {
+      sourceRequiresPreparation = this.feature.requiresPreparation?.(this.source) === true;
+    } catch (cause) {
+      this.failSourceGuard(cause);
+      return;
+    }
+    const declared = this.declarePlan(views);
+    if (declared.ok) this.consumeNativePlan(declared.value, views);
+    const declaredWork = this.nativeWork ?? (declared.ok ? declared.value.work : []);
+    const nativeRequiresPreparation = this.verifyNativeAdmissions(declared, declaredWork);
+    this.requiresPreparation =
+      sourceRequiresPreparation ||
+      nativeRequiresPreparation ||
+      (declared.ok && workRequestsPipelinePreparation(declaredWork));
+    if (!declared.ok) {
+      this.fail(
+        undefined,
+        declared.error,
+        declared.error instanceof RenderFeaturePreparationFailedError
+          ? nativeRequiresPreparation
+            ? 'native-admission'
+            : 'resource-preparation'
+          : 'source-plan',
+      );
+      return;
+    }
+    if (this.nativeFailure !== undefined) {
+      this.fail(this.nativeFailure);
+      return;
+    }
+    try {
+      this.prepareAndPublish(declared.value, declaredWork);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private extract(): Result<unknown, RenderError> {
+    const input = this.input;
+    const published = input.publishedFeatures?.find((row) => row.identity === this.identity);
+    if (published !== undefined) return ok(published.data);
+    return this.feature.extract({
+      worlds: input.worlds,
+      owner: input.owner,
+      frameNumber: input.frameNumber,
+      caps: input.caps,
+      ...renderMaterialContext(input.caps, input.limits),
+      views: this.batch.inputs.map(extractView),
+      ...(input.visibilitySnapshots === undefined
+        ? {}
+        : { visibilitySnapshots: input.visibilitySnapshots }),
+      reportHiddenEntity: (report) => this.reports.push(report),
+    });
+  }
+
+  private planViews() {
+    const input = this.input;
+    const generation = this.transaction.generation;
+    return this.batch.inputs.map((view) => ({
       identity: view.identity,
       render: view.render,
       frame: { frameNumber: input.frameNumber, ...view.frameSize },
@@ -1961,40 +2280,94 @@ export function runRenderFeatureFrame(
       sceneData:
         view.sceneData ??
         createSceneDataCatalog({
-          featureIdentity: identity,
-          generation: transaction.generation,
-          planIdentity: `${identity}:${view.identity}:${transaction.generation}`,
+          featureIdentity: this.identity,
+          generation,
+          planIdentity: `${this.identity}:${view.identity}:${generation}`,
           rgba16floatRenderable: input.caps.rgba16floatRenderable === true,
         }),
     }));
-    let sourceRequiresPreparation = false;
-    const nativeAdmissions = new Map<
-      RenderFeatureNativeResourceAdmission,
-      ReturnType<typeof createNativeResourceAdmission>
-    >();
+  }
+
+  private abortResources(): void {
+    drainFeatureFinalizers([
+      () => this.transaction.abort(),
+      () => {
+        const aborted = this.gpu?.abortFrame();
+        if (aborted !== undefined && !aborted.ok) this.batch.errors.push(aborted.error);
+      },
+    ]);
+  }
+
+  private abortProducerFrame(): void {
+    this.feature.onFrameAborted?.(this.source);
+  }
+
+  // A rejected producer must return its failure as data so already prepared
+  // siblings still reach the Renderer submission/abort barrier.
+  private cleanupPreparation(actions: readonly (() => void)[], stage: 'extract' | 'plan'): void {
     try {
-      sourceRequiresPreparation = feature.requiresPreparation?.(extracted.value) === true;
+      drainFeatureFinalizers(actions);
     } catch (cause) {
-      // A declared readiness guard cannot fail open before plan resources exist.
-      markPreparationPending(identity, 'source-guard');
-      recordFailure(slot, 'plan', cause, errors);
-      cleanupPreparation(
-        [
-          () => input.sceneResources?.abortFeature(identity),
-          abortResources,
-          () => feature.onFrameAborted?.(extracted.value),
-        ],
-        'plan',
-      );
-      host.setStatus(identity, 'failed', slot.latestError);
-      continue;
+      recordFailure(this.slot, stage, cause, this.batch.errors);
     }
-    let nativePlanningOpen = true;
+  }
+
+  /** A declared readiness guard cannot fail open before plan resources exist. */
+  private failSourceGuard(cause: unknown): void {
+    this.batch.markPreparationPending(this.identity, 'source-guard');
+    recordFailure(this.slot, 'plan', cause, this.batch.errors);
+    this.cleanupPreparation(
+      [
+        () => this.input.sceneResources?.abortFeature(this.identity),
+        () => this.abortResources(),
+        () => this.abortProducerFrame(),
+      ],
+      'plan',
+    );
+    this.batch.host.setStatus(this.identity, 'failed', this.slot.latestError);
+  }
+
+  private fail(
+    error?: unknown,
+    pendingError: unknown = error,
+    stage: NonNullable<FramePresentationPendingReason['preparationStage']> = pendingError instanceof
+    RenderFeaturePreparationFailedError
+      ? 'resource-preparation'
+      : 'plan-projection',
+  ): void {
+    if (this.requiresPreparation)
+      this.batch.markPreparationPending(this.identity, stage, pendingError);
+    if (error !== undefined) recordFailure(this.slot, 'plan', error, this.batch.errors);
+    this.cleanupPreparation(
+      [
+        () => this.input.sceneResources?.abortFeature(this.identity),
+        () => this.abortResources(),
+        ...this.resolvers.map((resolver) => () => {
+          const released = resolver.release();
+          if (!released.ok) throw released.error;
+        }),
+        () => this.abortProducerFrame(),
+      ],
+      'plan',
+    );
+    this.batch.host.setStatus(this.identity, 'failed', this.slot.latestError);
+  }
+
+  private publishInspection(): void {
+    const source = this.source;
+    if (typeof source === 'object' && source !== null && 'inspection' in source)
+      this.batch.host.setInspection(this.identity, (source as { inspection?: unknown }).inspection);
+  }
+
+  private declarePlan(
+    views: RenderFeaturePlanContext['views'],
+  ): Result<RenderFeaturePlan, RenderError> {
+    const input = this.input;
     const declared = invokeStage(
-      slot,
+      this.slot,
       'plan',
       () =>
-        feature.plan(extracted.value, {
+        this.feature.plan(this.source, {
           getFeatureShaderSource: input.getFeatureShaderSource,
           resolveAsset:
             input.resolveAsset ??
@@ -2008,549 +2381,590 @@ export function runRenderFeatureFrame(
           ...(input.limits === undefined ? {} : { limits: input.limits }),
           ...renderMaterialContext(input.caps, input.limits),
           frame: { frameNumber: input.frameNumber },
-          generation: transaction.generation,
-          createNativePlan: () => {
-            const retained =
-              gpu === undefined || missingCapability(feature, input.caps) !== undefined
-                ? undefined
-                : createNativeResourceAdmission({
-                    gpu,
-                    frame: input.frameNumber,
-                    isActive: () => nativePlanningOpen,
-                    prepare: (resources, keys, inherited) =>
-                      preparePlanResources(
-                        slot,
-                        { resources, passes: [] },
-                        createPreparedGraphicsPrepare(transaction, true),
-                        gpu,
-                        () => [],
-                        input.sceneResources,
-                        { keys, admission: inherited },
-                      ),
-                  });
-            const builder = createRenderFeatureNativePlanBuilder(
-              {
-                featureIdentity: identity,
-                frameNumber: input.frameNumber,
-                generation: transaction.generation,
-                transaction,
-                views,
-              },
-              retained?.admission,
-            );
-            if (retained !== undefined && builder.resourceAdmission !== undefined)
-              nativeAdmissions.set(builder.resourceAdmission, retained);
-            return builder;
-          },
+          generation: this.transaction.generation,
+          createNativePlan: () => this.createNativePlan(views),
           views,
           ...(input.materialShaderBindingContract === undefined
             ? {}
             : { materialShaderBindingContract: input.materialShaderBindingContract }),
         }),
-      stageEvents,
-      errors,
+      this.batch.stageEvents,
+      this.batch.errors,
     );
-    nativePlanningOpen = false;
-    const resolvers: PreparedGraphicsResolver[] = [];
-    const featurePlans: RenderFeaturePlannedFrame[] = [];
-    const projections: {
-      planned: RenderFeaturePlannedFrame;
-      projected: RenderFeaturePlanExecution;
-      result: RenderFeatureFrameResult;
-      effects: Map<string, PostProcessShaderEntry>;
-      requiresGraphRebuild: boolean;
-    }[] = [];
-    let nativeWork: readonly import('./plan').RenderFeatureWork[] | undefined;
-    let nativeFailure: unknown;
-    // The private wrapper identity is the protocol. Raw author objects never
-    // acquire a new property read (including an unknown `native` accessor).
-    if (declared.ok && isRenderFeatureNativePlan(declared.value)) {
-      try {
-        nativeWork = consumeRenderFeatureNativePlan(declared.value, {
-          featureIdentity: identity,
-          frameNumber: input.frameNumber,
-          generation: transaction.generation,
-          transaction,
-          views,
-        });
-        if (nativeWork === undefined)
-          nativeFailure = new Error('Invalid native Feature frame authority');
-      } catch (cause) {
-        nativeFailure = cause;
-      }
+    this.nativePlanningOpen = false;
+    return declared;
+  }
+
+  private createNativePlan(views: RenderFeaturePlanContext['views']) {
+    const gpu = this.gpu;
+    const retained =
+      gpu === undefined || missingCapability(this.feature, this.input.caps) !== undefined
+        ? undefined
+        : createNativeResourceAdmission({
+            gpu,
+            frame: this.input.frameNumber,
+            isActive: () => this.nativePlanningOpen,
+            prepare: (resources, keys, inherited) =>
+              preparePlanResources(
+                this.slot,
+                { resources, passes: [] },
+                createPreparedGraphicsPrepare(this.transaction, true),
+                gpu,
+                () => [],
+                this.input.sceneResources,
+                { keys, admission: inherited },
+              ),
+          });
+    const builder = createRenderFeatureNativePlanBuilder(
+      {
+        featureIdentity: this.identity,
+        frameNumber: this.input.frameNumber,
+        generation: this.transaction.generation,
+        transaction: this.transaction,
+        views,
+      },
+      retained?.admission,
+    );
+    if (retained !== undefined && builder.resourceAdmission !== undefined)
+      this.nativeAdmissions.set(builder.resourceAdmission, retained);
+    return builder;
+  }
+
+  // The private wrapper identity is the protocol. Raw author objects never
+  // acquire a new property read (including an unknown `native` accessor).
+  private consumeNativePlan(
+    plan: RenderFeaturePlan,
+    views: RenderFeaturePlanContext['views'],
+  ): void {
+    if (!isRenderFeatureNativePlan(plan)) return;
+    try {
+      this.nativeWork = consumeRenderFeatureNativePlan(plan, {
+        featureIdentity: this.identity,
+        frameNumber: this.input.frameNumber,
+        generation: this.transaction.generation,
+        transaction: this.transaction,
+        views,
+      });
+      if (this.nativeWork === undefined)
+        this.nativeFailure = new Error('Invalid native Feature frame authority');
+    } catch (cause) {
+      this.nativeFailure = cause;
     }
-    const declaredWork = nativeWork ?? (declared.ok ? declared.value.work : []);
+  }
+
+  /** Did any native admission request preparation? Records scope violations as failure. */
+  private verifyNativeAdmissions(
+    declared: Result<RenderFeaturePlan, RenderError>,
+    declaredWork: readonly RenderFeatureWork[],
+  ): boolean {
     const nativeAdmission =
-      declared.ok && nativeWork !== undefined
+      declared.ok && this.nativeWork !== undefined
         ? renderFeatureNativeResourceAdmission(declared.value)
         : undefined;
-    const admittedResources =
-      nativeAdmission === undefined ? undefined : nativeAdmissions.get(nativeAdmission);
+    this.admittedResources =
+      nativeAdmission === undefined ? undefined : this.nativeAdmissions.get(nativeAdmission);
     let nativeRequiresPreparation = false;
-    for (const admission of nativeAdmissions.values()) {
+    for (const admission of this.nativeAdmissions.values()) {
       nativeRequiresPreparation ||= admission.requestsPreparation();
       for (const scope of admission.usedScopes())
         if (
-          admission !== admittedResources ||
+          admission !== this.admittedResources ||
           !declaredWork.some((work) => featureScopeKey(work.scope) === scope)
         )
-          nativeFailure = new Error('Native resource admission must finish its exact work scopes');
-    }
-    const requiresPreparation =
-      sourceRequiresPreparation ||
-      nativeRequiresPreparation ||
-      (declared.ok &&
-        declaredWork.some((work) =>
-          work.resources.some(
-            (resource) =>
-              (resource.kind === 'graphics-program' &&
-                resource.program.preparePipelines === true) ||
-              (resource.kind === 'compute-program' && resource.preparePipelines === true),
-          ),
-        ));
-    const fail = (
-      error?: unknown,
-      pendingError: unknown = error,
-      stage: NonNullable<
-        FramePresentationPendingReason['preparationStage']
-      > = pendingError instanceof RenderFeaturePreparationFailedError
-        ? 'resource-preparation'
-        : 'plan-projection',
-    ) => {
-      if (requiresPreparation) markPreparationPending(identity, stage, pendingError);
-      if (error !== undefined) recordFailure(slot, 'plan', error, errors);
-      cleanupPreparation(
-        [
-          () => input.sceneResources?.abortFeature(identity),
-          abortResources,
-          ...resolvers.map((resolver) => () => {
-            const released = resolver.release();
-            if (!released.ok) throw released.error;
-          }),
-          () => feature.onFrameAborted?.(extracted.value),
-        ],
-        'plan',
-      );
-      host.setStatus(identity, 'failed', slot.latestError);
-    };
-    if (!declared.ok) {
-      fail(
-        undefined,
-        declared.error,
-        declared.error instanceof RenderFeaturePreparationFailedError
-          ? nativeRequiresPreparation
-            ? 'native-admission'
-            : 'resource-preparation'
-          : 'source-plan',
-      );
-      continue;
-    }
-    if (nativeFailure !== undefined) {
-      fail(nativeFailure);
-      continue;
-    }
-    try {
-      publishInspection();
-      const workResources =
-        nativeWork === undefined
-          ? resolveFeatureWorkResources(declaredWork)
-          : resolveNativeFeatureWorkResources(nativeWork);
-      host.retainPlanScopes?.(
-        identity,
-        workResources.map((row) => featureScopeKey(row.work.scope)),
-      );
-      const targetInputs = new Map<string, readonly RenderFeatureTargetHandle[]>();
-      for (const row of workResources) {
-        const workScope = row.work.scope;
-        if (workScope !== 'frame' && row.work.resources.some(isRenderFeatureSceneResource))
-          throw new Error('Scene inputs belong to frame-scoped work');
-        const view =
-          workScope === 'frame'
-            ? undefined
-            : inputs.find((view) => view.identity === workScope.view);
-        if (row.work.scope !== 'frame' && view === undefined)
-          throw new Error('Feature work references a missing view');
-        if (view?.render === false && row.work.passes.length > 0)
-          throw new Error('held views cannot declare render work');
-        if (nativeWork === undefined) {
-          const frozen = freezeRenderFeaturePlan(
-            identity,
-            row.closure,
-            logicalTargets(view?.targets ?? []),
+          this.nativeFailure = new Error(
+            'Native resource admission must finish its exact work scopes',
           );
-          if (!frozen.ok) throw frozen.error;
-        }
-        for (const resource of row.resources) {
-          const name = row.native ? row.keys.get(resource.name) : resource.name;
-          if (name === undefined) throw new Error('Missing native resource namespace');
-          targetInputs.set(name, view?.targets ?? []);
-        }
-      }
-      const missing = missingCapability(feature, input.caps);
-      if (missing !== undefined && workResources.some((row) => hasActivePlan(row.closure))) {
-        if (requiresPreparation) markPreparationPending(identity, 'capability');
-        const failure = new RenderFeatureCapabilityMissingError(identity, order, missing);
-        errors.push(failure);
-        cleanupPreparation(
-          [abortResources, () => feature.onFrameAborted?.(extracted.value)],
-          'plan',
-        );
-        host.setStatus(identity, 'disabled', errorDescriptor(failure));
-        continue;
-      }
-      const prepared =
-        nativeWork === undefined
-          ? preparePlanResources(
-              slot,
-              { resources: workResources.flatMap((row) => row.resources), passes: [] },
-              createPreparedGraphicsPrepare(transaction),
-              gpu,
-              (name) => targetInputs.get(name) ?? [],
-              input.sceneResources,
-            )
-          : undefined;
-      if (prepared !== undefined && !prepared.ok) throw prepared.error;
-      let sharedPrepared: PreparedPlanResources | undefined;
-      let scopeResources: ReturnType<typeof createPreparedResourceScopes> | undefined;
-      for (const row of workResources) {
-        const scope = row.work.scope;
-        const viewInput =
-          scope === 'frame' ? undefined : inputs.find((view) => view.identity === scope.view);
-        const result = results.get(featureScopeKey(scope));
-        if (result === undefined) throw new Error('unregistered Feature work scope');
-        const effects = new Map<string, PostProcessShaderEntry>();
-        for (const resource of row.closure.resources) {
-          if (resource.kind !== 'fullscreen-program') continue;
-          const { kind: _kind, name, ...entry } = resource;
-          effects.set(name, entry);
-          if (!effects.has(identity)) effects.set(identity, entry);
-        }
-        let scoped: PreparedPlanResources;
-        if (row.native) {
-          const admission = admittedResources?.prepared(scope);
-          const localPrepared = preparePlanResources(
-            slot,
-            { resources: row.resources, passes: [] },
-            createPreparedGraphicsPrepare(transaction, true),
-            gpu,
+    }
+    return nativeRequiresPreparation;
+  }
+
+  private prepareAndPublish(
+    plan: RenderFeaturePlan,
+    declaredWork: readonly RenderFeatureWork[],
+  ): void {
+    this.publishInspection();
+    const workResources =
+      this.nativeWork === undefined
+        ? resolveFeatureWorkResources(declaredWork)
+        : resolveNativeFeatureWorkResources(this.nativeWork);
+    this.batch.host.retainPlanScopes?.(
+      this.identity,
+      workResources.map((row) => featureScopeKey(row.work.scope)),
+    );
+    const targetInputs = this.validateWorkTargets(workResources);
+    if (this.disableForMissingCapability(workResources)) return;
+    const prepared =
+      this.nativeWork === undefined
+        ? preparePlanResources(
+            this.slot,
+            { resources: workResources.flatMap((row) => row.resources), passes: [] },
+            createPreparedGraphicsPrepare(this.transaction),
+            this.gpu,
             (name) => targetInputs.get(name) ?? [],
-            input.sceneResources,
-            {
-              keys: row.keys,
-              ...(sharedPrepared === undefined ? {} : { shared: sharedPrepared }),
-              ...(admission === undefined ? {} : { admission }),
-            },
-          );
-          if (!localPrepared.ok) throw localPrepared.error;
-          scoped = localPrepared.value;
-          if (scope === 'frame') sharedPrepared = scoped;
-        } else {
-          if (prepared === undefined || !prepared.ok)
-            throw new Error('Missing raw Feature preparation');
-          if (scopeResources === undefined)
-            scopeResources = createPreparedResourceScopes(prepared.value);
-          scoped = scopeResources(row.keys);
-        }
-        const resolver = (viewInput ?? input).createPreparedGraphicsResolver?.({
-          featureIdentity: identity,
-          order,
-          generation: transaction.generation,
-          ...(feature.shaderModuleMode === undefined
-            ? {}
-            : { shaderModuleMode: feature.shaderModuleMode }),
-          transaction,
-          fullscreenEffects: effects,
-          lookup: (reference) => transaction.lookup(reference),
-        });
-        if (resolver !== undefined) resolvers.push(resolver);
-        let projectionPlan = row.closure;
-        if (
-          row.native &&
-          scope !== 'frame' &&
-          viewInput?.featureReadOnlyDepthBatchDiagnostic === true &&
-          resolver !== undefined &&
-          renderFeatureNativeDepthBatchPermission(declared.value)
-        ) {
-          const readOnlyPrograms = new Set<string>();
-          for (const [name, reference] of scoped.graphicsPrograms) {
-            const descriptor = transaction.lookup(reference)?.descriptor;
-            if (
-              descriptor?.kind !== 'pipeline' ||
-              descriptor.renderState?.depthWriteEnabled !== false ||
-              descriptor.renderState.stencil !== undefined
-            )
-              continue;
-            const current = resolver.resolve(reference);
-            if (
-              current.ok &&
-              current.value.kind === 'pipeline' &&
-              current.value.writesDepth === false
-            )
-              readOnlyPrograms.add(name);
-          }
-          projectionPlan = {
-            ...projectionPlan,
-            passes: coalesceNativeReadOnlyDepthPasses(projectionPlan.passes, readOnlyPrograms),
-          };
-        }
-        const projected = projectPlanPasses(
-          slot,
-          projectionPlan,
-          scoped,
-          gpu,
-          viewInput?.targets ?? [],
-          graphicsValidator(identity, transaction, true),
-          resolver === undefined
-            ? undefined
-            : (descriptor, passName) =>
-                resolveGraphicsSnapshot(
-                  resolver,
-                  descriptor,
-                  transaction.generation,
-                  (name) => {
-                    const owned = scoped.buffers.get(name);
-                    const borrowed = scoped.preparedGpuResources.get(name);
-                    const reference =
-                      owned ?? (borrowed?.kind === 'buffer' ? borrowed.reference : undefined);
-                    return reference === undefined ? undefined : gpu?.resolveBuffer(reference);
-                  },
-                  row.native === true,
-                  (reference, error) => {
-                    if (
-                      preparationPendingFeatureIdentity !== undefined ||
-                      !requiresPreparation ||
-                      !(error instanceof RenderFeaturePreparationFailedError) ||
-                      error.detail.reason !== 'pipeline-pending'
-                    )
-                      return;
-                    const item = transaction.lookup(reference);
-                    markPreparationPending(identity, 'graphics-pipeline', error, {
-                      pass: passName,
-                      ...(item?.descriptor?.kind === 'pipeline'
-                        ? { shader: item.descriptor.shader }
-                        : {}),
-                    });
-                  },
-                ),
-        );
-        if (!projected.ok) throw projected.error;
-        if (
-          row.native &&
-          scope !== 'frame' &&
-          viewInput?.featureReadOnlyDepthBatchDiagnostic === true
-        )
-          host.recordDepthBatchInspection?.(
-            row.closure.passes.length,
-            projectionPlan.passes.length,
-            projected.value.passes.length,
-          );
-        if (requiresPreparation && projected.value.passes.length !== projectionPlan.passes.length)
-          markPreparationPending(identity, 'plan-projection');
-        if (scope === 'frame' && projected.value.passes.length !== row.work.passes.length)
-          throw new RenderFeaturePreparationFailedError(
-            identity,
-            order,
-            'frame',
-            'pipeline',
-            'shared-work',
-            'pipeline-pending',
-            'next-frame',
-          );
-        const scopeKey = featureScopeKey(scope);
-        const planned: RenderFeaturePlannedFrame = Object.freeze({
-          featureIdentity: identity,
-          scope,
-          generation: transaction.generation,
-          signature: row.native
-            ? (host.recordNativeExecutionSignature?.(
-                identity,
-                { ...projected.value, scope: scopeKey },
-                scopeKey,
-              ) ?? renderFeaturePlanSignature(projectionPlan))
-            : (host.recordPlanSignature?.(identity, row.closure, scopeKey) ??
-              renderFeaturePlanSignature(row.closure)),
-          plan: projectionPlan,
-          ...(feature.placement === undefined ? {} : { placement: feature.placement }),
-          ...(feature.viewGraph === undefined ? {} : { viewGraph: feature.viewGraph }),
-        });
-        featurePlans.push(planned);
-        projections.push({
-          planned,
-          projected: { ...projected.value, scope: scopeKey },
-          result,
-          effects,
-          requiresGraphRebuild:
-            projected.value.passes.length !== projectionPlan.passes.length ||
-            (resolver?.requiresGraphRebuild ?? (resolver?.leases.length ?? 0) > 0) ||
-            row.closure.resources.some((resource) => {
-              const name = row.keys.get(resource.name);
-              return name !== undefined && gpu?.changedResourceNames.has(name);
-            }),
-        });
-      }
-      // A held view keeps its committed resources without planning or executing work.
-      // Removed views are absent from the roster and retire through the usual fence.
-      transaction.retainResources(belongsToHeldView);
-      gpu?.retainResources(belongsToHeldView);
-      for (const item of transaction.committedItems()) {
-        const descriptor = item.descriptor;
-        if (
-          (descriptor?.kind === 'vertex-data' || descriptor?.kind === 'index-data') &&
-          descriptor.buffer !== undefined
-        )
-          gpu?.resolveBuffer(descriptor.buffer);
-      }
-      const leases = [...new Set(resolvers.flatMap((resolver) => resolver.leases))];
-      const retained = host.retainPreparedGraphics(identity, leases);
-      if (!retained.ok) throw retained.error;
-      if (leases.length > 0) preparedResourceBatches.push(retained.value);
-      // Prewarm declarations do not admit inactive or rejected fullscreen work.
-      for (const postProcess of feature.requiredFullscreenPostProcesses ?? []) {
-        if (projections.some(({ effects }) => effects.has(postProcess.identity)))
-          postProcessIdentities.add(postProcess.identity);
-      }
-      for (const { planned, projected, result, effects, requiresGraphRebuild } of projections) {
-        planExecutionProjections.set(planned, {
-          execution: projected,
-          ...(nativeWork === undefined ? {} : { nativeSignature: planned.signature }),
-        });
-        if (
-          feature.onFrameSubmitted !== undefined ||
-          feature.onSourceFrameSubmitted !== undefined ||
-          planned.plan.resources.some(
-            (resource) =>
-              resource.kind === 'buffer' ||
-              resource.kind === 'prepared-gpu-resource' ||
-              resource.kind === 'vertex-data' ||
-              resource.kind === 'index-data' ||
-              resource.kind === 'compute-bindings',
+            this.input.sceneResources,
           )
-        )
-          submissionSensitivePlans.add(planned);
-        (result.plans as RenderFeaturePlannedFrame[]).push(planned);
-        for (const [key, entry] of effects)
-          (result.fullscreenEffects as Map<string, PostProcessShaderEntry>).set(key, entry);
-        if (requiresGraphRebuild) {
-          preparedResourceKeyPlans.add(planned);
-          Object.assign(result, { requiresPreparedResourceKey: true });
-        }
+        : undefined;
+    if (prepared !== undefined && !prepared.ok) throw prepared.error;
+    for (const row of workResources) this.projectWorkRow(plan, row, targetInputs, prepared?.value);
+    this.retainFrameResources();
+    this.admitRequiredPostProcesses();
+    this.publishProjections();
+    this.batch.featureHiddenEntityReports.push(...this.reports);
+    this.batch.callbacks.push(this.frameCallbacks(plan));
+    this.batch.host.setStatus(this.identity, 'active');
+  }
+
+  /** Validate each work row's scope and map every resource name to its view targets. */
+  private validateWorkTargets(
+    workResources: readonly FeatureWorkResources[],
+  ): Map<string, readonly RenderFeatureTargetHandle[]> {
+    const targetInputs = new Map<string, readonly RenderFeatureTargetHandle[]>();
+    for (const row of workResources) {
+      const view = this.workView(row.work);
+      if (this.nativeWork === undefined) {
+        const frozen = freezeRenderFeaturePlan(
+          this.identity,
+          row.closure,
+          logicalTargets(view?.targets ?? []),
+        );
+        if (!frozen.ok) throw frozen.error;
       }
-      featureHiddenEntityReports.push(...reports);
-      let resourcesCommitted = false;
-      callbacks.push({
-        commitResources: () => {
-          if (resourcesCommitted) return;
-          const committed = transaction.commit();
-          if (!committed.ok) throw committed.error;
-          const retired = gpu?.commitFrame() ?? [];
-          resourcesCommitted = true;
-          if (retired.length > 0) {
-            const retained = host.retainPreparedGraphics(identity, retired);
-            if (!retained.ok) throw retained.error;
-            preparedResourceBatches.push(retained.value);
+      for (const resource of row.resources) {
+        const name = row.native ? row.keys.get(resource.name) : resource.name;
+        if (name === undefined) throw new Error('Missing native resource namespace');
+        targetInputs.set(name, view?.targets ?? []);
+      }
+    }
+    return targetInputs;
+  }
+
+  /** Resolve the view a work row belongs to, rejecting scopes it may not declare. */
+  private workView(work: RenderFeatureWork): RenderFeatureFrameInput | undefined {
+    const workScope = work.scope;
+    if (workScope !== 'frame' && work.resources.some(isRenderFeatureSceneResource))
+      throw new Error('Scene inputs belong to frame-scoped work');
+    const view =
+      workScope === 'frame'
+        ? undefined
+        : this.batch.inputs.find((candidate) => candidate.identity === workScope.view);
+    if (work.scope !== 'frame' && view === undefined)
+      throw new Error('Feature work references a missing view');
+    if (view?.render === false && work.passes.length > 0)
+      throw new Error('held views cannot declare render work');
+    return view;
+  }
+
+  private disableForMissingCapability(workResources: readonly FeatureWorkResources[]): boolean {
+    const missing = missingCapability(this.feature, this.input.caps);
+    if (missing === undefined || !workResources.some((row) => hasActivePlan(row.closure)))
+      return false;
+    if (this.requiresPreparation) this.batch.markPreparationPending(this.identity, 'capability');
+    const failure = new RenderFeatureCapabilityMissingError(this.identity, this.order, missing);
+    this.batch.errors.push(failure);
+    this.cleanupPreparation([() => this.abortResources(), () => this.abortProducerFrame()], 'plan');
+    this.batch.host.setStatus(this.identity, 'disabled', errorDescriptor(failure));
+    return true;
+  }
+
+  private projectWorkRow(
+    plan: RenderFeaturePlan,
+    row: FeatureWorkResources,
+    targetInputs: ReadonlyMap<string, readonly RenderFeatureTargetHandle[]>,
+    rawPrepared: PreparedPlanResources | undefined,
+  ): void {
+    const scope = row.work.scope;
+    const viewInput =
+      scope === 'frame'
+        ? undefined
+        : this.batch.inputs.find((view) => view.identity === scope.view);
+    const result = this.batch.results.get(featureScopeKey(scope));
+    if (result === undefined) throw new Error('unregistered Feature work scope');
+    const effects = fullscreenProgramEffects(row.closure, this.identity);
+    const scoped = this.scopedResources(row, targetInputs, rawPrepared);
+    const resolver = (viewInput ?? this.input).createPreparedGraphicsResolver?.({
+      featureIdentity: this.identity,
+      order: this.order,
+      generation: this.transaction.generation,
+      ...(this.feature.shaderModuleMode === undefined
+        ? {}
+        : { shaderModuleMode: this.feature.shaderModuleMode }),
+      transaction: this.transaction,
+      fullscreenEffects: effects,
+      lookup: (reference) => this.transaction.lookup(reference),
+    });
+    if (resolver !== undefined) this.resolvers.push(resolver);
+    const batchesDepth =
+      row.native === true &&
+      scope !== 'frame' &&
+      viewInput?.featureReadOnlyDepthBatchDiagnostic === true;
+    const projectionPlan =
+      batchesDepth && resolver !== undefined && renderFeatureNativeDepthBatchPermission(plan)
+        ? {
+            ...row.closure,
+            passes: coalesceNativeReadOnlyDepthPasses(
+              row.closure.passes,
+              readOnlyDepthPrograms(scoped, this.transaction, resolver),
+            ),
           }
+        : row.closure;
+    const projected = projectPlanPasses(
+      this.slot,
+      projectionPlan,
+      scoped,
+      this.gpu,
+      viewInput?.targets ?? [],
+      graphicsValidator(this.identity, this.transaction, true),
+      resolver === undefined ? undefined : this.graphicsSnapshotResolver(resolver, scoped, row),
+    );
+    if (!projected.ok) throw projected.error;
+    if (batchesDepth)
+      this.batch.host.recordDepthBatchInspection?.(
+        row.closure.passes.length,
+        projectionPlan.passes.length,
+        projected.value.passes.length,
+      );
+    this.checkProjectedPasses(row, projectionPlan, projected.value);
+    const scopeKey = featureScopeKey(scope);
+    const planned = this.plannedFrame(row, projectionPlan, projected.value, scopeKey);
+    this.projections.push({
+      planned,
+      projected: { ...projected.value, scope: scopeKey },
+      result,
+      effects,
+      requiresGraphRebuild: this.requiresGraphRebuild(
+        row,
+        projectionPlan,
+        projected.value,
+        resolver,
+      ),
+    });
+  }
+
+  /** Native rows prepare their own namespace; raw rows share one scoped copy of the plan. */
+  private scopedResources(
+    row: FeatureWorkResources,
+    targetInputs: ReadonlyMap<string, readonly RenderFeatureTargetHandle[]>,
+    rawPrepared: PreparedPlanResources | undefined,
+  ): PreparedPlanResources {
+    const scope = row.work.scope;
+    if (!row.native) {
+      if (rawPrepared === undefined) throw new Error('Missing raw Feature preparation');
+      this.scopeResources ??= createPreparedResourceScopes(rawPrepared);
+      return this.scopeResources(row.keys);
+    }
+    const admission = this.admittedResources?.prepared(scope);
+    const localPrepared = preparePlanResources(
+      this.slot,
+      { resources: row.resources, passes: [] },
+      createPreparedGraphicsPrepare(this.transaction, true),
+      this.gpu,
+      (name) => targetInputs.get(name) ?? [],
+      this.input.sceneResources,
+      {
+        keys: row.keys,
+        ...(this.sharedPrepared === undefined ? {} : { shared: this.sharedPrepared }),
+        ...(admission === undefined ? {} : { admission }),
+      },
+    );
+    if (!localPrepared.ok) throw localPrepared.error;
+    if (scope === 'frame') this.sharedPrepared = localPrepared.value;
+    return localPrepared.value;
+  }
+
+  private graphicsSnapshotResolver(
+    resolver: PreparedGraphicsResolver,
+    scoped: PreparedPlanResources,
+    row: FeatureWorkResources,
+  ) {
+    const gpu = this.gpu;
+    return (
+      descriptor: RenderFeatureGraphicsPassDescriptor,
+      passName: string,
+    ): Result<PreparedGraphicsResolvedSnapshot, RenderError> =>
+      resolveGraphicsSnapshot(
+        resolver,
+        descriptor,
+        this.transaction.generation,
+        (name) => {
+          const owned = scoped.buffers.get(name);
+          const borrowed = scoped.preparedGpuResources.get(name);
+          const reference = owned ?? (borrowed?.kind === 'buffer' ? borrowed.reference : undefined);
+          return reference === undefined ? undefined : gpu?.resolveBuffer(reference);
         },
-        abort: () => {
-          drainFeatureFinalizers([abortResources, () => feature.onFrameAborted?.(extracted.value)]);
-        },
-        submit: () => {
-          const accepted = projections.filter((row) => submittedWorks.has(row.planned));
-          if (accepted.length === 0) {
-            drainFeatureFinalizers([
-              abortResources,
-              () => feature.onFrameAborted?.(extracted.value),
-            ]);
-            return;
-          }
-          drainFeatureFinalizers([
-            () =>
-              feature.onFrameSubmitted?.(extracted.value, {
-                works: accepted.map((row) => ({
-                  scope: row.planned.scope,
-                  passes: row.projected.passes
-                    .filter((pass) => pass.enabled !== false)
-                    .map((pass) =>
-                      pass.graphics?.draws.some((draw) => draw.enabled === false)
-                        ? {
-                            ...pass,
-                            graphics: {
-                              ...pass.graphics,
-                              draws: pass.graphics.draws.filter((draw) => draw.enabled !== false),
-                            },
-                          }
-                        : pass,
-                    ),
-                })),
-              }),
-            publishInspection,
-            () => {
-              if (accepted.some((row) => row.planned.scope === 'frame')) {
-                if (input.publishedFeatures?.some((row) => row.identity === identity))
-                  input.onFeatureSourceSubmitted?.(identity, declared.value.sourceFeedback);
-                else
-                  feature.onSourceFrameSubmitted?.(extracted.value, declared.value.sourceFeedback);
-              }
-            },
-          ]);
-        },
-      });
-      host.setStatus(identity, 'active');
-    } catch (error) {
-      fail(error);
+        row.native === true,
+        (reference, error) => this.markPipelinePending(reference, error, passName),
+      );
+  }
+
+  private markPipelinePending(
+    reference: PreparedGraphicsReference,
+    error: RenderError,
+    passName: string,
+  ): void {
+    if (
+      this.batch.preparationPending ||
+      !this.requiresPreparation ||
+      !(error instanceof RenderFeaturePreparationFailedError) ||
+      error.detail.reason !== 'pipeline-pending'
+    )
+      return;
+    const item = this.transaction.lookup(reference);
+    this.batch.markPreparationPending(this.identity, 'graphics-pipeline', error, {
+      pass: passName,
+      ...(item?.descriptor?.kind === 'pipeline' ? { shader: item.descriptor.shader } : {}),
+    });
+  }
+
+  private checkProjectedPasses(
+    row: FeatureWorkResources,
+    projectionPlan: RenderFeatureWorkPlan,
+    projected: RenderFeaturePlanExecution,
+  ): void {
+    if (this.requiresPreparation && projected.passes.length !== projectionPlan.passes.length)
+      this.batch.markPreparationPending(this.identity, 'plan-projection');
+    if (row.work.scope === 'frame' && projected.passes.length !== row.work.passes.length)
+      throw new RenderFeaturePreparationFailedError(
+        this.identity,
+        this.order,
+        'frame',
+        'pipeline',
+        'shared-work',
+        'pipeline-pending',
+        'next-frame',
+      );
+  }
+
+  private plannedFrame(
+    row: FeatureWorkResources,
+    projectionPlan: RenderFeatureWorkPlan,
+    projected: RenderFeaturePlanExecution,
+    scopeKey: string,
+  ): RenderFeaturePlannedFrame {
+    const host = this.batch.host;
+    const feature = this.feature;
+    return Object.freeze({
+      featureIdentity: this.identity,
+      scope: row.work.scope,
+      generation: this.transaction.generation,
+      signature: row.native
+        ? (host.recordNativeExecutionSignature?.(
+            this.identity,
+            { ...projected, scope: scopeKey },
+            scopeKey,
+          ) ?? renderFeaturePlanSignature(projectionPlan))
+        : (host.recordPlanSignature?.(this.identity, row.closure, scopeKey) ??
+          renderFeaturePlanSignature(row.closure)),
+      plan: projectionPlan,
+      ...(feature.placement === undefined ? {} : { placement: feature.placement }),
+      ...(feature.viewGraph === undefined ? {} : { viewGraph: feature.viewGraph }),
+    });
+  }
+
+  private requiresGraphRebuild(
+    row: FeatureWorkResources,
+    projectionPlan: RenderFeatureWorkPlan,
+    projected: RenderFeaturePlanExecution,
+    resolver: PreparedGraphicsResolver | undefined,
+  ): boolean {
+    const gpu = this.gpu;
+    return (
+      projected.passes.length !== projectionPlan.passes.length ||
+      (resolver?.requiresGraphRebuild ?? (resolver?.leases.length ?? 0) > 0) ||
+      row.closure.resources.some((resource) => {
+        const name = row.keys.get(resource.name);
+        return name !== undefined && gpu?.changedResourceNames.has(name);
+      })
+    );
+  }
+
+  private retainFrameResources(): void {
+    // A held view keeps its committed resources without planning or executing work.
+    // Removed views are absent from the roster and retire through the usual fence.
+    this.transaction.retainResources(this.batch.belongsToHeldView);
+    this.gpu?.retainResources(this.batch.belongsToHeldView);
+    for (const item of this.transaction.committedItems()) {
+      const descriptor = item.descriptor;
+      if (
+        (descriptor?.kind === 'vertex-data' || descriptor?.kind === 'index-data') &&
+        descriptor.buffer !== undefined
+      )
+        this.gpu?.resolveBuffer(descriptor.buffer);
+    }
+    const leases = [...new Set(this.resolvers.flatMap((resolver) => resolver.leases))];
+    const retained = this.batch.host.retainPreparedGraphics(this.identity, leases);
+    if (!retained.ok) throw retained.error;
+    if (leases.length > 0) this.batch.preparedResourceBatches.push(retained.value);
+  }
+
+  // Prewarm declarations do not admit inactive or rejected fullscreen work.
+  private admitRequiredPostProcesses(): void {
+    for (const postProcess of this.feature.requiredFullscreenPostProcesses ?? []) {
+      if (this.projections.some(({ effects }) => effects.has(postProcess.identity)))
+        this.batch.postProcessIdentities.add(postProcess.identity);
     }
   }
-  // Immutable frame declarations (for example fullscreen shader registrations)
-  // are visible in each view without executing shared passes a second time.
-  for (const result of results.values()) {
-    if (result === shared) continue;
-    for (const [key, value] of shared.fullscreenEffects)
-      if (!result.fullscreenEffects.has(key))
-        (result.fullscreenEffects as Map<string, PostProcessShaderEntry>).set(key, value);
+
+  private publishProjections(): void {
+    for (const { planned, projected, result, effects, requiresGraphRebuild } of this.projections) {
+      planExecutionProjections.set(planned, {
+        execution: projected,
+        ...(this.nativeWork === undefined ? {} : { nativeSignature: planned.signature }),
+      });
+      if (isSubmissionSensitive(this.feature, planned)) submissionSensitivePlans.add(planned);
+      (result.plans as RenderFeaturePlannedFrame[]).push(planned);
+      for (const [key, entry] of effects)
+        (result.fullscreenEffects as Map<string, PostProcessShaderEntry>).set(key, entry);
+      if (requiresGraphRebuild) {
+        preparedResourceKeyPlans.add(planned);
+        Object.assign(result, { requiresPreparedResourceKey: true });
+      }
+    }
   }
-  for (const result of results.values())
-    Object.assign(result, {
-      ...(preparationPendingFeatureIdentity === undefined
-        ? {}
-        : {
-            preparationPending: true,
-            preparationPendingFeatureIdentity,
-            preparationPendingReason,
-          }),
-      postProcessIdentities: Object.freeze([...postProcessIdentities]),
-      hiddenEntityReports: mergeHiddenEntityReports([
-        ...result.hiddenEntityReports,
-        ...featureHiddenEntityReports,
-      ]),
-    });
-  let closed = false;
+
+  private frameCallbacks(plan: RenderFeaturePlan): FeatureFrameCallbacks {
+    let resourcesCommitted = false;
+    return {
+      commitResources: () => {
+        if (resourcesCommitted) return;
+        const committed = this.transaction.commit();
+        if (!committed.ok) throw committed.error;
+        const retired = this.gpu?.commitFrame() ?? [];
+        resourcesCommitted = true;
+        if (retired.length > 0) {
+          const retained = this.batch.host.retainPreparedGraphics(this.identity, retired);
+          if (!retained.ok) throw retained.error;
+          this.batch.preparedResourceBatches.push(retained.value);
+        }
+      },
+      abort: () => {
+        drainFeatureFinalizers([() => this.abortResources(), () => this.abortProducerFrame()]);
+      },
+      submit: () => this.submit(plan),
+    };
+  }
+
+  private submit(plan: RenderFeaturePlan): void {
+    const accepted = this.projections.filter((row) => this.batch.submittedWorks.has(row.planned));
+    if (accepted.length === 0) {
+      drainFeatureFinalizers([() => this.abortResources(), () => this.abortProducerFrame()]);
+      return;
+    }
+    drainFeatureFinalizers([
+      () =>
+        this.feature.onFrameSubmitted?.(this.source, {
+          works: accepted.map((row) => ({
+            scope: row.planned.scope,
+            passes: submittedPasses(row.projected),
+          })),
+        }),
+      () => this.publishInspection(),
+      () => {
+        if (accepted.some((row) => row.planned.scope === 'frame'))
+          this.acknowledgeSourceFrame(plan);
+      },
+    ]);
+  }
+
+  private acknowledgeSourceFrame(plan: RenderFeaturePlan): void {
+    if (this.input.publishedFeatures?.some((row) => row.identity === this.identity))
+      this.input.onFeatureSourceSubmitted?.(this.identity, plan.sourceFeedback);
+    else this.feature.onSourceFrameSubmitted?.(this.source, plan.sourceFeedback);
+  }
+}
+
+function extractView(view: RenderFeatureFrameInput) {
   return {
-    frame: shared,
-    views: new Map(
-      inputs.map((view) => {
-        const result = results.get(featureScopeKey({ view: view.identity }));
-        if (result === undefined) throw new Error('Renderer Feature frame omitted a view');
-        return [view.identity, result];
-      }),
-    ),
-    preparedResourceBatches,
-    commitPreparedResources: () => {
-      if (closed) return;
-      drainFeatureFinalizers(callbacks.map((callback) => callback.commitResources));
-    },
-    onSubmitted: () => {
-      if (closed) return;
-      closed = true;
-      drainFeatureFinalizers([
-        ...callbacks.map((callback) => callback.commitResources),
-        ...callbacks.map((callback) => callback.submit),
-      ]);
-    },
-    onAborted: () => {
-      if (closed) return;
-      closed = true;
-      drainFeatureFinalizers(callbacks.map((callback) => callback.abort));
-    },
+    identity: view.identity,
+    render: view.render,
+    ...(view.selectedCamera === undefined ? {} : { selectedCamera: view.selectedCamera }),
+    ...(view.selectedView === undefined ? {} : { selectedView: view.selectedView }),
+    ...(view.frame === undefined ? {} : { frame: view.frame }),
+    ...(view.frameSize === undefined ? {} : { frameSize: view.frameSize }),
+    ...(view.motionBlur === undefined ? {} : { motionBlur: view.motionBlur }),
   };
+}
+
+/** Does any declared program ask for pipeline compilation before it is ready? */
+function workRequestsPipelinePreparation(works: readonly RenderFeatureWork[]): boolean {
+  return works.some((work) =>
+    work.resources.some(
+      (resource) =>
+        (resource.kind === 'graphics-program' && resource.program.preparePipelines === true) ||
+        (resource.kind === 'compute-program' && resource.preparePipelines === true),
+    ),
+  );
+}
+
+function fullscreenProgramEffects(
+  plan: RenderFeatureWorkPlan,
+  identity: string,
+): Map<string, PostProcessShaderEntry> {
+  const effects = new Map<string, PostProcessShaderEntry>();
+  for (const resource of plan.resources) {
+    if (resource.kind !== 'fullscreen-program') continue;
+    const { kind: _kind, name, ...entry } = resource;
+    effects.set(name, entry);
+    if (!effects.has(identity)) effects.set(identity, entry);
+  }
+  return effects;
+}
+
+/** Graphics programs whose resolved pipeline never writes depth or stencil. */
+function readOnlyDepthPrograms(
+  scoped: PreparedPlanResources,
+  transaction: PreparedGraphicsTransaction,
+  resolver: PreparedGraphicsResolver,
+): Set<string> {
+  const readOnlyPrograms = new Set<string>();
+  for (const [name, reference] of scoped.graphicsPrograms) {
+    const descriptor = transaction.lookup(reference)?.descriptor;
+    if (
+      descriptor?.kind !== 'pipeline' ||
+      descriptor.renderState?.depthWriteEnabled !== false ||
+      descriptor.renderState.stencil !== undefined
+    )
+      continue;
+    const current = resolver.resolve(reference);
+    if (current.ok && current.value.kind === 'pipeline' && current.value.writesDepth === false)
+      readOnlyPrograms.add(name);
+  }
+  return readOnlyPrograms;
+}
+
+/** Plans with producer callbacks or GPU-resident payloads must not be replayed from cache. */
+function isSubmissionSensitive(
+  feature: RenderFeature<unknown>,
+  planned: RenderFeaturePlannedFrame,
+): boolean {
+  return (
+    feature.onFrameSubmitted !== undefined ||
+    feature.onSourceFrameSubmitted !== undefined ||
+    planned.plan.resources.some(
+      (resource) =>
+        resource.kind === 'buffer' ||
+        resource.kind === 'prepared-gpu-resource' ||
+        resource.kind === 'vertex-data' ||
+        resource.kind === 'index-data' ||
+        resource.kind === 'compute-bindings',
+    )
+  );
+}
+
+/** Enabled passes and draws a producer actually had recorded for it. */
+function submittedPasses(projected: RenderFeaturePlanExecution) {
+  return projected.passes
+    .filter((pass) => pass.enabled !== false)
+    .map((pass) =>
+      pass.graphics?.draws.some((draw) => draw.enabled === false)
+        ? {
+            ...pass,
+            graphics: {
+              ...pass.graphics,
+              draws: pass.graphics.draws.filter((draw) => draw.enabled !== false),
+            },
+          }
+        : pass,
+    );
 }
 
 /** Producer failures cannot strand sibling transactions or suppress accepted source receipts. */

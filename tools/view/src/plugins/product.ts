@@ -19,6 +19,7 @@ import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE } from '@
 import { listPackSources } from '@forgeax/engine-pack/build';
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '@forgeax/view-viewer/catalog/backend';
 import { startViewHostServer, type ViewHostServerOptions } from '@forgeax/view-workspace-core/resident';
+import { installedEngineRoot } from '../engine-root.ts';
 
 import { openViewProject, viewProjectOpenError } from '../view-project-open.ts';
 import { resolveProjectIntent, withProjectIntent } from '../view-start.ts';
@@ -169,6 +170,7 @@ export default {
             backendHost: host,
             accessToken: token,
             staticRoot: config.staticRoot ?? builtRoot,
+            engineRoot: installedEngineRoot(),
             frontendConfig,
             ...(core === undefined ? {} : {
               onClientConnect: (caller) => core.attachPageSession(caller, host.transport),

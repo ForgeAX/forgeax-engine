@@ -40,6 +40,7 @@ import {
   SDK_SOURCE_WASM,
   SDK_TEMPLATE_RESOURCE_ALLOWLIST,
   SDK_TEMPLATES,
+  SDK_ZIP_ONLY_PATHS,
   sdkResourceManifest,
   sdkTemplateResourceManifest,
   sha256,
@@ -288,7 +289,8 @@ for (const profile of ['base-ssao', 'point-ssao']) {
       '--expose-gc',
       '--max-old-space-size=512',
       'scripts/forgeax/check-shader-publication.mjs',
-      `packages/vite-plugin-shader/dist/engine-inputs/${profile}/manifest.json`,
+      'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz',
+      profile,
     ]),
   );
 }
@@ -864,17 +866,18 @@ const carrierArchive = resolve(npmRoot, `forgeax-engine-sdk-${version}.tgz`);
 try {
   await mkdir(carrierPackage, { recursive: true });
   const carrierSdkRoot = resolve(carrierPackage, 'sdk');
+  // The ZIP is the offline product: it keeps the normalized pnpm store, bare
+  // packages and the Engine source snapshot. The npm carrier is the online
+  // bootstrap surface. Games and the CLI runtime install the same Engine bytes
+  // from the registry, and source development uses the ZIP or source mirror.
   await cp(stage, carrierSdkRoot, {
     recursive: true,
-    filter: (source) => source !== resolve(stage, 'store'),
+    filter: (source) => !SDK_ZIP_ONLY_PATHS.some((path) => source === resolve(stage, path)),
   });
-  // The ZIP is the offline product and keeps the normalized pnpm store. The
-  // npm carrier is the smaller online bootstrap surface; games install the
-  // exact locked packages from the registry when this store is absent.
   const carrierManifestPath = resolve(carrierSdkRoot, 'sdk-manifest.json');
   const carrierManifest = JSON.parse(await readFile(carrierManifestPath, 'utf8'));
   carrierManifest.artifacts = carrierManifest.artifacts.filter(
-    ({ path }) => !path.startsWith('store/'),
+    ({ path }) => !SDK_ZIP_ONLY_PATHS.some((prefix) => path.startsWith(`${prefix}/`)),
   );
   await writeFile(carrierManifestPath, `${JSON.stringify(carrierManifest, null, 2)}\n`);
   await writeFile(

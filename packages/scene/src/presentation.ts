@@ -183,7 +183,10 @@ function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 |
     cursor = parent(world, cursor) as EntityHandle | undefined;
   }
   const fixed = world.getResource(FixedTime);
-  const alpha = Math.max(0, Math.min(1, fixed.overstep / fixed.delta));
+  // Render one base step behind simulation. A merged catch-up spans
+  // stepDelta between the captured poses, so offset into that wider interval.
+  const span = Math.max(fixed.delta, fixed.stepDelta ?? fixed.delta);
+  const alpha = Math.max(0, Math.min(1, (fixed.overstep + span - fixed.delta) / span));
   for (let index = path.length - 1; index >= 0; index -= 1) {
     const node = path[index];
     if (node === undefined) continue;

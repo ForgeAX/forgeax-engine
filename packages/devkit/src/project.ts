@@ -1,6 +1,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { GameProjectSchema } from '@forgeax/engine-project';
+import { resolveAssetLibraries } from './asset-libraries.js';
 import type { CommandError, CommandResult, ProjectFacts } from './types.js';
 
 function projectError(
@@ -148,6 +149,8 @@ export async function readProjectFacts(
   if (!startup.ok) return startup;
   const frame = timeoutFromPackage(root, packageJson, 'frameTimeoutMs');
   if (!frame.ok) return frame;
+  const assetLibraries = await resolveAssetLibraries(root, forge.assetLibraries);
+  if (!assetLibraries.ok) return assetLibraries;
   return {
     ok: true,
     value: {
@@ -158,6 +161,7 @@ export async function readProjectFacts(
       ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
       ...(frame.value === undefined ? {} : { frameTimeoutMs: frame.value }),
       assetRoots: forge.assetRoots,
+      assetLibraries: assetLibraries.value,
       packageJson,
     },
   };

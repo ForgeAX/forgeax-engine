@@ -144,15 +144,42 @@ describe('Pack variant compilation ownership', () => {
     expect((await f.cook(request('fixed'), 'fixed-source')).ok).toBe(true);
   });
 
-  it('releases the previous source namespace when a cooker observes source replacement', async () => {
+  it('keys variants by source identity so interleaved Packs keep their compiled programs', async () => {
     const f = fixture();
     await f.cook(request('first'), 'namespace-a');
     await f.cook(request('second'), 'namespace-a');
     expect(f.calls()).toBe(1);
     await f.cook(request('replacement'), 'namespace-b');
     expect(f.calls()).toBe(2);
-    await f.cook(request('restored'), 'namespace-a');
-    expect(f.calls()).toBe(3);
+    const restoredRequest = request('restored');
+    const restored = (await f.cook(restoredRequest, 'namespace-a')).unwrap();
+    expect(f.calls()).toBe(2);
+    expect(restored).toEqual((await cookMaterialAsset(restoredRequest)).unwrap());
+  });
+
+  it('compiles one variant once while concurrent Packs request it', async () => {
+    const f = fixture();
+    const requests = ['a', 'b', 'c'].map((guid, index) =>
+      request(guid, { ...material, values: { roughness: index / 4 } }),
+    );
+    const cooked = await Promise.all(requests.map((input) => f.cook(input, 'snapshot')));
+    expect(f.calls()).toBe(1);
+    for (const [index, result] of cooked.entries())
+      expect(result.unwrap()).toEqual(
+        (await cookMaterialAsset(requests[index] as MaterialCookRequest)).unwrap(),
+      );
+  });
+
+  it('lets concurrent requests retry after a shared compilation fails', async () => {
+    const f = fixture();
+    const input = request(
+      'invalid',
+      structuredClone(material),
+      shader.replace('material.roughness', 'missing_symbol'),
+    );
+    const results = await Promise.all([f.cook(input, 'broken'), f.cook(input, 'broken')]);
+    expect(results.map((result) => result.ok)).toEqual([false, false]);
+    expect(f.calls()).toBe(2);
   });
 
   it('keeps an untyped null selector on ordinary admission instead of an undefined-selector hit', async () => {

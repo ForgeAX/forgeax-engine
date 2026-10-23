@@ -12,3 +12,19 @@ export function rapierBodyTypeToString(
   if (bodyType === rapier.RigidBodyType.Fixed) return 'static';
   return 'kinematic';
 }
+
+/** Map a derived candidate's body type onto the native enum. */
+export function rapierBodyTypeFromString(
+  rapier: {
+    readonly RigidBodyType: {
+      readonly Dynamic: number;
+      readonly Fixed: number;
+      readonly KinematicPositionBased: number;
+    };
+  },
+  bodyType: RigidBodyType,
+): number {
+  if (bodyType === 'static') return rapier.RigidBodyType.Fixed;
+  if (bodyType === 'kinematic') return rapier.RigidBodyType.KinematicPositionBased;
+  return rapier.RigidBodyType.Dynamic;
+}

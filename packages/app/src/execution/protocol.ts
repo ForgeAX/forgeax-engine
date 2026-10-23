@@ -39,6 +39,8 @@ export interface ExecutionFrameCompletion {
   readonly deviceGeneration?: number;
   /** Compiled graph generation paired with the submitted picture. */
   readonly graphGeneration?: number;
+  /** Render Worker milliseconds from queue submission to completion. */
+  readonly renderSubmitToCompleteMs?: number;
   /**
    * Serialized output mapping for the accepted frame. `undefined` means that
    * no accepted submitted display context is available; consumers must fail

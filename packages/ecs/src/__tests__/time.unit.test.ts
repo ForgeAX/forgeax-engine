@@ -140,3 +140,62 @@ describe('World time resources', () => {
     expect(observed.droppedUpdates).toBe(dropped > 0 ? 1 : 0);
   });
 });
+
+describe('merged fixed catch-up', () => {
+  const policy = {
+    fixedDeltaSeconds: 0.05,
+    maxStepsPerUpdate: 2,
+    maxDeltaSeconds: 3 * 0.05,
+    fixedCatchUp: 'merged' as const,
+  };
+
+  it('runs one FixedUpdate pass with the owed steps as its delta and restores the base step', () => {
+    const world = new World({ time: policy });
+    const seen: number[] = [];
+    world.addSystem(FixedUpdate, {
+      name: 'fixed',
+      queries: [],
+      fn: (world) => void seen.push(world.getResource(FixedTime).delta),
+    });
+    expect(world.update(0.05).ok).toBe(true);
+    expect(world.update(0.11).ok).toBe(true);
+    expect(seen.map((value) => Math.round(value * 1000))).toEqual([50, 100]);
+    expect(world.getResource(FixedTime)).toMatchObject({ tick: 2, delta: 0.05, stepDelta: 0.1 });
+    expect(world.getResource(FixedTime).overstep).toBeCloseTo(0.01, 9);
+    // A frame owing one step runs an ordinary step.
+    expect(world.update(0.04).ok).toBe(true);
+    expect(seen.map((value) => Math.round(value * 1000))).toEqual([50, 100, 50]);
+    expect(world.getResource(FixedTime)).toMatchObject({ tick: 3, stepDelta: 0.05 });
+  });
+
+  it('keeps the step cap and drops whole overflow steps exactly like substeps', () => {
+    const world = new World({ time: policy });
+    let simulated = 0;
+    world.addSystem(FixedUpdate, {
+      name: 'fixed',
+      queries: [],
+      fn: (world) => {
+        simulated += world.getResource(FixedTime).delta;
+      },
+    });
+    // 0.15 s owes three steps; two are simulated in one pass and one is dropped.
+    expect(world.update(0.15).ok).toBe(true);
+    expect(simulated).toBeCloseTo(0.1, 9);
+    expect(world.getResource(FixedTime)).toMatchObject({ tick: 1, droppedUpdates: 1 });
+    expect(world.getResource(FixedTime).droppedSeconds).toBeCloseTo(0.05, 9);
+  });
+
+  it('keeps substeps as the default policy', () => {
+    const { fixedCatchUp: _merged, ...substeps } = policy;
+    const world = new World({ time: substeps });
+    const seen: number[] = [];
+    world.addSystem(FixedUpdate, {
+      name: 'fixed',
+      queries: [],
+      fn: (world) => void seen.push(world.getResource(FixedTime).delta),
+    });
+    expect(world.update(0.1).ok).toBe(true);
+    expect(seen).toEqual([0.05, 0.05]);
+    expect(world.getResource(FixedTime)).toMatchObject({ catchUp: 'substeps', tick: 2 });
+  });
+});

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { build } from 'vite';
+import { build, normalizePath } from 'vite';
 import { expect, it } from 'vitest';
 import { BrowserPluginProgramArchive } from '../plugin-programs-browser.js';
 
@@ -117,7 +117,7 @@ it('groups static closures without evaluating a sibling plugin or a lazy import'
           },
           load(id) {
             for (const [key, entry] of selections)
-              if (id === entry) archive.entries.set(key, entry);
+              if (normalizePath(id) === normalizePath(entry)) archive.entries.set(key, entry);
           },
           moduleParsed() {
             archive.preserveModules(this);
@@ -156,7 +156,8 @@ it('groups static closures without evaluating a sibling plugin or a lazy import'
     const output = Array.isArray(result) ? result[0] : result;
     if (!output || !('output' in output)) throw Error('Missing build output');
     const main = output.output.find(
-      (chunk) => chunk.type === 'chunk' && chunk.facadeModuleId === resolve(root, 'main.js'),
+      (chunk) =>
+        chunk.type === 'chunk' && chunk.facadeModuleId === normalizePath(resolve(root, 'main.js')),
     );
     if (!main) throw Error('Missing main entry');
     await import(resolve(root, 'dist', main.fileName));
@@ -164,7 +165,10 @@ it('groups static closures without evaluating a sibling plugin or a lazy import'
     let selected: { shared: unknown; leaf: number; lazy(): Promise<{ value: number }> } | undefined;
     for (const file of files) {
       const chunk = output.output.find((chunk) => chunk.fileName === file);
-      if (chunk?.type === 'chunk' && chunk.facadeModuleId === resolve(root, 'a.js')) {
+      if (
+        chunk?.type === 'chunk' &&
+        chunk.facadeModuleId === normalizePath(resolve(root, 'a.js'))
+      ) {
         const entry = await import(resolve(root, 'dist', file));
         expect(Object.keys(entry)).toEqual(['default']);
         selected = entry.default;
@@ -197,4 +201,103 @@ it('keeps single-chunk and non-ES build output policies intact', () => {
     { codeSplitting: false as const },
   ])
     expect(archive.groupedOutput(output)).toBe(output);
+});
+
+it('walks each parsed module once and archives the same programs as a full walk per parse', async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-plugin-incremental-')));
+  try {
+    const width = 24;
+    for (let index = 0; index < width; index++)
+      await writeFile(
+        resolve(root, `leaf-${index}.js`),
+        `${index + 1 < width ? `import './leaf-${index + 1}.js'; ` : ''}export const value${index} = ${index};`,
+      );
+    await writeFile(resolve(root, 'shared.js'), "import './leaf-0.js'; export const shared = {};");
+    await writeFile(
+      resolve(root, 'a.js'),
+      "import { shared } from './shared.js'; export default { shared, lazy: () => import('./leaf-7.js') };",
+    );
+    await writeFile(
+      resolve(root, 'b.js'),
+      "import { shared } from './shared.js'; export default { shared };",
+    );
+    await writeFile(resolve(root, 'main.js'), "import './shared.js';");
+    const selections = new Map([
+      ['a', resolve(root, 'a.js')],
+      ['b', resolve(root, 'b.js')],
+    ]);
+    const run = async (mode: 'full' | 'incremental') => {
+      const archive = new BrowserPluginProgramArchive();
+      let lookups = 0;
+      let programs: unknown;
+      const result = await build({
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        plugins: [
+          {
+            name: `archive-${mode}-probe`,
+            buildStart() {
+              for (const id of selections.values())
+                this.emitFile({ type: 'chunk', id, preserveSignature: 'strict' });
+            },
+            load(id) {
+              for (const [key, entry] of selections)
+                if (normalizePath(id) === normalizePath(entry)) archive.entries.set(key, entry);
+            },
+            moduleParsed(info) {
+              const counted = new Proxy(this, {
+                get: (target, key) =>
+                  key === 'getModuleInfo'
+                    ? (id: string) => {
+                        lookups++;
+                        return target.getModuleInfo(id);
+                      }
+                    : Reflect.get(target, key),
+              });
+              if (mode === 'full') archive.preserveModules(counted);
+              else archive.preserveParsedModule(counted, info.id);
+            },
+            buildEnd() {
+              if (mode === 'incremental') archive.preserveModules(this);
+              archive.prepareGroups(this);
+            },
+            outputOptions(output) {
+              return archive.groupedOutput(output);
+            },
+            generateBundle: {
+              order: 'post',
+              handler(_output, bundle) {
+                programs = archive.capture(this, bundle, 'engine');
+              },
+            },
+          },
+        ],
+        build: {
+          write: false,
+          minify: false,
+          modulePreload: false,
+          rollupOptions: {
+            input: resolve(root, 'main.js'),
+            preserveEntrySignatures: 'allow-extension',
+            output: { entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
+          },
+        },
+      });
+      const output = Array.isArray(result) ? result[0] : result;
+      if (!output || !('output' in output)) throw Error('Missing build output');
+      const files = output.output
+        .map((item) => [item.fileName, item.type === 'chunk' ? item.code : ''] as const)
+        .sort(([a], [b]) => a.localeCompare(b));
+      return { lookups, programs, files };
+    };
+    const full = await run('full');
+    const incremental = await run('incremental');
+    expect(incremental.programs).toEqual(full.programs);
+    expect(incremental.files).toEqual(full.files);
+    // The full walk repeats per parsed module; the incremental walk does not.
+    expect(incremental.lookups).toBeLessThan(full.lookups / 4);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

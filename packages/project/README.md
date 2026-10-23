@@ -8,6 +8,7 @@ The realm-neutral schema and injected JSON reader for `forge.json`. Its strict s
   "name": "My Game",
   "schemaVersion": "3.0.0",
   "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"],
   "roots": { "engine": "00000000-0000-4000-8000-000000000001" }
 }
 ```
@@ -23,6 +24,14 @@ defaults to `["assets"]`; `[]` declares no authored asset directories. Absolute
 paths, backslashes, empty path segments and `.`/`..` segments are rejected. DevKit
 uses these same roots for source discovery and transfer, and workspace project
 facts expose them to consumers such as View.
+
+`assetLibraries` (default `[]`) explicitly mounts read-only asset libraries by package
+specifier: `@forgeax/engine/<package-directory>` selects an Engine member through the
+project's Engine binding, and a bare npm package name is resolved from the project.
+The package manifest declares its library directory as `forgeax.library.assetRoot`.
+The Engine Content library is `@forgeax/engine/content`; both SDK templates mount it.
+Library assets keep their own Pack GUIDs and Catalog source identities of the form
+`<specifier>/<relative path>`; project authoring never writes them.
 
 Plugin configuration belongs in the referenced Pack asset. Native plugin code composes children. A scene is instantiated and released by a scene-owner plugin. The project manifest remains outside the asset Catalog.
 

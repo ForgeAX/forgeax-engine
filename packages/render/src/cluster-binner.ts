@@ -291,12 +291,14 @@ export function clusterSpaceObjectAabb(
   if (perspectiveWOnlyZ) {
     const xExtent = Math.abs(p00) * rx + Math.abs(p10) * ry;
     const yExtent = Math.abs(p01) * rx + Math.abs(p11) * ry;
+    const xCenterXY = p00 * vx + p10 * vy;
+    const yCenterXY = p01 * vx + p11 * vy;
     for (let face = 0; face < 2; face++) {
       const zTest = face === 0 ? minViewZ : maxViewZ;
       if (zTest > 0) continue;
       const invW = 1 / (p23 * zTest);
-      const xCenter = p20 * zTest + p30;
-      const yCenter = p21 * zTest + p31;
+      const xCenter = xCenterXY + p20 * zTest + p30;
+      const yCenter = yCenterXY + p21 * zTest + p31;
       const x0 = (xCenter - xExtent) * invW;
       const x1 = (xCenter + xExtent) * invW;
       const y0 = (yCenter - yExtent) * invW;

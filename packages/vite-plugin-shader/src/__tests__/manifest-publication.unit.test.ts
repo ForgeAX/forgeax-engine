@@ -121,6 +121,20 @@ describe('shared shader source publication', () => {
     );
   });
 
+  it('publishes merged packaged inputs with the field order of a source compile', () => {
+    const engine = publishShaderManifest(
+      [{ hash: 'engine', glsl: '', bindings: '[]', uvSetCount: 2, wgsl: 'fn main() {}' }],
+      [],
+    );
+    const authored = publishShaderManifest([], []);
+    const merged = mergeShaderManifestPublications(engine, authored, new Set(['engine']), {
+      uvSetCount: 0,
+    });
+    expect(Object.keys(merged)).toEqual(Object.keys(engine));
+    expect(Object.keys(merged.entries[0] ?? {})).toEqual(Object.keys(engine.entries[0] ?? {}));
+    expect(merged.entries[0]).toMatchObject({ uvSetCount: 2 });
+  });
+
   it('merges admitted engine and authored rows without expanding the engine sources', async () => {
     const shared = 'fn shared() {}\n\n';
     const engine = publishShaderManifest(

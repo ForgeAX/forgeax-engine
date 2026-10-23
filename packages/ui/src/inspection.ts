@@ -75,6 +75,16 @@ const defaultStyles = [
   'opacity',
 ];
 
+type InspectionSource = UiInspectionNode['source'];
+type InspectionControl = NonNullable<UiInspectionNode['control']>;
+
+interface PendingElement {
+  element: Element;
+  path: string;
+  depth: number;
+  source: InspectionSource;
+}
+
 /** Synchronous, bounded observation of actual DOM/Blitz nodes, including open shadows. */
 export function inspectUi(
   root: HTMLElement | null | undefined,
@@ -84,222 +94,260 @@ export function inspectUi(
   try {
     if (!root || root.nodeType !== 1 || !root.isConnected)
       throw new Error('UI inspection requires a connected root in the current document');
-    if (request === null || typeof request !== 'object' || Array.isArray(request))
-      throw new TypeError('UI inspection request must be an object');
-    const limit = request.limit ?? 256;
-    const styles = request.styles ?? defaultStyles;
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 512)
-      throw new TypeError('UI inspection limit must be an integer from 1 to 512');
-    if (
-      !Array.isArray(styles) ||
-      styles.length > 32 ||
-      styles.some(
-        (name) =>
-          typeof name !== 'string' || name.length > 80 || !/^(?:--)?[a-z][a-z0-9-]*$/i.test(name),
-      )
-    )
-      throw new TypeError('UI inspection styles must contain at most 32 CSS property names');
-    if (
-      request.selector !== undefined &&
-      (typeof request.selector !== 'string' ||
-        !request.selector.trim() ||
-        request.selector.length > 512)
-    )
-      throw new TypeError('UI inspection selector must contain 1–512 characters');
-    if (request.selector !== undefined) parse(request.selector, { context: 'selectorList' });
-    const point = request.point;
-    if (point !== undefined && (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)))
-      throw new TypeError('UI inspection point must contain finite logical coordinates');
-    const document = root.ownerDocument;
-    const view = document.defaultView;
-    const resolved =
-      reader ??
-      (view
-        ? {
-            getComputedStyle: (element: Element) => view.getComputedStyle(element),
-            elementFromPoint: (x: number, y: number) => document.elementFromPoint(x, y),
-          }
-        : undefined);
-    if (!resolved) throw new Error('Provide the native UI document reader');
-    let truncated = false;
-    let focused = document.activeElement;
-    for (let depth = 0; focused?.shadowRoot?.activeElement; depth++) {
-      if (depth >= 64) {
-        truncated = true;
-        break;
-      }
-      focused = focused.shadowRoot.activeElement;
-    }
-    let hit = point ? resolved.elementFromPoint(point.x, point.y) : null;
-    // Browsers retarget a document hit to the shadow host; Blitz returns the core node.
-    if (point) {
-      for (let depth = 0; hit?.shadowRoot; depth++) {
-        if (depth >= 64) {
-          truncated = true;
-          break;
-        }
-        const inner = hit.shadowRoot.elementFromPoint?.(point.x, point.y);
-        if (!inner || inner === hit) break;
-        hit = inner;
-      }
-    }
-    const bounded = (value: string) => {
-      if (value.length > 512) truncated = true;
-      return value.slice(0, 512);
-    };
+    const { limit, styles } = validateInspectionRequest(request);
+    const observation = new UiObservation(resolveReader(root.ownerDocument, reader), styles, limit);
+    const focused = observation.focusedElement(root.ownerDocument);
+    const hit = observation.hitElement(request.point);
     const nodes: UiInspectionNode[] = [];
     let visited = 0;
     let focusPath: string | null = null;
     let hitPath: string | null = null;
-    let initialSource: UiInspectionNode['source'] = null;
-    for (let node: Element | null = root, depth = 0; node; depth++) {
-      if (depth >= 64) {
-        truncated = true;
-        break;
-      }
-      const guid = node.getAttribute('data-ui-asset');
-      const path = node.getAttribute('data-ui-source');
-      if (guid || path) {
-        initialSource = {
-          guid: guid === null ? null : bounded(guid),
-          path: path === null ? null : bounded(path),
-        };
-        break;
-      }
-      const tree = node.getRootNode();
-      node = node.parentElement ?? (tree.nodeType === 11 ? (tree as ShadowRoot).host : null);
-    }
-    const pending: {
-      element: Element;
-      path: string;
-      depth: number;
-      source: UiInspectionNode['source'];
-    }[] = [{ element: root, path: '.', depth: 0, source: initialSource }];
+    const pending: PendingElement[] = [
+      { element: root, path: '.', depth: 0, source: observation.ancestorSource(root) },
+    ];
     while (pending.length && visited < limit) {
       const next = pending.pop();
       if (!next) break;
-      const { element, path, depth, source: inheritedSource } = next;
+      const { element, path } = next;
       visited++;
       if (element === focused) focusPath = path;
       if (element === hit) hitPath = path;
-      const guid = element.getAttribute('data-ui-asset');
-      const sourcePath = element.getAttribute('data-ui-source');
-      const source =
-        guid || sourcePath
-          ? {
-              guid: guid === null ? null : bounded(guid),
-              path: sourcePath === null ? null : bounded(sourcePath),
-            }
-          : inheritedSource;
-      if (request.selector === undefined || element.matches(request.selector)) {
-        const rect = element.getBoundingClientRect();
-        const computed = resolved.getComputedStyle(element);
-        const names = element.getAttributeNames();
-        if (names.length > 32) truncated = true;
-        let text = '';
-        if (element.localName !== 'style') {
-          const children = element.childNodes;
-          const count = Math.min(children.length, limit);
-          if (count < children.length) truncated = true;
-          for (let index = 0; index < count; index++) {
-            const node = children[index];
-            if (!node) continue;
-            if (node.nodeType === 3) text += bounded(node.textContent ?? '');
-            if (text.length > 512) {
-              truncated = true;
-              break;
-            }
-          }
-        }
-        const control = ['input', 'textarea', 'select'].includes(element.localName)
-          ? (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)
-          : undefined;
-        const validity = control?.validity;
-        nodes.push({
-          path,
-          tag: element.localName,
-          source,
-          attributes: Object.fromEntries(
-            names.slice(0, 32).map((name) => [name, bounded(element.getAttribute(name) ?? '')]),
-          ),
-          text: bounded(text),
-          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-          scroll: {
-            left: element.scrollLeft,
-            top: element.scrollTop,
-            width: element.scrollWidth,
-            height: element.scrollHeight,
-            clientWidth: element.clientWidth,
-            clientHeight: element.clientHeight,
-          },
-          style: Object.fromEntries(
-            styles.map((name) => [name, bounded(computed.getPropertyValue(name))]),
-          ),
-          ...(control && validity
-            ? {
-                control: {
-                  value: bounded(control.value),
-                  disabled: control.disabled,
-                  validity: {
-                    valid: validity.valid,
-                    badInput: validity.badInput,
-                    valueMissing: validity.valueMissing,
-                    rangeUnderflow: validity.rangeUnderflow,
-                    rangeOverflow: validity.rangeOverflow,
-                    stepMismatch: validity.stepMismatch,
-                  },
-                  ...(element.localName === 'input' &&
-                  ['checkbox', 'radio'].includes((control as HTMLInputElement).type)
-                    ? { checked: (control as HTMLInputElement).checked }
-                    : {}),
-                  ...(element.localName === 'input' &&
-                  (control as HTMLInputElement).type === 'number'
-                    ? {
-                        valueAsNumber: Number.isFinite((control as HTMLInputElement).valueAsNumber)
-                          ? (control as HTMLInputElement).valueAsNumber
-                          : null,
-                      }
-                    : {}),
-                  validationMessage: bounded(control.validationMessage),
-                },
-              }
-            : {}),
-        });
-      }
-      const children: typeof pending = [];
-      const branches = [{ children: element.children, path }];
-      if (element.shadowRoot)
-        branches.push({ children: element.shadowRoot.children, path: `${path}/shadow` });
-      for (const branch of branches) {
-        const count =
-          depth >= 64
-            ? 0
-            : Math.min(branch.children.length, limit - pending.length - children.length);
-        if (count < branch.children.length) truncated = true;
-        for (let index = 0; index < count; index++) {
-          const child = branch.children[index];
-          if (child)
-            children.push({
-              element: child,
-              path: `${branch.path}/${index}`,
-              depth: depth + 1,
-              source,
-            });
-        }
-      }
-      pending.push(...children.reverse());
+      const source = observation.source(element) ?? next.source;
+      if (request.selector === undefined || element.matches(request.selector))
+        nodes.push(observation.node(element, path, source));
+      observation.enqueueChildren(pending, next, source);
     }
     return {
       ok: true,
       value: {
         nodes,
         visited,
-        truncated: truncated || pending.length > 0,
+        truncated: observation.truncated || pending.length > 0,
         focused: focusPath,
         hit: hitPath,
       },
     };
   } catch (cause) {
     return uiInspectionFailed(cause);
+  }
+}
+
+function validateInspectionRequest(request: UiInspectionRequest): {
+  readonly limit: number;
+  readonly styles: readonly string[];
+} {
+  if (request === null || typeof request !== 'object' || Array.isArray(request))
+    throw new TypeError('UI inspection request must be an object');
+  const limit = request.limit ?? 256;
+  const styles = request.styles ?? defaultStyles;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 512)
+    throw new TypeError('UI inspection limit must be an integer from 1 to 512');
+  if (
+    !Array.isArray(styles) ||
+    styles.length > 32 ||
+    styles.some(
+      (name) =>
+        typeof name !== 'string' || name.length > 80 || !/^(?:--)?[a-z][a-z0-9-]*$/i.test(name),
+    )
+  )
+    throw new TypeError('UI inspection styles must contain at most 32 CSS property names');
+  if (request.selector !== undefined) validateSelector(request.selector);
+  const point = request.point;
+  if (point !== undefined && (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)))
+    throw new TypeError('UI inspection point must contain finite logical coordinates');
+  return { limit, styles };
+}
+
+function validateSelector(selector: string): void {
+  if (typeof selector !== 'string' || !selector.trim() || selector.length > 512)
+    throw new TypeError('UI inspection selector must contain 1–512 characters');
+  parse(selector, { context: 'selectorList' });
+}
+
+function resolveReader(document: Document, reader: UiInspectionReader | undefined) {
+  if (reader) return reader;
+  const view = document.defaultView;
+  if (!view) throw new Error('Provide the native UI document reader');
+  return {
+    getComputedStyle: (element: Element) => view.getComputedStyle(element),
+    elementFromPoint: (x: number, y: number) => document.elementFromPoint(x, y),
+  };
+}
+
+/** One bounded observation: the reader, requested styles, limits and truncation evidence. */
+class UiObservation {
+  truncated = false;
+
+  constructor(
+    private readonly reader: UiInspectionReader,
+    private readonly styles: readonly string[],
+    private readonly limit: number,
+  ) {}
+
+  bounded(value: string): string {
+    if (value.length > 512) this.truncated = true;
+    return value.slice(0, 512);
+  }
+
+  focusedElement(document: Document): Element | null {
+    let focused = document.activeElement;
+    for (let depth = 0; focused?.shadowRoot?.activeElement; depth++) {
+      if (depth >= 64) {
+        this.truncated = true;
+        break;
+      }
+      focused = focused.shadowRoot.activeElement;
+    }
+    return focused;
+  }
+
+  hitElement(point: UiInspectionRequest['point']): Element | null {
+    if (!point) return null;
+    let hit = this.reader.elementFromPoint(point.x, point.y);
+    // Browsers retarget a document hit to the shadow host; Blitz returns the core node.
+    for (let depth = 0; hit?.shadowRoot; depth++) {
+      if (depth >= 64) {
+        this.truncated = true;
+        break;
+      }
+      const inner = hit.shadowRoot.elementFromPoint?.(point.x, point.y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  }
+
+  /** The element's own asset/source attribution, or null when it inherits one. */
+  source(element: Element): InspectionSource {
+    const guid = element.getAttribute('data-ui-asset');
+    const path = element.getAttribute('data-ui-source');
+    if (!guid && !path) return null;
+    return {
+      guid: guid === null ? null : this.bounded(guid),
+      path: path === null ? null : this.bounded(path),
+    };
+  }
+
+  /** Attribution inherited by the inspected root from its nearest attributed ancestor. */
+  ancestorSource(root: Element): InspectionSource {
+    for (let node: Element | null = root, depth = 0; node; depth++) {
+      if (depth >= 64) {
+        this.truncated = true;
+        break;
+      }
+      const source = this.source(node);
+      if (source) return source;
+      const tree = node.getRootNode();
+      node = node.parentElement ?? (tree.nodeType === 11 ? (tree as ShadowRoot).host : null);
+    }
+    return null;
+  }
+
+  node(element: Element, path: string, source: InspectionSource): UiInspectionNode {
+    const rect = element.getBoundingClientRect();
+    const computed = this.reader.getComputedStyle(element);
+    const names = element.getAttributeNames();
+    if (names.length > 32) this.truncated = true;
+    const text = this.text(element);
+    const control = this.control(element);
+    return {
+      path,
+      tag: element.localName,
+      source,
+      attributes: Object.fromEntries(
+        names.slice(0, 32).map((name) => [name, this.bounded(element.getAttribute(name) ?? '')]),
+      ),
+      text: this.bounded(text),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      scroll: {
+        left: element.scrollLeft,
+        top: element.scrollTop,
+        width: element.scrollWidth,
+        height: element.scrollHeight,
+        clientWidth: element.clientWidth,
+        clientHeight: element.clientHeight,
+      },
+      style: Object.fromEntries(
+        this.styles.map((name) => [name, this.bounded(computed.getPropertyValue(name))]),
+      ),
+      ...(control ? { control } : {}),
+    };
+  }
+
+  private text(element: Element): string {
+    let text = '';
+    if (element.localName === 'style') return text;
+    const children = element.childNodes;
+    const count = Math.min(children.length, this.limit);
+    if (count < children.length) this.truncated = true;
+    for (let index = 0; index < count; index++) {
+      const node = children[index];
+      if (!node) continue;
+      if (node.nodeType === 3) text += this.bounded(node.textContent ?? '');
+      if (text.length > 512) {
+        this.truncated = true;
+        break;
+      }
+    }
+    return text;
+  }
+
+  private control(element: Element): InspectionControl | undefined {
+    const control = ['input', 'textarea', 'select'].includes(element.localName)
+      ? (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)
+      : undefined;
+    const validity = control?.validity;
+    if (!control || !validity) return undefined;
+    return {
+      value: this.bounded(control.value),
+      disabled: control.disabled,
+      validity: {
+        valid: validity.valid,
+        badInput: validity.badInput,
+        valueMissing: validity.valueMissing,
+        rangeUnderflow: validity.rangeUnderflow,
+        rangeOverflow: validity.rangeOverflow,
+        stepMismatch: validity.stepMismatch,
+      },
+      ...(element.localName === 'input' &&
+      ['checkbox', 'radio'].includes((control as HTMLInputElement).type)
+        ? { checked: (control as HTMLInputElement).checked }
+        : {}),
+      ...(element.localName === 'input' && (control as HTMLInputElement).type === 'number'
+        ? {
+            valueAsNumber: Number.isFinite((control as HTMLInputElement).valueAsNumber)
+              ? (control as HTMLInputElement).valueAsNumber
+              : null,
+          }
+        : {}),
+      validationMessage: this.bounded(control.validationMessage),
+    };
+  }
+
+  /** Light children then open-shadow children, popped in document order. */
+  enqueueChildren(pending: PendingElement[], parent: PendingElement, source: InspectionSource) {
+    const { element, path, depth } = parent;
+    const children: PendingElement[] = [];
+    const branches = [{ children: element.children, path }];
+    if (element.shadowRoot)
+      branches.push({ children: element.shadowRoot.children, path: `${path}/shadow` });
+    for (const branch of branches) {
+      const count =
+        depth >= 64
+          ? 0
+          : Math.min(branch.children.length, this.limit - pending.length - children.length);
+      if (count < branch.children.length) this.truncated = true;
+      for (let index = 0; index < count; index++) {
+        const child = branch.children[index];
+        if (child)
+          children.push({
+            element: child,
+            path: `${branch.path}/${index}`,
+            depth: depth + 1,
+            source,
+          });
+      }
+    }
+    pending.push(...children.reverse());
   }
 }

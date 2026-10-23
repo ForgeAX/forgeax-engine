@@ -17,7 +17,6 @@ export { decodeMeshBinary, normalizeMeshPayload } from './assets/mesh-binary';
 export { meshAssetContribution, meshAssetDecoder, meshAssetKind } from './assets/mesh-decoder';
 export {
   createPrimitiveMesh,
-  createProceduralMesh,
   type PrimitiveMeshKind,
 } from './assets/primitive-mesh';
 export { type UnpackedMeshBin, unpackMeshBin } from './assets/unpack-mesh-bin';
@@ -130,6 +129,7 @@ export {
   type VertexLayoutProjectionAttribute,
   type VertexLayoutProjectionMaskError,
 } from './vertex-attribute-layout';
+export { withVertexColor } from './vertex-color';
 export {
   buildVisibilityDistanceField,
   visibilityDistanceFieldSourceDigest,

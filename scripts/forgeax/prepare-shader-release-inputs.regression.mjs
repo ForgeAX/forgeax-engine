@@ -5,9 +5,11 @@ import { access, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  engineShaderSourceDigest,
-  PACKAGED_SOURCE_RECORD,
-} from '../../packages/vite-plugin-shader/dist/source-digest.mjs';
+  decodePackagedProfiles,
+  PACKAGED_PROFILES_FILE,
+  packagedProfilePublication,
+} from '../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
+import { engineShaderSourceDigest } from '../../packages/vite-plugin-shader/dist/source-digest.mjs';
 import { sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -68,7 +70,7 @@ assert.ok(buildReport.imports > 0, 'the real shader source catalog must be popul
 
 const allOutput = `${result.stdout}\n${result.stderr}`;
 const noCacheRuns = allOutput.match(
-  /\[shared-build\] local shader reuse disabled by FORGEAX_BUILD_NO_TASK_CACHE/g,
+  /\[shared-build\] shader reuse disabled by FORGEAX_BUILD_NO_TASK_CACHE/g,
 );
 assert.equal(
   noCacheRuns?.length ?? 0,
@@ -113,27 +115,22 @@ for (const profile of profiles) {
   );
 
   const releaseShaderManifest = resolve(releaseRoot, 'shaders/manifest.json');
-  const packagedProfileRoot = resolve(packageOutput, profile);
-  const packagedShaderManifest = resolve(packagedProfileRoot, 'manifest.json');
-  const packagedImports = JSON.parse(
-    await readFile(resolve(packagedProfileRoot, 'imports.json'), 'utf8'),
+  const container = decodePackagedProfiles(
+    await readFile(resolve(packageOutput, PACKAGED_PROFILES_FILE)),
   );
-  const sourceRecord = JSON.parse(
-    await readFile(resolve(packagedProfileRoot, PACKAGED_SOURCE_RECORD), 'utf8'),
+  assert.ok(container, 'the packaged profile container must use the current format');
+  const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+  const releaseHash = sha256(
+    JSON.stringify(JSON.parse(await readFile(releaseShaderManifest, 'utf8'))),
   );
-  const releaseHash = createHash('sha256')
-    .update(await readFile(releaseShaderManifest))
-    .digest('hex');
-  const packagedHash = createHash('sha256')
-    .update(await readFile(packagedShaderManifest))
-    .digest('hex');
+  const packagedHash = sha256(JSON.stringify(packagedProfilePublication(container, profile)));
   assert.equal(
     packagedHash,
     releaseHash,
-    `${profile} must package the real compiler manifest bytes`,
+    `${profile} must package the real compiler manifest publication`,
   );
-  assert.equal(Object.keys(packagedImports).length, buildReport.imports);
-  assert.equal(sourceRecord.shaderSourceDigest, expectedSourceDigest);
+  assert.equal(Object.keys(container.imports).length, buildReport.imports);
+  assert.equal(container.shaderSourceDigest, expectedSourceDigest);
   profileResults.push({
     profile,
     pointShadows,

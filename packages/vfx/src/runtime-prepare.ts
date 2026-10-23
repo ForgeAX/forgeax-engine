@@ -109,6 +109,276 @@ function validInstanceCompute(value: unknown): boolean {
   );
 }
 
+const REQUIRED_ENTRY_POINTS = [
+  'forgeax_vfx_spawn_main',
+  'forgeax_vfx_update_main',
+  'forgeax_vfx_compact_main',
+  'forgeax_vfx_billboard_main',
+  'forgeax_vfx_mesh_main',
+  'forgeax_vfx_ribbon_main',
+  'forgeax_vfx_trail_main',
+  'forgeax_vfx_beam_main',
+];
+
+/** The cooked reflection tables a runtime emitter is admitted against. */
+interface ReflectionTables extends Record<string, unknown> {
+  readonly entryPoints: unknown[];
+  readonly bindings: unknown[];
+  readonly resources: unknown[];
+  readonly dataInterfaces: unknown[];
+  readonly renderers: unknown[];
+  readonly stages: unknown[];
+}
+
+/** The reflected entry points exist in the executable WGSL and every reflection table is present. */
+function reflectionShapeValid(
+  reflection: Record<string, unknown>,
+  rendererCount: number,
+  executable: ReturnType<typeof program>,
+): reflection is ReflectionTables {
+  const entryPoints = reflection.entryPoints;
+  return (
+    Array.isArray(entryPoints) &&
+    REQUIRED_ENTRY_POINTS.every((name) => entryPoints.includes(name)) &&
+    entryPoints.every((name) => typeof name === 'string' && executable.entries.has(name)) &&
+    Array.isArray(reflection.bindings) &&
+    Array.isArray(reflection.resources) &&
+    Array.isArray(reflection.dataInterfaces) &&
+    Array.isArray(reflection.renderers) &&
+    reflection.renderers.length === rendererCount &&
+    Array.isArray(reflection.stages)
+  );
+}
+
+/** Reflected bindings cover the executable WGSL bindings exactly once. */
+function reflectedBindingKeys(
+  bindings: readonly unknown[],
+  executable: ReturnType<typeof program>,
+  path: string,
+): Result<Set<string>, AssetError> {
+  const bindingKeys = new Set<string>();
+  for (const group of bindings) {
+    if (!record(group) || typeof group.label !== 'string' || !Array.isArray(group.entries))
+      return invalid(`${path}.bindings`);
+    const groupIndex = /^@group\((\d+)\)$/.exec(group.label)?.[1];
+    if (groupIndex === undefined) return invalid(`${path}.bindings`);
+    for (const entry of group.entries) {
+      if (!record(entry) || !Number.isSafeInteger(entry.binding) || (entry.binding as number) < 0)
+        return invalid(`${path}.bindings`);
+      const key = `${groupIndex}:${entry.binding}`;
+      if (bindingKeys.has(key) || !executable.bindings.has(key))
+        return invalid(
+          `${path}.bindings`,
+          'reflected bindings present exactly once in executable WGSL',
+        );
+      bindingKeys.add(key);
+    }
+  }
+  if (bindingKeys.size !== executable.bindings.size)
+    return invalid(
+      `${path}.bindings`,
+      'complete reflected coverage of canonical cooked WGSL bindings',
+    );
+  return ok(bindingKeys);
+}
+
+/** Force fields are valid and declared exactly when the reflection requires the force-field binding. */
+function forceFieldsMatchReflection(
+  fields: unknown,
+  dataInterfaces: readonly unknown[],
+  bindingKeys: ReadonlySet<string>,
+  path: string,
+): boolean {
+  if (fields !== undefined && !validateVfxForceFields(fields, `${path}.forceFields`, true).ok)
+    return false;
+  const requirements = dataInterfaces.filter(
+    (entry) => record(entry) && entry.kind === 'force-fields',
+  );
+  return !(fields === undefined
+    ? requirements.length !== 0
+    : requirements.length !== 1 ||
+      !record(requirements[0]) ||
+      requirements[0].token !== 'vfx:force-fields' ||
+      requirements[0].binding !== 17 ||
+      requirements[0].bindingType !== 'read-only-storage' ||
+      !bindingKeys.has('0:17'));
+}
+
+function linkReference(
+  value: unknown,
+  kind: 'material' | 'mesh' | 'texture',
+  context: AssetPreparationContext | undefined,
+): Result<string | AssetHandle, AssetError> {
+  if (typeof value !== 'string' && typeof value !== 'number')
+    return invalid(kind, `a ${kind} GUID or owned handle`);
+  return context === undefined
+    ? ok(value as string | AssetHandle)
+    : context.reference(value as string | AssetHandle, kind);
+}
+
+/** Renderers matching the cooked topology, with material and mesh references linked. */
+function linkRenderers(
+  renderers: readonly unknown[],
+  reflected: readonly unknown[],
+  path: string,
+  context: AssetPreparationContext | undefined,
+): Result<Record<string, unknown>[], AssetError> {
+  const linked = [];
+  for (const [rendererIndex, renderer] of renderers.entries()) {
+    if (!record(renderer)) return invalid(`${path}.renderers`);
+    const projection = reflected[rendererIndex];
+    if (!record(projection) || projection.topology !== renderer.kind)
+      return invalid(
+        `${path}.renderers[${rendererIndex}]`,
+        'renderer topology matching the cooked projection',
+      );
+    const material = linkReference(renderer.material, 'material', context);
+    if (!material.ok) return material;
+    let mesh: string | AssetHandle | { readonly source: 'player' } | undefined;
+    if (renderer.kind === 'mesh') {
+      if (
+        record(renderer.mesh) &&
+        renderer.mesh.source === 'player' &&
+        Object.keys(renderer.mesh).length === 1
+      )
+        mesh = { source: 'player' };
+      else {
+        const resolved = linkReference(renderer.mesh, 'mesh', context);
+        if (!resolved.ok) return resolved;
+        mesh = resolved.value;
+      }
+    }
+    linked.push({
+      ...renderer,
+      material: material.value,
+      ...(mesh === undefined ? {} : { mesh }),
+    });
+  }
+  return ok(linked);
+}
+
+/** Force fields with their vector-field texture references linked. */
+function linkForceFields(
+  fields: unknown,
+  context: AssetPreparationContext | undefined,
+): Result<unknown[], AssetError> {
+  const linkedFields = [];
+  for (const field of (fields ?? []) as NonNullable<VfxGpuEmitterProgram['forceFields']>) {
+    if (field.kind !== 'vector') {
+      linkedFields.push(field);
+      continue;
+    }
+    const texture = linkReference(field.texture, 'texture', context);
+    if (!texture.ok) return texture;
+    linkedFields.push({ ...field, texture: texture.value });
+  }
+  return ok(linkedFields);
+}
+
+/** The author-source projection the Program v3 validator re-checks. */
+function authorEmitterSource(normalized: Record<string, unknown>): Record<string, unknown> {
+  // Reuse the author validator for schedules, bounds, renderer controls, channels and cross-emitter references.
+  const {
+    wgsl: _wgsl,
+    instanceCompute: _instanceCompute,
+    reflection: _reflection,
+    module,
+    channels,
+    events,
+    ...metadata
+  } = normalized;
+  return {
+    ...metadata,
+    program: { module },
+    ...(Array.isArray(channels) && channels.length > 0 ? { channels } : {}),
+    ...(Array.isArray(events) && events.length > 0 ? { events } : {}),
+  };
+}
+
+/** The fingerprint identity: executable WGSL is replaced by its digest. */
+function emitterIdentity(
+  normalized: Record<string, unknown>,
+  instanceCompute: unknown,
+  digest: string,
+): unknown {
+  return {
+    ...normalized,
+    wgsl: digest,
+    ...(record(instanceCompute) && typeof instanceCompute.wgsl === 'string'
+      ? {
+          instanceCompute: {
+            ...instanceCompute,
+            wgsl: program(instanceCompute.wgsl).digest,
+          },
+        }
+      : {}),
+  };
+}
+
+interface PreparedRuntimeEmitter {
+  readonly layoutKey: string;
+  readonly emitter: Record<string, unknown>;
+  readonly source: Record<string, unknown>;
+  readonly identity: unknown;
+}
+
+/** Validate one cooked emitter against its executable WGSL and link its references. */
+function prepareRuntimeEmitter(
+  value: unknown,
+  path: string,
+  layoutIdentity: string | undefined,
+  context: AssetPreparationContext | undefined,
+): Result<PreparedRuntimeEmitter, AssetError> {
+  if (
+    !record(value) ||
+    typeof value.wgsl !== 'string' ||
+    value.wgsl.length === 0 ||
+    value.wgsl.length > 8 * 1024 * 1024 ||
+    !record(value.reflection) ||
+    !Array.isArray(value.renderers)
+  )
+    return invalid(path);
+  if (!validInstanceCompute(value.instanceCompute)) return invalid(`${path}.instanceCompute`);
+  const reflection = value.reflection;
+  const layout = validateVfxEffectReflection(reflection.layout);
+  if (!layout.ok) return invalid(`${path}.${layout.error.detail.path}`, layout.error.expected);
+  const layoutKey = canonical({
+    ...layout.value,
+    fingerprint: undefined,
+    dataInterfaces: undefined,
+  });
+  if (layoutIdentity !== undefined && layoutIdentity !== layoutKey)
+    return invalid(`${path}.layout`, 'one shared Parameters/Custom layout across effect emitters');
+  const executable = program(value.wgsl);
+  if (!reflectionShapeValid(reflection, value.renderers.length, executable))
+    return invalid(`${path}.reflection`);
+  const bindingKeys = reflectedBindingKeys(reflection.bindings, executable, path);
+  if (!bindingKeys.ok) return bindingKeys;
+  const fields = value.forceFields;
+  if (!forceFieldsMatchReflection(fields, reflection.dataInterfaces, bindingKeys.value, path))
+    return invalid(`${path}.forceFields`);
+  const renderers = linkRenderers(value.renderers, reflection.renderers, path, context);
+  if (!renderers.ok) return renderers;
+  const linkedFields = linkForceFields(fields, context);
+  if (!linkedFields.ok) return linkedFields;
+  const linked = fields === undefined ? {} : { forceFields: linkedFields.value };
+  const emitter: Record<string, unknown> = {
+    ...value,
+    renderers: renderers.value,
+    ...linked,
+    reflection: {
+      ...reflection,
+      layout: { ...layout.value, fingerprint: `sha256:${sha256(layoutKey)}` },
+    },
+  };
+  return ok({
+    layoutKey,
+    emitter,
+    source: authorEmitterSource(emitter),
+    identity: emitterIdentity(emitter, value.instanceCompute, executable.digest),
+  });
+}
+
 /** Synchronous runtime owner admission, also used after source artifact verification. */
 export function prepareRuntimeParticleEffect(
   input: unknown,
@@ -128,186 +398,18 @@ export function prepareRuntimeParticleEffect(
   const emitters: VfxGpuEmitterProgram[] = [];
   const identities: unknown[] = [];
   let layoutIdentity: string | undefined;
-  const reference = (
-    value: unknown,
-    kind: 'material' | 'mesh' | 'texture',
-  ): Result<string | AssetHandle, AssetError> => {
-    if (typeof value !== 'string' && typeof value !== 'number')
-      return invalid(kind, `a ${kind} GUID or owned handle`);
-    return context === undefined
-      ? ok(value as string | AssetHandle)
-      : context.reference(value as string | AssetHandle, kind);
-  };
   for (const [index, value] of input.program.emitters.entries()) {
-    const path = `program.emitters[${index}]`;
-    if (
-      !record(value) ||
-      typeof value.wgsl !== 'string' ||
-      value.wgsl.length === 0 ||
-      value.wgsl.length > 8 * 1024 * 1024 ||
-      !record(value.reflection) ||
-      !Array.isArray(value.renderers)
-    )
-      return invalid(path);
-    if (!validInstanceCompute(value.instanceCompute)) return invalid(`${path}.instanceCompute`);
-    const reflection = value.reflection;
-    const layout = validateVfxEffectReflection(reflection.layout);
-    if (!layout.ok) return invalid(`${path}.${layout.error.detail.path}`, layout.error.expected);
-    const layoutKey = canonical({
-      ...layout.value,
-      fingerprint: undefined,
-      dataInterfaces: undefined,
-    });
-    if (layoutIdentity !== undefined && layoutIdentity !== layoutKey)
-      return invalid(
-        `${path}.layout`,
-        'one shared Parameters/Custom layout across effect emitters',
-      );
-    layoutIdentity = layoutKey;
-    const executable = program(value.wgsl);
-    const entryPoints = reflection.entryPoints;
-    if (
-      !Array.isArray(entryPoints) ||
-      ![
-        'forgeax_vfx_spawn_main',
-        'forgeax_vfx_update_main',
-        'forgeax_vfx_compact_main',
-        'forgeax_vfx_billboard_main',
-        'forgeax_vfx_mesh_main',
-        'forgeax_vfx_ribbon_main',
-        'forgeax_vfx_trail_main',
-        'forgeax_vfx_beam_main',
-      ].every((name) => entryPoints.includes(name)) ||
-      !entryPoints.every((name) => typeof name === 'string' && executable.entries.has(name)) ||
-      !Array.isArray(reflection.bindings) ||
-      !Array.isArray(reflection.resources) ||
-      !Array.isArray(reflection.dataInterfaces) ||
-      !Array.isArray(reflection.renderers) ||
-      reflection.renderers.length !== value.renderers.length ||
-      !Array.isArray(reflection.stages)
-    )
-      return invalid(`${path}.reflection`);
-    const bindingKeys = new Set<string>();
-    for (const group of reflection.bindings) {
-      if (!record(group) || typeof group.label !== 'string' || !Array.isArray(group.entries))
-        return invalid(`${path}.bindings`);
-      const groupIndex = /^@group\((\d+)\)$/.exec(group.label)?.[1];
-      if (groupIndex === undefined) return invalid(`${path}.bindings`);
-      for (const entry of group.entries) {
-        if (!record(entry) || !Number.isSafeInteger(entry.binding) || (entry.binding as number) < 0)
-          return invalid(`${path}.bindings`);
-        const key = `${groupIndex}:${entry.binding}`;
-        if (bindingKeys.has(key) || !executable.bindings.has(key))
-          return invalid(
-            `${path}.bindings`,
-            'reflected bindings present exactly once in executable WGSL',
-          );
-        bindingKeys.add(key);
-      }
-    }
-    if (bindingKeys.size !== executable.bindings.size)
-      return invalid(
-        `${path}.bindings`,
-        'complete reflected coverage of canonical cooked WGSL bindings',
-      );
-    const fields = value.forceFields;
-    if (fields !== undefined && !validateVfxForceFields(fields, `${path}.forceFields`, true).ok)
-      return invalid(`${path}.forceFields`);
-    const requirements = reflection.dataInterfaces.filter(
-      (entry) => record(entry) && entry.kind === 'force-fields',
+    const prepared = prepareRuntimeEmitter(
+      value,
+      `program.emitters[${index}]`,
+      layoutIdentity,
+      context,
     );
-    if (
-      fields === undefined
-        ? requirements.length !== 0
-        : requirements.length !== 1 ||
-          !record(requirements[0]) ||
-          requirements[0].token !== 'vfx:force-fields' ||
-          requirements[0].binding !== 17 ||
-          requirements[0].bindingType !== 'read-only-storage' ||
-          !bindingKeys.has('0:17')
-    )
-      return invalid(`${path}.forceFields`);
-    const renderers = [];
-    for (const [rendererIndex, renderer] of value.renderers.entries()) {
-      if (!record(renderer)) return invalid(`${path}.renderers`);
-      const reflected = reflection.renderers[rendererIndex];
-      if (!record(reflected) || reflected.topology !== renderer.kind)
-        return invalid(
-          `${path}.renderers[${rendererIndex}]`,
-          'renderer topology matching the cooked projection',
-        );
-      const material = reference(renderer.material, 'material');
-      if (!material.ok) return material;
-      let mesh: string | AssetHandle | { readonly source: 'player' } | undefined;
-      if (renderer.kind === 'mesh') {
-        if (
-          record(renderer.mesh) &&
-          renderer.mesh.source === 'player' &&
-          Object.keys(renderer.mesh).length === 1
-        )
-          mesh = { source: 'player' };
-        else {
-          const resolved = reference(renderer.mesh, 'mesh');
-          if (!resolved.ok) return resolved;
-          mesh = resolved.value;
-        }
-      }
-      renderers.push({
-        ...renderer,
-        material: material.value,
-        ...(mesh === undefined ? {} : { mesh }),
-      });
-    }
-    const linkedFields = [];
-    for (const field of (fields ?? []) as NonNullable<VfxGpuEmitterProgram['forceFields']>) {
-      if (field.kind !== 'vector') {
-        linkedFields.push(field);
-        continue;
-      }
-      const texture = reference(field.texture, 'texture');
-      if (!texture.ok) return texture;
-      linkedFields.push({ ...field, texture: texture.value });
-    }
-    const normalized: Record<string, unknown> = {
-      ...value,
-      renderers,
-      ...(fields === undefined ? {} : { forceFields: linkedFields }),
-      reflection: {
-        ...reflection,
-        layout: { ...layout.value, fingerprint: `sha256:${sha256(layoutKey)}` },
-      },
-    };
-    // Reuse the author validator for schedules, bounds, renderer controls, channels and cross-emitter references.
-    const {
-      wgsl: _wgsl,
-      instanceCompute: _instanceCompute,
-      reflection: _reflection,
-      module,
-      channels,
-      events,
-      ...metadata
-    } = normalized;
-    sourceEmitters.push({
-      ...metadata,
-      program: { module },
-      ...(Array.isArray(channels) && channels.length > 0 ? { channels } : {}),
-      ...(Array.isArray(events) && events.length > 0 ? { events } : {}),
-      renderers,
-      ...(fields === undefined ? {} : { forceFields: linkedFields }),
-    });
-    emitters.push(normalized as unknown as VfxGpuEmitterProgram);
-    identities.push({
-      ...normalized,
-      wgsl: executable.digest,
-      ...(record(value.instanceCompute) && typeof value.instanceCompute.wgsl === 'string'
-        ? {
-            instanceCompute: {
-              ...value.instanceCompute,
-              wgsl: program(value.instanceCompute.wgsl).digest,
-            },
-          }
-        : {}),
-    });
+    if (!prepared.ok) return prepared;
+    layoutIdentity = prepared.value.layoutKey;
+    sourceEmitters.push(prepared.value.source);
+    emitters.push(prepared.value.emitter as unknown as VfxGpuEmitterProgram);
+    identities.push(prepared.value.identity);
   }
   const source = parseParticleEffectSourceV3({ schemaVersion: 3, emitters: sourceEmitters }, true);
   if (!source.ok) return invalid(source.error.detail.path, source.error.expected);

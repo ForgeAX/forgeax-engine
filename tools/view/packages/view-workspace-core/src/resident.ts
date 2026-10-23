@@ -2,10 +2,9 @@ import type { HostCallerIdentity, HostTransportServer, HostTransportClient } fro
 import type { FrontendConfig } from './frontend-contract.ts';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-export type ViewHostServerOptions = { backendHost?: { transport: HostTransportServer }; transport?: HostTransportServer; accessToken?: string; host?: string; port?: number; path?: string; staticRoot?: string | URL; frontendConfig?: Pick<FrontendConfig, 'layout'>; frontendSourceId?: string; onClientConnect?: (caller: HostCallerIdentity) => unknown; onClientDisconnect?: (caller: HostCallerIdentity) => unknown };
+export type ViewHostServerOptions = { backendHost?: { transport: HostTransportServer }; transport?: HostTransportServer; accessToken?: string; host?: string; port?: number; path?: string; staticRoot?: string | URL; /** Serves Engine-owned viewer binaries; see viewer-static. */ engineRoot?: string; frontendConfig?: Pick<FrontendConfig, 'layout'>; frontendSourceId?: string; onClientConnect?: (caller: HostCallerIdentity) => unknown; onClientDisconnect?: (caller: HostCallerIdentity) => unknown };
 
-import { createReadStream, existsSync, statSync } from 'node:fs';
-import { join, normalize } from 'node:path';
+import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -15,26 +14,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import { createViewWorkspaceClient } from './client.ts';
 import { requireWorkspaceString, workspaceError } from './contract.ts';
+import { resolveViewerFile, viewerContentType } from './viewer-static.ts';
 
 const DEFAULT_PATH = '/__forgeax/view-workspace';
 const BOOTSTRAP_PATH = '/__forgeax/view/bootstrap';
-
-const STATIC_MIME: Readonly<Record<string, string>> = Object.freeze({
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.map': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
-  '.json': 'application/json; charset=utf-8',
-});
-
-function staticContentType(filePath: string) {
-  const index = filePath.lastIndexOf('.');
-  if (index === -1) return 'application/octet-stream';
-  return STATIC_MIME[filePath.slice(index)] ?? 'application/octet-stream';
-}
 
 function isLoopbackHost(host: string) {
   const normalized = host.toLowerCase().replace(/^\[(.*)\]$/, '$1');
@@ -44,13 +27,6 @@ function isLoopbackHost(host: string) {
     normalized === '0:0:0:0:0:0:0:1' ||
     normalized.startsWith('127.')
   );
-}
-
-function resolveStaticFile(root: string, requestPath: string) {
-  const relative = normalize(requestPath).replace(/^(\.\.(\/|\\|$))+/, '');
-  const absolute = join(root, relative);
-  if (!absolute.startsWith(root)) return undefined;
-  return absolute;
 }
 
 function rejectUpgrade(socket: Duplex, status: string, message: string) {
@@ -90,6 +66,7 @@ export async function startViewHostServer({
   onClientConnect,
   onClientDisconnect,
   staticRoot,
+  engineRoot,
   frontendConfig,
 }: ViewHostServerOptions = {}) {
   if (!transport || typeof transport.connect !== 'function') {
@@ -148,18 +125,19 @@ export async function startViewHostServer({
       response.end('View workspace WebSocket endpoint only');
       return;
     }
-    let filePath = resolveStaticFile(
+    const filePath = resolveViewerFile(
       staticRootPath,
       url.pathname === '/' ? '/index.html' : url.pathname,
+      engineRoot,
     );
-    if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
+    if (filePath) {
       response.statusCode = 200;
-      response.setHeader('Content-Type', staticContentType(filePath));
+      response.setHeader('Content-Type', viewerContentType(filePath));
       createReadStream(filePath).pipe(response);
       return;
     }
-    const spa = resolveStaticFile(staticRootPath, '/index.html');
-    if (spa && existsSync(spa)) {
+    const spa = resolveViewerFile(staticRootPath, '/index.html');
+    if (spa) {
       response.statusCode = 200;
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       createReadStream(spa).pipe(response);

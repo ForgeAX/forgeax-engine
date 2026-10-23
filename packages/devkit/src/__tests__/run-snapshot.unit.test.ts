@@ -4,6 +4,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -633,6 +634,67 @@ it('preserves bundled dependency layout and root-provided native leaves after is
     expect(
       (await import(pathToFileURL(join(snapshot.root, 'node_modules/bundle/index.cjs')).href))
         .default,
+    ).toBe(42);
+    await snapshot.dispose();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('keeps registry siblings reached by declared bundles inside the snapshot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-snapshot-bundle-sibling-'));
+  const project = join(directory, 'project');
+  // pnpm places a scoped bundle's registry dependencies beside it; npm-packlist
+  // then lists them from the bundled member as `../../shared/...`.
+  const store = join(project, 'node_modules/.pnpm/@scope+bundle@1.0.0/node_modules');
+  const bundle = join(store, '@scope/bundle');
+  try {
+    const packages = [
+      {
+        root: project,
+        manifest: { name: 'project', dependencies: { '@scope/bundle': '1.0.0' } },
+        source: '',
+      },
+      {
+        root: bundle,
+        manifest: {
+          name: '@scope/bundle',
+          dependencies: { '@scope/driver': '1.0.0', shared: '1.0.0' },
+          bundledDependencies: ['@scope/driver'],
+        },
+        source: "module.exports = require('@scope/driver');",
+      },
+      {
+        root: join(bundle, 'node_modules/@scope/driver'),
+        manifest: { name: '@scope/driver', dependencies: { shared: '1.0.0' } },
+        source: "module.exports = require('shared');",
+      },
+      {
+        root: join(store, 'shared'),
+        manifest: { name: 'shared' },
+        source: 'module.exports = 42;',
+      },
+    ];
+    for (const { root, manifest, source } of packages) {
+      await mkdir(root, { recursive: true });
+      await writeFile(
+        join(root, 'package.json'),
+        JSON.stringify({ version: '1.0.0', main: 'index.cjs', ...manifest }),
+      );
+      await writeFile(join(root, 'index.cjs'), source);
+    }
+    await mkdir(join(project, 'node_modules/@scope'), { recursive: true });
+    await symlink(bundle, join(project, 'node_modules/@scope/bundle'), 'junction');
+    const snapshotDirectory = join(directory, 'snapshot');
+    const snapshot = await createRunSnapshot(project, snapshotDirectory);
+    expect((await readdir(snapshotDirectory)).sort()).toEqual(['dependencies', 'project']);
+    await rm(project, { recursive: true, force: true });
+    expect(
+      (
+        await import(
+          pathToFileURL(join(snapshot.root, 'node_modules/@scope/bundle/index.cjs')).href
+        )
+      ).default,
     ).toBe(42);
     await snapshot.dispose();
   } finally {

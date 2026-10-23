@@ -6,7 +6,7 @@
       "kind": "scene",
       "guid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
       "refs": [
-        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "ea110435-6e3a-5c6a-8475-bec8573c0640",
         "008e4f75-e7a3-4715-b05b-b93a9ec12074"
       ],
       "artifacts": {},
@@ -44,16 +44,6 @@
           }
         }
       }
-    },
-    {
-      "guid": "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
-      "kind": "mesh",
-      "payload": {
-        "kind": "mesh",
-        "geometry": "procedural-cube"
-      },
-      "refs": [],
-      "artifacts": {}
     },
     {
       "guid": "008e4f75-e7a3-4715-b05b-b93a9ec12074",

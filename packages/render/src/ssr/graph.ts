@@ -65,7 +65,7 @@ interface SsrSpatialGraphInputs {
   };
 }
 
-interface SsrSpatialGraphProjection {
+export interface SsrSpatialGraphProjection {
   readonly enabled: boolean;
   readonly passNames: readonly string[];
   readonly resources: SsrSpatialResources | undefined;

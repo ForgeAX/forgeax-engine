@@ -222,15 +222,15 @@ export async function createAppFromAssemble(
 }
 
 export interface BuildAppArgs {
-  readonly geometryLane?: RenderFrameInput['geometryLane'];
+  readonly geometryLane?: RenderFrameInput['geometryLane'] | undefined;
   readonly installAppPlugin: (plugin: Plugin) => Promise<Fiber>;
   readonly platform: Platform;
   readonly renderer: Renderer;
-  readonly assets?: AssetRegistry;
+  readonly assets?: AssetRegistry | undefined;
   readonly world: World;
   readonly pluginContext: Context;
   readonly disposePluginContext?: () => Promise<void>;
-  readonly inputBackend?: InputBackend;
+  readonly inputBackend?: InputBackend | undefined;
   /**
    * M2 D-4: callback that buildApp calls after creating the ErrorFanoutRegistry
    * dispatch function. The input handle's onLockError callback needs the dispatch
@@ -238,23 +238,23 @@ export interface BuildAppArgs {
    * is created inside buildApp (after the input handle is already constructed).
    * This callback bridges the gap.
    */
-  readonly wireOnLockErrorDispatch?: (dispatch: (err: AppError) => void) => void;
-  readonly audioBackend?: AudioBackend;
-  readonly silenceUnhandledErrors?: boolean;
+  readonly wireOnLockErrorDispatch?: ((dispatch: (err: AppError) => void) => void) | undefined;
+  readonly audioBackend?: AudioBackend | undefined;
+  readonly silenceUnhandledErrors?: boolean | undefined;
   /** Optional App-owned RHI capture capability. */
-  readonly rhiCapture?: RhiCapture;
+  readonly rhiCapture?: RhiCapture | undefined;
   /** feat-20260615 debug-draw M5: DebugDraw instance created by createDebugDrawOnReady. */
-  readonly debugDraw?: DebugDraw;
+  readonly debugDraw?: DebugDraw | undefined;
   /** feat-20260629 M4 / w20: remote eval server handle from createAppFromCanvas. */
-  readonly remoteHandle?: { readonly port: number; close(): Promise<void> };
+  readonly remoteHandle?: { readonly port: number; close(): Promise<void> } | undefined;
   /**
    * feat-20260709-editor-world-partition-editorworld-super-composite / M2 / D-3:
    * per-frame draw-source pull forwarded verbatim into the frame-loop. Absent =>
    * the allocation-free primary-World path. Both createApp forms (canvas + assemble) forward
    * it from their respective options object.
    */
-  readonly drawSource?: import('./types').DrawSource;
-  readonly profiler?: import('@forgeax/engine-profiler').Profiler;
+  readonly drawSource?: import('./types').DrawSource | undefined;
+  readonly profiler?: import('@forgeax/engine-profiler').Profiler | undefined;
   readonly executionControl?: import('./execution/control').LocalExecutionControl;
   /** Mutable indirection lets the pre-loop execution control observe its owner. */
   readonly frameInspection?: FrameInspectionRef;

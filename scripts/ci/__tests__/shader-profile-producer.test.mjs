@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -13,6 +14,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
+import {
+  decodePackagedProfiles,
+  encodePackagedProfiles,
+  packagedProfilePublication,
+} from '../../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
 import { engineShaderSourceDigest } from '../../../packages/vite-plugin-shader/dist/source-digest.mjs';
 import {
   sharedShaderInputFingerprint,
@@ -20,6 +26,21 @@ import {
 } from '../../lib/shared-build-cache.mjs';
 
 const script = 'scripts/forgeax/prepare-shader-release-inputs.mjs';
+
+/** A minimal publication whose single fragment names its producer. */
+const publication = (marker) =>
+  JSON.stringify({
+    schemaVersion: '5.0.0',
+    receipts: [],
+    entryPoints: [],
+    fragments: [marker],
+    sources: { [createHash('sha256').update(marker).digest('hex')]: [0] },
+    entries: [],
+    materialShaders: [],
+  });
+const packaged = (output) => decodePackagedProfiles(readFileSync(join(output, 'profiles.json.gz')));
+const profileMarker = (output, name) =>
+  packagedProfilePublication(packaged(output), name)?.fragments[0];
 
 test('workflow stance permits bounded cache transport but rejects test and job overrides', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-cache-stance-'));
@@ -64,29 +85,30 @@ test('preparing one shader profile preserves declarations and other profiles', (
   const output = join(root, 'output');
   try {
     mkdirSync(join(input, 'point-ssao', 'shaders'), { recursive: true });
-    writeFileSync(join(input, 'point-ssao', 'shaders', 'manifest.json'), '{"entries":[]}');
-    mkdirSync(join(output, 'base-ssao'), { recursive: true });
-    writeFileSync(join(output, 'base-ssao', 'manifest.json'), 'existing base');
+    writeFileSync(join(input, 'point-ssao', 'shaders', 'manifest.json'), publication('point'));
+    mkdirSync(output, { recursive: true });
+    const shaderSourceDigest = engineShaderSourceDigest('packages/shader/src');
+    writeFileSync(
+      join(output, 'profiles.json.gz'),
+      encodePackagedProfiles({
+        shaderSourceDigest,
+        imports: {},
+        publications: { 'base-ssao': JSON.parse(publication('existing base')) },
+      }),
+    );
     writeFileSync(join(output, 'load-engine-shader-entries.d.ts'), 'existing declaration');
     const args = [script, '--profile', 'point-ssao', '--input', input, '--output', output];
     for (let attempt = 0; attempt < 2; attempt++) {
       execFileSync(process.execPath, args, { encoding: 'utf8' });
-      assert.equal(
-        readFileSync(join(output, 'point-ssao', 'manifest.json'), 'utf8'),
-        '{"entries":[]}',
-      );
-      assert.equal(
-        readFileSync(join(output, 'base-ssao', 'manifest.json'), 'utf8'),
-        'existing base',
-      );
+      assert.equal(profileMarker(output, 'point-ssao'), 'point');
+      assert.equal(profileMarker(output, 'base-ssao'), 'existing base');
       assert.equal(
         readFileSync(join(output, 'load-engine-shader-entries.d.ts'), 'utf8'),
         'existing declaration',
       );
-      const imports = JSON.parse(readFileSync(join(output, 'point-ssao', 'imports.json'), 'utf8'));
-      assert.ok(Object.keys(imports).some((key) => key.includes('slot::surface')));
-      const record = JSON.parse(readFileSync(join(output, 'point-ssao', 'source.json'), 'utf8'));
-      assert.equal(record.shaderSourceDigest, engineShaderSourceDigest('packages/shader/src'));
+      const container = packaged(output);
+      assert.ok(Object.keys(container.imports).some((key) => key.includes('slot::surface')));
+      assert.equal(container.shaderSourceDigest, shaderSourceDigest);
     }
     const invalid = spawnSync(
       process.execPath,
@@ -95,10 +117,7 @@ test('preparing one shader profile preserves declarations and other profiles', (
     );
     assert.notEqual(invalid.status, 0);
     assert.match(invalid.stderr, /unknown shader profile/);
-    assert.equal(
-      readFileSync(join(output, 'point-ssao', 'manifest.json'), 'utf8'),
-      '{"entries":[]}',
-    );
+    assert.equal(profileMarker(output, 'point-ssao'), 'point');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -163,6 +182,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       'scripts/lib/shared-build-cache.mjs',
       'scripts/build-task-cache.mjs',
       'packages/vite-plugin-shader/dist/source-digest.mjs',
+      'packages/vite-plugin-shader/dist/packaged-profiles.mjs',
     ]) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       cpSync(file, join(root, file));
@@ -194,7 +214,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       import { resolve } from 'node:path';
       const out = process.argv[process.argv.indexOf('--out') + 1];
       mkdirSync(resolve(out, 'shaders'), { recursive: true });
-      writeFileSync(resolve(out, 'shaders/manifest.json'), '{"sourceBuild":true}');
+      writeFileSync(resolve(out, 'shaders/manifest.json'), ${JSON.stringify(publication('sourceBuild'))});
       console.log('SOURCE_BUILD_CALLED');
     `,
     );
@@ -209,7 +229,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       payload: { engineShaderManifest: 'shared-app-inputs/shaders/manifest.json' },
     };
     const publish = () => {
-      write('shared-app-inputs/shaders/manifest.json', '{"shared":true}');
+      write('shared-app-inputs/shaders/manifest.json', publication('shared'));
       writeFileSync(
         sharedPath,
         JSON.stringify({
@@ -243,7 +263,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       });
     assert.match(invoke(), /verified shared point-ssao; compile count=0/);
     assert.equal(existsSync(input), false, 'shared hit must not run the local producer');
-    assert.equal(readFileSync(join(output, 'point-ssao/manifest.json'), 'utf8'), '{"shared":true}');
+    assert.equal(profileMarker(output, 'point-ssao'), 'shared');
     for (const mutate of [
       () => rmSync(sharedPath),
       () => writeFileSync(sharedPath, '{}'),
@@ -272,17 +292,14 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       publish();
       mutate();
       assert.match(invoke(), /SOURCE_BUILD_CALLED/);
-      assert.equal(
-        readFileSync(join(output, 'point-ssao/manifest.json'), 'utf8'),
-        '{"sourceBuild":true}',
-      );
+      assert.equal(profileMarker(output, 'point-ssao'), 'sourceBuild');
     }
     // Restored SDK profile inputs have no local task-cache receipt and may
     // arrive on a different checkout path. Reuse their existing transfer receipt.
     const cachedPath = join(input, 'point-ssao/manifest.json');
     const cachedShader = join(input, 'point-ssao/shaders/manifest.json');
     const publishCached = () => {
-      write('local/point-ssao/shaders/manifest.json', '{"cached":true}');
+      write('local/point-ssao/shaders/manifest.json', publication('cached'));
       writeFileSync(
         cachedPath,
         JSON.stringify({
@@ -299,7 +316,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     rmSync(sharedPath, { force: true });
     publishCached();
     assert.match(invoke(), /verified cached point-ssao; compile count=0/);
-    assert.equal(readFileSync(join(output, 'point-ssao/manifest.json'), 'utf8'), '{"cached":true}');
+    assert.equal(profileMarker(output, 'point-ssao'), 'cached');
     const portable = mkdtempSync(join(tmpdir(), 'forgeax-shader-portable-'));
     try {
       cpSync(root, portable, { recursive: true });
@@ -345,10 +362,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       publishCached();
       mutate();
       assert.match(invoke(), /SOURCE_BUILD_CALLED/);
-      assert.equal(
-        readFileSync(join(output, 'point-ssao/manifest.json'), 'utf8'),
-        '{"sourceBuild":true}',
-      );
+      assert.equal(profileMarker(output, 'point-ssao'), 'sourceBuild');
     }
     publishCached();
     assert.match(invoke({ FORGEAX_BUILD_NO_TASK_CACHE: '1' }), /SOURCE_BUILD_CALLED/);
@@ -373,15 +387,12 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     );
     assert.equal((allProfiles.match(/SOURCE_BUILD_CALLED/g) ?? []).length, 1);
     assert.match(allProfiles, /verified shared point-ssao; compile count=0/);
-    for (const name of ['base-base', 'point-base']) {
+    // Retired per-profile directories, including obsolete no-SSAO copies, go.
+    for (const name of ['base-base', 'point-base', 'base-ssao', 'point-ssao']) {
       assert.equal(existsSync(join(output, name)), false);
     }
-    for (const name of ['base-ssao', 'point-ssao']) {
-      assert.equal(
-        readFileSync(join(output, name, 'manifest.json'), 'utf8'),
-        name === 'point-ssao' ? '{"shared":true}' : '{"sourceBuild":true}',
-      );
-    }
+    assert.equal(profileMarker(output, 'point-ssao'), 'shared');
+    assert.equal(profileMarker(output, 'base-ssao'), 'sourceBuild');
     // The core artifact carries a separately validated base profile. A point
     // shared input must never satisfy base admission, nor force every View
     // consumer to repeat the same source compilation.
@@ -389,7 +400,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     const coreShader = join(root, coreDirectory, 'shaders/manifest.json');
     const coreManifest = join(root, coreDirectory, 'manifest.json');
     const publishCore = () => {
-      write(`${coreDirectory}/shaders/manifest.json`, '{"coreBase":true}');
+      write(`${coreDirectory}/shaders/manifest.json`, publication('coreBase'));
       writeFileSync(
         coreManifest,
         JSON.stringify({
@@ -412,10 +423,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
         encoding: 'utf8',
       });
     assert.match(invokeBase(), /verified core base-ssao; compile count=0/);
-    assert.equal(
-      readFileSync(join(output, 'base-ssao/manifest.json'), 'utf8'),
-      '{"coreBase":true}',
-    );
+    assert.equal(profileMarker(output, 'base-ssao'), 'coreBase');
     for (const mutate of [
       () => rmSync(coreManifest),
       () => writeFileSync(coreShader, '{"corrupt":true}'),

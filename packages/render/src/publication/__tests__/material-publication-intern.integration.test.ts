@@ -134,10 +134,15 @@ async function fixture() {
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
   const timings = { prepareMs: 0, transportMs: 0, acceptMs: 0 };
-  const publish = () => {
+  const publish = (...malformed: ((packet: RenderPublication) => void)[]) => {
     let start = performance.now();
     const candidate = publisher.prepare(0).unwrap();
     timings.prepareMs += performance.now() - start;
+    for (const mutate of malformed) {
+      const invalid = structuredClone(candidate.packet);
+      mutate(invalid);
+      expect(receiver.accept(invalid, receiving).ok).toBe(false);
+    }
     start = performance.now();
     // The Worker boundary: one structured clone per packet.
     const packet = structuredClone(candidate.packet, {
@@ -203,11 +208,12 @@ it('publishes copied materials with one shared, validated program projection', a
         `[material-publication] N=${N} incremental ${format(incremental)}; batch ${format(batched)}\n`,
       );
     }
-    // Publisher: every copied row references one detached projection, and the
-    // structured clone keeps that sharing across the Worker boundary.
+    // Publisher: the root's projection is already resident, so every copied
+    // row names an accepted holder instead of carrying the projection again.
     const rows = batch.assets.filter((row) => row.value.kind === 'material');
     expect(rows).toHaveLength(N);
-    expect(new Set(rows.map((row) => row.materialProjection)).size).toBe(1);
+    expect(rows.every((row) => row.materialProjection === undefined)).toBe(true);
+    expect(rows.every((row) => Number.isSafeInteger(row.materialProjectionSource))).toBe(true);
     // Receiver: every admitted material, across all packets, holds the same
     // frozen owned projection, registered for its own payload.
     const admitted = f.admitted();
@@ -219,6 +225,43 @@ it('publishes copied materials with one shared, validated program projection', a
     expect(Object.isFrozen(projection?.passes[0]?.programs[0]?.abi)).toBe(true);
     for (const row of admitted)
       expect(f.receiving.getMaterialProjectionForPayload(row.value)).toBe(projection);
+  } finally {
+    f.dispose();
+  }
+}, 60_000);
+
+it('carries a projection once per resident lifetime, then names holders', async () => {
+  const f = await fixture();
+  try {
+    // Root and copies first published together share one carried projection.
+    for (let i = 0; i < 3; i += 1) f.copy();
+    const baseline = f.publish();
+    const carried = baseline.assets.filter((row) => row.materialProjection != null);
+    expect(carried.length).toBe(4);
+    expect(new Set(carried.map((row) => row.materialProjection)).size).toBe(1);
+    expect(baseline.assets.some((row) => row.materialProjectionSource !== undefined)).toBe(false);
+    // A later copy names a resident holder; the receiver adopts its owned
+    // projection and rejects an unknown or retiring holder.
+    f.copy();
+    const holderRow = (packet: RenderPublication) =>
+      packet.assets.find((item) => item.materialProjectionSource !== undefined) as {
+        materialProjectionSource?: number;
+      };
+    const next = f.publish(
+      (packet) => {
+        holderRow(packet).materialProjectionSource = 0x7fffffff;
+      },
+      (packet) => {
+        const holder = holderRow(packet).materialProjectionSource as number;
+        (packet as unknown as { retiredAssets: number[] }).retiredAssets = [holder];
+      },
+    );
+    const [row] = next.assets.filter((item) => item.value.kind === 'material');
+    expect(row?.materialProjection).toBeUndefined();
+    expect(carried.map((item) => item.handle)).toContain(row?.materialProjectionSource);
+    const projections = new Set(f.admitted().map((item) => item.projection));
+    expect(projections.size).toBe(1);
+    expect(f.admitted()).toHaveLength(5);
   } finally {
     f.dispose();
   }

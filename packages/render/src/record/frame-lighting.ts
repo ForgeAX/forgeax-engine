@@ -1143,8 +1143,8 @@ export function writeHdrpClusterAndSsaoBuffers(
       // cluster_uniform .w lane (formerly pad), removing the dedicated
       // @binding(9) UBO that pushed fragment-stage UBO count past
       // WebGL2's max_uniform_buffers_per_shader_stage=11. Disabled-SSAO
-      // path writes 0 so `mix(1.0, ssao*ao, 0.0) = 1.0` in the lighting
-      // shader (no PSO recompile across enable/disable).
+      // path writes 0, which lighting reads as "no screen AO" (no PSO
+      // recompile across enable/disable).
       const clusterSsaoConfig = frameState.installedPipelineConfig?.ssao;
       const clusterSsaoIntensity =
         clusterSsaoConfig !== undefined && clusterSsaoConfig.enabled === true

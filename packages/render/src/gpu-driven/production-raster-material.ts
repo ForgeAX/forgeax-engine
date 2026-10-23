@@ -235,6 +235,116 @@ function invalidSurfaceDynamicRange(
   return undefined;
 }
 
+function invalidSurfaceInputShape(
+  frameTime: number,
+  recordCapacity: number,
+  page: ReadonlyDynamicInputPage | undefined,
+  expectedLayout: MaterialDynamicInputLayout | undefined,
+): RhiError | undefined {
+  if (!Number.isFinite(frameTime)) {
+    return surfaceDynamicInputError(
+      'the frame-time snapshot is finite',
+      'pass the World/App time snapshot to the Render owner',
+    );
+  }
+  if (!Number.isSafeInteger(recordCapacity) || recordCapacity <= 0) {
+    return surfaceDynamicInputError(
+      'the GPU-driven Surface frame capacity is a positive safe integer',
+      'prepare the frame from the bounded RenderScene batch capacity',
+    );
+  }
+  if (expectedLayout === undefined && page !== undefined) {
+    return surfaceDynamicInputError(
+      'a dynamic input page is supplied only when the published Surface ABI declares one',
+      'remove the page or recook the material with its dynamicInput declaration',
+    );
+  }
+  if (expectedLayout !== undefined && page === undefined) {
+    return surfaceDynamicInputError(
+      'the published Surface ABI dynamicInput page is present for this draw',
+      'publish the renderer-owned page before preparing the Surface draw',
+    );
+  }
+  return undefined;
+}
+
+function invalidSurfaceFrameRanges(
+  frameRanges: readonly SurfaceFrameRange[],
+  ranges: readonly DynamicInputRange[],
+): RhiError | undefined {
+  const frameIndices = new Set<number>();
+  for (const entry of frameRanges) {
+    if (!Number.isSafeInteger(entry.frameIndex) || entry.frameIndex < 0) {
+      return surfaceDynamicInputError(
+        'every renderer-owned Surface frame index is a non-negative safe integer',
+        'derive the visible-member row from the retained GPU Scene window',
+      );
+    }
+    if (frameIndices.has(entry.frameIndex)) {
+      return surfaceDynamicInputError(
+        'each Surface frame row has one renderer-owned visible member',
+        'repair the filtered scene-index membership before encoding the frame',
+      );
+    }
+    frameIndices.add(entry.frameIndex);
+    if (entry.range !== undefined && !ranges.includes(entry.range)) {
+      return surfaceDynamicInputError(
+        'each Surface row references a range from the submitted frame',
+        'derive the visible-member mapping from the same SurfaceDynamicInputFrame instance',
+      );
+    }
+  }
+  return undefined;
+}
+
+/** A page matching its cooked ABI, device generation and byte bounds opens one upload receipt. */
+function beginSurfacePageUpload(
+  page: ReadonlyDynamicInputPage,
+  expectedLayout: MaterialDynamicInputLayout | undefined,
+  expectedDeviceGeneration: number | undefined,
+): Result<DynamicInputUploadReceipt, RhiError> {
+  if (!sameDynamicInputLayout(page.layout, expectedLayout ?? page.layout)) {
+    return err(
+      surfaceDynamicInputError(
+        'the submitted Surface dynamic page matches the cooked MaterialProgramAbi layout',
+        'recreate the page from the published dynamicInput layout before drawing',
+      ),
+    );
+  }
+  if (
+    expectedDeviceGeneration !== undefined &&
+    page.deviceGeneration !== expectedDeviceGeneration
+  ) {
+    return err(
+      surfaceDynamicInputError(
+        'the submitted Surface dynamic page belongs to the current renderer device generation',
+        'reconfigure the page and retry after device recovery',
+      ),
+    );
+  }
+  if (
+    page.bytes.byteLength !== page.schema.maxPageBytes ||
+    page.layout.stride * page.schema.maxRecords > page.bytes.byteLength
+  ) {
+    return err(
+      surfaceDynamicInputError(
+        'the dynamic page byte length covers its derived bounded record layout',
+        'recreate the page through ReadonlyDynamicInputPage.create()',
+      ),
+    );
+  }
+  const begun = page.beginUpload();
+  if (!begun.ok) {
+    return err(
+      surfaceDynamicInputError(
+        'a live Surface dynamic input page can produce an upload receipt',
+        begun.error.hint,
+      ),
+    );
+  }
+  return ok(begun.value);
+}
+
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
 interface MaterialAbiRasterPipelineInput {
@@ -1121,235 +1231,205 @@ export class MaterialAbiRasterAdapter {
     frameRanges?: readonly SurfaceFrameRange[],
   ): Result<void, RhiError> {
     this.pendingDynamicInputUpload = undefined;
-    if (!Number.isFinite(frameTime)) {
-      return err(
-        surfaceDynamicInputError(
-          'the frame-time snapshot is finite',
-          'pass the World/App time snapshot to the Render owner',
-        ),
-      );
-    }
-    if (!Number.isSafeInteger(recordCapacity) || recordCapacity <= 0) {
-      return err(
-        surfaceDynamicInputError(
-          'the GPU-driven Surface frame capacity is a positive safe integer',
-          'prepare the frame from the bounded RenderScene batch capacity',
-        ),
-      );
-    }
     const page = frame?.page;
-    if (expectedLayout === undefined && page !== undefined) {
-      return err(
-        surfaceDynamicInputError(
-          'a dynamic input page is supplied only when the published Surface ABI declares one',
-          'remove the page or recook the material with its dynamicInput declaration',
-        ),
-      );
-    }
-    if (expectedLayout !== undefined && page === undefined) {
-      return err(
-        surfaceDynamicInputError(
-          'the published Surface ABI dynamicInput page is present for this draw',
-          'publish the renderer-owned page before preparing the Surface draw',
-        ),
-      );
-    }
+    const shapeError = invalidSurfaceInputShape(frameTime, recordCapacity, page, expectedLayout);
+    if (shapeError !== undefined) return err(shapeError);
     const ranges = frame?.ranges ?? [];
-    let compactFrameRanges = frameRanges;
-    if (compactFrameRanges === undefined) {
-      if (ranges === this.dynamicInputRangeSource && this.dynamicInputFrameRanges !== undefined) {
-        compactFrameRanges = this.dynamicInputFrameRanges;
-      } else {
-        compactFrameRanges = Object.freeze(
-          ranges.map(
-            (range) => ({ frameIndex: range.instanceIndex, range }) satisfies SurfaceFrameRange,
-          ),
-        );
-        this.dynamicInputRangeSource = ranges;
-        this.dynamicInputFrameRanges = compactFrameRanges;
-      }
-    }
+    const compactFrameRanges = frameRanges ?? this.compactSurfaceFrameRanges(ranges);
     const frameRangesChanged = compactFrameRanges !== this.dynamicFrameRangeSource;
     if (frameRangesChanged) {
-      const frameIndices = new Set<number>();
-      for (const entry of compactFrameRanges) {
-        if (!Number.isSafeInteger(entry.frameIndex) || entry.frameIndex < 0) {
-          return err(
-            surfaceDynamicInputError(
-              'every renderer-owned Surface frame index is a non-negative safe integer',
-              'derive the visible-member row from the retained GPU Scene window',
-            ),
-          );
-        }
-        if (frameIndices.has(entry.frameIndex)) {
-          return err(
-            surfaceDynamicInputError(
-              'each Surface frame row has one renderer-owned visible member',
-              'repair the filtered scene-index membership before encoding the frame',
-            ),
-          );
-        }
-        frameIndices.add(entry.frameIndex);
-        if (entry.range !== undefined && !ranges.includes(entry.range)) {
-          return err(
-            surfaceDynamicInputError(
-              'each Surface row references a range from the submitted frame',
-              'derive the visible-member mapping from the same SurfaceDynamicInputFrame instance',
-            ),
-          );
-        }
-      }
+      const frameError = invalidSurfaceFrameRanges(compactFrameRanges, ranges);
+      if (frameError !== undefined) return err(frameError);
     }
     let uploaded: DynamicInputUploadReceipt | undefined;
     if (page !== undefined) {
-      if (!sameDynamicInputLayout(page.layout, expectedLayout ?? page.layout)) {
-        return err(
-          surfaceDynamicInputError(
-            'the submitted Surface dynamic page matches the cooked MaterialProgramAbi layout',
-            'recreate the page from the published dynamicInput layout before drawing',
-          ),
-        );
-      }
-      if (
-        expectedDeviceGeneration !== undefined &&
-        page.deviceGeneration !== expectedDeviceGeneration
-      ) {
-        return err(
-          surfaceDynamicInputError(
-            'the submitted Surface dynamic page belongs to the current renderer device generation',
-            'reconfigure the page and retry after device recovery',
-          ),
-        );
-      }
-      if (
-        page.bytes.byteLength !== page.schema.maxPageBytes ||
-        page.layout.stride * page.schema.maxRecords > page.bytes.byteLength
-      ) {
-        return err(
-          surfaceDynamicInputError(
-            'the dynamic page byte length covers its derived bounded record layout',
-            'recreate the page through ReadonlyDynamicInputPage.create()',
-          ),
-        );
-      }
-      const begun = page.beginUpload();
-      if (!begun.ok) {
-        return err(
-          surfaceDynamicInputError(
-            'a live Surface dynamic input page can produce an upload receipt',
-            begun.error.hint,
-          ),
-        );
-      }
+      const begun = beginSurfacePageUpload(page, expectedLayout, expectedDeviceGeneration);
+      if (!begun.ok) return begun;
       uploaded = begun.value;
     }
     if (frameRangesChanged) {
-      const rangeAddresses = new Set<number>();
-      for (const range of ranges) {
-        if (page === undefined) {
-          return err(
-            surfaceDynamicInputError(
-              'Surface dynamic ranges are paired with their renderer-owned page',
-              'provide the page that owns the submitted ranges',
-            ),
-          );
-        }
-        const invalidRange = invalidSurfaceDynamicRange(page, range, expectedDeviceGeneration);
-        if (invalidRange !== undefined) {
-          return err(
-            surfaceDynamicInputError(
-              'every Surface dynamic range matches the published page schema and generation',
-              invalidRange,
-            ),
-          );
-        }
-        if (rangeAddresses.has(range.instanceIndex)) {
-          return err(
-            surfaceDynamicInputError(
-              'each Surface dynamic instance address has one unambiguous record range',
-              'merge duplicate ranges before publishing the frame projection',
-            ),
-          );
-        }
-        rangeAddresses.add(range.instanceIndex);
-      }
-      const directAddresses = this.ensureDirectSurfaceAddresses(compactFrameRanges);
-      if (!directAddresses.ok) return directAddresses;
+      const admitted = this.admitSurfaceDynamicRanges(
+        ranges,
+        page,
+        expectedDeviceGeneration,
+        compactFrameRanges,
+      );
+      if (!admitted.ok) return admitted;
     }
-    const pageChanged = page !== undefined && page !== this.dynamicInputPage;
-    const pageGenerationChanged =
-      page !== undefined && page.bufferGeneration !== this.dynamicInputPageGeneration;
     if (page !== undefined) {
-      const requiredBytes = Math.max(16, page.bytes.byteLength);
-      const maxStorageBufferBindingSize = this.device.limits.maxStorageBufferBindingSize;
-      if (
-        Number.isFinite(maxStorageBufferBindingSize) &&
-        requiredBytes > maxStorageBufferBindingSize
-      ) {
-        return err(
-          new RhiError({
-            code: 'limit-exceeded',
-            expected: 'the Surface dynamic page fits maxStorageBufferBindingSize',
-            hint: 'reduce the published dynamic page budget before entering the GPU lane',
-            detail: { maxStorageBufferBindingSize, requestedBytes: requiredBytes },
-          }),
-        );
-      }
-      if (requiredBytes > this.dynamicInputBufferSize || pageChanged || pageGenerationChanged) {
-        const replacement = this.device.createBuffer({
-          label: 'surface-dynamic-input-page',
-          size: requiredBytes,
-          usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-        });
-        if (!replacement.ok) return replacement;
-        this.trackOwnedBuffer(replacement.value, requiredBytes);
-        const initialWrite = this.device.queue.writeBuffer(replacement.value, 0, page.bytes);
-        if (!initialWrite.ok) {
-          this.rollbackOwnedBuffer(replacement.value);
-          return initialWrite;
-        }
-        const previous = this.dynamicInputBuffer;
-        const previousSize = this.dynamicInputBufferSize;
-        const previousPage = this.dynamicInputPage;
-        const previousGeneration = this.dynamicInputPageGeneration;
-        this.dynamicInputBuffer = replacement.value;
-        this.dynamicInputBufferSize = requiredBytes;
-        this.dynamicInputPage = page;
-        this.dynamicInputPageGeneration = page.bufferGeneration;
-        this.surfaceInputBuffers.add(replacement.value);
-        const rebound = this.rebuildInstancesBindGroup();
-        if (!rebound.ok) {
-          this.dynamicInputBuffer = previous;
-          this.dynamicInputBufferSize = previousSize;
-          this.dynamicInputPage = previousPage;
-          this.dynamicInputPageGeneration = previousGeneration;
-          this.surfaceInputBuffers.delete(replacement.value);
-          this.rollbackOwnedBuffer(replacement.value);
-          return rebound;
-        }
-        this.resetVisibleWindows();
-        this.directBindGroups.clear();
-        this.retireOwnedBuffer(previous);
-      } else {
-        for (const range of uploaded?.ranges ?? []) {
-          const write = this.device.queue.writeBuffer(
-            this.dynamicInputBuffer,
-            range.byteStart,
-            page.bytes.slice(range.byteStart, range.byteEnd),
-          );
-          if (!write.ok) return write;
-        }
-        this.dynamicInputPage = page;
-        this.dynamicInputPageGeneration = page.bufferGeneration;
-      }
-      this.pendingDynamicInputUpload =
-        uploaded === undefined ? undefined : { page, receipt: uploaded };
+      const pageUpload = this.uploadSurfacePage(page, uploaded);
+      if (!pageUpload.ok) return pageUpload;
     }
-
     const compactRangeCapacity = frameRangesChanged
       ? compactFrameRanges.reduce((capacity, entry) => Math.max(capacity, entry.frameIndex + 1), 0)
       : this.dynamicFrameRangeCapacity;
-    const capacity = Math.max(1, recordCapacity, compactRangeCapacity);
+    const frameBuffer = this.ensureSurfaceFrameBuffer(
+      Math.max(1, recordCapacity, compactRangeCapacity),
+    );
+    if (!frameBuffer.ok) return frameBuffer;
+    const frameBufferReplaced = frameBuffer.value;
+    const timeWrite = this.writeSurfaceFrameTime(frameTime);
+    if (!timeWrite.ok) return timeWrite;
+    if (!frameBufferReplaced && !frameRangesChanged) {
+      return ok(undefined);
+    }
+    const rowWrite = this.writeSurfaceFrameRows(compactFrameRanges, frameBufferReplaced);
+    if (!rowWrite.ok) return rowWrite;
+    this.dynamicFrameRangeSource = compactFrameRanges;
+    this.dynamicFrameRangeCapacity = compactRangeCapacity;
+    return ok(undefined);
+  }
+
+  /** Frame-owned ranges address their own instance rows; one projection per range list. */
+  private compactSurfaceFrameRanges(
+    ranges: readonly DynamicInputRange[],
+  ): readonly SurfaceFrameRange[] {
+    if (ranges === this.dynamicInputRangeSource && this.dynamicInputFrameRanges !== undefined) {
+      return this.dynamicInputFrameRanges;
+    }
+    const compact = Object.freeze(
+      ranges.map(
+        (range) => ({ frameIndex: range.instanceIndex, range }) satisfies SurfaceFrameRange,
+      ),
+    );
+    this.dynamicInputRangeSource = ranges;
+    this.dynamicInputFrameRanges = compact;
+    return compact;
+  }
+
+  /** Validate every published range against its page, then derive direct addresses. */
+  private admitSurfaceDynamicRanges(
+    ranges: readonly DynamicInputRange[],
+    page: ReadonlyDynamicInputPage | undefined,
+    expectedDeviceGeneration: number | undefined,
+    compactFrameRanges: readonly SurfaceFrameRange[],
+  ): Result<void, RhiError> {
+    const rangeAddresses = new Set<number>();
+    for (const range of ranges) {
+      if (page === undefined) {
+        return err(
+          surfaceDynamicInputError(
+            'Surface dynamic ranges are paired with their renderer-owned page',
+            'provide the page that owns the submitted ranges',
+          ),
+        );
+      }
+      const invalidRange = invalidSurfaceDynamicRange(page, range, expectedDeviceGeneration);
+      if (invalidRange !== undefined) {
+        return err(
+          surfaceDynamicInputError(
+            'every Surface dynamic range matches the published page schema and generation',
+            invalidRange,
+          ),
+        );
+      }
+      if (rangeAddresses.has(range.instanceIndex)) {
+        return err(
+          surfaceDynamicInputError(
+            'each Surface dynamic instance address has one unambiguous record range',
+            'merge duplicate ranges before publishing the frame projection',
+          ),
+        );
+      }
+      rangeAddresses.add(range.instanceIndex);
+    }
+    return this.ensureDirectSurfaceAddresses(compactFrameRanges);
+  }
+
+  /** Replace the page buffer on growth or page identity change; otherwise write dirty ranges. */
+  private uploadSurfacePage(
+    page: ReadonlyDynamicInputPage,
+    uploaded: DynamicInputUploadReceipt | undefined,
+  ): Result<void, RhiError> {
+    const pageChanged = page !== this.dynamicInputPage;
+    const pageGenerationChanged = page.bufferGeneration !== this.dynamicInputPageGeneration;
+    const requiredBytes = Math.max(16, page.bytes.byteLength);
+    const limit = this.storageBindingLimitError(
+      requiredBytes,
+      'the Surface dynamic page fits maxStorageBufferBindingSize',
+      'reduce the published dynamic page budget before entering the GPU lane',
+    );
+    if (limit !== undefined) return err(limit);
+    if (requiredBytes > this.dynamicInputBufferSize || pageChanged || pageGenerationChanged) {
+      const replaced = this.replaceSurfacePageBuffer(page, requiredBytes);
+      if (!replaced.ok) return replaced;
+    } else {
+      for (const range of uploaded?.ranges ?? []) {
+        const write = this.device.queue.writeBuffer(
+          this.dynamicInputBuffer,
+          range.byteStart,
+          page.bytes.slice(range.byteStart, range.byteEnd),
+        );
+        if (!write.ok) return write;
+      }
+      this.dynamicInputPage = page;
+      this.dynamicInputPageGeneration = page.bufferGeneration;
+    }
+    this.pendingDynamicInputUpload =
+      uploaded === undefined ? undefined : { page, receipt: uploaded };
+    return ok(undefined);
+  }
+
+  private storageBindingLimitError(
+    requestedBytes: number,
+    expected: string,
+    hint: string,
+  ): RhiError | undefined {
+    const maxStorageBufferBindingSize = this.device.limits.maxStorageBufferBindingSize;
+    if (!Number.isFinite(maxStorageBufferBindingSize)) return undefined;
+    if (requestedBytes <= maxStorageBufferBindingSize) return undefined;
+    return new RhiError({
+      code: 'limit-exceeded',
+      expected,
+      hint,
+      detail: { maxStorageBufferBindingSize, requestedBytes },
+    });
+  }
+
+  /** Publish a fully written page buffer; a failed rebind restores the previous one. */
+  private replaceSurfacePageBuffer(
+    page: ReadonlyDynamicInputPage,
+    requiredBytes: number,
+  ): Result<void, RhiError> {
+    const replacement = this.device.createBuffer({
+      label: 'surface-dynamic-input-page',
+      size: requiredBytes,
+      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    });
+    if (!replacement.ok) return replacement;
+    this.trackOwnedBuffer(replacement.value, requiredBytes);
+    const initialWrite = this.device.queue.writeBuffer(replacement.value, 0, page.bytes);
+    if (!initialWrite.ok) {
+      this.rollbackOwnedBuffer(replacement.value);
+      return initialWrite;
+    }
+    const previous = this.dynamicInputBuffer;
+    const previousSize = this.dynamicInputBufferSize;
+    const previousPage = this.dynamicInputPage;
+    const previousGeneration = this.dynamicInputPageGeneration;
+    this.dynamicInputBuffer = replacement.value;
+    this.dynamicInputBufferSize = requiredBytes;
+    this.dynamicInputPage = page;
+    this.dynamicInputPageGeneration = page.bufferGeneration;
+    this.surfaceInputBuffers.add(replacement.value);
+    const rebound = this.rebuildInstancesBindGroup();
+    if (!rebound.ok) {
+      this.dynamicInputBuffer = previous;
+      this.dynamicInputBufferSize = previousSize;
+      this.dynamicInputPage = previousPage;
+      this.dynamicInputPageGeneration = previousGeneration;
+      this.surfaceInputBuffers.delete(replacement.value);
+      this.rollbackOwnedBuffer(replacement.value);
+      return rebound;
+    }
+    this.resetVisibleWindows();
+    this.directBindGroups.clear();
+    this.retireOwnedBuffer(previous);
+    return ok(undefined);
+  }
+
+  /** Grow the frame record buffer to `capacity` rows; `true` when it was replaced. */
+  private ensureSurfaceFrameBuffer(capacity: number): Result<boolean, RhiError> {
     if (capacity > Number.MAX_SAFE_INTEGER / SURFACE_FRAME_RECORD_BYTES) {
       return err(
         surfaceDynamicInputError(
@@ -1359,63 +1439,57 @@ export class MaterialAbiRasterAdapter {
       );
     }
     const requiredFrameBytes = capacity * SURFACE_FRAME_RECORD_BYTES;
-    const maxStorageBufferBindingSize = this.device.limits.maxStorageBufferBindingSize;
-    if (
-      Number.isFinite(maxStorageBufferBindingSize) &&
-      requiredFrameBytes > maxStorageBufferBindingSize
-    ) {
-      return err(
-        new RhiError({
-          code: 'limit-exceeded',
-          expected: 'the Surface frame records fit maxStorageBufferBindingSize',
-          hint: 'reduce the explicit instance address range or the batch capacity',
-          detail: { maxStorageBufferBindingSize, requestedBytes: requiredFrameBytes },
-        }),
-      );
+    const limit = this.storageBindingLimitError(
+      requiredFrameBytes,
+      'the Surface frame records fit maxStorageBufferBindingSize',
+      'reduce the explicit instance address range or the batch capacity',
+    );
+    if (limit !== undefined) return err(limit);
+    if (requiredFrameBytes <= this.dynamicFrameBufferSize) return ok(false);
+    const replacement = this.device.createBuffer({
+      label: 'surface-dynamic-frame-input',
+      size: requiredFrameBytes,
+      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    });
+    if (!replacement.ok) return replacement;
+    this.trackOwnedBuffer(replacement.value, requiredFrameBytes);
+    const previous = this.dynamicFrameBuffer;
+    const previousSize = this.dynamicFrameBufferSize;
+    this.dynamicFrameBuffer = replacement.value;
+    this.dynamicFrameBufferSize = requiredFrameBytes;
+    this.surfaceInputBuffers.add(replacement.value);
+    const rebound = this.rebuildInstancesBindGroup();
+    if (!rebound.ok) {
+      this.dynamicFrameBuffer = previous;
+      this.dynamicFrameBufferSize = previousSize;
+      this.surfaceInputBuffers.delete(replacement.value);
+      this.rollbackOwnedBuffer(replacement.value);
+      return rebound;
     }
-    let frameBufferReplaced = false;
-    if (requiredFrameBytes > this.dynamicFrameBufferSize) {
-      const replacement = this.device.createBuffer({
-        label: 'surface-dynamic-frame-input',
-        size: requiredFrameBytes,
-        usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-      });
-      if (!replacement.ok) return replacement;
-      this.trackOwnedBuffer(replacement.value, requiredFrameBytes);
-      const previous = this.dynamicFrameBuffer;
-      const previousSize = this.dynamicFrameBufferSize;
-      this.dynamicFrameBuffer = replacement.value;
-      this.dynamicFrameBufferSize = requiredFrameBytes;
-      this.surfaceInputBuffers.add(replacement.value);
-      const rebound = this.rebuildInstancesBindGroup();
-      if (!rebound.ok) {
-        this.dynamicFrameBuffer = previous;
-        this.dynamicFrameBufferSize = previousSize;
-        this.surfaceInputBuffers.delete(replacement.value);
-        this.rollbackOwnedBuffer(replacement.value);
-        return rebound;
-      }
-      this.resetVisibleWindows();
-      this.directBindGroups.clear();
-      this.retireOwnedBuffer(previous);
-      this.dynamicFrameRows.clear();
-      this.dynamicFrameRangeSource = undefined;
-      frameBufferReplaced = true;
-    }
+    this.resetVisibleWindows();
+    this.directBindGroups.clear();
+    this.retireOwnedBuffer(previous);
+    this.dynamicFrameRows.clear();
+    this.dynamicFrameRangeSource = undefined;
+    return ok(true);
+  }
 
-    if (frameTime !== this.dynamicSharedFrame.frameTime) {
-      const payload = new Float32Array(4);
-      payload[0] = frameTime;
-      const write = this.device.queue.writeBuffer(this.dynamicSharedFrame.buffer, 0, payload);
-      if (!write.ok) return write;
-      this.dynamicSharedFrame.frameTime = frameTime;
-      this.dynamicSharedFrame.writes += 1;
-    }
+  private writeSurfaceFrameTime(frameTime: number): Result<void, RhiError> {
+    if (frameTime === this.dynamicSharedFrame.frameTime) return ok(undefined);
+    const payload = new Float32Array(4);
+    payload[0] = frameTime;
+    const write = this.device.queue.writeBuffer(this.dynamicSharedFrame.buffer, 0, payload);
+    if (!write.ok) return write;
+    this.dynamicSharedFrame.frameTime = frameTime;
+    this.dynamicSharedFrame.writes += 1;
+    return ok(undefined);
+  }
 
-    if (!frameBufferReplaced && !frameRangesChanged) {
-      return ok(undefined);
-    }
-
+  /** Write changed frame rows and zero retired rows still inside the frame buffer. */
+  private writeSurfaceFrameRows(
+    compactFrameRanges: readonly SurfaceFrameRange[],
+    frameBufferReplaced: boolean,
+  ): Result<void, RhiError> {
     const desiredFrameRows = new Map<number, SurfaceFrameRow>();
     for (const entry of compactFrameRanges) {
       this.dynamicFrameMemberScans += 1;
@@ -1470,8 +1544,6 @@ export class MaterialAbiRasterAdapter {
       if (!frameWrite.ok) return frameWrite;
       this.dynamicFrameRows.set(frameIndex, row);
     }
-    this.dynamicFrameRangeSource = compactFrameRanges;
-    this.dynamicFrameRangeCapacity = compactRangeCapacity;
     return ok(undefined);
   }
 

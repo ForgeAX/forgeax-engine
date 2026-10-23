@@ -439,9 +439,9 @@ export function packClusterUniform(
  *     -> binding 7 = 1x1 white fallback texture (AO = 1.0)
  *     -> binding 8 = fallback sampler
  *
- * Intensity flows via `cluster_uniform.near_far_log.w` (binding 6); the host
- * writes intensity=0 when SSAO is disabled so the lighting blend
- * `mix(1.0, ssao*ao, 0) = 1.0` collapses to the round-1 baseline. The
+ * Intensity flows via `cluster_uniform.near_far_log.w` (binding 6); lighting
+ * reads it only as the enabled flag (the calc pass already applied the
+ * exponent), and the host writes 0 when SSAO is disabled. The
  * "always-7-entries" invariant lets every PBR PSO use the same pipeline
  * layout regardless of SSAO state — toggling the runtime config never
  * triggers shader recompile (charter P4 one consistent abstraction).

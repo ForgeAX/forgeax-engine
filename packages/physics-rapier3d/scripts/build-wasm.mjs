@@ -32,6 +32,12 @@ const inputHashes = Object.fromEntries(
   await Promise.all(inputs.map(async (name) => [name, sha256(await readFile(join(root, name)))])),
 );
 const contentKey = sha256(JSON.stringify(inputHashes));
+// The CI payload cache key prints this same value, so restore and verify
+// can never disagree about which inputs a payload was built from.
+if (process.argv.includes('--key')) {
+  process.stdout.write(`${contentKey}\n`);
+  process.exit(0);
+}
 const pkg = join(owner, 'pkg');
 async function files(directory) {
   const result = [];
@@ -77,6 +83,23 @@ function run(command, args, cwd, extraEnv = {}) {
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} exited with ${result.status}`);
 }
+// Anonymous GitHub fetches can transiently answer 401/5xx under load; retry a
+// bounded number of times and never fall back to an interactive prompt.
+function fetchPinned(checkout, commit) {
+  const args = ['-c', 'core.longpaths=true', 'fetch', '--depth=1', 'origin', commit];
+  for (let attempt = 1; ; attempt += 1) {
+    const result = spawnSync('git', args, {
+      cwd: checkout,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdio: 'inherit',
+    });
+    if (result.error) throw result.error;
+    if (result.status === 0) return;
+    if (attempt === 4) throw new Error(`git fetch ${commit} failed after ${attempt} attempts`);
+    process.stdout.write(`git fetch ${commit} failed (attempt ${attempt}/4); retrying\n`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 15_000);
+  }
+}
 function output(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`${command} unavailable`);
@@ -101,7 +124,7 @@ for (const name of ['rapier', 'parry']) {
   const checkout = join(work, name);
   run('git', ['init', checkout], root);
   run('git', ['remote', 'add', 'origin', source[name].url], checkout);
-  run('git', ['fetch', '--depth=1', 'origin', source[name].commit], checkout);
+  fetchPinned(checkout, source[name].commit);
   run('git', ['checkout', '--detach', source[name].commit], checkout);
   // Preserve 2D's upstream behavior; the maintained solver patches belong to 3D.
   if (dimension === '3d') {

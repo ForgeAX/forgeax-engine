@@ -1,9 +1,9 @@
 {
-  "contentKey": "e08321beb2d79ce0d7dc1e7df1e07d0b6b1060752002b542759e6aa7b68758cf",
+  "contentKey": "df338936744a7a5c5640c127f60a1b9edb0741201f98a76ccc671750a2517de8",
   "inputHashes": {
     "package.json": "859acdba61a35785482fca2a7e00a1695724ca2b9d01b55be7935d15962ad492",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
-    "scripts/build-wasm.mjs": "9761798bc42eae7ac928e864adaca0ddb13da5ce444081df163ef6b875e92cf2",
+    "scripts/build-wasm.mjs": "14dd32a0747331afee14c170771de7e0b32d4e23346b7ffcf00779720e1a48fc",
     "scripts/native-init.js": "4b48c2123433d6fe079607b7527a12b5b3791be653fd76779ab4c5c814d6c732",
     "scripts/build-declarations.mjs": "12d720d5b612558e670259f51a9c62d0f722b9d28f5040da87779323050fd10c",
     "scripts/native-tests.Cargo.toml": "b00db370b03a7aca9647fb67ecde29db558f6b2743903c6b8e540dc761550967",
@@ -33,9 +33,9 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "a1a36b41ac3fe2b0a794fa8942d29c8263ec5617cc9f83fb9509bbaeb7a0f117",
+    "rapier-native.mjs": "8cdb6bd157620d07d7ae45503797799d7b98def6153942b289bc581c7a4bd75e",
     "rapier.d.mts": "dcd01ce5f56c64a2023bf056a5c0439836331e672a08fa7d2750d204d58536d4",
-    "rapier.mjs": "28a66fc39a1bf1dbf338154f838231044545f4f49667971ddc25d9bbaedc4ffa",
-    "rapier.wasm": "f236d82e19e5e8242d3800777de6fdeb421272310e5347614e61c3a3644b8dae"
+    "rapier.mjs": "ca50b2100eaf2f87824ed8dc0b5ae65c6ce259bf7256fa6523e8288a21df37bd",
+    "rapier.wasm": "76d301c02ee1fd4a6bb414fa9b676cbdbc3cc6371035a216853e03f4863e8e1f"
   }
 }

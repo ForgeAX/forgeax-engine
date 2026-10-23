@@ -8,6 +8,7 @@ const count = (source: string, pattern: RegExp): number => source.match(pattern)
 const productionRaster = read('../gpu-driven/production-raster.ts');
 const productionRasterMaterial = read('../gpu-driven/production-raster-material.ts');
 const frameRecord = read('../record/frame.ts');
+const frameGpuDriven = read('../record/frame-gpu-driven.ts');
 const mainPass = read('../record/main-pass.ts');
 const shadowPass = read('../record/shadow-pass.ts');
 const skinTasks = read('../record/skin-tasks.ts');
@@ -55,12 +56,14 @@ describe('GPU-driven baseline characterization', () => {
   });
 
   it('keeps probe-bearing rows on the GPU lane with the shared probe buffer', () => {
-    expect(frameRecord).toContain(
-      'const frameGpuDriven = fallbackLaneLimit ? undefined : gpuDriven;',
-    );
+    expect(frameRecord).toContain('return fallbackLaneLimit ? undefined : gpuDriven;');
     expect(frameRecord).not.toContain('const probeBlendFrame =');
-    expect(frameRecord).toContain('frameGpuDriven.scene?.probeBlend');
-    expect(frameRecord).toContain('probeBlendRecordBuffer: gpuProbeBlendBuffer');
+    expect(frameGpuDriven).toContain(
+      'ensureProbeBlendRecordBuffer(internals.device, frameState, scene?.probeBlend)',
+    );
+    expect(frameGpuDriven).toContain(
+      '...(probeBlendRecordBuffer === undefined ? {} : { probeBlendRecordBuffer })',
+    );
   });
 
   it('freezes CPU shadow caster enumeration as the pre-GPU baseline', () => {

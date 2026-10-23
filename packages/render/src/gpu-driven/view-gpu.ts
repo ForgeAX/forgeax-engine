@@ -1341,6 +1341,47 @@ interface EncodedViewTopology {
 }
 const encodedTopologies = new WeakMap<GpuScene, WeakMap<SubmissionPlan, EncodedViewTopology>>();
 
+/**
+ * Patch the current physical member roots into a topology template. The
+ * template stays shared until an address differs; fixed task plans cache
+ * their patched copy for the scene.
+ */
+function patchMemberAddresses(
+  plan: SubmissionPlan,
+  scene: GpuScene,
+  inputs: GpuInputReadFrame,
+  template: EncodedViewTopology,
+): EncodedViewTopology {
+  let batchBytes = template.batchBytes;
+  let patched = false;
+  let header = new DataView(batchBytes.buffer);
+  for (const membership of template.memberships) {
+    const address = inputs.members(membership.candidates);
+    for (const offset of membership.offsets) {
+      if (header.getUint32(offset, true) === address) continue;
+      if (!patched) {
+        batchBytes = batchBytes.slice();
+        header = new DataView(batchBytes.buffer);
+        patched = true;
+      }
+      header.setUint32(offset, address, true);
+    }
+  }
+  if (!patched) return template;
+  const encoded = { ...template, batchBytes };
+  if (hasFixedTaskHeaders(plan)) encodedTopologies.get(scene)?.set(plan, encoded);
+  return encoded;
+}
+
+/** Each batch owner's row in a previously encoded plan. */
+function rowsByBatch(plan: SubmissionPlan | undefined): Map<GpuDrivenBatch, number> | undefined {
+  if (plan === undefined) return undefined;
+  const rows = new Map<GpuDrivenBatch, number>();
+  let row = 0;
+  for (const batch of plan.batches) rows.set(batch, row++);
+  return rows;
+}
+
 /** Task headers retain logical member roots; physical roots are leased on each read. */
 function encodedViewTopology(
   plan: SubmissionPlan,
@@ -1360,12 +1401,7 @@ function encodedViewTopology(
   const candidateBases = fixed ? new Uint32Array(plan.batches.length) : undefined;
   // Rows are matched by owner, so an insertion does not re-encode later rows;
   // a moved row only rewrites its candidate base word.
-  let previousRows: Map<GpuDrivenBatch, number> | undefined;
-  if (reusable?.plan !== undefined) {
-    previousRows = new Map();
-    let row = 0;
-    for (const batch of reusable.plan.batches) previousRows.set(batch, row++);
-  }
+  const previousRows = rowsByBatch(reusable?.plan);
   if (owner === undefined) {
     owner = new WeakMap();
     encodedTopologies.set(scene, owner);
@@ -1799,320 +1835,413 @@ export class GpuDrivenView {
       );
     }
     try {
-      // Preparation may overwrite the same physical buffers without changing
-      // their generation. Only its subsequent submit can rebind receipt identity.
-      this.telemetrySubmit = undefined;
-      this.sharedInputUploadBytes = 0;
-      this.suppressionUploadBytes = 0;
-      this.batchUploadBytes = 0;
-      this.viewConstantsUploadBytes = 0;
-      this.bindGroupCreates = 0;
-      // The cached graph owns the readback copy.  Do not arm an observation latch
-      // here: a graph can be compiled but not submitted, and its copy can be
-      // skipped while the previous mapAsync is pending.  The encode callback
-      // records only a copy that really reached the command encoder.
-      this.lodSelection = undefined;
+      this.resetUpdateTelemetry();
       this.skinActive = (skin?.current.jointCapacity ?? 0) > 0;
-      const skinJointCapacity = Math.max(this.skinJointCapacity, skin?.current.jointCapacity ?? 0);
-      // A shared membership may execute in several Passes. Task references
-      // address actual candidate work, independently of unique member storage.
-      const skinCandidateCapacity = Math.max(
-        plan.candidateCount,
-        this.skinLayout?.rosterCapacity ?? 0,
-      );
-      const skinDemandGrows =
-        skinJointCapacity > 0 && skinCandidateCapacity > (this.skinLayout?.rosterCapacity ?? 0);
       if (this.skinActive) {
         const prepared = this.prepareSkinPipelines();
         if (!prepared.ok) return prepared;
       }
-      const topologyChanged = this.plan !== plan;
       const inputUploadStart = scene.inputs.uploadBytes;
-      const template = encodedViewTopology(
+      const encoded = patchMemberAddresses(
         plan,
         scene,
-        this.sceneRef === scene ? this.encodedTopology : undefined,
+        inputs,
+        encodedViewTopology(
+          plan,
+          scene,
+          this.sceneRef === scene ? this.encodedTopology : undefined,
+        ),
       );
-      let batchBytes = template.batchBytes;
-      let patched = false;
-      let header = new DataView(batchBytes.buffer);
-      for (const membership of template.memberships) {
-        const address = inputs.members(membership.candidates);
-        for (const offset of membership.offsets) {
-          const current = header.getUint32(offset, true);
-          if (current === address) continue;
-          if (!patched) {
-            batchBytes = batchBytes.slice();
-            header = new DataView(batchBytes.buffer);
-            patched = true;
-          }
-          header.setUint32(offset, address, true);
-        }
-      }
-      const encoded = patched ? { ...template, batchBytes } : template;
-      if (patched && hasFixedTaskHeaders(plan)) encodedTopologies.get(scene)?.set(plan, encoded);
       const sharedInput = inputs.buffer();
       if (!sharedInput.ok) return sharedInput;
       this.sharedInputUploadBytes = scene.inputs.uploadBytes - inputUploadStart;
       this.uploadBytes += this.sharedInputUploadBytes;
-      const previousEncoding = this.encodedTopology;
-      const suppressionWords = Math.max(
-        1,
-        Math.ceil(scene.inspect().capacity / 32),
-        suppressedPrimitives?.length ?? 0,
+      const ensured = this.ensureBuffers(
+        plan,
+        scene,
+        suppressedPrimitives,
+        visibleSurfaceRows !== undefined,
+        skin,
       );
-      const surfaceModeChanged =
-        (visibleSurfaceRows !== undefined) !== (this.buffers?.visibleSurfaceRows !== undefined);
-      let buffersRebuilt = false;
-      if (
-        topologyChanged ||
-        skinDemandGrows ||
-        skinJointCapacity > this.skinJointCapacity ||
-        surfaceModeChanged ||
-        this.buffers === undefined ||
-        suppressionWords > this.suppressionWordCapacity
-      ) {
-        // Candidate records and compacted visible indices are different
-        // capacity domains: every LOD level owns an aligned visible segment,
-        // so the visible address space exceeds the logical candidate count.
-        // Never let it inflate candidate/LOD-row storage allocations.
-        const capacities = deriveGpuDrivenViewBufferCapacities(plan);
-        if (
-          this.buffers === undefined ||
-          skinDemandGrows ||
-          skinJointCapacity > this.skinJointCapacity ||
-          surfaceModeChanged ||
-          capacities.candidate > this.candidateCapacity ||
-          capacities.visible > this.visibleBufferCapacity ||
-          capacities.batch > this.batchCapacity ||
-          capacities.indirect > this.indirectCapacity ||
-          suppressionWords > this.suppressionWordCapacity
-        ) {
-          const rebuilt = this.rebuildBuffers(
-            capacities.candidate,
-            capacities.visible,
-            capacities.batch,
-            capacities.indirect,
-            suppressionWords,
-            visibleSurfaceRows !== undefined,
-            skinJointCapacity,
-            skinCandidateCapacity,
-          );
-          if (!rebuilt.ok) return rebuilt;
-          buffersRebuilt = true;
-        }
-      }
+      if (!ensured.ok) return ensured;
+      const buffersRebuilt = ensured.value;
       const buffers = this.buffers;
       if (buffers === undefined) return ok(undefined);
-      const addressesChanged = this.sceneRef !== scene;
-      if (
-        topologyChanged ||
-        buffersRebuilt ||
-        addressesChanged ||
-        batchBytes !== previousEncoding?.batchBytes
-      ) {
-        const previous = !buffersRebuilt ? this.encodedTopology : undefined;
-        // Any accepted write may partially replace the old topology. A later
-        // failure must force reseeding even when the caller retries the old plan.
-        this.plan = undefined;
-        this.encodedTopology = undefined;
-        const { batchBytes } = encoded;
-        // Physical buffers retain their accepted bytes. Trim equal words at both
-        // ends instead of re-uploading the static roster for a local edit. One
-        // aligned interval per table keeps queue work bounded even for scattered
-        // changes; a replacement or partial failure always seeds the full table.
-        const write = (buffer: Buffer, bytes: Uint8Array, before: Uint8Array | undefined) => {
-          if (bytes === before) return ok(0);
-          let start = 0;
-          let end = bytes.byteLength / 4;
-          if (before !== undefined) {
-            const next = new Uint32Array(bytes.buffer, bytes.byteOffset, end);
-            const old = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
-            while (start < Math.min(end, old.length) && next[start] === old[start]) start++;
-            while (end > start && end <= old.length && next[end - 1] === old[end - 1]) end--;
-          }
-          const size = (end - start) * 4;
-          if (size === 0) return ok(0);
-          const written = this.device.queue.writeBuffer(buffer, start * 4, bytes, start * 4, size);
-          return written.ok ? ok(size) : written;
-        };
-        const batchWrite = write(buffers.batches, batchBytes, previous?.batchBytes);
-        if (!batchWrite.ok) return batchWrite;
-        this.encodedTopology = encoded;
-        this.batchUploadBytes = batchWrite.value;
-        this.uploadBytes += batchWrite.value;
-      }
-      if (visibleSurfaceRows !== undefined && buffers.visibleSurfaceRows !== undefined) {
-        if (
-          buffersRebuilt ||
-          this.surfaceRows?.length !== visibleSurfaceRows.length ||
-          visibleSurfaceRows.some((row, index) => this.surfaceRows?.[index] !== row)
-        ) {
-          const written = this.device.queue.writeBuffer(
-            buffers.visibleSurfaceRows,
-            0,
-            visibleSurfaceRows,
-          );
-          if (!written.ok) return written;
-          this.surfaceRows = visibleSurfaceRows.slice();
-          this.uploadBytes += visibleSurfaceRows.byteLength;
-        }
-      } else {
-        this.surfaceRows = undefined;
-      }
-      const viewBytes = this.viewBytes;
-      this.viewUpload.fill(0);
-      const viewFloats = this.viewFloats;
-      viewFloats.set(planes.subarray(0, 24));
-      const viewU32 = this.viewWords;
-      viewU32[24] = plan.candidateCount;
-      viewU32[25] = plan.batches.length;
-      viewU32[26] = this.batchCapacity;
-      viewFloats[27] = minCasterDiameter;
-      viewU32[28] = this.suppressionBase() / 4;
-      viewU32[29] = sharedInput.value.resourceRoot;
-      viewU32[30] = capsuleDirectional ? 1 : 0;
-      // Without a LOD camera the zero height scale reports an invalid height,
-      // so every chain resolves to its root.
-      if (lodCamera !== undefined) {
-        writeLodViewConstants(this.viewData, LOD_CONSTANTS_OFFSET, lodCamera);
-      }
-      if (lodClampCamera !== undefined) {
-        writeLodViewConstants(this.viewData, LOD_CLAMP_CONSTANTS_OFFSET, lodClampCamera, true);
-      }
-      // The per-frame history words (enabled, parity bases) stay zero here; the
-      // early cull encode fills them only when its graph also records the late
-      // phase, so a graph without it can never skip a previously hidden item.
-      this.occlusionCamera = occlusionCamera;
-      if (occlusionCamera !== undefined) {
-        viewFloats.set(
-          occlusionCamera.viewProjection.subarray(0, 16),
-          OCCLUSION_CONSTANTS_OFFSET / 4,
-        );
-        viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 16] = occlusionCamera.near;
-        viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 17] = occlusionCamera.far;
-        viewU32[OCCLUSION_CONSTANTS_OFFSET / 4 + 18] = occlusionCamera.orthographic ? 1 : 0;
-        viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 19] = this.footprintScale;
-      }
-      // Without a cull input the enable word stays zero, so a graph that binds
-      // the camera cull still draws every caster the frustum admits.
-      const lightInverse =
-        shadowCameraCull === undefined || !this.shadowCameraCullEligible
-          ? undefined
-          : invertLightViewProjection(shadowCameraCull.lightViewProjection);
-      const cameraPipeline = lightInverse === undefined ? ok(undefined) : this.shadowCameraCull();
-      if (!cameraPipeline.ok) return cameraPipeline;
-      if (
-        shadowCameraCull !== undefined &&
-        lightInverse !== undefined &&
-        cameraPipeline.value !== undefined
-      ) {
-        const base = SHADOW_CAMERA_CULL_OFFSET / 4;
-        const camera = shadowCameraCull.camera;
-        viewFloats.set(camera.viewProjection.subarray(0, 16), base);
-        viewFloats[base + 16] = camera.near;
-        viewFloats[base + 17] = camera.far;
-        viewU32[base + 18] = camera.orthographic ? 1 : 0;
-        viewFloats[base + 19] = this.footprintScale;
-        viewFloats.set(shadowCameraCull.lightViewProjection.subarray(0, 16), base + 20);
-        viewFloats.set(lightInverse, base + 36);
-        viewFloats[base + 52] = shadowCameraCull.ndcDilation;
-        viewFloats[base + 53] = shadowCameraCull.worldDilation;
-        viewU32[base + 54] = 1;
-      }
-      if (this.skinActive && skin !== undefined && this.skinLayout !== undefined) {
-        writeSkinDemandConstants(
-          this.viewData,
-          SKIN_CONSTANTS_OFFSET,
-          this.skinLayout,
-          skin.current.root,
-          skin.previous?.root ?? 0xffffffff,
-          plan.candidateCount,
-          this.skinCounterBase(),
-          this.skinDispatchBase(),
-          Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535,
-        );
-        viewU32[SKIN_RASTER_OFFSET / 4] = this.skinLayout.candidateBase;
-        viewU32[SKIN_RASTER_OFFSET / 4 + 1] = this.skinLayout.descriptorBase;
-      }
+      const topology = this.uploadTopology(plan, scene, encoded, buffers, buffersRebuilt);
+      if (!topology.ok) return topology;
+      const surfaceRows = this.uploadSurfaceRows(buffers, visibleSurfaceRows, buffersRebuilt);
+      if (!surfaceRows.ok) return surfaceRows;
+      this.writeViewConstants(
+        plan,
+        planes,
+        minCasterDiameter,
+        sharedInput.value.resourceRoot,
+        capsuleDirectional,
+      );
+      this.writeLodConstants(lodCamera, lodClampCamera);
+      this.writeOcclusionConstants(occlusionCamera);
+      const cameraCull = this.writeShadowCameraCullConstants(shadowCameraCull);
+      if (!cameraCull.ok) return cameraCull;
+      this.writeSkinConstants(skin, plan);
       const viewWrite = this.device.queue.writeBuffer(buffers.view, 0, this.viewUpload);
       if (!viewWrite.ok) return viewWrite;
-      this.viewConstantsUploadBytes = viewBytes.byteLength;
-      this.uploadBytes += viewBytes.byteLength;
+      this.viewConstantsUploadBytes = this.viewBytes.byteLength;
+      this.uploadBytes += this.viewBytes.byteLength;
       const suppressionUpdated = this.updateSuppression(
         buffers.batches,
         this.suppressionReseed,
         suppressedPrimitives,
       );
       if (!suppressionUpdated.ok) return suppressionUpdated;
-      const sceneChanged =
-        this.scenePrimitive !== scene.primitiveBuffer ||
-        this.sceneInstance !== scene.instanceBuffer ||
-        this.sceneTransform !== scene.transformBuffer ||
-        this.sceneInputs !== sharedInput.value.buffer;
-      if (
-        this.bindGroup === undefined ||
-        sceneChanged ||
-        buffersRebuilt ||
-        (this.skinActive && this.skinBindGroup === undefined)
-      ) {
-        // Graph passes read the current scene bindings and imports at execute
-        // time, so a scene or input buffer swap alone does not recompile them.
-        const graphShapeChanged =
-          this.bindGroup === undefined ||
-          buffersRebuilt ||
-          (this.skinActive && this.skinBindGroup === undefined);
-        const entries = [
-          { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
-          { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
-          { binding: 2, resource: bufferBinding(scene.transformBuffer) },
-          { binding: 3, resource: bufferBinding(sharedInput.value.buffer) },
-          { binding: 4, resource: bufferBinding(buffers.batches) },
-          { binding: 5, resource: bufferBinding(buffers.view) },
-          { binding: 6, resource: bufferBinding(buffers.counters) },
-          { binding: 7, resource: bufferBinding(buffers.visible) },
-          { binding: 8, resource: bufferBinding(buffers.indirect) },
-        ];
-        const binding = this.device.createBindGroup({
-          label: `${this.labelPrefix}-bg`,
-          layout: this.bindGroupLayout,
-          entries,
-        });
-        if (!binding.ok) return binding;
-        this.bindGroup = binding.value;
-        this.skinBindGroup = undefined;
-        if (this.skinPipelineLayout !== undefined) {
-          const taskBinding = this.device.createBindGroup({
-            label: `${this.labelPrefix}-skin-bg`,
-            layout: this.skinPipelineLayout,
-            entries: entries.slice(0, 8),
-          });
-          if (!taskBinding.ok) {
-            this.bindGroup = undefined;
-            return taskBinding;
-          }
-          this.skinBindGroup = taskBinding.value;
-        }
-        this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 2;
-        if (graphShapeChanged) this.resourceGeneration += 1;
-      }
+      const bound = this.ensureBindGroups(scene, sharedInput.value.buffer, buffers, buffersRebuilt);
+      if (!bound.ok) return bound;
       this.plan = plan;
       this.sceneInputs = sharedInput.value.buffer;
       this.sceneInputBytes = sharedInput.value.byteLength;
-      this.scenePrimitive = scene.primitiveBuffer;
-      this.sceneInstance = scene.instanceBuffer;
-      this.sceneTransform = scene.transformBuffer;
-      if (this.sceneMaterial !== scene.materialBuffer) this.materialResourceGeneration += 1;
-      this.sceneMaterial = scene.materialBuffer;
-      this.sceneMaterialBytes = scene.materialByteLength;
-      this.sceneRef = scene;
-      this.sceneCapacity = scene.inspect().capacity;
+      this.adoptScene(scene);
       this.updateCount += 1;
       return ok(undefined);
     } catch (cause) {
       if (cause instanceof RhiError) return err(cause);
       throw cause;
     }
+  }
+
+  /**
+   * Preparation may overwrite the same physical buffers without changing their
+   * generation. Only its subsequent submit can rebind receipt identity.
+   */
+  private resetUpdateTelemetry(): void {
+    this.telemetrySubmit = undefined;
+    this.sharedInputUploadBytes = 0;
+    this.suppressionUploadBytes = 0;
+    this.batchUploadBytes = 0;
+    this.viewConstantsUploadBytes = 0;
+    this.bindGroupCreates = 0;
+    // The cached graph owns the readback copy.  Do not arm an observation latch
+    // here: a graph can be compiled but not submitted, and its copy can be
+    // skipped while the previous mapAsync is pending.  The encode callback
+    // records only a copy that really reached the command encoder.
+    this.lodSelection = undefined;
+  }
+
+  /**
+   * Rebuild view storage when topology, Skin demand, surface mode or
+   * suppression capacity outgrows it. Returns whether buffers were replaced.
+   */
+  private ensureBuffers(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    suppressedPrimitives: Uint32Array | undefined,
+    surfaceRows: boolean,
+    skin: SkinSceneFrame | undefined,
+  ): Result<boolean, RhiError> {
+    const skinJointCapacity = Math.max(this.skinJointCapacity, skin?.current.jointCapacity ?? 0);
+    // A shared membership may execute in several Passes. Task references
+    // address actual candidate work, independently of unique member storage.
+    const rosterCapacity = this.skinLayout?.rosterCapacity ?? 0;
+    const skinCandidateCapacity = Math.max(plan.candidateCount, rosterCapacity);
+    const skinGrows =
+      (skinJointCapacity > 0 && skinCandidateCapacity > rosterCapacity) ||
+      skinJointCapacity > this.skinJointCapacity;
+    const suppressionWords = Math.max(
+      1,
+      Math.ceil(scene.inspect().capacity / 32),
+      suppressedPrimitives?.length ?? 0,
+    );
+    const structureGrows =
+      skinGrows ||
+      surfaceRows !== (this.buffers?.visibleSurfaceRows !== undefined) ||
+      this.buffers === undefined ||
+      suppressionWords > this.suppressionWordCapacity;
+    if (this.plan === plan && !structureGrows) return ok(false);
+    // Candidate records and compacted visible indices are different
+    // capacity domains: every LOD level owns an aligned visible segment,
+    // so the visible address space exceeds the logical candidate count.
+    // Never let it inflate candidate/LOD-row storage allocations.
+    const capacities = deriveGpuDrivenViewBufferCapacities(plan);
+    if (
+      !structureGrows &&
+      capacities.candidate <= this.candidateCapacity &&
+      capacities.visible <= this.visibleBufferCapacity &&
+      capacities.batch <= this.batchCapacity &&
+      capacities.indirect <= this.indirectCapacity
+    )
+      return ok(false);
+    const rebuilt = this.rebuildBuffers(
+      capacities.candidate,
+      capacities.visible,
+      capacities.batch,
+      capacities.indirect,
+      suppressionWords,
+      surfaceRows,
+      skinJointCapacity,
+      skinCandidateCapacity,
+    );
+    return rebuilt.ok ? ok(true) : rebuilt;
+  }
+
+  /**
+   * Upload the encoded topology when it, its storage or its scene changed.
+   * Any accepted write may partially replace the old topology, so a later
+   * failure must force reseeding even when the caller retries the old plan.
+   */
+  private uploadTopology(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    encoded: EncodedViewTopology,
+    buffers: ViewBuffers,
+    buffersRebuilt: boolean,
+  ): Result<void, RhiError> {
+    const previous = buffersRebuilt ? undefined : this.encodedTopology;
+    if (
+      this.plan === plan &&
+      !buffersRebuilt &&
+      this.sceneRef === scene &&
+      encoded.batchBytes === previous?.batchBytes
+    )
+      return ok(undefined);
+    this.plan = undefined;
+    this.encodedTopology = undefined;
+    const batchWrite = this.writeChangedWords(
+      buffers.batches,
+      encoded.batchBytes,
+      previous?.batchBytes,
+    );
+    if (!batchWrite.ok) return batchWrite;
+    this.encodedTopology = encoded;
+    this.batchUploadBytes = batchWrite.value;
+    this.uploadBytes += batchWrite.value;
+    return ok(undefined);
+  }
+
+  /**
+   * Physical buffers retain their accepted bytes. Trim equal words at both
+   * ends instead of re-uploading the static roster for a local edit. One
+   * aligned interval per table keeps queue work bounded even for scattered
+   * changes; a replacement or partial failure always seeds the full table.
+   */
+  private writeChangedWords(
+    buffer: Buffer,
+    bytes: Uint8Array,
+    before: Uint8Array | undefined,
+  ): Result<number, RhiError> {
+    if (bytes === before) return ok(0);
+    let start = 0;
+    let end = bytes.byteLength / 4;
+    if (before !== undefined) {
+      const next = new Uint32Array(bytes.buffer, bytes.byteOffset, end);
+      const old = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
+      while (start < Math.min(end, old.length) && next[start] === old[start]) start++;
+      while (end > start && end <= old.length && next[end - 1] === old[end - 1]) end--;
+    }
+    const size = (end - start) * 4;
+    if (size === 0) return ok(0);
+    const written = this.device.queue.writeBuffer(buffer, start * 4, bytes, start * 4, size);
+    return written.ok ? ok(size) : written;
+  }
+
+  /** Upload receiver addresses when they or their storage changed; clear them when absent. */
+  private uploadSurfaceRows(
+    buffers: ViewBuffers,
+    visibleSurfaceRows: Uint32Array | undefined,
+    buffersRebuilt: boolean,
+  ): Result<void, RhiError> {
+    if (visibleSurfaceRows === undefined || buffers.visibleSurfaceRows === undefined) {
+      this.surfaceRows = undefined;
+      return ok(undefined);
+    }
+    if (
+      !buffersRebuilt &&
+      this.surfaceRows?.length === visibleSurfaceRows.length &&
+      visibleSurfaceRows.every((row, index) => this.surfaceRows?.[index] === row)
+    )
+      return ok(undefined);
+    const written = this.device.queue.writeBuffer(
+      buffers.visibleSurfaceRows,
+      0,
+      visibleSurfaceRows,
+    );
+    if (!written.ok) return written;
+    this.surfaceRows = visibleSurfaceRows.slice();
+    this.uploadBytes += visibleSurfaceRows.byteLength;
+    return ok(undefined);
+  }
+
+  /** Reset the view constants and write the frustum and roster header words. */
+  private writeViewConstants(
+    plan: SubmissionPlan,
+    planes: Float32Array,
+    minCasterDiameter: number,
+    resourceRoot: number,
+    capsuleDirectional: boolean,
+  ): void {
+    this.viewUpload.fill(0);
+    const viewFloats = this.viewFloats;
+    viewFloats.set(planes.subarray(0, 24));
+    const viewU32 = this.viewWords;
+    viewU32[24] = plan.candidateCount;
+    viewU32[25] = plan.batches.length;
+    viewU32[26] = this.batchCapacity;
+    viewFloats[27] = minCasterDiameter;
+    viewU32[28] = this.suppressionBase() / 4;
+    viewU32[29] = resourceRoot;
+    viewU32[30] = capsuleDirectional ? 1 : 0;
+  }
+
+  /**
+   * The per-frame history words (enabled, parity bases) stay zero here; the
+   * early cull encode fills them only when its graph also records the late
+   * phase, so a graph without it can never skip a previously hidden item.
+   */
+  private writeOcclusionConstants(occlusionCamera: GpuDrivenOcclusionCamera | undefined): void {
+    this.occlusionCamera = occlusionCamera;
+    if (occlusionCamera === undefined) return;
+    const viewFloats = this.viewFloats;
+    viewFloats.set(occlusionCamera.viewProjection.subarray(0, 16), OCCLUSION_CONSTANTS_OFFSET / 4);
+    viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 16] = occlusionCamera.near;
+    viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 17] = occlusionCamera.far;
+    this.viewWords[OCCLUSION_CONSTANTS_OFFSET / 4 + 18] = occlusionCamera.orthographic ? 1 : 0;
+    viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 19] = this.footprintScale;
+  }
+
+  /**
+   * Without a cull input the enable word stays zero, so a graph that binds
+   * the camera cull still draws every caster the frustum admits.
+   */
+  private writeShadowCameraCullConstants(
+    shadowCameraCull: GpuDrivenShadowCameraCull | undefined,
+  ): Result<void, RhiError> {
+    const lightInverse =
+      shadowCameraCull === undefined || !this.shadowCameraCullEligible
+        ? undefined
+        : invertLightViewProjection(shadowCameraCull.lightViewProjection);
+    if (shadowCameraCull === undefined || lightInverse === undefined) return ok(undefined);
+    const cameraPipeline = this.shadowCameraCull();
+    if (!cameraPipeline.ok) return cameraPipeline;
+    if (cameraPipeline.value === undefined) return ok(undefined);
+    const viewFloats = this.viewFloats;
+    const base = SHADOW_CAMERA_CULL_OFFSET / 4;
+    const camera = shadowCameraCull.camera;
+    viewFloats.set(camera.viewProjection.subarray(0, 16), base);
+    viewFloats[base + 16] = camera.near;
+    viewFloats[base + 17] = camera.far;
+    this.viewWords[base + 18] = camera.orthographic ? 1 : 0;
+    viewFloats[base + 19] = this.footprintScale;
+    viewFloats.set(shadowCameraCull.lightViewProjection.subarray(0, 16), base + 20);
+    viewFloats.set(lightInverse, base + 36);
+    viewFloats[base + 52] = shadowCameraCull.ndcDilation;
+    viewFloats[base + 53] = shadowCameraCull.worldDilation;
+    this.viewWords[base + 54] = 1;
+    return ok(undefined);
+  }
+
+  /**
+   * Without a LOD camera the zero height scale reports an invalid height,
+   * so every chain resolves to its root.
+   */
+  private writeLodConstants(
+    lodCamera: LodViewCamera | undefined,
+    lodClampCamera: LodViewCamera | undefined,
+  ): void {
+    if (lodCamera !== undefined) {
+      writeLodViewConstants(this.viewData, LOD_CONSTANTS_OFFSET, lodCamera);
+    }
+    if (lodClampCamera !== undefined) {
+      writeLodViewConstants(this.viewData, LOD_CLAMP_CONSTANTS_OFFSET, lodClampCamera, true);
+    }
+  }
+
+  /** Skin demand constants exist only while this view has an active Skin layout. */
+  private writeSkinConstants(skin: SkinSceneFrame | undefined, plan: SubmissionPlan): void {
+    const layout = this.skinLayout;
+    if (!this.skinActive || skin === undefined || layout === undefined) return;
+    writeSkinDemandConstants(
+      this.viewData,
+      SKIN_CONSTANTS_OFFSET,
+      layout,
+      skin.current.root,
+      skin.previous?.root ?? 0xffffffff,
+      plan.candidateCount,
+      this.skinCounterBase(),
+      this.skinDispatchBase(),
+      Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535,
+    );
+    this.viewWords[SKIN_RASTER_OFFSET / 4] = layout.candidateBase;
+    this.viewWords[SKIN_RASTER_OFFSET / 4 + 1] = layout.descriptorBase;
+  }
+
+  /** Recreate the cull and Skin task bind groups when their scene or view storage changed. */
+  private ensureBindGroups(
+    scene: GpuScene,
+    inputBuffer: Buffer,
+    buffers: ViewBuffers,
+    buffersRebuilt: boolean,
+  ): Result<void, RhiError> {
+    const sceneChanged =
+      this.scenePrimitive !== scene.primitiveBuffer ||
+      this.sceneInstance !== scene.instanceBuffer ||
+      this.sceneTransform !== scene.transformBuffer ||
+      this.sceneInputs !== inputBuffer;
+    if (
+      this.bindGroup !== undefined &&
+      !sceneChanged &&
+      !buffersRebuilt &&
+      (!this.skinActive || this.skinBindGroup !== undefined)
+    )
+      return ok(undefined);
+    // Graph passes read the current scene bindings and imports at execute
+    // time, so a scene or input buffer swap alone does not recompile them.
+    const graphShapeChanged =
+      this.bindGroup === undefined ||
+      buffersRebuilt ||
+      (this.skinActive && this.skinBindGroup === undefined);
+    const entries = [
+      { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
+      { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
+      { binding: 2, resource: bufferBinding(scene.transformBuffer) },
+      { binding: 3, resource: bufferBinding(inputBuffer) },
+      { binding: 4, resource: bufferBinding(buffers.batches) },
+      { binding: 5, resource: bufferBinding(buffers.view) },
+      { binding: 6, resource: bufferBinding(buffers.counters) },
+      { binding: 7, resource: bufferBinding(buffers.visible) },
+      { binding: 8, resource: bufferBinding(buffers.indirect) },
+    ];
+    const binding = this.device.createBindGroup({
+      label: `${this.labelPrefix}-bg`,
+      layout: this.bindGroupLayout,
+      entries,
+    });
+    if (!binding.ok) return binding;
+    this.bindGroup = binding.value;
+    this.skinBindGroup = undefined;
+    if (this.skinPipelineLayout !== undefined) {
+      const taskBinding = this.device.createBindGroup({
+        label: `${this.labelPrefix}-skin-bg`,
+        layout: this.skinPipelineLayout,
+        entries: entries.slice(0, 8),
+      });
+      if (!taskBinding.ok) {
+        this.bindGroup = undefined;
+        return taskBinding;
+      }
+      this.skinBindGroup = taskBinding.value;
+    }
+    this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 2;
+    if (graphShapeChanged) this.resourceGeneration += 1;
+    return ok(undefined);
+  }
+
+  /** Retain the scene buffers this view's bind groups and receipts now address. */
+  private adoptScene(scene: GpuScene): void {
+    this.scenePrimitive = scene.primitiveBuffer;
+    this.sceneInstance = scene.instanceBuffer;
+    this.sceneTransform = scene.transformBuffer;
+    if (this.sceneMaterial !== scene.materialBuffer) this.materialResourceGeneration += 1;
+    this.sceneMaterial = scene.materialBuffer;
+    this.sceneMaterialBytes = scene.materialByteLength;
+    this.sceneRef = scene;
+    this.sceneCapacity = scene.inspect().capacity;
   }
 
   get computeResourceGeneration(): number {

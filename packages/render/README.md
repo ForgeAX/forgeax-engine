@@ -3634,7 +3634,7 @@ if (!disabled.ok) throw disabled.error;
 | `quality` | Default `high`. Hemisphere SSAO: 16 / 32 / 64 samples. GTAO: 3 slices with 2 / 4 / 6 steps per side = 12 / 24 / 36 depth candidates; high maps Three samples=16 to actual search work. |
 | `radius` | Positive finite view-space distance; default `0.25` |
 | `bias` | Non-negative finite view-space bias (GTAO rejects samples within this normal-plane distance); default `0` |
-| `intensity` | Non-negative finite raw-visibility exponent, applied before denoising; default `1`; zero preserves the unoccluded image |
+| `intensity` | Non-negative finite raw-visibility exponent, applied once before denoising (Three r184 `GTAONode.scale`); lighting multiplies the filtered visibility without reapplying it; default `1`; zero preserves the unoccluded image |
 | `thickness` | GTAO view-space Z rejection distance, independent of normal-plane bias; default `1` |
 | `distanceExponent` | GTAO radial sample distribution; non-negative finite, default `1` (linear) |
 | `distanceFallOff` | GTAO horizon update attenuation in `[0,1]`, default `1`; candidate j uses mix(1, 2/(j+2), falloff) |

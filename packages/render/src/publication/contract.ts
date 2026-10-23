@@ -119,6 +119,11 @@ export interface RenderPublication extends RenderPublicationIdentity {
     readonly materialProjection?:
       | import('@forgeax/engine-assets-runtime').MaterialRenderProjection
       | null;
+    /**
+     * Instead of `materialProjection`: adopt the projection already accepted for
+     * this resident, non-retiring material handle.
+     */
+    readonly materialProjectionSource?: number;
   }[];
   /**
    * Mesh asset rows whose exact payload the receiver already holds from a

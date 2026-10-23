@@ -91,15 +91,16 @@ fn get_ssao_intensity() -> f32 {
 }
 
 // Shared by static, skinned, and custom Standard surface programs.
+// The AO producer already applied the intensity exponent before filtering;
+// a non-zero intensity here only marks the texture as live.
 fn sampleStandardAmbientOcclusion(
   worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>,
   aoTexture: texture_2d<f32>, aoSampler: sampler,
 ) -> f32 {
-  let strength = get_ssao_intensity();
-  if (strength <= 0.0) { return 1.0; }
+  if (get_ssao_intensity() <= 0.0) { return 1.0; }
   let clip = worldViewProjection * vec4<f32>(worldPosition, 1.0);
   let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  return pow(clamp(textureSampleLevel(aoTexture, aoSampler, uv, 0.0).r, 0.0, 1.0), strength);
+  return clamp(textureSampleLevel(aoTexture, aoSampler, uv, 0.0).r, 0.0, 1.0);
 }
 
 fn view_z_to_z_slice(

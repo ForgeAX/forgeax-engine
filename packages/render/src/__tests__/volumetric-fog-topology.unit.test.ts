@@ -195,7 +195,7 @@ describe('volumetric fog RenderGraph topology', () => {
     expect(frameSource).toContain('volumetricFogHistoryGraph');
     expect(frameSource).toContain('volumetricFogHistorySlot');
     expect(frameSource).toContain('volumetricFogHistorySignature');
-    expect(frameSource).toContain('activeVolumetricFogSignature');
+    expect(frameSource).toContain('promoteVolumetricFogHistory(');
     expect(
       readFileSync(fileURLToPath(new URL('../record/volume-params.ts', import.meta.url)), 'utf8'),
     ).toContain('params[32] = fog.worldTimeSeconds ?? 0');

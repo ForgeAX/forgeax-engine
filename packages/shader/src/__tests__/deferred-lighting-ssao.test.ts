@@ -14,10 +14,16 @@ describe('Standard ambient occlusion consumer contract', () => {
     expect(code).toContain('ssaoBlurredTexture, ssaoBlurredSampler');
     expect(code).not.toMatch(/ssaoFactor\s*\*\s*ao/);
   });
-  it('defines zero strength independently of pow(0,0), and keeps strength non-negative', () => {
+  it('treats zero strength as disabled and never reapplies the producer exponent', () => {
     const code = source('standard-cluster');
-    expect(code).toContain('if (strength <= 0.0) { return 1.0; }');
-    expect(code).toContain('return pow(clamp(textureSampleLevel(');
+    expect(code).toContain('if (get_ssao_intensity() <= 0.0) { return 1.0; }');
+    expect(code).toContain(
+      'return clamp(textureSampleLevel(aoTexture, aoSampler, uv, 0.0).r, 0.0, 1.0);',
+    );
+    for (const name of ['standard-cluster', 'standard-deferred-lighting', 'single-layer-medium'])
+      expect(source(name).replace(/\/\/[^\n]*/g, '')).not.toMatch(
+        /pow\([^;]*(ssao|screenOcclusion|aoTexture)/,
+      );
   });
 });
 

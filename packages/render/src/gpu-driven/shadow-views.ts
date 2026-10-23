@@ -1121,6 +1121,126 @@ function graphStateError(identity: ShadowViewIdentity): RenderGraphError {
   });
 }
 
+/** The plan a view draws and the retention facts its selection established. */
+interface ShadowPlanSelection {
+  readonly plan: SubmissionPlan;
+  readonly memberships: ShadowViewRecord['memberships'];
+  /** A new shared execution whose depth differs from the retained one. */
+  readonly executionChanged: boolean;
+  /** The source or its depth execution is unchanged, so only content checks remain. */
+  readonly sourceRetained: boolean;
+}
+
+function planesChangedReason(
+  previous: ShadowViewRecord | undefined,
+  input: ShadowViewUpdateInput,
+): ShadowViewInvalidationReason | undefined {
+  return previous !== undefined && !samePrefix(previous.planes, input.planes, PLANE_FLOATS)
+    ? 'view-changed'
+    : undefined;
+}
+
+/** A published view on unchanged resources adopts the shared fixed execution. */
+function sharedExecutionPlan(
+  previous: ShadowViewRecord,
+  input: ShadowViewUpdateInput,
+): SubmissionPlan | undefined {
+  return previous.published && sameViewResources(previous, input.scene)
+    ? adoptSharedExecution(previous, input.sourcePlan)
+    : undefined;
+}
+
+/** The same source on an intact published view keeps its projected plan. */
+function retainedPublishedPlan(
+  previous: ShadowViewRecord | undefined,
+  scene: GpuScene,
+  sameSource: boolean,
+): SubmissionPlan | undefined {
+  return sameSource &&
+    previous?.published &&
+    !previous.invalidated &&
+    sameViewResources(previous, scene)
+    ? previous.plan
+    : undefined;
+}
+
+/**
+ * Raw values were observed by capture. Reuse the old fixed execution only
+ * after comparing those values, including the physical task addresses.
+ */
+function unchangedRawPlan(
+  previous: ShadowViewRecord | undefined,
+  selected: SubmissionPlan,
+): SubmissionPlan {
+  if (previous === undefined || !sameSubmissionLayout(previous.plan, selected)) return selected;
+  const changed = new Set<number>();
+  changedPrimitives(previous.plan, selected, changed, previous.preparation);
+  return changed.size === 0 ? previous.plan : selected;
+}
+
+/** A cache hit keeps the retained depth and adopts the current source observations. */
+function adoptCacheHit(
+  previous: ShadowViewRecord,
+  input: ShadowViewUpdateInput,
+  plan: SubmissionPlan,
+  candidateSource: ShadowViewUpdateInput['candidatePrimitiveIndices'],
+  candidates: ShadowCandidates | undefined,
+): ShadowViewUpdate {
+  previous.frameInput = { input, plan, bound: false };
+  previous.preparation.cacheHits++;
+  previous.cache = 'hit';
+  previous.invalidationReason = undefined;
+  previous.sourcePlan = input.sourcePlan;
+  previous.candidateSource = candidateSource;
+  previous.candidates = candidates;
+  previous.directMaterials = input.directMaterials;
+  previous.shadowMaterials = input.shadowMaterials;
+  return {
+    identity: previous.identity,
+    cache: 'hit',
+    generation: previous.generation,
+    sourcePlan: previous.sourcePlan,
+    plan: previous.plan,
+    view: previous.view,
+  };
+}
+
+/** Camera culling applies to bound views except the quiet re-raster that makes them retainable. */
+function shadowCameraCull(
+  input: ShadowViewUpdateInput,
+  reason: ShadowViewInvalidationReason | undefined,
+  view: GpuDrivenView,
+): GpuDrivenShadowCameraCull | undefined {
+  return input.cameraCull !== undefined &&
+    input.matrix !== undefined &&
+    reason !== 'camera-culled' &&
+    view.cameraCullBound
+    ? { ...input.cameraCull, lightViewProjection: input.matrix }
+    : undefined;
+}
+
+/** Count one cache rebuild, creating the per-view counters on first publication. */
+function countRebuild(
+  previous: ShadowViewRecord | undefined,
+  invalidationReason: ShadowViewInvalidationReason | undefined,
+): ShadowPreparationCounters {
+  const preparation = previous?.preparation ?? {
+    cacheHits: 0,
+    cacheRebuilds: 0,
+    cacheRebuildReasons: {},
+    membershipBuilds: 0,
+    membershipCandidateScans: 0,
+    planComparisons: 0,
+    batchChecks: 0,
+    candidateScans: 0,
+    primitiveChecks: 0,
+  };
+  preparation.cacheRebuilds++;
+  const reason = invalidationReason ?? 'first-publication';
+  preparation.cacheRebuildReasons[reason] = (preparation.cacheRebuildReasons[reason] ?? 0) + 1;
+  return preparation;
+}
+
 /**
  * Renderer-owned shadow view state. The pool shares one scene/topology source;
  * each directional, point, or spot entry owns only view constants, visibility,
@@ -1174,29 +1294,63 @@ export class ShadowViewStatePool {
     this.activeKeys.add(key);
     this.retiring.delete(key);
     const retainedRevision = previous?.contentRevision;
-    const structureMiss = this.structureInvalidationReason(previous, input);
     let invalidationReason =
-      structureMiss ??
-      (previous !== undefined && !samePrefix(previous.planes, input.planes, PLANE_FLOATS)
-        ? 'view-changed'
-        : undefined);
-    const sameSource =
-      fixedSource &&
-      previous !== undefined &&
-      previous.sourcePlan === input.sourcePlan &&
-      sameCandidates(previous.candidates, candidates);
-    const memberships =
-      fixedSource && previous !== undefined && sameCandidates(previous.candidates, candidates)
-        ? previous.memberships
-        : new WeakMap<FrameList<GpuDrivenCandidate>, FrameList<GpuDrivenCandidate>>();
-    const executionPlan =
-      fixedSource &&
-      previous?.published &&
-      sameViewResources(previous, input.scene) &&
-      projectionSource === input.sourcePlan &&
-      sameCandidates(previous.candidates, candidates)
-        ? adoptSharedExecution(previous, input.sourcePlan)
-        : undefined;
+      this.structureInvalidationReason(previous, input) ?? planesChangedReason(previous, input);
+    const selection = this.selectPlan(previous, input, projectionSource, fixedSource, candidates);
+    if (selection.executionChanged) invalidationReason ??= 'content-changed';
+    invalidationReason ??= this.retainedInvalidationReason(
+      previous,
+      input,
+      retainedRevision,
+      selection.plan,
+      selection.sourceRetained,
+      sameRestriction,
+    );
+    if (invalidationReason === undefined && previous !== undefined) {
+      return ok(adoptCacheHit(previous, input, selection.plan, candidateSource, candidates));
+    }
+
+    const dirtyRects =
+      previous === undefined || invalidationReason === undefined || selection.executionChanged
+        ? undefined
+        : partialStaticRects(
+            previous,
+            input,
+            invalidationReason,
+            retainedRevision ?? previous.contentRevision,
+            selection.plan,
+          );
+    return this.rebuild(
+      key,
+      previous,
+      input,
+      selection,
+      candidates,
+      invalidationReason,
+      dirtyRects,
+    );
+  }
+
+  /**
+   * Choose the plan this view draws: the shared fixed execution, its retained
+   * projection, or a new projection of the source. Depth changes do not change
+   * candidate rows; only a replaced or aborted physical view must re-project an
+   * otherwise identical source for upload.
+   */
+  private selectPlan(
+    previous: ShadowViewRecord | undefined,
+    input: ShadowViewUpdateInput,
+    projectionSource: SubmissionPlan | undefined,
+    fixedSource: boolean,
+    candidates: ShadowCandidates | undefined,
+  ): ShadowPlanSelection {
+    const sameFixedCandidates =
+      fixedSource && previous !== undefined && sameCandidates(previous.candidates, candidates);
+    const sameSource = sameFixedCandidates && previous.sourcePlan === input.sourcePlan;
+    const memberships = sameFixedCandidates
+      ? previous.memberships
+      : new WeakMap<FrameList<GpuDrivenCandidate>, FrameList<GpuDrivenCandidate>>();
+    const executionPlan = sameFixedCandidates ? sharedExecutionPlan(previous, input) : undefined;
     const sameDepthExecution =
       previous !== undefined &&
       executionPlan !== undefined &&
@@ -1204,109 +1358,36 @@ export class ShadowViewStatePool {
       sameShadowExecution(previous.plan, executionPlan);
     const executionChanged =
       executionPlan !== undefined && executionPlan !== previous?.plan && !sameDepthExecution;
-    if (executionChanged) invalidationReason ??= 'content-changed';
-    // Depth changes do not change candidate rows. Only a replaced or aborted
-    // physical view must re-project an otherwise identical source for upload.
-    let selectedPlan =
+    const plan =
       executionPlan ??
-      (sameSource &&
-      previous?.published &&
-      !previous.invalidated &&
-      sameViewResources(previous, input.scene)
-        ? previous.plan
-        : projectionSource === undefined
-          ? projectPlan(input.sourcePlan, candidates)
-          : this.projectSourcePlan(
-              input,
-              candidates,
-              previous?.plan,
-              projectionSource,
-              memberships,
-            ));
-    // Raw values were observed above. Reuse the old fixed execution only after
-    // comparing those values, including the physical task addresses.
-    if (
-      !fixedSource &&
-      previous !== undefined &&
-      sameSubmissionLayout(previous.plan, selectedPlan)
-    ) {
-      const changed = new Set<number>();
-      changedPrimitives(previous.plan, selectedPlan, changed, previous.preparation);
-      if (changed.size === 0) selectedPlan = previous.plan;
-    }
-    // Only this selected task inspects its caster execution. Joint edits do
-    // not broadcast invalidation to retained or staggered light views.
-    if (input.skin !== undefined && planDrawsSkin(selectedPlan)) {
-      invalidationReason ??= 'skin-task-demand';
-    }
-    if (invalidationReason === undefined && previous !== undefined) {
-      invalidationReason = this.retainedContentReason(
-        previous,
-        input,
-        retainedRevision ?? previous.contentRevision,
-        selectedPlan,
-        sameSource || sameDepthExecution,
-        sameRestriction,
-      );
-    }
-    // Depth rastered under a camera cull lacks casters a moved camera may see,
-    // so it is never reused. Changed content keeps culling every frame; a
-    // quiet view re-rasters once without the cull so it can be retained.
-    if (invalidationReason === undefined && previous?.cameraCull === true) {
-      invalidationReason = 'camera-culled';
-    }
-    if (invalidationReason === undefined && previous !== undefined) {
-      previous.frameInput = { input, plan: selectedPlan, bound: false };
-      previous.preparation.cacheHits++;
-      previous.cache = 'hit';
-      previous.invalidationReason = undefined;
-      previous.sourcePlan = input.sourcePlan;
-      previous.candidateSource = candidateSource;
-      previous.candidates = candidates;
-      previous.directMaterials = input.directMaterials;
-      previous.shadowMaterials = input.shadowMaterials;
-      return ok({
-        identity: previous.identity,
-        cache: 'hit',
-        generation: previous.generation,
-        sourcePlan: previous.sourcePlan,
-        plan: previous.plan,
-        view: previous.view,
-      });
-    }
+      retainedPublishedPlan(previous, input.scene, sameSource) ??
+      this.projectSourcePlan(input, candidates, previous?.plan, projectionSource, memberships);
+    return {
+      plan: fixedSource ? plan : unchangedRawPlan(previous, plan),
+      memberships,
+      executionChanged,
+      sourceRetained: sameSource || sameDepthExecution,
+    };
+  }
 
-    const dirtyRects =
-      previous === undefined || invalidationReason === undefined || executionChanged
-        ? undefined
-        : partialStaticRects(
-            previous,
-            input,
-            invalidationReason,
-            retainedRevision ?? previous.contentRevision,
-            selectedPlan,
-          );
+  /** Re-raster this view: update its physical view and publish a new pending record. */
+  private rebuild(
+    key: string,
+    previous: ShadowViewRecord | undefined,
+    input: ShadowViewUpdateInput,
+    selection: ShadowPlanSelection,
+    candidates: ShadowCandidates | undefined,
+    invalidationReason: ShadowViewInvalidationReason | undefined,
+    dirtyRects: readonly ShadowDirtyRect[] | undefined,
+  ): Result<ShadowViewUpdate, RhiError> {
     const planes = new Float32Array(input.planes.subarray(0, PLANE_FLOATS));
-    let view = previous?.view;
-    if (view === undefined) {
-      const created = GpuDrivenView.create({
-        device: this.device,
-        shaderModuleFactory: this.shaderModuleFactory,
-        labelPrefix: `${shadowViewLabelPrefix(input.identity)}.view`,
-        shadowCameraCull: cameraCullEligible(input.identity),
-      });
-      if (!created.ok) return created;
-      view = created.value;
-    }
+    const viewed = this.viewFor(previous, input.identity);
+    if (!viewed.ok) return viewed;
+    const view = viewed.value;
     const minCasterDiameter = shadowMinCasterDiameter(input.matrix, input.targetSize);
-    const cameraCull =
-      input.cameraCull !== undefined &&
-      input.matrix !== undefined &&
-      invalidationReason !== 'camera-culled' &&
-      view.cameraCullBound
-        ? { ...input.cameraCull, lightViewProjection: input.matrix }
-        : undefined;
+    const cameraCull = shadowCameraCull(input, invalidationReason, view);
     const updated = view.update(
-      selectedPlan,
+      selection.plan,
       input.scene,
       input.inputReads,
       planes,
@@ -1322,26 +1403,13 @@ export class ShadowViewStatePool {
     );
     if (!updated.ok) return updated;
     const generation = (previous?.generation ?? 0) + 1;
-    const preparation = previous?.preparation ?? {
-      cacheHits: 0,
-      cacheRebuilds: 0,
-      cacheRebuildReasons: {},
-      membershipBuilds: 0,
-      membershipCandidateScans: 0,
-      planComparisons: 0,
-      batchChecks: 0,
-      candidateScans: 0,
-      primitiveChecks: 0,
-    };
-    preparation.cacheRebuilds++;
-    const reason = invalidationReason ?? 'first-publication';
-    preparation.cacheRebuildReasons[reason] = (preparation.cacheRebuildReasons[reason] ?? 0) + 1;
+    const preparation = countRebuild(previous, invalidationReason);
     const record: ShadowViewRecord = {
       preparation,
       identity: Object.freeze({ ...input.identity }),
       view,
       sourcePlan: input.sourcePlan,
-      plan: selectedPlan,
+      plan: selection.plan,
       scene: input.scene,
       frameInput: undefined,
       matrix: input.matrix === undefined ? undefined : new Float32Array(input.matrix),
@@ -1351,9 +1419,9 @@ export class ShadowViewStatePool {
       directMaterials: input.directMaterials,
       shadowMaterials: input.shadowMaterials,
       planes,
-      candidateSource,
+      candidateSource: input.candidatePrimitiveIndices,
       candidates,
-      memberships,
+      memberships: selection.memberships,
       lodSelection: input.lodSelection,
       lodProjectedHeights: input.lodProjectedHeights,
       generation,
@@ -1380,6 +1448,50 @@ export class ShadowViewStatePool {
       sourcePlan: record.sourcePlan,
       plan: record.plan,
       view: record.view,
+    });
+  }
+
+  /**
+   * Reasons a structurally intact view must still re-raster for its selected
+   * plan. Only this selected task inspects its caster execution: joint edits do
+   * not broadcast invalidation to retained or staggered light views.
+   */
+  private retainedInvalidationReason(
+    previous: ShadowViewRecord | undefined,
+    input: ShadowViewUpdateInput,
+    retainedRevision: number | undefined,
+    selectedPlan: SubmissionPlan,
+    sourceRetained: boolean,
+    sameRestriction: boolean,
+  ): ShadowViewInvalidationReason | undefined {
+    if (input.skin !== undefined && planDrawsSkin(selectedPlan)) return 'skin-task-demand';
+    if (previous === undefined) return undefined;
+    const contentReason = this.retainedContentReason(
+      previous,
+      input,
+      retainedRevision ?? previous.contentRevision,
+      selectedPlan,
+      sourceRetained,
+      sameRestriction,
+    );
+    if (contentReason !== undefined) return contentReason;
+    // Depth rastered under a camera cull lacks casters a moved camera may see,
+    // so it is never reused. Changed content keeps culling every frame; a
+    // quiet view re-rasters once without the cull so it can be retained.
+    return previous.cameraCull ? 'camera-culled' : undefined;
+  }
+
+  /** The retained view object, or a new physical view for a first publication. */
+  private viewFor(
+    previous: ShadowViewRecord | undefined,
+    identity: ShadowViewIdentity,
+  ): Result<GpuDrivenView, RhiError> {
+    if (previous !== undefined) return ok(previous.view);
+    return GpuDrivenView.create({
+      device: this.device,
+      shaderModuleFactory: this.shaderModuleFactory,
+      labelPrefix: `${shadowViewLabelPrefix(identity)}.view`,
+      shadowCameraCull: cameraCullEligible(identity),
     });
   }
 
@@ -1446,7 +1558,7 @@ export class ShadowViewStatePool {
     input: ShadowViewUpdateInput,
     candidates: ShadowCandidates | undefined,
     previousPlan: SubmissionPlan | undefined,
-    projectionSource: SubmissionPlan,
+    projectionSource: SubmissionPlan | undefined,
     memberships: ShadowViewRecord['memberships'],
   ): SubmissionPlan {
     if (input.sourcePlan !== projectionSource) return projectPlan(input.sourcePlan, candidates);

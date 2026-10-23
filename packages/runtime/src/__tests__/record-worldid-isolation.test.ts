@@ -89,10 +89,16 @@ describe('production-path geometry instanceBuffers world-aware key', () => {
   });
 
   it('inst.cacheKey set uses a world-aware key', () => {
+    // Every write uses the key derived by instanceCollectionCacheKey next to
+    // the matching read; the direct-lane writer receives that key as input.
+    const src = readFileSync(FILE, 'utf8');
+    const writes = src.match(/frameState\.instanceBuffers\.set\(\w+/g) ?? [];
+    expect(writes.length).toBeGreaterThan(0);
+    for (const write of writes) expect(write).toBe('frameState.instanceBuffers.set(entityCacheKey');
     expectWorldAwareCacheKeyAt(
       FILE,
-      findLine(FILE, 'frameState.instanceBuffers.set('),
-      'main-pass-geometry instanceBuffers.set',
+      findLine(FILE, 'const entityCacheKey = '),
+      'main-pass-geometry instanceBuffers key',
     );
   });
 });

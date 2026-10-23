@@ -528,7 +528,8 @@ fn sampleMediumDiffuse(
   let dimensions = vec2<f32>(textureDimensions(surfaceBackdropTexture));
   let ssaoUv = clamp(pixelPosition.xy / max(dimensions, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
   let ssao = textureSample(ssaoBlurredTexture, ssaoBlurredSampler, ssaoUv).r;
-  diffuse *= mix(1.0, ssao, get_ssao_intensity());
+  // The AO producer already applied the intensity exponent before filtering.
+  diffuse *= select(1.0, ssao, get_ssao_intensity() > 0.0);
 #endif
   return diffuse;
 }

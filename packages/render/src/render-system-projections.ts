@@ -1,9 +1,11 @@
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
+import { mat4 } from '@forgeax/engine-math';
 import type { LodOcclusionInspectionRow, LodOcclusionWorldInspection } from './inspection-types';
 import type { RenderResourceScope } from './publication/resource-scope';
 import { lodLevelHistogram } from './record/cpu-lod';
 import { worldEntityKey } from './record/frame-snapshot';
+import { computeProjectionMatrix, computeViewMatrix } from './record/helpers';
 import type { CameraSnapshot, DrawOwnerOptions } from './render-contract';
 import type { RenderableSnapshot } from './render-system-extract';
 import type { FrameList } from './scene/frame-list';
@@ -143,4 +145,86 @@ export function createLodWorldInspections(
   return Object.freeze(
     result.sort((left, right) => left.attachmentId.localeCompare(right.attachmentId)),
   );
+}
+
+/**
+ * Capture-only snapshots keep the selected camera's geometry and clear color
+ * but omit display companions, so captures restore the author configuration.
+ */
+export function captureOnlyCameras(
+  cameras: readonly CameraSnapshot[],
+  cameraEntityKey: number | undefined,
+): CameraSnapshot[] {
+  return cameras
+    .filter((camera, index) =>
+      cameraEntityKey === undefined ? index === 0 : camera.entityKey === cameraEntityKey,
+    )
+    .map((camera) => ({
+      position: camera.position,
+      world: camera.world,
+      fov: camera.fov,
+      aspect: camera.aspect,
+      near: camera.near,
+      far: camera.far,
+      projection: camera.projection,
+      ...(camera.projectionOffset === undefined
+        ? {}
+        : { projectionOffset: camera.projectionOffset }),
+      orthoLeft: camera.orthoLeft,
+      orthoRight: camera.orthoRight,
+      orthoBottom: camera.orthoBottom,
+      orthoTop: camera.orthoTop,
+      tonemap: 'none' as const,
+      exposure: 1,
+      whitePoint: 1,
+      antialias: 'none' as const,
+      bloom: 'off' as const,
+      bloomThreshold: 1,
+      bloomIntensity: 0,
+      bloomSmoothWidth: 0,
+      bloomRadius: 0,
+      clearColor: camera.clearColor,
+      ...(camera.entityKey === undefined ? {} : { entityKey: camera.entityKey }),
+      ...(camera.worldId === undefined ? {} : { worldId: camera.worldId }),
+    }));
+}
+
+/** The selected display camera and its view basis as seen by render features. */
+export function featureCameraSelection(camera: CameraSnapshot | undefined) {
+  if (camera === undefined) return {};
+  return {
+    selectedCamera: camera,
+    selectedView: {
+      position: new Float32Array(camera.position),
+      right: new Float32Array([camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0]),
+      up: new Float32Array([camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0]),
+      viewProjection: mat4.multiply(
+        mat4.create(),
+        computeProjectionMatrix(camera),
+        computeViewMatrix(camera),
+      ),
+    },
+  };
+}
+
+/**
+ * World attachment identity per stable world key; an ambiguous key clears
+ * the table so a readback never attributes rows to the wrong World.
+ */
+export function lodWorldAttachments(
+  worlds: readonly RenderResourceScope[],
+  worldKeys: readonly number[],
+): ReadonlyMap<number, string> {
+  const attachments = new Map<number, string>();
+  for (let worldId = 0; worldId < worlds.length; worldId += 1) {
+    const world = worlds[worldId];
+    if (world === undefined) continue;
+    const worldKey = worldKeys[worldId] ?? worldId;
+    if (attachments.has(worldKey)) {
+      attachments.clear();
+      break;
+    }
+    attachments.set(worldKey, world.identity);
+  }
+  return attachments;
 }

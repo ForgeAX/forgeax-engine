@@ -371,7 +371,7 @@ describe('render-system-extract spot direction owner', () => {
     );
 
     expect(source.match(/\.query\(\{\s*read: \[SpotLight\]/g)?.length).toBe(1);
-    expect(source).toContain('const dirN = vec3.create(');
+    expect(source).toContain('vec3.create(x / length, y / length, z / length)');
     expect(source).toContain('direction: dirN');
   });
 });

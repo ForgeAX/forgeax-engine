@@ -779,20 +779,41 @@ function validateProjection(opts: StandardOpts): void {
   }
 }
 
-function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
+function validateDirectMultiscattering(
+  directMultiscattering: DefaultStandardOptions['directMultiscattering'],
+): void {
   if (
-    opts.directMultiscattering !== undefined &&
-    opts.directMultiscattering !== 'fit' &&
-    opts.directMultiscattering !== 'lut'
+    directMultiscattering !== undefined &&
+    directMultiscattering !== 'fit' &&
+    directMultiscattering !== 'lut'
   ) {
     throw new MaterialAuthoringContractError(
       'directMultiscattering',
       'range',
-      opts.directMultiscattering,
+      directMultiscattering,
     );
   }
-  const subsurfaceRadius = opts.subsurfaceRadius ?? [0, 0, 0];
-  const subsurfaceWeight = opts.subsurfaceWeight ?? 0;
+}
+
+/** Authored scalars with their Standard defaults; validation and values share one resolution. */
+function resolveStandardDefaults(opts: DefaultStandardOptions) {
+  return {
+    subsurfaceRadius: opts.subsurfaceRadius ?? [0, 0, 0],
+    subsurfaceWeight: opts.subsurfaceWeight ?? 0,
+    occlusionStrength: opts.occlusionStrength ?? 1,
+    transmission: opts.transmission ?? 0,
+    ior: opts.ior ?? 1.5,
+    thickness: opts.thickness ?? 0,
+    attenuationColor: opts.attenuationColor ?? [1, 1, 1],
+  };
+}
+
+type ResolvedStandardDefaults = ReturnType<typeof resolveStandardDefaults>;
+
+function validateSubsurface(
+  subsurfaceRadius: ResolvedStandardDefaults['subsurfaceRadius'],
+  subsurfaceWeight: number,
+): void {
   if (!Array.isArray(subsurfaceRadius) || subsurfaceRadius.length !== 3) {
     throw new MaterialAuthoringContractError('subsurfaceRadius', 'shape', subsurfaceRadius);
   }
@@ -808,8 +829,10 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   if (subsurfaceWeight < 0 || subsurfaceWeight > 1) {
     throw new MaterialAuthoringContractError('subsurfaceWeight', 'range', subsurfaceWeight);
   }
+}
 
-  const occlusionStrength = opts.occlusionStrength ?? 1;
+/** Occlusion, alpha cutoff, normal, bump and displacement scalar contracts. */
+function validateSurfaceScalars(opts: DefaultStandardOptions, occlusionStrength: number): void {
   if (occlusionStrength < 0 || occlusionStrength > 1) {
     throw new Error(
       `Materials.standard: occlusionStrength must be in [0, 1], got ${occlusionStrength}`,
@@ -837,44 +860,26 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
       throw new MaterialAuthoringContractError(name, 'non-finite', opts[name]);
     }
   }
-  validateProjection(opts);
-  validateChannel('metallicChannel', opts.metallicChannel);
-  validateChannel('roughnessChannel', opts.roughnessChannel);
-  validateChannel('alphaChannel', opts.alphaChannel);
-  const transmission = opts.transmission ?? 0;
-  const ior = opts.ior ?? 1.5;
-  const thickness = opts.thickness ?? 0;
-  const attenuationColor = opts.attenuationColor ?? [1, 1, 1];
-  validateFiniteRange('transmission', transmission, 0, 1);
-  validateFiniteRange('ior', ior, 1);
-  validateFiniteRange('thickness', thickness, 0);
-  validateFiniteRange('attenuationDistance', opts.attenuationDistance, Number.MIN_VALUE);
+}
+
+function validateTransmission(
+  resolved: ResolvedStandardDefaults,
+  attenuationDistance: number | undefined,
+): void {
+  validateFiniteRange('transmission', resolved.transmission, 0, 1);
+  validateFiniteRange('ior', resolved.ior, 1);
+  validateFiniteRange('thickness', resolved.thickness, 0);
+  validateFiniteRange('attenuationDistance', attenuationDistance, Number.MIN_VALUE);
+  const attenuationColor = resolved.attenuationColor;
   if (
     attenuationColor.length !== 3 ||
     attenuationColor.some((value) => !Number.isFinite(value) || value < 0 || value > 1)
   ) {
     throw new MaterialTransmissionContractError('attenuationColor', 'shape', attenuationColor);
   }
-  const values: Record<string, MaterialValue> = {
-    subsurfaceRadius: [...subsurfaceRadius],
-    subsurfaceWeight,
-    baseColor: linearColorFromInput(opts.baseColor, 4),
-    metallic: opts.metallic ?? 0,
-    roughness: opts.roughness ?? 1,
-    occlusionStrength,
-    displacementScale: opts.displacementScale ?? 1,
-    displacementBias: opts.displacementBias ?? 0,
-    specular: opts.specular ?? 1,
-    specularColor:
-      opts.specularColor === undefined ? [1, 1, 1] : linearColorFromInput(opts.specularColor, 3),
-    transmission,
-    ior,
-    thickness,
-    attenuationColor,
-  };
-  if (opts.flatShading !== undefined) values.flatShading = Number(opts.flatShading);
-  if (opts.metallicChannel !== undefined) values.metallicChannel = opts.metallicChannel;
-  if (opts.roughnessChannel !== undefined) values.roughnessChannel = opts.roughnessChannel;
+}
+
+function writeClearcoatValues(values: Record<string, MaterialValue>, opts: DefaultStandardOptions) {
   if (opts.clearcoat !== undefined) values.clearcoat = opts.clearcoat;
   if (opts.clearcoatRoughness !== undefined) values.clearcoatRoughness = opts.clearcoatRoughness;
   if (opts.clearcoatTexture !== undefined) values.clearcoatTexture = opts.clearcoatTexture;
@@ -886,6 +891,12 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   }
   if (opts.clearcoatNormalScale !== undefined)
     values.clearcoatNormalScale = opts.clearcoatNormalScale;
+}
+
+function writeAnisotropyAndSheenValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.anisotropyStrength !== undefined) values.anisotropyStrength = opts.anisotropyStrength;
   if (opts.anisotropyRotation !== undefined) values.anisotropyRotation = opts.anisotropyRotation;
   if (opts.anisotropyTexture !== undefined) values.anisotropyTexture = opts.anisotropyTexture;
@@ -895,6 +906,12 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   if (opts.sheenRoughnessTexture !== undefined) {
     values.sheenRoughnessTexture = opts.sheenRoughnessTexture;
   }
+}
+
+function writeDiffuseTransmissionValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.diffuseTransmission !== undefined) {
     values.diffuseTransmission = opts.diffuseTransmission;
   }
@@ -907,6 +924,12 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   if (opts.diffuseTransmissionColorTexture !== undefined) {
     values.diffuseTransmissionColorTexture = opts.diffuseTransmissionColorTexture;
   }
+}
+
+function writeIridescenceValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.iridescence !== undefined) values.iridescence = opts.iridescence;
   if (opts.iridescenceIor !== undefined) values.iridescenceIor = opts.iridescenceIor;
   if (opts.iridescenceThicknessMinimum !== undefined) {
@@ -919,6 +942,13 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   if (opts.iridescenceThicknessTexture !== undefined) {
     values.iridescenceThicknessTexture = opts.iridescenceThicknessTexture;
   }
+}
+
+/** Emissive, base color, metallic/roughness and alpha texture inputs. */
+function writeEmissiveAndBaseTextureValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.emissive !== undefined) values.emissive = linearColorFromInput(opts.emissive, 3);
   if (opts.emissiveIntensity !== undefined) values.emissiveIntensity = opts.emissiveIntensity;
   if (opts.emissiveTexture !== undefined) values.emissiveTexture = opts.emissiveTexture;
@@ -930,6 +960,13 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   if (opts.roughnessTexture !== undefined) values.roughnessTexture = opts.roughnessTexture;
   if (opts.alphaTexture !== undefined) values.alphaTexture = opts.alphaTexture;
   if (opts.alphaChannel !== undefined) values.alphaChannel = opts.alphaChannel;
+}
+
+/** Normal-map, triplanar projection and bump inputs. */
+function writeNormalAndProjectionValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.normalTexture !== undefined) values.normalTexture = opts.normalTexture;
   if (opts.normalScale !== undefined) values.normalScale = [...opts.normalScale];
   if (opts.normalMapSpace === 'object') values.normalMapSpace = 1;
@@ -940,21 +977,89 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   }
   if (opts.bumpTexture !== undefined) values.bumpTexture = opts.bumpTexture;
   if (opts.bumpScale !== undefined) values.bumpScale = opts.bumpScale;
+}
+
+/** Displacement, occlusion and specular texture inputs. */
+function writeDetailTextureValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.displacementTexture !== undefined) values.displacementTexture = opts.displacementTexture;
   if (opts.occlusionTexture !== undefined) values.occlusionTexture = opts.occlusionTexture;
   if (opts.specularTexture !== undefined) values.specularTexture = opts.specularTexture;
   if (opts.specularColorTexture !== undefined) {
     values.specularColorTexture = opts.specularColorTexture;
   }
+}
+
+/** Alpha clip/hash/blend, shadow alpha and multiscattering selection. */
+function writeAlphaModeValues(values: Record<string, MaterialValue>, opts: DefaultStandardOptions) {
   if (opts.alphaCutoff !== undefined) values.alphaCutoff = opts.alphaCutoff;
   if (opts.alphaHash !== undefined) values.alphaHash = Number(opts.alphaHash);
   values.shadowAlphaMode = opts.shadowAlphaMode === 'texture' ? 1 : 0;
   values.alphaMode = opts.alphaMode === 'opaque' ? 1 : opts.alphaMode === 'premultiplied' ? 2 : 0;
   values.alphaToCoverage = Number(opts.renderState?.alphaToCoverageEnabled ?? false);
   if (opts.directMultiscattering === 'lut') values.directMultiscatteringLut = 1;
+}
+
+function writeTransmissionTextureValues(
+  values: Record<string, MaterialValue>,
+  opts: DefaultStandardOptions,
+) {
   if (opts.transmissionTexture !== undefined) values.transmissionTexture = opts.transmissionTexture;
   if (opts.thicknessTexture !== undefined) values.thicknessTexture = opts.thicknessTexture;
   if (opts.attenuationDistance !== undefined) values.attenuationDistance = opts.attenuationDistance;
+}
+
+/** Projects authored options onto material values in the Standard parameter order. */
+function standardDefaultValues(
+  opts: DefaultStandardOptions,
+  resolved: ResolvedStandardDefaults,
+): Record<string, MaterialValue> {
+  const values: Record<string, MaterialValue> = {
+    subsurfaceRadius: [...resolved.subsurfaceRadius],
+    subsurfaceWeight: resolved.subsurfaceWeight,
+    baseColor: linearColorFromInput(opts.baseColor, 4),
+    metallic: opts.metallic ?? 0,
+    roughness: opts.roughness ?? 1,
+    occlusionStrength: resolved.occlusionStrength,
+    displacementScale: opts.displacementScale ?? 1,
+    displacementBias: opts.displacementBias ?? 0,
+    specular: opts.specular ?? 1,
+    specularColor:
+      opts.specularColor === undefined ? [1, 1, 1] : linearColorFromInput(opts.specularColor, 3),
+    transmission: resolved.transmission,
+    ior: resolved.ior,
+    thickness: resolved.thickness,
+    attenuationColor: resolved.attenuationColor,
+  };
+  if (opts.flatShading !== undefined) values.flatShading = Number(opts.flatShading);
+  if (opts.metallicChannel !== undefined) values.metallicChannel = opts.metallicChannel;
+  if (opts.roughnessChannel !== undefined) values.roughnessChannel = opts.roughnessChannel;
+  writeClearcoatValues(values, opts);
+  writeAnisotropyAndSheenValues(values, opts);
+  writeDiffuseTransmissionValues(values, opts);
+  writeIridescenceValues(values, opts);
+  writeEmissiveAndBaseTextureValues(values, opts);
+  writeNormalAndProjectionValues(values, opts);
+  writeDetailTextureValues(values, opts);
+  writeAlphaModeValues(values, opts);
+  writeTransmissionTextureValues(values, opts);
+  return values;
+}
+
+function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
+  validateDirectMultiscattering(opts.directMultiscattering);
+  const resolved = resolveStandardDefaults(opts);
+  validateSubsurface(resolved.subsurfaceRadius, resolved.subsurfaceWeight);
+  validateSurfaceScalars(opts, resolved.occlusionStrength);
+  validateProjection(opts);
+  validateChannel('metallicChannel', opts.metallicChannel);
+  validateChannel('roughnessChannel', opts.roughnessChannel);
+  validateChannel('alphaChannel', opts.alphaChannel);
+  validateTransmission(resolved, opts.attenuationDistance);
+  const transmission = resolved.transmission;
+  const values = standardDefaultValues(opts, resolved);
   const forwardRenderState =
     transmission > 0 ? { depthWriteEnabled: false, ...opts.renderState } : opts.renderState;
   const parameters = standardSurfaceParameters(standardParameters('linear', opts));

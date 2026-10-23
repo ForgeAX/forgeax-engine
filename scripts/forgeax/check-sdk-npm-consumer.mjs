@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
@@ -19,6 +19,32 @@ import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
  * It catches workspace:/file: leakage and carrier/umbrella metadata errors
  * before browser verification or npm publish spends the long release budget.
  */
+
+/**
+ * forge.json `assetLibraries: ["@forgeax/engine/content"]` resolves through the
+ * installed Engine closure, so the tarball must carry the library's Pack sources
+ * and the GUID module they import.
+ */
+async function installedContentAssets(engineRoot) {
+  for (let cursor = engineRoot; ; cursor = dirname(cursor)) {
+    const root = resolve(cursor, 'node_modules', '@forgeax', 'engine-content');
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+    } catch {
+      if (dirname(cursor) === cursor) throw new Error('npm-installed-content-missing');
+      continue;
+    }
+    const assetRoot = manifest.forgeax?.library?.assetRoot;
+    if (typeof assetRoot !== 'string') throw new Error('npm-installed-content-asset-root-missing');
+    const packs = (await readdir(resolve(root, assetRoot))).filter((name) =>
+      name.endsWith('.pack.ts'),
+    );
+    if (packs.length === 0) throw new Error('npm-installed-content-packs-missing');
+    await readFile(resolve(root, 'src', 'ids.ts'), 'utf8');
+    return packs.sort();
+  }
+}
 
 const execute = promisify(execFile);
 const execFileAsync = (file, args, options) =>
@@ -344,6 +370,9 @@ try {
   if (engineManifest.version !== version) {
     throw new Error('npm-installed-version-mismatch: @forgeax/engine');
   }
+  const contentAssets = await installedContentAssets(
+    await realpath(resolve(temporaryRoot, 'node_modules', '@forgeax', 'engine')),
+  );
   const installedSdk = resolve(temporaryRoot, 'installed-sdk');
   await execFileAsync(
     'node',
@@ -392,6 +421,7 @@ try {
     carrier: carrier.manifest.name,
     sdkInstall: { version: installedSdkManifest.sdkVersion, source: carrier.manifest.name },
     installed: { '@forgeax/engine': engineManifest.version },
+    contentAssets,
     toolchain: { node: process.version, npm: npmVersion },
     registry: 'ephemeral-local-with-npm-upstream-fallback',
   };

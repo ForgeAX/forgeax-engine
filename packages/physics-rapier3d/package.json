@@ -55,7 +55,7 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",
     "esbuild": "0.28.2",
-    "tsup": "8.5.1",
+    "tsup": "9.0.0",
     "typescript": "6.0.3"
   },
   "forgeax": {

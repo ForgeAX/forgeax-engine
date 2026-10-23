@@ -133,6 +133,19 @@ const PREPARED_MATERIAL_VERTEX_LAYOUTS: ReadonlySet<string> = new Set([
   RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInputInstance,
 ]);
 
+/** Vertex attributes a material PSO declares when the caller supplies no mesh map. */
+export function materialPipelineVertexAttributes(
+  meshAttributes: VertexAttributeMap | undefined,
+  vertexLayout: string | undefined,
+): VertexAttributeMap {
+  if (meshAttributes !== undefined) return meshAttributes;
+  if (vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.positionSizeColorInstance)
+    return PREPARED_INSTANCE_VERTEX_ATTRS;
+  return isPreparedMaterialVertexLayout(vertexLayout)
+    ? PREPARED_MATERIAL_INSTANCE_VERTEX_ATTRS
+    : DEFAULT_VERTEX_ATTRIBUTE_MAP;
+}
+
 export function isPreparedMaterialVertexLayout(layout: string | undefined): boolean {
   return layout !== undefined && PREPARED_MATERIAL_VERTEX_LAYOUTS.has(layout);
 }

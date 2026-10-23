@@ -7,7 +7,6 @@ import { assembleAssetRuntime, assembleRuntimePacks } from '@forgeax/engine-app'
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { FixedTime, Time, World } from '@forgeax/engine-ecs';
 import { decodeCatalogWire, type RuntimeCatalogWire } from '@forgeax/engine-pack';
-import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { Context } from '@forgeax/engine-plugin';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
@@ -742,10 +741,27 @@ describe('standalone host', () => {
   });
 
   it('owns canonical project and build DDC roots', () => {
-    expect(devKitDdcRoots('/workspace/game')).toEqual({
-      buildCacheRoot: resolve('/workspace/game', '.forgeax/ddc/build-cache'),
-      projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
-    });
+    vi.stubEnv('FORGEAX_BUILD_CACHE_DIR', '');
+    try {
+      expect(devKitDdcRoots('/workspace/game')).toEqual({
+        buildCacheRoot: resolve('/workspace/game', '.forgeax/ddc/build-cache'),
+        projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('shares only the build cache when FORGEAX_BUILD_CACHE_DIR selects a machine root', () => {
+    vi.stubEnv('FORGEAX_BUILD_CACHE_DIR', '/machine/build-cache');
+    try {
+      expect(devKitDdcRoots('/workspace/game')).toEqual({
+        buildCacheRoot: resolve('/machine/build-cache'),
+        projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('resolves Engine workspace packages for external projects without installed links', async () => {
@@ -787,65 +803,6 @@ describe('standalone host', () => {
       const guid = await resolver.resolveId.call(context, '@forgeax/engine-pack/guid', importer);
       expect(String(app)).toMatch(/packages[\\/]app[\\/]dist[\\/]index\.mjs$/);
       expect(String(guid)).toMatch(/packages[\\/]pack[\\/]dist[\\/]guid\.mjs$/);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('materializes only missing Engine builtin mesh descriptors for standalone projects', async () => {
-    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-builtins-'));
-    try {
-      await mkdir(resolve(root, 'assets'));
-      const cube = BUILTIN_MESH_ASSETS.find((asset) => asset.geometry === 'procedural-cube');
-      expect(cube).toBeDefined();
-      if (cube === undefined) return;
-      await Promise.all([
-        writeFile(
-          resolve(root, 'forge.json'),
-          `${JSON.stringify({
-            id: 'builtin-game',
-            name: 'Builtin Game',
-            schemaVersion: '3.0.0',
-            roots: {},
-          })}\n`,
-        ),
-        writeFile(resolve(root, 'package.json'), '{"name":"builtin-game"}\n'),
-        writeFile(resolve(root, 'main.ts'), 'export default () => undefined;\n'),
-        writeFile(
-          resolve(root, 'assets/authored.pack.json'),
-          `${JSON.stringify({
-            schemaVersion: '2.0.0',
-            kind: 'internal-text-package',
-            assets: [
-              {
-                guid: cube.guid,
-                kind: 'mesh',
-                payload: { geometry: 'procedural-cube' },
-                refs: [],
-                artifacts: {},
-              },
-            ],
-          })}\n`,
-        ),
-      ]);
-      const facts = await readProjectFacts(root);
-      expect(facts.ok).toBe(true);
-      if (!facts.ok) return;
-      await createViteConfig(facts.value, 'build');
-      const generated = JSON.parse(
-        await readFile(resolve(root, '.forgeax/generated/engine-builtins.pack.json'), 'utf8'),
-      ) as {
-        readonly assets: readonly {
-          readonly guid: string;
-          readonly payload: { readonly geometry: string };
-        }[];
-      };
-      const generatedGuids = generated.assets.map((asset) => asset.guid.toLowerCase());
-      expect(generatedGuids).not.toContain(cube.guid.toLowerCase());
-      expect(generatedGuids).toHaveLength(BUILTIN_MESH_ASSETS.length - 1);
-      expect(generated.assets.map((asset) => asset.payload.geometry)).toContain(
-        'procedural-sphere',
-      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -940,11 +897,6 @@ describe('standalone host', () => {
       const sources = await discoverPluginAssets(facts.value);
       await sources.sourceSnapshot.digest(dependency);
       const config = await createViteConfig(facts.value, 'serve', '/', { initialSources: sources });
-      // The Pack compiler can observe Engine builtins while preparing a real game.
-      // Use that same retained snapshot and its native observation method here.
-      await sources.sourceSnapshot.digest(
-        resolve(String(config.root), 'engine-builtins.pack.json'),
-      );
       const plugins = config.plugins as import('vite').Plugin[];
       const session = plugins.find(
         (plugin) => plugin.name === 'forgeax:project-session',
@@ -959,9 +911,6 @@ describe('standalone host', () => {
       const before = await readLiveProjectInputs(root, paths);
       await server.close();
       server = undefined;
-      await expect(
-        readFile(resolve(String(config.root), 'engine-builtins.pack.json')),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readLiveProjectInputs(root, paths)).toBe(before);
       await writeFile(dependency, 'export const value = 200;');
       expect(await readLiveProjectInputs(root, paths)).not.toBe(before);

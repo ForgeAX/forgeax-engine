@@ -295,7 +295,9 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
               ),
           }
         : {}),
-      ...(context.buildCacheRoot === undefined ? {} : { buildCacheRoot: context.buildCacheRoot }),
+      ...(context.buildCacheRoot === undefined
+        ? {}
+        : { buildCacheRoot: context.buildCacheRoot, cacheIdentityRoot: context.cwd }),
     });
     if (!built.ok) dynamicFailure(context, built.error);
 

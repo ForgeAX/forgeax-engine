@@ -230,10 +230,12 @@ describe('Environment and Fog selection (M2)', () => {
   });
 
   it('keeps Standard record assembly off World queries', () => {
-    const source = readFileSync(
-      fileURLToPath(new URL('../pipeline/standard-pipeline.ts', import.meta.url)),
-      'utf8',
-    );
-    expect(source).not.toMatch(/world\.query\s*\(/);
+    for (const owner of ['standard-pipeline.ts', 'standard-deferred-lane.ts']) {
+      const source = readFileSync(
+        fileURLToPath(new URL(`../pipeline/${owner}`, import.meta.url)),
+        'utf8',
+      );
+      expect(source).not.toMatch(/world\.query\s*\(/);
+    }
   });
 });

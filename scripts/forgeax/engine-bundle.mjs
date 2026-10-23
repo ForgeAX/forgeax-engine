@@ -22,7 +22,11 @@ async function dependencyRoot(root, name) {
   }
 }
 
-/** One standard npm bundle, including the locked transitive runtime closure. */
+/**
+ * One npm package that bundles every Engine owner and patched dependency.
+ * Registry packages stay ordinary exact-version dependencies so publication
+ * uploads only Engine bytes and package managers reuse their caches.
+ */
 export async function bundleEngineArchive({ engineArchive, members, version }) {
   const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-engine-bundle-'));
   try {
@@ -43,6 +47,14 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
         ...manifest.optionalDependencies,
       };
       for (const name of Object.keys(dependencies).sort()) {
+        // An optional registry peer is the consumer's opt-in, not delivery.
+        if (
+          manifest.peerDependenciesMeta?.[name]?.optional === true &&
+          !Object.hasOwn(manifest.dependencies ?? {}, name) &&
+          !Object.hasOwn(manifest.optionalDependencies ?? {}, name) &&
+          !internal.has(name)
+        )
+          continue;
         const target = await dependencyRoot(source, name);
         if (target === undefined) {
           if (
@@ -60,51 +72,62 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     for (const member of [...members].sort((a, b) => a.name.localeCompare(b.name))) {
       roots.set(member.name, await visit(member.root));
     }
-    // Only unpatched, registry-installed platform leaves whose incoming edges
-    // are all optional can leave the bundle. Multiple physical versions stay
-    // bundled: promoting one would silently give another tool the wrong ABI.
-    const namedNodes = new Map();
-    const incoming = new Map();
-    for (const node of graph.values()) {
-      const named = namedNodes.get(node.manifest.name) ?? new Set();
-      named.add(node);
-      namedNodes.set(node.manifest.name, named);
-      for (const [name, target] of node.dependencies) {
-        const edges = incoming.get(target) ?? [];
-        edges.push({
-          name,
-          optional: Object.hasOwn(node.manifest.optionalDependencies ?? {}, name),
-        });
-        incoming.set(target, edges);
-      }
-    }
+    const key = (node) => `${node.manifest.name}@${node.manifest.version}`;
+    const ordered = [...graph.values()].sort((a, b) => key(a).localeCompare(key(b)));
+    // Only unpatched registry installs can be fetched again by a consumer.
+    // Internal, patched and linked packages have no registry identity.
+    const fetchable = (node) =>
+      !internal.has(node.manifest.name) &&
+      node.source.includes('/node_modules/.pnpm/') &&
+      !node.source.includes('patch_hash=');
+    const bundled = new Set(ordered.filter((node) => !fetchable(node)));
+    // A registry package becomes one root dependency under its import name.
+    // Other physical versions under the same name cannot share that root slot,
+    // so they stay bundled at ordinary nested placement.
     const external = new Map();
-    for (const node of graph.values()) {
-      const edges = incoming.get(node) ?? [];
-      if (
-        !internal.has(node.manifest.name) &&
-        (node.manifest.os || node.manifest.cpu) &&
-        node.source.includes('/node_modules/.pnpm/') &&
-        !node.source.includes('patch_hash=') &&
-        node.dependencies.size === 0 &&
-        namedNodes.get(node.manifest.name).size === 1 &&
-        edges.length > 0 &&
-        edges.every((edge) => edge.optional && edge.name === node.manifest.name)
-      ) {
-        external.set(node.manifest.name, node);
+    for (let changed = true; changed; ) {
+      changed = false;
+      external.clear();
+      const claims = new Map();
+      for (const node of ordered) {
+        if (!bundled.has(node)) continue;
+        for (const [name, target] of node.dependencies) {
+          const claim = claims.get(name) ?? new Map();
+          const edges = claim.get(target) ?? [];
+          edges.push(Object.hasOwn(node.manifest.optionalDependencies ?? {}, name));
+          claim.set(target, edges);
+          claims.set(name, claim);
+        }
+      }
+      for (const [name, claim] of [...claims].sort(([a], [b]) => a.localeCompare(b))) {
+        const candidates = [...claim.keys()].filter((target) => !bundled.has(target));
+        if (candidates.length === 0) continue;
+        const rootOwner = roots.get(name);
+        const [selected] =
+          rootOwner !== undefined
+            ? []
+            : candidates.sort(
+                (a, b) => claim.get(b).length - claim.get(a).length || key(a).localeCompare(key(b)),
+              );
+        if (selected !== undefined) {
+          external.set(name, { node: selected, optional: claim.get(selected).every(Boolean) });
+        }
+        for (const target of candidates) {
+          if (target !== selected) {
+            bundled.add(target);
+            changed = true;
+          }
+        }
       }
     }
-    // Internal packages win root placement; duplicate external versions retain
-    // ordinary nested node_modules placement, with no import rewriting.
-    for (const node of [...graph.values()].sort((a, b) =>
-      `${a.manifest.name}@${a.manifest.version}`.localeCompare(
-        `${b.manifest.name}@${b.manifest.version}`,
-      ),
-    )) {
-      // Placement follows the import spelling, including npm aliases. Placing
-      // an alias under its canonical name caused a second full webgpu copy.
+    // Bundled third-party roots, such as a patched dependency, keep their
+    // import name at the package root when no Engine owner occupies it.
+    for (const node of ordered) {
+      if (!bundled.has(node)) continue;
       for (const [name, target] of node.dependencies) {
-        if (!external.has(name) && !roots.has(name)) roots.set(name, target);
+        if (bundled.has(target) && !roots.has(name) && !external.has(name)) {
+          roots.set(name, target);
+        }
       }
     }
     const placements = new Map();
@@ -126,11 +149,14 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
       const manifest = JSON.parse(await readFile(path, 'utf8'));
       // Development dependencies do not belong to the delivered runtime graph.
       delete manifest.devDependencies;
-      // The Engine root owns promoted platform leaves. Keeping the same edge
+      // The Engine root owns optional registry edges. Keeping the same edge
       // on a bundled parent makes npm's nested installer treat the missing leaf
       // as bundled too, so it skips fetching the native binding entirely.
       for (const [name, target] of node.dependencies) {
-        if (external.get(name) === target) delete manifest.optionalDependencies[name];
+        const owner = external.get(name);
+        if (owner?.node === target && owner.optional && manifest.optionalDependencies) {
+          delete manifest.optionalDependencies[name];
+        }
       }
       await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
     }
@@ -140,7 +166,6 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
       if (expanded.has(destination)) return;
       expanded.add(destination);
       for (const [name, target] of node.dependencies) {
-        if (external.get(name) === target) continue;
         let found;
         for (let cursor = destination; ; cursor = dirname(cursor)) {
           const candidate = resolve(cursor, 'node_modules', name);
@@ -151,6 +176,9 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
           if (cursor === packageRoot) break;
         }
         if (found === target) continue;
+        // A root registry dependency resolves above the bundle unless a
+        // different bundled version shadows it on this lookup path.
+        if (found === undefined && external.get(name)?.node === target) continue;
         const nested = resolve(destination, 'node_modules', name);
         await copy(target, nested);
         await expand(target, nested);
@@ -158,22 +186,23 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     }
     for (const [name, node] of roots)
       await expand(node, resolve(packageRoot, 'node_modules', name));
+    const exact = (name, node) =>
+      name === node.manifest.name
+        ? node.manifest.version
+        : `npm:${node.manifest.name}@${node.manifest.version}`;
     const manifestPath = resolve(packageRoot, 'package.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    manifest.dependencies = Object.fromEntries(
-      [...roots].map(([name, node]) => [
-        name,
-        internal.has(name)
-          ? version
-          : name === node.manifest.name
-            ? node.manifest.version
-            : `npm:${node.manifest.name}@${node.manifest.version}`,
-      ]),
-    );
-    manifest.optionalDependencies = Object.fromEntries(
+    const sorted = (entries) => Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));
+    manifest.dependencies = sorted([
+      ...[...roots].map(([name, node]) => [name, internal.has(name) ? version : exact(name, node)]),
+      ...[...external]
+        .filter(([, owner]) => !owner.optional)
+        .map(([name, owner]) => [name, exact(name, owner.node)]),
+    ]);
+    manifest.optionalDependencies = sorted(
       [...external]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, node]) => [name, node.manifest.version]),
+        .filter(([, owner]) => owner.optional)
+        .map(([name, owner]) => [name, exact(name, owner.node)]),
     );
     manifest.bundledDependencies = [...roots.keys()].sort();
     delete manifest.devDependencies;
@@ -187,8 +216,8 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
       );
     }
     return {
-      bundledPackages: graph.size - external.size,
-      externalPlatformPackages: external.size,
+      bundledPackages: new Set(placements.values()).size,
+      registryDependencies: external.size,
       archiveBytes,
     };
   } finally {

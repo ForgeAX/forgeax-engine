@@ -33,6 +33,7 @@ import {
 } from '../features/host';
 import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
 import { createFeatureNoiseResolver } from '../features/noise-texture';
+import type { RenderFeaturePlannedFrame } from '../features/plan';
 import type { RenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { resolveStandardRenderFeatureTargets } from '../features/targets';
 import { renderFeatureCameraView, renderFeatureViewIdentity } from '../features/view';
@@ -46,6 +47,7 @@ import { collectGpuDrivenMaterialArtifacts } from '../gpu-driven/material-artifa
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { disposeInstanceBufferChunks, disposeInstanceBuffers } from '../instance-buffer-cache';
 import { inspectStandardLighting } from '../pipeline/standard-lighting/inspection';
+import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import {
   prepareStandardOutputResources,
   resetStandardOutputForDeviceLoss,
@@ -84,7 +86,7 @@ import {
   shareRenderGraphGenerationAllocationOwner,
 } from '../record/typed-frame-graph';
 import { emptyVolumetricFogParams } from '../record/volume-params';
-import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
+import { type CameraSnapshot, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
 import type { ExtractedFrame } from '../render-system-extract';
 import { materialSamplerHandles, materialTextureHandles } from '../render-system-residency';
 import type { PersistentGpuDrivenCandidate, PersistentRenderScene } from '../scene/render-scene';
@@ -197,12 +199,6 @@ export function createRenderSystemRecovery(
     clearPostProcessPipelineCache,
     clearPostProcessPipelineEntry,
     invalidatePostProcessModule,
-    persistentRenderScene,
-    gpuDrivenShaderFactory,
-    createFeatureGpuWorkOwner,
-    pointsLinesOwner,
-    createPreparedResolverFactory,
-    createPreparedResolverCaches,
   } = deps;
 
   // This is a detached CPU projection, retained only after queue submission.
@@ -424,7 +420,7 @@ export function createRenderSystemRecovery(
   const prepareRecoveryGraphCandidate = (
     runtime: RecoveryGraphCandidateRuntime,
   ): RecoveryGraphCandidatePreparation => {
-    let seed = lastSuccessfulFrameSeed;
+    const seed = lastSuccessfulFrameSeed;
     if (seed === undefined) return { kind: 'no-seed' };
     const camera = seed.frame.cameras[0];
     // A successful clear-only draw can have no display camera. There is no
@@ -452,706 +448,14 @@ export function createRenderSystemRecovery(
     );
     runtime.internals.featureSceneInputs = candidateSceneInputs;
     candidateSceneInputs.begin(candidateFrameState.frameNumber);
-    const setupWorks: MipmapEncoderWork[] = [];
-    const candidateGpuStore = runtime.internals.gpuStore;
-    let candidateGpuDrivenScene: PersistentGpuDrivenCandidate | undefined;
-    let candidateGpuDrivenProduction: GpuDrivenProduction | undefined;
-    let candidateFeatureHost: RenderFeatureHost | undefined;
-    let candidateFeatureGpuWork: RenderFeatureGpuWorkOwner | undefined;
-    let candidatePointsLines: RecoveryPointsLinesCandidate | undefined;
-    let candidateSurfacePage: ReadonlyDynamicInputPage | undefined;
-    let candidateFeatureGraph: RenderFeatureGraphCandidate = {
-      plans: Object.freeze([]),
-      fullscreenEffects: new Map(),
-    };
-    let candidateValidated: ValidatedRenderable[] = [];
-    let recoveryReadiness: RecoveryPipelineReadiness | undefined;
-    let preparedGpuDriven:
-      | import('../gpu-driven/production-raster').PreparedGpuDrivenFrame
-      | undefined;
-    let recoveryGraphFailure: unknown;
-    let candidatePublished = false;
-    let candidateReleased = false;
-    const releaseCandidate = (): void => {
-      if (candidateReleased || candidatePublished) return;
-      candidateReleased = true;
-      retirePendingStandardOutputGpu(candidateFrameState);
-      for (const work of setupWorks) work.discard();
-      const graph = candidateFrameState.compiledFrameGraph?.graph;
-      candidateFrameState.compiledFrameGraph = null;
-      candidateFrameState.compiledFrameGraphCandidate = undefined;
-      try {
-        if (graph !== undefined) retireCompiledGraph(candidateFrameState, graph);
-      } catch {
-        // Candidate cleanup continues through every independent owner.
-      }
-      try {
-        candidateFrameState.pointShadowAtlas?.dispose();
-        candidateFrameState.shadowDepthLayers?.dispose();
-      } catch {
-        // Candidate cleanup continues through every independent owner.
-      }
-      candidateFrameState.pointShadowAtlas = null;
-      candidateFeatureGraph.onAbandoned?.();
-      const featureHost = candidateFeatureHost;
-      candidateFeatureHost = undefined;
-      if (featureHost !== undefined) {
-        featureHost.dispose();
-      }
-      candidateFeatureGpuWork?.dispose();
-      candidateFeatureGpuWork = undefined;
-      candidateSceneInputs.dispose();
-      candidateGpuDrivenProduction?.dispose();
-      candidateGpuDrivenProduction = undefined;
-      candidateGpuDrivenScene?.release();
-      candidateGpuDrivenScene = undefined;
-      candidatePointsLines?.release();
-      candidatePointsLines = undefined;
-      candidateSurfacePage?.release();
-      candidateSurfacePage = undefined;
-      disposeInstanceBuffers(candidateFrameState.instanceBuffers, runtime.internals.errorRegistry);
-      if (candidateFrameState.instanceBufferChunks !== undefined) {
-        disposeInstanceBufferChunks(
-          candidateFrameState.instanceBufferChunks,
-          runtime.internals.errorRegistry,
-        );
-      }
-      candidateGpuStore.destroyAll();
-    };
-    const markPublished = (): void => {
-      // The readiness graph is retired at publication; it is never submitted.
-      preparedGpuDriven?._abortResourceReplacement?.();
-      preparedGpuDriven = undefined;
-      candidatePointsLines?.publish();
-      candidateSurfacePage?.release();
-      candidateSurfacePage = undefined;
-      candidatePublished = true;
-    };
-    const failed = (
-      reason: string,
-      cause: unknown = recoveryGraphFailure,
-    ): RecoveryGraphCandidatePreparation => {
-      releaseCandidate();
-      return cause === undefined ? { kind: 'failed', reason } : { kind: 'failed', reason, cause };
-    };
-
-    try {
-      const output = prepareStandardOutputResources(
-        candidateFrameState,
-        runtime.internals,
-        camera,
-        seed.worlds[seed.cameraOwner] as RenderResourceScope,
-      );
-      if (!output.ok) return failed('candidate Standard output preparation failed', output.error);
-      const gpuScene = persistentRenderScene.prepareRecoveryGpuDrivenCandidate(
-        runtime.internals.device,
-      );
-      if (!gpuScene.ok) return failed('candidate GPU scene preparation failed', gpuScene.error);
-      candidateGpuDrivenScene = gpuScene.value;
-      seed = {
-        ...seed,
-        frame: {
-          ...seed.frame,
-          renderables: seed.frame.renderables.map((row) => {
-            const { temporal: _temporal, ...source } = row;
-            return source;
-          }),
-        },
-      };
-      const recoveryWorlds = seed.worlds;
-      candidateValidated = validateRenderables(
-        runtime.internals,
-        seed.worlds[seed.cameraOwner] as RenderResourceScope,
-        seed.worlds,
-        runtime.pipelineState,
-        candidateFrameState,
-        seed.frame.renderables,
-        seed.frame.dispatch,
-      );
-      if (candidateValidated.length !== seed.frame.renderables.length) {
-        return failed('candidate validation did not retain every LKG-visible renderable');
-      }
-      const lighting = prepareFrameLighting(
-        runtime.internals,
-        candidateFrameState,
-        seed.frame.lights,
-        camera,
-        runtime.pipelineState,
-      );
-      if (!lighting.ok) return failed('candidate lighting preparation failed');
-      let recoverySurfaceDynamicInput = seed.surfaceDynamicInput;
-      if (
-        recoverySurfaceDynamicInput !== undefined &&
-        recoverySurfaceDynamicInput.page.deviceGeneration !==
-          runtime.internals.deviceScope.generation
-      ) {
-        const source = recoverySurfaceDynamicInput;
-        const created = ReadonlyDynamicInputPage.create({
-          sourceId: source.page.sourceId,
-          pageId: source.page.pageId,
-          schema: source.page.schema,
-        });
-        if (!created.ok) {
-          return failed('candidate Surface recovery page creation failed', created.error);
-        }
-        candidateSurfacePage = created.value;
-        // Preserve CPU-authored parameters before preparing the replacement GPU page.
-        candidateSurfacePage.bytes.set(source.page.bytes);
-        const reconfigured = candidateSurfacePage.reconfigureDevice(
-          runtime.internals.deviceScope.generation,
-        );
-        if (!reconfigured.ok) {
-          return failed('candidate Surface recovery page generation failed', reconfigured.error);
-        }
-        const ranges = (source.ranges ?? []).map((range) => {
-          const reserved = candidateSurfacePage?.reserveRange({
-            domain: range.domain,
-            recordStart: range.recordStart,
-            recordCount: range.recordCount,
-            instanceIndex: range.instanceIndex,
-            member: range.member,
-          });
-          if (reserved === undefined || !reserved.ok) {
-            throw reserved?.error ?? new Error('candidate Surface recovery range unavailable');
-          }
-          return reserved.value;
-        });
-        recoverySurfaceDynamicInput = {
-          page: candidateSurfacePage,
-          ranges,
-          projectionRevision: source.projectionRevision + 1,
-          frameTime: source.frameTime,
-        };
-      }
-      if (candidateGpuDrivenScene.state !== undefined) {
-        // Recovery compiles real execution work, including every shared Mesh section.
-        const candidateScene = querySceneExecution(candidateGpuDrivenScene.state);
-        candidateGpuDrivenProduction = GpuDrivenProduction.forDevice(
-          runtime.internals.device,
-          gpuDrivenShaderFactory,
-        );
-        const clustered = lighting.value.standard?.kind === 'clustered';
-        const standardVariantSet = standardTopologyVariantSet(
-          lighting.value.standard,
-          runtime.internals.device.caps.storageBuffer,
-          false,
-        );
-        const standardPbrArtifact = runtime.internals.getMaterialShaderArtifact?.(
-          'forgeax::default-standard-pbr',
-          {
-            vertexColorAvailable: false,
-            deformation: 'rigid',
-            pass: 'forward',
-            address: 'scene-index',
-            variantSet: standardVariantSet,
-          },
-        );
-        const standardPbrSkinArtifact = runtime.internals.getMaterialShaderArtifact?.(
-          'forgeax::pbr-skin',
-          {
-            vertexColorAvailable: false,
-            deformation: 'skin',
-            pass: 'forward',
-            address: 'scene-index',
-            variantSet: standardVariantSet,
-          },
-        );
-        const shadowProjection = persistentRenderScene.shadowCasterProjection();
-        const shadowViews = hasShadowViewDemand(seed.frame.lights);
-        const collectedArtifacts = collectGpuDrivenMaterialArtifacts({
-          batches: candidateScene.plan.batches,
-          probeBlend: (candidateScene.probeBlend?.records.length ?? 0) > 0,
-          programs: shadowProjection?.materialPrograms,
-          resolve: runtime.internals.getMaterialShaderArtifact,
-          clustered:
-            seed.frame.lights.point.length +
-              seed.frame.lights.spot.length +
-              seed.frame.lights.rect.length >
-              0 || candidateFrameState.installedPipelineConfig?.ssao?.enabled === true,
-          reflectionFallback: candidateFrameState.reflectionFallbackDemand === true,
-          shadowViews,
-        });
-        const materialArtifacts =
-          collectedArtifacts.materialArtifacts.size > 0
-            ? collectedArtifacts.materialArtifacts
-            : (seed.materialArtifacts ?? new Map());
-        const shadowMaterialArtifacts =
-          !shadowViews || collectedArtifacts.shadowMaterialArtifacts.size > 0
-            ? collectedArtifacts.shadowMaterialArtifacts
-            : (seed.shadowMaterialArtifacts ?? new Map());
-        const firstMaterialArtifact = materialArtifacts.values().next().value as
-          | MaterialShaderArtifact
-          | undefined;
-        const firstSkinArtifact = [...materialArtifacts.values()].find((artifact) =>
-          materialProgramUsesSkin(artifact.receipt),
-        );
-        const firstArtifact = firstMaterialArtifact ?? standardPbrArtifact;
-        const materialSkinArtifact = firstSkinArtifact ?? standardPbrSkinArtifact;
-        const probeBlendRequested = [...materialArtifacts.values()].some((artifact) =>
-          requiresProbeBlendRecord(artifact),
-        );
-        const probeBlendRecordBuffer = probeBlendRequested
-          ? ensureProbeBlendRecordBuffer(
-              runtime.internals.device,
-              candidateFrameState,
-              candidateScene.probeBlend,
-            )
-          : undefined;
-        const prepared = candidateGpuDrivenProduction.prepare({
-          scene: candidateScene,
-          batchExecutions: collectedArtifacts.batchExecutions,
-          shadowViews,
-          ...(shadowProjection === undefined
-            ? {}
-            : { materialFrame: shadowProjection.content.materials }),
-          camera,
-          meshByBinding: gpuDrivenMeshesForFrame(runtime.internals, seed.worlds, candidateScene),
-          viewBindGroupLayout: runtime.pipelineState.viewBindGroupLayout,
-          hdrp:
-            clustered &&
-            ((lighting.value.standard?.prepared.local.length ?? 0) > 0 ||
-              candidateFrameState.installedPipelineConfig?.ssao?.enabled === true),
-          clustered,
-          ...(firstArtifact === undefined ? {} : { materialArtifact: firstArtifact }),
-          ...(materialSkinArtifact === undefined ? {} : { materialSkinArtifact }),
-          ...(materialArtifacts.size === 0 ? {} : { materialArtifacts }),
-          ...(shadowMaterialArtifacts.size === 0 ? {} : { shadowMaterialArtifacts }),
-          ...(probeBlendRecordBuffer === undefined ? {} : { probeBlendRecordBuffer }),
-          ...(seed.frameTime === undefined ? {} : { frameTime: seed.frameTime }),
-          ...(recoverySurfaceDynamicInput === undefined
-            ? {}
-            : { surfaceDynamicInput: recoverySurfaceDynamicInput }),
-          deviceGeneration: runtime.internals.deviceScope.generation,
-          materialPipelineState: runtime.pipelineState,
-          ...(runtime.internals.getMaterialShaderPipelineEntry === undefined
-            ? {}
-            : { materialPipelineFactory: runtime.internals.getMaterialShaderPipelineEntry }),
-        });
-        if (!prepared.ok) return failed('candidate GPU-driven preparation failed', prepared.error);
-        preparedGpuDriven = prepared.value;
-      }
-      for (const entry of candidateValidated) {
-        if (entry.source.instances === undefined) continue;
-        const prepared = resolveGeometryInstanceBuffer(
-          {
-            runtime: runtime.internals,
-            pipelineState: runtime.pipelineState,
-            frameState: candidateFrameState,
-            bindGroupCounts: { createBindGroup: 0, keys: [] },
-          },
-          entry,
-          [],
-          false,
-        );
-        if (prepared === null) return failed('candidate instance preparation failed');
-      }
-      candidateFeatureHost = runtime.internals.featureHost;
-      if (candidateFeatureHost !== undefined && candidateFeatureHost.size > 0) {
-        candidateFeatureGpuWork = createFeatureGpuWorkOwner(runtime.internals);
-        const featureTargets = resolveStandardRenderFeatureTargets({
-          tonemap: camera.tonemap,
-          antialias: camera.antialias,
-          colorAttachmentFormat: runtime.pipelineState.colorAttachmentFormat,
-          storageBuffer: runtime.internals.device.caps.storageBuffer,
-          multisample: runtime.internals.device.caps.backendKind !== 'wgpu-webgl2',
-          cloudHistory: seed.frame.cloudLayer !== undefined,
-        });
-        const featureBatch = runRenderFeatureFrame(candidateFeatureHost, [
-          {
-            ...renderFeatureCameraView(camera),
-            worlds: seed.worlds.flatMap((scope) =>
-              scope.world === undefined ? [] : [scope.world],
-            ),
-            ...(seed.publishedFeatures === undefined
-              ? {}
-              : { publishedFeatures: seed.publishedFeatures }),
-            resolveAsset: (index, handle, revision) => {
-              const source = recoveryWorlds[index];
-              return source === undefined
-                ? err(new Error(`Missing feature asset source ${index}`))
-                : source.resolveAsset(handle, revision);
-            },
-            owner: seed.resourceOwner,
-            frameNumber: candidateFrameState.frameNumber,
-            selectedCamera: camera,
-            frameSize: {
-              width: runtime.internals.canvas.width,
-              height: runtime.internals.canvas.height,
-            },
-            visibilitySnapshots: seed.frame.featureVisibilitySnapshots,
-            hiddenEntityReports: seed.frame.hiddenEntityReports,
-            targets: featureTargets,
-            generation: runtime.internals.deviceScope.generation,
-            caps: runtime.internals.device.caps,
-            featureReadOnlyDepthBatchDiagnostic:
-              (runtime.internals.standardProfile?.featureReadOnlyDepthBatchDiagnostic ??
-                runtime.internals.standardProfile?.featureReadOnlyDepthBatching) === true,
-            ...(runtime.internals.getMaterialShaderBindingContract === undefined
-              ? {}
-              : {
-                  materialShaderBindingContract: runtime.internals.getMaterialShaderBindingContract,
-                }),
-            createPreparedGraphicsResolver: createPreparedResolverFactory(
-              runtime.internals,
-              candidateFeatureGpuWork,
-              seed.worlds,
-              createPreparedResolverCaches(),
-            ),
-            gpuWork: candidateFeatureGpuWork,
-            sceneResources: {
-              prepare: (identity, resource) =>
-                candidateSceneInputs.prepare(identity, resource, {
-                  retained: persistentRenderScene.compositionRetainedScene(),
-                  scopes: recoveryWorlds,
-                }),
-              abortFeature: (identity) => candidateSceneInputs.abortFeature(identity),
-            },
-          },
-        ]);
-        const featureFrame = featureBatch.views.get(renderFeatureViewIdentity(camera));
-        if (featureFrame === undefined) return failed('candidate render-feature view is missing');
-        if (featureFrame.errors.length > 0) {
-          return failed('candidate render-feature preparation failed', featureFrame.errors[0]);
-        }
-        const featurePreparationIncomplete = featureFrame.plans.some((planned) => {
-          const execution = getRenderFeaturePlanExecutionProjection(planned);
-          return (
-            execution === undefined ||
-            execution.passes.some(
-              (pass) =>
-                (pass.graphics !== undefined && pass.resolvedGraphics === undefined) ||
-                (pass.gpuCompute !== undefined && pass.resolvedGpuCompute === undefined),
-            )
-          );
-        });
-        if (featurePreparationIncomplete) {
-          return failed('candidate render-feature resources are not fully prepared');
-        }
-        const batches = Object.freeze([...featureBatch.preparedResourceBatches]);
-        let batchesReleased = false;
-        const releaseBatches = (): void => {
-          if (batchesReleased) return;
-          batchesReleased = true;
-          for (const batch of batches) {
-            const released = batch.release();
-            if (!released.ok) runtime.internals.errorRegistry.fire(released.error);
-          }
-        };
-        candidateFeatureGraph = {
-          onAccepted: () => {
-            featureBatch.commitPreparedResources();
-            candidateSceneInputs.complete(true);
-            featureBatch.onAborted();
-          },
-          plans: featureFrame.plans,
-          fullscreenEffects: featureFrame.fullscreenEffects,
-          postProcessIdentities: featureFrame.postProcessIdentities,
-          ...(batches.length === 0
-            ? {}
-            : { preparedResourceKey: `recovery-${runtime.internals.deviceScope.generation}` }),
-          onRejected: () => {
-            featureBatch.onAborted();
-            releaseBatches();
-          },
-          onAbandoned: () => {
-            featureBatch.onAborted();
-            releaseBatches();
-          },
-        };
-      }
-      for (const renderable of seed.frame.renderables) {
-        const world = seed.worlds[renderable.worldId];
-        if (world === undefined) return failed(`world ${renderable.worldId} is unavailable`);
-        if (renderable.generatedMesh !== undefined) {
-          const prepared = runtime.internals.gpuStore.ensureGeneratedMesh(renderable.generatedMesh);
-          if (!prepared.ok) return failed('generated layout residency failed');
-        } else if (renderable.assetHandle !== undefined) {
-          const mesh = world.resolveAsset<MeshAsset>(renderable.assetHandle as AssetHandle<'mesh'>);
-          if (!mesh.ok) return failed(`mesh ${renderable.assetHandle} resolution failed`);
-          const preparedMesh = runtime.internals.gpuStore.prepareResidentForRecovery(
-            renderable.assetHandle as AssetHandle<'mesh'>,
-            mesh.value,
-            world,
-          );
-          if (!preparedMesh.ok) return failed(`mesh ${renderable.assetHandle} residency failed`);
-          if (preparedMesh.value.mipmapWork !== undefined) {
-            setupWorks.push(preparedMesh.value.mipmapWork);
-          }
-        }
-        for (const material of renderable.materials) {
-          for (const textureHandle of materialTextureHandles(material.snapshot)) {
-            const texture = world.resolveAsset<TextureAsset>(textureHandle);
-            if (!texture.ok) return failed(`texture ${textureHandle} resolution failed`);
-            const preparedTexture = runtime.internals.gpuStore.prepareResidentForRecovery(
-              textureHandle,
-              texture.value,
-              world,
-            );
-            if (!preparedTexture.ok) return failed(`texture ${textureHandle} residency failed`);
-            if (preparedTexture.value.mipmapWork !== undefined) {
-              setupWorks.push(preparedTexture.value.mipmapWork);
-            }
-          }
-          for (const samplerHandle of materialSamplerHandles(material.snapshot)) {
-            const sampler = world.resolveAsset<SamplerAsset>(samplerHandle);
-            if (!sampler.ok) return failed(`sampler ${samplerHandle} resolution failed`);
-            const preparedSampler = runtime.internals.gpuStore.ensureSamplerResident(
-              samplerHandle,
-              sampler.value,
-              world,
-            );
-            if (!preparedSampler.ok) return failed(`sampler ${samplerHandle} residency failed`);
-          }
-        }
-      }
-      const resourceWorld = seed.worlds[seed.resourceOwner] ?? seed.worlds[0];
-      if (resourceWorld === undefined)
-        return failed('recovery resource-owner world is unavailable');
-      const volumetricFog = seed.frame.volumetricFog;
-      if (volumetricFog?.status === 'available') {
-        const volumeWorld =
-          seed.worlds[volumetricFog.worldId ?? seed.resourceOwner] ?? resourceWorld;
-        if (volumetricFog.densityHandle === undefined || volumetricFog.densityAsset === undefined) {
-          return failed('recovery volumetric density source is unavailable');
-        }
-        const preparedDensity = candidateGpuStore.prepareResidentForRecovery(
-          volumetricFog.densityHandle,
-          volumetricFog.densityAsset,
-          volumeWorld,
-        );
-        if (!preparedDensity.ok) return failed('volumetric density residency failed');
-        if (preparedDensity.value.mipmapWork !== undefined) {
-          setupWorks.push(preparedDensity.value.mipmapWork);
-        }
-        if (
-          volumetricFog.projectorHandle !== undefined &&
-          volumetricFog.projectorAsset !== undefined
-        ) {
-          const preparedProjector = candidateGpuStore.prepareResidentForRecovery(
-            volumetricFog.projectorHandle,
-            volumetricFog.projectorAsset,
-            volumeWorld,
-          );
-          if (!preparedProjector.ok) return failed('volumetric projector residency failed');
-          if (preparedProjector.value.mipmapWork !== undefined) {
-            setupWorks.push(preparedProjector.value.mipmapWork);
-          }
-        }
-      }
-      candidatePointsLines = pointsLinesOwner.prepareRecoveryCandidate(
-        candidateValidated,
-        lighting.value.standard?.kind === 'clustered',
-        runtime.internals,
-      );
-      recoveryReadiness = prepareRecoveryPipelineReadiness({
-        internals: runtime.internals,
-        pipelineState: runtime.pipelineState,
-        camera,
-        standardLighting: lighting.value.standard,
-        validated: candidateValidated,
-        dispatch: seed.frame.dispatch,
-        shadowCastersActive:
-          seed.frame.lights.pointShadow.length > 0 ||
-          seed.frame.lights.spot.some((spot) => spot.castShadow === true) ||
-          (seed.frame.lights.lightViewProj?.length ?? 0) > 0,
-        splitLdrSprite: computeSplitLdrSprite(
-          candidateValidated,
-          camera.tonemap !== 'none',
-          seed.frame.dispatch,
-        ),
-        reflectionFallbackAvailable: candidateFrameState.reflectionFallbackDemand === true,
-      });
-      const candidatePostProcessIds = new Set<string>([
-        ...(candidateFrameState.installedPipelineConfig?.postEffects ?? []),
-        // Required identities include effects disabled for this frame. Warm only
-        // published entries, using their public identity rather than graph aliases.
-        ...(candidateFeatureGraph.postProcessIdentities ?? []).filter((id) =>
-          candidateFeatureGraph.fullscreenEffects.has(id),
-        ),
-      ]);
-      const configuredPostEffects = candidateFrameState.installedPipelineConfig?.postEffects ?? [];
-      const postProcessPipeline = runtime.internals.getPostProcessPipeline;
-      const postProcessLookup = runtime.internals.lookupPostProcess;
-      if (postProcessPipeline === undefined || postProcessLookup === undefined) {
-        return failed('candidate post-process pipeline owner is unavailable');
-      }
-      const depthMultisampled =
-        camera.antialias === 'msaa' && runtime.internals.device.caps.backendKind !== 'wgpu-webgl2';
-      const warmPostProcessPipeline = (
-        id: string,
-        colorFormat: GPUTextureFormat,
-        entryOverride?: PostProcessShaderEntry,
-      ): void => {
-        const entry =
-          entryOverride ?? candidateFeatureGraph.fullscreenEffects.get(id) ?? postProcessLookup(id);
-        if (entry === undefined) {
-          throw new Error(`recovery post-process declaration is unavailable: ${id}`);
-        }
-        const built = buildFullscreenPostProcessPass(
-          { device: runtime.internals.device, errorRegistry: runtime.internals.errorRegistry },
-          entry,
-          depthMultisampled,
-        );
-        if (
-          built === null ||
-          built.sampler === null ||
-          (entryHasDepthRead(entry) && built.depthSampler === null)
-        ) {
-          throw new Error(`recovery post-process bindings are unavailable: ${id}`);
-        }
-        const pipeline = postProcessPipeline(id, built.bindGroupLayout, [colorFormat], entry);
-        if (pipeline === null) {
-          throw new Error(`recovery post-process pipeline is unavailable: ${id}`);
-        }
-      };
-      const rawOnlyPostInput =
-        runtime.pipelineState.surfaceProfile === 'raw-only' &&
-        runtime.internals.device.caps.storageBuffer &&
-        configuredPostEffects.length > 0;
-      const outputFormat =
-        camera.antialias === 'fxaa' || rawOnlyPostInput
-          ? ('rgba16float' as GPUTextureFormat)
-          : (runtime.pipelineState.format as GPUTextureFormat);
-      // Standard's output transform is a graph pass even when no authored
-      // effect is installed. Warm its exact target format before publication;
-      // the first recovery frame must only resolve this candidate-owned cache.
-      warmPostProcessPipeline(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, outputFormat);
-      if (camera.antialias === 'taa') {
-        const temporal = getTemporalGpuState(
-          candidateFrameState,
-          runtime.internals.device,
-          runtime.internals.deviceScope,
-          seed.width,
-          seed.height,
-        );
-        getTemporalParamsBuffer(temporal);
-        const temporalBindings = getTemporalBindGroupResources(temporal);
-        const taaEntry = postProcessLookup('forgeax.taa-resolve');
-        if (taaEntry === undefined) {
-          throw new Error('recovery TAA post-process declaration is unavailable');
-        }
-        const taaPipeline = postProcessPipeline(
-          'forgeax.taa-resolve',
-          temporalBindings.layout,
-          [
-            TEMPORAL_HISTORY_FORMATS.color,
-            TEMPORAL_HISTORY_FORMATS.temporal,
-            TEMPORAL_HISTORY_FORMATS.stability,
-          ],
-          taaEntry,
-        );
-        if (taaPipeline === null) {
-          throw new Error('recovery TAA pipeline is unavailable');
-        }
-      }
-      if (
-        camera.motionBlur !== undefined &&
-        motionBlurTemporalDemand({
-          shutterAngle: camera.motionBlur.shutterAngle,
-          maxRadiusPixels: camera.motionBlur.maxRadiusPixels,
-          sampleCount: camera.motionBlur.sampleCount,
-          targetFps: camera.motionBlur.targetFps ?? 60,
-        })
-      ) {
-        warmPostProcessPipeline('forgeax.motion-blur', 'rgba16float');
-      }
-      for (const id of candidatePostProcessIds) {
-        warmPostProcessPipeline(id, runtime.pipelineState.format as GPUTextureFormat);
-      }
-      if (standardBloomAdmitted(camera)) {
-        runtime.pipelineState.perPassResources.ensureBloomResources?.();
-        const bloom = runtime.pipelineState.perPassResources.getBloomResources?.();
-        if (
-          bloom === null ||
-          bloom === undefined ||
-          bloom.bloomHorizontalPipeline === null ||
-          bloom.bloomVerticalPipeline === null ||
-          bloom.bloomCompositePipeline === null ||
-          bloom.bloomHorizontalBindGroupLayout === null ||
-          bloom.bloomVerticalBindGroupLayout === null ||
-          bloom.bloomCompositeBindGroupLayout === null ||
-          bloom.bloomSampler === null ||
-          bloom.bloomHorizontalParamsBuffer === null ||
-          bloom.bloomVerticalParamsBuffer === null ||
-          bloom.bloomCompositeParamsBuffer === null
-        ) {
-          throw new Error('recovery Bloom resources are incomplete');
-        }
-      }
-      const graph = ensureCompiledFrameGraph(
-        runtime.internals,
-        candidateFrameState,
-        runtime.pipelineState,
-        camera,
-        seed.frame.lights,
-        seed.width,
-        seed.height,
-        undefined,
-        preparedGpuDriven,
-        candidateFeatureGraph,
-        undefined,
-        false,
-        undefined,
-        seed.frame.volumetricFog,
-        seed.frame.volumetricFog?.status === 'available',
-        lighting.value.standard,
-        (error) => {
-          recoveryGraphFailure ??= error;
-        },
-        undefined,
-        undefined,
-        false,
-        false,
-        seed.frame.cloudLayer === undefined
-          ? undefined
-          : cloudShadowResolutionForQuality(seed.frame.cloudLayer.params.quality),
-      );
-      if (graph === null) return failed('candidate frame graph compilation failed');
-      if (recoveryReadiness === undefined)
-        return failed('candidate pipeline readiness was not prepared');
-      // Keep recovery inspection derived from the exact Standard declaration
-      // admitted to the candidate graph.  The point-shadow projection is
-      // likewise detached from the candidate atlas and never waits for the
-      // first post-recovery frame to rediscover the retained budget.
-      // Capsule and transparency projections carry over from the frame state
-      // this candidate was cloned from; they are not re-derived here.
-      candidateFrameState.submittedInspection = {
-        standardLighting: inspectStandardLighting(lighting.value.standard),
-        pointShadow: inspectPointShadow(seed.frame.lights.pointShadow, SHADOW_ATLAS_DEFAULT_LAYERS),
-        capsuleShadow: candidateFrameState.submittedInspection?.capsuleShadow,
-        transparency: candidateFrameState.submittedInspection?.transparency,
-      };
-      return {
-        kind: 'ready',
-        candidate: {
-          frameState: candidateFrameState,
-          setupWorks: Object.freeze(setupWorks),
-          device: runtime.internals.device,
-          generation: runtime.internals.deviceScope.generation,
-          ...(candidateGpuDrivenProduction === undefined
-            ? {}
-            : { gpuDrivenProduction: candidateGpuDrivenProduction }),
-          ...(candidateGpuDrivenScene === undefined
-            ? {}
-            : { gpuDrivenScene: candidateGpuDrivenScene }),
-          ...(candidatePointsLines === undefined ? {} : { pointsLines: candidatePointsLines }),
-          ...(candidateFeatureHost === undefined ? {} : { featureHost: candidateFeatureHost }),
-          ...(candidateFeatureGpuWork === undefined
-            ? {}
-            : { featureGpuWork: candidateFeatureGpuWork }),
-          featureSceneInputs: candidateSceneInputs,
-          featureGraphCandidate: candidateFeatureGraph,
-          postProcessPipelines: new Map(
-            runtime.internals.getRecoveryPostProcessPipelines?.() ?? [],
-          ),
-          recoveryReadiness,
-          release: releaseCandidate,
-          markPublished,
-        },
-      };
-    } catch (cause) {
-      return failed(`candidate preparation threw: ${String(cause)}`, cause);
-    }
+    return new RecoveryCandidateBuild(
+      deps,
+      runtime,
+      seed,
+      camera,
+      candidateFrameState,
+      candidateSceneInputs,
+    ).prepare();
   };
 
   const submitCandidateSetup = (
@@ -1212,4 +516,851 @@ export function createRenderSystemRecovery(
     publishRecoveryGraphCandidate,
     discardRecoveryGraphCandidate,
   };
+}
+
+/** Candidate-owned recovery preparation: every GPU owner it creates is released together unless published. */
+class RecoveryCandidateBuild {
+  private readonly setupWorks: MipmapEncoderWork[] = [];
+  private readonly gpuStore: RenderSystemInternals['gpuStore'];
+  private gpuDrivenScene: PersistentGpuDrivenCandidate | undefined;
+  private gpuDrivenProduction: GpuDrivenProduction | undefined;
+  private featureHost: RenderFeatureHost | undefined;
+  private featureGpuWork: RenderFeatureGpuWorkOwner | undefined;
+  private pointsLines: RecoveryPointsLinesCandidate | undefined;
+  private surfacePage: ReadonlyDynamicInputPage | undefined;
+  private featureGraph: RenderFeatureGraphCandidate = {
+    plans: Object.freeze([]),
+    fullscreenEffects: new Map(),
+  };
+  private validated: ValidatedRenderable[] = [];
+  private preparedGpuDriven:
+    | import('../gpu-driven/production-raster').PreparedGpuDrivenFrame
+    | undefined;
+  private graphFailure: unknown;
+  private published = false;
+  private released = false;
+
+  constructor(
+    private readonly deps: RenderSystemRecoveryDependencies,
+    private readonly runtime: RecoveryGraphCandidateRuntime,
+    private seed: RecoveryFrameSeed,
+    private readonly camera: CameraSnapshot,
+    private readonly frameState: RenderFrameState,
+    private readonly sceneInputs: ReturnType<typeof createFeatureSceneInputs>,
+  ) {
+    this.gpuStore = runtime.internals.gpuStore;
+  }
+
+  prepare(): RecoveryGraphCandidatePreparation {
+    try {
+      return this.prepareReady();
+    } catch (cause) {
+      return this.failed(`candidate preparation threw: ${String(cause)}`, cause);
+    }
+  }
+
+  private failed(
+    reason: string,
+    cause: unknown = this.graphFailure,
+  ): RecoveryGraphCandidatePreparation {
+    this.release();
+    return cause === undefined ? { kind: 'failed', reason } : { kind: 'failed', reason, cause };
+  }
+
+  readonly release = (): void => {
+    if (this.released || this.published) return;
+    this.released = true;
+    const frameState = this.frameState;
+    retirePendingStandardOutputGpu(frameState);
+    for (const work of this.setupWorks) work.discard();
+    const graph = frameState.compiledFrameGraph?.graph;
+    frameState.compiledFrameGraph = null;
+    frameState.compiledFrameGraphCandidate = undefined;
+    try {
+      if (graph !== undefined) retireCompiledGraph(frameState, graph);
+    } catch {
+      // Candidate cleanup continues through every independent owner.
+    }
+    try {
+      frameState.pointShadowAtlas?.dispose();
+      frameState.shadowDepthLayers?.dispose();
+    } catch {
+      // Candidate cleanup continues through every independent owner.
+    }
+    frameState.pointShadowAtlas = null;
+    this.featureGraph.onAbandoned?.();
+    const featureHost = this.featureHost;
+    this.featureHost = undefined;
+    featureHost?.dispose();
+    this.featureGpuWork?.dispose();
+    this.featureGpuWork = undefined;
+    this.sceneInputs.dispose();
+    this.gpuDrivenProduction?.dispose();
+    this.gpuDrivenProduction = undefined;
+    this.gpuDrivenScene?.release();
+    this.gpuDrivenScene = undefined;
+    this.pointsLines?.release();
+    this.pointsLines = undefined;
+    this.surfacePage?.release();
+    this.surfacePage = undefined;
+    const errorRegistry = this.runtime.internals.errorRegistry;
+    disposeInstanceBuffers(frameState.instanceBuffers, errorRegistry);
+    if (frameState.instanceBufferChunks !== undefined) {
+      disposeInstanceBufferChunks(frameState.instanceBufferChunks, errorRegistry);
+    }
+    this.gpuStore.destroyAll();
+  };
+
+  readonly markPublished = (): void => {
+    // The readiness graph is retired at publication; it is never submitted.
+    this.preparedGpuDriven?._abortResourceReplacement?.();
+    this.preparedGpuDriven = undefined;
+    this.pointsLines?.publish();
+    this.surfacePage?.release();
+    this.surfacePage = undefined;
+    this.published = true;
+  };
+
+  private prepareReady(): RecoveryGraphCandidatePreparation {
+    const { internals, pipelineState } = this.runtime;
+    const camera = this.camera;
+    const output = prepareStandardOutputResources(
+      this.frameState,
+      internals,
+      camera,
+      this.seed.worlds[this.seed.cameraOwner] as RenderResourceScope,
+    );
+    if (!output.ok)
+      return this.failed('candidate Standard output preparation failed', output.error);
+    const gpuScene = this.deps.persistentRenderScene.prepareRecoveryGpuDrivenCandidate(
+      internals.device,
+    );
+    if (!gpuScene.ok) return this.failed('candidate GPU scene preparation failed', gpuScene.error);
+    this.gpuDrivenScene = gpuScene.value;
+    this.seed = withoutTemporalSnapshots(this.seed);
+    const seed = this.seed;
+    this.validated = validateRenderables(
+      internals,
+      seed.worlds[seed.cameraOwner] as RenderResourceScope,
+      seed.worlds,
+      pipelineState,
+      this.frameState,
+      seed.frame.renderables,
+      seed.frame.dispatch,
+    );
+    if (this.validated.length !== seed.frame.renderables.length) {
+      return this.failed('candidate validation did not retain every LKG-visible renderable');
+    }
+    const lighting = prepareFrameLighting(
+      internals,
+      this.frameState,
+      seed.frame.lights,
+      camera,
+      pipelineState,
+    );
+    if (!lighting.ok) return this.failed('candidate lighting preparation failed');
+    const standardLighting = lighting.value.standard;
+    const surface = this.recoverSurfaceDynamicInput();
+    if (!surface.ok) return surface.error;
+    if (this.gpuDrivenScene.state !== undefined) {
+      const gpuDrivenFailure = this.prepareGpuDriven(
+        this.gpuDrivenScene.state,
+        standardLighting,
+        surface.value,
+      );
+      if (gpuDrivenFailure !== undefined) return gpuDrivenFailure;
+    }
+    let failure = this.prepareInstances();
+    if (failure !== undefined) return failure;
+    failure = this.prepareFeatures();
+    if (failure !== undefined) return failure;
+    failure = this.prepareRenderableResidency();
+    if (failure !== undefined) return failure;
+    failure = this.prepareVolumetricFogResidency();
+    if (failure !== undefined) return failure;
+    this.pointsLines = this.deps.pointsLinesOwner.prepareRecoveryCandidate(
+      this.validated,
+      standardLighting?.kind === 'clustered',
+      internals,
+    );
+    const recoveryReadiness = this.prepareReadiness(standardLighting);
+    const warmFailure = this.warmPostProcessing();
+    if (warmFailure !== undefined) return warmFailure;
+    return this.compileGraph(standardLighting, recoveryReadiness);
+  }
+
+  /** Rebind the last submitted Surface page onto the replacement device generation. */
+  private recoverSurfaceDynamicInput(): Result<
+    SurfaceDynamicInputFrame | undefined,
+    RecoveryGraphCandidatePreparation
+  > {
+    const source = this.seed.surfaceDynamicInput;
+    const generation = this.runtime.internals.deviceScope.generation;
+    if (source === undefined || source.page.deviceGeneration === generation) return ok(source);
+    const created = ReadonlyDynamicInputPage.create({
+      sourceId: source.page.sourceId,
+      pageId: source.page.pageId,
+      schema: source.page.schema,
+    });
+    if (!created.ok) {
+      return err(this.failed('candidate Surface recovery page creation failed', created.error));
+    }
+    const page = created.value;
+    this.surfacePage = page;
+    // Preserve CPU-authored parameters before preparing the replacement GPU page.
+    page.bytes.set(source.page.bytes);
+    const reconfigured = page.reconfigureDevice(generation);
+    if (!reconfigured.ok) {
+      return err(
+        this.failed('candidate Surface recovery page generation failed', reconfigured.error),
+      );
+    }
+    const ranges = (source.ranges ?? []).map((range) => {
+      const reserved = page.reserveRange({
+        domain: range.domain,
+        recordStart: range.recordStart,
+        recordCount: range.recordCount,
+        instanceIndex: range.instanceIndex,
+        member: range.member,
+      });
+      if (!reserved.ok) throw reserved.error;
+      return reserved.value;
+    });
+    return ok({
+      page,
+      ranges,
+      projectionRevision: source.projectionRevision + 1,
+      frameTime: source.frameTime,
+    });
+  }
+
+  /** Recovery compiles real execution work, including every shared Mesh section. */
+  private prepareGpuDriven(
+    state: NonNullable<PersistentGpuDrivenCandidate['state']>,
+    standardLighting: StandardTopologyInputValue,
+    surfaceDynamicInput: SurfaceDynamicInputFrame | undefined,
+  ): RecoveryGraphCandidatePreparation | undefined {
+    const { internals, pipelineState } = this.runtime;
+    const seed = this.seed;
+    const candidateScene = querySceneExecution(state);
+    const production = GpuDrivenProduction.forDevice(
+      internals.device,
+      this.deps.gpuDrivenShaderFactory,
+    );
+    this.gpuDrivenProduction = production;
+    const clustered = standardLighting?.kind === 'clustered';
+    const standardPbr = this.standardPbrArtifacts(standardLighting);
+    const shadowProjection = this.deps.persistentRenderScene.shadowCasterProjection();
+    const shadowViews = hasShadowViewDemand(seed.frame.lights);
+    const { collectedArtifacts, materialArtifacts, shadowMaterialArtifacts } =
+      this.recoveryMaterialArtifacts(candidateScene, shadowProjection, shadowViews);
+    const firstMaterialArtifact = materialArtifacts.values().next().value as
+      | MaterialShaderArtifact
+      | undefined;
+    const firstSkinArtifact = [...materialArtifacts.values()].find((artifact) =>
+      materialProgramUsesSkin(artifact.receipt),
+    );
+    const firstArtifact = firstMaterialArtifact ?? standardPbr.rigid;
+    const materialSkinArtifact = firstSkinArtifact ?? standardPbr.skin;
+    const probeBlendRequested = [...materialArtifacts.values()].some((artifact) =>
+      requiresProbeBlendRecord(artifact),
+    );
+    const probeBlendRecordBuffer = probeBlendRequested
+      ? ensureProbeBlendRecordBuffer(internals.device, this.frameState, candidateScene.probeBlend)
+      : undefined;
+    const prepared = production.prepare({
+      scene: candidateScene,
+      batchExecutions: collectedArtifacts.batchExecutions,
+      shadowViews,
+      ...(shadowProjection === undefined
+        ? {}
+        : { materialFrame: shadowProjection.content.materials }),
+      camera: this.camera,
+      meshByBinding: gpuDrivenMeshesForFrame(internals, seed.worlds, candidateScene),
+      viewBindGroupLayout: pipelineState.viewBindGroupLayout,
+      hdrp:
+        clustered &&
+        ((standardLighting?.prepared.local.length ?? 0) > 0 ||
+          this.frameState.installedPipelineConfig?.ssao?.enabled === true),
+      clustered,
+      ...(firstArtifact === undefined ? {} : { materialArtifact: firstArtifact }),
+      ...(materialSkinArtifact === undefined ? {} : { materialSkinArtifact }),
+      ...(materialArtifacts.size === 0 ? {} : { materialArtifacts }),
+      ...(shadowMaterialArtifacts.size === 0 ? {} : { shadowMaterialArtifacts }),
+      ...(probeBlendRecordBuffer === undefined ? {} : { probeBlendRecordBuffer }),
+      ...(seed.frameTime === undefined ? {} : { frameTime: seed.frameTime }),
+      ...(surfaceDynamicInput === undefined ? {} : { surfaceDynamicInput }),
+      deviceGeneration: internals.deviceScope.generation,
+      materialPipelineState: pipelineState,
+      ...(internals.getMaterialShaderPipelineEntry === undefined
+        ? {}
+        : { materialPipelineFactory: internals.getMaterialShaderPipelineEntry }),
+    });
+    if (!prepared.ok) return this.failed('candidate GPU-driven preparation failed', prepared.error);
+    this.preparedGpuDriven = prepared.value;
+    return undefined;
+  }
+
+  /** Artifacts collected from the candidate scene, else those the LKG frame accepted. */
+  private recoveryMaterialArtifacts(
+    candidateScene: ReturnType<typeof querySceneExecution>,
+    shadowProjection: ReturnType<PersistentRenderScene['shadowCasterProjection']>,
+    shadowViews: boolean,
+  ) {
+    const seed = this.seed;
+    const lights = seed.frame.lights;
+    const collectedArtifacts = collectGpuDrivenMaterialArtifacts({
+      batches: candidateScene.plan.batches,
+      probeBlend: (candidateScene.probeBlend?.records.length ?? 0) > 0,
+      programs: shadowProjection?.materialPrograms,
+      resolve: this.runtime.internals.getMaterialShaderArtifact,
+      clustered:
+        lights.point.length + lights.spot.length + lights.rect.length > 0 ||
+        this.frameState.installedPipelineConfig?.ssao?.enabled === true,
+      reflectionFallback: this.frameState.reflectionFallbackDemand === true,
+      shadowViews,
+    });
+    const materialArtifacts =
+      collectedArtifacts.materialArtifacts.size > 0
+        ? collectedArtifacts.materialArtifacts
+        : (seed.materialArtifacts ?? new Map());
+    const shadowMaterialArtifacts =
+      !shadowViews || collectedArtifacts.shadowMaterialArtifacts.size > 0
+        ? collectedArtifacts.shadowMaterialArtifacts
+        : (seed.shadowMaterialArtifacts ?? new Map());
+    return { collectedArtifacts, materialArtifacts, shadowMaterialArtifacts };
+  }
+
+  /** Default Standard PBR forward artifacts for the candidate's lighting topology. */
+  private standardPbrArtifacts(standardLighting: StandardTopologyInputValue): {
+    readonly rigid: MaterialShaderArtifact | undefined;
+    readonly skin: MaterialShaderArtifact | undefined;
+  } {
+    const internals = this.runtime.internals;
+    const standardVariantSet = standardTopologyVariantSet(
+      standardLighting,
+      internals.device.caps.storageBuffer,
+      false,
+    );
+    const rigid = internals.getMaterialShaderArtifact?.('forgeax::default-standard-pbr', {
+      vertexColorAvailable: false,
+      deformation: 'rigid',
+      pass: 'forward',
+      address: 'scene-index',
+      variantSet: standardVariantSet,
+    });
+    const skin = internals.getMaterialShaderArtifact?.('forgeax::pbr-skin', {
+      vertexColorAvailable: false,
+      deformation: 'skin',
+      pass: 'forward',
+      address: 'scene-index',
+      variantSet: standardVariantSet,
+    });
+    return { rigid, skin };
+  }
+
+  private prepareInstances(): RecoveryGraphCandidatePreparation | undefined {
+    for (const entry of this.validated) {
+      if (entry.source.instances === undefined) continue;
+      const prepared = resolveGeometryInstanceBuffer(
+        {
+          runtime: this.runtime.internals,
+          pipelineState: this.runtime.pipelineState,
+          frameState: this.frameState,
+          bindGroupCounts: { createBindGroup: 0, keys: [] },
+        },
+        entry,
+        [],
+        false,
+      );
+      if (prepared === null) return this.failed('candidate instance preparation failed');
+    }
+    return undefined;
+  }
+
+  /** Run the installed Features once on the candidate and require fully prepared work. */
+  private prepareFeatures(): RecoveryGraphCandidatePreparation | undefined {
+    const internals = this.runtime.internals;
+    this.featureHost = internals.featureHost;
+    const featureHost = this.featureHost;
+    if (featureHost === undefined || featureHost.size === 0) return undefined;
+    const gpuWork = this.deps.createFeatureGpuWorkOwner(internals);
+    this.featureGpuWork = gpuWork;
+    const featureBatch = runRenderFeatureFrame(featureHost, [this.featureFrameInput(gpuWork)]);
+    const featureFrame = featureBatch.views.get(renderFeatureViewIdentity(this.camera));
+    if (featureFrame === undefined) return this.failed('candidate render-feature view is missing');
+    if (featureFrame.errors.length > 0) {
+      return this.failed('candidate render-feature preparation failed', featureFrame.errors[0]);
+    }
+    if (featureFrame.plans.some(featurePlanIncomplete)) {
+      return this.failed('candidate render-feature resources are not fully prepared');
+    }
+    const batches = Object.freeze([...featureBatch.preparedResourceBatches]);
+    let batchesReleased = false;
+    const releaseBatches = (): void => {
+      if (batchesReleased) return;
+      batchesReleased = true;
+      for (const batch of batches) {
+        const released = batch.release();
+        if (!released.ok) internals.errorRegistry.fire(released.error);
+      }
+    };
+    const sceneInputs = this.sceneInputs;
+    this.featureGraph = {
+      onAccepted: () => {
+        featureBatch.commitPreparedResources();
+        sceneInputs.complete(true);
+        featureBatch.onAborted();
+      },
+      plans: featureFrame.plans,
+      fullscreenEffects: featureFrame.fullscreenEffects,
+      postProcessIdentities: featureFrame.postProcessIdentities,
+      ...(batches.length === 0
+        ? {}
+        : { preparedResourceKey: `recovery-${internals.deviceScope.generation}` }),
+      onRejected: () => {
+        featureBatch.onAborted();
+        releaseBatches();
+      },
+      onAbandoned: () => {
+        featureBatch.onAborted();
+        releaseBatches();
+      },
+    };
+    return undefined;
+  }
+
+  private featureFrameInput(gpuWork: RenderFeatureGpuWorkOwner): RenderFeatureFrameInput {
+    const { internals, pipelineState } = this.runtime;
+    const camera = this.camera;
+    const seed = this.seed;
+    const recoveryWorlds = seed.worlds;
+    const sceneInputs = this.sceneInputs;
+    const persistentRenderScene = this.deps.persistentRenderScene;
+    const featureTargets = resolveStandardRenderFeatureTargets({
+      tonemap: camera.tonemap,
+      antialias: camera.antialias,
+      colorAttachmentFormat: pipelineState.colorAttachmentFormat,
+      storageBuffer: internals.device.caps.storageBuffer,
+      multisample: internals.device.caps.backendKind !== 'wgpu-webgl2',
+      cloudHistory: seed.frame.cloudLayer !== undefined,
+    });
+    return {
+      ...renderFeatureCameraView(camera),
+      worlds: seed.worlds.flatMap((scope) => (scope.world === undefined ? [] : [scope.world])),
+      ...(seed.publishedFeatures === undefined
+        ? {}
+        : { publishedFeatures: seed.publishedFeatures }),
+      resolveAsset: (index, handle, revision) => {
+        const source = recoveryWorlds[index];
+        return source === undefined
+          ? err(new Error(`Missing feature asset source ${index}`))
+          : source.resolveAsset(handle, revision);
+      },
+      owner: seed.resourceOwner,
+      frameNumber: this.frameState.frameNumber,
+      selectedCamera: camera,
+      frameSize: {
+        width: internals.canvas.width,
+        height: internals.canvas.height,
+      },
+      visibilitySnapshots: seed.frame.featureVisibilitySnapshots,
+      hiddenEntityReports: seed.frame.hiddenEntityReports,
+      targets: featureTargets,
+      generation: internals.deviceScope.generation,
+      caps: internals.device.caps,
+      featureReadOnlyDepthBatchDiagnostic:
+        (internals.standardProfile?.featureReadOnlyDepthBatchDiagnostic ??
+          internals.standardProfile?.featureReadOnlyDepthBatching) === true,
+      ...(internals.getMaterialShaderBindingContract === undefined
+        ? {}
+        : {
+            materialShaderBindingContract: internals.getMaterialShaderBindingContract,
+          }),
+      createPreparedGraphicsResolver: this.deps.createPreparedResolverFactory(
+        internals,
+        gpuWork,
+        seed.worlds,
+        this.deps.createPreparedResolverCaches(),
+      ),
+      gpuWork,
+      sceneResources: {
+        prepare: (identity, resource) =>
+          sceneInputs.prepare(identity, resource, {
+            retained: persistentRenderScene.compositionRetainedScene(),
+            scopes: recoveryWorlds,
+          }),
+        abortFeature: (identity) => sceneInputs.abortFeature(identity),
+      },
+    };
+  }
+
+  /** Make every LKG renderable's mesh, textures and samplers resident on the new device. */
+  private prepareRenderableResidency(): RecoveryGraphCandidatePreparation | undefined {
+    const gpuStore = this.runtime.internals.gpuStore;
+    for (const renderable of this.seed.frame.renderables) {
+      const world = this.seed.worlds[renderable.worldId];
+      if (world === undefined) return this.failed(`world ${renderable.worldId} is unavailable`);
+      if (renderable.generatedMesh !== undefined) {
+        const prepared = gpuStore.ensureGeneratedMesh(renderable.generatedMesh);
+        if (!prepared.ok) return this.failed('generated layout residency failed');
+      } else if (renderable.assetHandle !== undefined) {
+        const failure = this.prepareMeshResidency(
+          renderable.assetHandle as AssetHandle<'mesh'>,
+          world,
+        );
+        if (failure !== undefined) return failure;
+      }
+      for (const material of renderable.materials) {
+        const failure = this.prepareMaterialResidency(material.snapshot, world);
+        if (failure !== undefined) return failure;
+      }
+    }
+    return undefined;
+  }
+
+  private prepareMeshResidency(
+    handle: AssetHandle<'mesh'>,
+    world: RenderResourceScope,
+  ): RecoveryGraphCandidatePreparation | undefined {
+    const mesh = world.resolveAsset<MeshAsset>(handle);
+    if (!mesh.ok) return this.failed(`mesh ${handle} resolution failed`);
+    const preparedMesh = this.runtime.internals.gpuStore.prepareResidentForRecovery(
+      handle,
+      mesh.value,
+      world,
+    );
+    if (!preparedMesh.ok) return this.failed(`mesh ${handle} residency failed`);
+    if (preparedMesh.value.mipmapWork !== undefined) {
+      this.setupWorks.push(preparedMesh.value.mipmapWork);
+    }
+    return undefined;
+  }
+
+  private prepareMaterialResidency(
+    snapshot: Parameters<typeof materialTextureHandles>[0],
+    world: RenderResourceScope,
+  ): RecoveryGraphCandidatePreparation | undefined {
+    const gpuStore = this.runtime.internals.gpuStore;
+    for (const textureHandle of materialTextureHandles(snapshot)) {
+      const texture = world.resolveAsset<TextureAsset>(textureHandle);
+      if (!texture.ok) return this.failed(`texture ${textureHandle} resolution failed`);
+      const preparedTexture = gpuStore.prepareResidentForRecovery(
+        textureHandle,
+        texture.value,
+        world,
+      );
+      if (!preparedTexture.ok) return this.failed(`texture ${textureHandle} residency failed`);
+      if (preparedTexture.value.mipmapWork !== undefined) {
+        this.setupWorks.push(preparedTexture.value.mipmapWork);
+      }
+    }
+    for (const samplerHandle of materialSamplerHandles(snapshot)) {
+      const sampler = world.resolveAsset<SamplerAsset>(samplerHandle);
+      if (!sampler.ok) return this.failed(`sampler ${samplerHandle} resolution failed`);
+      const preparedSampler = gpuStore.ensureSamplerResident(samplerHandle, sampler.value, world);
+      if (!preparedSampler.ok) return this.failed(`sampler ${samplerHandle} residency failed`);
+    }
+    return undefined;
+  }
+
+  private prepareVolumetricFogResidency(): RecoveryGraphCandidatePreparation | undefined {
+    const seed = this.seed;
+    const resourceWorld = seed.worlds[seed.resourceOwner] ?? seed.worlds[0];
+    if (resourceWorld === undefined)
+      return this.failed('recovery resource-owner world is unavailable');
+    const volumetricFog = seed.frame.volumetricFog;
+    if (volumetricFog?.status !== 'available') return undefined;
+    const volumeWorld = seed.worlds[volumetricFog.worldId ?? seed.resourceOwner] ?? resourceWorld;
+    if (volumetricFog.densityHandle === undefined || volumetricFog.densityAsset === undefined) {
+      return this.failed('recovery volumetric density source is unavailable');
+    }
+    const preparedDensity = this.gpuStore.prepareResidentForRecovery(
+      volumetricFog.densityHandle,
+      volumetricFog.densityAsset,
+      volumeWorld,
+    );
+    if (!preparedDensity.ok) return this.failed('volumetric density residency failed');
+    if (preparedDensity.value.mipmapWork !== undefined) {
+      this.setupWorks.push(preparedDensity.value.mipmapWork);
+    }
+    if (volumetricFog.projectorHandle === undefined || volumetricFog.projectorAsset === undefined)
+      return undefined;
+    const preparedProjector = this.gpuStore.prepareResidentForRecovery(
+      volumetricFog.projectorHandle,
+      volumetricFog.projectorAsset,
+      volumeWorld,
+    );
+    if (!preparedProjector.ok) return this.failed('volumetric projector residency failed');
+    if (preparedProjector.value.mipmapWork !== undefined) {
+      this.setupWorks.push(preparedProjector.value.mipmapWork);
+    }
+    return undefined;
+  }
+
+  private prepareReadiness(
+    standardLighting: StandardTopologyInputValue,
+  ): RecoveryPipelineReadiness {
+    const seed = this.seed;
+    const camera = this.camera;
+    const lights = seed.frame.lights;
+    return prepareRecoveryPipelineReadiness({
+      internals: this.runtime.internals,
+      pipelineState: this.runtime.pipelineState,
+      camera,
+      standardLighting,
+      validated: this.validated,
+      dispatch: seed.frame.dispatch,
+      shadowCastersActive:
+        lights.pointShadow.length > 0 ||
+        lights.spot.some((spot) => spot.castShadow === true) ||
+        (lights.lightViewProj?.length ?? 0) > 0,
+      splitLdrSprite: computeSplitLdrSprite(
+        this.validated,
+        camera.tonemap !== 'none',
+        seed.frame.dispatch,
+      ),
+      reflectionFallbackAvailable: this.frameState.reflectionFallbackDemand === true,
+    });
+  }
+
+  /** Warm every post-process pipeline the first recovered frame resolves from the candidate cache. */
+  private warmPostProcessing(): RecoveryGraphCandidatePreparation | undefined {
+    const { internals, pipelineState } = this.runtime;
+    const camera = this.camera;
+    const featureGraph = this.featureGraph;
+    const installed = this.frameState.installedPipelineConfig;
+    const candidatePostProcessIds = new Set<string>([
+      ...(installed?.postEffects ?? []),
+      // Required identities include effects disabled for this frame. Warm only
+      // published entries, using their public identity rather than graph aliases.
+      ...(featureGraph.postProcessIdentities ?? []).filter((id) =>
+        featureGraph.fullscreenEffects.has(id),
+      ),
+    ]);
+    const configuredPostEffects = installed?.postEffects ?? [];
+    const postProcessPipeline = internals.getPostProcessPipeline;
+    const postProcessLookup = internals.lookupPostProcess;
+    if (postProcessPipeline === undefined || postProcessLookup === undefined) {
+      return this.failed('candidate post-process pipeline owner is unavailable');
+    }
+    const depthMultisampled =
+      camera.antialias === 'msaa' && internals.device.caps.backendKind !== 'wgpu-webgl2';
+    const warm = (id: string, colorFormat: GPUTextureFormat): void =>
+      this.warmPostProcessPipeline(id, colorFormat, depthMultisampled);
+    const rawOnlyPostInput =
+      pipelineState.surfaceProfile === 'raw-only' &&
+      internals.device.caps.storageBuffer &&
+      configuredPostEffects.length > 0;
+    const outputFormat =
+      camera.antialias === 'fxaa' || rawOnlyPostInput
+        ? ('rgba16float' as GPUTextureFormat)
+        : (pipelineState.format as GPUTextureFormat);
+    // Standard's output transform is a graph pass even when no authored
+    // effect is installed. Warm its exact target format before publication;
+    // the first recovery frame must only resolve this candidate-owned cache.
+    warm(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, outputFormat);
+    if (camera.antialias === 'taa') this.warmTaaResolve();
+    if (
+      camera.motionBlur !== undefined &&
+      motionBlurTemporalDemand({
+        shutterAngle: camera.motionBlur.shutterAngle,
+        maxRadiusPixels: camera.motionBlur.maxRadiusPixels,
+        sampleCount: camera.motionBlur.sampleCount,
+        targetFps: camera.motionBlur.targetFps ?? 60,
+      })
+    ) {
+      warm('forgeax.motion-blur', 'rgba16float');
+    }
+    for (const id of candidatePostProcessIds) {
+      warm(id, pipelineState.format as GPUTextureFormat);
+    }
+    if (standardBloomAdmitted(camera)) assertRecoveryBloomResources(pipelineState);
+    return undefined;
+  }
+
+  private warmPostProcessPipeline(
+    id: string,
+    colorFormat: GPUTextureFormat,
+    depthMultisampled: boolean,
+  ): void {
+    const internals = this.runtime.internals;
+    const postProcessPipeline = internals.getPostProcessPipeline;
+    const entry = this.featureGraph.fullscreenEffects.get(id) ?? internals.lookupPostProcess?.(id);
+    if (entry === undefined || postProcessPipeline === undefined) {
+      throw new Error(`recovery post-process declaration is unavailable: ${id}`);
+    }
+    const built = buildFullscreenPostProcessPass(
+      { device: internals.device, errorRegistry: internals.errorRegistry },
+      entry,
+      depthMultisampled,
+    );
+    if (
+      built === null ||
+      built.sampler === null ||
+      (entryHasDepthRead(entry) && built.depthSampler === null)
+    ) {
+      throw new Error(`recovery post-process bindings are unavailable: ${id}`);
+    }
+    const pipeline = postProcessPipeline(id, built.bindGroupLayout, [colorFormat], entry);
+    if (pipeline === null) {
+      throw new Error(`recovery post-process pipeline is unavailable: ${id}`);
+    }
+  }
+
+  private warmTaaResolve(): void {
+    const internals = this.runtime.internals;
+    const temporal = getTemporalGpuState(
+      this.frameState,
+      internals.device,
+      internals.deviceScope,
+      this.seed.width,
+      this.seed.height,
+    );
+    getTemporalParamsBuffer(temporal);
+    const temporalBindings = getTemporalBindGroupResources(temporal);
+    const taaEntry = internals.lookupPostProcess?.('forgeax.taa-resolve');
+    if (taaEntry === undefined) {
+      throw new Error('recovery TAA post-process declaration is unavailable');
+    }
+    const taaPipeline = internals.getPostProcessPipeline?.(
+      'forgeax.taa-resolve',
+      temporalBindings.layout,
+      [
+        TEMPORAL_HISTORY_FORMATS.color,
+        TEMPORAL_HISTORY_FORMATS.temporal,
+        TEMPORAL_HISTORY_FORMATS.stability,
+      ],
+      taaEntry,
+    );
+    if (taaPipeline === null || taaPipeline === undefined) {
+      throw new Error('recovery TAA pipeline is unavailable');
+    }
+  }
+
+  private compileGraph(
+    standardLighting: StandardTopologyInputValue,
+    recoveryReadiness: RecoveryPipelineReadiness | undefined,
+  ): RecoveryGraphCandidatePreparation {
+    const { internals, pipelineState } = this.runtime;
+    const seed = this.seed;
+    const frameState = this.frameState;
+    const graph = ensureCompiledFrameGraph(
+      internals,
+      frameState,
+      pipelineState,
+      this.camera,
+      seed.frame.lights,
+      seed.width,
+      seed.height,
+      undefined,
+      this.preparedGpuDriven,
+      this.featureGraph,
+      undefined,
+      false,
+      undefined,
+      seed.frame.volumetricFog,
+      seed.frame.volumetricFog?.status === 'available',
+      standardLighting,
+      (error) => {
+        this.graphFailure ??= error;
+      },
+      undefined,
+      undefined,
+      false,
+      false,
+      seed.frame.cloudLayer === undefined
+        ? undefined
+        : cloudShadowResolutionForQuality(seed.frame.cloudLayer.params.quality),
+    );
+    if (graph === null) return this.failed('candidate frame graph compilation failed');
+    if (recoveryReadiness === undefined)
+      return this.failed('candidate pipeline readiness was not prepared');
+    // Keep recovery inspection derived from the exact Standard declaration
+    // admitted to the candidate graph.  The point-shadow projection is
+    // likewise detached from the candidate atlas and never waits for the
+    // first post-recovery frame to rediscover the retained budget.
+    // Capsule and transparency projections carry over from the frame state
+    // this candidate was cloned from; they are not re-derived here.
+    frameState.submittedInspection = {
+      standardLighting: inspectStandardLighting(standardLighting),
+      pointShadow: inspectPointShadow(seed.frame.lights.pointShadow, SHADOW_ATLAS_DEFAULT_LAYERS),
+      capsuleShadow: frameState.submittedInspection?.capsuleShadow,
+      transparency: frameState.submittedInspection?.transparency,
+    };
+    return { kind: 'ready', candidate: this.readyCandidate(recoveryReadiness) };
+  }
+
+  private readyCandidate(recoveryReadiness: RecoveryPipelineReadiness): RecoveryGraphCandidate {
+    const internals = this.runtime.internals;
+    return {
+      frameState: this.frameState,
+      setupWorks: Object.freeze(this.setupWorks),
+      device: internals.device,
+      generation: internals.deviceScope.generation,
+      ...(this.gpuDrivenProduction === undefined
+        ? {}
+        : { gpuDrivenProduction: this.gpuDrivenProduction }),
+      ...(this.gpuDrivenScene === undefined ? {} : { gpuDrivenScene: this.gpuDrivenScene }),
+      ...(this.pointsLines === undefined ? {} : { pointsLines: this.pointsLines }),
+      ...(this.featureHost === undefined ? {} : { featureHost: this.featureHost }),
+      ...(this.featureGpuWork === undefined ? {} : { featureGpuWork: this.featureGpuWork }),
+      featureSceneInputs: this.sceneInputs,
+      featureGraphCandidate: this.featureGraph,
+      postProcessPipelines: new Map(internals.getRecoveryPostProcessPipelines?.() ?? []),
+      recoveryReadiness,
+      release: this.release,
+      markPublished: this.markPublished,
+    };
+  }
+}
+
+/** Temporal snapshots belong to the lost device's history; recovery restarts it. */
+function withoutTemporalSnapshots(seed: RecoveryFrameSeed): RecoveryFrameSeed {
+  return {
+    ...seed,
+    frame: {
+      ...seed.frame,
+      renderables: seed.frame.renderables.map((row) => {
+        const { temporal: _temporal, ...source } = row;
+        return source;
+      }),
+    },
+  };
+}
+
+/** Is any graphics or compute pass of this planned Feature work still unresolved? */
+function featurePlanIncomplete(planned: RenderFeaturePlannedFrame): boolean {
+  const execution = getRenderFeaturePlanExecutionProjection(planned);
+  return (
+    execution === undefined ||
+    execution.passes.some(
+      (pass) =>
+        (pass.graphics !== undefined && pass.resolvedGraphics === undefined) ||
+        (pass.gpuCompute !== undefined && pass.resolvedGpuCompute === undefined),
+    )
+  );
+}
+
+function assertRecoveryBloomResources(
+  pipelineState: RecoveryGraphCandidateRuntime['pipelineState'],
+): void {
+  pipelineState.perPassResources.ensureBloomResources?.();
+  const bloom = pipelineState.perPassResources.getBloomResources?.();
+  if (
+    bloom === null ||
+    bloom === undefined ||
+    bloom.bloomHorizontalPipeline === null ||
+    bloom.bloomVerticalPipeline === null ||
+    bloom.bloomCompositePipeline === null ||
+    bloom.bloomHorizontalBindGroupLayout === null ||
+    bloom.bloomVerticalBindGroupLayout === null ||
+    bloom.bloomCompositeBindGroupLayout === null ||
+    bloom.bloomSampler === null ||
+    bloom.bloomHorizontalParamsBuffer === null ||
+    bloom.bloomVerticalParamsBuffer === null ||
+    bloom.bloomCompositeParamsBuffer === null
+  ) {
+    throw new Error('recovery Bloom resources are incomplete');
+  }
 }

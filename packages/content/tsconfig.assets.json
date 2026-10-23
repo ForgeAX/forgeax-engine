@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["assets/**/*.ts", "src/**/*.ts"]
+}

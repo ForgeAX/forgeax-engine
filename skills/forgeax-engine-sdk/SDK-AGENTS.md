@@ -97,12 +97,12 @@ to recover.
 | Path | Purpose |
 |:--|:--|
 | bin/forgeax | Standalone project-creation CLI. |
-| packages/name | Built public package with manifest/README at its root. |
+| packages/name | Built public package with manifest/README at its root; full ZIP only. |
 | templates/empty | Minimal project with a scene-owner Pack and an assets root. |
 | templates/game-3d | Feature-owned behavior Packs plus procedural atmosphere, PBR, meshes, and lighting. |
 | store/pnpm | Full-ZIP offline closure shared by both templates; omitted by npm carrier. |
 | skills | Engine task guides; SDK tour and audited feature catalog. sdk-manifest.json records file/byte closure. |
-| source/engine | Public source/contracts/rules/skills and prebuilt WASM. |
+| source/engine | Public source/contracts/rules/skills and prebuilt WASM; full ZIP only. |
 
 ## Project, assets, and tools
 

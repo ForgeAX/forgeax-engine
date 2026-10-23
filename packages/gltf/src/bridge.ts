@@ -117,89 +117,9 @@ export function meshIrToMeshAsset(
       }),
     );
   }
-  let totalVertexCount = 0;
-  let totalIndexCount = 0;
-  let hasAnySkin = false;
-  const hasAnyColor = prims.some((p) => p.colors0 !== undefined);
-  let hasAnyIndices = false;
-  // feat-20260629-multi-uv-set-support m1-w3: derive the widest canonical UV
-  // key list across all primitives so the geometry projection accommodates it.
-  let widestUvIndex = 0;
-  const morphTargetCount = prims[0]?.morphTargets?.length ?? 0;
-  for (const p of prims) {
-    const primVc = p.positions.length / 3;
-    totalVertexCount += primVc;
-    if (p.indices !== undefined) {
-      totalIndexCount += p.indices.length;
-      hasAnyIndices = true;
-    } else {
-      totalIndexCount += primVc;
-    }
-    if (p.joints0 !== undefined && p.weights0 !== undefined) hasAnySkin = true;
-    if ((p.morphTargets?.length ?? 0) !== morphTargetCount) {
-      return err(
-        gltfErr('gltf-mesh-bridge-invalid', {
-          meshIndex: p.meshIndex,
-          primitiveIndex: prims.indexOf(p),
-          reason: 'morph-count-mismatch',
-          expectedTargetCount: morphTargetCount,
-          actualTargetCount: p.morphTargets?.length ?? 0,
-        }),
-      );
-    }
-    // Count present UV sets in this primitive.
-    for (let k = GLTF_UV_SET_COUNT - 1; k >= 1; k--) {
-      if (gltfMeshUvSet(p, k) !== undefined) {
-        widestUvIndex = Math.max(widestUvIndex, k);
-        break;
-      }
-    }
-  }
-
-  const uvKeys = Array.from({ length: widestUvIndex }, (_, index) => `uv${index + 1}`);
-
-  const positionsCat = new Float32Array(totalVertexCount * 3);
-  const normalsCat = new Float32Array(totalVertexCount * 3);
-  const uvsCat = new Float32Array(totalVertexCount * 2);
-  const tangentsCat = new Float32Array(totalVertexCount * 4);
-  const colorsCat = hasAnyColor ? new Float32Array(totalVertexCount * 4) : undefined;
-  const morphTargets: MorphTarget[] = Array.from({ length: morphTargetCount }, (_, targetIndex) => {
-    const source = prims[0]?.morphTargets?.[targetIndex];
-    return {
-      ...(source?.position === undefined
-        ? {}
-        : { position: new Float32Array(totalVertexCount * 3) }),
-      ...(source?.normal === undefined ? {} : { normal: new Float32Array(totalVertexCount * 3) }),
-      ...(source?.tangent === undefined ? {} : { tangent: new Float32Array(totalVertexCount * 4) }),
-    };
-  });
-  // feat-20260629-multi-uv-set-support m1-w3: per-UV-set standalone typed arrays
-  // for MeshAsset.attributes (uv1..uvK). Allocated only for imported sets.
-  const uvCats = uvKeys.map(() => new Float32Array(totalVertexCount * 2));
-  // D-2 / w8: when promoted to a skinned projection, retain canonical
-  // standalone arrays; the geometry packer owns the interleaved GPU bytes.
-  const skinIndicesCat = hasAnySkin ? new Uint16Array(totalVertexCount * 4) : undefined;
-  const skinWeightsCat = hasAnySkin ? new Float32Array(totalVertexCount * 4) : undefined;
-  // Multi-primitive merge biases each primitive's index range by the running
-  // vertex offset, so the merged max index is `totalVertexCount - 1`. When a
-  // glTF mesh has > 65535 vertices across all primitives (common for
-  // moderately complex scenes like Sponza at ~192k verts), Uint16 overflows
-  // and we must widen to Uint32. WebGPU's setIndexBuffer takes 'uint16' or
-  // 'uint32' (auto-selected by the runtime via TypedArray.constructor); both
-  // are supported by every WebGPU device.
-  // bug-20260612 hello-skin visual layered gate: when no primitive carries
-  // indices (glTF non-indexed geometry per spec — primitive.indices optional),
-  // route MeshAsset.indices to undefined so the runtime takes the
-  // pass.draw(vertexCount) non-indexed path. Mixed bags (some prims indexed,
-  // some not) synthesize identity indices for the non-indexed prims so the
-  // merged MeshAsset stays single-index-buffer. hasAnyIndices === false
-  // skips the index buffer allocation entirely.
-  const useUint32 = totalVertexCount > 0xffff;
-  const indices: Uint16Array | Uint32Array | undefined = !hasAnyIndices
-    ? undefined
-    : useUint32
-      ? new Uint32Array(totalIndexCount)
-      : new Uint16Array(totalIndexCount);
+  const shape = measureMergedMesh(prims);
+  if (!shape.ok) return shape;
+  const streams = allocateMergedStreams(prims, shape.value);
   const submeshes: Submesh[] = [];
   const materialTable = createMeshMaterialSlotTable('gltf', materials);
 
@@ -207,190 +127,29 @@ export function meshIrToMeshAsset(
   let indexCursor = 0;
   for (const mesh of prims) {
     const materialSlot = materialTable.slotFor(mesh.materialIndex);
+    const primitiveIndex = prims.indexOf(mesh);
     const primVertexCount = mesh.positions.length / 3;
-    const primIndexCount = mesh.indices === undefined ? 0 : mesh.indices.length;
-    // Repair only undefined source frames; valid authored MikkTSpace tangents
-    // retain their direction and handedness. All consumers receive this same MeshAsset.
-    let sourceTangents = mesh.tangents;
-    const invalid: number[] = [];
-    if (sourceTangents !== undefined && mesh.normals !== undefined) {
-      for (let i = 0; i < primVertexCount; i++) {
-        const nx = mesh.normals[i * 3] ?? 0,
-          ny = mesh.normals[i * 3 + 1] ?? 0,
-          nz = mesh.normals[i * 3 + 2] ?? 0;
-        const tx = sourceTangents[i * 4] ?? 0,
-          ty = sourceTangents[i * 4 + 1] ?? 0,
-          tz = sourceTangents[i * 4 + 2] ?? 0;
-        if (
-          Math.hypot(ny * tz - nz * ty, nz * tx - nx * tz, nx * ty - ny * tx) <=
-          Math.hypot(nx, ny, nz) * Math.hypot(tx, ty, tz) * 1e-8
-        )
-          invalid.push(i);
-      }
-    }
-    if (
-      (sourceTangents === undefined || invalid.length > 0) &&
-      mesh.normals !== undefined &&
-      mesh.texcoord0 !== undefined
-    ) {
-      const generated = computeTangentVec4(
-        mesh.positions,
-        mesh.normals,
-        mesh.texcoord0,
-        mesh.indices,
-      );
-      if (generated.ok) {
-        if (sourceTangents === undefined) sourceTangents = generated.value;
-        else {
-          sourceTangents = sourceTangents.slice();
-          for (const i of invalid)
-            sourceTangents.set(generated.value.subarray(i * 4, i * 4 + 4), i * 4);
-        }
-      }
-    }
-    // Collapsed UVs leave orientation undefined. For an already supplied but
-    // parallel frame, use a deterministic normal-plane basis rather than a NaN.
-    // This repairs the producer data; it does not infer a meaningful UV direction.
-    if (invalid.length > 0 && sourceTangents !== undefined && mesh.normals !== undefined) {
-      sourceTangents = sourceTangents.slice();
-      for (const i of invalid) {
-        const nx = mesh.normals[i * 3] ?? 0,
-          ny = mesh.normals[i * 3 + 1] ?? 0,
-          nz = mesh.normals[i * 3 + 2] ?? 0;
-        const tx = sourceTangents[i * 4] ?? 0,
-          ty = sourceTangents[i * 4 + 1] ?? 0,
-          tz = sourceTangents[i * 4 + 2] ?? 0;
-        if (Math.hypot(ny * tz - nz * ty, nz * tx - nx * tz, nx * ty - ny * tx) > 1e-8) continue;
-        if (!writeNormalPlaneTangent(sourceTangents, i * 4, nx, ny, nz))
-          return err(
-            gltfErr('gltf-mesh-bridge-invalid', {
-              reason: 'tangent-frame',
-              meshIndex: mesh.meshIndex,
-              primitiveIndex: prims.indexOf(mesh),
-            }),
-          );
-      }
-    }
-    if (mesh.colors0 !== undefined && mesh.colors0.length !== primVertexCount * 4) {
-      return err(
-        gltfErr('gltf-mesh-bridge-invalid', {
-          meshIndex: mesh.meshIndex,
-          primitiveIndex: prims.indexOf(mesh),
-          reason: 'color-cardinality',
-          semantic: 'COLOR_0',
-          vertexCount: primVertexCount,
-          expectedLength: primVertexCount * 4,
-          actualLength: mesh.colors0.length,
-        }),
-      );
-    }
-    copyVertexStream(positionsCat, mesh.positions, vertexCursor * 3, primVertexCount * 3);
-    if (mesh.normals !== undefined) {
-      copyVertexStream(normalsCat, mesh.normals, vertexCursor * 3, primVertexCount * 3);
-    } else {
-      for (let i = vertexCursor; i < vertexCursor + primVertexCount; i++) normalsCat[i * 3 + 1] = 1;
-    }
-    if (mesh.texcoord0 !== undefined)
-      copyVertexStream(uvsCat, mesh.texcoord0, vertexCursor * 2, primVertexCount * 2);
-    if (sourceTangents !== undefined) {
-      copyVertexStream(tangentsCat, sourceTangents, vertexCursor * 4, primVertexCount * 4);
-    } else {
-      for (let i = vertexCursor; i < vertexCursor + primVertexCount; i++) {
-        tangentsCat[i * 4] = 1;
-        tangentsCat[i * 4 + 3] = 1;
-      }
-    }
-    if (colorsCat !== undefined) {
-      if (mesh.colors0 === undefined)
-        colorsCat.fill(1, vertexCursor * 4, (vertexCursor + primVertexCount) * 4);
-      else copyVertexStream(colorsCat, mesh.colors0, vertexCursor * 4, primVertexCount * 4);
-    }
-    if (
-      skinIndicesCat !== undefined &&
-      skinWeightsCat !== undefined &&
-      mesh.joints0 !== undefined &&
-      mesh.weights0 !== undefined
-    ) {
-      copyVertexStream(skinIndicesCat, mesh.joints0, vertexCursor * 4, primVertexCount * 4);
-      copyVertexStream(skinWeightsCat, mesh.weights0, vertexCursor * 4, primVertexCount * 4);
-    }
-    for (let k = 1; k <= uvKeys.length; k++) {
-      const source = gltfMeshUvSet(mesh, k);
-      const target = uvCats[k - 1];
-      if (source !== undefined && target !== undefined)
-        copyVertexStream(target, source, vertexCursor * 2, primVertexCount * 2);
-    }
-    // Morph lanes already use bounded subarrays: absent or short lanes stay zero-filled.
-    for (let targetIndex = 0; targetIndex < morphTargetCount; targetIndex++) {
-      const source = mesh.morphTargets?.[targetIndex];
-      const target = morphTargets[targetIndex] as MorphTarget;
-      if (source?.position !== undefined && target.position !== undefined)
-        target.position.set(source.position.subarray(0, primVertexCount * 3), vertexCursor * 3);
-      if (source?.normal !== undefined && target.normal !== undefined)
-        target.normal.set(source.normal.subarray(0, primVertexCount * 3), vertexCursor * 3);
-      if (source?.tangent !== undefined && target.tangent !== undefined)
-        target.tangent.set(source.tangent.subarray(0, primVertexCount * 4), vertexCursor * 4);
-    }
-    // Bias each submesh's indices by the running vertex offset so they
-    // reference into the merged vertex buffer rather than the per-primitive
-    // local 0-base. When the merged MeshAsset is non-indexed (hasAnyIndices
-    // === false → `indices` is undefined here), skip the bias loop and
-    // emit a vertex-only submesh (indexCount=0; runtime dispatches via
-    // `pass.draw(vertexCount)`). When mixed (some prims indexed, this one
-    // not), synthesize identity indices [vertexCursor..+primVertexCount-1]
-    // so the merged single-index-buffer contract holds.
-    if (indices !== undefined) {
-      if (mesh.indices !== undefined) {
-        for (let i = 0; i < primIndexCount; i++) {
-          const src = mesh.indices[i] as number;
-          indices[indexCursor + i] = src + vertexCursor;
-        }
-        submeshes.push({
-          indexOffset: indexCursor,
-          indexCount: primIndexCount,
-          vertexCount: primVertexCount,
-          topology: 'triangle-list',
-          materialSlot,
-        });
-        indexCursor += primIndexCount;
-      } else {
-        // mixed bag: synthesize identity indices for this non-indexed prim
-        for (let i = 0; i < primVertexCount; i++) {
-          indices[indexCursor + i] = vertexCursor + i;
-        }
-        submeshes.push({
-          indexOffset: indexCursor,
-          indexCount: primVertexCount,
-          vertexCount: primVertexCount,
-          topology: 'triangle-list',
-          materialSlot,
-        });
-        indexCursor += primVertexCount;
-      }
-    } else {
-      // pure non-indexed mesh: indexCount=0, vertexCount carries draw count.
-      submeshes.push({
-        indexOffset: 0,
-        indexCount: 0,
-        vertexCount: primVertexCount,
-        topology: 'triangle-list',
-        materialSlot,
-      });
-    }
+    const tangents = resolvePrimitiveTangents(mesh, primitiveIndex, primVertexCount);
+    if (!tangents.ok) return tangents;
+    const colors = validatePrimitiveColors(mesh, primitiveIndex, primVertexCount);
+    if (!colors.ok) return colors;
+    copyPrimitiveSurfaceStreams(streams, mesh, tangents.value, vertexCursor, primVertexCount);
+    copyPrimitiveOptionalStreams(streams, mesh, vertexCursor, primVertexCount);
+    copyPrimitiveMorphTargets(streams.morphTargets, mesh, vertexCursor, primVertexCount);
+    const submesh = appendPrimitiveIndices(
+      streams.indices,
+      mesh,
+      indexCursor,
+      vertexCursor,
+      materialSlot,
+    );
+    submeshes.push(submesh);
+    indexCursor += submesh.indexCount;
     vertexCursor += primVertexCount;
   }
 
-  const attributes: VertexAttributeMap = {
-    position: positionsCat,
-    normal: normalsCat,
-    uv: uvsCat,
-    tangent: tangentsCat,
-    ...(colorsCat === undefined ? {} : { color: colorsCat }),
-    ...(skinIndicesCat === undefined ? {} : { skinIndex: skinIndicesCat }),
-    ...(skinWeightsCat === undefined ? {} : { skinWeight: skinWeightsCat }),
-    ...Object.fromEntries(uvCats.map((cat, idx) => [`uv${idx + 1}`, cat])),
-  };
-  const packed = packInterleavedVertexAttributes(attributes, totalVertexCount);
+  const attributes = mergedVertexAttributes(streams);
+  const packed = packInterleavedVertexAttributes(attributes, shape.value.vertexCount);
   if (!packed.ok) {
     return err(
       gltfErr('gltf-mesh-bridge-invalid', {
@@ -404,16 +163,399 @@ export function meshIrToMeshAsset(
   return ok({
     kind: 'mesh',
     vertices: packed.value.vertices,
-    ...(indices === undefined ? {} : { indices }),
+    ...(streams.indices === undefined ? {} : { indices: streams.indices }),
     submeshes,
     materialSlots: meshMaterialSlotsFromTopology(materialTable.slots),
-    aabb: box3.fromPositions(box3.create(), positionsCat),
+    aabb: box3.fromPositions(box3.create(), streams.positions),
     attributes,
-    ...(morphTargetCount === 0 ? {} : { morphTargets }),
+    ...(shape.value.morphTargetCount === 0 ? {} : { morphTargets: streams.morphTargets }),
     ...(prims[0]?.morphWeights === undefined
       ? {}
       : { morphWeights: new Float32Array(prims[0].morphWeights) }),
   });
+}
+
+/** Merged size and optional-stream presence across the primitives of one glTF mesh. */
+interface MergedMeshShape {
+  readonly vertexCount: number;
+  readonly indexCount: number;
+  readonly hasSkin: boolean;
+  readonly hasColor: boolean;
+  readonly hasIndices: boolean;
+  /** Highest present TEXCOORD_n (n >= 1); uv1..uvN are allocated. */
+  readonly extraUvSetCount: number;
+  readonly morphTargetCount: number;
+}
+
+function measureMergedMesh(prims: readonly GltfMeshIr[]): Result<MergedMeshShape, GltfError> {
+  let vertexCount = 0;
+  let indexCount = 0;
+  let hasSkin = false;
+  const hasColor = prims.some((p) => p.colors0 !== undefined);
+  let hasIndices = false;
+  // feat-20260629-multi-uv-set-support m1-w3: derive the widest canonical UV
+  // key list across all primitives so the geometry projection accommodates it.
+  let extraUvSetCount = 0;
+  const morphTargetCount = prims[0]?.morphTargets?.length ?? 0;
+  for (const p of prims) {
+    const primVc = p.positions.length / 3;
+    vertexCount += primVc;
+    if (p.indices !== undefined) {
+      indexCount += p.indices.length;
+      hasIndices = true;
+    } else {
+      indexCount += primVc;
+    }
+    if (p.joints0 !== undefined && p.weights0 !== undefined) hasSkin = true;
+    if ((p.morphTargets?.length ?? 0) !== morphTargetCount) {
+      return err(
+        gltfErr('gltf-mesh-bridge-invalid', {
+          meshIndex: p.meshIndex,
+          primitiveIndex: prims.indexOf(p),
+          reason: 'morph-count-mismatch',
+          expectedTargetCount: morphTargetCount,
+          actualTargetCount: p.morphTargets?.length ?? 0,
+        }),
+      );
+    }
+    extraUvSetCount = Math.max(extraUvSetCount, widestExtraUvSet(p));
+  }
+  return ok({
+    vertexCount,
+    indexCount,
+    hasSkin,
+    hasColor,
+    hasIndices,
+    extraUvSetCount,
+    morphTargetCount,
+  });
+}
+
+function widestExtraUvSet(p: GltfMeshIr): number {
+  for (let k = GLTF_UV_SET_COUNT - 1; k >= 1; k--) {
+    if (gltfMeshUvSet(p, k) !== undefined) return k;
+  }
+  return 0;
+}
+
+/** Concatenation targets for every primitive of one merged MeshAsset. */
+interface MergedMeshStreams {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly tangents: Float32Array;
+  readonly colors: Float32Array | undefined;
+  readonly skinIndices: Uint16Array | undefined;
+  readonly skinWeights: Float32Array | undefined;
+  /** uv1..uvN standalone arrays, allocated only for imported sets. */
+  readonly uvSets: readonly Float32Array[];
+  readonly morphTargets: MorphTarget[];
+  readonly indices: Uint16Array | Uint32Array | undefined;
+}
+
+function allocateMergedStreams(
+  prims: readonly GltfMeshIr[],
+  shape: MergedMeshShape,
+): MergedMeshStreams {
+  const vertexCount = shape.vertexCount;
+  return {
+    positions: new Float32Array(vertexCount * 3),
+    normals: new Float32Array(vertexCount * 3),
+    uvs: new Float32Array(vertexCount * 2),
+    tangents: new Float32Array(vertexCount * 4),
+    colors: shape.hasColor ? new Float32Array(vertexCount * 4) : undefined,
+    // D-2 / w8: when promoted to a skinned projection, retain canonical
+    // standalone arrays; the geometry packer owns the interleaved GPU bytes.
+    skinIndices: shape.hasSkin ? new Uint16Array(vertexCount * 4) : undefined,
+    skinWeights: shape.hasSkin ? new Float32Array(vertexCount * 4) : undefined,
+    uvSets: Array.from({ length: shape.extraUvSetCount }, () => new Float32Array(vertexCount * 2)),
+    morphTargets: Array.from({ length: shape.morphTargetCount }, (_, targetIndex) =>
+      allocateMorphTarget(prims[0]?.morphTargets?.[targetIndex], vertexCount),
+    ),
+    indices: allocateMergedIndices(shape),
+  };
+}
+
+type GltfMorphTargetIr = NonNullable<GltfMeshIr['morphTargets']>[number];
+
+/** The first primitive decides which lanes a merged morph target carries. */
+function allocateMorphTarget(
+  source: GltfMorphTargetIr | undefined,
+  vertexCount: number,
+): MorphTarget {
+  return {
+    ...(source?.position === undefined ? {} : { position: new Float32Array(vertexCount * 3) }),
+    ...(source?.normal === undefined ? {} : { normal: new Float32Array(vertexCount * 3) }),
+    ...(source?.tangent === undefined ? {} : { tangent: new Float32Array(vertexCount * 4) }),
+  };
+}
+
+function allocateMergedIndices(shape: MergedMeshShape): Uint16Array | Uint32Array | undefined {
+  // Multi-primitive merge biases each primitive's index range by the running
+  // vertex offset, so the merged max index is `totalVertexCount - 1`. When a
+  // glTF mesh has > 65535 vertices across all primitives (common for
+  // moderately complex scenes like Sponza at ~192k verts), Uint16 overflows
+  // and we must widen to Uint32. WebGPU's setIndexBuffer takes 'uint16' or
+  // 'uint32' (auto-selected by the runtime via TypedArray.constructor); both
+  // are supported by every WebGPU device.
+  // bug-20260612 hello-skin visual layered gate: when no primitive carries
+  // indices (glTF non-indexed geometry per spec — primitive.indices optional),
+  // route MeshAsset.indices to undefined so the runtime takes the
+  // pass.draw(vertexCount) non-indexed path. Mixed bags (some prims indexed,
+  // some not) synthesize identity indices for the non-indexed prims so the
+  // merged MeshAsset stays single-index-buffer. hasIndices === false
+  // skips the index buffer allocation entirely.
+  if (!shape.hasIndices) return undefined;
+  return shape.vertexCount > 0xffff
+    ? new Uint32Array(shape.indexCount)
+    : new Uint16Array(shape.indexCount);
+}
+
+/** Vertices whose authored tangent is parallel to (or zero against) the normal. */
+function degenerateTangentFrames(
+  normals: Float32Array,
+  tangents: Float32Array,
+  vertexCount: number,
+): number[] {
+  const invalid: number[] = [];
+  for (let i = 0; i < vertexCount; i++) {
+    const nx = normals[i * 3] ?? 0,
+      ny = normals[i * 3 + 1] ?? 0,
+      nz = normals[i * 3 + 2] ?? 0;
+    const tx = tangents[i * 4] ?? 0,
+      ty = tangents[i * 4 + 1] ?? 0,
+      tz = tangents[i * 4 + 2] ?? 0;
+    if (
+      Math.hypot(ny * tz - nz * ty, nz * tx - nx * tz, nx * ty - ny * tx) <=
+      Math.hypot(nx, ny, nz) * Math.hypot(tx, ty, tz) * 1e-8
+    )
+      invalid.push(i);
+  }
+  return invalid;
+}
+
+/**
+ * Repair only undefined source frames; valid authored MikkTSpace tangents
+ * retain their direction and handedness. All consumers receive this same MeshAsset.
+ */
+function resolvePrimitiveTangents(
+  mesh: GltfMeshIr,
+  primitiveIndex: number,
+  vertexCount: number,
+): Result<Float32Array | undefined, GltfError> {
+  let sourceTangents = mesh.tangents;
+  const invalid =
+    sourceTangents !== undefined && mesh.normals !== undefined
+      ? degenerateTangentFrames(mesh.normals, sourceTangents, vertexCount)
+      : [];
+  if (
+    (sourceTangents === undefined || invalid.length > 0) &&
+    mesh.normals !== undefined &&
+    mesh.texcoord0 !== undefined
+  ) {
+    const generated = computeTangentVec4(
+      mesh.positions,
+      mesh.normals,
+      mesh.texcoord0,
+      mesh.indices,
+    );
+    if (generated.ok) {
+      if (sourceTangents === undefined) sourceTangents = generated.value;
+      else {
+        sourceTangents = sourceTangents.slice();
+        for (const i of invalid)
+          sourceTangents.set(generated.value.subarray(i * 4, i * 4 + 4), i * 4);
+      }
+    }
+  }
+  if (invalid.length > 0 && sourceTangents !== undefined && mesh.normals !== undefined) {
+    return repairParallelTangentFrames(
+      sourceTangents.slice(),
+      mesh.normals,
+      invalid,
+      mesh,
+      primitiveIndex,
+    );
+  }
+  return ok(sourceTangents);
+}
+
+/**
+ * Collapsed UVs leave orientation undefined. For an already supplied but
+ * parallel frame, use a deterministic normal-plane basis rather than a NaN.
+ * This repairs the producer data; it does not infer a meaningful UV direction.
+ */
+function repairParallelTangentFrames(
+  tangents: Float32Array,
+  normals: Float32Array,
+  invalid: readonly number[],
+  mesh: GltfMeshIr,
+  primitiveIndex: number,
+): Result<Float32Array, GltfError> {
+  for (const i of invalid) {
+    const nx = normals[i * 3] ?? 0,
+      ny = normals[i * 3 + 1] ?? 0,
+      nz = normals[i * 3 + 2] ?? 0;
+    const tx = tangents[i * 4] ?? 0,
+      ty = tangents[i * 4 + 1] ?? 0,
+      tz = tangents[i * 4 + 2] ?? 0;
+    if (Math.hypot(ny * tz - nz * ty, nz * tx - nx * tz, nx * ty - ny * tx) > 1e-8) continue;
+    if (!writeNormalPlaneTangent(tangents, i * 4, nx, ny, nz))
+      return err(
+        gltfErr('gltf-mesh-bridge-invalid', {
+          reason: 'tangent-frame',
+          meshIndex: mesh.meshIndex,
+          primitiveIndex,
+        }),
+      );
+  }
+  return ok(tangents);
+}
+
+function validatePrimitiveColors(
+  mesh: GltfMeshIr,
+  primitiveIndex: number,
+  vertexCount: number,
+): Result<void, GltfError> {
+  if (mesh.colors0 !== undefined && mesh.colors0.length !== vertexCount * 4) {
+    return err(
+      gltfErr('gltf-mesh-bridge-invalid', {
+        meshIndex: mesh.meshIndex,
+        primitiveIndex,
+        reason: 'color-cardinality',
+        semantic: 'COLOR_0',
+        vertexCount,
+        expectedLength: vertexCount * 4,
+        actualLength: mesh.colors0.length,
+      }),
+    );
+  }
+  return ok(undefined);
+}
+
+/** Position, normal, uv0 and tangent; absent normals are +Y and absent tangents +X with w=1. */
+function copyPrimitiveSurfaceStreams(
+  streams: MergedMeshStreams,
+  mesh: GltfMeshIr,
+  tangents: Float32Array | undefined,
+  vertexCursor: number,
+  vertexCount: number,
+): void {
+  copyVertexStream(streams.positions, mesh.positions, vertexCursor * 3, vertexCount * 3);
+  if (mesh.normals !== undefined) {
+    copyVertexStream(streams.normals, mesh.normals, vertexCursor * 3, vertexCount * 3);
+  } else {
+    for (let i = vertexCursor; i < vertexCursor + vertexCount; i++) streams.normals[i * 3 + 1] = 1;
+  }
+  if (mesh.texcoord0 !== undefined)
+    copyVertexStream(streams.uvs, mesh.texcoord0, vertexCursor * 2, vertexCount * 2);
+  if (tangents !== undefined) {
+    copyVertexStream(streams.tangents, tangents, vertexCursor * 4, vertexCount * 4);
+  } else {
+    for (let i = vertexCursor; i < vertexCursor + vertexCount; i++) {
+      streams.tangents[i * 4] = 1;
+      streams.tangents[i * 4 + 3] = 1;
+    }
+  }
+}
+
+/** Streams present on only some primitives: color (white fill), skin (zero fill) and uv1..uvN. */
+function copyPrimitiveOptionalStreams(
+  streams: MergedMeshStreams,
+  mesh: GltfMeshIr,
+  vertexCursor: number,
+  vertexCount: number,
+): void {
+  if (streams.colors !== undefined) {
+    if (mesh.colors0 === undefined)
+      streams.colors.fill(1, vertexCursor * 4, (vertexCursor + vertexCount) * 4);
+    else copyVertexStream(streams.colors, mesh.colors0, vertexCursor * 4, vertexCount * 4);
+  }
+  if (
+    streams.skinIndices !== undefined &&
+    streams.skinWeights !== undefined &&
+    mesh.joints0 !== undefined &&
+    mesh.weights0 !== undefined
+  ) {
+    copyVertexStream(streams.skinIndices, mesh.joints0, vertexCursor * 4, vertexCount * 4);
+    copyVertexStream(streams.skinWeights, mesh.weights0, vertexCursor * 4, vertexCount * 4);
+  }
+  for (let k = 1; k <= streams.uvSets.length; k++) {
+    const source = gltfMeshUvSet(mesh, k);
+    const target = streams.uvSets[k - 1];
+    if (source !== undefined && target !== undefined)
+      copyVertexStream(target, source, vertexCursor * 2, vertexCount * 2);
+  }
+}
+
+/** Morph lanes already use bounded subarrays: absent or short lanes stay zero-filled. */
+function copyPrimitiveMorphTargets(
+  morphTargets: readonly MorphTarget[],
+  mesh: GltfMeshIr,
+  vertexCursor: number,
+  vertexCount: number,
+): void {
+  for (let targetIndex = 0; targetIndex < morphTargets.length; targetIndex++) {
+    const source = mesh.morphTargets?.[targetIndex];
+    const target = morphTargets[targetIndex] as MorphTarget;
+    if (source?.position !== undefined && target.position !== undefined)
+      target.position.set(source.position.subarray(0, vertexCount * 3), vertexCursor * 3);
+    if (source?.normal !== undefined && target.normal !== undefined)
+      target.normal.set(source.normal.subarray(0, vertexCount * 3), vertexCursor * 3);
+    if (source?.tangent !== undefined && target.tangent !== undefined)
+      target.tangent.set(source.tangent.subarray(0, vertexCount * 4), vertexCursor * 4);
+  }
+}
+
+/**
+ * Bias each submesh's indices by the running vertex offset so they
+ * reference into the merged vertex buffer rather than the per-primitive
+ * local 0-base. When the merged MeshAsset is non-indexed (`indices` is
+ * undefined), emit a vertex-only submesh (indexCount=0; runtime dispatches
+ * via `pass.draw(vertexCount)`). When mixed (some prims indexed, this one
+ * not), synthesize identity indices [vertexCursor..+vertexCount-1] so the
+ * merged single-index-buffer contract holds.
+ */
+function appendPrimitiveIndices(
+  indices: Uint16Array | Uint32Array | undefined,
+  mesh: GltfMeshIr,
+  indexCursor: number,
+  vertexCursor: number,
+  materialSlot: number,
+): Submesh {
+  const vertexCount = mesh.positions.length / 3;
+  if (indices === undefined) {
+    return { indexOffset: 0, indexCount: 0, vertexCount, topology: 'triangle-list', materialSlot };
+  }
+  const indexCount = mesh.indices === undefined ? vertexCount : mesh.indices.length;
+  if (mesh.indices !== undefined) {
+    for (let i = 0; i < indexCount; i++) {
+      const src = mesh.indices[i] as number;
+      indices[indexCursor + i] = src + vertexCursor;
+    }
+  } else {
+    for (let i = 0; i < indexCount; i++) indices[indexCursor + i] = vertexCursor + i;
+  }
+  return {
+    indexOffset: indexCursor,
+    indexCount,
+    vertexCount,
+    topology: 'triangle-list',
+    materialSlot,
+  };
+}
+
+function mergedVertexAttributes(streams: MergedMeshStreams): VertexAttributeMap {
+  return {
+    position: streams.positions,
+    normal: streams.normals,
+    uv: streams.uvs,
+    tangent: streams.tangents,
+    ...(streams.colors === undefined ? {} : { color: streams.colors }),
+    ...(streams.skinIndices === undefined ? {} : { skinIndex: streams.skinIndices }),
+    ...(streams.skinWeights === undefined ? {} : { skinWeight: streams.skinWeights }),
+    ...Object.fromEntries(streams.uvSets.map((cat, idx) => [`uv${idx + 1}`, cat])),
+  };
 }
 
 export interface GltfBridgeContext {
@@ -980,10 +1122,51 @@ export function validateMaterialTangentInputs(
   return ok(undefined);
 }
 
+type MaterialValues = Record<string, NonNullable<MaterialAsset['values']>[string]>;
+type StandardRootContract = ReturnType<typeof standardRootParameterNames>;
+
 /** Convert a parsed GltfMaterialIr into a standard-root derived MaterialAsset. */
 export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext): MaterialAsset {
   const rootContract = standardRootParameterNames(mat);
-  const values: Record<string, NonNullable<MaterialAsset['values']>[string]> = {
+  const values = baseMaterialValues(mat, ctx);
+  writeVolumeAndCoatValues(values, mat, rootContract);
+  writeLobeLayerValues(values, mat, rootContract);
+  const module = materialModule(mat, ctx);
+
+  const isMask = mat.alphaMode === 'MASK';
+  const alphaCutoff = isMask ? (mat.alphaCutoff ?? 0.5) : undefined;
+  if (alphaCutoff !== undefined) values.alphaCutoff = alphaCutoff;
+  const passes = materialPasses(mat, module, rootContract.extended);
+
+  const child = mat.unlit !== true && !rootContract.extended && ctx?.standardRootGuid !== undefined;
+  if (mat.unlit === true)
+    for (const name of Object.keys(values))
+      if (!['baseColor', 'baseColorTexture', 'alphaCutoff'].includes(name)) delete values[name];
+  return {
+    kind: 'material',
+    ...(mat.unlit === true || Object.keys(rootContract.staticSwitches).length === 0
+      ? {}
+      : { staticSwitches: rootContract.staticSwitches }),
+    ...(child
+      ? { parent: ctx.standardRootGuid }
+      : {
+          colorSpace: 'linear' as const,
+          passes,
+          parameters:
+            mat.unlit === true
+              ? unlitMaterialParameters('linear')
+              : standardMaterialParameters(rootContract.names),
+        }),
+    values,
+  };
+}
+
+/** Metallic-roughness factors, emission and every bound texture slot. */
+function baseMaterialValues(
+  mat: GltfMaterialIr,
+  ctx: MaterialBridgeContext | undefined,
+): MaterialValues {
+  const values: MaterialValues = {
     baseColor: mat.baseColorFactor,
     metallic: mat.metallicFactor,
     roughness: mat.roughnessFactor,
@@ -999,6 +1182,15 @@ export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext
   if (mat.occlusionTexture !== undefined && values.occlusionStrength === undefined) {
     values.occlusionStrength = 1;
   }
+  return values;
+}
+
+/** Transmission volume, clearcoat and the normal-map scales of base and coat. */
+function writeVolumeAndCoatValues(
+  values: MaterialValues,
+  mat: GltfMaterialIr,
+  rootContract: StandardRootContract,
+): void {
   if (rootContract.extended && rootContract.names.has('transmission')) {
     values.transmission = mat.transmissionFactor ?? 0;
     values.ior = mat.ior ?? 1.5;
@@ -1018,6 +1210,14 @@ export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext
     | (GltfTextureInfoIr & { readonly scale?: number })
     | undefined;
   if (clearcoatNormal?.scale !== undefined) values.clearcoatNormalScale = clearcoatNormal.scale;
+}
+
+/** Anisotropy, sheen, iridescence, diffuse transmission and specular lobe factors. */
+function writeLobeLayerValues(
+  values: MaterialValues,
+  mat: GltfMaterialIr,
+  rootContract: StandardRootContract,
+): void {
   if (rootContract.names.has('anisotropyStrength')) {
     values.anisotropyStrength = mat.anisotropyStrength ?? 0;
     values.anisotropyRotation = mat.anisotropyRotation ?? 0;
@@ -1038,18 +1238,23 @@ export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext
   }
   if (mat.specularFactor !== undefined) values.specular = mat.specularFactor;
   if (mat.specularColorFactor !== undefined) values.specularColor = mat.specularColorFactor;
+}
 
-  const module =
-    mat.unlit === true
-      ? 'forgeax_material::unlit'
-      : ctx?.skinned === true
-        ? 'forgeax::pbr-skin'
-        : 'forgeax::default-standard-pbr';
+function materialModule(mat: GltfMaterialIr, ctx: MaterialBridgeContext | undefined): string {
+  return mat.unlit === true
+    ? 'forgeax_material::unlit'
+    : ctx?.skinned === true
+      ? 'forgeax::pbr-skin'
+      : 'forgeax::default-standard-pbr';
+}
 
+/** Forward, optional Deferred and ShadowCaster passes for one imported material. */
+function materialPasses(
+  mat: GltfMaterialIr,
+  module: string,
+  extended: boolean,
+): [MaterialPass, ...MaterialPass[]] {
   const isMask = mat.alphaMode === 'MASK';
-  const alphaCutoff = isMask ? (mat.alphaCutoff ?? 0.5) : undefined;
-  if (alphaCutoff !== undefined) values.alphaCutoff = alphaCutoff;
-
   // glTF BLEND uses straight alpha and does not write depth.
   const isBlend = mat.alphaMode === 'BLEND';
   const straightAlphaBlend = {
@@ -1089,7 +1294,7 @@ export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext
   // authored Standard materials. Physical layers and BLEND stay Forward;
   // opaque/MASK materials also provide the deferred material attachments.
   const passes: [MaterialPass, ...MaterialPass[]] = [pass];
-  if (mat.unlit !== true && !isBlend && !rootContract.extended) {
+  if (mat.unlit !== true && !isBlend && !extended) {
     passes.push({
       ...pass,
       name: 'Deferred',
@@ -1108,26 +1313,5 @@ export function toMaterialAsset(mat: GltfMaterialIr, ctx?: MaterialBridgeContext
       ...(mat.doubleSided === true ? { cullMode: 'none' } : {}),
     },
   });
-
-  const child = mat.unlit !== true && !rootContract.extended && ctx?.standardRootGuid !== undefined;
-  if (mat.unlit === true)
-    for (const name of Object.keys(values))
-      if (!['baseColor', 'baseColorTexture', 'alphaCutoff'].includes(name)) delete values[name];
-  return {
-    kind: 'material',
-    ...(mat.unlit === true || Object.keys(rootContract.staticSwitches).length === 0
-      ? {}
-      : { staticSwitches: rootContract.staticSwitches }),
-    ...(child
-      ? { parent: ctx.standardRootGuid }
-      : {
-          colorSpace: 'linear' as const,
-          passes,
-          parameters:
-            mat.unlit === true
-              ? unlitMaterialParameters('linear')
-              : standardMaterialParameters(rootContract.names),
-        }),
-    values,
-  };
+  return passes;
 }

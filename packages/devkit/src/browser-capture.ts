@@ -819,12 +819,32 @@ function markFailed(records: ReadonlyMap<Request, MutableRequestWitness>, reques
   record.resourceMiss = true;
 }
 
-async function openBrowserCaptureSession(
-  root: string,
+async function assertSingleHtmlCandidate(path: string): Promise<void> {
+  if (!path.toLowerCase().endsWith('.html')) {
+    fail(
+      'browser-capture-target-invalid',
+      'single-html target path to end with .html',
+      'Pass the exact forgeax project package --format single-html candidate.',
+      { path },
+    );
+  }
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) throw new Error('target is not a regular file');
+  } catch (cause) {
+    fail(
+      'browser-capture-target-missing',
+      'single-html target path to exist',
+      'Package the game first, then pass its candidate HTML path.',
+      { path, reason: cause instanceof Error ? cause.message : String(cause) },
+    );
+  }
+}
+
+/** The capture target after host-binding admission; a single-html candidate must be a real file. */
+async function admitCaptureTarget(
   options: BrowserCaptureOpenOptions,
-): Promise<BrowserCaptureSession> {
-  const backend: CaptureBackend = options.backend ?? 'auto';
-  const launchProfile = options.launchProfile ?? 'development';
+): Promise<BrowserCaptureTarget> {
   const requestedTarget = options.target ?? { kind: 'project' as const };
   if (
     options.host !== undefined &&
@@ -832,31 +852,13 @@ async function openBrowserCaptureSession(
   ) {
     hostBindingError('host binding cannot modify an external server or a prebuilt HTML target');
   }
-  const target: BrowserCaptureTarget =
-    requestedTarget.kind === 'single-html'
-      ? { kind: 'single-html', path: resolve(requestedTarget.path) }
-      : { kind: 'project' };
-  if (target.kind === 'single-html') {
-    if (!target.path.toLowerCase().endsWith('.html')) {
-      fail(
-        'browser-capture-target-invalid',
-        'single-html target path to end with .html',
-        'Pass the exact forgeax project package --format single-html candidate.',
-        { path: target.path },
-      );
-    }
-    try {
-      const info = await stat(target.path);
-      if (!info.isFile()) throw new Error('target is not a regular file');
-    } catch (cause) {
-      fail(
-        'browser-capture-target-missing',
-        'single-html target path to exist',
-        'Package the game first, then pass its candidate HTML path.',
-        { path: target.path, reason: cause instanceof Error ? cause.message : String(cause) },
-      );
-    }
-  }
+  if (requestedTarget.kind !== 'single-html') return { kind: 'project' };
+  const path = resolve(requestedTarget.path);
+  await assertSingleHtmlCandidate(path);
+  return { kind: 'single-html', path };
+}
+
+async function readCaptureProjectFacts(root: string) {
   const facts = await readProjectFacts(root);
   if (!facts.ok) {
     throw new BrowserCaptureError(
@@ -866,33 +868,242 @@ async function openBrowserCaptureSession(
       facts.error.detail,
     );
   }
-  const width = options.width ?? 1280;
-  const height = options.height ?? 720;
-  const browserPath = await resolveBrowserExecutable(options.browser);
-  if (options.browser !== undefined && browserPath === undefined) {
+  return facts;
+}
+
+/** An explicitly requested browser must resolve; otherwise discovery may find none. */
+async function resolveRequestedBrowser(browser: string | undefined): Promise<string | undefined> {
+  const browserPath = await resolveBrowserExecutable(browser);
+  if (browser !== undefined && browserPath === undefined) {
     fail(
       'browser-capture-browser-missing',
-      `a runnable browser at ${options.browser}`,
+      `a runnable browser at ${browser}`,
       'Install Chrome/Chromium or pass --browser with an executable path.',
-      { browser: options.browser },
+      { browser },
     );
   }
+  return browserPath;
+}
 
+async function captureProjectPort(port: number | undefined): Promise<number> {
+  return port === undefined || port === 0 ? await reservePort() : port;
+}
+
+// A Pack-backed project can publish its first catalog asynchronously.
+// The page cannot recover from the one-shot 503 that precedes that
+// publication, so wait for the owner generation before navigation.
+async function waitForCaptureCatalog(
+  server: ViteDevServer,
+  port: number,
+  projectId: string,
+): Promise<void> {
+  if (server.httpServer === undefined) return;
+  const serverUrl = server.resolvedUrls?.local?.[0] ?? `http://127.0.0.1:${port}/`;
+  try {
+    await waitForRuntimeCatalog(serverUrl, projectId, 120_000);
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === 'DevKitWorkspaceError') {
+      const detail =
+        'detail' in cause && cause.detail !== null && typeof cause.detail === 'object'
+          ? cause.detail
+          : {};
+      throw new BrowserCaptureError(
+        'browser-capture-catalog-not-ready',
+        'the project Pack catalog to become ready before the browser page loads',
+        'Wait for the project producer to finish, repair its diagnostics, and retry the capture.',
+        detail as Readonly<Record<string, unknown>>,
+      );
+    }
+    throw cause;
+  }
+}
+
+async function openCaptureDisplay(
+  headless: boolean | undefined,
+  width: number,
+  height: number,
+): Promise<VirtualDisplay> {
+  return headless === true ? { async close() {} } : await startVirtualDisplay(width, height);
+}
+
+function defaultHeadless(display: VirtualDisplay): boolean {
+  return display.value === undefined && process.platform !== 'linux';
+}
+
+/** A headed development launch without an explicit viewport keeps the native window size. */
+function usesNativeWindow(
+  headless: boolean,
+  launchProfile: BrowserLaunchProfile,
+  viewport: { readonly width?: number | undefined; readonly height?: number | undefined },
+): boolean {
+  return (
+    !headless &&
+    launchProfile === 'development' &&
+    viewport.width === undefined &&
+    viewport.height === undefined
+  );
+}
+
+function projectBaseUrl(
+  serverUrl: string | undefined,
+  server: ViteDevServer | undefined,
+  port: number | undefined,
+): URL {
+  return new URL(serverUrl ?? server?.resolvedUrls?.local[0] ?? `http://127.0.0.1:${port ?? 0}/`);
+}
+
+function assertObservedBackend(
+  backend: CaptureBackend,
+  observed: CaptureBackendObserved,
+  runtime: BrowserCaptureRuntimeWitness,
+  launchProfile: BrowserLaunchProfile,
+  initialAdapterError: BrowserCaptureRuntimeWitness['adapterError'],
+): void {
+  if (backend !== 'auto' && observed !== backend) {
+    fail(
+      'browser-capture-backend-unavailable',
+      `the explicitly requested ${backend} adapter`,
+      'Use backend: auto to allow fallback, or repair the requested browser backend.',
+      {
+        requested: backend,
+        actual: observed,
+        adapter: runtime.adapter,
+        cause: runtime.adapterError,
+      },
+    );
+  }
+  if (backend === 'auto' && observed === 'unknown') {
+    fail(
+      'browser-capture-backend-unavailable',
+      'the browser to expose either a hardware or software WebGPU adapter',
+      'The browser exposed no usable adapter for the requested launch profile; use development for the software fallback or repair the browser environment.',
+      {
+        requested: backend,
+        actual: observed,
+        launchProfile,
+        initialAdapterError,
+        fallbackAdapterError: runtime.adapterError,
+      },
+    );
+  }
+}
+
+function captureEntryUrl(
+  target: BrowserCaptureTarget,
+  baseUrl: URL | undefined,
+  deterministic: boolean,
+): URL {
+  const captureUrl =
+    target.kind === 'single-html'
+      ? new URL(pathToFileURL(target.path).href)
+      : new URL(baseUrl?.href ?? 'http://127.0.0.1/');
+  if (deterministic) captureUrl.searchParams.set('forgeaxCapture', '1');
+  return captureUrl;
+}
+
+function carrierReportFields(
+  carrierAttachment: { readonly target: BrowserCarrierTarget } | undefined,
+  carrierFallbackReason: string | undefined,
+): Pick<BrowserCaptureRunReport, 'carrier' | 'carrierTarget' | 'carrierFallbackReason'> {
+  return {
+    carrier: carrierAttachment === undefined ? 'private-browser' : 'borrowed',
+    ...(carrierAttachment === undefined ? {} : { carrierTarget: carrierAttachment.target }),
+    ...(carrierFallbackReason === undefined ? {} : { carrierFallbackReason }),
+  };
+}
+
+function backendReportFields(
+  backend: CaptureBackend,
+  observed: CaptureBackendObserved,
+  initialAdapterError: BrowserCaptureRuntimeWitness['adapterError'],
+): Pick<BrowserCaptureRunReport, 'backendRequested' | 'backend' | 'fallbackReason'> {
+  return {
+    backendRequested: backend,
+    backend: observed,
+    ...(backend === 'auto' && observed === 'software'
+      ? { fallbackReason: initialAdapterError ?? 'The browser selected a software adapter.' }
+      : {}),
+  };
+}
+
+function viewportReport(
+  nativeViewport:
+    | { readonly width: number; readonly height: number; readonly deviceScaleFactor: number }
+    | undefined,
+  width: number,
+  height: number,
+): BrowserCaptureRunReport['viewport'] {
+  return {
+    width: nativeViewport?.width ?? width,
+    height: nativeViewport?.height ?? height,
+    deviceScaleFactor: nativeViewport?.deviceScaleFactor ?? 1,
+    colorProfile: 'srgb',
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezone: 'UTC',
+  };
+}
+
+function browserReport(
+  browser: Browser | undefined,
+  carrierAttachment: object | undefined,
+  browserPath: string | undefined,
+): BrowserCaptureRunReport['browser'] {
+  return {
+    version: browser?.version() ?? 'borrowed-carrier',
+    executable:
+      carrierAttachment === undefined ? (browserPath ?? 'borrowed-carrier') : 'borrowed-carrier',
+  };
+}
+
+/** Run identity and artifact locations, resolved against the project root. */
+function captureRunLayout(
+  projectRoot: string,
+  options: Pick<BrowserCaptureOpenOptions, 'runId' | 'outputDir' | 'report'>,
+): { readonly id: string; readonly outputDirectory: string; readonly reportPath: string } {
   const id = options.runId ?? newRunId();
-  const outputDirectory = resolve(
-    facts.value.root,
-    options.outputDir ?? `artifacts/playthrough/${id}`,
-  );
-  const reportPath = resolve(
-    facts.value.root,
-    options.report ?? resolve(outputDirectory, 'run.json'),
-  );
-  const port =
-    target.kind === 'project'
-      ? options.port === undefined || options.port === 0
-        ? await reservePort()
-        : options.port
-      : undefined;
+  const outputDirectory = resolve(projectRoot, options.outputDir ?? `artifacts/playthrough/${id}`);
+  const reportPath = resolve(projectRoot, options.report ?? resolve(outputDirectory, 'run.json'));
+  return { id, outputDirectory, reportPath };
+}
+
+/** Auto relaunches its own browser on the software lane when no hardware adapter appeared. */
+function fallsBackToSoftware(
+  backend: CaptureBackend,
+  observed: CaptureBackendObserved,
+  borrowedCarrier: boolean,
+): boolean {
+  return backend === 'auto' && observed !== 'hardware' && !borrowedCarrier;
+}
+
+function assertCaptureSessionOpened(
+  page: Page | undefined,
+  browser: Browser | undefined,
+  carrierAttachment: object | undefined,
+): asserts page is Page {
+  if (page === undefined || (browser === undefined && carrierAttachment === undefined)) {
+    fail(
+      'browser-capture-browser-unavailable',
+      'the browser capture session to open',
+      'Inspect the browser launch diagnostic and retry with --browser or --headless.',
+    );
+  }
+}
+
+async function openBrowserCaptureSession(
+  root: string,
+  options: BrowserCaptureOpenOptions,
+): Promise<BrowserCaptureSession> {
+  const backend: CaptureBackend = options.backend ?? 'auto';
+  const launchProfile = options.launchProfile ?? 'development';
+  const target = await admitCaptureTarget(options);
+  const facts = await readCaptureProjectFacts(root);
+  const width = options.width ?? 1280;
+  const height = options.height ?? 720;
+  const browserPath = await resolveRequestedBrowser(options.browser);
+
+  const { id, outputDirectory, reportPath } = captureRunLayout(facts.value.root, options);
+  const port = target.kind === 'project' ? await captureProjectPort(options.port) : undefined;
   let server: ViteDevServer | undefined;
   let browser: Browser | undefined;
   let page: Page | undefined;
@@ -919,32 +1130,9 @@ async function openBrowserCaptureSession(
         }),
       );
       await server.listen(port);
-      // A Pack-backed project can publish its first catalog asynchronously.
-      // The page cannot recover from the one-shot 503 that precedes that
-      // publication, so wait for the owner generation before navigation.
-      if (server.httpServer !== undefined) {
-        const serverUrl = server.resolvedUrls?.local?.[0] ?? `http://127.0.0.1:${port}/`;
-        try {
-          await waitForRuntimeCatalog(serverUrl, facts.value.id, 120_000);
-        } catch (cause) {
-          if (cause instanceof Error && cause.name === 'DevKitWorkspaceError') {
-            const detail =
-              'detail' in cause && cause.detail !== null && typeof cause.detail === 'object'
-                ? cause.detail
-                : {};
-            throw new BrowserCaptureError(
-              'browser-capture-catalog-not-ready',
-              'the project Pack catalog to become ready before the browser page loads',
-              'Wait for the project producer to finish, repair its diagnostics, and retry the capture.',
-              detail as Readonly<Record<string, unknown>>,
-            );
-          }
-          throw cause;
-        }
-      }
+      await waitForCaptureCatalog(server, port, facts.value.id);
     }
-    display =
-      options.headless === true ? { async close() {} } : await startVirtualDisplay(width, height);
+    display = await openCaptureDisplay(options.headless, width, height);
     const captureDisplay = display;
     const icd = await lavapipeIcd();
     const consoleErrors: string[] = [];
@@ -956,19 +1144,10 @@ async function openBrowserCaptureSession(
     removePageListeners = (): void => {
       for (const cleanup of pageListenerCleanups.splice(0)) cleanup();
     };
-    const hasDisplay = display.value !== undefined;
-    const headless = options.headless ?? (!hasDisplay && process.platform !== 'linux');
-    const nativeWindow =
-      !headless &&
-      launchProfile === 'development' &&
-      options.width === undefined &&
-      options.height === undefined;
+    const headless = options.headless ?? defaultHeadless(display);
+    const nativeWindow = usesNativeWindow(headless, launchProfile, options);
     const baseUrl =
-      target.kind === 'project'
-        ? new URL(
-            options.serverUrl ?? server?.resolvedUrls?.local[0] ?? `http://127.0.0.1:${port ?? 0}/`,
-          )
-        : undefined;
+      target.kind === 'project' ? projectBaseUrl(options.serverUrl, server, port) : undefined;
     const openPage = async (
       launchBackend: CaptureBackend,
     ): Promise<BrowserCaptureRuntimeWitness> => {
@@ -1132,7 +1311,7 @@ async function openBrowserCaptureSession(
     let runtime = await openPage(initialLaunchBackend);
     let observed = classifyCaptureAdapter(runtime.adapter);
     const initialAdapterError = runtime.adapterError;
-    if (backend === 'auto' && observed !== 'hardware' && carrierAttachment === undefined) {
+    if (fallsBackToSoftware(backend, observed, carrierAttachment !== undefined)) {
       removePageListeners();
       await browser?.close();
       browser = undefined;
@@ -1145,45 +1324,9 @@ async function openBrowserCaptureSession(
       runtime = await openPage('software');
       observed = classifyCaptureAdapter(runtime.adapter);
     }
-    if (backend !== 'auto' && observed !== backend) {
-      fail(
-        'browser-capture-backend-unavailable',
-        `the explicitly requested ${backend} adapter`,
-        'Use backend: auto to allow fallback, or repair the requested browser backend.',
-        {
-          requested: backend,
-          actual: observed,
-          adapter: runtime.adapter,
-          cause: runtime.adapterError,
-        },
-      );
-    }
-    if (backend === 'auto' && observed === 'unknown') {
-      fail(
-        'browser-capture-backend-unavailable',
-        'the browser to expose either a hardware or software WebGPU adapter',
-        'The browser exposed no usable adapter for the requested launch profile; use development for the software fallback or repair the browser environment.',
-        {
-          requested: backend,
-          actual: observed,
-          launchProfile,
-          initialAdapterError,
-          fallbackAdapterError: runtime.adapterError,
-        },
-      );
-    }
-    const captureUrl =
-      target.kind === 'single-html'
-        ? new URL(pathToFileURL(target.path).href)
-        : new URL(baseUrl?.href ?? 'http://127.0.0.1/');
-    if (options.deterministic === true) captureUrl.searchParams.set('forgeaxCapture', '1');
-    if (page === undefined || (browser === undefined && carrierAttachment === undefined)) {
-      fail(
-        'browser-capture-browser-unavailable',
-        'the browser capture session to open',
-        'Inspect the browser launch diagnostic and retry with --browser or --headless.',
-      );
-    }
+    assertObservedBackend(backend, observed, runtime, launchProfile, initialAdapterError);
+    const captureUrl = captureEntryUrl(target, baseUrl, options.deterministic === true);
+    assertCaptureSessionOpened(page, browser, carrierAttachment);
     const nativeViewport = nativeWindow
       ? await page.evaluate(() => ({
           width: window.innerWidth,
@@ -1203,33 +1346,13 @@ async function openBrowserCaptureSession(
       root: facts.value.root,
       url: captureUrl.href,
       target,
-      carrier: carrierAttachment === undefined ? 'private-browser' : 'borrowed',
-      ...(carrierAttachment === undefined ? {} : { carrierTarget: carrierAttachment.target }),
-      ...(carrierFallbackReason === undefined ? {} : { carrierFallbackReason }),
+      ...carrierReportFields(carrierAttachment, carrierFallbackReason),
       launchProfile,
       report: reportPath,
-      backendRequested: backend,
-      backend: observed,
-      ...(backend === 'auto' && observed === 'software'
-        ? { fallbackReason: initialAdapterError ?? 'The browser selected a software adapter.' }
-        : {}),
+      ...backendReportFields(backend, observed, initialAdapterError),
       deterministicRequested: options.deterministic === true,
-      viewport: {
-        width: nativeViewport?.width ?? width,
-        height: nativeViewport?.height ?? height,
-        deviceScaleFactor: nativeViewport?.deviceScaleFactor ?? 1,
-        colorProfile: 'srgb',
-        colorScheme: 'light',
-        locale: 'en-US',
-        timezone: 'UTC',
-      },
-      browser: {
-        version: browser?.version() ?? 'borrowed-carrier',
-        executable:
-          carrierAttachment === undefined
-            ? (browserPath ?? 'borrowed-carrier')
-            : 'borrowed-carrier',
-      },
+      viewport: viewportReport(nativeViewport, width, height),
+      browser: browserReport(browser, carrierAttachment, browserPath),
       display: display.value ?? null,
       lavapipeIcd: icd ?? null,
       captures,

@@ -16,12 +16,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gtk = "=0.18.2"
 gdkx11 = "=0.18.2"
-wry = "=0.55.1"
-tauri = { version = "=2.11.5", features = ["unstable"] }
+wry = "=0.57.0"
+tauri = { version = "=2.12.5", features = ["unstable"] }
 
 [build-dependencies]
 napi-build = "2"
-tauri-build = "=2.6.3"
+tauri-build = "=2.7.4"
 
 [profile.release]
 lto = "thin"

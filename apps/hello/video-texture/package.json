@@ -56,7 +56,7 @@
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "playwright": "^1.55.0",
     "pngjs": "^7.0.0",
-    "vite": "8.0.16",
+    "vite": "8.3.5",
     "@forgeax/engine-dawn-node": "workspace:*",
     "@webgpu/types": "^0.1.74"
   }

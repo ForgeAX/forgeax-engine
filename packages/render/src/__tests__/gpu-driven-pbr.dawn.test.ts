@@ -5,8 +5,23 @@ import {
   deriveVertexBufferLayoutFromProjection,
   deriveVertexLayoutProjection,
 } from '@forgeax/engine-geometry';
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
+import {
+  type CompiledRenderGraph,
+  type GraphBuffer,
+  type GraphTexture,
+  type GraphTextureView,
+  RenderGraphBuilder,
+} from '@forgeax/engine-render-graph';
+import type {
+  BindGroup,
+  BindGroupLayout,
+  Buffer,
+  RenderPipeline,
+  RhiDevice,
+  ShaderModule,
+  Texture,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import {
   createMaterialShaderProgram,
@@ -17,7 +32,7 @@ import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
-import { GpuDrivenProduction } from '../gpu-driven/production-raster';
+import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import {
   shadowViewHasStaticLayer,
   shadowViewIdentityKey,
@@ -49,7 +64,7 @@ import {
   recordGpuDrivenShadowIndirect,
 } from '../record/shadow-pass';
 import { VIEW_UNIFORM_BUFFER_SIZE, writeViewUbo } from '../record/view-ubo';
-import type { RenderPipelineFrame } from '../render-pipeline';
+import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
 import type {
   ExtractedFrame,
   MaterialSnapshot,
@@ -392,6 +407,994 @@ function mesh(device: RhiDevice, coordinateSet: 1 | 7 | undefined, vertexColorAv
   };
 }
 
+const ALPHA_MASK_SHADOW_IDENTITIES = [
+  { kind: 'directional' as const, index: 0 },
+  { kind: 'point' as const, index: 0, face: 0 },
+  { kind: 'spot' as const, index: 0 },
+] as const;
+type AlphaMaskShadowIdentity = (typeof ALPHA_MASK_SHADOW_IDENTITIES)[number];
+type AlphaMaskShadowKind = AlphaMaskShadowIdentity['kind'];
+type AlphaMaskGraph = RenderGraphBuilder<RenderPipelineFrame>;
+type AlphaMaskGpuState = NonNullable<
+  ReturnType<PersistentRenderScene['compositionGpuDrivenState']>
+>;
+type AlphaMaskShadowResources = Parameters<typeof shadowViewRasterAccesses>[0];
+type AlphaMaskShaders = NonNullable<Awaited<ReturnType<typeof compileAlphaMaskShaders>>>;
+type AlphaMaskMaterialInputs = ReturnType<typeof createAlphaMaskMaterialInputs>;
+type AlphaMaskShadowView = {
+  readonly identity: AlphaMaskShadowIdentity;
+  readonly planes: Float32Array;
+};
+type AlphaMaskShadowDepthReadback = {
+  readonly identity: AlphaMaskShadowIdentity;
+  readonly buffer: Buffer;
+};
+const READBACK_USAGE = GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST;
+
+/**
+ * Compile the exact cooked Standard PBR scene-index producer variant on
+ * native Dawn. This is the same manifest branch selected by the renderer
+ * for the storage-backed GPU-driven lane, including its production material
+ * ABI and Alpha Mask discard path.
+ */
+async function compileAlphaMaskShaders(device: RhiDevice, vertexColorAvailable: boolean) {
+  const variant = vertexColorAvailable
+    ? STANDARD_PBR_COLORED_GPU_VARIANT
+    : STANDARD_PBR_GPU_VARIANT;
+  const defaultVariant = STANDARD_PBR_GPU_VARIANT;
+  expect(STANDARD_PBR_PRODUCER).toBeDefined();
+  if (STANDARD_PBR_PRODUCER === undefined) return undefined;
+  expect(variant).toBeDefined();
+  if (variant === undefined) return undefined;
+  expect(variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE).toBe(true);
+  if (vertexColorAvailable) {
+    expect(defaultVariant).toBeDefined();
+    if (defaultVariant === undefined) return undefined;
+  }
+  const producer = await createShaderModule(device, {
+    code: variant.composedWgsl,
+    label: `standard-pbr-gpu-driven-producer-alpha-mask${vertexColorAvailable ? '-vertex-color' : ''}`,
+  });
+  expect(
+    producer.ok,
+    producer.ok
+      ? undefined
+      : JSON.stringify({
+          defines: variant.defines,
+          error: producer.error,
+        }),
+  ).toBe(true);
+  if (!producer.ok) return undefined;
+  const defaultProducer = vertexColorAvailable
+    ? await createShaderModule(device, {
+        code: defaultVariant?.composedWgsl ?? '',
+        label: 'standard-pbr-gpu-driven-producer-alpha-mask-default',
+      })
+    : producer;
+  expect(defaultProducer.ok).toBe(true);
+  if (!defaultProducer.ok) return undefined;
+  expect(SHADOW_CASTER_PRODUCER).toBeDefined();
+  expect(SHADOW_CASTER_GPU_ALPHA_VARIANT).toBeDefined();
+  if (SHADOW_CASTER_GPU_ALPHA_VARIANT === undefined) return undefined;
+  const shadowCaster = (
+    await createShaderModule(device, {
+      code: SHADOW_CASTER_GPU_ALPHA_VARIANT.composedWgsl,
+      label: 'shadow-caster-gpu-driven-producer-alpha-mask',
+    })
+  ).unwrap();
+  expect(STANDARD_PBR_RECEIPT.alphaMask).toEqual({
+    cutoff: 'alphaCutoff',
+    source: 'baseColor.a',
+  });
+  return {
+    variant,
+    defaultVariant,
+    producer: producer.value,
+    defaultProducer: defaultProducer.value,
+    shadowCaster,
+  };
+}
+
+function createUniformBuffer(device: RhiDevice, size: number): Buffer {
+  return device
+    .createBuffer({ size, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
+    .unwrap();
+}
+
+function createReadbackBuffer(device: RhiDevice, label: string): Buffer {
+  return device.createBuffer({ label, size: 256, usage: READBACK_USAGE }).unwrap();
+}
+
+function importReadback(graph: AlphaMaskGraph, name: string, buffer: Buffer): GraphBuffer {
+  return graph.importBuffer(name, { size: 256, usage: READBACK_USAGE }, () => buffer).unwrap();
+}
+
+function writeDirectionalViewUbo(
+  device: RhiDevice,
+  uniform: Buffer,
+  lightViewProj: Float32Array,
+): void {
+  writeViewUbo(
+    device.queue,
+    uniform,
+    makeZeroCameraFallbackSnapshot(),
+    {
+      kind: 'directional',
+      // The triangle faces +Z; choose a light direction whose incoming
+      // vector (`-view.lightDir`) illuminates that normal so the opaque
+      // readback proves the fragment path rather than a black fixture.
+      direction: new Float32Array([0, 0, -1]) as never,
+      color: new Float32Array([1, 1, 1]) as never,
+      intensity: 1,
+      contactShadowLength: 0,
+    },
+    { lightViewProj: [lightViewProj], point: [], spot: [], rect: [] } as never,
+    [],
+  );
+}
+
+/** Main and per-kind shadow view groups over shared 1x1 depth arrays and their uniforms. */
+function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
+  const viewUniform = createUniformBuffer(device, VIEW_UNIFORM_BUFFER_SIZE);
+  const shadowViewUniform = createUniformBuffer(device, VIEW_UNIFORM_BUFFER_SIZE);
+  const directionalCascadeUniform = createUniformBuffer(device, 256);
+  const pointCascadeUniform = createUniformBuffer(device, 256);
+  const spotCascadeUniform = createUniformBuffer(device, 256);
+  const viewDepthTexture = device
+    .createTexture({
+      label: 'gpu-driven-alpha-mask.view-depth',
+      format: 'depth32float',
+      size: { width: 1, height: 1, depthOrArrayLayers: 2 },
+      usage: 0x14,
+      dimension: '2d',
+      textureBindingViewDimension: '2d-array',
+    })
+    .unwrap();
+  const pointShadowTexture = device
+    .createTexture({
+      label: 'gpu-driven-alpha-mask.point-shadow-depth',
+      format: 'depth32float',
+      size: { width: 1, height: 1, depthOrArrayLayers: 6 },
+      usage: 0x14,
+      dimension: '2d',
+      textureBindingViewDimension: 'cube-array',
+    })
+    .unwrap();
+  const viewDepth = device.createTextureView(viewDepthTexture, { dimension: '2d-array' }).unwrap();
+  const pointShadowDepth = device
+    .createTextureView(pointShadowTexture, { dimension: 'cube-array' })
+    .unwrap();
+  const comparisonSampler = device.createSampler({ compare: 'less' }).unwrap();
+  const viewBindGroup = device
+    .createBindGroup({
+      layout: viewLayout,
+      entries: [
+        { binding: 0, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
+        { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
+        { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
+        { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
+        { binding: 6, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
+        { binding: 7, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
+        { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
+        { binding: 10, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
+      ],
+    })
+    .unwrap();
+  const createShadowViewBindGroup = (cascadeBuffer: Buffer) =>
+    device
+      .createBindGroup({
+        layout: viewLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
+          },
+          { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
+          { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
+          { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
+          {
+            binding: 6,
+            resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
+          },
+          { binding: 7, resource: { kind: 'buffer', value: { buffer: cascadeBuffer } } },
+          { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
+          {
+            binding: 10,
+            resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
+          },
+        ],
+      })
+      .unwrap();
+  const shadowViewBindGroups = new Map([
+    ['directional', createShadowViewBindGroup(directionalCascadeUniform)],
+    ['point', createShadowViewBindGroup(pointCascadeUniform)],
+    ['spot', createShadowViewBindGroup(spotCascadeUniform)],
+  ] as const);
+  const identityLightMatrix = new Float32Array(16);
+  identityLightMatrix[0] = 1;
+  identityLightMatrix[5] = 1;
+  identityLightMatrix[10] = 1;
+  identityLightMatrix[15] = 1;
+  writeDirectionalViewUbo(device, viewUniform, identityLightMatrix);
+  const shadowLightMatrix = new Float32Array(identityLightMatrix);
+  shadowLightMatrix[10] = -1;
+  shadowLightMatrix[14] = -1;
+  writeDirectionalViewUbo(device, shadowViewUniform, shadowLightMatrix);
+  device.queue.writeBuffer(directionalCascadeUniform, 0, new Uint32Array([0, 0, 0, 0])).unwrap();
+  device.queue.writeBuffer(pointCascadeUniform, 0, new Uint32Array([0, 0, 0, 0])).unwrap();
+  device.queue.writeBuffer(spotCascadeUniform, 0, new Uint32Array([0, 1, 0, 0])).unwrap();
+  device.queue.writeBuffer(spotCascadeUniform, 16, shadowLightMatrix).unwrap();
+  return {
+    viewUniform,
+    viewBindGroup,
+    shadowViewBindGroups,
+    buffers: [
+      viewUniform,
+      shadowViewUniform,
+      directionalCascadeUniform,
+      pointCascadeUniform,
+      spotCascadeUniform,
+    ],
+    textures: [viewDepthTexture, pointShadowTexture],
+  };
+}
+
+function createBaseColorTexture(device: RhiDevice, label: string, width: number): Texture {
+  return device
+    .createTexture({
+      label,
+      format: 'rgba8unorm',
+      size: { width, height: 1, depthOrArrayLayers: 1 },
+      usage: 0x06,
+      dimension: '2d',
+      textureBindingViewDimension: undefined,
+    })
+    .unwrap();
+}
+
+/** An opaque and an alpha-discarded material over the same Standard bindings. */
+function createAlphaMaskMaterialInputs(device: RhiDevice, transformed: boolean) {
+  const opaqueMaterialBuffer = createUniformBuffer(device, MATERIAL_PER_ENTITY_STRIDE);
+  const discardedMaterialBuffer = createUniformBuffer(device, MATERIAL_PER_ENTITY_STRIDE);
+  const opaqueWidth = transformed ? 4 : 1;
+  const opaqueBaseColorTexture = createBaseColorTexture(
+    device,
+    'gpu-driven-alpha-mask.opaque-base-color',
+    opaqueWidth,
+  );
+  const discardedBaseColorTexture = createBaseColorTexture(
+    device,
+    'gpu-driven-alpha-mask.discarded-base-color',
+    1,
+  );
+  const opaqueBaseColorView = device
+    .createTextureView(opaqueBaseColorTexture, { dimension: '2d' })
+    .unwrap();
+  const discardedBaseColorView = device
+    .createTextureView(discardedBaseColorTexture, { dimension: '2d' })
+    .unwrap();
+  const materialCubeTexture = device
+    .createTexture({
+      label: 'gpu-driven-alpha-mask.material-fallback-cube',
+      format: 'rgba8unorm',
+      size: { width: 1, height: 1, depthOrArrayLayers: 6 },
+      usage: 0x06,
+      dimension: '2d',
+      textureBindingViewDimension: 'cube',
+    })
+    .unwrap();
+  const materialCubeView = device
+    .createTextureView(materialCubeTexture, { dimension: 'cube' })
+    .unwrap();
+  const baseColorSampler = device
+    .createSampler({ magFilter: 'nearest', minFilter: 'nearest' })
+    .unwrap();
+  expect(
+    device.queue.writeTexture(
+      { texture: opaqueBaseColorTexture },
+      // Only transformed UV1 reaches the opaque texel. UV0, ignoring
+      // rotation, or ignoring the offset each reaches a transparent texel.
+      new Uint8Array(
+        transformed
+          ? [255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 0]
+          : [255, 255, 255, 255],
+      ),
+      { bytesPerRow: opaqueWidth * 4, rowsPerImage: 1 },
+      { width: opaqueWidth, height: 1, depthOrArrayLayers: 1 },
+    ).ok,
+  ).toBe(true);
+  expect(
+    device.queue.writeTexture(
+      { texture: discardedBaseColorTexture },
+      new Uint8Array([255, 255, 255, 64]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    ).ok,
+  ).toBe(true);
+  device.queue.writeBuffer(opaqueMaterialBuffer, 0, new Float32Array([1, 1, 1, 1, 0.5])).unwrap();
+  device.queue
+    .writeBuffer(discardedMaterialBuffer, 0, new Float32Array([1, 1, 1, 0.25, 0.5]))
+    .unwrap();
+  return {
+    opaque: { buffer: opaqueMaterialBuffer, baseColorView: opaqueBaseColorView },
+    discarded: { buffer: discardedMaterialBuffer, baseColorView: discardedBaseColorView },
+    materialCubeView,
+    baseColorSampler,
+    buffers: [opaqueMaterialBuffer, discardedMaterialBuffer],
+    textures: [opaqueBaseColorTexture, discardedBaseColorTexture, materialCubeTexture],
+  };
+}
+
+function createAlphaMaskMaterialGroup(
+  device: RhiDevice,
+  layout: BindGroupLayout,
+  inputs: AlphaMaskMaterialInputs,
+  material: { readonly buffer: Buffer; readonly baseColorView: TextureView },
+  viewUniform: Buffer,
+  sceneMaterialBuffer: Buffer,
+): BindGroup {
+  const iblStart = 1 + BUILTIN_USER_REGION_TEXTURE_FIELDS.length * 2;
+  const omitted = omittedStandardMaterialBindings(
+    BUILTIN_USER_REGION_TEXTURE_FIELDS,
+    false,
+    true,
+    true,
+  );
+  const { baseColorSampler } = inputs;
+  const { baseColorView } = material;
+  const entries = [
+    { binding: 0, resource: { kind: 'buffer' as const, value: { buffer: material.buffer } } },
+    ...Array.from({ length: BUILTIN_USER_REGION_TEXTURE_FIELDS.length }, (_, index) => [
+      {
+        binding: index * 2 + 1,
+        resource: { kind: 'sampler' as const, value: baseColorSampler },
+      },
+      {
+        binding: index * 2 + 2,
+        resource: { kind: 'textureView' as const, value: baseColorView },
+      },
+    ]).flat(),
+    {
+      binding: iblStart + 0,
+      resource: { kind: 'textureView' as const, value: inputs.materialCubeView },
+    },
+    { binding: iblStart + 1, resource: { kind: 'sampler' as const, value: baseColorSampler } },
+    {
+      binding: iblStart + 2,
+      resource: { kind: 'textureView' as const, value: baseColorView },
+    },
+    { binding: 47, resource: { kind: 'textureView' as const, value: baseColorView } },
+    { binding: iblStart + 3, resource: { kind: 'sampler' as const, value: baseColorSampler } },
+    { binding: iblStart + 4, resource: { kind: 'textureView' as const, value: baseColorView } },
+    {
+      binding: iblStart + 5,
+      resource: { kind: 'buffer' as const, value: { buffer: viewUniform, size: 4096 } },
+    },
+    {
+      binding: 46,
+      resource: {
+        kind: 'buffer' as const,
+        value: { buffer: sceneMaterialBuffer },
+      },
+    },
+  ].filter((entry) => !omitted.has(entry.binding));
+  return device.createBindGroup({ layout, entries }).unwrap();
+}
+
+function alphaMaskExtractedFrame(source: RenderableSnapshot): ExtractedFrame {
+  return {
+    cameras: [makeZeroCameraFallbackSnapshot()],
+    auxiliaryCameras: [],
+    cubeCameras: [],
+    lights: { directional: undefined, directionalCount: 0, point: [], spot: [], rect: [] },
+    environment: undefined,
+    environmentReady: true,
+    renderables: [source],
+    dispatch: [],
+    shadowCasterEntityKeys: new Set<number>(),
+    shadowCasterDrawKeys: new Set<string>(),
+    skylight: undefined,
+    skylightCount: 0,
+    skybox: undefined,
+    skyboxCount: 0,
+    fog: undefined,
+    frustumStats: { culled: 0, total: 1 },
+    visibilityStats: { explicitlyHidden: 0 },
+    postProcessParams: new Map(),
+    visibilitySnapshots: [],
+    featureVisibilitySnapshots: [],
+    hiddenEntityReports: [],
+  } as unknown as ExtractedFrame;
+}
+
+/** The selected producer program and, for vertex color, the default program it falls back to. */
+function alphaMaskPrograms(shaders: AlphaMaskShaders, vertexColorAvailable: boolean) {
+  const receipt = vertexColorAvailable ? STANDARD_PBR_COLORED_RECEIPT : STANDARD_PBR_RECEIPT;
+  const artifact = {
+    material: 'forgeax::default-standard-pbr',
+    pass: 'forward',
+    program: createMaterialShaderProgram(shaders.variant.composedWgsl),
+    layoutIdentity: receipt.reflection.layoutIdentity,
+    bindings: [],
+    deps: [],
+    vertexInputs: receipt.vertexInputs as unknown as readonly Readonly<Record<string, unknown>>[],
+    receipt,
+  } satisfies MaterialShaderArtifact;
+  const programKey = standardPbrProgramKey(artifact.material, vertexColorAvailable);
+  expect(programKey).toBeDefined();
+  if (programKey === undefined) return undefined;
+  const defaultProgramKey = standardPbrProgramKey(artifact.material);
+  expect(defaultProgramKey).toBeDefined();
+  if (defaultProgramKey === undefined) return undefined;
+  const defaultArtifact: MaterialShaderArtifact = vertexColorAvailable
+    ? {
+        ...artifact,
+        program: createMaterialShaderProgram(shaders.defaultVariant?.composedWgsl ?? ''),
+        layoutIdentity: STANDARD_PBR_RECEIPT.reflection.layoutIdentity,
+        vertexInputs: STANDARD_PBR_RECEIPT.vertexInputs as unknown as readonly Readonly<
+          Record<string, unknown>
+        >[],
+        receipt: STANDARD_PBR_RECEIPT,
+      }
+    : artifact;
+  const programs = new Map<string, GpuDrivenPbrProgram>([
+    [programKey, { module: shaders.producer, artifact }],
+  ]);
+  if (defaultProgramKey !== programKey) {
+    programs.set(defaultProgramKey, {
+      module: shaders.defaultProducer,
+      artifact: defaultArtifact,
+    });
+  }
+  return { artifact, programs };
+}
+
+function expectPreparedAlphaMask(
+  prepared: PreparedGpuDrivenFrame,
+  source: RenderableSnapshot,
+  projection: ReturnType<PersistentRenderScene['compositionSlots']>,
+  sceneMaterialBuffer: Buffer,
+  artifact: NonNullable<ReturnType<typeof alphaMaskPrograms>>['artifact'],
+): void {
+  const sourceSlot = projection.at(0);
+  if (sourceSlot === undefined) throw Error('missing source slot');
+  expect(prepared.selection.ownsSlot(source, 0, sourceSlot.slot, sourceSlot.generation)).toBe(true);
+  expect(prepared.standardPbrFrameResources.sceneMaterialBuffer).toBe(sceneMaterialBuffer);
+  expect(typeof prepared.standardPbrFrameResources.prepareMaterialBinding).toBe('function');
+  expect(artifact.receipt.alphaMask).toEqual({ cutoff: 'alphaCutoff', source: 'baseColor.a' });
+}
+
+function createAlphaMaskShadowPipeline(
+  device: RhiDevice,
+  layout: ReturnType<typeof buildGpuDrivenPbrPipelineLayout>,
+  module: ShaderModule,
+  gpuMesh: ReturnType<typeof mesh>,
+): RenderPipeline | undefined {
+  const shadowVertexLayout = deriveVertexBufferLayoutFromProjection(gpuMesh.layoutProjection, {
+    shaderUvSetCount: 8,
+  })[0];
+  expect(shadowVertexLayout).toBeDefined();
+  if (shadowVertexLayout === undefined) return undefined;
+  return device
+    .createRenderPipeline({
+      label: 'gpu-driven-alpha-mask-production-shadow-caster',
+      layout,
+      vertex: {
+        module,
+        entryPoint: 'vs_scene_index',
+        buffers: [
+          {
+            arrayStride: shadowVertexLayout.arrayStride,
+            stepMode: 'vertex',
+            attributes: shadowVertexLayout.attributes.map(({ shaderLocation, offset, format }) => ({
+              shaderLocation,
+              offset,
+              format: format as GPUVertexFormat,
+            })),
+          },
+        ],
+      },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'ccw' },
+      depthStencil: {
+        format: 'depth32float',
+        depthWriteEnabled: true,
+        depthCompare: 'greater',
+      },
+    })
+    .unwrap();
+}
+
+/** The unmoved caster settles into each available static layer. */
+function alphaMaskRasterIdentity(identity: AlphaMaskShadowIdentity): ShadowViewIdentity {
+  return shadowViewHasStaticLayer(identity) ? { ...identity, layer: 'static' } : identity;
+}
+
+/** Project every shadow kind's production culling; any missing kind ends the case. */
+function projectAlphaMaskShadows(
+  prepared: PreparedGpuDrivenFrame,
+  graph: AlphaMaskGraph,
+): Readonly<Record<AlphaMaskShadowKind, AlphaMaskShadowResources>> | undefined {
+  const [directionalIdentity, pointIdentity, spotIdentity] = ALPHA_MASK_SHADOW_IDENTITIES;
+  const directional = prepared.projectShadow?.(graph, alphaMaskRasterIdentity(directionalIdentity));
+  expect(directional?.ok).toBe(true);
+  if (directional === undefined || !directional.ok || directional.value === undefined) return;
+  if (directional.value.graphResources === undefined) return;
+  const point = prepared.projectShadow?.(graph, alphaMaskRasterIdentity(pointIdentity));
+  const spot = prepared.projectShadow?.(graph, alphaMaskRasterIdentity(spotIdentity));
+  expect(point?.ok).toBe(true);
+  expect(spot?.ok).toBe(true);
+  if (
+    point === undefined ||
+    !point.ok ||
+    point.value === undefined ||
+    point.value.graphResources === undefined ||
+    spot === undefined ||
+    !spot.ok ||
+    spot.value === undefined ||
+    spot.value.graphResources === undefined
+  )
+    return;
+  return {
+    directional: directional.value.graphResources,
+    point: point.value.graphResources,
+    spot: spot.value.graphResources,
+  };
+}
+
+function alphaMaskShadowSubmission(
+  prepared: PreparedGpuDrivenFrame,
+  identity: AlphaMaskShadowIdentity,
+  pipeline: RenderPipeline,
+  materialGroup: BindGroup,
+): GpuDrivenShadowSubmission | undefined {
+  const raster = alphaMaskRasterIdentity(identity);
+  const submission = prepared.shadowViewPool?.submission(raster);
+  const projections = prepared.shadowBatchProjections?.get(shadowViewIdentityKey(raster));
+  if (submission === undefined || projections === undefined) return undefined;
+  const batches: GpuDrivenShadowBatch[] = [];
+  for (const batch of submission.plan.batches) {
+    const projection = projections.get(batch.batchId);
+    if (projection === undefined) return undefined;
+    const indexBuffer = projection.mesh.indexBuffer;
+    batches.push({
+      indirectOffset: batch.indirectOffset,
+      pipeline,
+      meshBindGroup: projection.meshBindGroup,
+      visibleBindGroups: projection.visibleBindGroups,
+      deformation: projection.deformation,
+      materialGroup,
+      vertexBuffer: projection.mesh.vertexBuffer.handle,
+      ...(indexBuffer === null
+        ? {}
+        : {
+            indexBuffer: indexBuffer.handle,
+            indexFormat: projection.mesh.indexFormat,
+          }),
+    });
+  }
+  return { view: submission.view, batches };
+}
+
+function addTextureReadbackPass(
+  graph: AlphaMaskGraph,
+  name: string,
+  texture: GraphTexture,
+  view: GraphTextureView,
+  readback: GraphBuffer,
+): void {
+  graph
+    .addCopyPass(name, {
+      accesses: [
+        { resource: view, usage: 'copy-src' },
+        { resource: readback, usage: 'copy-dst' },
+      ],
+      encode: ({ encoder, resources }) =>
+        encoder.copyTextureToBuffer(
+          { texture: resources.texture(texture).unwrap() },
+          {
+            buffer: resources.buffer(readback).unwrap(),
+            bytesPerRow: 256,
+            rowsPerImage: 1,
+          },
+          { width: 1, height: 1, depthOrArrayLayers: 1 },
+        ),
+    })
+    .unwrap();
+}
+
+function addIndirectReadbackPass(
+  graph: AlphaMaskGraph,
+  name: string,
+  indirect: GraphBuffer,
+  readback: GraphBuffer,
+): void {
+  graph
+    .addCopyPass(name, {
+      accesses: [
+        { resource: indirect, usage: 'copy-src' },
+        { resource: readback, usage: 'copy-dst' },
+      ],
+      encode: ({ encoder, resources }) =>
+        encoder.copyBufferToBuffer(
+          resources.buffer(indirect).unwrap(),
+          0,
+          resources.buffer(readback).unwrap(),
+          0,
+          20,
+        ),
+    })
+    .unwrap();
+}
+
+function addAlphaMaskRaster(
+  graph: AlphaMaskGraph,
+  main: RenderPipelineGpuDrivenProjection,
+  frame: {
+    readonly depthView: GraphTextureView;
+    readonly viewBindGroup: BindGroup;
+    readonly frameResources: PreparedGpuDrivenFrame['standardPbrFrameResources'];
+  },
+  name: string,
+  outputView: GraphTextureView,
+  materialBindGroup: () => BindGroup,
+): void {
+  graph
+    .addRasterPass(name, {
+      accesses: [
+        ...main.accesses,
+        { resource: outputView, usage: 'color-attachment' },
+        { resource: frame.depthView, usage: 'depth-stencil-write' },
+      ],
+      colorAttachments: [
+        {
+          view: outputView,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        },
+      ],
+      depthStencilAttachment: {
+        view: frame.depthView,
+        depthClearValue: 0,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'discard',
+        stencilLoadOp: 'clear',
+        stencilStoreOp: 'discard',
+      },
+      encode: ({ pass, resources }) =>
+        main.encode(frame.viewBindGroup, pass, resources, {
+          ...frame.frameResources,
+          prepareMaterialBinding: (
+            (groups: readonly (BindGroup | undefined)[]) => (slot: number) => {
+              const group = groups[slot];
+              return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+            }
+          )([materialBindGroup()]),
+        }),
+    })
+    .unwrap();
+}
+
+/**
+ * Rasterize each shadow kind's production indirect submission into its own
+ * depth target and copy one texel back. Returns false when a kind is missing.
+ */
+function addAlphaMaskShadowDepthRasters(
+  graph: AlphaMaskGraph,
+  targets: readonly {
+    readonly identity: AlphaMaskShadowIdentity;
+    readonly texture: GraphTexture;
+    readonly view: GraphTextureView;
+  }[],
+  readbacks: readonly {
+    readonly identity: AlphaMaskShadowIdentity;
+    readonly resource: GraphBuffer;
+  }[],
+  shadows: Readonly<Record<AlphaMaskShadowKind, AlphaMaskShadowResources>>,
+  shadowViewBindGroups: ReadonlyMap<AlphaMaskShadowKind, BindGroup>,
+  submissionFor: (identity: AlphaMaskShadowIdentity) => GpuDrivenShadowSubmission | undefined,
+): boolean {
+  for (const target of targets) {
+    const submission = submissionFor(target.identity);
+    const resources = shadows[target.identity.kind];
+    const shadowViewGroup = shadowViewBindGroups.get(target.identity.kind);
+    const readback = readbacks.find(({ identity }) => identity.kind === target.identity.kind);
+    expect(submission).toBeDefined();
+    expect(resources).toBeDefined();
+    expect(shadowViewGroup).toBeDefined();
+    expect(readback).toBeDefined();
+    if (submission === undefined || shadowViewGroup === undefined || readback === undefined)
+      return false;
+    graph
+      .addRasterPass(`gpu-driven.alpha-mask.${target.identity.kind}-shadow-depth-raster`, {
+        accesses: [
+          ...shadowViewRasterAccesses(resources),
+          { resource: target.view, usage: 'depth-stencil-write' },
+        ],
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: target.view,
+          depthClearValue: 0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+        encode: ({ pass }) => {
+          pass.setBindGroup(0, shadowViewGroup, [0, 0]);
+          recordGpuDrivenShadowIndirect(pass, submission);
+        },
+      })
+      .unwrap();
+    addTextureReadbackPass(
+      graph,
+      `gpu-driven.alpha-mask.${target.identity.kind}-shadow-depth-readback`,
+      target.texture,
+      target.view,
+      readback.resource,
+    );
+  }
+  return true;
+}
+
+interface AlphaMaskRun {
+  readonly device: RhiDevice;
+  readonly native: Awaited<ReturnType<typeof nativeDeviceFixture>>['native'];
+  readonly compiled: CompiledRenderGraph<RenderPipelineFrame>;
+  readonly production: GpuDrivenProduction;
+  readonly prepared: PreparedGpuDrivenFrame;
+  readonly prepareInput: Parameters<typeof admitPbrDawnFixture>[0];
+  readonly source: RenderableSnapshot;
+  readonly persistentAssets: AssetRegistry;
+  readonly persistentScene: PersistentRenderScene;
+  readonly persistentWorld: World;
+  readonly persistentLease: ReturnType<typeof createRenderReadLease>;
+  readonly persistentFrame: ExtractedFrame;
+  readonly shadowViews: readonly AlphaMaskShadowView[];
+  readonly readbacks: Readonly<Record<'opaque' | 'discarded' | AlphaMaskShadowKind, Buffer>>;
+  readonly shadowDepthReadbackBuffers: readonly AlphaMaskShadowDepthReadback[];
+  readonly viewBindGroup: BindGroup;
+  readonly opaqueMaterialBindGroup: BindGroup;
+  readonly setDiscardedTexture: (discarded: boolean) => void;
+  readonly coordinateSet: 1 | 7 | undefined;
+  readonly vertexColorAvailable: boolean;
+}
+
+function extractAlphaMaskComposition(run: AlphaMaskRun): void {
+  run.persistentScene.extractComposition(
+    [run.persistentWorld],
+    { cameraOwner: 0, resourceOwner: 0 },
+    run.persistentAssets,
+    () => run.persistentFrame,
+    [run.persistentLease],
+  );
+}
+
+function expectAlphaMaskPasses(compiled: CompiledRenderGraph<RenderPipelineFrame>): void {
+  const names = compiled.inspect().passes.map((pass) => pass.name);
+  expect(names).toEqual(
+    expect.arrayContaining([
+      'gpu-driven.view-reset',
+      'gpu-driven.frustum-compact',
+      'gpu-driven.finalize-indirect',
+      'gpu-driven.shadow.directional-cascade-0.static.view-reset',
+      'gpu-driven.shadow.directional-cascade-0.static.finalize-indirect',
+      'gpu-driven.shadow.point-cube-face-0-0.static.view-reset',
+      'gpu-driven.shadow.point-cube-face-0-0.static.finalize-indirect',
+      'gpu-driven.shadow.spot-atlas-0.static.view-reset',
+      'gpu-driven.shadow.spot-atlas-0.static.finalize-indirect',
+      'gpu-driven.alpha-mask.opaque',
+      'gpu-driven.alpha-mask.discarded',
+    ]),
+  );
+}
+
+async function executeAlphaMaskFrame(run: AlphaMaskRun, label: string): Promise<void> {
+  const encoder = run.device.createCommandEncoder({ label }).unwrap();
+  expect(run.compiled.execute({ encoder } as unknown as RenderPipelineFrame).ok).toBe(true);
+  run.device.queue.submit([encoder.finish().unwrap()]).unwrap();
+  await run.device.queue.onSubmittedWorkDone();
+}
+
+/** Admit the same binding-input domain before measuring stable frames. */
+function prepareStableAlphaMask(run: AlphaMaskRun): PreparedGpuDrivenFrame | undefined {
+  extractAlphaMaskComposition(run);
+  const stableGpuState = run.persistentScene.compositionGpuDrivenState();
+  expect(stableGpuState).toBeDefined();
+  if (stableGpuState === undefined) return undefined;
+  const stableMetrics = stableGpuState.structureMetrics;
+  if (stableMetrics === undefined) return undefined;
+  expect(stableMetrics).toEqual({
+    worldEntitiesScanned: 0,
+    sceneTableUploadBytes: 0,
+  });
+  const stablePrepared = run.production.prepare(
+    admitPbrDawnFixture({
+      ...run.prepareInput,
+      scene: stableGpuState,
+      structureMetrics: stableMetrics,
+      // No-map inputs do not observe source binding keys; a first map must.
+    }),
+  );
+  expect(stablePrepared.ok).toBe(true);
+  if (!stablePrepared.ok || stablePrepared.value === undefined) return undefined;
+  const stableShadowUpdated = stablePrepared.value.updateShadowViews?.(run.shadowViews);
+  expect(stableShadowUpdated?.ok).toBe(true);
+  stablePrepared.value._commitResourceReplacement();
+  return stablePrepared.value;
+}
+
+function stableFrameInspection(inspection: ReturnType<GpuDrivenProduction['inspect']>) {
+  return {
+    gpuOwnedSnapshotsMaterialized: inspection.gpuOwnedSnapshotsMaterialized,
+    filteredPlanBuilds: inspection.filteredPlanBuilds,
+    sharedInputUploadBytes: inspection.sharedInputUploadBytes,
+    batchUploadBytes: inspection.batchUploadBytes,
+    batchBindGroupCreates: inspection.batchBindGroupCreates,
+    validatedGpuOwnedRows: inspection.validatedGpuOwnedRows,
+    cpuFallbackDrawItems: inspection.cpuFallbackDrawItems,
+    cpuValidationScans: inspection.cpuValidationScans,
+    cpuValidationCacheHits: inspection.cpuValidationCacheHits,
+    worldEntitiesScanned: inspection.worldEntitiesScanned,
+    sceneTableUploadBytes: inspection.sceneTableUploadBytes,
+    paletteUploadBytes: inspection.paletteUploadBytes,
+    overflow: inspection.overflow,
+  };
+}
+
+/**
+ * Prepare and submit every stable frame to detect topology/upload leaks.
+ * Returns undefined when a frame's GPU state or preparation is missing.
+ */
+async function recordStableAlphaMaskFrames(run: AlphaMaskRun) {
+  const inspections: ReturnType<typeof stableFrameInspection>[] = [];
+  const metrics: NonNullable<AlphaMaskGpuState['structureMetrics']>[] = [];
+  for (let frame = 0; frame < STABLE_FRAME_COUNT; frame += 1) {
+    extractAlphaMaskComposition(run);
+    const frameGpuState = run.persistentScene.compositionGpuDrivenState();
+    expect(frameGpuState).toBeDefined();
+    if (frameGpuState === undefined || frameGpuState.structureMetrics === undefined) return;
+    metrics.push(frameGpuState.structureMetrics);
+    const framePrepared = run.production.prepare(
+      admitPbrDawnFixture({
+        ...run.prepareInput,
+        scene: frameGpuState,
+        structureMetrics: frameGpuState.structureMetrics,
+        // CPU-only material publication changes cannot invalidate this GPU plan.
+      }),
+    );
+    expect(framePrepared.ok).toBe(true);
+    if (!framePrepared.ok || framePrepared.value === undefined) return;
+    expect(framePrepared.value.updateShadowViews?.(run.shadowViews)?.ok).toBe(true);
+    framePrepared.value._commitResourceReplacement();
+    await executeAlphaMaskFrame(run, `gpu-driven-alpha-mask-stable-${frame}`);
+    inspections.push(stableFrameInspection(run.production.inspect()));
+  }
+  return { inspections, metrics };
+}
+
+function expectStableAlphaMaskFrames(
+  run: AlphaMaskRun,
+  stable: NonNullable<Awaited<ReturnType<typeof recordStableAlphaMaskFrames>>>,
+  baseline: ReturnType<GpuDrivenProduction['inspect']>,
+): void {
+  expect(stable.inspections).toHaveLength(STABLE_FRAME_COUNT);
+  expect(stable.metrics).toHaveLength(STABLE_FRAME_COUNT);
+  for (const metrics of stable.metrics) {
+    expect(metrics).toEqual({
+      worldEntitiesScanned: 0,
+      sceneTableUploadBytes: 0,
+    });
+  }
+  for (const inspection of stable.inspections) {
+    expect(inspection).toEqual({
+      gpuOwnedSnapshotsMaterialized: 0,
+      filteredPlanBuilds: 0,
+      sharedInputUploadBytes: 0,
+      batchUploadBytes: 0,
+      batchBindGroupCreates: 0,
+      validatedGpuOwnedRows: 0,
+      cpuFallbackDrawItems: 0,
+      cpuValidationScans: baseline.cpuValidationScans,
+      cpuValidationCacheHits: expect.any(Number),
+      worldEntitiesScanned: 0,
+      sceneTableUploadBytes: 0,
+      paletteUploadBytes: 0,
+      overflow: false,
+    });
+  }
+  expect(run.production.inspect().cpuValidationScans).toBe(baseline.cpuValidationScans);
+  expect(run.production.inspect().cpuValidationCacheHits).toBe(baseline.cpuValidationCacheHits);
+}
+
+async function readFirstBytes(buffer: Buffer, bytes: number): Promise<ArrayBuffer> {
+  const mapped = (await buffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();
+  const data = mapped.getMappedRange().unwrap().slice(0, bytes);
+  mapped.unmap();
+  return data;
+}
+
+/** Opaque coverage, discarded coverage, every shadow kind's indirect draw and depth texel. */
+async function expectAlphaMaskReadbacks(run: AlphaMaskRun): Promise<void> {
+  const opaquePixel = [...new Uint8Array(await readFirstBytes(run.readbacks.opaque, 4))];
+  const discardedPixel = [...new Uint8Array(await readFirstBytes(run.readbacks.discarded, 4))];
+  const shadowIndirect = new Uint32Array(await readFirstBytes(run.readbacks.directional, 20));
+  const pointShadowIndirect = new Uint32Array(await readFirstBytes(run.readbacks.point, 20));
+  const spotShadowIndirect = new Uint32Array(await readFirstBytes(run.readbacks.spot, 20));
+  expect(opaquePixel[0]).toBeGreaterThan(0);
+  if (run.vertexColorAvailable) {
+    expect(opaquePixel[0]).toBeGreaterThan(opaquePixel[1] ?? Number.NaN);
+  } else {
+    expect(opaquePixel[1]).toBeGreaterThan(0);
+  }
+  expect(discardedPixel).toEqual([0, 0, 0, 0]);
+  expect(Array.from(shadowIndirect.slice(0, 2))).toEqual([3, 1]);
+  expect(Array.from(pointShadowIndirect.slice(0, 2))).toEqual([3, 1]);
+  expect(Array.from(spotShadowIndirect.slice(0, 2))).toEqual([3, 1]);
+  for (const { identity, buffer } of run.shadowDepthReadbackBuffers) {
+    const depth = new Float32Array(await readFirstBytes(buffer, 4))[0] ?? 1;
+    expect(depth, `${identity.kind} shadow depth raster readback`).toBeGreaterThan(0);
+  }
+}
+
+/**
+ * Submit the compiled graph, hold 60 stable frames, then read every output.
+ * Returns false when an intermediate frame state is missing.
+ */
+async function verifyCompiledAlphaMask(run: AlphaMaskRun): Promise<boolean> {
+  expectAlphaMaskPasses(run.compiled);
+  await executeAlphaMaskFrame(run, 'gpu-driven-alpha-mask-dawn');
+  run.prepared._commitResourceReplacement();
+  expect(run.production.inspect().worldEntitiesScanned).toBe(1);
+  expect(run.production.inspect().sceneTableUploadBytes).toBeGreaterThan(0);
+  expect(run.production.inspect().paletteUploadBytes).toBe(0);
+  const stablePrepared = prepareStableAlphaMask(run);
+  if (stablePrepared === undefined) return false;
+  const stableBaseline = run.production.inspect();
+  const stable = await recordStableAlphaMaskFrames(run);
+  if (stable === undefined) return false;
+  expectStableAlphaMaskFrames(run, stable, stableBaseline);
+  if (run.coordinateSet === undefined && !run.vertexColorAvailable) {
+    await verifyRetainedRasterClass({
+      device: run.device,
+      compiled: run.compiled,
+      production: run.production,
+      prepareInput: run.prepareInput,
+      source: run.source,
+      persistentScene: run.persistentScene,
+      persistentWorld: run.persistentWorld,
+      persistentLease: run.persistentLease,
+      persistentFrame: run.persistentFrame,
+      discardedReadbackBuffer: run.readbacks.discarded,
+      opaqueReadbackBuffer: run.readbacks.opaque,
+      setDiscardedTexture: run.setDiscardedTexture,
+      shadowViews: run.shadowViews,
+      topologySignature: stablePrepared.topologySignature,
+    });
+  }
+  await expectAlphaMaskReadbacks(run);
+  if (run.coordinateSet === 1 && !run.vertexColorAvailable) {
+    await verifyRetainedRasterRouting({
+      device: run.device,
+      native: run.native,
+      production: run.production,
+      prepareInput: run.prepareInput,
+      source: run.source,
+      persistentScene: run.persistentScene,
+      persistentWorld: run.persistentWorld,
+      persistentLease: run.persistentLease,
+      persistentFrame: run.persistentFrame,
+      viewBindGroup: run.viewBindGroup,
+      materialBindGroup: run.opaqueMaterialBindGroup,
+    });
+  }
+  (await run.compiled.retire()).unwrap();
+  return true;
+}
+
 describe('GPU-driven production PBR Dawn regression', () => {
   it.each([
     { coordinateSet: undefined, vertexColorAvailable: false, firstInstanceIndirect: false },
@@ -402,11 +1405,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
     vertexColorAvailable,
     firstInstanceIndirect,
   }) => {
-    const transformed = coordinateSet !== undefined;
-    const standardPbrGpuVariant = vertexColorAvailable
-      ? STANDARD_PBR_COLORED_GPU_VARIANT
-      : STANDARD_PBR_GPU_VARIANT;
-    const defaultGpuVariant = STANDARD_PBR_GPU_VARIANT;
     const { device, native } = await nativeDeviceFixture({
       requiredFeatures: [
         'depth32float-stencil8',
@@ -415,54 +1413,8 @@ describe('GPU-driven production PBR Dawn regression', () => {
     });
     expect(native.features.has('indirect-first-instance')).toBe(firstInstanceIndirect);
     expect(device.caps.firstInstanceIndirect).toBe(firstInstanceIndirect);
-    expect(STANDARD_PBR_PRODUCER).toBeDefined();
-    if (STANDARD_PBR_PRODUCER === undefined) return;
-    expect(standardPbrGpuVariant).toBeDefined();
-    if (standardPbrGpuVariant === undefined) return;
-    expect(standardPbrGpuVariant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE).toBe(true);
-    if (vertexColorAvailable) {
-      expect(defaultGpuVariant).toBeDefined();
-      if (defaultGpuVariant === undefined) return;
-    }
-    // Compile the exact cooked Standard PBR scene-index producer variant on
-    // native Dawn. This is the same manifest branch selected by the renderer
-    // for the storage-backed GPU-driven lane, including its production material
-    // ABI and Alpha Mask discard path.
-    const producerShader = await createShaderModule(device, {
-      code: standardPbrGpuVariant.composedWgsl,
-      label: `standard-pbr-gpu-driven-producer-alpha-mask${vertexColorAvailable ? '-vertex-color' : ''}`,
-    });
-    expect(
-      producerShader.ok,
-      producerShader.ok
-        ? undefined
-        : JSON.stringify({
-            defines: standardPbrGpuVariant.defines,
-            error: producerShader.error,
-          }),
-    ).toBe(true);
-    if (!producerShader.ok) return;
-    const defaultProducerShader = vertexColorAvailable
-      ? await createShaderModule(device, {
-          code: defaultGpuVariant?.composedWgsl ?? '',
-          label: 'standard-pbr-gpu-driven-producer-alpha-mask-default',
-        })
-      : producerShader;
-    expect(defaultProducerShader.ok).toBe(true);
-    if (!defaultProducerShader.ok) return;
-    expect(SHADOW_CASTER_PRODUCER).toBeDefined();
-    expect(SHADOW_CASTER_GPU_ALPHA_VARIANT).toBeDefined();
-    if (SHADOW_CASTER_GPU_ALPHA_VARIANT === undefined) return;
-    const shadowCasterShader = (
-      await createShaderModule(device, {
-        code: SHADOW_CASTER_GPU_ALPHA_VARIANT.composedWgsl,
-        label: 'shadow-caster-gpu-driven-producer-alpha-mask',
-      })
-    ).unwrap();
-    expect(STANDARD_PBR_RECEIPT.alphaMask).toEqual({
-      cutoff: 'alphaCutoff',
-      source: 'baseColor.a',
-    });
+    const shaders = await compileAlphaMaskShaders(device, vertexColorAvailable);
+    if (shaders === undefined) return;
     const viewShader = (
       await createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL, label: 'gpu-driven-view' })
     ).unwrap();
@@ -476,237 +1428,8 @@ describe('GPU-driven production PBR Dawn regression', () => {
       storageBuffer: true,
     });
     const pipelineLayout = buildGpuDrivenPbrPipelineLayout(device, pbrLayouts, instancesLayout);
-    const viewLayout = pbrLayouts.viewBgl;
-    const materialLayout = pbrLayouts.materialBgl;
-    const meshLayout = pbrLayouts.meshArrayBgl;
-    const viewUniform = device
-      .createBuffer({
-        size: VIEW_UNIFORM_BUFFER_SIZE,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const shadowViewUniform = device
-      .createBuffer({
-        size: VIEW_UNIFORM_BUFFER_SIZE,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const directionalCascadeUniform = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const pointCascadeUniform = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const spotCascadeUniform = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const viewDepthTexture = device
-      .createTexture({
-        label: 'gpu-driven-alpha-mask.view-depth',
-        format: 'depth32float',
-        size: { width: 1, height: 1, depthOrArrayLayers: 2 },
-        usage: 0x14,
-        dimension: '2d',
-        textureBindingViewDimension: '2d-array',
-      })
-      .unwrap();
-    const pointShadowTexture = device
-      .createTexture({
-        label: 'gpu-driven-alpha-mask.point-shadow-depth',
-        format: 'depth32float',
-        size: { width: 1, height: 1, depthOrArrayLayers: 6 },
-        usage: 0x14,
-        dimension: '2d',
-        textureBindingViewDimension: 'cube-array',
-      })
-      .unwrap();
-    const viewDepth = device
-      .createTextureView(viewDepthTexture, { dimension: '2d-array' })
-      .unwrap();
-    const pointShadowDepth = device
-      .createTextureView(pointShadowTexture, { dimension: 'cube-array' })
-      .unwrap();
-    const comparisonSampler = device.createSampler({ compare: 'less' }).unwrap();
-    const viewBindGroup = device
-      .createBindGroup({
-        layout: viewLayout,
-        entries: [
-          { binding: 0, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
-          { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
-          { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
-          { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
-          { binding: 6, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
-          { binding: 7, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
-          { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
-          { binding: 10, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
-        ],
-      })
-      .unwrap();
-    const createShadowViewBindGroup = (cascadeBuffer: typeof directionalCascadeUniform) =>
-      device
-        .createBindGroup({
-          layout: viewLayout,
-          entries: [
-            {
-              binding: 0,
-              resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
-            },
-            { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
-            { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
-            { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
-            {
-              binding: 6,
-              resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
-            },
-            { binding: 7, resource: { kind: 'buffer', value: { buffer: cascadeBuffer } } },
-            { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
-            {
-              binding: 10,
-              resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
-            },
-          ],
-        })
-        .unwrap();
-    const directionalShadowViewBindGroup = createShadowViewBindGroup(directionalCascadeUniform);
-    const pointShadowViewBindGroup = createShadowViewBindGroup(pointCascadeUniform);
-    const spotShadowViewBindGroup = createShadowViewBindGroup(spotCascadeUniform);
-    const camera = makeZeroCameraFallbackSnapshot();
-    const identityLightMatrix = new Float32Array(16);
-    identityLightMatrix[0] = 1;
-    identityLightMatrix[5] = 1;
-    identityLightMatrix[10] = 1;
-    identityLightMatrix[15] = 1;
-    writeViewUbo(
-      device.queue,
-      viewUniform,
-      camera,
-      {
-        kind: 'directional',
-        // The triangle faces +Z; choose a light direction whose incoming
-        // vector (`-view.lightDir`) illuminates that normal so the opaque
-        // readback proves the fragment path rather than a black fixture.
-        direction: new Float32Array([0, 0, -1]) as never,
-        color: new Float32Array([1, 1, 1]) as never,
-        intensity: 1,
-        contactShadowLength: 0,
-      },
-      { lightViewProj: [identityLightMatrix], point: [], spot: [], rect: [] } as never,
-      [],
-    );
-    const shadowLightMatrix = new Float32Array(identityLightMatrix);
-    shadowLightMatrix[10] = -1;
-    shadowLightMatrix[14] = -1;
-    writeViewUbo(
-      device.queue,
-      shadowViewUniform,
-      camera,
-      {
-        kind: 'directional',
-        direction: new Float32Array([0, 0, -1]) as never,
-        color: new Float32Array([1, 1, 1]) as never,
-        intensity: 1,
-        contactShadowLength: 0,
-      },
-      { lightViewProj: [shadowLightMatrix], point: [], spot: [], rect: [] } as never,
-      [],
-    );
-    device.queue.writeBuffer(directionalCascadeUniform, 0, new Uint32Array([0, 0, 0, 0])).unwrap();
-    device.queue.writeBuffer(pointCascadeUniform, 0, new Uint32Array([0, 0, 0, 0])).unwrap();
-    device.queue.writeBuffer(spotCascadeUniform, 0, new Uint32Array([0, 1, 0, 0])).unwrap();
-    device.queue.writeBuffer(spotCascadeUniform, 16, shadowLightMatrix).unwrap();
-    const opaqueMaterialBuffer = device
-      .createBuffer({
-        size: MATERIAL_PER_ENTITY_STRIDE,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const discardedMaterialBuffer = device
-      .createBuffer({
-        size: MATERIAL_PER_ENTITY_STRIDE,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const opaqueBaseColorTexture = device
-      .createTexture({
-        label: 'gpu-driven-alpha-mask.opaque-base-color',
-        format: 'rgba8unorm',
-        size: { width: transformed ? 4 : 1, height: 1, depthOrArrayLayers: 1 },
-        usage: 0x06,
-        dimension: '2d',
-        textureBindingViewDimension: undefined,
-      })
-      .unwrap();
-    const discardedBaseColorTexture = device
-      .createTexture({
-        label: 'gpu-driven-alpha-mask.discarded-base-color',
-        format: 'rgba8unorm',
-        size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-        usage: 0x06,
-        dimension: '2d',
-        textureBindingViewDimension: undefined,
-      })
-      .unwrap();
-    const opaqueBaseColorView = device
-      .createTextureView(opaqueBaseColorTexture, {
-        dimension: '2d',
-      })
-      .unwrap();
-    const discardedBaseColorView = device
-      .createTextureView(discardedBaseColorTexture, {
-        dimension: '2d',
-      })
-      .unwrap();
-    const materialCubeTexture = device
-      .createTexture({
-        label: 'gpu-driven-alpha-mask.material-fallback-cube',
-        format: 'rgba8unorm',
-        size: { width: 1, height: 1, depthOrArrayLayers: 6 },
-        usage: 0x06,
-        dimension: '2d',
-        textureBindingViewDimension: 'cube',
-      })
-      .unwrap();
-    const materialCubeView = device
-      .createTextureView(materialCubeTexture, { dimension: 'cube' })
-      .unwrap();
-    const baseColorSampler = device
-      .createSampler({ magFilter: 'nearest', minFilter: 'nearest' })
-      .unwrap();
-    expect(
-      device.queue.writeTexture(
-        { texture: opaqueBaseColorTexture },
-        // Only transformed UV1 reaches the opaque texel. UV0, ignoring
-        // rotation, or ignoring the offset each reaches a transparent texel.
-        new Uint8Array(
-          transformed
-            ? [255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 0]
-            : [255, 255, 255, 255],
-        ),
-        { bytesPerRow: transformed ? 16 : 4, rowsPerImage: 1 },
-        { width: transformed ? 4 : 1, height: 1, depthOrArrayLayers: 1 },
-      ).ok,
-    ).toBe(true);
-    expect(
-      device.queue.writeTexture(
-        { texture: discardedBaseColorTexture },
-        new Uint8Array([255, 255, 255, 64]),
-        { bytesPerRow: 4, rowsPerImage: 1 },
-        { width: 1, height: 1, depthOrArrayLayers: 1 },
-      ).ok,
-    ).toBe(true);
-    device.queue.writeBuffer(opaqueMaterialBuffer, 0, new Float32Array([1, 1, 1, 1, 0.5])).unwrap();
-    device.queue
-      .writeBuffer(discardedMaterialBuffer, 0, new Float32Array([1, 1, 1, 0.25, 0.5]))
-      .unwrap();
+    const views = createAlphaMaskViews(device, pbrLayouts.viewBgl);
+    const materials = createAlphaMaskMaterialInputs(device, coordinateSet !== undefined);
     const persistentAssets = new AssetRegistry();
     const source = alphaMaskSnapshot(coordinateSet, vertexColorAvailable, persistentAssets);
     const persistentWorld = new World({ assets: persistentAssets });
@@ -715,29 +1438,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
       getDevice: () => device,
       assets: persistentAssets,
     });
-    const persistentFrame = {
-      cameras: [makeZeroCameraFallbackSnapshot()],
-      auxiliaryCameras: [],
-      cubeCameras: [],
-      lights: { directional: undefined, directionalCount: 0, point: [], spot: [], rect: [] },
-      environment: undefined,
-      environmentReady: true,
-      renderables: [source],
-      dispatch: [],
-      shadowCasterEntityKeys: new Set<number>(),
-      shadowCasterDrawKeys: new Set<string>(),
-      skylight: undefined,
-      skylightCount: 0,
-      skybox: undefined,
-      skyboxCount: 0,
-      fog: undefined,
-      frustumStats: { culled: 0, total: 1 },
-      visibilityStats: { explicitlyHidden: 0 },
-      postProcessParams: new Map(),
-      visibilitySnapshots: [],
-      featureVisibilitySnapshots: [],
-      hiddenEntityReports: [],
-    } as unknown as ExtractedFrame;
+    const persistentFrame = alphaMaskExtractedFrame(source);
     persistentScene.extractComposition(
       [persistentWorld],
       { cameraOwner: 0, resourceOwner: 0 },
@@ -756,74 +1457,26 @@ describe('GPU-driven production PBR Dawn regression', () => {
       worldEntitiesScanned: 1,
       sceneTableUploadBytes: expect.any(Number),
     });
-    const iblStart = 1 + BUILTIN_USER_REGION_TEXTURE_FIELDS.length * 2;
-    const omitted = omittedStandardMaterialBindings(
-      BUILTIN_USER_REGION_TEXTURE_FIELDS,
-      false,
-      true,
-      true,
+    const opaqueMaterialBindGroup = createAlphaMaskMaterialGroup(
+      device,
+      pbrLayouts.materialBgl,
+      materials,
+      materials.opaque,
+      views.viewUniform,
+      scene.materialBuffer,
     );
-    const createMaterialEntries = (
-      materialBuffer: typeof opaqueMaterialBuffer,
-      baseColorView: typeof opaqueBaseColorView,
-    ) =>
-      [
-        { binding: 0, resource: { kind: 'buffer' as const, value: { buffer: materialBuffer } } },
-        ...Array.from({ length: BUILTIN_USER_REGION_TEXTURE_FIELDS.length }, (_, index) => [
-          {
-            binding: index * 2 + 1,
-            resource: { kind: 'sampler' as const, value: baseColorSampler },
-          },
-          {
-            binding: index * 2 + 2,
-            resource: { kind: 'textureView' as const, value: baseColorView },
-          },
-        ]).flat(),
-        {
-          binding: iblStart + 0,
-          resource: { kind: 'textureView' as const, value: materialCubeView },
-        },
-        { binding: iblStart + 1, resource: { kind: 'sampler' as const, value: baseColorSampler } },
-        {
-          binding: iblStart + 2,
-          resource: { kind: 'textureView' as const, value: baseColorView },
-        },
-        { binding: 47, resource: { kind: 'textureView' as const, value: baseColorView } },
-        { binding: iblStart + 3, resource: { kind: 'sampler' as const, value: baseColorSampler } },
-        { binding: iblStart + 4, resource: { kind: 'textureView' as const, value: baseColorView } },
-        {
-          binding: iblStart + 5,
-          resource: { kind: 'buffer' as const, value: { buffer: viewUniform, size: 4096 } },
-        },
-        {
-          binding: 46,
-          resource: {
-            kind: 'buffer' as const,
-            value: { buffer: scene.materialBuffer },
-          },
-        },
-      ].filter((entry) => !omitted.has(entry.binding));
-    const opaqueMaterialBindGroup = device
-      .createBindGroup({
-        layout: materialLayout,
-        entries: createMaterialEntries(opaqueMaterialBuffer, opaqueBaseColorView),
-      })
-      .unwrap();
-    const discardedMaterialBindGroup = device
-      .createBindGroup({
-        layout: materialLayout,
-        entries: createMaterialEntries(discardedMaterialBuffer, discardedBaseColorView),
-      })
-      .unwrap();
+    const discardedMaterialBindGroup = createAlphaMaskMaterialGroup(
+      device,
+      pbrLayouts.materialBgl,
+      materials,
+      materials.discarded,
+      views.viewUniform,
+      scene.materialBuffer,
+    );
     expect(initialGpuState.plan).toMatchObject({
       candidateCount: 1,
     });
-    const shadowIdentities = [
-      { kind: 'directional' as const, index: 0 },
-      { kind: 'point' as const, index: 0, face: 0 },
-      { kind: 'spot' as const, index: 0 },
-    ] as const;
-    const shadowViews = shadowIdentities.map((identity) => ({
+    const shadowViews = ALPHA_MASK_SHADOW_IDENTITIES.map((identity) => ({
       identity,
       planes: new Float32Array(24),
     }));
@@ -831,43 +1484,9 @@ describe('GPU-driven production PBR Dawn regression', () => {
       createShaderModule: () => ok(viewShader as ShaderModule),
     });
     const gpuMesh = mesh(device, coordinateSet, vertexColorAvailable);
-    const receipt = vertexColorAvailable ? STANDARD_PBR_COLORED_RECEIPT : STANDARD_PBR_RECEIPT;
-    const artifact = {
-      material: 'forgeax::default-standard-pbr',
-      pass: 'forward',
-      program: createMaterialShaderProgram(standardPbrGpuVariant.composedWgsl),
-      layoutIdentity: receipt.reflection.layoutIdentity,
-      bindings: [],
-      deps: [],
-      vertexInputs: receipt.vertexInputs as unknown as readonly Readonly<Record<string, unknown>>[],
-      receipt,
-    } satisfies MaterialShaderArtifact;
-    const programKey = standardPbrProgramKey(artifact.material, vertexColorAvailable);
-    expect(programKey).toBeDefined();
-    if (programKey === undefined) return;
-    const defaultProgramKey = standardPbrProgramKey(artifact.material);
-    expect(defaultProgramKey).toBeDefined();
-    if (defaultProgramKey === undefined) return;
-    const defaultArtifact: MaterialShaderArtifact = vertexColorAvailable
-      ? {
-          ...artifact,
-          program: createMaterialShaderProgram(defaultGpuVariant?.composedWgsl ?? ''),
-          layoutIdentity: STANDARD_PBR_RECEIPT.reflection.layoutIdentity,
-          vertexInputs: STANDARD_PBR_RECEIPT.vertexInputs as unknown as readonly Readonly<
-            Record<string, unknown>
-          >[],
-          receipt: STANDARD_PBR_RECEIPT,
-        }
-      : artifact;
-    const gpuDrivenPbrPrograms = new Map<string, GpuDrivenPbrProgram>([
-      [programKey, { module: producerShader.value, artifact }],
-    ]);
-    if (defaultProgramKey !== programKey) {
-      gpuDrivenPbrPrograms.set(defaultProgramKey, {
-        module: defaultProducerShader.value,
-        artifact: defaultArtifact,
-      });
-    }
+    const programs = alphaMaskPrograms(shaders, vertexColorAvailable);
+    if (programs === undefined) return;
+    const { artifact } = programs;
     const prepareInput = {
       scene: {
         scene,
@@ -877,17 +1496,17 @@ describe('GPU-driven production PBR Dawn regression', () => {
       },
       camera: makeZeroCameraFallbackSnapshot(),
       meshBySlot: new Map(projection.map((slot) => [slot.slot, gpuMesh])),
-      viewBindGroupLayout: viewLayout,
+      viewBindGroupLayout: pbrLayouts.viewBgl,
       meshResidencyEpoch: 1,
 
       materialArtifact: artifact,
       materialPipelineState: {
         pbrPipelineLayout: pipelineLayout,
         gpuDrivenPbrPipelineLayout: pipelineLayout,
-        meshBindGroupLayout: meshLayout,
+        meshBindGroupLayout: pbrLayouts.meshArrayBgl,
         instancesBindGroupLayout: instancesLayout,
         gpuDrivenInstancesBindGroupLayout: instancesLayout,
-        gpuDrivenPbrPrograms,
+        gpuDrivenPbrPrograms: programs.programs,
         // The composed producer keeps the canonical uv0..uv7 input ABI even
         // when this material only authored uv0. The geometry owner aliases the
         // missing sets to uv0 when the producer advertises the full ABI.
@@ -901,95 +1520,31 @@ describe('GPU-driven production PBR Dawn regression', () => {
     const prepared = production.prepare(admitPbrDawnFixture(prepareInput));
     expect(prepared.ok).toBe(true);
     if (!prepared.ok || prepared.value === undefined) return;
-    const sourceSlot = projection.at(0);
-    if (sourceSlot === undefined) throw Error('missing source slot');
-    expect(
-      prepared.value.selection.ownsSlot(source, 0, sourceSlot.slot, sourceSlot.generation),
-    ).toBe(true);
-    expect(prepared.value.standardPbrFrameResources.sceneMaterialBuffer).toBe(scene.materialBuffer);
-    expect(typeof prepared.value.standardPbrFrameResources.prepareMaterialBinding).toBe('function');
-    expect(artifact.receipt.alphaMask).toEqual({ cutoff: 'alphaCutoff', source: 'baseColor.a' });
+    const preparedFrame = prepared.value;
+    expectPreparedAlphaMask(preparedFrame, source, projection, scene.materialBuffer, artifact);
 
-    const shadowVertexLayout = deriveVertexBufferLayoutFromProjection(gpuMesh.layoutProjection, {
-      shaderUvSetCount: 8,
-    })[0];
-    expect(shadowVertexLayout).toBeDefined();
-    if (shadowVertexLayout === undefined) return;
-    const shadowPipeline = device
-      .createRenderPipeline({
-        label: 'gpu-driven-alpha-mask-production-shadow-caster',
-        layout: pipelineLayout,
-        vertex: {
-          module: shadowCasterShader,
-          entryPoint: 'vs_scene_index',
-          buffers: [
-            {
-              arrayStride: shadowVertexLayout.arrayStride,
-              stepMode: 'vertex',
-              attributes: shadowVertexLayout.attributes.map(
-                ({ shaderLocation, offset, format }) => ({
-                  shaderLocation,
-                  offset,
-                  format: format as GPUVertexFormat,
-                }),
-              ),
-            },
-          ],
-        },
-        fragment: {
-          module: shadowCasterShader,
-          entryPoint: 'fs_main',
-          targets: [],
-        },
-        primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'ccw' },
-        depthStencil: {
-          format: 'depth32float',
-          depthWriteEnabled: true,
-          depthCompare: 'greater',
-        },
-      })
-      .unwrap();
+    const shadowPipeline = createAlphaMaskShadowPipeline(
+      device,
+      pipelineLayout,
+      shaders.shadowCaster,
+      gpuMesh,
+    );
+    if (shadowPipeline === undefined) return;
 
-    const shadowUpdated = prepared.value.updateShadowViews?.(shadowViews);
+    const shadowUpdated = preparedFrame.updateShadowViews?.(shadowViews);
     expect(shadowUpdated?.ok).toBe(true);
-    expect(prepared.value.shadowBatchProjections?.get('directional:0:')).toBeDefined();
-    expect(prepared.value.shadowBatchProjections?.get('point:0:0')).toBeDefined();
-    expect(prepared.value.shadowBatchProjections?.get('spot:0:')).toBeDefined();
+    expect(preparedFrame.shadowBatchProjections?.get('directional:0:')).toBeDefined();
+    expect(preparedFrame.shadowBatchProjections?.get('point:0:0')).toBeDefined();
+    expect(preparedFrame.shadowBatchProjections?.get('spot:0:')).toBeDefined();
 
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    const main = prepared.value.project(graph, 'rgba8unorm', 1);
+    const main = preparedFrame.project(graph, 'rgba8unorm', 1);
     expect(main.ok).toBe(true);
     if (!main.ok) return;
-    // The unmoved caster settles into each available static layer.
-    const rasterIdentity = (identity: (typeof shadowIdentities)[number]): ShadowViewIdentity =>
-      shadowViewHasStaticLayer(identity) ? { ...identity, layer: 'static' } : identity;
-    const shadow = prepared.value.projectShadow?.(graph, rasterIdentity(shadowIdentities[0]));
-    expect(shadow?.ok).toBe(true);
-    if (shadow === undefined || !shadow.ok || shadow.value === undefined) return;
-    if (shadow.value.graphResources === undefined) return;
-    const shadowProjection = shadow.value;
-    const shadowGraphResources = shadowProjection.graphResources;
-    if (shadowGraphResources === undefined) return;
-    const pointShadow = prepared.value.projectShadow?.(graph, rasterIdentity(shadowIdentities[1]));
-    const spotShadow = prepared.value.projectShadow?.(graph, rasterIdentity(shadowIdentities[2]));
-    expect(pointShadow?.ok).toBe(true);
-    expect(spotShadow?.ok).toBe(true);
-    if (
-      pointShadow === undefined ||
-      !pointShadow.ok ||
-      pointShadow.value === undefined ||
-      pointShadow.value.graphResources === undefined ||
-      spotShadow === undefined ||
-      !spotShadow.ok ||
-      spotShadow.value === undefined ||
-      spotShadow.value.graphResources === undefined
-    )
-      return;
-    const pointShadowGraphResources = pointShadow.value.graphResources;
-    const spotShadowGraphResources = spotShadow.value.graphResources;
-    const frameResources = prepared.value.standardPbrFrameResources;
+    const shadows = projectAlphaMaskShadows(preparedFrame, graph);
+    if (shadows === undefined) return;
 
-    const shadowDepthTargets = shadowIdentities.map((identity) => {
+    const shadowDepthTargets = ALPHA_MASK_SHADOW_IDENTITIES.map((identity) => {
       const texture = graph
         .createTexture(`gpu-driven-alpha-mask.${identity.kind}-shadow-depth`, {
           format: 'depth32float',
@@ -998,59 +1553,21 @@ describe('GPU-driven production PBR Dawn regression', () => {
         .unwrap();
       return { identity, texture, view: graph.view(texture).unwrap() };
     });
-    const shadowDepthReadbackBuffers = shadowIdentities.map((identity) => ({
+    const shadowDepthReadbackBuffers = ALPHA_MASK_SHADOW_IDENTITIES.map((identity) => ({
       identity,
-      buffer: device
-        .createBuffer({
-          label: `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
-          size: 256,
-          usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-        })
-        .unwrap(),
+      buffer: createReadbackBuffer(
+        device,
+        `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
+      ),
     }));
     const shadowDepthReadbackResources = shadowDepthReadbackBuffers.map(({ identity, buffer }) => ({
       identity,
-      buffer,
-      resource: graph
-        .importBuffer(
-          `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
-          { size: 256, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST },
-          () => buffer,
-        )
-        .unwrap(),
+      resource: importReadback(
+        graph,
+        `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
+        buffer,
+      ),
     }));
-    const makeShadowSubmission = (
-      identity: (typeof shadowIdentities)[number],
-    ): GpuDrivenShadowSubmission | undefined => {
-      const preparedFrame = prepared.value;
-      if (preparedFrame === undefined) return undefined;
-      const raster = rasterIdentity(identity);
-      const submission = preparedFrame.shadowViewPool?.submission(raster);
-      const projections = preparedFrame.shadowBatchProjections?.get(shadowViewIdentityKey(raster));
-      if (submission === undefined || projections === undefined) return undefined;
-      const batches: GpuDrivenShadowBatch[] = [];
-      for (const batch of submission.plan.batches) {
-        const projection = projections.get(batch.batchId);
-        if (projection === undefined) return undefined;
-        const indexBuffer = projection.mesh.indexBuffer;
-        batches.push({
-          indirectOffset: batch.indirectOffset,
-          pipeline: shadowPipeline,
-          meshBindGroup: projection.meshBindGroup,
-          visibleBindGroups: projection.visibleBindGroups,
-          deformation: projection.deformation,
-          materialGroup: opaqueMaterialBindGroup,
-          vertexBuffer: projection.mesh.vertexBuffer.handle,
-          ...(indexBuffer === null
-            ? {}
-            : {
-                indexBuffer: indexBuffer.handle,
-                indexFormat: projection.mesh.indexFormat,
-              }),
-        });
-      }
-      return { view: submission.view, batches };
-    };
 
     const opaqueOutput = graph
       .createTexture('gpu-driven-alpha-mask-opaque', {
@@ -1073,537 +1590,143 @@ describe('GPU-driven production PBR Dawn regression', () => {
       })
       .unwrap();
     const depthView = graph.view(depth).unwrap();
-    const opaqueReadbackBuffer = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const discardedReadbackBuffer = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const shadowIndirectReadbackBuffer = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const pointShadowIndirectReadbackBuffer = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const spotShadowIndirectReadbackBuffer = device
-      .createBuffer({
-        size: 256,
-        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-      })
-      .unwrap();
-    const opaqueReadback = graph
-      .importBuffer(
-        'gpu-driven-alpha-mask-opaque-readback',
-        { size: 256, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST },
-        () => opaqueReadbackBuffer,
-      )
-      .unwrap();
-    const discardedReadback = graph
-      .importBuffer(
-        'gpu-driven-alpha-mask-discarded-readback',
-        { size: 256, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST },
-        () => discardedReadbackBuffer,
-      )
-      .unwrap();
-    const shadowIndirectReadback = graph
-      .importBuffer(
-        'gpu-driven-alpha-mask-shadow-indirect-readback',
-        { size: 256, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST },
-        () => shadowIndirectReadbackBuffer,
-      )
-      .unwrap();
-    const pointShadowIndirectReadback = graph
-      .importBuffer(
-        'gpu-driven-alpha-mask-point-shadow-indirect-readback',
-        { size: 256, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST },
-        () => pointShadowIndirectReadbackBuffer,
-      )
-      .unwrap();
-    const spotShadowIndirectReadback = graph
-      .importBuffer(
-        'gpu-driven-alpha-mask-spot-shadow-indirect-readback',
-        { size: 256, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST },
-        () => spotShadowIndirectReadbackBuffer,
-      )
-      .unwrap();
+    const readbacks = {
+      opaque: createReadbackBuffer(device, 'gpu-driven-alpha-mask-opaque-readback'),
+      discarded: createReadbackBuffer(device, 'gpu-driven-alpha-mask-discarded-readback'),
+      directional: createReadbackBuffer(device, 'gpu-driven-alpha-mask-shadow-indirect-readback'),
+      point: createReadbackBuffer(device, 'gpu-driven-alpha-mask-point-shadow-indirect-readback'),
+      spot: createReadbackBuffer(device, 'gpu-driven-alpha-mask-spot-shadow-indirect-readback'),
+    };
+    const opaqueReadback = importReadback(
+      graph,
+      'gpu-driven-alpha-mask-opaque-readback',
+      readbacks.opaque,
+    );
+    const discardedReadback = importReadback(
+      graph,
+      'gpu-driven-alpha-mask-discarded-readback',
+      readbacks.discarded,
+    );
+    const shadowIndirectReadback = importReadback(
+      graph,
+      'gpu-driven-alpha-mask-shadow-indirect-readback',
+      readbacks.directional,
+    );
+    const pointShadowIndirectReadback = importReadback(
+      graph,
+      'gpu-driven-alpha-mask-point-shadow-indirect-readback',
+      readbacks.point,
+    );
+    const spotShadowIndirectReadback = importReadback(
+      graph,
+      'gpu-driven-alpha-mask-spot-shadow-indirect-readback',
+      readbacks.spot,
+    );
     let currentOpaqueMaterialGroup = opaqueMaterialBindGroup;
-    const addAlphaMaskRaster = (
-      name: string,
-      outputView: typeof opaqueOutputView,
-      materialBindGroup: () => typeof opaqueMaterialBindGroup,
-    ) =>
-      graph
-        .addRasterPass(name, {
-          accesses: [
-            ...main.value.accesses,
-            { resource: outputView, usage: 'color-attachment' },
-            { resource: depthView, usage: 'depth-stencil-write' },
-          ],
-          colorAttachments: [
-            {
-              view: outputView,
-              loadOp: 'clear',
-              storeOp: 'store',
-              clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            },
-          ],
-          depthStencilAttachment: {
-            view: depthView,
-            depthClearValue: 0,
-            depthLoadOp: 'clear',
-            depthStoreOp: 'discard',
-            stencilLoadOp: 'clear',
-            stencilStoreOp: 'discard',
-          },
-          encode: ({ pass, resources }) =>
-            main.value.encode(viewBindGroup, pass, resources, {
-              ...frameResources,
-              prepareMaterialBinding: (
-                (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
-                (slot: number) => {
-                  const group = groups[slot];
-                  return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
-                }
-              )([materialBindGroup()]),
-            }),
-        })
-        .unwrap();
+    const rasterFrame = {
+      depthView,
+      viewBindGroup: views.viewBindGroup,
+      frameResources: preparedFrame.standardPbrFrameResources,
+    };
     addAlphaMaskRaster(
+      graph,
+      main.value,
+      rasterFrame,
       'gpu-driven.alpha-mask.opaque',
       opaqueOutputView,
       () => currentOpaqueMaterialGroup,
     );
     addAlphaMaskRaster(
+      graph,
+      main.value,
+      rasterFrame,
       'gpu-driven.alpha-mask.discarded',
       discardedOutputView,
       () => discardedMaterialBindGroup,
     );
-    const shadowViewBindGroups = new Map([
-      ['directional', directionalShadowViewBindGroup],
-      ['point', pointShadowViewBindGroup],
-      ['spot', spotShadowViewBindGroup],
-    ] as const);
-    const shadowGraphResourcesByKind = new Map([
-      ['directional', shadowGraphResources],
-      ['point', pointShadowGraphResources],
-      ['spot', spotShadowGraphResources],
-    ] as const);
-    for (const target of shadowDepthTargets) {
-      const submission = makeShadowSubmission(target.identity);
-      const resources = shadowGraphResourcesByKind.get(target.identity.kind);
-      const shadowViewGroup = shadowViewBindGroups.get(target.identity.kind);
-      const readback = shadowDepthReadbackResources.find(
-        ({ identity }) => identity.kind === target.identity.kind,
-      );
-      expect(submission).toBeDefined();
-      expect(resources).toBeDefined();
-      expect(shadowViewGroup).toBeDefined();
-      expect(readback).toBeDefined();
-      if (
-        submission === undefined ||
-        resources === undefined ||
-        shadowViewGroup === undefined ||
-        readback === undefined
-      )
-        return;
-      graph
-        .addRasterPass(`gpu-driven.alpha-mask.${target.identity.kind}-shadow-depth-raster`, {
-          accesses: [
-            ...shadowViewRasterAccesses(resources),
-            { resource: target.view, usage: 'depth-stencil-write' },
-          ],
-          colorAttachments: [],
-          depthStencilAttachment: {
-            view: target.view,
-            depthClearValue: 0,
-            depthLoadOp: 'clear',
-            depthStoreOp: 'store',
-          },
-          encode: ({ pass }) => {
-            pass.setBindGroup(0, shadowViewGroup, [0, 0]);
-            recordGpuDrivenShadowIndirect(pass, submission);
-          },
-        })
-        .unwrap();
-      graph
-        .addCopyPass(`gpu-driven.alpha-mask.${target.identity.kind}-shadow-depth-readback`, {
-          accesses: [
-            { resource: target.view, usage: 'copy-src' },
-            { resource: readback.resource, usage: 'copy-dst' },
-          ],
-          encode: ({ encoder, resources: graphResources }) =>
-            encoder.copyTextureToBuffer(
-              { texture: graphResources.texture(target.texture).unwrap() },
-              {
-                buffer: graphResources.buffer(readback.resource).unwrap(),
-                bytesPerRow: 256,
-                rowsPerImage: 1,
-              },
-              { width: 1, height: 1, depthOrArrayLayers: 1 },
-            ),
-        })
-        .unwrap();
-    }
-    graph
-      .addCopyPass('gpu-driven.alpha-mask.opaque-readback', {
-        accesses: [
-          { resource: opaqueOutputView, usage: 'copy-src' },
-          { resource: opaqueReadback, usage: 'copy-dst' },
-        ],
-        encode: ({ encoder, resources }) =>
-          encoder.copyTextureToBuffer(
-            { texture: resources.texture(opaqueOutput).unwrap() },
-            {
-              buffer: resources.buffer(opaqueReadback).unwrap(),
-              bytesPerRow: 256,
-              rowsPerImage: 1,
-            },
-            { width: 1, height: 1, depthOrArrayLayers: 1 },
-          ),
-      })
-      .unwrap();
-    graph
-      .addCopyPass('gpu-driven.alpha-mask.discarded-readback', {
-        accesses: [
-          { resource: discardedOutputView, usage: 'copy-src' },
-          { resource: discardedReadback, usage: 'copy-dst' },
-        ],
-        encode: ({ encoder, resources }) =>
-          encoder.copyTextureToBuffer(
-            { texture: resources.texture(discardedOutput).unwrap() },
-            {
-              buffer: resources.buffer(discardedReadback).unwrap(),
-              bytesPerRow: 256,
-              rowsPerImage: 1,
-            },
-            { width: 1, height: 1, depthOrArrayLayers: 1 },
-          ),
-      })
-      .unwrap();
-    graph
-      .addCopyPass('gpu-driven.alpha-mask.shadow-indirect-readback', {
-        accesses: [
-          { resource: shadowGraphResources.indirect, usage: 'copy-src' },
-          { resource: shadowIndirectReadback, usage: 'copy-dst' },
-        ],
-        encode: ({ encoder, resources }) =>
-          encoder.copyBufferToBuffer(
-            resources.buffer(shadowGraphResources.indirect).unwrap(),
-            0,
-            resources.buffer(shadowIndirectReadback).unwrap(),
-            0,
-            20,
-          ),
-      })
-      .unwrap();
-    graph
-      .addCopyPass('gpu-driven.alpha-mask.point-shadow-indirect-readback', {
-        accesses: [
-          { resource: pointShadowGraphResources.indirect, usage: 'copy-src' },
-          { resource: pointShadowIndirectReadback, usage: 'copy-dst' },
-        ],
-        encode: ({ encoder, resources }) =>
-          encoder.copyBufferToBuffer(
-            resources.buffer(pointShadowGraphResources.indirect).unwrap(),
-            0,
-            resources.buffer(pointShadowIndirectReadback).unwrap(),
-            0,
-            20,
-          ),
-      })
-      .unwrap();
-    graph
-      .addCopyPass('gpu-driven.alpha-mask.spot-shadow-indirect-readback', {
-        accesses: [
-          { resource: spotShadowGraphResources.indirect, usage: 'copy-src' },
-          { resource: spotShadowIndirectReadback, usage: 'copy-dst' },
-        ],
-        encode: ({ encoder, resources }) =>
-          encoder.copyBufferToBuffer(
-            resources.buffer(spotShadowGraphResources.indirect).unwrap(),
-            0,
-            resources.buffer(spotShadowIndirectReadback).unwrap(),
-            0,
-            20,
-          ),
-      })
-      .unwrap();
+    const shadowDepthsAdded = addAlphaMaskShadowDepthRasters(
+      graph,
+      shadowDepthTargets,
+      shadowDepthReadbackResources,
+      shadows,
+      views.shadowViewBindGroups,
+      (identity) =>
+        alphaMaskShadowSubmission(preparedFrame, identity, shadowPipeline, opaqueMaterialBindGroup),
+    );
+    if (!shadowDepthsAdded) return;
+    addTextureReadbackPass(
+      graph,
+      'gpu-driven.alpha-mask.opaque-readback',
+      opaqueOutput,
+      opaqueOutputView,
+      opaqueReadback,
+    );
+    addTextureReadbackPass(
+      graph,
+      'gpu-driven.alpha-mask.discarded-readback',
+      discardedOutput,
+      discardedOutputView,
+      discardedReadback,
+    );
+    addIndirectReadbackPass(
+      graph,
+      'gpu-driven.alpha-mask.shadow-indirect-readback',
+      shadows.directional.indirect,
+      shadowIndirectReadback,
+    );
+    addIndirectReadbackPass(
+      graph,
+      'gpu-driven.alpha-mask.point-shadow-indirect-readback',
+      shadows.point.indirect,
+      pointShadowIndirectReadback,
+    );
+    addIndirectReadbackPass(
+      graph,
+      'gpu-driven.alpha-mask.spot-shadow-indirect-readback',
+      shadows.spot.indirect,
+      spotShadowIndirectReadback,
+    );
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
     expect(compiled.ok).toBe(true);
     if (compiled.ok) {
-      const names = compiled.value.inspect().passes.map((pass) => pass.name);
-      expect(names).toEqual(
-        expect.arrayContaining([
-          'gpu-driven.view-reset',
-          'gpu-driven.frustum-compact',
-          'gpu-driven.finalize-indirect',
-          'gpu-driven.shadow.directional-cascade-0.static.view-reset',
-          'gpu-driven.shadow.directional-cascade-0.static.finalize-indirect',
-          'gpu-driven.shadow.point-cube-face-0-0.static.view-reset',
-          'gpu-driven.shadow.point-cube-face-0-0.static.finalize-indirect',
-          'gpu-driven.shadow.spot-atlas-0.static.view-reset',
-          'gpu-driven.shadow.spot-atlas-0.static.finalize-indirect',
-          'gpu-driven.alpha-mask.opaque',
-          'gpu-driven.alpha-mask.discarded',
-        ]),
-      );
-      const encoder = device.createCommandEncoder({ label: 'gpu-driven-alpha-mask-dawn' }).unwrap();
-      expect(compiled.value.execute({ encoder } as unknown as RenderPipelineFrame).ok).toBe(true);
-      device.queue.submit([encoder.finish().unwrap()]).unwrap();
-      await device.queue.onSubmittedWorkDone();
-      prepared.value._commitResourceReplacement();
-      expect(production.inspect().worldEntitiesScanned).toBe(1);
-      expect(production.inspect().sceneTableUploadBytes).toBeGreaterThan(0);
-      expect(production.inspect().paletteUploadBytes).toBe(0);
-      persistentScene.extractComposition(
-        [persistentWorld],
-        { cameraOwner: 0, resourceOwner: 0 },
+      const completed = await verifyCompiledAlphaMask({
+        device,
+        native,
+        compiled: compiled.value,
+        production,
+        prepared: preparedFrame,
+        prepareInput,
+        source,
         persistentAssets,
-        () => persistentFrame,
-        [persistentLease],
-      );
-      const stableGpuState = persistentScene.compositionGpuDrivenState();
-      expect(stableGpuState).toBeDefined();
-      if (stableGpuState === undefined) return;
-      const stableMetrics = stableGpuState.structureMetrics;
-      if (stableMetrics === undefined) return;
-      expect(stableMetrics).toEqual({
-        worldEntitiesScanned: 0,
-        sceneTableUploadBytes: 0,
+        persistentScene,
+        persistentWorld,
+        persistentLease,
+        persistentFrame,
+        shadowViews,
+        readbacks,
+        shadowDepthReadbackBuffers,
+        viewBindGroup: views.viewBindGroup,
+        opaqueMaterialBindGroup,
+        setDiscardedTexture: (discarded) => {
+          currentOpaqueMaterialGroup = discarded
+            ? discardedMaterialBindGroup
+            : opaqueMaterialBindGroup;
+        },
+        coordinateSet,
+        vertexColorAvailable,
       });
-      const stablePrepared = production.prepare(
-        admitPbrDawnFixture({
-          ...prepareInput,
-          scene: stableGpuState,
-          structureMetrics: stableMetrics,
-          // Admit the same binding-input domain before measuring stable frames.
-          // No-map inputs do not observe source binding keys; a first map must.
-        }),
-      );
-      expect(stablePrepared.ok).toBe(true);
-      if (!stablePrepared.ok || stablePrepared.value === undefined) return;
-      const stableShadowUpdated = stablePrepared.value.updateShadowViews?.(shadowViews);
-      expect(stableShadowUpdated?.ok).toBe(true);
-      stablePrepared.value._commitResourceReplacement();
-      const stableBaseline = production.inspect();
-      const stableFrameInspections: Array<{
-        readonly gpuOwnedSnapshotsMaterialized: number;
-        readonly filteredPlanBuilds: number;
-        readonly sharedInputUploadBytes: number;
-        readonly batchUploadBytes: number;
-        readonly batchBindGroupCreates: number;
-        readonly validatedGpuOwnedRows: number;
-        readonly cpuFallbackDrawItems: number;
-        readonly cpuValidationScans: number;
-        readonly cpuValidationCacheHits: number;
-        readonly worldEntitiesScanned: number;
-        readonly sceneTableUploadBytes: number;
-        readonly paletteUploadBytes: number;
-        readonly overflow: boolean;
-      }> = [];
-      const stableFrameMetrics: Array<NonNullable<typeof stableGpuState.structureMetrics>> = [];
-      for (let frame = 0; frame < STABLE_FRAME_COUNT; frame += 1) {
-        persistentScene.extractComposition(
-          [persistentWorld],
-          { cameraOwner: 0, resourceOwner: 0 },
-          persistentAssets,
-          () => persistentFrame,
-          [persistentLease],
-        );
-        const frameGpuState = persistentScene.compositionGpuDrivenState();
-        expect(frameGpuState).toBeDefined();
-        if (frameGpuState === undefined || frameGpuState.structureMetrics === undefined) return;
-        stableFrameMetrics.push(frameGpuState.structureMetrics);
-        // Prepare every submitted frame to detect topology/upload leaks.
-        const framePrepared = production.prepare(
-          admitPbrDawnFixture({
-            ...prepareInput,
-            scene: frameGpuState,
-            structureMetrics: frameGpuState.structureMetrics,
-            // CPU-only material publication changes cannot invalidate this GPU plan.
-          }),
-        );
-        expect(framePrepared.ok).toBe(true);
-        if (!framePrepared.ok || framePrepared.value === undefined) return;
-        expect(framePrepared.value.updateShadowViews?.(shadowViews)?.ok).toBe(true);
-        framePrepared.value._commitResourceReplacement();
-
-        const stableEncoder = device
-          .createCommandEncoder({ label: `gpu-driven-alpha-mask-stable-${frame}` })
-          .unwrap();
-        expect(
-          compiled.value.execute({ encoder: stableEncoder } as unknown as RenderPipelineFrame).ok,
-        ).toBe(true);
-        device.queue.submit([stableEncoder.finish().unwrap()]).unwrap();
-        await device.queue.onSubmittedWorkDone();
-        const inspection = production.inspect();
-        stableFrameInspections.push({
-          gpuOwnedSnapshotsMaterialized: inspection.gpuOwnedSnapshotsMaterialized,
-          filteredPlanBuilds: inspection.filteredPlanBuilds,
-          sharedInputUploadBytes: inspection.sharedInputUploadBytes,
-          batchUploadBytes: inspection.batchUploadBytes,
-          batchBindGroupCreates: inspection.batchBindGroupCreates,
-          validatedGpuOwnedRows: inspection.validatedGpuOwnedRows,
-          cpuFallbackDrawItems: inspection.cpuFallbackDrawItems,
-          cpuValidationScans: inspection.cpuValidationScans,
-          cpuValidationCacheHits: inspection.cpuValidationCacheHits,
-          worldEntitiesScanned: inspection.worldEntitiesScanned,
-          sceneTableUploadBytes: inspection.sceneTableUploadBytes,
-          paletteUploadBytes: inspection.paletteUploadBytes,
-          overflow: inspection.overflow,
-        });
-      }
-      expect(stableFrameInspections).toHaveLength(STABLE_FRAME_COUNT);
-      expect(stableFrameMetrics).toHaveLength(STABLE_FRAME_COUNT);
-      for (const metrics of stableFrameMetrics) {
-        expect(metrics).toEqual({
-          worldEntitiesScanned: 0,
-          sceneTableUploadBytes: 0,
-        });
-      }
-      for (const inspection of stableFrameInspections) {
-        expect(inspection).toEqual({
-          gpuOwnedSnapshotsMaterialized: 0,
-          filteredPlanBuilds: 0,
-          sharedInputUploadBytes: 0,
-          batchUploadBytes: 0,
-          batchBindGroupCreates: 0,
-          validatedGpuOwnedRows: 0,
-          cpuFallbackDrawItems: 0,
-          cpuValidationScans: stableBaseline.cpuValidationScans,
-          cpuValidationCacheHits: expect.any(Number),
-          worldEntitiesScanned: 0,
-          sceneTableUploadBytes: 0,
-          paletteUploadBytes: 0,
-          overflow: false,
-        });
-      }
-      expect(production.inspect().cpuValidationScans).toBe(stableBaseline.cpuValidationScans);
-      expect(production.inspect().cpuValidationCacheHits).toBe(
-        stableBaseline.cpuValidationCacheHits,
-      );
-      if (!transformed && !vertexColorAvailable) {
-        await verifyRetainedRasterClass({
-          device,
-          compiled: compiled.value,
-          production,
-          prepareInput,
-          source,
-          persistentScene,
-          persistentWorld,
-          persistentLease,
-          persistentFrame,
-          discardedReadbackBuffer,
-          opaqueReadbackBuffer,
-          setDiscardedTexture: (discarded) => {
-            currentOpaqueMaterialGroup = discarded
-              ? discardedMaterialBindGroup
-              : opaqueMaterialBindGroup;
-          },
-          shadowViews,
-          topologySignature: stablePrepared.value.topologySignature,
-        });
-      }
-      const opaqueMapped = (
-        await opaqueReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)
-      ).unwrap();
-      const opaquePixel = [...new Uint8Array(opaqueMapped.getMappedRange().unwrap().slice(0, 4))];
-      opaqueMapped.unmap();
-      const discardedMapped = (
-        await discardedReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)
-      ).unwrap();
-      const discardedPixel = [
-        ...new Uint8Array(discardedMapped.getMappedRange().unwrap().slice(0, 4)),
-      ];
-      discardedMapped.unmap();
-      const shadowIndirectMapped = (
-        await shadowIndirectReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)
-      ).unwrap();
-      const shadowIndirect = new Uint32Array(
-        shadowIndirectMapped.getMappedRange().unwrap().slice(0, 20),
-      );
-      shadowIndirectMapped.unmap();
-      const pointShadowIndirectMapped = (
-        await pointShadowIndirectReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)
-      ).unwrap();
-      const pointShadowIndirect = new Uint32Array(
-        pointShadowIndirectMapped.getMappedRange().unwrap().slice(0, 20),
-      );
-      pointShadowIndirectMapped.unmap();
-      const spotShadowIndirectMapped = (
-        await spotShadowIndirectReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)
-      ).unwrap();
-      const spotShadowIndirect = new Uint32Array(
-        spotShadowIndirectMapped.getMappedRange().unwrap().slice(0, 20),
-      );
-      spotShadowIndirectMapped.unmap();
-      expect(opaquePixel[0]).toBeGreaterThan(0);
-      if (vertexColorAvailable) {
-        expect(opaquePixel[0]).toBeGreaterThan(opaquePixel[1] ?? Number.NaN);
-      } else {
-        expect(opaquePixel[1]).toBeGreaterThan(0);
-      }
-      expect(discardedPixel).toEqual([0, 0, 0, 0]);
-      expect(Array.from(shadowIndirect.slice(0, 2))).toEqual([3, 1]);
-      expect(Array.from(pointShadowIndirect.slice(0, 2))).toEqual([3, 1]);
-      expect(Array.from(spotShadowIndirect.slice(0, 2))).toEqual([3, 1]);
-      for (const { identity, buffer } of shadowDepthReadbackBuffers) {
-        const mapped = (await buffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();
-        const depth = new Float32Array(mapped.getMappedRange().unwrap().slice(0, 4))[0] ?? 1;
-        mapped.unmap();
-        expect(depth, `${identity.kind} shadow depth raster readback`).toBeGreaterThan(0);
-      }
-      if (coordinateSet === 1 && !vertexColorAvailable) {
-        await verifyRetainedRasterRouting({
-          device,
-          native,
-          production,
-          prepareInput,
-          source,
-          persistentScene,
-          persistentWorld,
-          persistentLease,
-          persistentFrame,
-          viewBindGroup,
-          materialBindGroup: opaqueMaterialBindGroup,
-        });
-      }
-      (await compiled.value.retire()).unwrap();
+      if (!completed) return;
     }
     for (const buffer of [
-      viewUniform,
-      opaqueMaterialBuffer,
-      discardedMaterialBuffer,
-      opaqueReadbackBuffer,
-      discardedReadbackBuffer,
-      shadowIndirectReadbackBuffer,
-      pointShadowIndirectReadbackBuffer,
-      spotShadowIndirectReadbackBuffer,
+      ...views.buffers,
+      ...materials.buffers,
+      ...Object.values(readbacks),
       ...shadowDepthReadbackBuffers.map(({ buffer }) => buffer),
     ]) {
       device.destroyBuffer(buffer);
     }
-    device.destroyTexture(opaqueBaseColorTexture);
-    device.destroyTexture(discardedBaseColorTexture);
-    device.destroyTexture(viewDepthTexture);
-    device.destroyTexture(pointShadowTexture);
-    device.destroyTexture(materialCubeTexture);
-    device.destroyBuffer(shadowViewUniform);
-    device.destroyBuffer(directionalCascadeUniform);
-    device.destroyBuffer(pointCascadeUniform);
-    device.destroyBuffer(spotCascadeUniform);
+    for (const texture of [...materials.textures, ...views.textures])
+      device.destroyTexture(texture);
     production.dispose();
     persistentScene.dispose();
     persistentLease.dispose();

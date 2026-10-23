@@ -526,11 +526,10 @@ export default {
         .workers()
         .find((worker) => worker.url().includes('engine-worker-runtime'));
       expect(engine !== undefined).toBe(workers?.engine !== false);
-      const source = engine ?? page;
+      const readHost = () =>
+        (globalThis as unknown as { __workerGameHost: unknown }).__workerGameHost;
       expect(
-        await source.evaluate(
-          () => (globalThis as unknown as { __workerGameHost: unknown }).__workerGameHost,
-        ),
+        await (engine === undefined ? page.evaluate(readHost) : engine.evaluate(readHost)),
       ).toEqual({ world: 'string', renderer: false, assets: true });
       const selected = await page.evaluate(
         () =>

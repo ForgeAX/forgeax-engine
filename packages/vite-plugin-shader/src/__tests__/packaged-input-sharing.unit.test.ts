@@ -1,28 +1,34 @@
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { shaderSourceDigestInput } from '@forgeax/engine-shader';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { encodePackagedProfiles } from '../engine-inputs/packaged-profiles.js';
 
-const files = vi.hoisted(() => ({ manifest: '', imports: '', sourceDigest: 'current' }));
+const files = vi.hoisted(() => ({
+  manifest: '',
+  imports: '',
+  sourceDigest: 'current',
+  container: undefined as Buffer | undefined,
+}));
 vi.mock('node:fs', async (original) => ({
   ...(await original<typeof import('node:fs')>()),
   existsSync: () => true,
-  readFileSync: (path: string, encoding?: string) => {
-    const body = path.endsWith('source.json')
-      ? JSON.stringify({ shaderSourceDigest: 'current' })
-      : path.endsWith('imports.json')
-        ? files.imports
-        : files.manifest;
-    return encoding === undefined ? Buffer.from(body) : body;
-  },
+  readFileSync: () =>
+    files.container ??
+    encodePackagedProfiles({
+      shaderSourceDigest: 'current',
+      imports: JSON.parse(files.imports),
+      publications: { 'base-ssao': JSON.parse(files.manifest) },
+    }),
 }));
 vi.mock('../engine-inputs/source-digest.js', () => ({
-  PACKAGED_SOURCE_RECORD: 'source.json',
   engineShaderSourceDigest: () => files.sourceDigest,
 }));
 
 beforeEach(() => {
   vi.resetModules();
   files.sourceDigest = 'current';
+  files.container = undefined;
   files.imports = JSON.stringify({
     'forgeax_material::slot::surface': 'surface source',
   });
@@ -95,7 +101,16 @@ it('rebuilds an obsolete transport even when its WGSL provenance still matches',
       expect(loadPackagedEngineShaderInputs(false, true)).toBeNull();
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('publication version'));
     }
+    files.container = gzipSync(JSON.stringify({ schemaVersion: 0 }));
+    expect(loadPackagedEngineShaderInputs(false, true)).toBeNull();
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('container version'));
   } finally {
     warning.mockRestore();
   }
+});
+
+it('compiles from source when the container lacks the requested profile', async () => {
+  const { loadPackagedEngineShaderInputs } = await import('../shared-engine-inputs.js');
+  expect(loadPackagedEngineShaderInputs(false, true)).not.toBeNull();
+  expect(loadPackagedEngineShaderInputs(true, true)).toBeNull();
 });

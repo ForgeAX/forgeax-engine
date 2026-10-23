@@ -61,6 +61,39 @@ export interface TransmissionBackdropTopology {
   readonly phases: readonly TransmissionBackdropPhase[];
 }
 
+/**
+ * Which Standard transmission and backdrop consumers are active for an opaque
+ * scene of this sampling; sorted transmission excludes weighted blending and
+ * the single-layer medium.
+ */
+export function standardTransmissionRoute(
+  topology: RenderPipelineTopology,
+  sourceSampleCount: RenderPipelineTarget['sampleCount'],
+) {
+  const demand = transmissionDemandForTopology(topology);
+  const backdropDemand = {
+    activeCount: demand.activeCount + (topology.singleLayerMedium === true ? 1 : 0),
+    needsRoughMips: demand.needsRoughMips,
+  };
+  const transmissionActive = resolveTransmissionBackdropTopology({
+    demand,
+    sourceSampleCount,
+  }).active;
+  return {
+    demand,
+    backdropDemand,
+    transmissionActive,
+    backdropActive: resolveTransmissionBackdropTopology({
+      demand: backdropDemand,
+      sourceSampleCount,
+    }).active,
+    sorted:
+      transmissionActive &&
+      topology.transparency?.weightedBlended !== true &&
+      topology.singleLayerMedium !== true,
+  };
+}
+
 export function resolveTransmissionBackdropTopology(
   input: TransmissionBackdropTopologyInput,
 ): TransmissionBackdropTopology {

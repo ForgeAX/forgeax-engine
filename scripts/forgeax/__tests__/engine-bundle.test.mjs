@@ -327,7 +327,7 @@ test('npm and pnpm install the exact platform dependency outside the atomic Engi
       members: [{ name: '@forgeax/engine-leaf', root: leaf, archive: memberArchive }],
       version: '1.2.3',
     });
-    assert.equal(receipt.externalPlatformPackages, 1);
+    assert.equal(receipt.registryDependencies, 1);
     const manifest = JSON.parse(
       (await execute('tar', ['-xOf', archive, 'package/package.json'])).stdout,
     );
@@ -385,6 +385,223 @@ test('npm and pnpm install the exact platform dependency outside the atomic Engi
           )
         ).stdout.trim(),
         '42',
+      );
+    }
+  } finally {
+    if (server) await new Promise((done) => server.close(done));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function registryFixture(root, packages) {
+  const archives = new Map();
+  for (const [name, versions] of packages) {
+    for (const [version, { source, dependencies = {} }] of versions) {
+      const stage = resolve(root, 'registry-stage', `${name.replace('/', '+')}@${version}`);
+      await fixture(resolve(stage, 'package'), name, version, source, dependencies);
+      const archive = resolve(root, 'registry', `${name.replace('/', '+')}-${version}.tgz`);
+      await mkdir(resolve(root, 'registry'), { recursive: true });
+      await writePackageArchive(stage, archive);
+      archives.set(`${name}@${version}`, {
+        name,
+        version,
+        dependencies,
+        bytes: await readFile(archive),
+      });
+    }
+  }
+  const server = createServer((request, response) => {
+    const url = decodeURIComponent(request.url ?? '/');
+    if (url.startsWith('/tarballs/')) {
+      const item = archives.get(url.slice('/tarballs/'.length, -'.tgz'.length));
+      if (item === undefined) return response.writeHead(404).end();
+      return response.end(item.bytes);
+    }
+    const name = url.slice(1);
+    const versions = [...archives.values()].filter((item) => item.name === name);
+    if (versions.length === 0) return response.writeHead(404).end();
+    const port = server.address().port;
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      JSON.stringify({
+        name,
+        'dist-tags': { latest: versions.at(-1).version },
+        versions: Object.fromEntries(
+          versions.map((item) => [
+            item.version,
+            {
+              name,
+              version: item.version,
+              type: 'module',
+              exports: './index.mjs',
+              dependencies: item.dependencies,
+              dist: {
+                tarball: `http://127.0.0.1:${port}/tarballs/${name}@${item.version}.tgz`,
+                integrity: `sha512-${createHash('sha512').update(item.bytes).digest('base64')}`,
+              },
+            },
+          ]),
+        ),
+      }),
+    );
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  return { server, registry: `http://127.0.0.1:${server.address().port}` };
+}
+
+test('registry packages stay exact dependencies while Engine owners, patches and conflicts stay bundled', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'engine-bundle-registry-'));
+  let server;
+  try {
+    const store = resolve(root, 'workspace/node_modules/.pnpm');
+    const installed = async (directory, name, version, source, dependencies = {}) => {
+      const path = resolve(store, directory, 'node_modules', name);
+      await fixture(path, name, version, source, dependencies);
+      return path;
+    };
+    const shared1 = await installed('shared@1.0.0', 'shared', '1.0.0', 'export default 1;');
+    const shared2 = await installed('shared@2.0.0', 'shared', '2.0.0', 'export default 2;');
+    const tool = await installed(
+      'tool@1.0.0',
+      'tool',
+      '1.0.0',
+      "import shared from 'shared'; export default shared * 10;",
+      { shared: '1.0.0' },
+    );
+    await mkdir(resolve(store, 'tool@1.0.0/node_modules/tool/node_modules'), { recursive: true });
+    await symlink(shared1, resolve(store, 'tool@1.0.0/node_modules/tool/node_modules/shared'));
+    const patched = await installed(
+      'patched@1.0.0_patch_hash=abc',
+      'patched',
+      '1.0.0',
+      'export default 100;',
+    );
+    const memberSources = [
+      [
+        '@forgeax/engine-a',
+        "import tool from 'tool'; import shared from 'shared'; import patched from 'patched'; export const a=[tool, shared, patched];",
+        { tool: '1.0.0', shared: '1.0.0', patched: '1.0.0' },
+        { tool, shared: shared1, patched },
+      ],
+      [
+        '@forgeax/engine-b',
+        "import shared from 'shared'; export const b=shared;",
+        { shared: '2.0.0' },
+        { shared: shared2 },
+      ],
+    ];
+    const members = [];
+    for (const [name, source, dependencies, links] of memberSources) {
+      const directory = resolve(root, 'members', name.replace('/', '+'));
+      const member = resolve(directory, 'package');
+      await fixture(member, name, '1.2.3', source, dependencies);
+      await mkdir(resolve(member, 'node_modules'));
+      for (const [link, target] of Object.entries(links)) {
+        await symlink(target, resolve(member, 'node_modules', link));
+      }
+      const archive = resolve(directory, 'member.tgz');
+      await execute('tar', ['--exclude=node_modules', '-czf', archive, '-C', directory, 'package']);
+      members.push({ name, root: member, archive });
+    }
+    await fixture(
+      resolve(root, 'stage/package'),
+      '@forgeax/engine',
+      '1.2.3',
+      "export {a} from '@forgeax/engine-a'; export {b} from '@forgeax/engine-b';",
+      { '@forgeax/engine-a': '1.2.3', '@forgeax/engine-b': '1.2.3' },
+    );
+    const archive = resolve(root, 'engine.tgz');
+    await writePackageArchive(resolve(root, 'stage'), archive);
+    const receipt = await bundleEngineArchive({
+      engineArchive: archive,
+      members,
+      version: '1.2.3',
+    });
+    const manifest = JSON.parse(
+      (await execute('tar', ['-xOf', archive, 'package/package.json'])).stdout,
+    );
+    assert.deepEqual(manifest.dependencies, {
+      '@forgeax/engine-a': '1.2.3',
+      '@forgeax/engine-b': '1.2.3',
+      patched: '1.0.0',
+      shared: '1.0.0',
+      tool: '1.0.0',
+    });
+    assert.deepEqual(manifest.bundledDependencies, [
+      '@forgeax/engine-a',
+      '@forgeax/engine-b',
+      'patched',
+    ]);
+    assert.equal(receipt.registryDependencies, 2);
+    const entries = (await execute('tar', ['-tzf', archive])).stdout.split('\n');
+    assert.ok(
+      entries.includes('package/node_modules/@forgeax/engine-b/node_modules/shared/package.json'),
+    );
+    assert.ok(!entries.some((entry) => entry.startsWith('package/node_modules/tool/')));
+    assert.ok(!entries.includes('package/node_modules/shared/package.json'));
+    ({ server } = await registryFixture(root, [
+      ['shared', [['1.0.0', { source: 'export default 1;' }]]],
+      [
+        'tool',
+        [
+          [
+            '1.0.0',
+            {
+              source: "import shared from 'shared'; export default shared * 10;",
+              dependencies: { shared: '1.0.0' },
+            },
+          ],
+        ],
+      ],
+    ]));
+    const registry = `http://127.0.0.1:${server.address().port}`;
+    for (const manager of ['npm', 'pnpm']) {
+      const consumer = resolve(root, manager);
+      await mkdir(consumer);
+      await writeFile(resolve(consumer, 'package.json'), '{"private":true,"type":"module"}');
+      const command =
+        manager === 'npm'
+          ? [
+              'npm',
+              [
+                'install',
+                archive,
+                '--ignore-scripts',
+                '--no-audit',
+                '--no-fund',
+                '--registry',
+                registry,
+              ],
+            ]
+          : [
+              'corepack',
+              [
+                JSON.parse(await readFile(new URL('../../../package.json', import.meta.url)))
+                  .packageManager,
+                'add',
+                archive,
+                '--ignore-scripts',
+                '--registry',
+                registry,
+              ],
+            ];
+      await execute(...command, {
+        cwd: consumer,
+        env: { ...process.env, npm_config_registry: registry },
+      });
+      assert.equal(
+        (
+          await execute(
+            process.execPath,
+            [
+              '--input-type=module',
+              '-e',
+              "import {a, b} from '@forgeax/engine'; console.log(JSON.stringify([a, b]))",
+            ],
+            { cwd: consumer },
+          )
+        ).stdout.trim(),
+        '[[10,1,100],2]',
       );
     }
   } finally {

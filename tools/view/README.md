@@ -172,6 +172,12 @@ Engine may load a PluginAsset through a compiled chunk. View resolves its static
 UI from the selected View package's `@forgeax/view/plugin` entry instead of
 using that chunk's URL. Game plugins execute in Engine's Worker; browser UI
 belongs to frontend plugins.
+Engine-owned generated binaries that the viewer bundles (for example the wgpu
+WASM used by RHI inspection) are not copied into `dist/viewer`. The build keeps
+their hashed URLs under `assets/engine/<package-dir>/<hash>/<file>`, and both View
+servers read those bytes from `pkg/` of the exact-version Engine installation
+(`view-workspace-core/viewer-static`). The browser's existing provenance check
+still verifies the bytes.
 
 ### Observe an AI run
 

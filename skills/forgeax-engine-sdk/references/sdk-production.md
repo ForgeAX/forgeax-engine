@@ -90,9 +90,9 @@ Read `artifacts/sdk/sdk-build-result.json` and `artifacts/sdk/sdk-verify-result.
 | Request | Flow | Branch action | Dispatch | Result |
 |:--|:--|:--|:--|:--|
 | Development release | One green `main` commit | None | `gh workflow run engine-development-release.yml [-f source_sha=<main-sha>]` | `x.y.z-dev.N.sha12` on `next`, public `main` mirror; promotes automatically |
-| Weekly test cut | `main` tree onto `rc` | Cut commit on `rc` ([commands](../../../packages/engine/RELEASING.md#test-cycle)) | Candidate `version=<latest+1 patch>-rc.1` | `rc` tag only, no mirror; promotes automatically |
-| Test fix | Fix lands on `main`, cherry-picked to `rc` | Push `rc` | Candidate `version=<same core>-rc.<n+1>` | Next rc on the same core |
-| Promote rc to stable | Tested rc commit | Fast-forward `stable` to that exact rc SHA | Candidate `version=<rc core>` `source_sha=<rc-sha>`, then explicit Promotion | `latest`, public `stable` mirror |
+| Weekly test cut | `main` tree onto `rc` | Cut commit on `rc` ([commands](../../../packages/engine/RELEASING.md#test-cycle)) | Candidate `version=<latest+1 patch>-rc.1` | `rc` tag only, no mirror; promotes automatically and prepares the stable Candidate |
+| Test fix | Fix lands on `main`, cherry-picked to `rc` | Push `rc` | Candidate `version=<same core>-rc.<n+1>` | Next rc on the same core; prepares a new stable Candidate |
+| Promote rc to stable | Prepared stable Candidate of the last rc | None; Promotion fast-forwards `stable` | Promotion `candidate_run_id=<prepared stable Candidate>` | `latest`, public `stable` mirror |
 | Urgent stable hotfix | Fix on `stable` | Push `stable`; then merge `stable` into `rc` and port to `main` | Candidate `version=<latest+1 patch>`, then explicit Promotion | `latest`; an open rc line moves up one patch |
 
 Confirm these facts with the user when any is missing or ambiguous:
@@ -104,7 +104,9 @@ Confirm these facts with the user when any is missing or ambiguous:
   A hotfix that takes the open rc's number means the rc line continues one patch
   higher; confirm that with the user before publishing.
 - **Source**: the exact SHA on its channel branch. Releases do not wait for
-  branch push CI; the Candidate gates are the release proof. For a promotion, it must be the tested rc commit, not a newer one.
+  branch push CI; the Candidate gates are the release proof. For a promotion, it must be the tested rc commit, not a newer one:
+  promote the stable Candidate prepared by the last rc's Promotion
+  (`gh run list --workflow sdk-release-candidate.yml` names runs by version).
 - **Hotfix porting**: an urgent hotfix is also merged into `rc` and ported to
   `main`. The next weekly cut takes `main`'s tree and would otherwise drop it.
 
@@ -227,12 +229,12 @@ response is terminal and must never be overwritten.
 
 ## Archive surfaces
 
-Every SDK archive contains both of these surfaces:
+The full SDK ZIP contains all of these surfaces; the npm carrier contains only the first built-use row:
 
 | Surface | Archive path | Contract |
 |:--|:--|:--|
 | Built use (full ZIP) | `bin/`, bare `packages/`, `templates/`, `skills/`, `store/pnpm/` | The CLI requires `empty` or `game-3d`, installs project-local Engine skills, and creates games without registry access. |
-| Built use (npm carrier) | `bin/`, bare `packages/`, `templates/`, `skills/` | The carrier deliberately omits `store/pnpm/` to stay publishable; `new` and `init` use the exact lockfile against the npm registry. |
+| Built use (npm carrier) | `bin/`, `templates/`, `skills/` | The carrier omits the full-ZIP-only `SDK_ZIP_ONLY_PATHS` (`store/pnpm/`, bare `packages/`, `source/`, `toolchain/wasm/`); `new` and `init` use the exact lockfile against the npm registry, which also supplies the Engine bytes. |
 | Source development | `source/engine/` | Tracked Engine source and guidance, plus the pinned wgpu source expanded under `third_party/wgpu/`; private binary assets remain excluded. |
 | Prebuilt WASM | `source/engine/packages/{wgpu-wasm,fbx,codec}/pkg/` and `toolchain/wasm/` | Checked glue and binary outputs remove the default Rust/Emscripten hydration prerequisite. |
 
@@ -359,7 +361,7 @@ staged conflict is a pending identity, not permission to allocate a new version.
 `npm-published-integrity-mismatch` is terminal. Source repairs require a new
 Candidate and version. Development releases are explicit:
 `gh workflow run engine-development-release.yml [-f source_sha=<main-sha>]`
-continues the published `next` sequence and submits a Candidate; successful development and rc Candidates promote automatically. Stable Candidate promotion remains explicit.
+continues the published `next` sequence and submits a Candidate; successful development and rc Candidates promote automatically, and an rc Promotion also dispatches the stable Candidate of the same source. Stable Candidate promotion remains explicit.
 
 ## Reproducibility check
 
@@ -407,7 +409,7 @@ material compilation or package bytes. See the [SDK/Dawn workload evidence](../.
 | `sdk-template-resource-missing` / `sdk-template-resource-allowlist-drift` | Full template resource closure | Repair the template allowlist or its package-owned inputs; rebuild and rerun the verifier |
 | `sdk-skill-*` / `skill-verify-failed` | SDK root `skills/` or project-local mount projection | Repair the skill source/manifest or rerun `forgeax project skill install`; never patch mount copies |
 | `sdk-consumer-mutated-store` | SDK-backed pnpm package payloads | Repair package-content mutation; SQLite `index.db` hydration is the only cache exception |
-| `npm-sdk-carrier-store-*` | npm carrier surface | Remove `store/pnpm/` from the carrier; keep it in the full ZIP and rebuild |
+| `npm-sdk-carrier-zip-only-*` | npm carrier surface | Remove the full-ZIP-only paths (`SDK_ZIP_ONLY_PATHS`: `store/`, `packages/`, `source/`, `toolchain/wasm/`) from the carrier; keep them in the full ZIP and rebuild |
 | `sdk-source-wasm-path` / `sdk-source-wasm-unmanifested` | Prebuilt source WASM closure | Restore the owning package `pkg/` outputs and rebuild; missing Blitz UI inputs use `prepare-ui-blitz` in every Candidate source producer, per [Host build inputs](../../../scripts/ci/README.md#cross-platform-host-build-inputs). |
 | `project-target-inside-sdk` | SDK and game ownership boundary | Choose a sibling directory or an absolute path outside the SDK; never turn the distribution into a game workspace |
 | `sdkUpdate.status=available` | Public npm selected channel tag | Consider a separate newer SDK install; review release notes and explicitly migrate/test each pinned game before changing Engine versions |

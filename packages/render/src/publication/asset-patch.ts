@@ -1,8 +1,11 @@
 import type { AssetChange, AssetRange } from '@forgeax/engine-assets-runtime/internal';
 import {
   type Asset,
+  type MaterialAsset,
   type MaterialValue,
+  type MeshAsset,
   type TerrainAsset,
+  type TextureAsset,
   validateMaterialValues,
 } from '@forgeax/engine-types';
 import { RenderPublicationError } from './contract';
@@ -87,104 +90,191 @@ export function publishAssetPatch(
   };
 }
 
+/** A validated patch whose captured bytes reach the accepted asset only on `commit`. */
+export interface PreparedAssetPatch {
+  readonly value: Asset;
+  readonly change: AssetChange;
+  commit(): void;
+}
+
 /** Validate and capture every operation before the receiver commits any bytes. */
 export function prepareAssetPatch(
   current: Asset,
   patch: PublishedAssetPatch,
   retained: boolean,
-): {
-  readonly value: Asset;
-  readonly change: AssetChange;
-  commit(): void;
-} {
-  const fail = () => {
-    throw new RenderPublicationError({ reason: 'shape', subject: 'asset binary patch' });
-  };
-  if (current.kind === 'material') {
-    if (
-      patch.fields === null ||
-      typeof patch.fields !== 'object' ||
-      Array.isArray(patch.fields) ||
-      !Array.isArray(patch.ranges) ||
-      patch.ranges.length !== 0 ||
-      !Array.isArray(patch.removed) ||
-      patch.removed.length !== 0 ||
-      Object.keys(patch.fields).length !== 1 ||
-      !Object.hasOwn(patch.fields, 'values')
-    )
-      return fail();
-    const values = structuredClone(patch.fields.values);
-    if (
-      values === null ||
-      typeof values !== 'object' ||
-      Array.isArray(values) ||
-      !validateMaterialValues(
-        '<publication>',
-        values as Record<string, MaterialValue | null>,
-        current.parameters === undefined
-          ? undefined
-          : new Map(current.parameters.map((parameter) => [parameter.name, parameter])),
-      ).ok
-    )
-      return fail();
-    return {
-      value: { ...current, values: values as Record<string, MaterialValue | null> },
-      change: {
-        handle: patch.handle as AssetChange['handle'],
-        revision: patch.revision,
-        removed: false,
-        fields: ['values'],
-        ranges: [],
-      },
-      commit() {},
-    };
-  }
+): PreparedAssetPatch {
+  if (current.kind === 'material') return prepareMaterialPatch(current, patch);
   if (current.kind === 'terrain') return prepareTerrainPatch(current, patch);
-  const keyValid = (key: unknown): key is string =>
+  if (current.kind !== 'mesh' && current.kind !== 'texture') return failBinaryPatch();
+  return prepareBinaryPatch(current, patch, retained);
+}
+
+function failBinaryPatch(): never {
+  throw new RenderPublicationError({ reason: 'shape', subject: 'asset binary patch' });
+}
+
+function writeStridedRows(
+  target: Uint8Array,
+  bytes: Uint8Array,
+  offset: number,
+  rowBytes: number,
+  stride: number,
+): void {
+  for (
+    let source = 0, destination = offset;
+    source < bytes.byteLength;
+    source += rowBytes, destination += stride
+  )
+    target.set(bytes.subarray(source, source + rowBytes), destination);
+}
+
+function patchFieldsRecord(fields: PublishedAssetPatch['fields']): boolean {
+  return fields !== null && typeof fields === 'object' && !Array.isArray(fields);
+}
+
+function prepareMaterialPatch(
+  current: MaterialAsset,
+  patch: PublishedAssetPatch,
+): PreparedAssetPatch {
+  if (
+    !patchFieldsRecord(patch.fields) ||
+    !Array.isArray(patch.ranges) ||
+    patch.ranges.length !== 0 ||
+    !Array.isArray(patch.removed) ||
+    patch.removed.length !== 0 ||
+    Object.keys(patch.fields).length !== 1 ||
+    !Object.hasOwn(patch.fields, 'values')
+  )
+    return failBinaryPatch();
+  const values = structuredClone(patch.fields.values);
+  if (
+    values === null ||
+    typeof values !== 'object' ||
+    Array.isArray(values) ||
+    !validateMaterialValues(
+      '<publication>',
+      values as Record<string, MaterialValue | null>,
+      current.parameters === undefined
+        ? undefined
+        : new Map(current.parameters.map((parameter) => [parameter.name, parameter])),
+    ).ok
+  )
+    return failBinaryPatch();
+  return {
+    value: { ...current, values: values as Record<string, MaterialValue | null> },
+    change: {
+      handle: patch.handle as AssetChange['handle'],
+      revision: patch.revision,
+      removed: false,
+      fields: ['values'],
+      ranges: [],
+    },
+    commit() {},
+  };
+}
+
+function patchKeyValid(key: unknown): key is string {
+  return (
     typeof key === 'string' &&
     key !== 'kind' &&
     key !== '__proto__' &&
     key !== 'constructor' &&
-    key !== 'prototype';
+    key !== 'prototype'
+  );
+}
+
+function binaryPatchShapeValid(patch: PublishedAssetPatch): boolean {
+  return (
+    patchFieldsRecord(patch.fields) &&
+    Array.isArray(patch.removed) &&
+    Array.isArray(patch.ranges) &&
+    patch.ranges.length !== 0 &&
+    patch.ranges.length <= 64
+  );
+}
+
+/** Only mesh bounds and derived geometry products may change beside binary ranges. */
+function binaryPatchFieldsValid(
+  kind: 'mesh' | 'texture',
+  keys: readonly string[],
+  removed: readonly string[],
+): boolean {
+  return !(
+    keys.some((key) => key !== 'aabb') ||
+    removed.some((key) => !derivedGeometry.has(key)) ||
+    (kind === 'texture' && (keys.length > 0 || removed.length > 0))
+  );
+}
+
+function patchAabbValid(aabb: unknown): boolean {
+  return (
+    aabb === undefined ||
+    (aabb instanceof Float32Array &&
+      aabb.length === 6 &&
+      aabb.every(Number.isFinite) &&
+      ![0, 1, 2].some((axis) => (aabb[axis] as number) > (aabb[axis + 3] as number)))
+  );
+}
+
+function binaryRangePathValid(
+  kind: 'mesh' | 'texture',
+  range: PublishedAssetPatch['ranges'][number],
+  touched: ReadonlySet<string>,
+): boolean {
   if (
-    (current.kind !== 'mesh' && current.kind !== 'texture') ||
-    patch.fields === null ||
-    typeof patch.fields !== 'object' ||
-    Array.isArray(patch.fields) ||
-    !Array.isArray(patch.removed) ||
-    !Array.isArray(patch.ranges) ||
-    patch.ranges.length === 0 ||
-    patch.ranges.length > 64
+    !Array.isArray(range.path) ||
+    range.path.length < 1 ||
+    range.path.length > 2 ||
+    !range.path.every(patchKeyValid) ||
+    touched.has(range.path[0] as string) ||
+    !(range.bytes instanceof Uint8Array)
   )
-    return fail();
+    return false;
+  if (kind === 'texture') return range.path.length === 1 && range.path[0] === 'data';
+  return (
+    (range.path.length === 1 && (range.path[0] === 'vertices' || range.path[0] === 'indices')) ||
+    (range.path.length === 2 && range.path[0] === 'attributes')
+  );
+}
+
+function binaryRangeLayoutValid(
+  range: PublishedAssetPatch['ranges'][number],
+  rowBytes: number,
+  stride: number,
+  rows: number,
+): boolean {
+  return (
+    Number.isSafeInteger(range.byteOffset) &&
+    range.byteOffset >= 0 &&
+    Number.isSafeInteger(rowBytes) &&
+    rowBytes > 0 &&
+    Number.isSafeInteger(stride) &&
+    stride >= rowBytes &&
+    Number.isSafeInteger(rows) &&
+    rows >= 1 &&
+    Number.isSafeInteger(range.byteLength) &&
+    rows * rowBytes === range.bytes.byteLength
+  );
+}
+
+function prepareBinaryPatch(
+  current: MeshAsset | TextureAsset,
+  patch: PublishedAssetPatch,
+  retained: boolean,
+): PreparedAssetPatch {
+  if (!binaryPatchShapeValid(patch)) return failBinaryPatch();
   const fields = structuredClone(patch.fields);
   const removed = [...patch.removed];
   const keys = Object.keys(fields);
-  if (
-    keys.some((key) => key !== 'aabb') ||
-    removed.some((key) => !derivedGeometry.has(key)) ||
-    (current.kind === 'texture' && (keys.length > 0 || removed.length > 0))
-  )
-    return fail();
-  if (
-    fields.aabb !== undefined &&
-    (!(fields.aabb instanceof Float32Array) ||
-      fields.aabb.length !== 6 ||
-      !fields.aabb.every(Number.isFinite) ||
-      [0, 1, 2].some(
-        (axis) =>
-          ((fields.aabb as Float32Array)[axis] as number) >
-          ((fields.aabb as Float32Array)[axis + 3] as number),
-      ))
-  )
-    return fail();
+  if (!binaryPatchFieldsValid(current.kind, keys, removed) || !patchAabbValid(fields.aabb))
+    return failBinaryPatch();
   const touched = new Set([...keys, ...removed]);
   const next = { ...current, ...fields } as unknown as Record<string, unknown>;
   for (const key of removed) delete next[key];
   const ranges: AssetRange[] = [];
   const copied = new WeakMap<object, unknown>();
   const copyBranch = (value: unknown, path: readonly string[], index = 0): unknown => {
-    if (value === null || typeof value !== 'object') return fail();
+    if (value === null || typeof value !== 'object') return failBinaryPatch();
     const cached = copied.get(value);
     if (index === path.length) {
       if (cached !== undefined) return cached;
@@ -206,41 +296,11 @@ export function prepareAssetPatch(
     stride: number;
   }[] = [];
   for (const range of patch.ranges) {
-    if (
-      !Array.isArray(range.path) ||
-      range.path.length < 1 ||
-      range.path.length > 2 ||
-      !range.path.every(keyValid) ||
-      touched.has(range.path[0] as string) ||
-      !(range.bytes instanceof Uint8Array)
-    )
-      return fail();
-    if (
-      current.kind === 'texture'
-        ? range.path.length !== 1 || range.path[0] !== 'data'
-        : !(
-            (range.path.length === 1 &&
-              (range.path[0] === 'vertices' || range.path[0] === 'indices')) ||
-            (range.path.length === 2 && range.path[0] === 'attributes')
-          )
-    )
-      return fail();
+    if (!binaryRangePathValid(current.kind, range, touched)) return failBinaryPatch();
     const rowBytes = range.rowBytes ?? range.byteLength;
     const stride = range.byteStride ?? rowBytes;
     const rows = (range.byteLength - rowBytes) / stride + 1;
-    if (
-      !Number.isSafeInteger(range.byteOffset) ||
-      range.byteOffset < 0 ||
-      !Number.isSafeInteger(rowBytes) ||
-      rowBytes <= 0 ||
-      !Number.isSafeInteger(stride) ||
-      stride < rowBytes ||
-      !Number.isSafeInteger(rows) ||
-      rows < 1 ||
-      !Number.isSafeInteger(range.byteLength) ||
-      rows * rowBytes !== range.bytes.byteLength
-    )
-      return fail();
+    if (!binaryRangeLayoutValid(range, rowBytes, stride, rows)) return failBinaryPatch();
     // A fixed preparation owns the old buffers; ordinary receiver reads borrow until adoption.
     if (retained) {
       const key = range.path[0] as string;
@@ -250,7 +310,7 @@ export function prepareAssetPatch(
       );
     }
     const target = binary(next, range.path);
-    if (range.byteOffset + range.byteLength > target.byteLength) return fail();
+    if (range.byteOffset + range.byteLength > target.byteLength) return failBinaryPatch();
     writes.push({ target, bytes: range.bytes.slice(), offset: range.byteOffset, rowBytes, stride });
     ranges.push({
       path: [...range.path],
@@ -271,12 +331,7 @@ export function prepareAssetPatch(
     },
     commit: () => {
       for (const { target, bytes, offset, rowBytes, stride } of writes)
-        for (
-          let source = 0, destination = offset;
-          source < bytes.byteLength;
-          source += rowBytes, destination += stride
-        )
-          target.set(bytes.subarray(source, source + rowBytes), destination);
+        writeStridedRows(target, bytes, offset, rowBytes, stride);
     },
   };
 }
@@ -285,11 +340,7 @@ export function prepareAssetPatch(
 function prepareTerrainPatch(
   current: TerrainAsset,
   patch: PublishedAssetPatch,
-): {
-  readonly value: Asset;
-  readonly change: AssetChange;
-  commit(): void;
-} {
+): PreparedAssetPatch {
   const fail = (): never => {
     throw new RenderPublicationError({ reason: 'shape', subject: 'terrain height patch' });
   };
@@ -395,12 +446,7 @@ function prepareTerrainPatch(
         current.heights.byteLength,
       );
       for (const write of writes)
-        for (
-          let source = 0, destination = write.offset;
-          source < write.bytes.byteLength;
-          source += write.rowBytes, destination += write.stride
-        )
-          target.set(write.bytes.subarray(source, source + write.rowBytes), destination);
+        writeStridedRows(target, write.bytes, write.offset, write.rowBytes, write.stride);
       for (const [index, section] of sections)
         (current.sections as TerrainAsset['sections'][number][])[index] = section;
     },

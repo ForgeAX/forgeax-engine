@@ -23,6 +23,7 @@ import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE } from '@
 import { listPackSources } from '@forgeax/engine-pack/build';
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '@forgeax/view-viewer/catalog/backend';
 import { startViewHostServer } from '@forgeax/view-workspace-core/resident';
+import { installedEngineRoot } from '../engine-root.ts';
 
 export function createViewPlatformBinding(platform: ViewPlatform) {
   if (!platform || typeof platform.createPage !== 'function') {
@@ -142,7 +143,7 @@ export async function createViewBackend({ platform, capabilities, frontendConfig
         },
         onClientDisconnect: (caller) => workspaceCore.revokeConnection(caller.connectionId),
         ...(workspacePath === undefined ? {} : { path: workspacePath }),
-        ...(staticRoot === undefined ? {} : { staticRoot }),
+        ...(staticRoot === undefined ? {} : { staticRoot, engineRoot: installedEngineRoot() }),
         ...(config.layout === undefined ? {} : { frontendConfig: { layout: config.layout } }),
       });
     }

@@ -2225,7 +2225,7 @@ it('preserves live internal package inspection even when it carries a source key
     guid,
     kind: 'mesh',
     sourceKey: 'mesh/main',
-    path: '.forgeax/generated/serve-proof/engine-builtins.pack.json',
+    path: '@forgeax/engine/content/meshes.pack.ts',
   };
   const inspection = { guid, asset, source: { path: asset.path }, meta: { vertexCount: 3 } };
   const handle = {

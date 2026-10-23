@@ -1,11 +1,11 @@
 import { deepStrictEqual } from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deserialize, serialize } from 'node:v8';
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
-import { DdcEntryStore, ddcOutputDigest, semanticDdcKey } from '@forgeax/engine-ddc';
+import { brotliDecompressSync } from 'node:zlib';
+import { DdcEntryStore, ddcOutputDigest } from '@forgeax/engine-ddc';
 import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -195,78 +195,6 @@ it('shares equal artifact bytes across a Pack product without changing their con
     await rm(root, { recursive: true, force: true });
   }
 }, 15_000);
-
-it.each([
-  'scriptable-pack-product/5',
-  'scriptable-pack-product/6',
-])('migrates verified %s products without rebuilding or accepting changed source', async (schema) => {
-  const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-migrate-'));
-  const sourcePath = join(root, 'scene.pack.ts');
-  const packageId = definePackageId('01900000-0000-7000-8000-0000000000e3');
-  const source = 'original source';
-  try {
-    await writeFile(sourcePath, source);
-    const subject = {
-      sourcePath,
-      sourceClosure: [{ path: sourcePath, digest: revision(source) }],
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId,
-        build: () => ok({ 'scene/main': { kind: 'scene' as const, entities: {} } }),
-      }),
-    };
-    const product = {
-      product: { assets: [{ kind: 'scene', payload: new Uint8Array(1024) }] },
-      stagedOutputs: [],
-      externalEvidence: [],
-      inputFingerprint: 'sha256:original',
-    } as unknown as ScriptablePackBuildProduct;
-    const guid = '01900000-0000-7000-8000-0000000000e3';
-    const key = semanticDdcKey({
-      schemaVersion: schema,
-      importer: 'scriptable-pack',
-      codec: `node-v8/${process.versions.v8}`,
-      settings: {
-        sourcePath,
-        packageId: guid,
-        values: null,
-        inheritedValues: null,
-        outputVersions: {},
-        cookerIdentity: [],
-      },
-      sourceBytes: [new TextEncoder().encode(`${sourcePath}\0${revision(source)}`)],
-      declaredGuids: [guid],
-      targetProfile: 'dev',
-      producer: schema,
-    });
-    const store = new DdcEntryStore(join(root, 'scriptable-pack-products'));
-    const entry = {
-      key,
-      guid,
-      payload: { schemaVersion: schema, sourcePath },
-      refs: [] as string[],
-      artifacts: {
-        'product.v8.br': {
-          mediaType: 'application/vnd.node-v8-serialized+br',
-          bytes: brotliCompressSync(serialize(product)),
-        },
-      },
-      receipt: { guid, key, producer: schema, inputFingerprint: key, outputDigest: '' },
-    };
-    entry.receipt.outputDigest = ddcOutputDigest(entry);
-    await store.write(entry);
-
-    const cache = await createScriptablePackProductCache({ root, outputVersions: {}, cookers: [] });
-    expect(await cache.read(subject)).toEqual(product);
-    expect(await store.listKeys()).toHaveLength(2);
-    await store.remove(key);
-    expect(await cache.read(subject)).toEqual(product);
-    await writeFile(sourcePath, 'edited without notification');
-    expect(await cache.read(subject)).toBeUndefined();
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
 it('keeps unserializable Pack products out of the advisory DDC', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-budget-'));
@@ -622,5 +550,164 @@ it('observes newly added, removed and unversioned cookers for a native-free outp
     expect(builds).toBe(5);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('shares a product between checkouts at different locations through an identity root', async () => {
+  const cacheRoot = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-shared-root-'));
+  const checkouts = await Promise.all(
+    ['a', 'b'].map((name) => mkdtemp(join(tmpdir(), `forgeax-pack-cache-checkout-${name}-`))),
+  );
+  try {
+    const subjects = await Promise.all(
+      checkouts.map(async (root) => {
+        await mkdir(join(root, 'assets'));
+        const sourcePath = join(root, 'assets', 'scene.pack.ts');
+        const helperPath = join(root, 'assets', 'helper.ts');
+        await writeFile(sourcePath, 'source');
+        await writeFile(helperPath, 'helper');
+        return {
+          root,
+          subject: {
+            sourcePath,
+            sourceClosure: [
+              { path: helperPath, digest: revision('helper') },
+              { path: sourcePath, digest: revision('source') },
+            ],
+            definition: definePack({
+              schemaVersion: '2.0.0',
+              packageId: definePackageId('01900000-0000-7000-8000-0000000000e5'),
+              build: () => ok({}),
+            }),
+          },
+        };
+      }),
+    );
+    const [first, second] = subjects;
+    if (first === undefined || second === undefined) throw new Error('missing checkout');
+    // Products name their sources by absolute path; a hit must name the
+    // reading checkout's files exactly as a fresh cook there would.
+    const productAt = (root: string) =>
+      ({
+        product: {
+          assets: [
+            {
+              kind: 'scene',
+              payload: {
+                entities: {},
+                cooked: { sourceClosure: [join(root, 'assets', 'mesh.glb'), 'forgeax::pbr'] },
+              },
+            },
+          ],
+          sourceKey: join(root, 'assets', 'scene.pack.ts'),
+          sourceDependencies: [join(root, 'assets', 'helper.ts')],
+        },
+        stagedOutputs: [],
+        externalEvidence: [],
+        inputFingerprint: 'sha256:source',
+      }) as unknown as ScriptablePackBuildProduct;
+    const product = productAt(first.root);
+    const cacheFor = (identityRoot?: string) =>
+      createScriptablePackProductCache({
+        root: cacheRoot,
+        outputVersions: {},
+        cookers: [],
+        ...(identityRoot === undefined ? {} : { identityRoot }),
+      });
+    await (await cacheFor(first.root)).write(first.subject, product);
+    const stored = new DdcEntryStore(join(cacheRoot, 'scriptable-pack-products'));
+    const [key] = await stored.listKeys();
+    const bytes =
+      key === undefined ? undefined : (await stored.read(key))?.artifacts['product.v8.br'];
+    if (bytes === undefined) throw new Error('product was not cached');
+    expect(brotliDecompressSync(bytes.bytes).includes(Buffer.from(first.root))).toBe(false);
+    deepStrictEqual(
+      await (await cacheFor(second.root)).read(second.subject),
+      productAt(second.root),
+    );
+    deepStrictEqual(await (await cacheFor(first.root)).read(first.subject), product);
+    // Only whole root components relocate. A sibling path sharing the root's
+    // prefix is location-bound, so that product never enters the shared cache.
+    await stored.remove(key as string);
+    const bound = productAt(first.root);
+    Object.assign(bound.product, { sibling: `${first.root}-sibling` });
+    await (await cacheFor(first.root)).write(first.subject, bound);
+    expect(await stored.listKeys()).toEqual([]);
+    await (await cacheFor(first.root)).write(first.subject, product);
+    // Absolute identities remain private to the checkout that wrote them.
+    expect(await (await cacheFor()).read(second.subject)).toBeUndefined();
+    // Location independence never relaxes content identity.
+    await writeFile(join(second.root, 'assets', 'helper.ts'), 'changed');
+    const changed = {
+      ...second.subject,
+      sourceClosure: [
+        { path: join(second.root, 'assets', 'helper.ts'), digest: revision('changed') },
+        { path: second.subject.sourcePath, digest: revision('source') },
+      ],
+    };
+    expect(await (await cacheFor(second.root)).read(changed)).toBeUndefined();
+  } finally {
+    await Promise.all(
+      [cacheRoot, ...checkouts].map((path) => rm(path, { recursive: true, force: true })),
+    );
+  }
+});
+
+it('relocates both canonical and configured root spellings to the reading checkout', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-spellings-'));
+  try {
+    const cacheRoot = join(base, 'cache');
+    const real = join(base, 'real');
+    const linked = join(base, 'linked');
+    const reader = join(base, 'reader');
+    await Promise.all([
+      mkdir(join(real, 'assets'), { recursive: true }),
+      mkdir(join(reader, 'assets'), { recursive: true }),
+    ]);
+    await symlink(real, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    const subjectAt = async (root: string) => {
+      const sourcePath = join(root, 'assets', 'scene.pack.ts');
+      await writeFile(sourcePath, 'source');
+      return {
+        sourcePath,
+        sourceClosure: [{ path: sourcePath, digest: revision('source') }],
+        definition: definePack({
+          schemaVersion: '2.0.0',
+          packageId: definePackageId('01900000-0000-7000-8000-0000000000e6'),
+          build: () => ok({}),
+        }),
+      };
+    };
+    const productAt = (canonical: string, configured: string) =>
+      ({
+        product: {
+          assets: [],
+          sourceKey: join(configured, 'assets', 'scene.pack.ts'),
+          sourceDependencies: [join(canonical, 'assets', 'scene.pack.ts')],
+        },
+        stagedOutputs: [],
+        externalEvidence: [],
+        inputFingerprint: 'sha256:source',
+      }) as unknown as ScriptablePackBuildProduct;
+    const cacheFor = (identityRoot: string) =>
+      createScriptablePackProductCache({
+        root: cacheRoot,
+        outputVersions: {},
+        cookers: [],
+        identityRoot,
+      });
+    const canonicalReal = await realpath(real);
+    const canonicalReader = await realpath(reader);
+    // Scanned subjects are canonical; product strings may use either spelling.
+    await (await cacheFor(linked)).write(
+      await subjectAt(canonicalReal),
+      productAt(canonicalReal, linked),
+    );
+    deepStrictEqual(
+      await (await cacheFor(reader)).read(await subjectAt(canonicalReader)),
+      productAt(canonicalReader, reader),
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
   }
 });

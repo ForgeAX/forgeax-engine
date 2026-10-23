@@ -35,6 +35,8 @@ const GATE_PROVED_ROWS = new Set([
   'Acoustic regions',
   'Quantized layered music',
   'Long audio windows',
+  // Project asset-library mount; DevKit asset-libraries integration, content unit and template tests.
+  'Engine Content library',
   // Preview and workspace hosts.
   'Tool Preview Host',
   'Resident Host Pack selection',

@@ -113,24 +113,8 @@ export async function executeEvent(
         return destroyResource(context, eventIndex, event, 'texture');
       case 'destroyQuerySet':
         return destroyResource(context, eventIndex, event, 'query-set');
-      case 'createTextureView': {
-        const texture = requireResource(
-          context,
-          event.sourceHandleId,
-          'texture',
-          eventIndex,
-          event.kind,
-        );
-        if (!texture.ok) return texture;
-        return createResource(
-          context,
-          eventIndex,
-          event,
-          context.device.createTextureView(texture.value, event.desc),
-          'texture-view',
-          event.resultHandleId,
-        );
-      }
+      case 'createTextureView':
+        return createTextureView(context, event, eventIndex);
       case 'createSampler':
         return createResource(
           context,
@@ -147,22 +131,8 @@ export async function executeEvent(
           context.device.createBindGroupLayout(event.desc as never),
           'bind-group-layout',
         );
-      case 'getBindGroupLayout': {
-        const pipeline = context.table.get(event.pipelineHandleId)?.resource;
-        if (pipeline?.kind !== 'render-pipeline' && pipeline?.kind !== 'compute-pipeline')
-          return missingResource(eventIndex, event, event.pipelineHandleId, 'pipeline');
-        return createResource(
-          context,
-          eventIndex,
-          event,
-          ok(
-            (pipeline.value as typeof pipeline.value & RhiRenderPipelineOps).getBindGroupLayout(
-              event.index,
-            ),
-          ),
-          'bind-group-layout',
-        );
-      }
+      case 'getBindGroupLayout':
+        return getBindGroupLayout(context, event, eventIndex);
       case 'createBindGroup':
         return createBindGroup(context, event, eventIndex);
       case 'createPipelineLayout':
@@ -601,6 +571,44 @@ async function createShaderModule(
 ): Promise<Result<void, RhiDebugError>> {
   const result = await context.createShaderModule(context.device, { code: event.wgslCode });
   return createResource(context, eventIndex, event, result, 'shader-module');
+}
+
+function createTextureView(
+  context: ReplayExecutionContext,
+  event: Extract<RhiCallEvent, { kind: 'createTextureView' }>,
+  eventIndex: number,
+): Result<void, RhiDebugError> {
+  const texture = requireResource(context, event.sourceHandleId, 'texture', eventIndex, event.kind);
+  if (!texture.ok) return texture;
+  return createResource(
+    context,
+    eventIndex,
+    event,
+    context.device.createTextureView(texture.value, event.desc),
+    'texture-view',
+    event.resultHandleId,
+  );
+}
+
+function getBindGroupLayout(
+  context: ReplayExecutionContext,
+  event: Extract<RhiCallEvent, { kind: 'getBindGroupLayout' }>,
+  eventIndex: number,
+): Result<void, RhiDebugError> {
+  const pipeline = context.table.get(event.pipelineHandleId)?.resource;
+  if (pipeline?.kind !== 'render-pipeline' && pipeline?.kind !== 'compute-pipeline')
+    return missingResource(eventIndex, event, event.pipelineHandleId, 'pipeline');
+  return createResource(
+    context,
+    eventIndex,
+    event,
+    ok(
+      (pipeline.value as typeof pipeline.value & RhiRenderPipelineOps).getBindGroupLayout(
+        event.index,
+      ),
+    ),
+    'bind-group-layout',
+  );
 }
 
 function createBindGroup(

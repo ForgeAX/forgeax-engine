@@ -621,10 +621,10 @@ export interface InitOutput {
     readonly start: () => void;
     readonly validate: (a: number) => [number, number, number];
     readonly validate_render_entries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h2e98ac29f1fbd5db: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h642fb491fa67ad7e: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hf4075af474fd64d6: (a: number, b: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__h07ff40ca4994d300: (a: number, b: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

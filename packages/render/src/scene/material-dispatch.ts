@@ -10,7 +10,7 @@ import {
 } from '../render-system-extract';
 import { type FrameList, FrameListBase } from './frame-list';
 import { at, changes, type Node, nodes, put, range, remove } from './frame-tree';
-import type { MeshFrame } from './mesh-frame';
+import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import {
   captureMaterialOverrides,
   defaultMeshMaterial,
@@ -66,6 +66,7 @@ interface Binding {
   readonly layer: number;
   readonly shadowCaster: boolean;
   readonly visible: boolean;
+  readonly prepared: boolean;
   /** Strong: a binding sees only its own few Pass versions and dies with its slot. */
   readonly entries: Map<Pass, DispatchEntry>;
 }
@@ -99,6 +100,8 @@ interface Work {
 interface QueryWork {
   members: Node<Node<Binding>> | undefined;
   casters: Node<Node<Binding>> | undefined;
+  /** Pipeline-preparation demand: accepted materials without Pass work. */
+  prepared: Node<Node<Binding>> | undefined;
   passes: readonly Pass[];
 }
 
@@ -449,12 +452,63 @@ interface BindingGroup {
   holders: number;
   members: Node<Binding> | undefined;
   casters: Node<Binding> | undefined;
+  // Hidden preparation rows draw nothing but validate against the accepted
+  // frame, so their effective (Mesh-default) materials must be resolved too.
+  prepared: Node<Binding> | undefined;
 }
 interface MeshExpression {
   readonly worldId: number;
   readonly handle: number;
   holders: number;
 }
+function joinGroup(group: BindingGroup, binding: Binding, identity: number): void {
+  if (binding.visible) {
+    group.members = put(group.members, binding, 0, identity, 1);
+    if (binding.shadowCaster) group.casters = put(group.casters, binding, 0, identity, 1);
+  }
+  if (binding.prepared) group.prepared = put(group.prepared, binding, 0, identity, 1);
+}
+function leaveGroup(group: BindingGroup, binding: Binding, identity: number): void {
+  group.members = remove(group.members, 0, identity);
+  if (binding.shadowCaster) group.casters = remove(group.casters, 0, identity);
+  if (binding.prepared) group.prepared = remove(group.prepared, 0, identity);
+}
+/** Draw members or pipeline preparation both need the group's effective materials. */
+function groupHasDemand(group: BindingGroup): boolean {
+  return group.members !== undefined || group.prepared !== undefined;
+}
+function addRoot(
+  roots: Node<Node<Binding>> | undefined,
+  members: Node<Binding> | undefined,
+  identity: number,
+): Node<Node<Binding>> | undefined {
+  return members === undefined ? roots : put(roots, members, 0, identity, members.count);
+}
+function addGroupWork(value: QueryWork, group: BindingGroup): QueryWork {
+  return {
+    ...value,
+    members: addRoot(value.members, group.members, group.identity),
+    casters: addRoot(value.casters, group.casters, group.identity),
+    prepared: addRoot(value.prepared, group.prepared, group.identity),
+  };
+}
+function removeGroupWork(value: QueryWork, identity: number): QueryWork {
+  return {
+    ...value,
+    members: remove(value.members, 0, identity),
+    casters: remove(value.casters, 0, identity),
+    prepared: remove(value.prepared, 0, identity),
+  };
+}
+function workIsEmpty(value: QueryWork): boolean {
+  return value.members === undefined && value.casters === undefined && value.prepared === undefined;
+}
+const EMPTY_WORK: QueryWork = Object.freeze({
+  members: undefined,
+  casters: undefined,
+  prepared: undefined,
+  passes: [],
+});
 /** Source bindings and asset roots; Pass work is produced only by an actual query. */
 export class MaterialDispatch {
   private querying = false;
@@ -571,6 +625,7 @@ export class MaterialDispatch {
         binding.layer === (snapshot.layer ?? 0) &&
         binding.shadowCaster === (snapshot.shadowCaster !== false) &&
         binding.visible === (snapshot.authorVisible !== false) &&
+        binding.prepared === (snapshot.pipelinePreparation !== undefined) &&
         group.key === tryMaterialBindingKey(snapshot)
       ) {
         for (const resource of group.held) {
@@ -640,6 +695,7 @@ export class MaterialDispatch {
           holders: 0,
           members: undefined,
           casters: undefined,
+          prepared: undefined,
         };
         this.groups.set(key, group);
         if (mesh !== undefined) mesh.holders++;
@@ -656,14 +712,11 @@ export class MaterialDispatch {
         layer: snapshot.layer ?? 0,
         shadowCaster: snapshot.shadowCaster !== false,
         visible: snapshot.authorVisible !== false,
+        prepared: snapshot.pipelinePreparation !== undefined,
         entries: new Map(),
       };
       group.holders++;
-      if (snapshot.authorVisible !== false) {
-        const identity = worldEntityKey(binding.worldId, binding.entity);
-        group.members = put(group.members, binding, 0, identity, 1);
-        if (binding.shadowCaster) group.casters = put(group.casters, binding, 0, identity, 1);
-      }
+      joinGroup(group, binding, worldEntityKey(binding.worldId, binding.entity));
       this.bindings.set(slot, { group, binding });
       this.revision++;
       this.invalidateGroup(group);
@@ -678,9 +731,7 @@ export class MaterialDispatch {
     const previous = this.bindings.get(slot);
     if (previous === undefined) return;
     const { group, binding } = previous;
-    const identity = worldEntityKey(binding.worldId, binding.entity);
-    group.members = remove(group.members, 0, identity);
-    if (binding.shadowCaster) group.casters = remove(group.casters, 0, identity);
+    leaveGroup(group, binding, worldEntityKey(binding.worldId, binding.entity));
     if (--group.holders === 0) {
       this.groups.delete(group.key);
       const mesh = group.mesh;
@@ -729,59 +780,18 @@ export class MaterialDispatch {
         const groupResources = new Map<BindingGroup, readonly MaterialResource[]>();
         let materials = this.sourceMaterials;
         for (const group of this.groups.values()) {
-          if (group.members === undefined) continue;
-          const mesh =
-            group.mesh === undefined
-              ? undefined
-              : meshes?.get(group.mesh.worldId, group.mesh.handle);
-          if (group.mesh !== undefined && mesh === undefined)
-            throw new Error('Mesh Pass query requires accepted geometry');
-          const effective =
-            mesh === undefined
-              ? group.source
-              : this.resolveMaterial === undefined
-                ? effectiveMeshMaterials(group.source, mesh, group.geometry)
-                : prepareMeshMaterialBindings(
-                    group.source,
-                    mesh,
-                    group.geometry,
-                    this.resolveMaterial,
-                    pendingBindings,
-                  );
-          // One binding can repeat a material in several authored slots.
-          const resources = new Set(
-            effective.materials.length === 0 ? [effective.material] : effective.materials,
+          if (!groupHasDemand(group)) continue;
+          const { mesh, resources } = this.effectiveResources(
+            group,
+            meshes,
+            resolve,
+            pendingBindings,
           );
-          groupResources.set(group, [...resources]);
+          groupResources.set(group, resources);
           for (const resource of resources) {
-            let value = work.get(resource);
-            if (value === undefined) {
-              value = { members: undefined, casters: undefined, passes: [] };
-              work.set(resource, value);
-              const accepted = this.materialFrame.get(resource) ?? materials.get(resource);
-              materials =
-                accepted === undefined ||
-                (mesh !== undefined &&
-                  resolve !== undefined &&
-                  accepted.snapshot !== resource.snapshot)
-                  ? materials.with(resource, 0)
-                  : materials.withAccepted(accepted, 0);
-            }
-            value.members = put(
-              value.members,
-              group.members,
-              0,
-              group.identity,
-              group.members.count,
-            );
-            if (group.casters !== undefined)
-              value.casters = put(
-                value.casters,
-                group.casters,
-                0,
-                group.identity,
-                group.casters.count,
-              );
+            const value = work.get(resource);
+            if (value === undefined) materials = this.admit(materials, resource, mesh, resolve);
+            work.set(resource, addGroupWork(value ?? EMPTY_WORK, group));
           }
         }
         let root: Node<Work> | undefined;
@@ -853,54 +863,17 @@ export class MaterialDispatch {
         const value = work.get(resource);
         if (value === undefined) continue;
         if (!affected.has(resource)) affected.set(resource, value.passes);
-        work.set(resource, {
-          ...value,
-          members: remove(value.members, 0, group.identity),
-          casters: remove(value.casters, 0, group.identity),
-        });
+        work.set(resource, removeGroupWork(value, group.identity));
       }
       groupResources.delete(group);
-      if (this.groups.get(group.key) !== group || group.members === undefined) continue;
-      const mesh =
-        group.mesh === undefined ? undefined : meshes?.get(group.mesh.worldId, group.mesh.handle);
-      if (group.mesh !== undefined && mesh === undefined)
-        throw new Error('Mesh Pass query requires accepted geometry');
-      const effective =
-        mesh === undefined
-          ? group.source
-          : resolve === undefined
-            ? effectiveMeshMaterials(group.source, mesh, group.geometry)
-            : prepareMeshMaterialBindings(
-                group.source,
-                mesh,
-                group.geometry,
-                resolve,
-                pendingBindings,
-              );
-      const resources = [
-        ...new Set(effective.materials.length === 0 ? [effective.material] : effective.materials),
-      ];
+      if (this.groups.get(group.key) !== group || !groupHasDemand(group)) continue;
+      const { mesh, resources } = this.effectiveResources(group, meshes, resolve, pendingBindings);
       groupResources.set(group, resources);
       for (const resource of resources) {
-        let value = work.get(resource);
-        if (value === undefined) {
-          const accepted = this.materialFrame.get(resource) ?? materials.get(resource);
-          materials =
-            accepted === undefined ||
-            (mesh !== undefined && resolve !== undefined && accepted.snapshot !== resource.snapshot)
-              ? materials.with(resource, 0)
-              : materials.withAccepted(accepted, 0);
-          value = { members: undefined, casters: undefined, passes: [] };
-        }
-        if (!affected.has(resource)) affected.set(resource, value.passes);
-        work.set(resource, {
-          ...value,
-          members: put(value.members, group.members, 0, group.identity, group.members.count),
-          casters:
-            group.casters === undefined
-              ? value.casters
-              : put(value.casters, group.casters, 0, group.identity, group.casters.count),
-        });
+        const value = work.get(resource);
+        if (value === undefined) materials = this.admit(materials, resource, mesh, resolve);
+        if (!affected.has(resource)) affected.set(resource, value?.passes ?? []);
+        work.set(resource, addGroupWork(value ?? EMPTY_WORK, group));
       }
     }
     let root = this.queryRoot;
@@ -909,7 +882,7 @@ export class MaterialDispatch {
         root = remove(root, pass.queue, getOpaqueResourceIdentity(pass));
       const value = work.get(resource);
       if (value === undefined) continue;
-      if (value.members === undefined && value.casters === undefined) {
+      if (workIsEmpty(value)) {
         work.delete(resource);
         const source = sources.get(resource);
         materials =
@@ -948,6 +921,44 @@ export class MaterialDispatch {
     this.dirtyGroups.clear();
     this.previous = undefined;
     return true;
+  }
+
+  /** One binding group's effective resources against one fixed Mesh version. */
+  private effectiveResources(
+    group: BindingGroup,
+    meshes: MeshFrame | undefined,
+    resolve: MeshMaterialResolver | undefined,
+    pending: MeshMaterialBindingWrite[],
+  ): { mesh: MeshGeometry | undefined; resources: MaterialResource[] } {
+    const mesh =
+      group.mesh === undefined ? undefined : meshes?.get(group.mesh.worldId, group.mesh.handle);
+    if (group.mesh !== undefined && mesh === undefined)
+      throw new Error('Mesh Pass query requires accepted geometry');
+    const effective =
+      mesh === undefined
+        ? group.source
+        : resolve === undefined
+          ? effectiveMeshMaterials(group.source, mesh, group.geometry)
+          : prepareMeshMaterialBindings(group.source, mesh, group.geometry, resolve, pending);
+    // One binding can repeat a material in several authored slots.
+    const resources = [
+      ...new Set(effective.materials.length === 0 ? [effective.material] : effective.materials),
+    ];
+    return { mesh, resources };
+  }
+
+  /** Admit a resource's accepted version; a resolved Mesh variant adopts its current bytes. */
+  private admit(
+    materials: MaterialFrame,
+    resource: MaterialResource,
+    mesh: MeshGeometry | undefined,
+    resolve: MeshMaterialResolver | undefined,
+  ): MaterialFrame {
+    const accepted = this.materialFrame.get(resource) ?? materials.get(resource);
+    return accepted === undefined ||
+      (mesh !== undefined && resolve !== undefined && accepted.snapshot !== resource.snapshot)
+      ? materials.with(resource, 0)
+      : materials.withAccepted(accepted, 0);
   }
 
   revisionValue(): number {

@@ -10,6 +10,7 @@ import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { createDynamicGeometryFrameBindings } from '../../record/dynamic-geometry-consumption';
 import type { FrameReceipt } from '../../render-contract';
+import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
@@ -562,5 +563,66 @@ it('adopts a referenced revision after a newer revision of the same handle was p
   expect(receiver.accept(packet).unwrap().resources.resolveAsset(meshHandle).unwrap()).toBe(
     first.mesh,
   );
+  publisher.dispose();
+});
+
+it('keeps a source-held preparation adoptable after its asset row was retired', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'prepared-reference-retired', epoch: 1 };
+  // The source still holds its ready preparation; asset retirement does not reach it.
+  const held = new Set<string>();
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    (handle, revision) => held.has(`${handle}:${revision}`),
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const mesh = assets.read(meshHandle).unwrap();
+  const spawn = () =>
+    world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
+        { component: MeshRenderer, data: {} },
+      )
+      .unwrap();
+  const publish = () => {
+    world.update(0).unwrap();
+    const candidate = publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    const accepted = receiver.accept(packet);
+    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    return { packet, accepted };
+  };
+  // Dust2 order: the accepted row precedes a standalone residency of the same revision.
+  let entity = spawn();
+  expect(publish().packet.assets.some((row) => row.handle === meshHandle)).toBe(true);
+  const prepared = receiver.prepareMesh({ ...identity, meshHandle, mesh, revision: 1 }).unwrap();
+  held.add(`${meshHandle}:1`);
+  // The renderable leaves (for example parked rubble): the asset row is retired.
+  world.despawn(entity).unwrap();
+  const retired = publish();
+  expect(retired.packet.retiredAssets).toContain(meshHandle);
+  expect(retired.accepted.ok).toBe(true);
+  // Re-entering the closure references the still-held preparation.
+  entity = spawn();
+  const back = publish();
+  expect(back.packet.preparedAssets).toEqual([
+    expect.objectContaining({ handle: meshHandle, revision: 1 }),
+  ]);
+  expect(back.accepted.ok).toBe(true);
+  expect(back.accepted.unwrap().resources.resolveAsset(meshHandle).unwrap()).toBe(prepared.mesh);
+  prepared.release();
   publisher.dispose();
 });

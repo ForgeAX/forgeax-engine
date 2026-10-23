@@ -147,11 +147,13 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
       Array.isArray(time) ||
       Object.entries(time).some(
         ([key, value]) =>
-          !['fixedDeltaSeconds', 'maxStepsPerUpdate', 'maxDeltaSeconds'].includes(key) ||
-          typeof value !== 'number' ||
-          !Number.isFinite(value) ||
-          value <= 0 ||
-          (key === 'maxStepsPerUpdate' && !Number.isSafeInteger(value)),
+          (key === 'fixedCatchUp' ? value !== 'substeps' && value !== 'merged' : false) ||
+          (key !== 'fixedCatchUp' &&
+            (!['fixedDeltaSeconds', 'maxStepsPerUpdate', 'maxDeltaSeconds'].includes(key) ||
+              typeof value !== 'number' ||
+              !Number.isFinite(value) ||
+              value <= 0 ||
+              (key === 'maxStepsPerUpdate' && !Number.isSafeInteger(value)))),
       )
     )
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');

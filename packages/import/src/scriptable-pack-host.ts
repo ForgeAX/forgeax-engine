@@ -8,7 +8,6 @@ import {
   packageTransportRevision,
   resolveAssetSource,
 } from '@forgeax/engine-pack/build';
-import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import { AssetGuid, PackageId, type PackageId as PackageIdType } from '@forgeax/engine-pack/guid';
 import {
   type NativeCookDraft,
@@ -93,6 +92,8 @@ export interface ScriptablePackProductionOptions {
   readonly sources: readonly ScriptablePackInput[];
   /** Optional immutable Pack-product DDC root, independent of runtime publication scope. */
   readonly buildCacheRoot?: string;
+  /** Project root that Pack-product cache keys spell source paths relative to. */
+  readonly cacheIdentityRoot?: string;
   readonly declaredExternalOutputs?: readonly ScriptablePackStagedOutput[];
   readonly assetSource?: ScriptablePackAssetSnapshotSource;
   /** Build-time producers used for custom or otherwise uncooked asset rows. */
@@ -638,9 +639,7 @@ export async function prepareDirectPackTransport(
 ): Promise<Result<DirectPackTransport, unknown>> {
   const localGuids = new Set(input.projected.assets.map((asset) => asset.guid.toLowerCase()));
   const availableGuids = new Set(
-    [...(input.availableGuids ?? []), ...BUILTIN_MESH_ASSETS.map((asset) => asset.guid)].filter(
-      (guid) => !localGuids.has(guid.toLowerCase()),
-    ),
+    [...(input.availableGuids ?? [])].filter((guid) => !localGuids.has(guid.toLowerCase())),
   );
   const directArtifacts = input.projected.assets.find(
     (asset) => asset.artifacts !== undefined && Object.keys(asset.artifacts).length > 0,
@@ -1008,6 +1007,9 @@ export async function produceScriptablePackProducts(
       ? undefined
       : await createScriptablePackProductCache({
           root: options.buildCacheRoot,
+          ...(options.cacheIdentityRoot === undefined
+            ? {}
+            : { identityRoot: options.cacheIdentityRoot }),
           outputVersions: outputs.versions(),
           cookers: options.cookers ?? [],
         });

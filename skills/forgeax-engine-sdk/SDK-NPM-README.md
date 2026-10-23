@@ -21,19 +21,18 @@ pnpm exec forgeax project preview --json
 ```
 
 The carrier uses the exact SDK lockfile and installs the Engine packages from
-the npm registry. It does not contain the full ZIP's offline pnpm store. For a
-network-free or reproducible handoff, download the matching SDK ZIP from the
-release instead.
+the npm registry. It omits the full ZIP's offline pnpm store, bare package
+directories and Engine source snapshot: games install the same Engine bytes from
+npm. For a network-free handoff or Engine source work, download the matching SDK
+ZIP, or use the public Engine source mirror for stable and development versions.
 
 ## What is included
 
 | Surface | Purpose |
 |:--|:--|
 | `sdk/bin/` | Standalone `forgeax` CLI used to initialise the SDK and create games |
-| `sdk/packages/` | Bare built Engine package directories |
 | `sdk/templates/` | Explicitly selected `empty` and source-complete `game-3d` starter projects; the latter keeps procedural packs and a readable imported UI pair |
 | `sdk/skills/` | Engine authoring and debugging skills copied into each game |
-| `sdk/source/engine/` | Public Engine source snapshot for inspection and extension |
 | `sdk/AGENTS.md` | AI-first workflow, capability map, asset and verification guidance |
 
 The package root README is intentionally short; after installation, read

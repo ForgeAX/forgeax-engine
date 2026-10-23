@@ -576,7 +576,7 @@ describe('typed built-in pipeline topology', () => {
     expect(source).toContain("fragmentEntryPoint: 'fs_tone_only'");
     expect(source).toContain("fragmentEntryPoint: 'fs_encode_only'");
     expect(source).toContain("domain: 'linear-ldr'");
-    expect(source).toContain('{ dither: false }');
+    expect(source).toMatch(/\{\s*dither: false,?\s*\}/);
   });
 
   it('declares stable JSON-safe output and observation inspection facts', () => {

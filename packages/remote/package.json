@@ -44,7 +44,7 @@
   "dependencies": {
     "@forgeax/engine-profiler": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "ws": "^8.20.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

@@ -1,0 +1,71 @@
+{
+  "name": "@forgeax/engine-content",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Engine Content asset library: authored meshes, textures and materials mounted by projects through forge.json assetLibraries.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "assets",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "tsc -p tsconfig.assets.json && vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsup": "^9.0.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  },
+  "forgeax": {
+    "library": {
+      "assetRoot": "assets"
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Asset library has no frame loop; its content renders through ordinary games"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Asset library owns no runtime hot loop"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/content"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Focused production package"
+      }
+    }
+  }
+}

@@ -186,12 +186,39 @@ function runFixed(
   }
   let steps = 0;
   const accumulated = accumulator.value;
+  if (fixed.catchUp === 'merged') {
+    let owed = 0;
+    while (accumulated >= (owed + 1) * fixed.delta && owed < fixed.maxStepsPerUpdate) owed += 1;
+    if (owed > 0) {
+      // One schedule pass simulates every owed step: systems read the merged
+      // delta, the tick advances once, and the base delta is restored after.
+      const base = fixed.delta;
+      const span = owed * base;
+      accumulator.value = Math.round((accumulated - span) * 1e12) / 1e12;
+      fixed.overstep = accumulator.value;
+      fixed.tick += 1;
+      fixed.stepDelta = span;
+      fixed.delta = span;
+      try {
+        runSchedule(fixedSchedule, world);
+      } finally {
+        fixed.delta = base;
+      }
+      steps = owed;
+    }
+  }
+  // Compare against the original total, not a repeatedly rounded remainder:
   // Compare against the original total, not a repeatedly rounded remainder:
   // at 60 Hz, rounding 0.05 - delta twice otherwise loses the third tick.
-  while (accumulated >= (steps + 1) * fixed.delta && steps < fixed.maxStepsPerUpdate) {
+  while (
+    fixed.catchUp === 'substeps' &&
+    accumulated >= (steps + 1) * fixed.delta &&
+    steps < fixed.maxStepsPerUpdate
+  ) {
     accumulator.value = Math.round((accumulated - (steps + 1) * fixed.delta) * 1e12) / 1e12;
     fixed.overstep = accumulator.value;
     fixed.tick += 1;
+    fixed.stepDelta = fixed.delta;
     runSchedule(fixedSchedule, world);
     steps += 1;
   }

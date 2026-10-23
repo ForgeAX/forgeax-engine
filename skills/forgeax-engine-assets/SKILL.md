@@ -69,6 +69,23 @@ Use `source(handle)` / `sourceOf(handle)` for adopted provenance and explicit
 closure. Catalog changes alone do not overwrite runtime content. See the
 [runtime contract](../../packages/assets-runtime/README.md#runtime-content).
 
+## Engine Content library
+
+Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
+`plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker
+texture/sampler and a default Standard material are ordinary Pack assets in
+`@forgeax/engine-content`. Both SDK templates mount them with forge.json
+`"assetLibraries": ["@forgeax/engine/content"]`; `asset list` then shows them
+under `@forgeax/engine/content/<file>.pack.ts`. Reference them by the GUID
+strings in `EngineContent` from `@forgeax/engine/content` and load them like
+project assets. A project that removes the entry has none of them; library
+sources are read-only, so copy one into an asset root to edit it. Failures:
+`project-asset-library-unresolved` (install or bind the Engine, fix the
+specifier) and `project-asset-library-invalid` (package has no
+`forgeax.library.assetRoot`). In code, `createPrimitiveMesh(kind)` plus
+`assets.create` still produces an unregistered runtime mesh. See the
+[content contract](../../packages/content/README.md).
+
 ## Lighting asset route
 
 Use these entry points:

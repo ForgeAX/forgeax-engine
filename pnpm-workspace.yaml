@@ -37,7 +37,5 @@ linkWorkspacePackages: true
 shellEmulator: true
 minimumReleaseAgeExclude:
   - "@forgeax/*"
-overrides:
-  fast-uri: 3.1.7
 patchedDependencies:
   '@deepseek-ai/cordis@4.0.4': patches/@deepseek-ai__cordis@4.0.4.patch

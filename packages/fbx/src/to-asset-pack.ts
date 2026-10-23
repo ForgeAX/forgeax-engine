@@ -441,7 +441,7 @@ function buildTextureNote(_pod: TexturePod, _guid: string): ImportedAsset<unknow
   };
 }
 
-export function toAssetPack(params: {
+interface FbxAssetPackInput {
   readonly meshes: readonly MeshPod[];
   readonly meshCollision?: unknown;
   readonly scene: ScenePod;
@@ -455,146 +455,258 @@ export function toAssetPack(params: {
   readonly standardMaterialGuid?: string;
   readonly sourceOverrides?: SourceOverrideMap;
   readonly lodGroups?: readonly FbxLodGroupPod[];
-}): readonly ImportedAsset<unknown>[] {
-  const assets: ImportedAsset<unknown>[] = [];
-  const guidOf = makeGuidResolver(params.subAssets);
-  const materialGuidByIndex = new Map<number, string>();
-  const materialNameByIndex = new Map<number, string>();
-  const materialSourceKeyByIndex = new Map<number, string>();
+}
+
+type GuidResolver = ReturnType<typeof makeGuidResolver>;
+
+function declaredSubAsset(
+  params: FbxAssetPackInput,
+  kind: string,
+  sourceIndex: number,
+): ImportSubAsset | undefined {
+  return params.subAssets.find((entry) => entry.kind === kind && entry.sourceIndex === sourceIndex);
+}
+
+function materialSlotSource(params: FbxAssetPackInput, guidOf: GuidResolver) {
+  const guidByIndex = new Map<number, string>();
+  const nameByIndex = new Map<number, string>();
+  const sourceKeyByIndex = new Map<number, string>();
   for (let materialIndex = 0; materialIndex < params.materials.length; materialIndex++) {
     const materialGuid = guidOf('material', materialIndex);
-    if (materialGuid !== undefined) materialGuidByIndex.set(materialIndex, materialGuid);
-    const materialSourceKey = params.subAssets.find(
-      (entry) => entry.kind === 'material' && entry.sourceIndex === materialIndex,
-    )?.sourceKey;
-    if (materialSourceKey !== undefined) {
-      materialSourceKeyByIndex.set(materialIndex, materialSourceKey);
-    }
+    if (materialGuid !== undefined) guidByIndex.set(materialIndex, materialGuid);
+    const materialSourceKey = declaredSubAsset(params, 'material', materialIndex)?.sourceKey;
+    if (materialSourceKey !== undefined) sourceKeyByIndex.set(materialIndex, materialSourceKey);
     const materialName = params.materials[materialIndex]?.name;
-    if (materialName !== undefined) materialNameByIndex.set(materialIndex, materialName);
+    if (materialName !== undefined) nameByIndex.set(materialIndex, materialName);
   }
+  return { guidByIndex, nameByIndex, sourceKeyByIndex };
+}
 
-  // The skin deforms the (single) first mesh. Only material slots actually used
-  // by that mesh are promoted to the pbr-skin shader; other FBX meshes may share
-  // the document material table but remain rigid and must keep Standard PBR.
-  const hasSkin = params.skin.vertexCount > 0;
-  const skinnedMeshSourceIndex = hasSkin ? (params.meshes[0]?.sourceIndex ?? null) : null;
-  const skinnedMaterialIndices = new Set<number>();
-  if (skinnedMeshSourceIndex !== null) {
-    const skinnedMesh = params.meshes.find((mesh) => mesh.sourceIndex === skinnedMeshSourceIndex);
-    for (const submesh of skinnedMesh?.submeshes ?? []) {
-      if (submesh.materialIndex !== null) skinnedMaterialIndices.add(submesh.materialIndex);
-    }
+// The skin deforms the (single) first mesh. Only material slots actually used
+// by that mesh are promoted to the pbr-skin shader; other FBX meshes may share
+// the document material table but remain rigid and must keep Standard PBR.
+function skinnedMaterialIndices(
+  params: FbxAssetPackInput,
+  skinnedMeshSourceIndex: number | null,
+): ReadonlySet<number> {
+  const indices = new Set<number>();
+  if (skinnedMeshSourceIndex === null) return indices;
+  const skinnedMesh = params.meshes.find((mesh) => mesh.sourceIndex === skinnedMeshSourceIndex);
+  for (const submesh of skinnedMesh?.submeshes ?? []) {
+    if (submesh.materialIndex !== null) indices.add(submesh.materialIndex);
   }
+  return indices;
+}
 
+function lodGroupLevels(
+  params: FbxAssetPackInput,
+  group: FbxLodGroupPod,
+): readonly MeshLodLevel[] | undefined {
+  const [rootMeshIndex, ...lowerMeshIndices] = group.childMeshIndices;
+  if (rootMeshIndex === undefined || lowerMeshIndices.length === 0) return undefined;
+  const rootDeclaration = declaredSubAsset(params, 'mesh', rootMeshIndex);
+  if (rootDeclaration?.sourceKey === undefined) return undefined;
+  const levels = lowerMeshIndices.flatMap((sourceIndex) => {
+    const declaration = declaredSubAsset(params, 'mesh', sourceIndex);
+    if (declaration?.guid === undefined || declaration.sourceKey === undefined) return [];
+    return [{ sourceKey: declaration.sourceKey, meshGuid: declaration.guid }];
+  });
+  if (levels.length !== lowerMeshIndices.length) return undefined;
+  const projected = reconcileMeshLodMeta(
+    params.sourceOverrides?.[rootDeclaration.sourceKey]?.lods,
+    levels,
+  );
+  if (!projected.ok) {
+    throw new ImportError({
+      code: 'mesh-lod-contract-invalid',
+      expected: 'FBX LODGroup child meshes to form a valid decreasing coverage sequence',
+      hint: IMPORT_ERROR_HINTS['mesh-lod-contract-invalid'],
+      detail: { reason: projected.error.reason },
+    });
+  }
+  return projected.value.lods.flatMap((level) => {
+    const guid = AssetGuid.parse(level.meshGuid);
+    return guid.ok && Number.isFinite(level.screenCoverage)
+      ? [{ mesh: guid.value, screenCoverage: level.screenCoverage }]
+      : [];
+  });
+}
+
+function meshLodsByRoot(params: FbxAssetPackInput): ReadonlyMap<number, readonly MeshLodLevel[]> {
   const lodsByRootMesh = new Map<number, readonly MeshLodLevel[]>();
   for (const group of params.lodGroups ?? []) {
-    const [rootMeshIndex, ...lowerMeshIndices] = group.childMeshIndices;
-    if (rootMeshIndex === undefined || lowerMeshIndices.length === 0) continue;
-    const rootDeclaration = params.subAssets.find(
-      (entry) => entry.kind === 'mesh' && entry.sourceIndex === rootMeshIndex,
-    );
-    if (rootDeclaration?.sourceKey === undefined) continue;
-    const levels = lowerMeshIndices.flatMap((sourceIndex) => {
-      const declaration = params.subAssets.find(
-        (entry) => entry.kind === 'mesh' && entry.sourceIndex === sourceIndex,
-      );
-      if (declaration?.guid === undefined || declaration.sourceKey === undefined) return [];
-      return [{ sourceKey: declaration.sourceKey, meshGuid: declaration.guid }];
-    });
-    if (levels.length !== lowerMeshIndices.length) continue;
-    const projected = reconcileMeshLodMeta(
-      params.sourceOverrides?.[rootDeclaration.sourceKey]?.lods,
-      levels,
-    );
-    if (!projected.ok) {
-      throw new ImportError({
-        code: 'mesh-lod-contract-invalid',
-        expected: 'FBX LODGroup child meshes to form a valid decreasing coverage sequence',
-        hint: IMPORT_ERROR_HINTS['mesh-lod-contract-invalid'],
-        detail: { reason: projected.error.reason },
+    const levels = lodGroupLevels(params, group);
+    const rootMeshIndex = group.childMeshIndices[0];
+    if (levels !== undefined && rootMeshIndex !== undefined)
+      lodsByRootMesh.set(rootMeshIndex, levels);
+  }
+  return lodsByRootMesh;
+}
+
+function previousMaterialSlots(raw: unknown): MeshMaterialSlotTopologyEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter(
+    (slot): slot is MeshMaterialSlotTopologyEntry =>
+      slot !== null &&
+      typeof slot === 'object' &&
+      !Array.isArray(slot) &&
+      typeof (slot as { slotName?: unknown }).slotName === 'string',
+  );
+}
+
+function materialSlotDefaultOverrides(raw: unknown): Record<string, string | null> | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  return Object.fromEntries(
+    Object.entries(raw).filter(
+      (entry): entry is [string, string | null] =>
+        typeof entry[1] === 'string' || entry[1] === null,
+    ),
+  );
+}
+
+function buildDeclaredMeshAsset(
+  params: FbxAssetPackInput,
+  mesh: MeshPod,
+  skinnedMeshSourceIndex: number | null,
+  slotSource: MeshMaterialSlotSource,
+  meshLods: readonly MeshLodLevel[] | undefined,
+): ImportedAsset<unknown> | undefined {
+  const meshDeclaration = declaredSubAsset(params, 'mesh', mesh.sourceIndex);
+  const guid = meshDeclaration?.guid;
+  if (guid === undefined) return undefined;
+  const meshSourceKey = meshDeclaration?.sourceKey;
+  const override =
+    meshSourceKey === undefined ? undefined : params.sourceOverrides?.[meshSourceKey];
+  const previousSlots = previousMaterialSlots(override?.materialSlots);
+  const slotDefaultOverrides = materialSlotDefaultOverrides(override?.materialSlotDefaultOverrides);
+  const inf = mesh.sourceIndex === skinnedMeshSourceIndex ? params.skin.influences : undefined;
+  return buildMeshAsset(mesh, guid, inf, {
+    meshCollision: params.meshCollision,
+    ...slotSource,
+    ...(previousSlots === undefined ? {} : { previousMaterialSlots: previousSlots }),
+    ...(slotDefaultOverrides === undefined
+      ? {}
+      : { materialSlotDefaultOverrides: slotDefaultOverrides }),
+    ...(meshSourceKey === undefined ? {} : { meshSourceKey }),
+    ...(meshLods === undefined ? {} : { lods: meshLods }),
+  });
+}
+
+// Skeleton asset (t48). refs[] empty (skeleton is leaf data). The runtime
+// SkeletonAsset POD is { inverseBindMatrices, jointCount } — joint paths live
+// on the parallel SkinAsset (mirror of gltfImporter's emit policy). The native
+// binding derives the skeleton from the skin's clusters, so jointCount /
+// inverseBindMatrices already align 1:1 with the skin's jointPaths and the
+// per-vertex skinIndex influences (runtime requires
+// SkeletonAsset.jointCount === Skin.joints.length).
+function buildSkeletonAsset(skeleton: SkeletonPod, guid: string): ImportedAsset<unknown> {
+  const { bounds, shadowCapsules } = skeleton;
+  return {
+    guid,
+    kind: 'skeleton',
+    payload: {
+      kind: 'skeleton',
+      inverseBindMatrices: skeleton.inverseBindMatrices,
+      jointCount: skeleton.jointCount,
+      ...(bounds === undefined ? {} : { bounds }),
+      ...(shadowCapsules === undefined ? {} : { shadowCapsules }),
+    } as never,
+    refs: [],
+    artifacts: {},
+  };
+}
+
+// Skin asset (t49). The runtime SkinAsset POD is { skeletonGuid, jointPaths };
+// per-vertex influences live in the mesh vertex buffer, not the SkinAsset.
+// refs[] carries the skeleton GUID cross-edge (mirror of gltfImporter) so the
+// runner / runtime asset graph sees the skin->skeleton link.
+function buildSkinAsset(
+  skin: SkinPod,
+  guid: string,
+  skeletonGuid: string | undefined,
+): ImportedAsset<unknown> {
+  return {
+    guid,
+    kind: 'skin',
+    payload: {
+      kind: 'skin',
+      skeletonGuid: skeletonGuid ?? '',
+      jointPaths: skin.jointPaths,
+    } as never,
+    refs:
+      skeletonGuid !== undefined
+        ? [{ guid: skeletonGuid, sourceField: { fieldName: 'skeleton' } }]
+        : [],
+    artifacts: {},
+  };
+}
+
+// Animation clip assets (t50)
+function buildAnimationClipAsset(
+  clip: AnimationClipPod,
+  clipIndex: number,
+  guid: string,
+): ImportedAsset<unknown> {
+  const payload = {
+    kind: 'animation-clip',
+    name: clip.name ?? `Clip${clipIndex}`,
+    duration: clip.duration,
+    channels: clip.channels.map((ch) => ({
+      targetId: ch.targetId,
+      property: ch.property,
+      sampler: {
+        input: Array.from(ch.sampler.input),
+        output: Array.from(ch.sampler.output),
+        interpolation: ch.sampler.interpolation,
+      },
+    })),
+  };
+  const samples = encodeAnimationClipSamples(payload);
+  return {
+    guid,
+    kind: 'animation-clip',
+    payload: (samples?.payload ?? payload) as never,
+    refs: [],
+    artifacts:
+      samples === undefined
+        ? {}
+        : {
+            [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+              mediaType: 'application/octet-stream',
+              bytes: samples.bytes,
+            },
+          },
+  };
+}
+
+function morphWeightsByMeshIndex(
+  meshes: readonly MeshPod[],
+): SceneBuildContext['morphWeightsByMeshIndex'] {
+  const weightsByMesh = new Map<
+    number,
+    { readonly targetCount: number; readonly weights?: Float32Array }
+  >();
+  for (const mesh of meshes) {
+    const targetCount = mesh.morphTargets?.length ?? 0;
+    if (targetCount > 0) {
+      weightsByMesh.set(mesh.sourceIndex, {
+        targetCount,
+        ...(mesh.morphWeights === undefined
+          ? {}
+          : { weights: new Float32Array(mesh.morphWeights) }),
       });
     }
-    const parsed = projected.value.lods.flatMap((level) => {
-      const guid = AssetGuid.parse(level.meshGuid);
-      return guid.ok && Number.isFinite(level.screenCoverage)
-        ? [{ mesh: guid.value, screenCoverage: level.screenCoverage }]
-        : [];
-    });
-    lodsByRootMesh.set(rootMeshIndex, parsed);
   }
+  return weightsByMesh;
+}
 
-  for (const mesh of params.meshes) {
-    const meshDeclaration = params.subAssets.find(
-      (entry) => entry.kind === 'mesh' && entry.sourceIndex === mesh.sourceIndex,
-    );
-    const guid = meshDeclaration?.guid;
-    if (guid === undefined) continue;
-    const previousRaw =
-      meshDeclaration?.sourceKey === undefined
-        ? undefined
-        : params.sourceOverrides?.[meshDeclaration.sourceKey]?.materialSlots;
-    const previousMaterialSlots = Array.isArray(previousRaw)
-      ? previousRaw.filter(
-          (slot): slot is MeshMaterialSlotTopologyEntry =>
-            slot !== null &&
-            typeof slot === 'object' &&
-            !Array.isArray(slot) &&
-            typeof (slot as { slotName?: unknown }).slotName === 'string',
-        )
-      : undefined;
-    const authoredRaw =
-      meshDeclaration?.sourceKey === undefined
-        ? undefined
-        : params.sourceOverrides?.[meshDeclaration.sourceKey]?.materialSlotDefaultOverrides;
-    const materialSlotDefaultOverrides =
-      authoredRaw !== null && typeof authoredRaw === 'object' && !Array.isArray(authoredRaw)
-        ? Object.fromEntries(
-            Object.entries(authoredRaw).filter(
-              (entry): entry is [string, string | null] =>
-                typeof entry[1] === 'string' || entry[1] === null,
-            ),
-          )
-        : undefined;
-    const inf = mesh.sourceIndex === skinnedMeshSourceIndex ? params.skin.influences : undefined;
-    const meshLods = lodsByRootMesh.get(mesh.sourceIndex);
-    assets.push(
-      buildMeshAsset(mesh, guid, inf, {
-        meshCollision: params.meshCollision,
-        guidByIndex: materialGuidByIndex,
-        nameByIndex: materialNameByIndex,
-        sourceKeyByIndex: materialSourceKeyByIndex,
-        ...(previousMaterialSlots === undefined ? {} : { previousMaterialSlots }),
-        ...(materialSlotDefaultOverrides === undefined ? {} : { materialSlotDefaultOverrides }),
-        ...(meshDeclaration?.sourceKey === undefined
-          ? {}
-          : { meshSourceKey: meshDeclaration.sourceKey }),
-        ...(meshLods === undefined ? {} : { lods: meshLods }),
-      }),
-    );
-  }
-
-  for (let i = 0; i < params.materials.length; i++) {
-    const mat = params.materials[i];
-    if (!mat) continue;
-    const guid = guidOf('material', i);
-    const materialIsSkinned = skinnedMaterialIndices.has(i);
-    if (guid !== undefined) {
-      assets.push(buildMaterialAsset(mat, guid, materialIsSkinned, params.standardMaterialGuid));
-    }
-  }
-
-  for (const tex of params.textures) {
-    const guid = guidOf('texture', tex.sourceIndex);
-    if (guid !== undefined) assets.push(buildTextureNote(tex, guid));
-  }
-
-  // Scene refs[] ordering (mirror of gltfImporter): only direct scene
-  // dependencies live here. Mesh defaults belong to MeshAsset refs and
-  // textures belong to MaterialAsset refs, so the scene concatenates
-  //   [mesh GUIDs..., skeleton GUIDs..., skin GUIDs...]
-  // each section in declared sourceIndex order. Build the section -> refs-index
-  // maps here so buildSceneAsset can stamp the right indices.
+// Scene refs[] ordering (mirror of gltfImporter): only direct scene
+// dependencies live here. Mesh defaults belong to MeshAsset refs and
+// textures belong to MaterialAsset refs, so the scene concatenates
+//   [mesh GUIDs..., skeleton GUIDs..., skin GUIDs...]
+// each section in declared sourceIndex order. Build the section -> refs-index
+// maps here so buildSceneAsset can stamp the right indices.
+function sceneBuildContext(params: FbxAssetPackInput): SceneBuildContext {
   const declaredByKind = (kind: string): string[] =>
     params.subAssets
       .filter((s) => s.kind === kind)
@@ -605,7 +717,6 @@ export function toAssetPack(params: {
   const meshGuids = declaredByKind('mesh');
   const skeletonGuids = declaredByKind('skeleton');
   const skinGuids = declaredByKind('skin');
-  const sceneRefs = [...meshGuids, ...skeletonGuids, ...skinGuids];
 
   // mesh sourceIndex -> scene refs[] index (mesh section starts at 0).
   const meshHandleByIndex = new Map<number, number>();
@@ -617,141 +728,92 @@ export function toAssetPack(params: {
     });
   // skeleton handle = first skeleton's scene refs[] index.
   const skeletonRefBase = meshGuids.length;
-  const skeletonHandle = skeletonGuids.length > 0 ? skeletonRefBase : undefined;
-  // Single-mesh fixtures: the skin deforms the (only) mesh node.
-  const skinnedMeshIndex =
-    params.skin.vertexCount > 0 ? (params.meshes[0]?.sourceIndex ?? null) : null;
+  return {
+    meshHandleByIndex,
+    // Single-mesh fixtures: the skin deforms the (only) mesh node.
+    skinnedMeshIndex: params.skin.vertexCount > 0 ? (params.meshes[0]?.sourceIndex ?? null) : null,
+    skeletonHandle: skeletonGuids.length > 0 ? skeletonRefBase : undefined,
+    refs: [...meshGuids, ...skeletonGuids, ...skinGuids],
+    skinGuids,
+    animationTargetIds: new Set(
+      params.animationClips.flatMap((clip) => clip.channels.map((channel) => channel.targetId)),
+    ),
+    morphWeightsByMeshIndex: morphWeightsByMeshIndex(params.meshes),
+  };
+}
 
-  // Skeleton asset (t48). refs[] empty (skeleton is leaf data). The runtime
-  // SkeletonAsset POD is { inverseBindMatrices, jointCount } — joint paths live
-  // on the parallel SkinAsset (mirror of gltfImporter's emit policy). The native
-  // binding derives the skeleton from the skin's clusters, so jointCount /
-  // inverseBindMatrices already align 1:1 with the skin's jointPaths and the
-  // per-vertex skinIndex influences (runtime requires
-  // SkeletonAsset.jointCount === Skin.joints.length).
+// XOR identity rule (aligned with the glTF importer): a single-asset package
+// derives its name from the package path, so the stored entry name is dropped.
+// Only multi-asset packages keep per-entry stored names. FBX is almost always
+// multi-asset (a scene asset is always emitted), so this strips name only in
+// the degenerate single-asset case.
+function dropSingleAssetName(assets: ImportedAsset<unknown>[]): void {
+  if (assets.length !== 1) return;
+  const only = assets[0];
+  if (only && 'name' in only) {
+    const { name: _dropped, ...rest } = only;
+    assets[0] = rest;
+  }
+}
+
+export function toAssetPack(params: FbxAssetPackInput): readonly ImportedAsset<unknown>[] {
+  const assets: ImportedAsset<unknown>[] = [];
+  const guidOf = makeGuidResolver(params.subAssets);
+  const slotSource = materialSlotSource(params, guidOf);
+  const hasSkin = params.skin.vertexCount > 0;
+  const skinnedMeshSourceIndex = hasSkin ? (params.meshes[0]?.sourceIndex ?? null) : null;
+  const skinnedMaterials = skinnedMaterialIndices(params, skinnedMeshSourceIndex);
+  const lodsByRootMesh = meshLodsByRoot(params);
+
+  for (const mesh of params.meshes) {
+    const meshLods = lodsByRootMesh.get(mesh.sourceIndex);
+    const asset = buildDeclaredMeshAsset(
+      params,
+      mesh,
+      skinnedMeshSourceIndex,
+      slotSource,
+      meshLods,
+    );
+    if (asset !== undefined) assets.push(asset);
+  }
+
+  for (let i = 0; i < params.materials.length; i++) {
+    const mat = params.materials[i];
+    if (!mat) continue;
+    const guid = guidOf('material', i);
+    if (guid !== undefined) {
+      assets.push(
+        buildMaterialAsset(mat, guid, skinnedMaterials.has(i), params.standardMaterialGuid),
+      );
+    }
+  }
+
+  for (const tex of params.textures) {
+    const guid = guidOf('texture', tex.sourceIndex);
+    if (guid !== undefined) assets.push(buildTextureNote(tex, guid));
+  }
+
   const skeletonGuid = guidOf('skeleton', 0);
   if (params.skeleton.jointCount > 0 && skeletonGuid !== undefined) {
-    const { bounds, shadowCapsules } = params.skeleton;
-    assets.push({
-      guid: skeletonGuid,
-      kind: 'skeleton',
-      payload: {
-        kind: 'skeleton',
-        inverseBindMatrices: params.skeleton.inverseBindMatrices,
-        jointCount: params.skeleton.jointCount,
-        ...(bounds === undefined ? {} : { bounds }),
-        ...(shadowCapsules === undefined ? {} : { shadowCapsules }),
-      } as never,
-      refs: [],
-      artifacts: {},
-    });
+    assets.push(buildSkeletonAsset(params.skeleton, skeletonGuid));
   }
-
-  // Skin asset (t49). The runtime SkinAsset POD is { skeletonGuid, jointPaths };
-  // per-vertex influences live in the mesh vertex buffer, not the SkinAsset.
-  // refs[] carries the skeleton GUID cross-edge (mirror of gltfImporter) so the
-  // runner / runtime asset graph sees the skin->skeleton link.
   const skinGuid = guidOf('skin', 0);
-  if (params.skin.vertexCount > 0 && skinGuid !== undefined) {
-    assets.push({
-      guid: skinGuid,
-      kind: 'skin',
-      payload: {
-        kind: 'skin',
-        skeletonGuid: skeletonGuid ?? '',
-        jointPaths: params.skin.jointPaths,
-      } as never,
-      refs:
-        skeletonGuid !== undefined
-          ? [{ guid: skeletonGuid, sourceField: { fieldName: 'skeleton' } }]
-          : [],
-      artifacts: {},
-    });
+  if (hasSkin && skinGuid !== undefined) {
+    assets.push(buildSkinAsset(params.skin, skinGuid, skeletonGuid));
   }
 
-  // Animation clip assets (t50)
   for (let i = 0; i < params.animationClips.length; i++) {
     const clip = params.animationClips[i];
     if (!clip) continue;
     const guid = guidOf('animation-clip', i);
-    if (guid === undefined) continue;
-    const payload = {
-      kind: 'animation-clip',
-      name: clip.name ?? `Clip${i}`,
-      duration: clip.duration,
-      channels: clip.channels.map((ch) => ({
-        targetId: ch.targetId,
-        property: ch.property,
-        sampler: {
-          input: Array.from(ch.sampler.input),
-          output: Array.from(ch.sampler.output),
-          interpolation: ch.sampler.interpolation,
-        },
-      })),
-    };
-    const samples = encodeAnimationClipSamples(payload);
-    assets.push({
-      guid,
-      kind: 'animation-clip',
-      payload: (samples?.payload ?? payload) as never,
-      refs: [],
-      artifacts:
-        samples === undefined
-          ? {}
-          : {
-              [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
-                mediaType: 'application/octet-stream',
-                bytes: samples.bytes,
-              },
-            },
-    });
+    if (guid !== undefined) assets.push(buildAnimationClipAsset(clip, i, guid));
   }
 
   const sceneGuid = guidOf('scene', 0);
-  const animationTargetIds = new Set(
-    params.animationClips.flatMap((clip) => clip.channels.map((channel) => channel.targetId)),
-  );
-  const morphWeightsByMeshIndex = new Map<
-    number,
-    { readonly targetCount: number; readonly weights?: Float32Array }
-  >();
-  for (const mesh of params.meshes) {
-    const targetCount = mesh.morphTargets?.length ?? 0;
-    if (targetCount > 0) {
-      morphWeightsByMeshIndex.set(mesh.sourceIndex, {
-        targetCount,
-        ...(mesh.morphWeights === undefined
-          ? {}
-          : { weights: new Float32Array(mesh.morphWeights) }),
-      });
-    }
-  }
   if (sceneGuid !== undefined) {
-    assets.push(
-      buildSceneAsset(params.scene, sceneGuid, {
-        meshHandleByIndex,
-        skinnedMeshIndex,
-        skeletonHandle,
-        refs: sceneRefs,
-        skinGuids,
-        animationTargetIds,
-        morphWeightsByMeshIndex,
-      }),
-    );
+    assets.push(buildSceneAsset(params.scene, sceneGuid, sceneBuildContext(params)));
   }
 
-  // XOR identity rule (aligned with the glTF importer): a single-asset package
-  // derives its name from the package path, so the stored entry name is dropped.
-  // Only multi-asset packages keep per-entry stored names. FBX is almost always
-  // multi-asset (a scene asset is always emitted), so this strips name only in
-  // the degenerate single-asset case.
-  if (assets.length === 1) {
-    const only = assets[0];
-    if (only && 'name' in only) {
-      const { name: _dropped, ...rest } = only;
-      assets[0] = rest;
-    }
-  }
-
+  dropSingleAssetName(assets);
   return assets;
 }

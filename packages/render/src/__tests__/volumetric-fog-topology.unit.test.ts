@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { deriveVolumetricFogResolvedExtent } from '../volume/resources';
 
 const pipelineSource = readFileSync(
-  fileURLToPath(new URL('../pipeline/standard-pipeline.ts', import.meta.url)),
+  fileURLToPath(new URL('../pipeline/standard-deferred-lane.ts', import.meta.url)),
   'utf8',
 );
 const forwardPipelineSource = readFileSync(
@@ -120,7 +120,7 @@ describe('volumetric fog RenderGraph topology', () => {
     expect(opaqueFogSource).toContain('input.directionalShadow');
     for (const source of [pipelineSource, forwardPipelineSource]) {
       expect(source).toContain('addTranslucencyVolumetricFogPasses');
-      expect(source).toContain('shadows.value.directional?.view');
+      expect(source).toMatch(/shadows(?:\.value)?\.directional\?\.view/);
     }
     expect(shaderSource('volume-inject.wgsl')).toContain('fn volume_cascade');
     expect(shaderSource('volume-inject.wgsl')).toContain('sample_shadow_2d_kernel');

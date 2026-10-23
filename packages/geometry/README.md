@@ -39,8 +39,9 @@ an authoring map's attributes derives a different mask without retaining the map
 or its buffers. Layout offsets, formats, and digests still derive from the one
 canonical attribute schema.
 
-Runtime Mesh decoding uses the same canonical preparation for JSON, procedural
-descriptors and binary bodies. A binary body excludes duplicate JSON geometry.
+Runtime Mesh decoding uses the same canonical preparation for JSON and binary
+bodies; a symbolic geometry token is not a Mesh payload and fails as
+`asset-package-invalid`. A binary body excludes duplicate JSON geometry.
 Empty meshes retain zero vertices and finite zero bounds; an empty index array
 on a nonempty mesh selects vertex-only geometry.
 
@@ -125,6 +126,11 @@ digest; color is host `@location(13)` (`float32x4`, 16 bytes), while existing
 locations `0..12` remain unchanged. Render and asset consumers carry this
 projection instead of calculating offsets or a parallel stride. See
 [`VertexAttributeMap`](../types/src/index.ts) for the public POD shape.
+
+`withVertexColor(mesh, rgbaLinear)` adds or replaces the canonical `color`
+attribute with one constant linear RGBA value and repacks the interleaved
+vertices; index, tangent, bounds and submesh facts are preserved. Engine Content
+uses it to give its meshes a white vertex color.
 
 ### 30s hands-on example
 

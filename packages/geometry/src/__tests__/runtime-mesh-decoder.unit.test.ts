@@ -66,10 +66,11 @@ const meshBody = (bytes: Uint8Array) => ({
 });
 
 describe('Geometry runtime decoder', () => {
-  it('decodes procedural descriptors and JSON geometry without a second runtime loader', async () => {
-    expect((await decode({ geometry: 'procedural-cube' })).unwrap()).toEqual(
-      createBoxGeometry(1, 1, 1).unwrap(),
-    );
+  it('decodes JSON geometry without a second runtime loader and rejects procedural tokens', async () => {
+    expect(await decode({ geometry: 'procedural-cube' })).toMatchObject({
+      ok: false,
+      error: { code: 'asset-package-invalid' },
+    });
     const source = createBoxGeometry(1, 2, 3).unwrap();
     const json = JSON.parse(
       JSON.stringify(source, (_key, value) =>
@@ -227,7 +228,6 @@ describe('Geometry runtime decoder', () => {
     ]) {
       expect((await decode(payload, meshBody(binary))).ok).toBe(false);
     }
-    expect((await decode({ ...source, geometry: 'procedural-cube' })).ok).toBe(false);
     for (const payload of [null, [], 3]) expect((await decode(payload)).ok).toBe(false);
     for (const bytes of [new Uint8Array([3, 0, 0]), new Uint8Array([...binary, 0])])
       expect(await decode({}, meshBody(bytes))).toMatchObject({

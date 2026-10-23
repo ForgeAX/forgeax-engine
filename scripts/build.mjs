@@ -199,6 +199,19 @@ if (mode !== 'packages-only') {
   summary.engineShaderCompileCount = producerFacts.engineShaderCompileCount ?? 0;
 }
 
+if (mode === 'engine') {
+  // Registry releases ship precompiled engine shader profiles; without them a
+  // game bound to this source Engine recompiles every engine entry on each
+  // build. The producer verifies its inputs by fingerprint, reusing the shared
+  // manifest above or its previous output, and compiles only what changed.
+  await runStage('shader-profiles', process.execPath, [
+    'scripts/forgeax/prepare-shader-release-inputs.mjs',
+    '--build',
+    '--shared-input-manifest',
+    sharedManifest,
+  ]);
+}
+
 if (mode === 'full') {
   await runStage(
     'apps',

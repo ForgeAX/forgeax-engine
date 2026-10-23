@@ -55,6 +55,7 @@ async function fixture(body: string, nested = false, config?: unknown): Promise<
     name: 'Fixture',
     packageJson: {},
     assetRoots: ['assets'],
+    assetLibraries: [],
     roots: { build: guid },
   };
 }

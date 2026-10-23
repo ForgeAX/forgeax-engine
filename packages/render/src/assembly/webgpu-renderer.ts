@@ -7,10 +7,7 @@ import {
 } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease, type RenderReadLease } from '@forgeax/engine-ecs/projection';
-import {
-  DEFAULT_VERTEX_ATTRIBUTE_MAP,
-  type VertexLayoutProjection,
-} from '@forgeax/engine-geometry';
+import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import type {
   BindGroupLayout,
   RenderPipeline,
@@ -21,7 +18,6 @@ import type {
 import { err, ok, RhiError, validateDrawArgs } from '@forgeax/engine-rhi';
 import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
-  findVariantByKey,
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   materialShaderSourceEquals,
@@ -102,8 +98,6 @@ import {
   registerDepthOfFieldBuiltins,
 } from '../features/depth-of-field/depth-of-field-assembly';
 import { createRenderFeatureHost } from '../features/host';
-import { motionBlurDrawOptions } from '../features/motion-blur/motion-blur-runtime';
-import { RENDER_FEATURE_VERTEX_LAYOUTS } from '../features/prepared-graphics';
 import type { RenderFeature, RenderFeatureShaderModuleMode } from '../features/types';
 import {
   type PostProcessShaderEntry,
@@ -117,7 +111,6 @@ import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import {
   cacheKeyOf,
-  colorFormatsForPassKind,
   type PipelineSpec,
   PipelineSpecError,
   passKindPolicyTable,
@@ -183,6 +176,17 @@ import type { RhiBackendPack } from './backend-contract';
 import { inspectBarrelDistortion } from './barrel-distortion-inspection';
 import type { BundlerOptions } from './bundler-contract';
 import { rejectZeroCanvasSize } from './canvas-draw-guard';
+import {
+  type DrawRequest,
+  frameDrawOwnerOptions,
+  frameDrawRequest,
+  missingFrameLeaseOwnerError,
+  publicationDrawOwnerOptions,
+  publicationDrawRequest,
+  sceneFreeFrameInputError,
+  unattachedFrameLeaseError,
+  withFeatureSourceFeedback,
+} from './draw-frame-input';
 import { captureMaterialDraws } from './draw-observation';
 import { createRendererDynamicGeometryController } from './dynamic-geometry-host';
 import { createExternalTextureHost } from './external-texture-host';
@@ -206,11 +210,15 @@ import {
   invokeDeviceCreateShaderModule,
   type LayoutKind,
   makeShaderDeviceAdapter,
-  normalizeMaterialShaderVariantSet,
+  manifestVariantShaderEntry,
+  materialPipelineAttachments,
+  materialPipelineGeometry,
+  materialPipelineShaderSpec,
   prepareLowLimitMaterialShaderEntry,
   prepareMaterialShaders,
   requiresPreparedMaterialShader,
   resolveCachedMaterialShaderVariant,
+  resolveMaterialPipelineVariantSet,
   resolveMaterialShaderBackendArtifactKey,
   resolveMaterialShaderVertexInputContract,
   type ShaderDeviceAdapterInternal,
@@ -245,11 +253,13 @@ import {
 import { projectRendererFeatureInspection } from './renderer-feature-inspection';
 import {
   type ContinuationTerminator,
+  completeFrameFailure,
   createContinuationTerminator,
-  guardFrameCompletion,
   inspectFrameCompletionContinuations,
   observeFrameCompletionStages,
   type PendingFrameCompletion,
+  raceFrameContinuation,
+  settleFrameCompletion,
 } from './renderer-frame-transaction';
 import {
   ensureContextConfigured,
@@ -286,8 +296,7 @@ import {
 } from './webgpu-renderer-observation-owner';
 import {
   isPreparedMaterialVertexLayout,
-  PREPARED_INSTANCE_VERTEX_ATTRS,
-  PREPARED_MATERIAL_INSTANCE_VERTEX_ATTRS,
+  materialPipelineVertexAttributes,
   particleMaterialInputVertexBuffers,
   resolveWebGPUVertexBufferLayouts,
 } from './webgpu-vertex-layouts';
@@ -1425,8 +1434,6 @@ async function makeWebGPURenderer(
     const ldrColorFormat: GPUTextureFormat =
       colorFormatOverride ??
       (currentState !== null ? currentState.colorAttachmentFormat : 'bgra8unorm-srgb');
-    // feat-20260629 M4: auto-fill shaderUvSetCount from naga reflection
-    // (stored in materialShaderUvSetCounts during prepareMaterialShaders).
     const materialShaderIdForPass = resolveMaterialPipelineShaderId(materialShaderId, passKind);
     const pipelineShaderId = resolveMaterialShaderBackendArtifactKey(
       materialShaderIdForPass,
@@ -1434,118 +1441,52 @@ async function makeWebGPURenderer(
       assets.getMaterialArtifact(materialShaderIdForPass),
     );
     const materialShaderEntry = getShader().findMaterialArtifact(pipelineShaderId);
-    const materialShaderSource = materialProgramSource(materialShaderEntry);
     // Programs that predate fs_opaque keep their default forward entry.
-    fragmentEntry = declaredFragmentEntry(fragmentEntry, materialShaderSource);
-    const currentMaterialUvSetCounts = currentMaterialShaderUvSetCounts();
-    const materialUvSetCount =
-      currentMaterialUvSetCounts.get(pipelineShaderId) ??
-      (materialShaderEntry.ok ? materialShaderEntry.value.program.uvSetCount : undefined);
-    if (materialUvSetCount !== undefined) {
-      currentMaterialUvSetCounts.set(pipelineShaderId, materialUvSetCount);
-    }
-    const resolvedUvSetCount = shaderUvSetCount ?? materialUvSetCount;
+    fragmentEntry = declaredFragmentEntry(
+      fragmentEntry,
+      materialProgramSource(materialShaderEntry),
+    );
+    const resolvedUvSetCount =
+      shaderUvSetCount ?? rememberMaterialUvSetCount(pipelineShaderId, materialShaderEntry);
     const manifestEntry = getShader().materialShaderManifestEntry(pipelineShaderId);
-    // Sprite's omitted request is the boot-selected default artifact. The
-    // explicit empty key remains the PER_INSTANCE_REGION=true request used by
-    // SpriteInstances, so only that path is capability-rewritten here.
-    const resolvedVariantSet =
-      variantSet === undefined &&
-      (pipelineShaderId === 'forgeax::sprite' || pipelineShaderId === 'forgeax::sprite-lit')
-        ? undefined
-        : resolveCachedMaterialShaderVariantSet(variantSet, manifestEntry);
     // The record stage composes capability axes; plain custom shaders retain
     // only manifest-declared axes so '' cannot select an HDRP mesh layout.
-    // Builtin forgeax:: shaders keep the compatibility request
-    // when a reduced test/legacy manifest omits variant metadata.
     // A single-source manifest entry must stay on its canonical module key;
     // otherwise a synthesized capability axis races the prewarmed module.
-    let effectiveVariantSet = normalizeMaterialShaderVariantSet(resolvedVariantSet, manifestEntry);
-    // A published artifact is already backend-specific; no manifest means no synthesized key.
-    if (manifestEntry === undefined) effectiveVariantSet = undefined;
-    if (
-      vertexLayoutProjection === undefined &&
-      manifestEntry?.variants.some((variant) => 'VERTEX_COLOR_AVAILABLE' in variant.defines)
-    ) {
-      if (effectiveVariantSet === '') {
-        const noColorVariant = manifestEntry.variants.find(
-          (variant) =>
-            variant.defines.VERTEX_COLOR_AVAILABLE === false &&
-            Object.entries(variant.defines).every(
-              ([axis, value]) => axis === 'VERTEX_COLOR_AVAILABLE' || value === true,
-            ),
-        );
-        effectiveVariantSet = noColorVariant?.definesKey ?? 'VERTEX_COLOR_AVAILABLE=false';
-      } else {
-        effectiveVariantSet = effectiveVariantSet?.replace(
-          'VERTEX_COLOR_AVAILABLE=true',
-          'VERTEX_COLOR_AVAILABLE=false',
-        );
-      }
-    }
-    if (
-      manifestEntry !== undefined &&
-      !pipelineShaderId.startsWith('forgeax::') &&
-      effectiveVariantSet !== undefined &&
-      effectiveVariantSet !== ''
-    ) {
-      const declaredAxes = new Set<string>();
-      for (const variant of manifestEntry.variants) {
-        for (const axis of Object.keys(variant.defines)) declaredAxes.add(axis);
-      }
-      const filteredVariantParts = effectiveVariantSet
-        .split('+')
-        .filter((part) => declaredAxes.has(part.slice(0, part.indexOf('='))))
-        .sort();
-      effectiveVariantSet =
-        filteredVariantParts.length === 0 ? undefined : filteredVariantParts.join('+');
-    }
+    const effectiveVariantSet = resolveMaterialPipelineVariantSet(
+      requestedMaterialVariantSet(variantSet, pipelineShaderId, manifestEntry),
+      manifestEntry,
+      pipelineShaderId,
+      vertexLayoutProjection !== undefined,
+    );
     const colorFormat: GPUTextureFormat =
       renderState?.outputs?.[0]?.format ?? (isHdr ? 'rgba16float' : ldrColorFormat);
     additionalColorFormats ??= renderState?.outputs?.slice(1).map((output) => output.format);
-    const isDepthOnlyPass = passKindPolicyTable[passKind]?.shape === 'depth-only';
     const resolvedVertexEntry = vertexEntry ?? vertexEntryPoint;
-    const inputVertexBuffers = particleMaterialInputVertexBuffers(vertexLayout, particleInputLanes);
     const spec: PipelineSpec = {
-      shader: {
-        id: pipelineShaderId,
+      shader: materialPipelineShaderSpec(
+        pipelineShaderId,
         passKind,
-        variantSet: effectiveVariantSet,
-        ...(resolvedVertexEntry === undefined ? {} : { vertexEntry: resolvedVertexEntry }),
-        ...(fragmentEntry === undefined ? {} : { fragmentEntry }),
-        ...(constants === undefined ? {} : { constants }),
-      },
-      attachments: {
-        colorFormats:
-          additionalColorFormats === undefined
-            ? colorFormatsForPassKind(passKind, colorFormat)
-            : [colorFormat, ...additionalColorFormats],
-        depthFormat: isDepthOnlyPass
-          ? (depthFormatOverride ?? 'depth32float')
-          : depthFormatOverride === null
-            ? undefined
-            : (depthFormatOverride ?? 'depth32float-stencil8'),
-        sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
-      },
-      geometry: {
-        topology: topology ?? 'triangle-list',
-        stripIndexFormat: indexFormat,
-        vertexLayout:
-          meshAttributes ??
-          (vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.positionSizeColorInstance
-            ? PREPARED_INSTANCE_VERTEX_ATTRS
-            : isPreparedMaterialVertexLayout(vertexLayout)
-              ? PREPARED_MATERIAL_INSTANCE_VERTEX_ATTRS
-              : DEFAULT_VERTEX_ATTRIBUTE_MAP),
-        // Thread the shader-declared count whenever it is greater than one.
-        // Built-in PBR reserves all eight supported UV inputs; single-UV meshes
-        // remain byte-stable because missing sets are clamp-to-last aliases.
-        ...(resolvedUvSetCount !== undefined && resolvedUvSetCount > 1
-          ? { shaderUvSetCount: resolvedUvSetCount }
-          : {}),
-        ...(vertexLayoutProjection === undefined ? {} : { vertexLayoutProjection }),
-        ...(inputVertexBuffers === undefined ? {} : { vertexBuffers: inputVertexBuffers }),
-      },
+        effectiveVariantSet,
+        resolvedVertexEntry,
+        fragmentEntry,
+        constants,
+      ),
+      attachments: materialPipelineAttachments(
+        passKind,
+        colorFormat,
+        additionalColorFormats,
+        depthFormatOverride,
+        sampleCount,
+      ),
+      geometry: materialPipelineGeometry(
+        topology,
+        indexFormat,
+        materialPipelineVertexAttributes(meshAttributes, vertexLayout),
+        resolvedUvSetCount,
+        vertexLayoutProjection,
+        particleMaterialInputVertexBuffers(vertexLayout, particleInputLanes),
+      ),
       renderState,
     };
     const cacheKey = `${cacheKeyOf(spec)}|vertex:${resolvedVertexEntry ?? 'vs_main'}`;
@@ -1558,219 +1499,39 @@ async function makeWebGPURenderer(
         preparedPipelineOwners.get(currentPipelineCacheState())?.has(cacheKey) === true);
     if (cached !== undefined && !prepare) return cached;
     if (pipelineState === null) return null;
-    const lookup = getShader().findMaterialArtifact(pipelineShaderId);
-    if (!lookup.ok) {
-      if (requiresPreparedMaterialShader(vertexLayout)) {
-        // Only a registered shader can be warming up. Preserve a permanent
-        // lookup failure instead of turning it into an endless pending PSO.
-        throw lookup.error;
-      }
-      // bug-20260527-renderstate-pipeline-dispatch-gap D-3:
-      // fallback path parity -- when renderState is defined and the
-      // shader id is not registered, build a renderState-variant of
-      // the standard pipeline from the engine-shipped PBR entry.
-      if (
-        renderState === undefined &&
-        !allowsUnlitPreparedFallback(depthFormatOverride, vertexLayout, pipelineShaderId)
-      ) {
-        // A prepared feature declares the vertex layout it owns. Falling back
-        // to default-unlit here would pair that data with the unlit shader's
-        // position/normal/uv/tangent inputs and let WebGPU reject the
-        // pipeline at validation time. Keep the missing shader retryable and
-        // preserve the declared input contract instead.
-        return null;
-      }
-      if (renderState === undefined) {
-        const unlitLookup = getShader().findMaterialArtifact('forgeax::default-unlit');
-        if (!unlitLookup.ok) return null;
-        return buildAndCachePipeline(
-          cacheKey,
-          unlitLookup.value,
-          `pbr-pipeline-prepared-${pipelineShaderId}`,
-          // Reuse the eagerly compiled engine unlit module. The adapter cache
-          // is seeded under this label during renderer readiness; a new label
-          // would keep color-only prepared passes in perpetual warm-up.
-          'unlit',
-          isHdr,
-          undefined,
-          topology,
-          indexFormat,
-          effectiveVariantSet,
-          passKind,
-          'forgeax::default-unlit',
-          meshAttributes,
-          sampleCount,
-          colorFormatOverride,
-          depthFormatOverride,
-          vertexLayout,
-          vertexLayoutProjection,
-          shaderModuleMode,
-          layoutKindOverride,
-          vertexEntryPoint,
-          additionalColorFormats,
-          undefined,
-          undefined,
-          undefined,
-          coverageOnly,
-          constants,
-          prepare,
-        );
-      }
-      const pbrEntry = findStandardPbrEntry(getShader(), currentBuildDevice(), effectiveVariantSet);
-      if (pbrEntry === undefined) return null;
-      // Reuse readiness only for byte-identical WGSL. A fallback can select a
-      // different capability variant, so one shared fallback label is unsafe.
-      const preparedVariant = [...getShader().materialShaderManifestEntries()]
-        .find((entry) => entry.identifier === 'forgeax::default-standard-pbr')
-        ?.variants.find((variant) => materialShaderSourceEquals(variant, pbrEntry.wgsl));
-      const fallbackModuleLabel =
-        preparedVariant === undefined
-          ? `module-fallback-pbr#${getShader().materialProgram(pbrEntry.wgsl, pbrEntry.entryPoints).identity}`
-          : `module-forgeax::default-standard-pbr#${preparedVariant.definesKey}`;
-      return buildAndCachePipeline(
-        cacheKey,
-        { source: pbrEntry.wgsl, paramSchema: [] },
-        `pbr-pipeline-fallback-${pipelineShaderId}${isHdr ? '-hdr' : ''}`,
-        fallbackModuleLabel,
-        isHdr,
-        renderState,
-        topology,
-        indexFormat,
-        // M4.5 / w37 (D-10): the fallback path also threads variantSet so the
-        // layout selector picks HDRP layout when an HDRP caller falls into
-        // this branch (registered shader id missing).
-        effectiveVariantSet,
-        // feat-20260609 / T-002: passKind threaded through the fallback path
-        // for parity with the main path; default 'forward' keeps every prior
-        // fallback caller byte-identical.
-        passKind,
-        // bug-20260611-skin-pipeline-layout: passing materialShaderId here is
-        // intentional even on the fallback (registered-id-missing) branch --
-        // a missing skin shader registration should not silently pick the
-        // wrong BGL chain. With LayoutKind='pbr-skin' the selector returns
-        // null when pbrSkinPipelineLayout is null (charter P3 explicit fail).
-        //
-        // MaterialAsset per-slot texCoord: this branch always compiles the
-        // selected built-in PBR source (`pbrEntry.wgsl`), whose
-        // vertex stage declares all eight UV inputs. The vertex-buffer layout
-        // therefore has to be the PBR layout with all declared slots present,
-        // not the caller shader's -- e.g. a transparent sprite / sprite-lit
-        // material lands here with meshAttributes carrying only uv0, so the
-        // sprite id would resolve a 48-byte 4-attribute layout and the PBR
-        // module would reject a missing UV slot. Pass the built-in PBR id for
-        // layout resolution so buildPipelineContext derives the layout that
-        // matches the compiled module. Skin keeps its
-        // own id so the pbr-skin fail-fast (null layout) is preserved.
-        pipelineShaderId === SKIN_MATERIAL_SHADER_ID
-          ? pipelineShaderId
-          : 'forgeax::default-standard-pbr',
-        // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w16 (D-4):
-        // forward meshAttributes through the fallback path so the pbr-skin
-        // layout chain reads from the deriveVertexBufferLayout SSOT here too.
-        meshAttributes,
-        sampleCount,
-        colorFormatOverride,
-        depthFormatOverride,
-        vertexLayout,
-        vertexLayoutProjection,
-        shaderModuleMode,
-        layoutKindOverride,
-        vertexEntryPoint,
-        additionalColorFormats,
-        undefined,
-        undefined,
-        undefined,
-        coverageOnly,
-        constants,
-        prepare,
-      );
-    }
-    // feat-20260609 M4 / w31: resolve variant WGSL from manifest when
-    // variantSet is non-empty. The boot-time registered shader (from
-    // `installMaterialArtifact` at line ~2473) carries the default (all-true)
-    // variant's WGSL. For URP callers that want a different variant
-    // (e.g. STORAGE_BUFFER_AVAILABLE=true without CLUSTER_FORWARD_AVAILABLE),
-    // we look up the manifest entry, find the matching variant, and
-    // substitute its composedWgsl into the PSO build path. The pipeline
-    // layout itself is built by buildPbrPipelineLayouts (M3 / w12).
-    // When variantSet is empty/undefined, the boot-time registered entry
-    // (which is the all-true default) is used verbatim — backward compat.
-    let shaderEntry = lookup.value;
-    // M4.5 / w38 (D-11): `variantSet === ''` is canonical all-true (HDRP
-    // path) and MUST hit the manifest variant lookup -- treat it as a
-    // first-class variant request, not a falsy "no variant" signal.
-    // Use `!== undefined` so the empty-string case enters the lookup.
-    if (effectiveVariantSet !== undefined) {
-      const registry = getShader();
-      for (const msEntry of registry.materialShaderManifestEntries()) {
-        if (msEntry.identifier === pipelineShaderId) {
-          const variant = findVariantByKey(msEntry, effectiveVariantSet);
-          if (variant) {
-            // M3 / w12-w13: variant substitution carries the same source +
-            // paramSchema as the boot-registered entry; the binding layout
-            // is no longer carried on MaterialShaderEntry (deleted in
-            // w13) — buildPbrPipelineLayouts is the BGL SSOT and reads
-            // derive(paramSchema).bglEntries on demand.
-            shaderEntry = {
-              source: variant.composedWgsl,
-              program: registry.materialProgram(
-                variant.composedWgsl,
-                variant.entryPoints ?? variant.receipt?.entryPoints,
-              ),
-              paramSchema: lookup.value.paramSchema,
-              paramSchemaProjection: lookup.value.paramSchemaProjection,
-            };
-          }
-          break;
-        }
-      }
-    }
-    shaderEntry = prepareLowLimitMaterialShaderEntry(
-      shaderEntry,
-      currentBuildDevice().limits.maxSampledTexturesPerShaderStage,
+    const source = selectMaterialPipelineSource(
+      pipelineShaderId,
+      effectiveVariantSet,
+      isHdr,
+      passKind,
+      renderState,
+      depthFormatOverride,
+      vertexLayout,
     );
-    shaderEntry = { ...shaderEntry, program: getShader().materialProgram(shaderEntry.source) };
-    // feat-20260609 M4 / R3-fixup: append `-${passKind}` to the PSO label so
-    // GPU debug captures (and the shadow-caster branch in the builder)
-    // make the cache variant visible. The fallback path above keeps the
-    // pre-existing fallback-* label shape (no shadow-caster fallback
-    // exists today; the only shadow caller registers shadowCaster directly).
-    const passKindLabelSegment = passKind === 'forward' ? '' : `-${passKind}`;
+    if (source === null) return null;
+    // Fallback sources compile a different program, so caller-selected
+    // entry points and particle lanes belong only to the registered shader.
+    const ownEntries = source.ownEntries;
     return buildAndCachePipeline(
       cacheKey,
-      shaderEntry,
-      `pbr-pipeline-${pipelineShaderId}${isHdr ? '-hdr' : ''}${passKindLabelSegment}`,
-      // feat-20260609 M4 / w31: when variantSet is non-empty, the module identity
-      // includes the variant key so URP (STORAGE_BUFFER_AVAILABLE=true) and HDRP
-      // (CLUSTER_FORWARD_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true) variants
-      // compile as separate shader modules (they have different WGSL sources).
-      // When variantSet is empty/undefined, the module identity stays pre-M4
-      // backward-compatible for all PSOs of the default variant.
-      // M4.5 / w38 (D-11): same `!== undefined` discipline as the cache
-      // key -- `''` (canonical all-true) gets its own module-label slot,
-      // distinct from the no-variant path. Trailing `#` for the empty
-      // case is intentional (parallel to the cache key's `:variant:`
-      // empty-tail segment); module identity stays a function of the
-      // exact variantSet string.
-      effectiveVariantSet !== undefined
-        ? `module-${pipelineShaderId}#${effectiveVariantSet}`
-        : `module-${pipelineShaderId}`,
+      source.entry,
+      source.label,
+      source.moduleLabel,
       isHdr,
       renderState,
       topology,
       indexFormat,
-      // M4.5 / w37 (D-10): main path threads variantSet so HDRP-variant PSO
-      // builds against `hdrpPbrPipelineLayout` (7-slot group(2) BGL) and URP
+      // M4.5 / w37 (D-10): every path threads variantSet so HDRP-variant PSOs
+      // build against `hdrpPbrPipelineLayout` (7-slot group(2) BGL) and URP
       // builds against `pbrPipelineLayout` (1-slot group(2) BGL).
       effectiveVariantSet,
       // feat-20260609 / T-002: passKind selects createRenderPipeline
       // attachment shape (forward color+DS vs shadow-caster depth32float
       // no-color). Orthogonal to variantSet (which selects the BGL chain).
       passKind,
-      // bug-20260611-skin-pipeline-layout: thread the registered materialShaderId
-      // so buildPipelineContext can resolve LayoutKind='pbr-skin' for the skin
-      // shader (2-entry mesh-array BGL).
-      pipelineShaderId,
+      // The layout shader id lets buildPipelineContext resolve the BGL chain
+      // (for example LayoutKind='pbr-skin') that matches the compiled module.
+      source.layoutShaderId,
       // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w16 (D-4):
       // forward meshAttributes so the pbr-skin path's vertex buffer layout
       // is derived via the SSOT (deriveVertexBufferLayout). For URP/HDRP
@@ -1786,13 +1547,164 @@ async function makeWebGPURenderer(
       layoutKindOverride,
       vertexEntryPoint,
       additionalColorFormats,
-      vertexEntry,
-      fragmentEntry,
-      particleInputLanes,
+      ownEntries ? vertexEntry : undefined,
+      ownEntries ? fragmentEntry : undefined,
+      ownEntries ? particleInputLanes : undefined,
       coverageOnly,
       constants,
       prepare,
     );
+  };
+  // feat-20260629 M4: auto-fill shaderUvSetCount from naga reflection
+  // (stored in materialShaderUvSetCounts during prepareMaterialShaders).
+  const rememberMaterialUvSetCount = (
+    pipelineShaderId: string,
+    materialShaderEntry: ReturnType<ShaderCatalog['findMaterialArtifact']>,
+  ): number | undefined => {
+    const currentMaterialUvSetCounts = currentMaterialShaderUvSetCounts();
+    const materialUvSetCount =
+      currentMaterialUvSetCounts.get(pipelineShaderId) ??
+      (materialShaderEntry.ok ? materialShaderEntry.value.program.uvSetCount : undefined);
+    if (materialUvSetCount !== undefined) {
+      currentMaterialUvSetCounts.set(pipelineShaderId, materialUvSetCount);
+    }
+    return materialUvSetCount;
+  };
+  // Sprite's omitted request is the boot-selected default artifact. The
+  // explicit empty key remains the PER_INSTANCE_REGION=true request used by
+  // SpriteInstances, so only that path is capability-rewritten here.
+  const requestedMaterialVariantSet = (
+    variantSet: string | undefined,
+    pipelineShaderId: string,
+    manifestEntry: MaterialShaderManifestEntry | undefined,
+  ): string | undefined =>
+    variantSet === undefined &&
+    (pipelineShaderId === 'forgeax::sprite' || pipelineShaderId === 'forgeax::sprite-lit')
+      ? undefined
+      : resolveCachedMaterialShaderVariantSet(variantSet, manifestEntry);
+  /**
+   * Choose the program a material PSO compiles: the registered shader (with
+   * its manifest variant), or, when the id is not registered, the engine
+   * unlit or standard-PBR fallback. `null` keeps a missing shader retryable.
+   */
+  const selectMaterialPipelineSource = (
+    pipelineShaderId: string,
+    effectiveVariantSet: string | undefined,
+    isHdr: boolean,
+    passKind: PassKind,
+    renderState: MaterialRenderState | undefined,
+    depthFormatOverride: GPUTextureFormat | null | undefined,
+    vertexLayout: string | undefined,
+  ): {
+    readonly entry: MaterialShaderEntry;
+    readonly label: string;
+    readonly moduleLabel: string;
+    readonly layoutShaderId: string;
+    readonly ownEntries: boolean;
+  } | null => {
+    const lookup = getShader().findMaterialArtifact(pipelineShaderId);
+    if (!lookup.ok) {
+      if (requiresPreparedMaterialShader(vertexLayout)) {
+        // Only a registered shader can be warming up. Preserve a permanent
+        // lookup failure instead of turning it into an endless pending PSO.
+        throw lookup.error;
+      }
+      return renderState === undefined
+        ? selectUnlitPreparedFallback(pipelineShaderId, depthFormatOverride, vertexLayout)
+        : selectStandardPbrFallback(pipelineShaderId, effectiveVariantSet, isHdr);
+    }
+    // feat-20260609 M4 / w31: a non-empty variantSet substitutes the manifest
+    // variant's composedWgsl; the pipeline layout itself is built by
+    // buildPbrPipelineLayouts (M3 / w12). `''` is canonical all-true (HDRP)
+    // and also enters the lookup; `undefined` keeps the boot-time entry.
+    let shaderEntry = manifestVariantShaderEntry(
+      getShader(),
+      pipelineShaderId,
+      effectiveVariantSet,
+      lookup.value,
+    );
+    shaderEntry = prepareLowLimitMaterialShaderEntry(
+      shaderEntry,
+      currentBuildDevice().limits.maxSampledTexturesPerShaderStage,
+    );
+    shaderEntry = { ...shaderEntry, program: getShader().materialProgram(shaderEntry.source) };
+    // feat-20260609 M4 / R3-fixup: append `-${passKind}` to the PSO label so
+    // GPU debug captures make the cache variant visible.
+    const passKindLabelSegment = passKind === 'forward' ? '' : `-${passKind}`;
+    return {
+      entry: shaderEntry,
+      label: `pbr-pipeline-${pipelineShaderId}${isHdr ? '-hdr' : ''}${passKindLabelSegment}`,
+      // M4.5 / w38 (D-11): the module identity is a function of the exact
+      // variantSet string; `''` (canonical all-true) gets its own slot with
+      // a trailing `#`, distinct from the no-variant path.
+      moduleLabel:
+        effectiveVariantSet !== undefined
+          ? `module-${pipelineShaderId}#${effectiveVariantSet}`
+          : `module-${pipelineShaderId}`,
+      layoutShaderId: pipelineShaderId,
+      ownEntries: true,
+    };
+  };
+  // bug-20260527-renderstate-pipeline-dispatch-gap D-3: an unregistered id
+  // without renderState builds against the engine unlit module.
+  const selectUnlitPreparedFallback = (
+    pipelineShaderId: string,
+    depthFormatOverride: GPUTextureFormat | null | undefined,
+    vertexLayout: string | undefined,
+  ) => {
+    // A prepared feature declares the vertex layout it owns. Falling back
+    // to default-unlit here would pair that data with the unlit shader's
+    // position/normal/uv/tangent inputs and let WebGPU reject the
+    // pipeline at validation time. Keep the missing shader retryable and
+    // preserve the declared input contract instead.
+    if (!allowsUnlitPreparedFallback(depthFormatOverride, vertexLayout, pipelineShaderId))
+      return null;
+    const unlitLookup = getShader().findMaterialArtifact('forgeax::default-unlit');
+    if (!unlitLookup.ok) return null;
+    return {
+      entry: unlitLookup.value,
+      label: `pbr-pipeline-prepared-${pipelineShaderId}`,
+      // Reuse the eagerly compiled engine unlit module. The adapter cache
+      // is seeded under this label during renderer readiness; a new label
+      // would keep color-only prepared passes in perpetual warm-up.
+      moduleLabel: 'unlit',
+      layoutShaderId: 'forgeax::default-unlit',
+      ownEntries: false,
+    };
+  };
+  // An unregistered id with renderState builds a renderState variant of the
+  // engine-shipped standard PBR program.
+  const selectStandardPbrFallback = (
+    pipelineShaderId: string,
+    effectiveVariantSet: string | undefined,
+    isHdr: boolean,
+  ) => {
+    const pbrEntry = findStandardPbrEntry(getShader(), currentBuildDevice(), effectiveVariantSet);
+    if (pbrEntry === undefined) return null;
+    // Reuse readiness only for byte-identical WGSL. A fallback can select a
+    // different capability variant, so one shared fallback label is unsafe.
+    const preparedVariant = [...getShader().materialShaderManifestEntries()]
+      .find((entry) => entry.identifier === 'forgeax::default-standard-pbr')
+      ?.variants.find((variant) => materialShaderSourceEquals(variant, pbrEntry.wgsl));
+    return {
+      entry: { source: pbrEntry.wgsl, paramSchema: [] },
+      label: `pbr-pipeline-fallback-${pipelineShaderId}${isHdr ? '-hdr' : ''}`,
+      moduleLabel:
+        preparedVariant === undefined
+          ? `module-fallback-pbr#${getShader().materialProgram(pbrEntry.wgsl, pbrEntry.entryPoints).identity}`
+          : `module-forgeax::default-standard-pbr#${preparedVariant.definesKey}`,
+      // bug-20260611-skin-pipeline-layout: a missing skin registration keeps
+      // its own id so the pbr-skin fail-fast (null layout) is preserved. Every
+      // other id resolves the layout of the built-in PBR module compiled here,
+      // whose vertex stage declares all eight UV inputs (MaterialAsset
+      // per-slot texCoord): a sprite id would otherwise resolve a 4-attribute
+      // layout the PBR module rejects.
+      layoutShaderId:
+        pipelineShaderId === SKIN_MATERIAL_SHADER_ID
+          ? pipelineShaderId
+          : 'forgeax::default-standard-pbr',
+      ownEntries: false,
+    };
   };
   const pipelineRequests = new WeakMap<
     RendererPipelineCacheState,
@@ -2376,151 +2288,76 @@ async function makeWebGPURenderer(
         'one active Renderer preparation operation without interleaved resource mutation',
       ),
     );
-  function* prepareDraw(
-    worldsOrRequest: readonly World[] | RenderFrameInput | PublishedRenderFrameInput,
-    options?: DrawOwnerOptions,
-    isCurrent?: () => boolean,
-  ): FramePreparation<Result<void | FrameReceipt, RhiError | RenderError>> {
-    const isFrameRequest = !Array.isArray(worldsOrRequest);
-    const publicationRequest =
-      isFrameRequest && 'publication' in worldsOrRequest
-        ? (worldsOrRequest as PublishedRenderFrameInput)
-        : undefined;
-    const frameRequest =
-      isFrameRequest && publicationRequest === undefined
-        ? (worldsOrRequest as RenderFrameInput)
-        : undefined;
+  /** Frame input shape and publication/local-lease route admission. */
+  const drawRequestError = (
+    frameRequest: RenderFrameInput | undefined,
+    publicationRequest: PublishedRenderFrameInput | undefined,
+  ): RenderError | undefined => {
     const sceneAbsent = frameRequest?.camera === null;
     if (
       sceneAbsent &&
       (frameRequest.leases.length !== 0 || frameRequest.environment !== null || ui === undefined)
     ) {
-      return err(
-        new RendererOperationError('frame-input-invalid', {
-          operation: 'draw',
-          cause: new RendererContractFailureError(
-            'draw',
-            'a scene-free frame requires empty leases, null camera/environment and configured screen UI',
-          ),
-        }),
-      );
+      return sceneFreeFrameInputError();
     }
-    let publication: PreparedRenderPublication | undefined;
     if (publicationRequest !== undefined) {
       if (publicationReceiver === undefined)
-        return err(
-          new RenderPublicationError({
-            reason: 'identity',
-            subject: 'RendererOptions.publicationSource',
-          }),
-        );
-    } else if (publicationReceiver !== undefined && !sceneAbsent) {
-      return err(
-        new RenderPublicationError({
+        return new RenderPublicationError({
           reason: 'identity',
-          subject: 'a publication-bound renderer cannot consume local World leases',
-        }),
-      );
+          subject: 'RendererOptions.publicationSource',
+        });
+    } else if (publicationReceiver !== undefined && !sceneAbsent) {
+      return new RenderPublicationError({
+        reason: 'identity',
+        subject: 'a publication-bound renderer cannot consume local World leases',
+      });
     }
-    const worlds: readonly World[] =
-      frameRequest !== undefined
-        ? frameRequest.leases
-            .map((lease) => attachedLeases.get(lease))
-            .filter((world): world is World => world !== undefined)
-        : publicationRequest === undefined
-          ? (worldsOrRequest as readonly World[])
-          : [];
+    return undefined;
+  };
+  const drawWorlds = (
+    request: DrawRequest,
+    frameRequest: RenderFrameInput | undefined,
+    publicationRequest: PublishedRenderFrameInput | undefined,
+  ): readonly World[] => {
+    if (frameRequest !== undefined)
+      return frameRequest.leases
+        .map((lease) => attachedLeases.get(lease))
+        .filter((world): world is World => world !== undefined);
+    return publicationRequest === undefined ? (request as readonly World[]) : [];
+  };
+  /** A legacy World list reads through its newest attached leases, when all exist. */
+  const drawReadLeases = (
+    worlds: readonly World[],
+    frameRequest: RenderFrameInput | undefined,
+  ): readonly RenderReadLease[] | undefined => {
+    if (frameRequest !== undefined) return frameRequest.leases;
     const localLeases = worlds.map(
       (world) => [...attachedLeases].reverse().find(([, source]) => source === world)?.[0],
     );
-    const readLeases: readonly RenderReadLease[] | undefined =
-      frameRequest?.leases ??
-      (localLeases.every((lease): lease is RenderReadLease => lease !== undefined)
-        ? localLeases
-        : undefined);
+    return localLeases.every((lease): lease is RenderReadLease => lease !== undefined)
+      ? localLeases
+      : undefined;
+  };
+  /** Source Worlds must be fully published and every frame lease attached. */
+  const drawWorldError = (
+    worlds: readonly World[],
+    frameRequest: RenderFrameInput | undefined,
+  ): RenderError | undefined => {
     const physicsFrameError = derivedPhysicsFrameError(worlds);
-    if (physicsFrameError !== undefined) return err(physicsFrameError);
+    if (physicsFrameError !== undefined) return physicsFrameError;
     const geometryFrameError = dynamicGeometryFrameError(worlds, (world) =>
       dynamicGeometryHost.dynamicGeometryFault(world),
     );
-    if (geometryFrameError !== undefined) return err(geometryFrameError);
-    if (frameRequest !== undefined && worlds.length !== frameRequest.leases.length) {
-      return err(
-        new RendererOperationError('world-lease-invalid', {
-          operation: 'draw',
-          cause: new RendererContractFailureError(
-            'draw',
-            'every RenderFrameInput lease must be attached to this Renderer',
-          ),
-        }),
-      );
-    }
-    const cameraOwner =
-      frameRequest?.camera == null ? -1 : frameRequest.leases.indexOf(frameRequest.camera.lease);
-    const resourceOwner =
-      frameRequest?.environment == null
-        ? -1
-        : frameRequest.leases.indexOf(frameRequest.environment.lease);
-    if (frameRequest !== undefined && !sceneAbsent && (cameraOwner < 0 || resourceOwner < 0)) {
-      return err(
-        new RendererOperationError('frame-input-invalid', {
-          operation: 'draw',
-          cause: new RendererContractFailureError(
-            'draw',
-            cameraOwner < 0
-              ? 'camera lease must be present in RenderFrameInput.leases'
-              : 'environment lease must be present in RenderFrameInput.leases',
-          ),
-        }),
-      );
-    }
-    const drawOptions: DrawOwnerOptions =
-      frameRequest !== undefined
-        ? {
-            cameraOwner,
-            resourceOwner,
-            ...(frameRequest.camera?.entityKey === undefined
-              ? {}
-              : { cameraEntityKey: frameRequest.camera.entityKey }),
-            ...motionBlurDrawOptions(frameRequest),
-            ...(frameRequest.profileFrame === undefined
-              ? {}
-              : { profileFrame: frameRequest.profileFrame }),
-            ...(frameRequest.geometryObservation === true
-              ? { geometryObservation: true as const }
-              : {}),
-            ...(frameRequest.geometryLane === undefined
-              ? {}
-              : { geometryLane: frameRequest.geometryLane }),
-          }
-        : publicationRequest === undefined
-          ? (options ?? { cameraOwner: 0, resourceOwner: 0 })
-          : {
-              cameraOwner: 0,
-              resourceOwner: 0,
-              sampleTimeSeconds: publicationRequest.publication.sampleTimeSeconds,
-              temporalReset: publicationRequest.publication.temporalReset,
-              ...(publicationRequest.geometryObservation === true
-                ? {
-                    geometryObservation: true as const,
-                    ...(publicationRequest.geometryObservationSourceWorldIdentity === undefined
-                      ? {}
-                      : {
-                          geometryObservationSourceWorldIdentity:
-                            publicationRequest.geometryObservationSourceWorldIdentity,
-                        }),
-                  }
-                : {}),
-              ...(publicationRequest.geometryLane === undefined
-                ? {}
-                : { geometryLane: publicationRequest.geometryLane }),
-            };
-    // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M5 / w21
-    // (plan-strategy D-1, D-8): post-dispose the renderer is dead. AI
-    // users observing `result.ok === false && err.code === 'rhi-not-
-    // available'` know to rebuild the renderer (mirrors the "ready not
-    // settled" + "pipelineState null" fail-fast paths below; reuses the
-    // existing closed-union member, no new ErrorCode introduced).
+    if (geometryFrameError !== undefined) return geometryFrameError;
+    if (frameRequest !== undefined && worlds.length !== frameRequest.leases.length)
+      return unattachedFrameLeaseError();
+    return undefined;
+  };
+  // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M5 / w21
+  // (plan-strategy D-1, D-8): post-dispose the renderer is dead. AI users
+  // observing `rhi-not-available` know to rebuild the renderer; the same
+  // existing closed-union member covers every lifecycle admission below.
+  const drawLifecycleError = (): RhiError | undefined => {
     if (disposed) {
       const e = new RhiError({
         code: 'rhi-not-available',
@@ -2529,40 +2366,42 @@ async function makeWebGPURenderer(
         hint: 'renderer.dispose() flipped the lifecycle latch; rebuild via createRenderer / Engine.create',
       });
       internals.errorRegistry.fire(e);
-      return err(e);
+      return e;
     }
     if (surfaceReleased) {
-      return err(
-        new RhiError({
-          code: 'rhi-not-available',
-          expected: 'renderer surface restored before drawing',
-          hint: 'call renderer.restoreSurface() after the temporary surface owner stops',
-        }),
-      );
+      return new RhiError({
+        code: 'rhi-not-available',
+        expected: 'renderer surface restored before drawing',
+        hint: 'call renderer.restoreSurface() after the temporary surface owner stops',
+      });
     }
     const canvasSizeError = rejectZeroCanvasSize(internals.canvas.width, internals.canvas.height);
-    if (canvasSizeError !== undefined) return err(canvasSizeError);
-    // Health owns admission for the legacy Host entry as well as the public
-    // Renderer. The initiating failure was already reported; do not fire it
-    // again for every attempted frame while the Host chooses recovery/rebuild.
+    if (canvasSizeError !== undefined) return canvasSizeError;
+    const healthError = drawHealthError();
+    if (healthError !== undefined) return healthError;
+    return drawReadinessError();
+  };
+  // Health owns admission for the legacy Host entry as well as the public
+  // Renderer. The initiating failure was already reported; do not fire it
+  // again for every attempted frame while the Host chooses recovery/rebuild.
+  const drawHealthError = (): RhiError | undefined => {
     const health = internals.healthRegistry.getLastSnapshot();
-    if (health.reason !== 'alive') {
-      return err(
-        new RhiError({
-          code: 'rhi-not-available',
-          expected: 'renderer generation is healthy before submitting another frame',
-          hint:
-            health.reason === 'device-lost'
-              ? 'call renderer.recover() after a host-chosen delay; camera holds previous frame'
-              : 'dispose and recreate the faulted Renderer; submitted GPU completion is unknown',
-        }),
-      );
-    }
-    // D-S4: ready not settled => fire onError + skip frame. Uses
-    // 'rhi-not-available' (closed union placeholder semantics; charter
-    // proposition 4 explicit failure - AI users observe through onError
-    // and decide whether to retry).
-    if (!readySettled && ui === undefined) {
+    if (health.reason === 'alive') return undefined;
+    return new RhiError({
+      code: 'rhi-not-available',
+      expected: 'renderer generation is healthy before submitting another frame',
+      hint:
+        health.reason === 'device-lost'
+          ? 'call renderer.recover() after a host-chosen delay; camera holds previous frame'
+          : 'dispose and recreate the faulted Renderer; submitted GPU completion is unknown',
+    });
+  };
+  // Screen UI may present before scene readiness; otherwise an unsettled or
+  // rejected initialization fires onError and skips the frame (charter
+  // propositions 4 and 9: explicit failure, the AI user owns the retry).
+  const drawReadinessError = (): RhiError | undefined => {
+    if (ui !== undefined) return undefined;
+    if (!readySettled) {
       const e = new RhiError({
         code: 'rhi-not-available',
         expected:
@@ -2570,45 +2409,66 @@ async function makeWebGPURenderer(
         hint: 'await renderer.initialization resolves once the manifest / pipeline / asset upload chain completes',
       });
       internals.errorRegistry.fire(e);
-      return err(e);
+      return e;
     }
-    // pipeline build rejected: ready Promise has already surfaced the
-    // structured error to AI users through `await renderer.initialization`. Skip
-    // to keep draw(world) idempotent; a transient retry next frame is
-    // the responsibility of the AI user (charter proposition 9).
-    if (pipelineState === null && ui === undefined) {
-      const e = new RhiError({
-        code: 'rhi-not-available',
-        expected: 'pipelineState built during Renderer.initialization',
-        hint: 'await renderer.initialization resolved successfully; rebuild renderer or fix the upstream RhiError',
-      });
-      internals.errorRegistry.fire(e);
-      return err(e);
+    if (pipelineState !== null) return undefined;
+    const e = new RhiError({
+      code: 'rhi-not-available',
+      expected: 'pipelineState built during Renderer.initialization',
+      hint: 'await renderer.initialization resolved successfully; rebuild renderer or fix the upstream RhiError',
+    });
+    internals.errorRegistry.fire(e);
+    return e;
+  };
+  function* prepareDraw(
+    worldsOrRequest: DrawRequest,
+    options?: DrawOwnerOptions,
+    isCurrent?: () => boolean,
+  ): FramePreparation<Result<void | FrameReceipt, RhiError | RenderError>> {
+    const publicationRequest = publicationDrawRequest(worldsOrRequest);
+    const frameRequest = frameDrawRequest(worldsOrRequest);
+    const sceneAbsent = frameRequest?.camera === null;
+    const requestError = drawRequestError(frameRequest, publicationRequest);
+    if (requestError !== undefined) return err(requestError);
+    const worlds = drawWorlds(worldsOrRequest, frameRequest, publicationRequest);
+    const readLeases = drawReadLeases(worlds, frameRequest);
+    const worldError = drawWorldError(worlds, frameRequest);
+    if (worldError !== undefined) return err(worldError);
+    const drawOptions: DrawOwnerOptions =
+      frameRequest !== undefined
+        ? frameDrawOwnerOptions(frameRequest)
+        : publicationRequest === undefined
+          ? (options ?? { cameraOwner: 0, resourceOwner: 0 })
+          : publicationDrawOwnerOptions(publicationRequest);
+    if (
+      frameRequest !== undefined &&
+      !sceneAbsent &&
+      (drawOptions.cameraOwner < 0 || drawOptions.resourceOwner < 0)
+    ) {
+      return err(missingFrameLeaseOwnerError(drawOptions.cameraOwner < 0));
     }
+    const lifecycleError = drawLifecycleError();
+    if (lifecycleError !== undefined) return err(lifecycleError);
     // feat-20260708-composited-multi-world-rendering M3 / D-5: draw-args
     // entry validation runs before each extract or context configuration.
     // Empty worlds / owner out of range returns a structured Result.err
-    // (never silent, charter P3) without touching GPU state. The two codes
-    // are non-exclusive: an empty array short-circuits to empty-worlds. The
-    // check is defensive against JS callers passing a non-array despite the
+    // (never silent, charter P3) without touching GPU state. The check is
+    // defensive against JS callers passing a non-array despite the
     // compile-time World[] type (red-window migration safety).
-    const worldCount =
-      publicationRequest === undefined ? (Array.isArray(worlds) ? worlds.length : 0) : 1;
+    const worldCount = publicationRequest === undefined ? worlds.length : 1;
     if (!sceneAbsent && worldCount === 0 && internals.device.caps.backendKind === 'null') {
       return ok(undefined);
     }
     // Validate both owner indices (cameraOwner before resourceOwner, first
     // offender wins). The empty object only protects the JS boundary; it is
     // rejected by the same validation and never becomes another draw shape.
-    const drawOwners = drawOptions;
-    const argsCheck = sceneAbsent ? ok(undefined) : validateDrawArgs(worldCount, drawOwners);
+    const argsCheck = sceneAbsent ? ok(undefined) : validateDrawArgs(worldCount, drawOptions);
     if (!argsCheck.ok) {
       internals.errorRegistry.fire(argsCheck.error);
       return argsCheck;
     }
-    // Configure context lazily on first draw (D-S1 single-point
-    // exemption): GPUCanvasContext.configure({device}) needs a raw
-    // The canvas context is configured through the RHI device scope.
+    // Configure context lazily on first draw (D-S1 single-point exemption)
+    // through the RHI device scope.
     const contextConfigured =
       pipelineState === null
         ? ok(undefined)
@@ -2619,380 +2479,364 @@ async function makeWebGPURenderer(
     // through onError separately; the facade Result is the synchronous
     // summary AI users can ignore or branch on).
     try {
-      if (publicationRequest !== undefined && publicationReceiver !== undefined) {
-        const accepted = publicationReceiver.accept(publicationRequest.publication, assets);
-        if (!accepted.ok) return accepted;
-        publication = {
-          ...accepted.value,
-          ...(publicationRequest.onFeatureSourceSubmitted === undefined
-            ? {}
-            : {
-                onFeatureSourceSubmitted: publicationRequest.onFeatureSourceSubmitted,
-              }),
-        };
-      }
-      renderTargetHost.beginFrame();
-      externalTextureHost.beginFrame();
-
-      const timingHost = internals;
-      const timingRequested =
-        isFrameRequest &&
-        (frameRequest?.profileFrame !== undefined || internals.options?.captureGpuTimings === true);
-      let volumeTimingCapture: GpuTimingCapture | undefined;
-      const volumeTimingUnavailableReason = timingRequested
-        ? 'timestamp capture is unavailable on this device'
-        : 'timestamp capture was not requested for this frame';
-      if (timingRequested && gpuPassTimingOptions === undefined) {
-        const createdTiming = GpuTimingCapture.create(internals.device);
-        if (createdTiming.ok) volumeTimingCapture = createdTiming.value;
-      }
-      if (isFrameRequest) {
-        timingHost.observationFrameId = frameId + 1;
-        timingHost.observationGraphGeneration = undefined;
-        timingHost.observationCaptureDomains = pendingObservationDomains;
-        timingHost.gpuPassTimingFrameIdentity = {
-          frameId: frameId + 1,
-          deviceGeneration: activeDeviceScope.generation,
-          graphGeneration: 0,
-        };
-      }
-      uiOnlyFrame = ui !== undefined && (sceneAbsent || !readySettled || pipelineState === null);
-      ui?.prepare(
-        (drawOptions.sampleTimeSeconds ?? 0) * 1000,
-        internals.canvas.width,
-        internals.canvas.height,
-        uiOnlyFrame,
-        internals.outputColorSpace.report.effective,
-        uiFormats.storage === uiFormats.view &&
-          pendingObservationDomains?.includes('final-display') === true,
+      return yield* submitDrawFrame(
+        worlds,
+        readLeases,
+        drawOptions,
+        frameRequest,
+        publicationRequest,
+        isCurrent,
       );
-      const recordUi = function* (): FrameRecording {
-        const encoded = internals.device.createCommandEncoder({ label: 'screen-ui-frame' });
-        if (!encoded.ok) throw encoded.error;
-        const generation = activeDeviceScope.generation;
-        const submitted = yield {
-          encoder: encoded.value,
-          device: internals.device,
-          beforeSubmit: renderInternals.beforeSubmit,
-          isCurrent: () => !disposed && activeDeviceScope.generation === generation,
-          reportError: (error: RhiError) => internals.errorRegistry.fire(error),
-        };
-        return submitted.ok;
-      };
-      const submitted = uiOnlyFrame
-        ? yield* prepareFrameSubmission([recordUi()], undefined, renderInternals, isCurrent)
-        : yield* cameraViews.prepareSubmission(
-            worlds,
-            drawOptions,
-            readLeases,
-            volumeTimingCapture,
-            publication === undefined || publicationReceiver === undefined
-              ? undefined
-              : { publication, receiver: publicationReceiver },
-            isCurrent,
-          );
-      timingHost.observationFrameId = undefined;
-      timingHost.observationCaptureDomains = undefined;
-      timingHost.gpuPassTimingFrameIdentity = undefined;
-      if (!submitted) {
-        const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
-        volumeTimingCapture?.discard();
-        if (cleanupFailure !== undefined) return err(cleanupFailure);
-        const invalidMotionBlur = cameraViews.currentSystem.motionBlurInvalidParams;
-        if (invalidMotionBlur !== undefined) return err(invalidMotionBlur);
-        return err(
-          new RendererContractFailureError(
-            'draw',
-            'the Standard render owner did not submit a command buffer; inspect Renderer error events and recover the owning frame path',
-          ),
-        );
-      }
-      const timingCompletion = timingHost.gpuPassTimingSubmittedWork;
-      timingHost.gpuPassTimingSubmittedWork = undefined;
-      const reflectionFallbackCompletion = uiOnlyFrame
-        ? undefined
-        : cameraViews.currentSystem.reflectionFallbackCompletion;
-      const receiptFrameId = isFrameRequest ? ++frameId : undefined;
-      const receiptGeneration = activeDeviceScope.generation;
-      const queueCompletion = timingCompletion ?? internals.device.queue.onSubmittedWorkDone();
-      // Submission succeeded, so a rejected completion leaves this generation's
-      // GPU work unconfirmed. Do not retire the device scope here: a completion
-      // failure is not proof of device loss. Health and continuations own admission.
-      void Promise.resolve(queueCompletion).catch((cause: unknown) => {
-        if (
-          disposed ||
-          receiptGeneration !== activeDeviceScope.generation ||
-          internals.healthRegistry.getLastSnapshot().reason !== 'alive'
-        )
-          return;
-        const failure = new RendererOperationError(
-          'device-operation-failed',
-          {
-            operation: 'complete-frame',
-            ...(receiptFrameId === undefined ? {} : { frameId: receiptFrameId }),
-            deviceGeneration: receiptGeneration,
-            cause: structuredRendererCause(cause, 'complete-frame'),
-          },
-          { cause },
-        );
-        // Seal the first cause before a health listener can dispose/rebuild.
-        for (const [continuation, pending] of frameContinuations) {
-          if (pending.deviceGeneration === receiptGeneration)
-            continuation.terminate({ code: 'internal-fault', detail: failure });
-        }
-        internals.healthRegistry.fire({
-          reason: 'internal-fault',
-          recoverable: false,
-          detail: {
-            message: 'submitted queue completion failed; dispose and recreate this Renderer',
-          },
-        });
-        internals.errorRegistry.fire(failure);
-      });
-      ui?.submitted(queueCompletion);
-      gpuStore.trackMeshSubmission(queueCompletion);
-      internals.pack.instrumentation?.onFrameBoundary?.();
-      if (receiptFrameId === undefined) {
-        const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
-        renderTargetHost.onFrameSubmitted(
-          queueCompletion.then(() => ({ ok: true, value: undefined }) as const),
-        );
-        if (cleanupFailure !== undefined) return err(cleanupFailure);
-        return ok(undefined);
-      }
-      const completion: FrameReceipt['completed'] = Promise.all([
-        queueCompletion,
-        reflectionFallbackCompletion ?? Promise.resolve(),
-      ])
-        .then(() => ok(undefined))
-        .catch((cause: unknown) =>
-          err(
-            new RendererOperationError(
-              'device-operation-failed',
-              {
-                operation: 'complete-frame',
-                frameId: receiptFrameId,
-                deviceGeneration: receiptGeneration,
-                cause: structuredRendererCause(cause, 'complete-frame'),
-              },
-              { cause },
-            ),
-          ),
-        );
-      const continuation = createContinuationTerminator();
-      const receiptPresentation = uiOnlyFrame
-        ? 'pending'
-        : (cameraViews.presentation ?? renderSystem.presentation);
-      const presentationPendingReason =
-        receiptPresentation === 'ready'
-          ? undefined
-          : uiOnlyFrame
-            ? Object.freeze({ code: 'ui-only' as const })
-            : cameraViews.active
-              ? cameraViews.presentationPendingReason
-              : renderSystem.presentationPendingReason;
-      frameContinuations.set(continuation, {
-        frameId: receiptFrameId,
-        deviceGeneration: receiptGeneration,
-        presentation: receiptPresentation,
-        stages: observeFrameCompletionStages(queueCompletion, reflectionFallbackCompletion),
-      });
-      const guardedCompletion = guardFrameCompletion(
-        completion,
-        () => continuation.guard('queue-completion'),
-        () =>
-          new RendererOperationError('device-operation-failed', {
-            operation: 'complete-frame',
-            frameId: receiptFrameId,
-            deviceGeneration: receiptGeneration,
-            cause: structuredRendererCause(
-              {
-                code: 'stale-generation',
-                expected: 'frame completion belongs to its device generation',
-                hint: 'discard the stale receipt',
-              },
-              'complete-frame',
-            ),
-          }),
-        (cause: unknown) =>
-          new RendererOperationError('device-operation-failed', {
-            operation: 'complete-frame',
-            frameId: receiptFrameId,
-            deviceGeneration: receiptGeneration,
-            cause: structuredRendererCause(cause, 'complete-frame'),
-          }),
-      );
-      const terminated = continuation.promise().then((reason) =>
-        err(
-          new RendererOperationError(
-            'device-operation-failed',
-            {
-              operation: 'complete-frame',
-              frameId: receiptFrameId,
-              deviceGeneration: receiptGeneration,
-              cause: structuredRendererCause(
-                reason.code === 'internal-fault'
-                  ? reason.detail
-                  : {
-                      code: reason.code,
-                      expected: 'a frame continuation completes before device loss or disposal',
-                      hint: 'discard the stale receipt and inspect the current renderer generation',
-                      detail: reason,
-                    },
-                'complete-frame',
-              ),
-            },
-            reason.code === 'internal-fault' ? { cause: reason.detail.cause } : undefined,
-          ),
-        ),
-      );
-      const completed: FrameReceipt['completed'] = Promise.race([
-        guardedCompletion,
-        terminated,
-      ]).finally(() => {
-        frameContinuations.delete(continuation);
-      });
-      const captures = observationCaptureOwner.consume(receiptFrameId);
-      const observationDomains =
-        pendingObservationDomains === undefined
-          ? undefined
-          : Object.freeze(captures.map((capture) => capture.domain));
-      pendingObservationDomains = undefined;
-      const receiptGraphGeneration =
-        timingHost.observationGraphGeneration ??
-        (uiOnlyFrame ? 0 : (cameraViews.currentSystem.perFrameGraphInfo?.generation ?? 0));
-      const receipt = Object.freeze({
-        frameId: receiptFrameId,
-        deviceGeneration: receiptGeneration,
-        presentation: receiptPresentation,
-        ...(presentationPendingReason === undefined ? {} : { presentationPendingReason }),
-        ...(observationDomains === undefined ? {} : { observationDomains }),
-        backendId: internals.device.caps.backendKind,
-        graphGeneration: receiptGraphGeneration,
-        ...(uiOnlyFrame ||
-        cameraViews.active ||
-        renderSystem.lastSuccessfulBarrelDistortion === undefined
-          ? {}
-          : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
-        completed,
-        ...(internals.options?.shadowWorkload !== true
-          ? {}
-          : {
-              shadowWorkload: captureShadowWorkload(
-                {
-                  frameId: receiptFrameId,
-                  deviceGeneration: receiptGeneration,
-                  graphGeneration: receiptGraphGeneration,
-                },
-                cameraViews.lastLodObservationCapture,
-                uiOnlyFrame,
-              ),
-            }),
-      });
-      renderTargetHost.onFrameSubmitted(completed, receipt);
-      latestReceipt = receipt;
-      latestPublicationRevision = publicationReceiver?.acceptedRevision ?? 0;
-      latestLodObservation = {
-        receipt,
-        capture: cameraViews.lastLodObservationCapture,
-        draws: captureMaterialDraws(cameraViews.lastLodObservationCapture),
-      };
-      if (captures.length > 0) {
-        const captureRead: ObservationCaptureRead = async () => {
-          const completion = await completed;
-          if (!completion.ok) {
-            const cleanupFailure = disposeObservationCaptures(captures);
-            return cleanupFailure === undefined ? completion : err(cleanupFailure);
-          }
-          const read = [];
-          for (const capture of captures) {
-            const bytes = await readObservationCapture(capture);
-            if (!bytes.ok) {
-              const cleanupFailure = disposeObservationCaptures(captures);
-              return cleanupFailure === undefined ? bytes : err(cleanupFailure);
-            }
-            read.push({ capture, bytes: bytes.value });
-          }
-          return ok(read);
-        };
-        receiptObservationBuffers.set(receipt, captures);
-        receiptObservationCaptures.set(receipt, captureRead);
-      }
-      const passTimingCapture = uiOnlyFrame ? undefined : timingHost.gpuPassTimingCapture;
-      const timingBeginReason = uiOnlyFrame ? undefined : timingHost.gpuPassTimingBeginReason;
-      const timingSource =
-        passTimingCapture === undefined
-          ? gpuPassTimingUnavailable === undefined && timingBeginReason === undefined
-            ? undefined
-            : async (): Promise<GpuPassTimingObservation> =>
-                gpuPassTimingUnavailable ??
-                failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingError)
-          : async (): Promise<GpuPassTimingObservation> => {
-              const observed = await passTimingCapture.observe();
-              if (!observed.ok) return failedGpuPassTimingObservation(observed.error);
-              const frame = observed.value;
-              const unmeasured = frame.passes.find((pass) => pass.status === 'unmeasured');
-              if (unmeasured !== undefined) {
-                return { status: 'partial', frame, reason: unmeasured.reason };
-              }
-              if (frame.droppedPassCount > 0) {
-                return {
-                  status: 'partial',
-                  frame,
-                  reason: {
-                    code: 'query-budget-exceeded',
-                    expected: 'all executed passes fit within the bounded query budget',
-                    hint: 'increase maxPassesPerFrame or simplify the pass graph',
-                    detail: { droppedPassCount: frame.droppedPassCount },
-                  },
-                };
-              }
-              return { status: 'complete', frame };
-            };
-      timingObservationStore?.register(receipt, timingSource);
-      if (timingRequested && gpuPassTimingOptions === undefined) {
-        receiptTimings.set(
-          receipt,
-          volumeTimingCapture?.observation() ??
-            Promise.resolve({
-              status: 'unavailable',
-              reason: volumeTimingUnavailableReason,
-            }),
-        );
-      }
-      issuedReceipts.add(receipt);
-      terrainReceipts.register(receipt, uiOnlyFrame ? [] : cameraViews.terrainSections());
-      if (!uiOnlyFrame)
-        dynamicGeometryHost.publishDynamicGeometry(receipt, worlds, frameRequest?.fixedStep);
-      return ok(receipt);
     } catch (cause) {
-      internals.observationFrameId = undefined;
-      internals.observationCaptureDomains = undefined;
-      internals.gpuPassTimingFrameIdentity = undefined;
-      const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
-      if (cleanupFailure !== undefined) return err(cleanupFailure);
-      if (cause instanceof RendererOperationError) return err(cause);
-      if (cause instanceof CameraViewInvalidError) return err(cause);
-      if (cause instanceof ProjectedDecalInvalidError) return err(cause);
-      const error =
-        cause instanceof Error
-          ? { code: 'unknown' as const, message: cause.message, name: cause.name }
-          : { code: 'unknown' as const, message: String(cause) };
-      const e = new RhiError({
-        code: 'webgpu-runtime-error',
-        expected:
-          'renderSystem.draw(worlds, { cameraOwner, resourceOwner }) completes without throwing',
-        hint: `RenderSystem internal error: ${error.message}`,
-        detail: { error },
-      });
-      internals.errorRegistry.fire(e);
-      return err(e);
+      return drawFailure(cause);
     } finally {
       // Native video pixels have been consumed by synchronous queue copy calls.
       // Release them on every success/failure path, including direct publication users.
       publicationReceiver?.releaseVideoFrames();
     }
   }
+  function* submitDrawFrame(
+    worlds: readonly World[],
+    readLeases: readonly RenderReadLease[] | undefined,
+    drawOptions: DrawOwnerOptions,
+    frameRequest: RenderFrameInput | undefined,
+    publicationRequest: PublishedRenderFrameInput | undefined,
+    isCurrent: (() => boolean) | undefined,
+  ): FramePreparation<Result<void | FrameReceipt, RhiError | RenderError>> {
+    const isFrameRequest = frameRequest !== undefined || publicationRequest !== undefined;
+    let publication:
+      | {
+          readonly publication: PreparedRenderPublication;
+          readonly receiver: RenderPublicationReceiver;
+        }
+      | undefined;
+    if (publicationRequest !== undefined && publicationReceiver !== undefined) {
+      const accepted = publicationReceiver.accept(publicationRequest.publication, assets);
+      if (!accepted.ok) return accepted;
+      publication = {
+        publication: withFeatureSourceFeedback(accepted.value, publicationRequest),
+        receiver: publicationReceiver,
+      };
+    }
+    renderTargetHost.beginFrame();
+    externalTextureHost.beginFrame();
+    const timingRequested =
+      isFrameRequest &&
+      (frameRequest?.profileFrame !== undefined || internals.options?.captureGpuTimings === true);
+    const volumeTimingCapture = createVolumeTimingCapture(timingRequested);
+    if (isFrameRequest) beginObservationFrame();
+    prepareScreenUi(frameRequest?.camera === null, drawOptions);
+    const submitted = uiOnlyFrame
+      ? yield* prepareFrameSubmission([recordScreenUi()], undefined, renderInternals, isCurrent)
+      : yield* cameraViews.prepareSubmission(
+          worlds,
+          drawOptions,
+          readLeases,
+          volumeTimingCapture,
+          publication,
+          isCurrent,
+        );
+    internals.observationFrameId = undefined;
+    internals.observationCaptureDomains = undefined;
+    internals.gpuPassTimingFrameIdentity = undefined;
+    if (!submitted) return err(unsubmittedFrameError(volumeTimingCapture));
+    const timingCompletion = internals.gpuPassTimingSubmittedWork;
+    internals.gpuPassTimingSubmittedWork = undefined;
+    const reflectionFallbackCompletion = uiOnlyFrame
+      ? undefined
+      : cameraViews.currentSystem.reflectionFallbackCompletion;
+    const receiptFrameId = isFrameRequest ? ++frameId : undefined;
+    const receiptGeneration = activeDeviceScope.generation;
+    const queueCompletion = timingCompletion ?? internals.device.queue.onSubmittedWorkDone();
+    watchQueueCompletion(queueCompletion, receiptFrameId, receiptGeneration);
+    ui?.submitted(queueCompletion);
+    gpuStore.trackMeshSubmission(queueCompletion);
+    internals.pack.instrumentation?.onFrameBoundary?.();
+    if (receiptFrameId === undefined) {
+      const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
+      renderTargetHost.onFrameSubmitted(
+        queueCompletion.then(() => ({ ok: true, value: undefined }) as const),
+      );
+      if (cleanupFailure !== undefined) return err(cleanupFailure);
+      return ok(undefined);
+    }
+    const receipt = issueFrameReceipt(
+      receiptFrameId,
+      receiptGeneration,
+      queueCompletion,
+      reflectionFallbackCompletion,
+    );
+    if (timingRequested && gpuPassTimingOptions === undefined) {
+      receiptTimings.set(
+        receipt,
+        volumeTimingCapture?.observation() ??
+          Promise.resolve({
+            status: 'unavailable',
+            reason: 'timestamp capture is unavailable on this device',
+          }),
+      );
+    }
+    issuedReceipts.add(receipt);
+    terrainReceipts.register(receipt, uiOnlyFrame ? [] : cameraViews.terrainSections());
+    if (!uiOnlyFrame)
+      dynamicGeometryHost.publishDynamicGeometry(receipt, worlds, frameRequest?.fixedStep);
+    return ok(receipt);
+  }
+  const createVolumeTimingCapture = (timingRequested: boolean): GpuTimingCapture | undefined => {
+    if (!timingRequested || gpuPassTimingOptions !== undefined) return undefined;
+    const createdTiming = GpuTimingCapture.create(internals.device);
+    return createdTiming.ok ? createdTiming.value : undefined;
+  };
+  const beginObservationFrame = (): void => {
+    internals.observationFrameId = frameId + 1;
+    internals.observationGraphGeneration = undefined;
+    internals.observationCaptureDomains = pendingObservationDomains;
+    internals.gpuPassTimingFrameIdentity = {
+      frameId: frameId + 1,
+      deviceGeneration: activeDeviceScope.generation,
+      graphGeneration: 0,
+    };
+  };
+  /** Select a UI-only frame when no scene can draw, then lay out screen UI. */
+  const prepareScreenUi = (sceneAbsent: boolean, drawOptions: DrawOwnerOptions): void => {
+    uiOnlyFrame = ui !== undefined && (sceneAbsent || !readySettled || pipelineState === null);
+    ui?.prepare(
+      (drawOptions.sampleTimeSeconds ?? 0) * 1000,
+      internals.canvas.width,
+      internals.canvas.height,
+      uiOnlyFrame,
+      internals.outputColorSpace.report.effective,
+      uiFormats.storage === uiFormats.view &&
+        pendingObservationDomains?.includes('final-display') === true,
+    );
+  };
+  function* recordScreenUi(): FrameRecording {
+    const encoded = internals.device.createCommandEncoder({ label: 'screen-ui-frame' });
+    if (!encoded.ok) throw encoded.error;
+    const generation = activeDeviceScope.generation;
+    const submitted = yield {
+      encoder: encoded.value,
+      device: internals.device,
+      beforeSubmit: renderInternals.beforeSubmit,
+      isCurrent: () => !disposed && activeDeviceScope.generation === generation,
+      reportError: (error: RhiError) => internals.errorRegistry.fire(error),
+    };
+    return submitted.ok;
+  }
+  const unsubmittedFrameError = (
+    volumeTimingCapture: GpuTimingCapture | undefined,
+  ): RhiError | RenderError => {
+    const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
+    volumeTimingCapture?.discard();
+    if (cleanupFailure !== undefined) return cleanupFailure;
+    const invalidMotionBlur = cameraViews.currentSystem.motionBlurInvalidParams;
+    if (invalidMotionBlur !== undefined) return invalidMotionBlur;
+    return new RendererContractFailureError(
+      'draw',
+      'the Standard render owner did not submit a command buffer; inspect Renderer error events and recover the owning frame path',
+    );
+  };
+  // Submission succeeded, so a rejected completion leaves this generation's
+  // GPU work unconfirmed. Do not retire the device scope here: a completion
+  // failure is not proof of device loss. Health and continuations own admission.
+  const watchQueueCompletion = (
+    queueCompletion: Promise<unknown>,
+    receiptFrameId: number | undefined,
+    receiptGeneration: number,
+  ): void => {
+    void Promise.resolve(queueCompletion).catch((cause: unknown) => {
+      if (
+        disposed ||
+        receiptGeneration !== activeDeviceScope.generation ||
+        internals.healthRegistry.getLastSnapshot().reason !== 'alive'
+      )
+        return;
+      const failure = completeFrameFailure(receiptFrameId, receiptGeneration, cause, { cause });
+      // Seal the first cause before a health listener can dispose/rebuild.
+      for (const [continuation, pending] of frameContinuations) {
+        if (pending.deviceGeneration === receiptGeneration)
+          continuation.terminate({ code: 'internal-fault', detail: failure });
+      }
+      internals.healthRegistry.fire({
+        reason: 'internal-fault',
+        recoverable: false,
+        detail: {
+          message: 'submitted queue completion failed; dispose and recreate this Renderer',
+        },
+      });
+      internals.errorRegistry.fire(failure);
+    });
+  };
+  const receiptPresentation = (): FrameReceipt['presentation'] =>
+    uiOnlyFrame ? 'pending' : (cameraViews.presentation ?? renderSystem.presentation);
+  const receiptPresentationPendingReason = (presentation: FrameReceipt['presentation']) => {
+    if (presentation === 'ready') return undefined;
+    if (uiOnlyFrame) return Object.freeze({ code: 'ui-only' as const });
+    return cameraViews.active
+      ? cameraViews.presentationPendingReason
+      : renderSystem.presentationPendingReason;
+  };
+  /** Publish the receipt of a submitted frame with its completion and observations. */
+  const issueFrameReceipt = (
+    receiptFrameId: number,
+    receiptGeneration: number,
+    queueCompletion: Promise<unknown>,
+    reflectionFallbackCompletion: Promise<unknown> | undefined,
+  ): FrameReceipt => {
+    const completion = settleFrameCompletion(
+      receiptFrameId,
+      receiptGeneration,
+      queueCompletion,
+      reflectionFallbackCompletion,
+    );
+    const continuation = createContinuationTerminator();
+    const presentation = receiptPresentation();
+    const presentationPendingReason = receiptPresentationPendingReason(presentation);
+    frameContinuations.set(continuation, {
+      frameId: receiptFrameId,
+      deviceGeneration: receiptGeneration,
+      presentation,
+      stages: observeFrameCompletionStages(queueCompletion, reflectionFallbackCompletion),
+    });
+    const completed: FrameReceipt['completed'] = raceFrameContinuation(
+      completion,
+      continuation,
+      receiptFrameId,
+      receiptGeneration,
+    ).finally(() => {
+      frameContinuations.delete(continuation);
+    });
+    const captures = observationCaptureOwner.consume(receiptFrameId);
+    const observationDomains =
+      pendingObservationDomains === undefined
+        ? undefined
+        : Object.freeze(captures.map((capture) => capture.domain));
+    pendingObservationDomains = undefined;
+    const receiptGraphGeneration =
+      internals.observationGraphGeneration ??
+      (uiOnlyFrame ? 0 : (cameraViews.currentSystem.perFrameGraphInfo?.generation ?? 0));
+    const receipt = Object.freeze({
+      frameId: receiptFrameId,
+      deviceGeneration: receiptGeneration,
+      presentation,
+      ...(presentationPendingReason === undefined ? {} : { presentationPendingReason }),
+      ...(observationDomains === undefined ? {} : { observationDomains }),
+      backendId: internals.device.caps.backendKind,
+      graphGeneration: receiptGraphGeneration,
+      ...(uiOnlyFrame ||
+      cameraViews.active ||
+      renderSystem.lastSuccessfulBarrelDistortion === undefined
+        ? {}
+        : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
+      completed,
+      ...(internals.options?.shadowWorkload !== true
+        ? {}
+        : {
+            shadowWorkload: captureShadowWorkload(
+              {
+                frameId: receiptFrameId,
+                deviceGeneration: receiptGeneration,
+                graphGeneration: receiptGraphGeneration,
+              },
+              cameraViews.lastLodObservationCapture,
+              uiOnlyFrame,
+            ),
+          }),
+    });
+    renderTargetHost.onFrameSubmitted(completed, receipt);
+    latestReceipt = receipt;
+    latestPublicationRevision = publicationReceiver?.acceptedRevision ?? 0;
+    latestLodObservation = {
+      receipt,
+      capture: cameraViews.lastLodObservationCapture,
+      draws: captureMaterialDraws(cameraViews.lastLodObservationCapture),
+    };
+    if (captures.length > 0) registerObservationReads(receipt, captures, completed);
+    timingObservationStore?.register(receipt, gpuPassTimingSource());
+    return receipt;
+  };
+  const registerObservationReads = (
+    receipt: FrameReceipt,
+    captures: ReturnType<typeof observationCaptureOwner.consume>,
+    completed: FrameReceipt['completed'],
+  ): void => {
+    const captureRead: ObservationCaptureRead = async () => {
+      const completion = await completed;
+      if (!completion.ok) {
+        const cleanupFailure = disposeObservationCaptures(captures);
+        return cleanupFailure === undefined ? completion : err(cleanupFailure);
+      }
+      const read = [];
+      for (const capture of captures) {
+        const bytes = await readObservationCapture(capture);
+        if (!bytes.ok) {
+          const cleanupFailure = disposeObservationCaptures(captures);
+          return cleanupFailure === undefined ? bytes : err(cleanupFailure);
+        }
+        read.push({ capture, bytes: bytes.value });
+      }
+      return ok(read);
+    };
+    receiptObservationBuffers.set(receipt, captures);
+    receiptObservationCaptures.set(receipt, captureRead);
+  };
+  /** The current frame's pass-timing observation, or its unavailable/failed reason. */
+  const gpuPassTimingSource = (): (() => Promise<GpuPassTimingObservation>) | undefined => {
+    const passTimingCapture = uiOnlyFrame ? undefined : internals.gpuPassTimingCapture;
+    if (passTimingCapture !== undefined) return () => observeGpuPassTiming(passTimingCapture);
+    const timingBeginReason = uiOnlyFrame ? undefined : internals.gpuPassTimingBeginReason;
+    if (gpuPassTimingUnavailable === undefined && timingBeginReason === undefined) return undefined;
+    return async (): Promise<GpuPassTimingObservation> =>
+      gpuPassTimingUnavailable ??
+      failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingError);
+  };
+  const observeGpuPassTiming = async (
+    passTimingCapture: GpuPassTimingCapture,
+  ): Promise<GpuPassTimingObservation> => {
+    const observed = await passTimingCapture.observe();
+    if (!observed.ok) return failedGpuPassTimingObservation(observed.error);
+    const frame = observed.value;
+    const unmeasured = frame.passes.find((pass) => pass.status === 'unmeasured');
+    if (unmeasured !== undefined) {
+      return { status: 'partial', frame, reason: unmeasured.reason };
+    }
+    if (frame.droppedPassCount > 0) {
+      return {
+        status: 'partial',
+        frame,
+        reason: {
+          code: 'query-budget-exceeded',
+          expected: 'all executed passes fit within the bounded query budget',
+          hint: 'increase maxPassesPerFrame or simplify the pass graph',
+          detail: { droppedPassCount: frame.droppedPassCount },
+        },
+      };
+    }
+    return { status: 'complete', frame };
+  };
+  const drawFailure = (cause: unknown): Result<never, RhiError | RenderError> => {
+    internals.observationFrameId = undefined;
+    internals.observationCaptureDomains = undefined;
+    internals.gpuPassTimingFrameIdentity = undefined;
+    const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
+    if (cleanupFailure !== undefined) return err(cleanupFailure);
+    if (cause instanceof RendererOperationError) return err(cause);
+    if (cause instanceof CameraViewInvalidError) return err(cause);
+    if (cause instanceof ProjectedDecalInvalidError) return err(cause);
+    const error =
+      cause instanceof Error
+        ? { code: 'unknown' as const, message: cause.message, name: cause.name }
+        : { code: 'unknown' as const, message: String(cause) };
+    const e = new RhiError({
+      code: 'webgpu-runtime-error',
+      expected:
+        'renderSystem.draw(worlds, { cameraOwner, resourceOwner }) completes without throwing',
+      hint: `RenderSystem internal error: ${error.message}`,
+      detail: { error },
+    });
+    internals.errorRegistry.fire(e);
+    return err(e);
+  };
   const renderer: RendererAssemblyImplementation = {
     setSurfaceDynamicInput(frame) {
       cameraViews.setSurfaceDynamicInput(frame);

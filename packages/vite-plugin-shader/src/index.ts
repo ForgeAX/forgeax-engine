@@ -77,10 +77,15 @@ import {
 } from './engine-inputs/prepare-engine-shader-source.js';
 
 export {
-  engineShaderSourceDigest,
-  PACKAGED_SOURCE_RECORD,
-  type PackagedSourceRecord,
-} from './engine-inputs/source-digest.js';
+  decodePackagedProfiles,
+  encodePackagedProfiles,
+  PACKAGED_PROFILE_NAMES,
+  PACKAGED_PROFILES_FILE,
+  type PackagedProfileName,
+  type PackagedProfiles,
+  packagedProfilePublication,
+} from './engine-inputs/packaged-profiles.js';
+export { engineShaderSourceDigest } from './engine-inputs/source-digest.js';
 export { VIEW_ABI, type ViewAbi, type ViewAbiField } from './engine-inputs/view-abi.js';
 
 import {

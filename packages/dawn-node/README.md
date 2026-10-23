@@ -8,7 +8,7 @@ by the browser and does not use this Node carrier.
 | --- | --- | --- |
 | macOS arm64 | Pinned Dawn with the Metal empty-compute timestamp patch | Host arm64 source build |
 | macOS x64 | Same pinned source and patch | Host x86_64 source build; validation pending |
-| Linux | Exact upstream `webgpu@0.4.0` | Upstream installation contract |
+| Linux | Exact upstream `webgpu@0.4.0`, an optional peer named `upstream-webgpu` | Consumers opt in with `upstream-webgpu@npm:webgpu@0.4.0`; the workspace installs it as a development dependency |
 | Windows x64 | Pinned Dawn with built DXC; GPU qualification pending | Host x64 source build |
 
 ## Build and installation

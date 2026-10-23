@@ -730,6 +730,13 @@ it('forwards the pending cause captured on the completed receipt, without inspec
     });
     expect(completed[1]?.[0].frame).not.toHaveProperty('presentationPendingReason');
     expect(structuredClone(completed[0]?.[0]).frame.presentationPendingReason).toEqual(reason);
+    // Always-on Render Worker cadence: a draw interval from the second draw on,
+    // and a non-negative submit-to-complete latency on every completion.
+    const submitted = post.mock.calls.filter(([m]) => m.kind === 'submitted');
+    expect(submitted[0]?.[0].frame).not.toHaveProperty('renderDrawIntervalMs');
+    expect(submitted[1]?.[0].frame.renderDrawIntervalMs).toBeGreaterThanOrEqual(0);
+    for (const [message] of completed)
+      expect(message.frame.renderSubmitToCompleteMs).toBeGreaterThanOrEqual(0);
   } finally {
     completion.resolve({ ok: true, value: undefined });
     receive({ data: { kind: 'dispose' } });

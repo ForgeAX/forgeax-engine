@@ -9,6 +9,7 @@ function facts(packageJson: Record<string, unknown>): ProjectFacts {
     name: 'Game',
     roots: {},
     assetRoots: ['assets'],
+    assetLibraries: [],
     packageJson,
   };
 }
@@ -70,7 +71,7 @@ describe('createInitPlan', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.dependencyChanges).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: 'vitest', to: '4.0.18' })]),
+      expect.arrayContaining([expect.objectContaining({ name: 'vitest', to: '4.1.12' })]),
     );
   });
 

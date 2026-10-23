@@ -84,6 +84,18 @@ interface PhysicsPublicationLike {
   readonly fixedStep: number;
 }
 
+/** One admitted group member: the caller's credential and its exact host record. */
+interface CandidateEntry {
+  readonly input: DynamicGeometryCandidate;
+  readonly record: HostCandidateRecord;
+}
+
+/** Managed reference count per held mesh handle, keyed by its numeric identity. */
+type MeshReferenceCounts = Map<
+  number,
+  { readonly handle: AssetHandle<'mesh'>; readonly count: number }
+>;
+
 interface HostCandidateRecord {
   pipelinePreparation?: MeshPipelinePreparation;
   materialIsCurrent?: () => boolean;
@@ -659,10 +671,10 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     // releases on either settlement; only proven cleanup may settle this one.
     return completed;
   };
-  const acceptCandidates = (
+  /** The attached World a nonempty candidate group names through its first credential. */
+  const groupWorld = (
     candidates: readonly DynamicGeometryCandidate[],
-    ordering: DynamicGeometryOrdering,
-  ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError> => {
+  ): Result<World, DynamicGeometryError> => {
     if (!Array.isArray(candidates) || candidates.length === 0)
       return err(
         new DynamicGeometryError(
@@ -689,6 +701,607 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
           'attach the World before accepting dynamic geometry',
         ),
       );
+    return ok(world);
+  };
+  /** Resolve one group member to its exact prepared host record, one per distinct entity. */
+  const groupEntry = (
+    candidate: DynamicGeometryCandidate | undefined,
+    index: number,
+    world: World,
+    ordering: DynamicGeometryOrdering,
+    uniqueEntities: Set<number>,
+  ): Result<CandidateEntry, DynamicGeometryError> => {
+    if (candidate === undefined || candidate === null || typeof candidate !== 'object')
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-candidate-not-found',
+          'every geometry candidate is an object issued by this Renderer',
+          'discard the invalid candidate and use a prepared credential',
+          { actual: { inputIndex: index } },
+        ),
+      );
+    const candidateWorld = candidate.world as World;
+    if (candidateWorld === null || typeof candidateWorld !== 'object')
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-world-not-attached',
+          'every candidate belongs to the attached World',
+          'discard the invalid credential and prepare it against the attached World',
+          { actual: { inputIndex: index } },
+        ),
+      );
+    const byId = hostCandidates.get(candidate.candidateId);
+    const record = candidateRecord(candidate);
+    if (record === undefined)
+      return err(
+        new DynamicGeometryError(
+          byId === undefined
+            ? 'dynamic-geometry-candidate-not-found'
+            : 'dynamic-geometry-receipt-mismatch',
+          'admission uses the exact host candidate owner and lifecycle credential',
+          'discard altered or stale credentials and use the value returned by preparation',
+          { candidateId: candidate.candidateId, actual: { inputIndex: index } },
+        ),
+      );
+    if (
+      candidateWorld !== world ||
+      candidate.world !== ordering?.world ||
+      !attachedWorlds.has(world)
+    )
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-world-not-attached',
+          'all candidates and fixed-step ordering belong to the same attached World',
+          'attach the World and submit its PhysicsWorld ordering before accepting geometry',
+          { candidateId: candidate.candidateId, actual: { inputIndex: index } },
+        ),
+      );
+    ensureHealthyWorld(candidateWorld);
+    if (
+      record.cleanup !== undefined ||
+      record.candidate.state !== 'prepared' ||
+      candidate.state !== 'prepared'
+    )
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-candidate-state',
+          'admission consumes each prepared candidate exactly once',
+          'retain the accepted or published receipt instead of admitting it again',
+          { candidateId: candidate.candidateId },
+        ),
+      );
+    if (!uniqueEntities.add(record.entity))
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'a geometry group contains one candidate per distinct entity',
+          'prepare one candidate per entity and retry the group admission',
+          { candidateId: candidate.candidateId, actual: { entity: record.entity } },
+        ),
+      );
+    return ok({ input: candidate, record });
+  };
+  /** Whether the candidate lost its standard GPU residency, material or pipeline currentness. */
+  const gpuResidencyLost = (
+    input: DynamicGeometryCandidate,
+    record: HostCandidateRecord,
+  ): boolean =>
+    !record.assetRevision.matchesCurrent() ||
+    !input.gpuReady ||
+    record.residency === undefined ||
+    record.residency.isCurrent?.() === false ||
+    record.materialIsCurrent?.() === false ||
+    record.pipelines?.isCurrent() === false;
+  /** Fault unless both held MeshAsset references resolve and are reflected in the asset store. */
+  const assertMeshReferencesResolve = (
+    world: World,
+    input: DynamicGeometryCandidate,
+    record: HostCandidateRecord,
+  ): void => {
+    for (const handle of [record.meshHandle, record.previousMeshHandle]) {
+      const resolved = runtimeAssets(world.assets).resolveAsset(handle);
+      if (!resolved.ok)
+        throwFault(
+          world,
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'each held MeshAsset asset reference resolves before and after the ECS swap',
+            'rebuild the paired World and Renderer because a managed payload is unavailable',
+            { candidateId: input.candidateId, actual: resolved.error },
+          ),
+        );
+      if (runtimeAssets(world.assets).refcount(handle) < 1)
+        throwFault(
+          world,
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'each Renderer-owned MeshAsset asset-reference lease is reflected in its store',
+            'rebuild the paired World and Renderer because a managed lease cannot be proven',
+            { candidateId: input.candidateId, actual: { handle } },
+          ),
+        );
+    }
+  };
+  /**
+   * Whether one admitted entry is still ready at this fixed step: active device
+   * generation, current GPU residency, held leases, current tick, live ECS
+   * binding and, when paired, the current physics admission.
+   */
+  const entryReadiness = (
+    world: World,
+    { input, record }: CandidateEntry,
+    ordering: DynamicGeometryOrdering,
+    generation: number,
+    currentFixedStep: number | undefined,
+  ): Result<void, DynamicGeometryError> => {
+    if (input.generation !== generation || record.generation !== generation)
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-generation-mismatch',
+          'every candidate uses the active Renderer device generation',
+          'prepare candidates again against the active device generation',
+          {
+            candidateId: input.candidateId,
+            actual: { generation, candidate: input.generation },
+          },
+        ),
+      );
+    if (gpuResidencyLost(input, record))
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-gpu-not-ready',
+          'every candidate retains standard GPU residency before acceptance',
+          'repair GPU residency and prepare the candidate again',
+          { candidateId: input.candidateId },
+        ),
+      );
+    if (!record.meshLeaseHeld || !record.previousMeshLeaseHeld)
+      throwFault(
+        world,
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'both Renderer-owned MeshAsset asset-reference leases remain held until commit',
+          'rebuild the paired World and Renderer because a managed lease was lost',
+          { candidateId: input.candidateId },
+        ),
+      );
+    if (
+      currentFixedStep === undefined ||
+      input.fixedStep === undefined ||
+      input.fixedStep > currentFixedStep ||
+      ordering.fixedStep !== currentFixedStep
+    )
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-ordering-required',
+          'ordering matches the current World tick, no earlier than preparation',
+          'accept prepared candidates during the current fixed-step admission',
+          {
+            candidateId: input.candidateId,
+            actual: {
+              candidate: input.fixedStep,
+              currentFixedStep,
+              ordering: ordering.fixedStep,
+            },
+          },
+        ),
+      );
+    if (
+      !hasRenderableBinding(world, record.entity) ||
+      !hasMaterialIdentity(world, record.entity, record.mesh, input.materialIdentity)
+    )
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'the candidate remains bound to a live ECS MeshFilter and MeshRenderer',
+          'keep the candidate MeshFilter binding intact until the consuming draw',
+          { candidateId: input.candidateId },
+        ),
+      );
+    if (meshHandleOf(world, record.entity) !== record.previousMeshHandle)
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'the old MeshFilter binding remains visible until candidate acceptance',
+          'reconcile the entity and prepare a fresh candidate before retrying',
+          { candidateId: input.candidateId },
+        ),
+      );
+    assertMeshReferencesResolve(world, input, record);
+    if (input.physicsEntity === undefined) return ok(undefined);
+    const publication = physicsPublicationOf(world, input.physicsEntity, true);
+    if (
+      publication === undefined ||
+      publication.fixedStep !== currentFixedStep ||
+      publication.revision !== input.revision
+    )
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-ordering-required',
+          'candidate physicsEntity has the active paired PhysicsWorld admission',
+          'accept geometry inside admitDerivedShapeCandidates commitGeometry before physics step',
+          { candidateId: input.candidateId, actual: publication },
+        ),
+      );
+    return ok(undefined);
+  };
+  /** Prepared or accepted candidates of the group's entities that this admission replaces. */
+  const supersededRecords = (
+    world: World,
+    uniqueEntities: ReadonlySet<number>,
+    admitted: readonly DynamicGeometryCandidate[],
+  ): HostCandidateRecord[] =>
+    [...hostCandidates.values()].filter(
+      (record) =>
+        record.world === world &&
+        uniqueEntities.has(record.entity) &&
+        !admitted.some((candidate) => candidate.candidateId === record.candidate.candidateId) &&
+        (record.candidate.state === 'prepared' || record.candidate.state === 'accepted'),
+    );
+  /** Each touched entity's MeshFilter binding and each held mesh handle's reference count before staging. */
+  const preflightBindings = (
+    world: World,
+    touched: readonly HostCandidateRecord[],
+  ): { bindings: Map<number, AssetHandle<'mesh'> | undefined>; counts: MeshReferenceCounts } => {
+    const bindings = new Map<number, AssetHandle<'mesh'> | undefined>();
+    const counts: MeshReferenceCounts = new Map();
+    for (const record of touched) {
+      if (!bindings.has(record.entity))
+        bindings.set(record.entity, meshHandleOf(world, record.entity));
+      for (const handle of [record.meshHandle, record.previousMeshHandle]) {
+        const key = Number(handle);
+        if (!counts.has(key))
+          counts.set(key, {
+            handle,
+            count: runtimeAssets(world.assets).refcount(handle),
+          });
+      }
+    }
+    return { bindings, counts };
+  };
+  /**
+   * Snapshot lifecycle history, host reservations and receipts; the returned
+   * probe answers whether a refused batch left all of them unchanged.
+   */
+  const captureHostState = (): (() => boolean) => {
+    const lifecycleBefore = JSON.stringify(lifecycle.inspect());
+    const hostBefore = [...hostCandidates.entries()].map(([id, record]) => ({
+      id,
+      record,
+      candidate: record.candidate,
+      meshLeaseHeld: record.meshLeaseHeld,
+      previousMeshLeaseHeld: record.previousMeshLeaseHeld,
+    }));
+    const receiptsBefore = new Map(
+      hostBefore.map(({ id, candidate }) => [id, lifecycle.receipt(candidate)] as const),
+    );
+    return () =>
+      JSON.stringify(lifecycle.inspect()) === lifecycleBefore &&
+      hostBefore.length === hostCandidates.size &&
+      hostBefore.every(
+        ({ id, record, candidate, meshLeaseHeld, previousMeshLeaseHeld }) =>
+          hostCandidates.get(id) === record &&
+          record.candidate === candidate &&
+          record.meshLeaseHeld === meshLeaseHeld &&
+          record.previousMeshLeaseHeld === previousMeshLeaseHeld &&
+          JSON.stringify(lifecycle.receipt(candidate)) === JSON.stringify(receiptsBefore.get(id)),
+      );
+  };
+  /** Whether a healthy World exposes exactly these MeshFilter bindings and managed reference counts. */
+  const bindingsAndReferencesMatch = (
+    world: World,
+    expectedBindings: ReadonlyMap<number, AssetHandle<'mesh'> | undefined>,
+    expectedCounts: MeshReferenceCounts,
+  ): boolean => {
+    if (world.execution.health !== 'healthy') return false;
+    for (const [entity, expected] of expectedBindings) {
+      if (meshHandleOf(world, entity) !== expected) return false;
+    }
+    for (const { handle, count } of expectedCounts.values()) {
+      const resolved = runtimeAssets(world.assets).resolveAsset(handle);
+      if (!resolved.ok || runtimeAssets(world.assets).refcount(handle) !== count) return false;
+    }
+    return true;
+  };
+  /** Stage every MeshFilter swap in group order; a refused write rolls the whole batch back. */
+  const stageSwaps = (
+    world: World,
+    entries: readonly CandidateEntry[],
+    attempted: HostCandidateRecord[],
+    rollback: (cause: unknown) => DynamicGeometryError | undefined,
+  ): Result<void, DynamicGeometryError> => {
+    for (const { input, record } of entries) {
+      attempted.push(record);
+      const swapped = (() => {
+        try {
+          return world.set(record.entity as EntityHandle, MeshFilter, {
+            assetHandle: record.meshHandle,
+          });
+        } catch (cause) {
+          const rollbackFault = rollback(cause);
+          throw (
+            rollbackFault ??
+            fault(
+              world,
+              new DynamicGeometryError(
+                'dynamic-geometry-invalid',
+                'ECS MeshFilter writes either commit or return a recoverable Result',
+                'rebuild the paired World and Renderer after an unexpected write exception',
+                { candidateId: input.candidateId, actual: cause },
+              ),
+            )
+          );
+        }
+      })();
+      if (!swapped.ok) {
+        const rollbackFault = rollback(swapped.error);
+        if (rollbackFault !== undefined) throw rollbackFault;
+        return err(
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'a refused MeshFilter swap restores the complete preflight snapshot',
+            'retain the prepared candidates and retry after the ECS write barrier is healthy',
+            { candidateId: input.candidateId, actual: swapped.error },
+          ),
+        );
+      }
+    }
+    return ok(undefined);
+  };
+  /** The reference counts every staged swap moves from the previous handle to the candidate's. */
+  const committedReferenceCounts = (
+    entries: readonly CandidateEntry[],
+    referenceCounts: MeshReferenceCounts,
+  ): MeshReferenceCounts => {
+    const expected = new Map(referenceCounts);
+    for (const { record } of entries) {
+      if (record.previousMeshHandle === record.meshHandle) continue;
+      const previousKey = Number(record.previousMeshHandle);
+      const candidateKey = Number(record.meshHandle);
+      const previous = expected.get(previousKey);
+      const candidate = expected.get(candidateKey);
+      if (previous !== undefined)
+        expected.set(previousKey, { ...previous, count: previous.count - 1 });
+      if (candidate !== undefined)
+        expected.set(candidateKey, { ...candidate, count: candidate.count + 1 });
+    }
+    return expected;
+  };
+  /** Adopt each committed credential into its host record and its preflighted residency. */
+  const adoptAccepted = (
+    world: World,
+    entries: readonly CandidateEntry[],
+    accepted: readonly DynamicGeometryCandidate[],
+  ): void => {
+    if (accepted.length !== entries.length)
+      throw fault(
+        world,
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'lifecycle acceptance returns one committed credential per staged ECS entity',
+          'rebuild the paired World and Renderer because the batch commit shape changed',
+          { actual: { expected: entries.length, received: accepted.length } },
+        ),
+      );
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      const committed = accepted[index];
+      if (entry === undefined || committed === undefined)
+        throw fault(world, new Error('lifecycle acceptance returned an incomplete batch'));
+      entry.record.candidate = committed;
+      if (entry.record.residency?.commit?.() === false)
+        throw fault(
+          world,
+          new Error('preflighted mesh residency changed during candidate adoption'),
+        );
+      releasePipelinePreparation(entry.record);
+      invalidateCurrentness();
+    }
+  };
+  /** Carry each explicit deferred-retirement request from a superseded record to its exact successor. */
+  const carryRetirementSuccessors = (
+    superseded: readonly HostCandidateRecord[],
+    entries: readonly CandidateEntry[],
+  ): void => {
+    if (!hasDeferredRetirements) return;
+    for (const record of hostCandidates.values()) {
+      const previous = record.retirementSuccessor;
+      if (previous === undefined || !superseded.includes(previous)) continue;
+      // Carry only an explicit request through this exact successful ECS
+      // admission. A shared handle alone never discovers a successor.
+      const replacement = entries.find(
+        ({ record: next }) =>
+          next.world === previous.world &&
+          next.entity === previous.entity &&
+          next.generation === previous.generation &&
+          next.previousMeshHandle === previous.meshHandle &&
+          next.candidate.revision > previous.candidate.revision,
+      );
+      if (replacement !== undefined) record.retirementSuccessor = replacement.record;
+    }
+  };
+  /** Clean up superseded candidates and invalidate temporal geometry, collecting every failure. */
+  const postCommitFailures = (
+    world: World,
+    superseded: readonly HostCandidateRecord[],
+  ): DynamicGeometryError[] => {
+    const failures: DynamicGeometryError[] = [];
+    for (const record of superseded) {
+      try {
+        scheduleCandidateCleanup(record, false, 'cancel');
+      } catch (cause) {
+        failures.push(
+          fault(
+            world,
+            new DynamicGeometryError(
+              'dynamic-geometry-invalid',
+              'GPU residency release and superseded candidate cleanup complete after commit',
+              'rebuild the paired World and Renderer after a post-commit cleanup failure',
+              { candidateId: record.candidate.candidateId, actual: cause },
+            ),
+          ),
+        );
+      }
+    }
+    try {
+      options.onTopologyChanged?.();
+    } catch (cause) {
+      failures.push(
+        fault(
+          world,
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'the temporal geometry owner accepts one invalidation after the ECS batch commits',
+            'rebuild the paired World and Renderer after a post-commit callback failure',
+            { actual: cause },
+          ),
+        ),
+      );
+    }
+    return failures;
+  };
+  /** Stage, verify and commit a preflighted group; any refusal restores the preflight snapshot. */
+  const commitGroup = (
+    world: World,
+    entries: readonly CandidateEntry[],
+    candidatesForLifecycle: readonly DynamicGeometryCandidate[],
+    ordering: DynamicGeometryOrdering,
+    uniqueEntities: ReadonlySet<number>,
+  ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError> => {
+    const superseded = supersededRecords(world, uniqueEntities, candidatesForLifecycle);
+    const allTouched = [...entries.map(({ record }) => record), ...superseded];
+    const { bindings: bindingBefore, counts: referenceCounts } = preflightBindings(
+      world,
+      allTouched,
+    );
+    for (const { record } of entries) {
+      if (bindingBefore.get(record.entity) !== record.previousMeshHandle)
+        return err(
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'all old MeshFilter bindings remain unchanged through whole-batch preflight',
+            'reconcile the entity and prepare a fresh candidate before retrying',
+            { candidateId: record.candidate.candidateId },
+          ),
+        );
+    }
+    const stateWasPreserved = captureHostState();
+    const attempted: HostCandidateRecord[] = [];
+    const rollback = (cause: unknown): DynamicGeometryError | undefined => {
+      for (const record of [...attempted].reverse()) {
+        const previous = bindingBefore.get(record.entity);
+        const current = meshHandleOf(world, record.entity);
+        if (current === previous) continue;
+        if (current !== record.meshHandle)
+          return fault(
+            world,
+            new DynamicGeometryError(
+              'dynamic-geometry-invalid',
+              'a failed batch swap exposes only its previous or attempted MeshFilter handle',
+              'rebuild the paired World and Renderer because rollback found an unexpected binding',
+              { candidateId: record.candidate.candidateId, actual: { cause, current, previous } },
+            ),
+          );
+        try {
+          const restored = world.set(record.entity as EntityHandle, MeshFilter, {
+            assetHandle: record.previousMeshHandle,
+          });
+          if (!restored.ok && meshHandleOf(world, record.entity) !== previous)
+            return fault(
+              world,
+              new DynamicGeometryError(
+                'dynamic-geometry-invalid',
+                'every staged MeshFilter write can be restored through the ECS write barrier',
+                'rebuild the paired World and Renderer after an uncertain rollback',
+                {
+                  candidateId: record.candidate.candidateId,
+                  actual: { cause, restore: restored.error },
+                },
+              ),
+            );
+        } catch (restoreCause) {
+          return fault(
+            world,
+            new DynamicGeometryError(
+              'dynamic-geometry-invalid',
+              'every staged MeshFilter write can be restored through the ECS write barrier',
+              'rebuild the paired World and Renderer after an uncertain rollback',
+              { candidateId: record.candidate.candidateId, actual: { cause, restoreCause } },
+            ),
+          );
+        }
+      }
+      if (
+        !bindingsAndReferencesMatch(world, bindingBefore, referenceCounts) ||
+        !stateWasPreserved()
+      )
+        return fault(
+          world,
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'a refused batch restores all MeshFilter bindings, asset references, lifecycle history, and reservations',
+            'rebuild the paired World and Renderer because rollback could not be proven',
+            { actual: cause },
+          ),
+        );
+      return undefined;
+    };
+    const staged = stageSwaps(world, entries, attempted, rollback);
+    if (!staged.ok) return staged;
+
+    const expectedCommittedCounts = committedReferenceCounts(entries, referenceCounts);
+    const expectedCommittedBindings = new Map(bindingBefore);
+    for (const { record } of entries)
+      expectedCommittedBindings.set(record.entity, record.meshHandle);
+    if (!bindingsAndReferencesMatch(world, expectedCommittedBindings, expectedCommittedCounts)) {
+      const rollbackFault = rollback('post-stage binding or asset-reference verification failed');
+      if (rollbackFault !== undefined) throw rollbackFault;
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'the full ECS batch exposes the staged handles with exact managed-reference counts',
+          'repair the MeshAsset bindings and retry from the retained prepared candidates',
+        ),
+      );
+    }
+
+    const accepted = (() => {
+      try {
+        return lifecycle.acceptCandidates(candidatesForLifecycle, ordering);
+      } catch (cause) {
+        const rollbackFault = rollback(cause);
+        throw (
+          rollbackFault ??
+          fault(
+            world,
+            new DynamicGeometryError(
+              'dynamic-geometry-invalid',
+              'lifecycle acceptance commits the preflighted candidate batch once',
+              'rebuild the paired World and Renderer after an uncertain lifecycle commit',
+              { actual: cause },
+            ),
+          )
+        );
+      }
+    })();
+    if (!accepted.ok) {
+      const rollbackFault = rollback(accepted.error);
+      if (rollbackFault !== undefined) throw rollbackFault;
+      return err(accepted.error);
+    }
+    adoptAccepted(world, entries, accepted.value);
+    carryRetirementSuccessors(superseded, entries);
+    const failures = postCommitFailures(world, superseded);
+    if (failures.length > 0) throw failures[0];
+    return ok(accepted.value);
+  };
+  const acceptCandidates = (
+    candidates: readonly DynamicGeometryCandidate[],
+    ordering: DynamicGeometryOrdering,
+  ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError> => {
+    const admitted = groupWorld(candidates);
+    if (!admitted.ok) return admitted;
+    const world = admitted.value;
     ensureHealthyWorld(world);
     if (batchActive)
       throwFault(world, new Error('dynamic geometry admission reentered its ECS swap'));
@@ -696,81 +1309,11 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     try {
       const generation = currentGeneration();
       const uniqueEntities = new Set<number>();
-      const entries: Array<{
-        readonly input: DynamicGeometryCandidate;
-        readonly record: HostCandidateRecord;
-      }> = [];
+      const entries: CandidateEntry[] = [];
       for (let index = 0; index < candidates.length; index += 1) {
-        const candidate = candidates[index];
-        if (candidate === undefined || candidate === null || typeof candidate !== 'object')
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-candidate-not-found',
-              'every geometry candidate is an object issued by this Renderer',
-              'discard the invalid candidate and use a prepared credential',
-              { actual: { inputIndex: index } },
-            ),
-          );
-        const candidateWorld = candidate.world as World;
-        if (candidateWorld === null || typeof candidateWorld !== 'object')
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-world-not-attached',
-              'every candidate belongs to the attached World',
-              'discard the invalid credential and prepare it against the attached World',
-              { actual: { inputIndex: index } },
-            ),
-          );
-        const byId = hostCandidates.get(candidate.candidateId);
-        const record = candidateRecord(candidate);
-        if (record === undefined)
-          return err(
-            new DynamicGeometryError(
-              byId === undefined
-                ? 'dynamic-geometry-candidate-not-found'
-                : 'dynamic-geometry-receipt-mismatch',
-              'admission uses the exact host candidate owner and lifecycle credential',
-              'discard altered or stale credentials and use the value returned by preparation',
-              { candidateId: candidate.candidateId, actual: { inputIndex: index } },
-            ),
-          );
-        if (
-          candidateWorld !== world ||
-          candidate.world !== ordering?.world ||
-          !attachedWorlds.has(world)
-        )
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-world-not-attached',
-              'all candidates and fixed-step ordering belong to the same attached World',
-              'attach the World and submit its PhysicsWorld ordering before accepting geometry',
-              { candidateId: candidate.candidateId, actual: { inputIndex: index } },
-            ),
-          );
-        ensureHealthyWorld(candidateWorld);
-        if (
-          record.cleanup !== undefined ||
-          record.candidate.state !== 'prepared' ||
-          candidate.state !== 'prepared'
-        )
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-candidate-state',
-              'admission consumes each prepared candidate exactly once',
-              'retain the accepted or published receipt instead of admitting it again',
-              { candidateId: candidate.candidateId },
-            ),
-          );
-        if (!uniqueEntities.add(record.entity))
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'a geometry group contains one candidate per distinct entity',
-              'prepare one candidate per entity and retry the group admission',
-              { candidateId: candidate.candidateId, actual: { entity: record.entity } },
-            ),
-          );
-        entries.push({ input: candidate, record });
+        const entry = groupEntry(candidates[index], index, world, ordering, uniqueEntities);
+        if (!entry.ok) return entry;
+        entries.push(entry.value);
       }
       if (ordering === undefined || !Number.isInteger(ordering.fixedStep) || ordering.fixedStep < 0)
         return err(
@@ -782,433 +1325,15 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         );
 
       const currentFixedStep = fixedStepOf(world);
-      for (const { input, record } of entries) {
-        if (input.generation !== generation || record.generation !== generation)
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-generation-mismatch',
-              'every candidate uses the active Renderer device generation',
-              'prepare candidates again against the active device generation',
-              {
-                candidateId: input.candidateId,
-                actual: { generation, candidate: input.generation },
-              },
-            ),
-          );
-        if (
-          !record.assetRevision.matchesCurrent() ||
-          !input.gpuReady ||
-          record.residency === undefined ||
-          record.residency.isCurrent?.() === false ||
-          record.materialIsCurrent?.() === false ||
-          record.pipelines?.isCurrent() === false
-        )
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-gpu-not-ready',
-              'every candidate retains standard GPU residency before acceptance',
-              'repair GPU residency and prepare the candidate again',
-              { candidateId: input.candidateId },
-            ),
-          );
-        if (!record.meshLeaseHeld || !record.previousMeshLeaseHeld)
-          throwFault(
-            world,
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'both Renderer-owned MeshAsset asset-reference leases remain held until commit',
-              'rebuild the paired World and Renderer because a managed lease was lost',
-              { candidateId: input.candidateId },
-            ),
-          );
-        if (
-          currentFixedStep === undefined ||
-          input.fixedStep === undefined ||
-          input.fixedStep > currentFixedStep ||
-          ordering.fixedStep !== currentFixedStep
-        )
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-ordering-required',
-              'ordering matches the current World tick, no earlier than preparation',
-              'accept prepared candidates during the current fixed-step admission',
-              {
-                candidateId: input.candidateId,
-                actual: {
-                  candidate: input.fixedStep,
-                  currentFixedStep,
-                  ordering: ordering.fixedStep,
-                },
-              },
-            ),
-          );
-        if (
-          !hasRenderableBinding(world, record.entity) ||
-          !hasMaterialIdentity(world, record.entity, record.mesh, input.materialIdentity)
-        )
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'the candidate remains bound to a live ECS MeshFilter and MeshRenderer',
-              'keep the candidate MeshFilter binding intact until the consuming draw',
-              { candidateId: input.candidateId },
-            ),
-          );
-        if (meshHandleOf(world, record.entity) !== record.previousMeshHandle)
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'the old MeshFilter binding remains visible until candidate acceptance',
-              'reconcile the entity and prepare a fresh candidate before retrying',
-              { candidateId: input.candidateId },
-            ),
-          );
-        for (const handle of [record.meshHandle, record.previousMeshHandle]) {
-          const resolved = runtimeAssets(world.assets).resolveAsset(handle);
-          if (!resolved.ok)
-            throwFault(
-              world,
-              new DynamicGeometryError(
-                'dynamic-geometry-invalid',
-                'each held MeshAsset asset reference resolves before and after the ECS swap',
-                'rebuild the paired World and Renderer because a managed payload is unavailable',
-                { candidateId: input.candidateId, actual: resolved.error },
-              ),
-            );
-          if (runtimeAssets(world.assets).refcount(handle) < 1)
-            throwFault(
-              world,
-              new DynamicGeometryError(
-                'dynamic-geometry-invalid',
-                'each Renderer-owned MeshAsset asset-reference lease is reflected in its store',
-                'rebuild the paired World and Renderer because a managed lease cannot be proven',
-                { candidateId: input.candidateId, actual: { handle } },
-              ),
-            );
-        }
-        if (input.physicsEntity !== undefined) {
-          const publication = physicsPublicationOf(world, input.physicsEntity, true);
-          if (
-            publication === undefined ||
-            publication.fixedStep !== currentFixedStep ||
-            publication.revision !== input.revision
-          )
-            return err(
-              new DynamicGeometryError(
-                'dynamic-geometry-ordering-required',
-                'candidate physicsEntity has the active paired PhysicsWorld admission',
-                'accept geometry inside admitDerivedShapeCandidates commitGeometry before physics step',
-                { candidateId: input.candidateId, actual: publication },
-              ),
-            );
-        }
+      for (const entry of entries) {
+        const ready = entryReadiness(world, entry, ordering, generation, currentFixedStep);
+        if (!ready.ok) return ready;
       }
 
       const candidatesForLifecycle = entries.map(({ input }) => input);
       const validated = lifecycle.validateCandidates(candidatesForLifecycle, ordering);
       if (!validated.ok) return err(validated.error);
-
-      const superseded = [...hostCandidates.values()].filter(
-        (record) =>
-          record.world === world &&
-          uniqueEntities.has(record.entity) &&
-          !candidatesForLifecycle.some(
-            (candidate) => candidate.candidateId === record.candidate.candidateId,
-          ) &&
-          (record.candidate.state === 'prepared' || record.candidate.state === 'accepted'),
-      );
-      const allTouched = [...entries.map(({ record }) => record), ...superseded];
-      const bindingBefore = new Map<number, AssetHandle<'mesh'> | undefined>();
-      const referenceCounts = new Map<
-        number,
-        { readonly handle: AssetHandle<'mesh'>; readonly count: number }
-      >();
-      for (const record of allTouched) {
-        if (!bindingBefore.has(record.entity))
-          bindingBefore.set(record.entity, meshHandleOf(world, record.entity));
-        for (const handle of [record.meshHandle, record.previousMeshHandle]) {
-          const key = Number(handle);
-          if (!referenceCounts.has(key))
-            referenceCounts.set(key, {
-              handle,
-              count: runtimeAssets(world.assets).refcount(handle),
-            });
-        }
-      }
-      for (const { record } of entries) {
-        if (bindingBefore.get(record.entity) !== record.previousMeshHandle)
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'all old MeshFilter bindings remain unchanged through whole-batch preflight',
-              'reconcile the entity and prepare a fresh candidate before retrying',
-              { candidateId: record.candidate.candidateId },
-            ),
-          );
-      }
-      const lifecycleBefore = JSON.stringify(lifecycle.inspect());
-      const hostBefore = [...hostCandidates.entries()].map(([id, record]) => ({
-        id,
-        record,
-        candidate: record.candidate,
-        meshLeaseHeld: record.meshLeaseHeld,
-        previousMeshLeaseHeld: record.previousMeshLeaseHeld,
-      }));
-      const receiptsBefore = new Map(
-        hostBefore.map(({ id, candidate }) => [id, lifecycle.receipt(candidate)] as const),
-      );
-      const attempted: HostCandidateRecord[] = [];
-      const stateWasPreserved = (): boolean =>
-        JSON.stringify(lifecycle.inspect()) === lifecycleBefore &&
-        hostBefore.length === hostCandidates.size &&
-        hostBefore.every(
-          ({ id, record, candidate, meshLeaseHeld, previousMeshLeaseHeld }) =>
-            hostCandidates.get(id) === record &&
-            record.candidate === candidate &&
-            record.meshLeaseHeld === meshLeaseHeld &&
-            record.previousMeshLeaseHeld === previousMeshLeaseHeld &&
-            JSON.stringify(lifecycle.receipt(candidate)) === JSON.stringify(receiptsBefore.get(id)),
-        );
-      const bindingsAndReferencesMatch = (
-        expectedBindings: ReadonlyMap<number, AssetHandle<'mesh'> | undefined>,
-        expectedCounts: ReadonlyMap<
-          number,
-          { readonly handle: AssetHandle<'mesh'>; readonly count: number }
-        >,
-      ): boolean => {
-        if (world.execution.health !== 'healthy') return false;
-        for (const [entity, expected] of expectedBindings) {
-          if (meshHandleOf(world, entity) !== expected) return false;
-        }
-        for (const { handle, count } of expectedCounts.values()) {
-          const resolved = runtimeAssets(world.assets).resolveAsset(handle);
-          if (!resolved.ok || runtimeAssets(world.assets).refcount(handle) !== count) return false;
-        }
-        return true;
-      };
-      const rollback = (cause: unknown): DynamicGeometryError | undefined => {
-        for (const record of [...attempted].reverse()) {
-          const previous = bindingBefore.get(record.entity);
-          const current = meshHandleOf(world, record.entity);
-          if (current === previous) continue;
-          if (current !== record.meshHandle)
-            return fault(
-              world,
-              new DynamicGeometryError(
-                'dynamic-geometry-invalid',
-                'a failed batch swap exposes only its previous or attempted MeshFilter handle',
-                'rebuild the paired World and Renderer because rollback found an unexpected binding',
-                { candidateId: record.candidate.candidateId, actual: { cause, current, previous } },
-              ),
-            );
-          try {
-            const restored = world.set(record.entity as EntityHandle, MeshFilter, {
-              assetHandle: record.previousMeshHandle,
-            });
-            if (!restored.ok && meshHandleOf(world, record.entity) !== previous)
-              return fault(
-                world,
-                new DynamicGeometryError(
-                  'dynamic-geometry-invalid',
-                  'every staged MeshFilter write can be restored through the ECS write barrier',
-                  'rebuild the paired World and Renderer after an uncertain rollback',
-                  {
-                    candidateId: record.candidate.candidateId,
-                    actual: { cause, restore: restored.error },
-                  },
-                ),
-              );
-          } catch (restoreCause) {
-            return fault(
-              world,
-              new DynamicGeometryError(
-                'dynamic-geometry-invalid',
-                'every staged MeshFilter write can be restored through the ECS write barrier',
-                'rebuild the paired World and Renderer after an uncertain rollback',
-                { candidateId: record.candidate.candidateId, actual: { cause, restoreCause } },
-              ),
-            );
-          }
-        }
-        if (!bindingsAndReferencesMatch(bindingBefore, referenceCounts) || !stateWasPreserved())
-          return fault(
-            world,
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'a refused batch restores all MeshFilter bindings, asset references, lifecycle history, and reservations',
-              'rebuild the paired World and Renderer because rollback could not be proven',
-              { actual: cause },
-            ),
-          );
-        return undefined;
-      };
-
-      for (const { input, record } of entries) {
-        attempted.push(record);
-        const swapped = (() => {
-          try {
-            return world.set(record.entity as EntityHandle, MeshFilter, {
-              assetHandle: record.meshHandle,
-            });
-          } catch (cause) {
-            const rollbackFault = rollback(cause);
-            throw (
-              rollbackFault ??
-              fault(
-                world,
-                new DynamicGeometryError(
-                  'dynamic-geometry-invalid',
-                  'ECS MeshFilter writes either commit or return a recoverable Result',
-                  'rebuild the paired World and Renderer after an unexpected write exception',
-                  { candidateId: input.candidateId, actual: cause },
-                ),
-              )
-            );
-          }
-        })();
-        if (!swapped.ok) {
-          const rollbackFault = rollback(swapped.error);
-          if (rollbackFault !== undefined) throw rollbackFault;
-          return err(
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'a refused MeshFilter swap restores the complete preflight snapshot',
-              'retain the prepared candidates and retry after the ECS write barrier is healthy',
-              { candidateId: input.candidateId, actual: swapped.error },
-            ),
-          );
-        }
-      }
-
-      const expectedCommittedCounts = new Map(referenceCounts);
-      for (const { record } of entries) {
-        if (record.previousMeshHandle === record.meshHandle) continue;
-        const previousKey = Number(record.previousMeshHandle);
-        const candidateKey = Number(record.meshHandle);
-        const previous = expectedCommittedCounts.get(previousKey);
-        const candidate = expectedCommittedCounts.get(candidateKey);
-        if (previous !== undefined)
-          expectedCommittedCounts.set(previousKey, { ...previous, count: previous.count - 1 });
-        if (candidate !== undefined)
-          expectedCommittedCounts.set(candidateKey, { ...candidate, count: candidate.count + 1 });
-      }
-      const expectedCommittedBindings = new Map(bindingBefore);
-      for (const { record } of entries)
-        expectedCommittedBindings.set(record.entity, record.meshHandle);
-      if (!bindingsAndReferencesMatch(expectedCommittedBindings, expectedCommittedCounts)) {
-        const rollbackFault = rollback('post-stage binding or asset-reference verification failed');
-        if (rollbackFault !== undefined) throw rollbackFault;
-        return err(
-          new DynamicGeometryError(
-            'dynamic-geometry-invalid',
-            'the full ECS batch exposes the staged handles with exact managed-reference counts',
-            'repair the MeshAsset bindings and retry from the retained prepared candidates',
-          ),
-        );
-      }
-
-      const accepted = (() => {
-        try {
-          return lifecycle.acceptCandidates(candidatesForLifecycle, ordering);
-        } catch (cause) {
-          const rollbackFault = rollback(cause);
-          throw (
-            rollbackFault ??
-            fault(
-              world,
-              new DynamicGeometryError(
-                'dynamic-geometry-invalid',
-                'lifecycle acceptance commits the preflighted candidate batch once',
-                'rebuild the paired World and Renderer after an uncertain lifecycle commit',
-                { actual: cause },
-              ),
-            )
-          );
-        }
-      })();
-      if (!accepted.ok) {
-        const rollbackFault = rollback(accepted.error);
-        if (rollbackFault !== undefined) throw rollbackFault;
-        return err(accepted.error);
-      }
-      if (accepted.value.length !== entries.length)
-        throw fault(
-          world,
-          new DynamicGeometryError(
-            'dynamic-geometry-invalid',
-            'lifecycle acceptance returns one committed credential per staged ECS entity',
-            'rebuild the paired World and Renderer because the batch commit shape changed',
-            { actual: { expected: entries.length, received: accepted.value.length } },
-          ),
-        );
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index];
-        const committed = accepted.value[index];
-        if (entry === undefined || committed === undefined)
-          throw fault(world, new Error('lifecycle acceptance returned an incomplete batch'));
-        entry.record.candidate = committed;
-        if (entry.record.residency?.commit?.() === false)
-          throw fault(
-            world,
-            new Error('preflighted mesh residency changed during candidate adoption'),
-          );
-        releasePipelinePreparation(entry.record);
-        invalidateCurrentness();
-      }
-
-      if (hasDeferredRetirements) {
-        for (const record of hostCandidates.values()) {
-          const previous = record.retirementSuccessor;
-          if (previous === undefined || !superseded.includes(previous)) continue;
-          // Carry only an explicit request through this exact successful ECS
-          // admission. A shared handle alone never discovers a successor.
-          const replacement = entries.find(
-            ({ record: next }) =>
-              next.world === previous.world &&
-              next.entity === previous.entity &&
-              next.generation === previous.generation &&
-              next.previousMeshHandle === previous.meshHandle &&
-              next.candidate.revision > previous.candidate.revision,
-          );
-          if (replacement !== undefined) record.retirementSuccessor = replacement.record;
-        }
-      }
-
-      const postCommitFailures: DynamicGeometryError[] = [];
-      for (const record of superseded) {
-        try {
-          scheduleCandidateCleanup(record, false, 'cancel');
-        } catch (cause) {
-          postCommitFailures.push(
-            fault(
-              world,
-              new DynamicGeometryError(
-                'dynamic-geometry-invalid',
-                'GPU residency release and superseded candidate cleanup complete after commit',
-                'rebuild the paired World and Renderer after a post-commit cleanup failure',
-                { candidateId: record.candidate.candidateId, actual: cause },
-              ),
-            ),
-          );
-        }
-      }
-      try {
-        options.onTopologyChanged?.();
-      } catch (cause) {
-        postCommitFailures.push(
-          fault(
-            world,
-            new DynamicGeometryError(
-              'dynamic-geometry-invalid',
-              'the temporal geometry owner accepts one invalidation after the ECS batch commits',
-              'rebuild the paired World and Renderer after a post-commit callback failure',
-              { actual: cause },
-            ),
-          ),
-        );
-      }
-      if (postCommitFailures.length > 0) throw postCommitFailures[0];
-      return ok(accepted.value);
+      return commitGroup(world, entries, candidatesForLifecycle, ordering, uniqueEntities);
     } finally {
       batchActive = false;
     }

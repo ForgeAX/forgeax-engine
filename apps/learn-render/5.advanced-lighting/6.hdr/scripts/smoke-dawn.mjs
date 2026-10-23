@@ -443,12 +443,14 @@ const exposureEntity = world.spawn({
 }).unwrap();
 
 const frameStart = Date.now();
+const presentationDeadline = frameStart + 120_000;
 let framesObserved = 0;
 // Await each frame's GPU work so the standard-PBR material's async PSO compile
 // resolves (a synchronous loop leaves it 'rhi-not-available' -> skip-draw ->
 // black scene; mirrors 5.1 advanced-lighting smoke header). Prerequisite for
 // the wall-pixel readback below to observe real geometry.
-for (let i = 0; i < PER_MODE_FRAMES; i++) {
+// Pending receipts waited on pipeline preparation and presented nothing.
+for (let i = 0; i < PER_MODE_FRAMES; ) {
   world.update(1 / 60).unwrap();
   const r = renderer.draw({
     leases: [lease],
@@ -457,10 +459,12 @@ for (let i = 0; i < PER_MODE_FRAMES; i++) {
   });
   if (!r.ok) {
     console.error(`[smoke] draw hdr frame ${i} error: ${r.error.code}`);
+    i++;
   } else {
     const completed = await r.value.completed;
     if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
     else framesObserved++;
+    if (!completed.ok || r.value.presentation === 'ready' || Date.now() > presentationDeadline) i++;
   }
   await sharedDevice.queue.onSubmittedWorkDone();
 }
@@ -484,7 +488,8 @@ console.log(
 );
 
 world.set(exposureEntity, PostProcessParams, {data: packExposureBytes(1.0, 1)}).unwrap();
-for (let i = 0; i < PER_MODE_FRAMES; i++) {
+// Pending receipts waited on pipeline preparation and presented nothing.
+for (let i = 0; i < PER_MODE_FRAMES; ) {
   world.update(1 / 60).unwrap();
   const r = renderer.draw({
     leases: [lease],
@@ -493,10 +498,12 @@ for (let i = 0; i < PER_MODE_FRAMES; i++) {
   });
   if (!r.ok) {
     console.error(`[smoke] draw ldr frame ${i} error: ${r.error.code}`);
+    i++;
   } else {
     const completed = await r.value.completed;
     if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
     else framesObserved++;
+    if (!completed.ok || r.value.presentation === 'ready' || Date.now() > presentationDeadline) i++;
   }
 }
 

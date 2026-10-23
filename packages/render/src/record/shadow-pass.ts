@@ -746,6 +746,35 @@ function prepareGpuDrivenShadowIfPublished(
     }
     return current;
   };
+  // Each invocation still observes a retained row's actual PSO owner once per
+  // pipeline. A current pipeline is also the row's own recording observation
+  // when only its material binding is rejected.
+  const retainedPipeline = (
+    row:
+      | {
+          readonly batch: GpuDrivenBatch;
+          readonly projection: GpuDrivenShadowBatchProjection;
+          readonly pipeline: RenderPipeline;
+        }
+      | undefined,
+    batch: GpuDrivenBatch,
+    projection: GpuDrivenShadowBatchProjection,
+  ): RenderPipeline | undefined => {
+    if (row?.batch !== batch || row.projection !== projection) return undefined;
+    let current = validatedPipelines.get(row.pipeline);
+    if (current === undefined) {
+      current =
+        requestGpuDrivenShadowPipeline(
+          c,
+          c.runtime.getMaterialShaderPipeline,
+          projection,
+          batch,
+          identity.kind === 'point',
+        ) === row.pipeline;
+      validatedPipelines.set(row.pipeline, current);
+    }
+    return current ? row.pipeline : undefined;
+  };
   for (const batch of viewSubmission.plan.batches) {
     if (batch.visibleCapacity === 0) continue;
     const projection: GpuDrivenShadowBatchProjection | undefined = projections.get(batch.batchId);
@@ -757,24 +786,12 @@ function prepareGpuDrivenShadowIfPublished(
       });
     }
     const retainedRow = retainedView?.rows.get(batch.batchId);
-    let validRow = retainedRow?.batch === batch && retainedRow.projection === projection;
-    if (validRow && retainedRow !== undefined) {
-      // Each invocation still observes its actual PSO owner once per pipeline.
-      let current = validatedPipelines.get(retainedRow.pipeline);
-      if (current === undefined) {
-        current =
-          requestGpuDrivenShadowPipeline(
-            c,
-            c.runtime.getMaterialShaderPipeline,
-            projection,
-            batch,
-            identity.kind === 'point',
-          ) === retainedRow.pipeline;
-        validatedPipelines.set(retainedRow.pipeline, current);
-      }
-      validRow = current && materialCurrent(retainedRow.material, projection);
-    }
-    if (validRow && retainedRow !== undefined) {
+    const validatedPipeline = retainedPipeline(retainedRow, batch, projection);
+    if (
+      validatedPipeline !== undefined &&
+      retainedRow !== undefined &&
+      materialCurrent(retainedRow.material, projection)
+    ) {
       previousBatch = batch;
       previousProjection = projection;
       previousPipeline = retainedRow.pipeline;
@@ -808,24 +825,26 @@ function prepareGpuDrivenShadowIfPublished(
     // facts. Adjacent batches may differ only in resources or draw ranges;
     // keep their PSO locally without building another serialized request key.
     // The view kind and device capabilities are fixed for this invocation.
-    let pipeline: RenderPipeline | null | undefined = previousPipeline;
+    let pipeline: RenderPipeline | null | undefined = validatedPipeline ?? previousPipeline;
     if (
-      !reuseAdjacentShadow ||
-      previousProjection === undefined ||
-      previousBatch === undefined ||
-      previousProjection.shadowArtifact !== shadowArtifact ||
-      previousProjection.shadowRenderState !== projection.shadowRenderState ||
-      previousProjection.shadowVertexEntry !== projection.shadowVertexEntry ||
-      previousProjection.shadowFragmentEntry !== projection.shadowFragmentEntry ||
-      previousProjection.deformation !== projection.deformation ||
-      previousProjection.vertexColorAvailable !== projection.vertexColorAvailable ||
-      previousProjection.material.standardTextureMask !== projection.material.standardTextureMask ||
-      previousProjection.mesh.layoutProjection !== projection.mesh.layoutProjection ||
-      previousBatch.key.admission !== batch.key.admission ||
-      previousBatch.key.topology !== batch.key.topology ||
-      previousBatch.key.drawKind !== batch.key.drawKind ||
-      (batch.key.drawKind === 'indexed' &&
-        previousProjection.mesh.indexFormat !== projection.mesh.indexFormat)
+      validatedPipeline === undefined &&
+      (!reuseAdjacentShadow ||
+        previousProjection === undefined ||
+        previousBatch === undefined ||
+        previousProjection.shadowArtifact !== shadowArtifact ||
+        previousProjection.shadowRenderState !== projection.shadowRenderState ||
+        previousProjection.shadowVertexEntry !== projection.shadowVertexEntry ||
+        previousProjection.shadowFragmentEntry !== projection.shadowFragmentEntry ||
+        previousProjection.deformation !== projection.deformation ||
+        previousProjection.vertexColorAvailable !== projection.vertexColorAvailable ||
+        previousProjection.material.standardTextureMask !==
+          projection.material.standardTextureMask ||
+        previousProjection.mesh.layoutProjection !== projection.mesh.layoutProjection ||
+        previousBatch.key.admission !== batch.key.admission ||
+        previousBatch.key.topology !== batch.key.topology ||
+        previousBatch.key.drawKind !== batch.key.drawKind ||
+        (batch.key.drawKind === 'indexed' &&
+          previousProjection.mesh.indexFormat !== projection.mesh.indexFormat))
     ) {
       pipeline = requestGpuDrivenShadowPipeline(
         c,

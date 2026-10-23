@@ -1350,8 +1350,12 @@ if (SSR_REFLECTION_EVIDENCE) {
   let recoveryReceipt;
   let afterRecovery = renderer.inspect();
   let replacement = deriveReflectionProbeRecoveryEvidence(afterRecovery, beforeDeviceGeneration);
-  for (let frame = 0; frame < REFLECTION_PROBE_SETTLE_FRAMES; frame += 1) {
+  // Replacement-device frames pending on pipeline preparation present nothing;
+  // only presented frames spend the settle budget.
+  const recoveryDeadline = performance.now() + 120_000;
+  for (let frame = 0; frame < REFLECTION_PROBE_SETTLE_FRAMES; ) {
     recoveryReceipt = await drawEvidenceFrame();
+    if (recoveryReceipt.presentation === 'ready' || performance.now() > recoveryDeadline) frame += 1;
     await delay(0);
     afterRecovery = renderer.inspect();
     replacement = deriveReflectionProbeRecoveryEvidence(afterRecovery, beforeDeviceGeneration);

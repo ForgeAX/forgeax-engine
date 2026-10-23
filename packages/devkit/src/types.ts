@@ -21,6 +21,12 @@ export type CommandResult<T> =
       readonly artifacts?: readonly ArtifactRef[];
     };
 
+/** One forge.json `assetLibraries` entry and the read-only asset directory it mounts. */
+export interface ProjectAssetLibrary {
+  readonly specifier: string;
+  readonly root: string;
+}
+
 export interface ProjectFacts {
   readonly root: string;
   readonly id: string;
@@ -29,6 +35,7 @@ export interface ProjectFacts {
   readonly startupTimeoutMs?: number | null;
   readonly frameTimeoutMs?: number | null;
   readonly assetRoots: readonly string[];
+  readonly assetLibraries: readonly ProjectAssetLibrary[];
   readonly packageJson: Readonly<Record<string, unknown>>;
 }
 

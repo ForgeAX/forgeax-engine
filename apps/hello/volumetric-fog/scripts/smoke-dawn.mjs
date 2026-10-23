@@ -461,7 +461,16 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
     };
   }
 
-  for (; framesObserved < SMOKE_MIN_FRAMES; ) await drawCompletedFrame('warmup');
+  // Pending receipts waited on pipeline preparation and presented nothing.
+  const presentationDeadline = performance.now() + 120_000;
+  for (let presentedFrames = 0; presentedFrames < SMOKE_MIN_FRAMES; ) {
+    const receipt = await drawCompletedFrame('warmup');
+    if (receipt.presentation === 'ready') presentedFrames += 1;
+    else if (performance.now() > presentationDeadline)
+      throw new Error(
+        `volumetric-fog presented ${presentedFrames}/${SMOKE_MIN_FRAMES} warmup frames: ${JSON.stringify(receipt.presentationPendingReason)}`,
+      );
+  }
   if (latestReceipt === undefined)
     throw new Error('volumetric-fog has no completed warmup receipt');
   const baselineReceipt = latestReceipt;

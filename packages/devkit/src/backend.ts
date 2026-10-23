@@ -127,6 +127,7 @@ export async function createDevKitBackend(
           packageJson: projectFacts.ok ? projectFacts.value.packageJson : {},
           roots: {},
           assetRoots: [hostPack],
+          assetLibraries: [],
         };
       } else if (projectFacts.ok) facts = projectFacts.value;
       else throw projectFacts.error;

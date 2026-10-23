@@ -2308,7 +2308,11 @@ export class GpuDrivenProduction {
                 recordingRun = undefined;
                 const reused = retainedRuns.reuse(lives, liveIndex, runEnd, liveFacts);
                 if (reused !== undefined) {
-                  if (reused.bundle !== undefined) preparedBundles.push(reused.bundle);
+                  // A replayed run reuses its prepared bundle without rebuilding it.
+                  if (reused.bundle !== undefined) {
+                    preparedBundles.push(reused.bundle);
+                    production.preparedBundleCounters.hits++;
+                  }
                   this.encodedIndirectDraws += reused.draws;
                   liveIndex = runEnd - 1;
                   continue;

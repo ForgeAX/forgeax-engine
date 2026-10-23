@@ -477,6 +477,526 @@ export async function listPackSourcePaths(
   return rawPaths.sort();
 }
 
+type PackageKind = 'legacy' | 'direct' | 'instance' | 'scriptable';
+
+interface InstanceDeclaration {
+  readonly path: string;
+  readonly source: ParsedPackInstanceJson;
+}
+
+function packErrorAt(
+  code: MalformedFileCode,
+  path: string,
+  instancePath: string,
+  message: string,
+): PackError {
+  return makePackError(code, { path, ajvErrors: [{ instancePath, message }] });
+}
+
+/** Producer-contract checks one legacy pack applies before any GUID is registered. */
+function legacyPackContractError(
+  packPath: string,
+  packObj: LegacyPackInventoryDocument,
+): PackError | undefined {
+  for (const asset of packObj.assets) {
+    if (
+      asset.kind === 'particle-effect' &&
+      asset.execution === 'direct' &&
+      (asset.refs.length > 0 || Object.keys(asset.artifacts ?? {}).length > 0)
+    ) {
+      return packErrorAt(
+        'pack-malformed-pack',
+        packPath,
+        '/assets',
+        'authored particle-effect assets are source-only; refs and artifacts must be empty',
+      );
+    }
+  }
+  const producerAssets = packObj.assets.filter(
+    (asset) => asset.sourceKey !== undefined || asset.sourceIndex !== undefined,
+  );
+  if (producerAssets.length === 0) return undefined;
+  for (const asset of producerAssets) {
+    const assetContract = validateProducerContract(asset);
+    if (!assetContract.ok)
+      return packErrorAt('pack-malformed-pack', packPath, '/assets', assetContract.error.code);
+  }
+  const topologyContract = validateProducerOutputs(
+    producerAssets.map((asset, sourceIndex) => ({
+      guid: asset.guid,
+      kind: asset.kind,
+      sourceIndex: asset.sourceIndex ?? sourceIndex,
+      ...(asset.sourceKey === undefined ? {} : { sourceKey: asset.sourceKey }),
+    })),
+  );
+  if (!topologyContract.ok)
+    return packErrorAt('pack-malformed-pack', packPath, '/assets', topologyContract.error.code);
+  return undefined;
+}
+
+function scriptableLoadError(sourcePath: string, error: PackAuthoringError): PackError {
+  if (error.code === 'pack-module-not-found') {
+    return new PackError({
+      code: error.code,
+      expected: error.expected,
+      hint: error.hint,
+      detail: {
+        code: error.code,
+        sourcePath: String(error.detail.sourcePath),
+        specifier: String(error.detail.specifier),
+      },
+      cause: error,
+    });
+  }
+  const diagnostic = error.detail.diagnostic;
+  return makePackError(
+    'pack-malformed-meta',
+    {
+      path: sourcePath,
+      ajvErrors: [
+        {
+          instancePath: '',
+          message: typeof diagnostic === 'string' ? `${error.code}: ${diagnostic}` : error.code,
+        },
+      ],
+    },
+    error,
+  );
+}
+
+async function loadScriptableSource(
+  sourcePath: string,
+  sourceSnapshot: ScriptablePackSourceSnapshot,
+  loaderOptions: LoadScriptablePackOptions,
+): Promise<ScanResult<ScriptablePackSourceDeclaration, PackError>> {
+  let source: string;
+  try {
+    source = await sourceSnapshot.readText(sourcePath);
+  } catch {
+    return packErr(packErrorAt('pack-malformed-meta', sourcePath, '', 'Pack source read failed'));
+  }
+  const loaded = await loadScriptablePack(sourcePath, loaderOptions);
+  if (!loaded.ok) return packErr(scriptableLoadError(sourcePath, loaded.error));
+  let sourceClosure: readonly ScriptablePackSourceClosureEntry[];
+  try {
+    sourceClosure = await inventoryScriptablePackSource(
+      sourcePath,
+      source,
+      undefined,
+      sourceSnapshot,
+    );
+  } catch {
+    return packErr(
+      packErrorAt('pack-malformed-meta', sourcePath, '', 'Pack source closure read failed'),
+    );
+  }
+  return ok({
+    format: 'pack.ts' as const,
+    sourcePath,
+    sourceRevision: await sourceSnapshot.digest(sourcePath),
+    value: projectScriptablePackMeta(loaded.value, sourcePath),
+    definition: loaded.value,
+    sourceClosure,
+  });
+}
+
+/** Follows a GUID's refs depth-first; returns the first reference cycle found. */
+function findReferenceCycle(
+  assets: ReadonlyMap<string, { readonly refs: readonly string[] }>,
+): string[] | null {
+  const visitState = new Map<string, 'visiting' | 'visited'>();
+
+  function dfs(guid: string, path: string[]): string[] | null {
+    visitState.set(guid, 'visiting');
+
+    for (const ref of assets.get(guid)?.refs ?? []) {
+      if (!visitState.has(ref)) {
+        const cycle = dfs(ref, [...path, ref]);
+        if (cycle !== null) return cycle;
+      } else if (visitState.get(ref) === 'visiting') {
+        // Found a back-edge: reconstruct cycle from the repeated node
+        const cycleStart = path.indexOf(ref);
+        return cycleStart >= 0 ? [...path.slice(cycleStart), ref] : [...path, ref];
+      }
+    }
+
+    visitState.set(guid, 'visited');
+    return null;
+  }
+
+  for (const guid of assets.keys()) {
+    if (!visitState.has(guid)) {
+      const cycle = dfs(guid, [guid]);
+      if (cycle !== null) return cycle;
+    }
+  }
+  return null;
+}
+
+/**
+ * One validated scan: the normalized identity rows every declaration registers into.
+ * One normalized GUID map covers pack assets and meta subAssets. The source
+ * kind stays in the path/detail evidence; identity is the normalized GUID.
+ */
+class PackScan {
+  readonly assets = new Map<string, { path: string; refs: readonly string[] }>();
+  readonly packages = new Map<string, { path: string; kind: PackageKind }>();
+  readonly instances: InstanceDeclaration[] = [];
+  readonly failedPaths = new Set<string>();
+
+  constructor(
+    readonly opts: ScanOptions,
+    readonly sourceSnapshot: ScriptablePackSourceSnapshot,
+    readonly capture: ScanCapture | undefined,
+  ) {}
+
+  omitFailedSource(path: string, error: PackError): boolean {
+    if (!this.opts.onSourceFailure) return false;
+    this.opts.onSourceFailure(path, error);
+    this.failedPaths.add(path);
+    return true;
+  }
+
+  registerPackage(
+    packageId: string | undefined,
+    path: string,
+    kind: PackageKind,
+  ): PackError | undefined {
+    if (packageId === undefined) return undefined;
+    const normalized = packageId.toLowerCase();
+    const existing = this.packages.get(normalized);
+    if (existing !== undefined) {
+      return makePackError('pack-guid-collision', {
+        paths: [existing.path, path],
+        guid: normalized,
+      });
+    }
+    this.packages.set(normalized, { path, kind });
+    return undefined;
+  }
+
+  registerAsset(guid: string, path: string, refs: readonly string[] = []): PackError | undefined {
+    const normalized = guid.toLowerCase();
+    const existing = this.assets.get(normalized);
+    if (existing !== undefined)
+      return makePackError('pack-guid-collision', {
+        paths: [existing.path, path],
+        guid: normalized,
+      });
+    this.assets.set(normalized, { path, refs });
+    return undefined;
+  }
+
+  /** Steps 2 + 3 for one .pack.json; undefined means registered or omitted. */
+  async scanPackJson(packPath: string): Promise<PackError | undefined> {
+    const loaded = await readValidatedJson(
+      packPath,
+      'pack-malformed-pack',
+      validatePack,
+      this.sourceSnapshot,
+    );
+    if (!loaded.ok) return this.omitFailedSource(packPath, loaded.error) ? undefined : loaded.error;
+    const { raw, parsed } = loaded.value;
+    if (record(parsed) && parsed.schemaVersion === '3.0.0')
+      return this.registerV3PackJson(packPath, raw, parsed);
+    const packageContract = validateProducerContract(parsed);
+    if (!packageContract.ok) {
+      const error = packErrorAt('pack-malformed-pack', packPath, '', packageContract.error.code);
+      return this.omitFailedSource(packPath, error) ? undefined : error;
+    }
+    // Step 3: validate GUIDs in pack
+    return this.registerLegacyPack(packPath, raw, parsed as unknown as LegacyPackInventoryDocument);
+  }
+
+  async registerV3PackJson(
+    packPath: string,
+    raw: string,
+    parsed: Readonly<Record<string, unknown>>,
+  ): Promise<PackError | undefined> {
+    const authoring = parsePackSourceJson(parsed);
+    if (!authoring.ok) {
+      const error = packErrorAt('pack-malformed-pack', packPath, '', authoring.error.code);
+      return this.omitFailedSource(packPath, error) ? undefined : error;
+    }
+    const packageCollision = this.registerPackage(
+      PackageId.format(authoring.value.packageId),
+      packPath,
+      authoring.value.format,
+    );
+    if (packageCollision !== undefined) return packageCollision;
+    if (authoring.value.format === 'instance') {
+      this.instances.push({ path: packPath, source: authoring.value });
+    } else {
+      for (const asset of projectDirectPackJson(authoring.value).assets) {
+        const collision = this.registerAsset(asset.guid, packPath, [
+          ...asset.refs.map((ref) => ref.toLowerCase()),
+          ...extractInstanceSourceGuids(asset),
+        ]);
+        if (collision !== undefined) return collision;
+      }
+    }
+    this.capture?.declarations.set(packPath, {
+      format: 'pack.json',
+      sourcePath: packPath,
+      sourceRevision: await this.sourceSnapshot.digest(packPath),
+      sourceText: raw,
+      value: authoring.value,
+    });
+    return undefined;
+  }
+
+  async registerLegacyPack(
+    packPath: string,
+    raw: string,
+    packObj: LegacyPackInventoryDocument,
+  ): Promise<PackError | undefined> {
+    const packageCollision = this.registerPackage(packObj.packageId, packPath, 'legacy');
+    if (packageCollision !== undefined) return packageCollision;
+    const contract = legacyPackContractError(packPath, packObj);
+    if (contract !== undefined) return contract;
+    for (const asset of packObj.assets) {
+      if (!isValidAssetGuidString(asset.guid)) {
+        return makePackError('pack-guid-malformed', {
+          raw: asset.guid,
+          reason: 'expected 36-char RFC 4122 dash-form UUID',
+        });
+      }
+      for (const ref of asset.refs) {
+        if (!isValidAssetGuidString(ref)) {
+          return makePackError('pack-guid-malformed', {
+            raw: ref,
+            reason: 'expected 36-char RFC 4122 dash-form UUID in refs[]',
+          });
+        }
+      }
+
+      // Keyed scene instances are dependency edges in the same identity row.
+      const collision = this.registerAsset(asset.guid, packPath, [
+        ...asset.refs.map((ref) => ref.toLowerCase()),
+        ...extractInstanceSourceGuids(asset),
+      ]);
+      if (collision !== undefined) return collision;
+    }
+    this.capture?.declarations.set(packPath, {
+      format: 'pack.json',
+      sourcePath: packPath,
+      sourceRevision: await this.sourceSnapshot.digest(packPath),
+      sourceText: raw,
+      value: packObj,
+    });
+    return undefined;
+  }
+
+  /**
+   * Steps 2 + 3 + 5 for one .meta.json. Meta source paths are local to their
+   * sidecar: an omitted source names the companion file and an explicit source
+   * is resolved relative to the sidecar.
+   */
+  async scanMetaJson(metaPath: string): Promise<PackError | undefined> {
+    const loaded = await readValidatedJson(
+      metaPath,
+      'pack-malformed-meta',
+      validateMeta,
+      this.sourceSnapshot,
+    );
+    if (!loaded.ok) return this.omitFailedSource(metaPath, loaded.error) ? undefined : loaded.error;
+    const { parsed } = loaded.value;
+    const metaContract = validateProducerContract(parsed);
+    if (!metaContract.ok) {
+      const error = packErrorAt('pack-malformed-meta', metaPath, '', metaContract.error.code);
+      return this.omitFailedSource(metaPath, error) ? undefined : error;
+    }
+    // Step 3: validate GUIDs in meta subAssets
+    const metaObj = parsed as unknown as MetaInventoryDocument;
+    const registered = await this.registerMeta(metaPath, metaObj);
+    if (registered !== undefined) return registered;
+    // Step 5: orphan .meta.json check — the source file declared in meta.source must exist.
+    const expectedSourcePath = resolveAssetSource(metaPath, metaObj.source);
+    try {
+      await stat(expectedSourcePath);
+    } catch {
+      return makePackError('pack-orphan-meta', { metaPath, expectedFile: expectedSourcePath });
+    }
+    return undefined;
+  }
+
+  async registerMeta(
+    metaPath: string,
+    metaObj: MetaInventoryDocument,
+  ): Promise<PackError | undefined> {
+    const packageCollision = this.registerPackage(metaObj.packageId, metaPath, 'legacy');
+    if (packageCollision !== undefined) return packageCollision;
+    this.capture?.declarations.set(metaPath, {
+      format: 'meta.json',
+      sourcePath: metaPath,
+      sourceRevision: await this.sourceSnapshot.digest(metaPath),
+      value: metaObj,
+    });
+    for (const sub of metaObj.subAssets) {
+      if (!isValidAssetGuidString(sub.guid)) {
+        return makePackError('pack-guid-malformed', {
+          raw: sub.guid,
+          reason: 'expected 36-char RFC 4122 dash-form UUID in subAssets[].guid',
+        });
+      }
+      const collision = this.registerAsset(sub.guid, metaPath);
+      if (collision !== undefined) return collision;
+    }
+    if (metaObj.subAssets.length <= 1) return undefined;
+    const topologyContract = validateProducerOutputs(metaObj.subAssets);
+    if (!topologyContract.ok)
+      return packErrorAt(
+        'pack-malformed-meta',
+        metaPath,
+        '/subAssets',
+        topologyContract.error.code,
+      );
+    return undefined;
+  }
+
+  /**
+   * Metadata reads release their isolated workers before returning. Parallelize
+   * only those reads; inventories retaining build leases and caller executors
+   * remain serial. Commit declarations in source order, not completion order.
+   */
+  async scanScriptableSources(scriptablePaths: readonly string[]): Promise<PackError | undefined> {
+    const loaderOptions = {
+      ...(this.opts.scriptablePack ?? {}),
+      sourceSnapshot: this.sourceSnapshot,
+      ...(this.capture === undefined ? { metadataOnly: true } : {}),
+    };
+    const batchSize =
+      loaderOptions.metadataOnly === true && loaderOptions.executor === undefined ? 4 : 1;
+    for (let start = 0; start < scriptablePaths.length; start += batchSize) {
+      // Even a failed read must settle every started sibling before returning.
+      const completed = await Promise.allSettled(
+        scriptablePaths
+          .slice(start, start + batchSize)
+          .map((sourcePath) =>
+            loadScriptableSource(sourcePath, this.sourceSnapshot, loaderOptions),
+          ),
+      );
+      for (const [index, item] of completed.entries()) {
+        if (item.status === 'rejected') throw item.reason;
+        if (!item.value.ok) {
+          const sourcePath = scriptablePaths[start + index];
+          if (sourcePath !== undefined && this.omitFailedSource(sourcePath, item.value.error))
+            continue;
+          return item.value.error;
+        }
+        const declaration = item.value.value;
+        const packageCollision = this.registerPackage(
+          PackageId.format(declaration.definition.packageId),
+          declaration.sourcePath,
+          'scriptable',
+        );
+        if (packageCollision !== undefined) return packageCollision;
+        this.capture?.declarations.set(declaration.sourcePath, declaration);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * v3 instance parent validation happens after all declarations have been
+   * registered, so scan order cannot change missing-parent or cycle results.
+   */
+  instanceParentError(): PackError | undefined {
+    for (const instance of this.instances) {
+      const parentId = PackageId.format(instance.source.parent).toLowerCase();
+      const parent = this.packages.get(parentId);
+      if (parent === undefined) {
+        return makePackError('pack-malformed-pack', {
+          path: instance.path,
+          reason: 'pack-parent-not-found',
+          ajvErrors: [
+            {
+              instancePath: '/parent',
+              message: `parent packageId ${PackageId.format(instance.source.parent)} was not found`,
+            },
+          ],
+        });
+      }
+      const kind = parent.kind;
+      if (kind !== 'scriptable' && kind !== 'instance') {
+        return makePackError('pack-malformed-pack', {
+          path: instance.path,
+          reason: 'pack-parent-has-no-parameters',
+          ajvErrors: [
+            {
+              instancePath: '/parent',
+              message: `parent ${PackageId.format(instance.source.parent)} is not a ScriptablePack source with parameters`,
+            },
+          ],
+        });
+      }
+    }
+    return undefined;
+  }
+
+  /** Walks every instance's parent chain, merging values child-over-parent into the capture. */
+  captureInstanceChains(): PackError | undefined {
+    const parentByPackageId = new Map(
+      this.instances.map((instance) => [
+        PackageId.format(instance.source.packageId).toLowerCase(),
+        instance,
+      ]),
+    );
+    for (const instance of this.instances) {
+      const chain = new Set<string>();
+      let current = PackageId.format(instance.source.packageId).toLowerCase();
+      let values: Readonly<Record<string, unknown>> = {};
+      while (true) {
+        if (chain.has(current)) {
+          return makePackError('pack-malformed-pack', {
+            path: instance.path,
+            reason: 'pack-parent-cycle',
+            ajvErrors: [
+              { instancePath: '/parent', message: `parent chain repeats packageId ${current}` },
+            ],
+          });
+        }
+        chain.add(current);
+        const next = parentByPackageId.get(current);
+        if (next === undefined) break;
+        values = { ...next.source.values, ...values };
+        current = PackageId.format(next.source.parent).toLowerCase();
+      }
+      this.captureInstance(instance, current, values);
+    }
+    return undefined;
+  }
+
+  captureInstance(
+    instance: InstanceDeclaration,
+    rootPackageId: string,
+    values: Readonly<Record<string, unknown>>,
+  ): void {
+    const declaration = this.capture?.declarations.get(instance.path);
+    const root = this.capture?.declarations.get(this.packages.get(rootPackageId)?.path ?? '');
+    if (declaration !== undefined && root?.format === 'pack.ts')
+      this.capture?.instances.set(instance.path, {
+        packageId: instance.source.packageId,
+        sourceRevision: declaration.sourceRevision,
+        root,
+        values,
+      });
+  }
+
+  async sourceSnapshotError(): Promise<PackError | undefined> {
+    const current = await this.sourceSnapshot.verify();
+    if (current.ok) return undefined;
+    return makePackError(
+      'pack-malformed-meta',
+      {
+        path: String(current.error.detail.sourcePath),
+        ajvErrors: [{ instancePath: '', message: current.error.code }],
+      },
+      current.error,
+    );
+  }
+}
+
 /**
  * Scan one or more root directories for `.meta.json`, `.pack.json`, and `.pack.ts` files.
  * Runs a 7-step fail-fast validation chain (w17 + M7-T01):
@@ -503,526 +1023,35 @@ async function scanValidated(
   const sourceSnapshot =
     opts.scriptablePack?.sourceSnapshot ?? createScriptablePackSourceSnapshot();
   const rawPaths = await listPackSourcePaths(roots, opts);
-  const failedPaths = new Set<string>();
-  const omitFailedSource = (path: string, error: PackError): boolean => {
-    if (!opts.onSourceFailure) return false;
-    opts.onSourceFailure(path, error);
-    failedPaths.add(path);
-    return true;
-  };
-  // Separate meta and pack paths
-  const metaPaths = rawPaths.filter((p) => p.endsWith('.meta.json'));
-  const packPaths = rawPaths.filter((p) => p.endsWith('.pack.json'));
-  const scriptablePaths = rawPaths.filter((p) => p.endsWith('.pack.ts'));
-
-  // Step 2 + 3: parse + schema validate + GUID format validate each pack file
-  // One normalized GUID map covers pack assets and meta subAssets. The source
-  // kind stays in the path/detail evidence; identity is the normalized GUID.
-  const assets = new Map<string, { path: string; refs: readonly string[] }>();
-  const packages = new Map<
-    string,
-    { path: string; kind: 'legacy' | 'direct' | 'instance' | 'scriptable' }
-  >();
-  const instanceParents: {
-    readonly path: string;
-    readonly source: ParsedPackInstanceJson;
-  }[] = [];
-
-  function registerPackage(
-    packageId: string | undefined,
-    path: string,
-    kind: 'legacy' | 'direct' | 'instance' | 'scriptable',
-  ): PackError | undefined {
-    if (packageId === undefined) return undefined;
-    const normalized = packageId.toLowerCase();
-    const existing = packages.get(normalized);
-    if (existing !== undefined) {
-      return makePackError('pack-guid-collision', {
-        paths: [existing.path, path],
-        guid: normalized,
-      });
-    }
-    packages.set(normalized, { path, kind });
-    return undefined;
+  const scan = new PackScan(opts, sourceSnapshot, capture);
+  for (const packPath of rawPaths.filter((p) => p.endsWith('.pack.json'))) {
+    const failure = await scan.scanPackJson(packPath);
+    if (failure !== undefined) return packErr(failure);
   }
-
-  function registerAsset(
-    guid: string,
-    path: string,
-    refs: readonly string[] = [],
-  ): PackError | undefined {
-    const normalized = guid.toLowerCase();
-    const existing = assets.get(normalized);
-    if (existing !== undefined)
-      return makePackError('pack-guid-collision', {
-        paths: [existing.path, path],
-        guid: normalized,
-      });
-    assets.set(normalized, { path, refs });
-    return undefined;
+  for (const metaPath of rawPaths.filter((p) => p.endsWith('.meta.json'))) {
+    const failure = await scan.scanMetaJson(metaPath);
+    if (failure !== undefined) return packErr(failure);
   }
-
-  for (const packPath of packPaths) {
-    const loaded = await readValidatedJson(
-      packPath,
-      'pack-malformed-pack',
-      validatePack,
-      sourceSnapshot,
-    );
-    if (!loaded.ok) {
-      if (omitFailedSource(packPath, loaded.error)) continue;
-      return loaded;
-    }
-    const { raw, parsed } = loaded.value;
-
-    if (record(parsed) && parsed.schemaVersion === '3.0.0') {
-      const authoring = parsePackSourceJson(parsed);
-      if (!authoring.ok) {
-        const error = makePackError('pack-malformed-pack', {
-          path: packPath,
-          ajvErrors: [{ instancePath: '', message: authoring.error.code }],
-        });
-        if (omitFailedSource(packPath, error)) continue;
-        return packErr(error);
-      }
-      const packageId = authoring.value.packageId;
-      const packageCollision = registerPackage(
-        PackageId.format(packageId),
-        packPath,
-        authoring.value.format,
-      );
-      if (packageCollision !== undefined) return packErr(packageCollision);
-      if (authoring.value.format === 'instance') {
-        instanceParents.push({
-          path: packPath,
-          source: authoring.value,
-        });
-      } else {
-        for (const asset of projectDirectPackJson(authoring.value).assets) {
-          const collision = registerAsset(asset.guid, packPath, [
-            ...asset.refs.map((ref) => ref.toLowerCase()),
-            ...extractInstanceSourceGuids(asset),
-          ]);
-          if (collision !== undefined) return packErr(collision);
-        }
-      }
-      capture?.declarations.set(packPath, {
-        format: 'pack.json',
-        sourcePath: packPath,
-        sourceRevision: await sourceSnapshot.digest(packPath),
-        sourceText: raw,
-        value: authoring.value,
-      });
-      continue;
-    }
-
-    const packageContract = validateProducerContract(parsed);
-    if (!packageContract.ok) {
-      const error = makePackError('pack-malformed-pack', {
-        path: packPath,
-        ajvErrors: [{ instancePath: '', message: packageContract.error.code }],
-      });
-      if (omitFailedSource(packPath, error)) continue;
-      return packErr(error);
-    }
-
-    // Step 3: validate GUIDs in pack
-    const packObj = parsed as unknown as LegacyPackInventoryDocument;
-    const packageCollision = registerPackage(packObj.packageId, packPath, 'legacy');
-    if (packageCollision !== undefined) return packErr(packageCollision);
-    for (const asset of packObj.assets) {
-      if (
-        asset.kind === 'particle-effect' &&
-        asset.execution === 'direct' &&
-        (asset.refs.length > 0 || Object.keys(asset.artifacts ?? {}).length > 0)
-      ) {
-        return packErr(
-          makePackError('pack-malformed-pack', {
-            path: packPath,
-            ajvErrors: [
-              {
-                instancePath: '/assets',
-                message:
-                  'authored particle-effect assets are source-only; refs and artifacts must be empty',
-              },
-            ],
-          }),
-        );
-      }
-    }
-    const producerAssets = packObj.assets.filter(
-      (asset) => asset.sourceKey !== undefined || asset.sourceIndex !== undefined,
-    );
-    if (producerAssets.length > 0) {
-      for (const asset of producerAssets) {
-        const assetContract = validateProducerContract(asset);
-        if (!assetContract.ok) {
-          return packErr(
-            makePackError('pack-malformed-pack', {
-              path: packPath,
-              ajvErrors: [{ instancePath: '/assets', message: assetContract.error.code }],
-            }),
-          );
-        }
-      }
-      const topologyContract = validateProducerOutputs(
-        producerAssets.map((asset, sourceIndex) => ({
-          guid: asset.guid,
-          kind: asset.kind,
-          sourceIndex: asset.sourceIndex ?? sourceIndex,
-          ...(asset.sourceKey === undefined ? {} : { sourceKey: asset.sourceKey }),
-        })),
-      );
-      if (!topologyContract.ok) {
-        return packErr(
-          makePackError('pack-malformed-pack', {
-            path: packPath,
-            ajvErrors: [{ instancePath: '/assets', message: topologyContract.error.code }],
-          }),
-        );
-      }
-    }
-    for (const asset of packObj.assets) {
-      if (!isValidAssetGuidString(asset.guid)) {
-        return packErr(
-          makePackError('pack-guid-malformed', {
-            raw: asset.guid,
-            reason: 'expected 36-char RFC 4122 dash-form UUID',
-          }),
-        );
-      }
-      for (const ref of asset.refs) {
-        if (!isValidAssetGuidString(ref)) {
-          return packErr(
-            makePackError('pack-guid-malformed', {
-              raw: ref,
-              reason: 'expected 36-char RFC 4122 dash-form UUID in refs[]',
-            }),
-          );
-        }
-      }
-
-      // Keyed scene instances are dependency edges in the same identity row.
-      const collision = registerAsset(asset.guid, packPath, [
-        ...asset.refs.map((ref) => ref.toLowerCase()),
-        ...extractInstanceSourceGuids(asset),
-      ]);
-      if (collision !== undefined) return packErr(collision);
-    }
-    capture?.declarations.set(packPath, {
-      format: 'pack.json',
-      sourcePath: packPath,
-      sourceRevision: await sourceSnapshot.digest(packPath),
-      sourceText: raw,
-      value: packObj,
-    });
-  }
-
-  // Step 2 + 3 + 5: parse + schema validate + GUID format validate + orphan check for meta files.
-  // Meta source paths are local to their sidecar: an omitted source names the
-  // companion file and an explicit source is resolved relative to the sidecar.
-  for (const metaPath of metaPaths) {
-    const loaded = await readValidatedJson(
-      metaPath,
-      'pack-malformed-meta',
-      validateMeta,
-      sourceSnapshot,
-    );
-    if (!loaded.ok) {
-      if (omitFailedSource(metaPath, loaded.error)) continue;
-      return loaded;
-    }
-    const { parsed } = loaded.value;
-
-    const metaContract = validateProducerContract(parsed);
-    if (!metaContract.ok) {
-      const error = makePackError('pack-malformed-meta', {
-        path: metaPath,
-        ajvErrors: [{ instancePath: '', message: metaContract.error.code }],
-      });
-      if (omitFailedSource(metaPath, error)) continue;
-      return packErr(error);
-    }
-
-    // Step 3: validate GUIDs in meta subAssets
-    const metaObj = parsed as unknown as MetaInventoryDocument;
-    const packageCollision = registerPackage(metaObj.packageId, metaPath, 'legacy');
-    if (packageCollision !== undefined) return packErr(packageCollision);
-    capture?.declarations.set(metaPath, {
-      format: 'meta.json',
-      sourcePath: metaPath,
-      sourceRevision: await sourceSnapshot.digest(metaPath),
-      value: metaObj,
-    });
-    for (const sub of metaObj.subAssets) {
-      if (!isValidAssetGuidString(sub.guid)) {
-        return packErr(
-          makePackError('pack-guid-malformed', {
-            raw: sub.guid,
-            reason: 'expected 36-char RFC 4122 dash-form UUID in subAssets[].guid',
-          }),
-        );
-      }
-      const collision = registerAsset(sub.guid, metaPath);
-      if (collision !== undefined) return packErr(collision);
-    }
-    const producerSubAssets = metaObj.subAssets.length > 1 ? metaObj.subAssets : [];
-    if (producerSubAssets.length > 0) {
-      const topologyContract = validateProducerOutputs(producerSubAssets);
-      if (!topologyContract.ok) {
-        return packErr(
-          makePackError('pack-malformed-meta', {
-            path: metaPath,
-            ajvErrors: [{ instancePath: '/subAssets', message: topologyContract.error.code }],
-          }),
-        );
-      }
-    }
-
-    // Step 5: orphan .meta.json check — the source file declared in meta.source must exist.
-    const expectedSourcePath = resolveAssetSource(metaPath, metaObj.source);
-    try {
-      await stat(expectedSourcePath);
-    } catch {
-      return packErr(
-        makePackError('pack-orphan-meta', {
-          metaPath,
-          expectedFile: expectedSourcePath,
-        }),
-      );
-    }
-  }
-
-  // Metadata reads release their isolated workers before returning. Parallelize
-  // only those reads; inventories retaining build leases and caller executors
-  // remain serial. Commit declarations in source order, not completion order.
-  const loaderOptions = {
-    ...(opts.scriptablePack ?? {}),
-    sourceSnapshot,
-    ...(capture === undefined ? { metadataOnly: true } : {}),
-  };
-  const loadSource = async (sourcePath: string) => {
-    let source: string;
-    try {
-      source = await sourceSnapshot.readText(sourcePath);
-    } catch {
-      return packErr(
-        makePackError('pack-malformed-meta', {
-          path: sourcePath,
-          ajvErrors: [{ instancePath: '', message: 'Pack source read failed' }],
-        }),
-      );
-    }
-    const loaded = await loadScriptablePack(sourcePath, loaderOptions);
-    if (!loaded.ok) {
-      if (loaded.error.code === 'pack-module-not-found') {
-        return packErr(
-          new PackError({
-            code: loaded.error.code,
-            expected: loaded.error.expected,
-            hint: loaded.error.hint,
-            detail: {
-              code: loaded.error.code,
-              sourcePath: String(loaded.error.detail.sourcePath),
-              specifier: String(loaded.error.detail.specifier),
-            },
-            cause: loaded.error,
-          }),
-        );
-      }
-      const diagnostic = loaded.error.detail.diagnostic;
-      return packErr(
-        makePackError(
-          'pack-malformed-meta',
-          {
-            path: sourcePath,
-            ajvErrors: [
-              {
-                instancePath: '',
-                message:
-                  typeof diagnostic === 'string'
-                    ? `${loaded.error.code}: ${diagnostic}`
-                    : loaded.error.code,
-              },
-            ],
-          },
-          loaded.error,
-        ),
-      );
-    }
-    let sourceClosure: readonly ScriptablePackSourceClosureEntry[];
-    try {
-      sourceClosure = await inventoryScriptablePackSource(
-        sourcePath,
-        source,
-        undefined,
-        sourceSnapshot,
-      );
-    } catch {
-      return packErr(
-        makePackError('pack-malformed-meta', {
-          path: sourcePath,
-          ajvErrors: [{ instancePath: '', message: 'Pack source closure read failed' }],
-        }),
-      );
-    }
-    return ok({
-      format: 'pack.ts' as const,
-      sourcePath,
-      sourceRevision: await sourceSnapshot.digest(sourcePath),
-      value: projectScriptablePackMeta(loaded.value, sourcePath),
-      definition: loaded.value,
-      sourceClosure,
-    });
-  };
-  const batchSize =
-    loaderOptions.metadataOnly === true && loaderOptions.executor === undefined ? 4 : 1;
-  for (let start = 0; start < scriptablePaths.length; start += batchSize) {
-    // Even a failed read must settle every started sibling before returning.
-    const completed = await Promise.allSettled(
-      scriptablePaths.slice(start, start + batchSize).map(loadSource),
-    );
-    for (const [index, item] of completed.entries()) {
-      if (item.status === 'rejected') throw item.reason;
-      if (!item.value.ok) {
-        const sourcePath = scriptablePaths[start + index];
-        if (sourcePath !== undefined && omitFailedSource(sourcePath, item.value.error)) continue;
-        return item.value;
-      }
-      const declaration = item.value.value;
-      const packageCollision = registerPackage(
-        PackageId.format(declaration.definition.packageId),
-        declaration.sourcePath,
-        'scriptable',
-      );
-      if (packageCollision !== undefined) return packErr(packageCollision);
-      capture?.declarations.set(declaration.sourcePath, declaration);
-    }
-  }
-
-  // v3 instance parent validation happens after all declarations have been
-  // registered, so scan order cannot change missing-parent or cycle results.
-  const parentByPackageId = new Map(
-    instanceParents.map((instance) => [
-      PackageId.format(instance.source.packageId).toLowerCase(),
-      instance,
-    ]),
+  const scriptable = await scan.scanScriptableSources(
+    rawPaths.filter((p) => p.endsWith('.pack.ts')),
   );
-  for (const instance of instanceParents) {
-    const parentId = PackageId.format(instance.source.parent).toLowerCase();
-    const parent = packages.get(parentId);
-    if (parent === undefined) {
-      return packErr(
-        makePackError('pack-malformed-pack', {
-          path: instance.path,
-          reason: 'pack-parent-not-found',
-          ajvErrors: [
-            {
-              instancePath: '/parent',
-              message: `parent packageId ${PackageId.format(instance.source.parent)} was not found`,
-            },
-          ],
-        }),
-      );
-    }
-    const kind = parent.kind;
-    if (kind !== 'scriptable' && kind !== 'instance') {
-      return packErr(
-        makePackError('pack-malformed-pack', {
-          path: instance.path,
-          reason: 'pack-parent-has-no-parameters',
-          ajvErrors: [
-            {
-              instancePath: '/parent',
-              message: `parent ${PackageId.format(instance.source.parent)} is not a ScriptablePack source with parameters`,
-            },
-          ],
-        }),
-      );
-    }
-  }
-  for (const instance of instanceParents) {
-    const chain = new Set<string>();
-    let current = PackageId.format(instance.source.packageId).toLowerCase();
-    let values: Readonly<Record<string, unknown>> = {};
-    while (true) {
-      if (chain.has(current)) {
-        return packErr(
-          makePackError('pack-malformed-pack', {
-            path: instance.path,
-            reason: 'pack-parent-cycle',
-            ajvErrors: [
-              { instancePath: '/parent', message: `parent chain repeats packageId ${current}` },
-            ],
-          }),
-        );
-      }
-      chain.add(current);
-      const next = parentByPackageId.get(current);
-      if (next === undefined) break;
-      values = { ...next.source.values, ...values };
-      current = PackageId.format(next.source.parent).toLowerCase();
-    }
-    const declaration = capture?.declarations.get(instance.path);
-    const root = capture?.declarations.get(packages.get(current)?.path ?? '');
-    if (declaration !== undefined && root?.format === 'pack.ts')
-      capture?.instances.set(instance.path, {
-        packageId: instance.source.packageId,
-        sourceRevision: declaration.sourceRevision,
-        root,
-        values,
-      });
-  }
-
+  if (scriptable !== undefined) return packErr(scriptable);
+  const parents = scan.instanceParentError() ?? scan.captureInstanceChains();
+  if (parents !== undefined) return packErr(parents);
   // Step 6: cyclic reference detection via hand-written DFS (no graphlib dep)
-  const visitState = new Map<string, 'visiting' | 'visited'>();
-
-  function dfs(guid: string, path: string[]): string[] | null {
-    visitState.set(guid, 'visiting');
-
-    for (const ref of assets.get(guid)?.refs ?? []) {
-      if (!visitState.has(ref)) {
-        const cycle = dfs(ref, [...path, ref]);
-        if (cycle !== null) return cycle;
-      } else if (visitState.get(ref) === 'visiting') {
-        // Found a back-edge: reconstruct cycle from the repeated node
-        const cycleStart = path.indexOf(ref);
-        return cycleStart >= 0 ? [...path.slice(cycleStart), ref] : [...path, ref];
-      }
-    }
-
-    visitState.set(guid, 'visited');
-    return null;
-  }
-
-  for (const guid of assets.keys()) {
-    if (!visitState.has(guid)) {
-      const cycle = dfs(guid, [guid]);
-      if (cycle !== null) {
-        return packErr(
-          makePackError('pack-cyclic-reference', {
-            code: 'pack-cyclic-reference',
-            kind: 'mount-asset',
-            cycle,
-          }),
-        );
-      }
-    }
-  }
-
-  const current = await sourceSnapshot.verify();
-  if (!current.ok)
+  const cycle = findReferenceCycle(scan.assets);
+  if (cycle !== null) {
     return packErr(
-      makePackError(
-        'pack-malformed-meta',
-        {
-          path: String(current.error.detail.sourcePath),
-          ajvErrors: [{ instancePath: '', message: current.error.code }],
-        },
-        current.error,
-      ),
+      makePackError('pack-cyclic-reference', {
+        code: 'pack-cyclic-reference',
+        kind: 'mount-asset',
+        cycle,
+      }),
     );
-  return ok(rawPaths.filter((path) => !failedPaths.has(path)));
+  }
+  const stale = await scan.sourceSnapshotError();
+  if (stale !== undefined) return packErr(stale);
+  return ok(rawPaths.filter((path) => !scan.failedPaths.has(path)));
 }
 
 /** Scan one complete Pack inventory while preserving the public path-only API. */

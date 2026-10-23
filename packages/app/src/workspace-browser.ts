@@ -88,6 +88,7 @@ type CommandInput = EngineWorkspaceCameraInput & {
   readonly revision?: number;
   readonly display?: EngineWorkspacePreviewDisplayOptions;
 };
+type ExecuteInput = CommandInput & { readonly signal: AbortSignal };
 interface Command {
   readonly kind: 'command' | 'cancel';
   readonly id: string;
@@ -469,337 +470,373 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
       syncCanvasDrawingBuffer(canvas, { width, height });
       frameFloor = submittedFrame;
     };
-    const execute = async (
-      command: Command,
+    const closeWorkspace = async () => {
+      workspaceClosed = true;
+      if (failure?.detail.cleanup === 'failed' || failure?.detail.cleanup === 'timeout')
+        throw failure;
+      await releaseWorkspacePlugins(ctx);
+      return { cleanup: 'completed' };
+    };
+    const runRuntimePack = async (
+      input: ExecuteInput,
       signal: AbortSignal,
       onInstalled?: (fiber: Fiber) => void,
+    ) => {
+      if (input.targetId !== target.targetId || input.worldId !== app.world.identity)
+        throw new EngineWorkspaceError(
+          'engine-workspace-target-stale',
+          'The actual App World and target',
+        );
+      if (!input.request) throw new TypeError('A runtime Pack request is required');
+      const result = await executeWorkspaceRuntimePack(
+        ctx,
+        app,
+        input.request,
+        signal,
+        input.connectionId,
+      );
+      if (result.installed) onInstalled?.(result.installed);
+      return result.value;
+    };
+    const listAssets = async () => {
+      if (!app.assets) throw new Error('Engine workspace requires AssetRegistry');
+      return projectEngineWorkspaceAssets((await app.assets.enumerateCatalog()).unwrap());
+    };
+    const inspectAsset = (input: ExecuteInput, signal: AbortSignal) => {
+      if (!app.assets || !input.guid)
+        throw new Error('Asset inspection requires an AssetRegistry and GUID');
+      return inspectEngineWorkspaceAsset(app.assets, input.guid, signal);
+    };
+    /** An independent inline preview owns a child App in its own isolated native scope. */
+    const openInlinePreview = async (
+      input: ExecuteInput,
+      childId: string,
+      signal: AbortSignal,
     ): Promise<unknown> => {
-      if (command.operation === 'closeWorkspace') {
-        workspaceClosed = true;
-        if (failure?.detail.cleanup === 'failed' || failure?.detail.cleanup === 'timeout')
-          throw failure;
-        await releaseWorkspacePlugins(ctx);
-        return { cleanup: 'completed' };
-      }
-      assertAvailable();
+      if (!options.createPreviewApp || !input.asset)
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'Independent inline preview assembly',
+        );
+      const asset = input.asset;
+      if (children.has(childId)) throw new Error('Preview identity is already allocated');
+      const surface = canvas.ownerDocument.createElement('div');
+      const childCanvas = canvas.ownerDocument.createElement('canvas');
+      const { url: _url, ...parentTarget } = target;
+      const childTarget = {
+        ...parentTarget,
+        targetId: childId,
+        width: input.width ?? target.width,
+        height: input.height ?? target.height,
+      };
+      childCanvas.width = childTarget.width;
+      childCanvas.height = childTarget.height;
+      surface.append(childCanvas);
+      let opened: unknown;
+      let childApp: App | undefined;
+      let childBrowser: Fiber | undefined;
+      const create = options.createPreviewApp;
+      const childPlugin: Plugin = {
+        name: 'forgeax:workspace-inline-preview',
+        async apply(childContext) {
+          const parking = canvas.ownerDocument.createElement('div');
+          parking.hidden = true;
+          parking.append(surface);
+          canvas.ownerDocument.body.append(parking);
+          childContext.effect(() => () => {
+            surface.remove();
+            parking.remove();
+          });
+          childApp = await create({
+            context: childContext,
+            canvas: childCanvas,
+            asset: asset,
+            targetId: childId,
+          });
+          childBrowser = await childContext.plugin(engineWorkspaceBrowserPlugin, {
+            app: childApp,
+            canvas: childCanvas,
+            surface,
+            target: { ...childTarget, worldId: childApp.world.identity },
+            project,
+            initialAsset: asset,
+            ...(openResourcePreview ? { openResourcePreview: openResourcePreview } : {}),
+            transport: {
+              async request(_service: string, payload: unknown) {
+                const value = payload as Record<string, unknown>;
+                if (value.kind === 'ready') {
+                  opened = value.preview;
+                  return {};
+                }
+                return transport.request(engineWorkspaceResultService(target.targetId), value);
+              },
+              subscribe(topic: string, listener: (value: unknown) => void) {
+                return transport.subscribe(topic, (value) => {
+                  const command = value as Command;
+                  if (
+                    command?.kind === 'cancel' ||
+                    (command?.input?.targetId === childId && command.operation !== 'closePreview')
+                  )
+                    listener(value);
+                });
+              },
+            },
+          });
+          await childBrowser.await();
+        },
+      };
+      // Native Cordis scopes separate App capabilities inside the same Host realm.
+      const scope = [
+        'world',
+        'renderer',
+        'assets',
+        'pluginPrograms',
+        'runtimePacks',
+        'input',
+        'renderFeatureHost',
+        'audio',
+        'physics',
+        'engineWorkspaceTargetTools',
+        'engineWorkspacePresentation',
+      ].reduce((scope, name) => scope.isolate(name), ctx);
+      const dispose = await ctx.effect(async function* () {
+        const fiber = scope.plugin(childPlugin);
+        yield joinPluginFiber(fiber);
+        // Drain the App before its native renderer and service Fibers unload.
+        yield async () => {
+          await childBrowser?.dispose();
+          await childApp?.dispose();
+        };
+        await fiber.await();
+        signal.throwIfAborted();
+        if (!opened) throw new Error('Inline preview did not publish its target');
+      });
+      if (!childBrowser) throw new Error('Inline preview did not publish its browser owner');
+      children.set(childId, { dispose, surface, context: childBrowser.ctx });
+      return opened;
+    };
+    /** The editing target replaces its own asset preview and resumes the App on it. */
+    const openTargetPreview = async (
+      command: Command,
+      input: ExecuteInput,
+      signal: AbortSignal,
+    ) => {
+      if (options.input)
+        throw new EngineWorkspaceError(
+          'engine-workspace-operation-unavailable',
+          'Asset previews belong to the editing target',
+        );
+      if (!app.assets || !input.asset)
+        throw new TypeError('Workspace requires an asset and AssetRegistry');
+      const width = input.width ?? target.width;
+      const height = input.height ?? target.height;
+      if (![width, height].every((v) => Number.isSafeInteger(v) && v > 0))
+        throw new TypeError('Invalid target extent');
+      await closePreview();
       signal.throwIfAborted();
-      const input = { ...command.input, signal };
-      switch (command.operation) {
-        case 'authoring.write': {
-          const owner = active(input);
-          if (!owner.writeAssetField || !input.fieldWrite)
-            throw new TypeError('This target has no asset authoring capability');
-          await owner.writeAssetField(input.fieldWrite);
-          return { applied: true };
-        }
-        case 'authoring.prepare': {
-          const owner = active(input);
-          if (!owner.prepareAssetContent || !input.content)
-            throw new TypeError('This target has no author generation capability');
-          return await owner.prepareAssetContent(
-            decodePackData(input.content) as RuntimePackContent,
-            signal,
-          );
-        }
-        case 'authoring.commit': {
-          const owner = active(input);
-          if (
-            !owner.commitAssetContent ||
-            typeof input.preparation !== 'number' ||
-            !Array.isArray(input.fields)
-          )
-            throw new TypeError('This target has no prepared author content');
-          await owner.commitAssetContent(
-            input.preparation,
-            input.fields as WorkspaceAssetFieldWrite[],
-          );
-          return null;
-        }
-        case 'runtimePack': {
-          if (input.targetId !== target.targetId || input.worldId !== app.world.identity)
-            throw new EngineWorkspaceError(
-              'engine-workspace-target-stale',
-              'The actual App World and target',
-            );
-          if (!input.request) throw new TypeError('A runtime Pack request is required');
-          const result = await executeWorkspaceRuntimePack(
-            ctx,
-            app,
-            input.request,
-            signal,
-            input.connectionId,
-          );
-          if (result.installed) onInstalled?.(result.installed);
-          return result.value;
-        }
-        case 'target.pick': {
-          if (
-            typeof input.x !== 'number' ||
-            typeof input.y !== 'number' ||
-            !Number.isFinite(input.x) ||
-            !Number.isFinite(input.y)
-          )
-            throw new TypeError('Picking requires finite output pixels');
-          const pick = requireTools(input).pick;
-          if (!pick)
-            throw new EngineWorkspaceError(
-              'engine-workspace-capability-unavailable',
-              'Display picking tools',
-            );
-          return pick({ x: input.x, y: input.y });
-        }
+      errors.length = 0;
+      await resize({ targetId: target.targetId, width, height });
+      const next = await createEngineWorkspaceAppPreview({
+        app,
+        assets: app.assets,
+        asset: input.asset,
+        project,
+        target: { ...target, width, height },
+        capture,
+        resize,
+        tools: targetTools,
+        ...(openResourcePreview === undefined
+          ? {}
+          : {
+              openResourcePreview: (input) => openResourcePreview({ ...input, canvas }),
+            }),
+      });
+      try {
+        assertAvailable();
+        signal.throwIfAborted();
+        (started ? app.resume() : app.start()).unwrap();
+        started = true;
+        if (!presented) app.pause().unwrap();
+        preview = next;
+        previewOwner = command.id;
+        frameFloor = submittedFrame;
+        return {
+          previewOwner,
+          target: next.target,
+          asset: next.asset,
+          assetBinding: next.assetBinding,
+        };
+      } catch (error) {
+        await next.close?.();
+        throw error;
+      }
+    };
+    const closePreviewCommand = async (input: ExecuteInput) => {
+      const child = input.targetId ? children.get(input.targetId) : undefined;
+      if (child && input.targetId) {
+        await child.dispose();
+        if (children.get(input.targetId) === child) children.delete(input.targetId);
+        return { closed: true, targetId: input.targetId };
+      }
+      if (input.previewOwner !== previewOwner) return { closed: false, stale: true };
+      await closePreview();
+      return { closed: true, targetId: target.targetId };
+    };
+    const writeAuthoringField = async (input: ExecuteInput) => {
+      const owner = active(input);
+      if (!owner.writeAssetField || !input.fieldWrite)
+        throw new TypeError('This target has no asset authoring capability');
+      await owner.writeAssetField(input.fieldWrite);
+      return { applied: true };
+    };
+    const prepareAuthoringContent = async (input: ExecuteInput, signal: AbortSignal) => {
+      const owner = active(input);
+      if (!owner.prepareAssetContent || !input.content)
+        throw new TypeError('This target has no author generation capability');
+      return await owner.prepareAssetContent(
+        decodePackData(input.content) as RuntimePackContent,
+        signal,
+      );
+    };
+    const commitAuthoringContent = async (input: ExecuteInput) => {
+      const owner = active(input);
+      if (
+        !owner.commitAssetContent ||
+        typeof input.preparation !== 'number' ||
+        !Array.isArray(input.fields)
+      )
+        throw new TypeError('This target has no prepared author content');
+      await owner.commitAssetContent(input.preparation, input.fields as WorkspaceAssetFieldWrite[]);
+      return null;
+    };
+    const setTargetControl = (input: ExecuteInput) => {
+      if (input.mode !== 'player' && input.mode !== 'observer')
+        throw new TypeError('Invalid control mode');
+      const setControl = active(input).setControl;
+      if (!setControl)
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'Game input control tools',
+        );
+      return setControl({ ...input, mode: input.mode });
+    };
+    const resizeTarget = async (input: ExecuteInput) => {
+      if (typeof input.width !== 'number' || typeof input.height !== 'number')
+        throw new TypeError('Workspace resize requires output dimensions');
+      return {
+        target: await active(input).resize?.({
+          ...input,
+          width: input.width,
+          height: input.height,
+        }),
+      };
+    };
+    const requireTexturePreview = (input: ExecuteInput) => {
+      const texture = active(input).texture;
+      if (!texture) throw new Error('Texture preview controls are unavailable');
+      return texture;
+    };
+    const requireDisplay = (input: ExecuteInput) => {
+      const display = active(input).display;
+      if (!display)
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'A resource preview display plugin',
+        );
+      return display;
+    };
+    const revokeCameraConnection = (input: ExecuteInput) => {
+      if (typeof input.connectionId !== 'string')
+        throw new TypeError('A connection identity is required');
+      return active(input).revokeConnection?.({
+        targetId: input.targetId,
+        connectionId: input.connectionId,
+      });
+    };
+    const pickTarget = (input: ExecuteInput) => {
+      if (
+        typeof input.x !== 'number' ||
+        typeof input.y !== 'number' ||
+        !Number.isFinite(input.x) ||
+        !Number.isFinite(input.y)
+      )
+        throw new TypeError('Picking requires finite output pixels');
+      const pick = requireTools(input).pick;
+      if (!pick)
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'Display picking tools',
+        );
+      return pick({ x: input.x, y: input.y });
+    };
+    const requireEntityId = (input: ExecuteInput) => {
+      if (typeof input.entityId !== 'string')
+        throw new TypeError('An entity reference is required');
+      return input.entityId;
+    };
+    /** Operations served by the target tools plugin of the active preview. */
+    const executeTargetToolCommand = (operation: string, input: ExecuteInput): unknown => {
+      switch (operation) {
+        case 'target.pick':
+          return pickTarget(input);
         case 'entity.highlight':
           return (
             requireTools(input).highlight?.(input.entityId ? { entityId: input.entityId } : {}) ?? {
               available: false,
             }
           );
-        case 'target.control': {
-          if (input.mode !== 'player' && input.mode !== 'observer')
-            throw new TypeError('Invalid control mode');
-          const setControl = active(input).setControl;
-          if (!setControl)
-            throw new EngineWorkspaceError(
-              'engine-workspace-capability-unavailable',
-              'Game input control tools',
-            );
-          return setControl({ ...input, mode: input.mode });
-        }
-        case 'describe':
-          return { project, target };
-        case 'listAssets': {
-          if (!app.assets) throw new Error('Engine workspace requires AssetRegistry');
-          return projectEngineWorkspaceAssets((await app.assets.enumerateCatalog()).unwrap());
-        }
-        case 'inspectAsset': {
-          if (!app.assets || !input.guid)
-            throw new Error('Asset inspection requires an AssetRegistry and GUID');
-          return inspectEngineWorkspaceAsset(app.assets, input.guid, signal);
-        }
-        case 'openPreview': {
-          if (input.previewTargetId && input.previewTargetId !== target.targetId) {
-            if (!options.createPreviewApp || !input.asset)
-              throw new EngineWorkspaceError(
-                'engine-workspace-capability-unavailable',
-                'Independent inline preview assembly',
-              );
-            const asset = input.asset;
-            const childId = input.previewTargetId;
-            if (children.has(childId)) throw new Error('Preview identity is already allocated');
-            const surface = canvas.ownerDocument.createElement('div');
-            const childCanvas = canvas.ownerDocument.createElement('canvas');
-            const { url: _url, ...parentTarget } = target;
-            const childTarget = {
-              ...parentTarget,
-              targetId: childId,
-              width: input.width ?? target.width,
-              height: input.height ?? target.height,
-            };
-            childCanvas.width = childTarget.width;
-            childCanvas.height = childTarget.height;
-            surface.append(childCanvas);
-            let opened: unknown;
-            let childApp: App | undefined;
-            let childBrowser: Fiber | undefined;
-            const create = options.createPreviewApp;
-            const childPlugin: Plugin = {
-              name: 'forgeax:workspace-inline-preview',
-              async apply(childContext) {
-                const parking = canvas.ownerDocument.createElement('div');
-                parking.hidden = true;
-                parking.append(surface);
-                canvas.ownerDocument.body.append(parking);
-                childContext.effect(() => () => {
-                  surface.remove();
-                  parking.remove();
-                });
-                childApp = await create({
-                  context: childContext,
-                  canvas: childCanvas,
-                  asset: asset,
-                  targetId: childId,
-                });
-                childBrowser = await childContext.plugin(engineWorkspaceBrowserPlugin, {
-                  app: childApp,
-                  canvas: childCanvas,
-                  surface,
-                  target: { ...childTarget, worldId: childApp.world.identity },
-                  project,
-                  initialAsset: asset,
-                  ...(openResourcePreview ? { openResourcePreview: openResourcePreview } : {}),
-                  transport: {
-                    async request(_service: string, payload: unknown) {
-                      const value = payload as Record<string, unknown>;
-                      if (value.kind === 'ready') {
-                        opened = value.preview;
-                        return {};
-                      }
-                      return transport.request(
-                        engineWorkspaceResultService(target.targetId),
-                        value,
-                      );
-                    },
-                    subscribe(topic: string, listener: (value: unknown) => void) {
-                      return transport.subscribe(topic, (value) => {
-                        const command = value as Command;
-                        if (
-                          command?.kind === 'cancel' ||
-                          (command?.input?.targetId === childId &&
-                            command.operation !== 'closePreview')
-                        )
-                          listener(value);
-                      });
-                    },
-                  },
-                });
-                await childBrowser.await();
-              },
-            };
-            // Native Cordis scopes separate App capabilities inside the same Host realm.
-            const scope = [
-              'world',
-              'renderer',
-              'assets',
-              'pluginPrograms',
-              'runtimePacks',
-              'input',
-              'renderFeatureHost',
-              'audio',
-              'physics',
-              'engineWorkspaceTargetTools',
-              'engineWorkspacePresentation',
-            ].reduce((scope, name) => scope.isolate(name), ctx);
-            const dispose = await ctx.effect(async function* () {
-              const fiber = scope.plugin(childPlugin);
-              yield joinPluginFiber(fiber);
-              // Drain the App before its native renderer and service Fibers unload.
-              yield async () => {
-                await childBrowser?.dispose();
-                await childApp?.dispose();
-              };
-              await fiber.await();
-              signal.throwIfAborted();
-              if (!opened) throw new Error('Inline preview did not publish its target');
-            });
-            if (!childBrowser) throw new Error('Inline preview did not publish its browser owner');
-            children.set(childId, { dispose, surface, context: childBrowser.ctx });
-            return opened;
-          }
-          if (options.input)
-            throw new EngineWorkspaceError(
-              'engine-workspace-operation-unavailable',
-              'Asset previews belong to the editing target',
-            );
-          if (!app.assets || !input.asset)
-            throw new TypeError('Workspace requires an asset and AssetRegistry');
-          const width = input.width ?? target.width;
-          const height = input.height ?? target.height;
-          if (![width, height].every((v) => Number.isSafeInteger(v) && v > 0))
-            throw new TypeError('Invalid target extent');
-          await closePreview();
-          signal.throwIfAborted();
-          errors.length = 0;
-          await resize({ targetId: target.targetId, width, height });
-          const next = await createEngineWorkspaceAppPreview({
-            app,
-            assets: app.assets,
-            asset: input.asset,
-            project,
-            target: { ...target, width, height },
-            capture,
-            resize,
-            tools: targetTools,
-            ...(openResourcePreview === undefined
-              ? {}
-              : {
-                  openResourcePreview: (input) => openResourcePreview({ ...input, canvas }),
-                }),
-          });
-          try {
-            assertAvailable();
-            signal.throwIfAborted();
-            (started ? app.resume() : app.start()).unwrap();
-            started = true;
-            if (!presented) app.pause().unwrap();
-            preview = next;
-            previewOwner = command.id;
-            frameFloor = submittedFrame;
-            return {
-              previewOwner,
-              target: next.target,
-              asset: next.asset,
-              assetBinding: next.assetBinding,
-            };
-          } catch (error) {
-            await next.close?.();
-            throw error;
-          }
-        }
-        case 'closePreview': {
-          const child = input.targetId ? children.get(input.targetId) : undefined;
-          if (child && input.targetId) {
-            await child.dispose();
-            if (children.get(input.targetId) === child) children.delete(input.targetId);
-            return { closed: true, targetId: input.targetId };
-          }
-          if (input.previewOwner !== previewOwner) return { closed: false, stale: true };
-          await closePreview();
-          return { closed: true, targetId: target.targetId };
-        }
         case 'scene.tree.get':
           return requireTools(input).tree(input);
-        case 'entity.inspect':
-        case 'entity.focus': {
-          if (typeof input.entityId !== 'string')
-            throw new TypeError('An entity reference is required');
-          const tools = requireTools(input);
-          return command.operation === 'entity.inspect'
-            ? tools.inspect({ entityId: input.entityId })
-            : tools.focus({ entityId: input.entityId });
+        case 'entity.inspect': {
+          const entityId = requireEntityId(input);
+          return requireTools(input).inspect({ entityId });
         }
+        case 'entity.focus': {
+          const entityId = requireEntityId(input);
+          return requireTools(input).focus({ entityId });
+        }
+        default:
+          throw new EngineWorkspaceError(
+            'engine-workspace-operation-unavailable',
+            'An installed workspace operation',
+          );
+      }
+    };
+    /** Operations owned by the active preview: authoring, control, output and camera. */
+    const executeTargetCommand = async (
+      operation: string,
+      input: ExecuteInput,
+      signal: AbortSignal,
+    ): Promise<unknown> => {
+      switch (operation) {
+        case 'authoring.write':
+          return writeAuthoringField(input);
+        case 'authoring.prepare':
+          return prepareAuthoringContent(input, signal);
+        case 'authoring.commit':
+          return commitAuthoringContent(input);
+        case 'target.control':
+          return setTargetControl(input);
         case 'resize':
-          if (typeof input.width !== 'number' || typeof input.height !== 'number')
-            throw new TypeError('Workspace resize requires output dimensions');
-          return {
-            target: await active(input).resize?.({
-              ...input,
-              width: input.width,
-              height: input.height,
-            }),
-          };
+          return resizeTarget(input);
         case 'capture':
           return active(input).capture?.(input);
         case 'preview.texture.get':
+          return requireTexturePreview(input).get();
         case 'preview.texture.set': {
-          const owner = active(input);
-          if (!owner.texture) throw new Error('Texture preview controls are unavailable');
-          if (command.operation === 'preview.texture.get') return owner.texture.get();
-          const result = await owner.texture.set(input.options);
+          const result = await requireTexturePreview(input).set(input.options);
+          frameFloor = submittedFrame;
+          return result;
+        }
+        case 'preview.display.get':
+          return requireDisplay(input).get();
+        case 'preview.display.set': {
+          const result = await requireDisplay(input).set(input.display ?? {});
           frameFloor = submittedFrame;
           return result;
         }
         case 'camera.get':
           return active(input).getCamera(input);
-        case 'preview.display.get': {
-          const display = active(input).display;
-          if (!display)
-            throw new EngineWorkspaceError(
-              'engine-workspace-capability-unavailable',
-              'A resource preview display plugin',
-            );
-          return display.get();
-        }
-        case 'preview.display.set': {
-          const display = active(input).display;
-          if (!display)
-            throw new EngineWorkspaceError(
-              'engine-workspace-capability-unavailable',
-              'A resource preview display plugin',
-            );
-          const result = await display.set(input.display ?? {});
-          frameFloor = submittedFrame;
-          return result;
-        }
         case 'camera.begin':
           return active(input).beginCameraInteraction?.(input);
         case 'camera.update': {
@@ -818,17 +855,38 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           return result;
         }
         case 'camera.revoke':
-          if (typeof input.connectionId !== 'string')
-            throw new TypeError('A connection identity is required');
-          return active(input).revokeConnection?.({
-            targetId: input.targetId,
-            connectionId: input.connectionId,
-          });
+          return revokeCameraConnection(input);
         default:
-          throw new EngineWorkspaceError(
-            'engine-workspace-operation-unavailable',
-            'An installed workspace operation',
-          );
+          return executeTargetToolCommand(operation, input);
+      }
+    };
+    /** Session operations; everything else addresses the active preview. */
+    const execute = async (
+      command: Command,
+      signal: AbortSignal,
+      onInstalled?: (fiber: Fiber) => void,
+    ): Promise<unknown> => {
+      if (command.operation === 'closeWorkspace') return closeWorkspace();
+      assertAvailable();
+      signal.throwIfAborted();
+      const input = { ...command.input, signal };
+      switch (command.operation) {
+        case 'runtimePack':
+          return runRuntimePack(input, signal, onInstalled);
+        case 'describe':
+          return { project, target };
+        case 'listAssets':
+          return listAssets();
+        case 'inspectAsset':
+          return inspectAsset(input, signal);
+        case 'openPreview':
+          if (input.previewTargetId && input.previewTargetId !== target.targetId)
+            return openInlinePreview(input, input.previewTargetId, signal);
+          return openTargetPreview(command, input, signal);
+        case 'closePreview':
+          return closePreviewCommand(input);
+        default:
+          return executeTargetCommand(command.operation, input, signal);
       }
     };
     if (options.input) {

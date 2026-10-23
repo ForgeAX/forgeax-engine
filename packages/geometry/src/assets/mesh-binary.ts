@@ -181,138 +181,196 @@ function deriveAabb(vertices: Float32Array, stride: number): Float32Array | unde
   return Float32Array.of(minX, minY, minZ, maxX, maxY, maxZ);
 }
 
-function meshFromParts(
-  parts: {
-    readonly vertices: unknown;
-    readonly indices?: unknown;
-    readonly attributes?: unknown;
-    readonly aabb?: unknown;
-    readonly submeshes?: readonly Record<string, unknown>[];
-    readonly cardLayout?: MeshCardLayout;
-    readonly collision?: unknown;
-    readonly materialSlots?: PackedMaterialSlots;
-    readonly morphTargets?: unknown;
-    readonly morphWeights?: unknown;
-    readonly floatsPerVertex?: number;
-    readonly uvSetCount?: number;
-    readonly lods?: unknown;
-    readonly lodHysteresis?: unknown;
-  },
-  refs: readonly string[],
-): MeshAsset | undefined {
-  const vertices = floatArray(parts.vertices);
-  if (vertices === undefined) return undefined;
-  const indices = indexArray(parts.indices);
-  if (
-    parts.indices !== undefined &&
-    indices === undefined &&
-    !(Array.isArray(parts.indices) && parts.indices.length === 0) &&
-    !(ArrayBuffer.isView(parts.indices) && parts.indices.byteLength === 0)
-  )
-    return undefined;
-  const sourceAttributes =
-    parts.attributes !== null && typeof parts.attributes === 'object'
-      ? (parts.attributes as Record<string, unknown>)
-      : {};
+interface MeshParts {
+  readonly vertices: unknown;
+  readonly indices?: unknown;
+  readonly attributes?: unknown;
+  readonly aabb?: unknown;
+  readonly submeshes?: readonly Record<string, unknown>[];
+  readonly cardLayout?: MeshCardLayout;
+  readonly collision?: unknown;
+  readonly materialSlots?: PackedMaterialSlots;
+  readonly morphTargets?: unknown;
+  readonly morphWeights?: unknown;
+  readonly floatsPerVertex?: number;
+  readonly uvSetCount?: number;
+  readonly lods?: unknown;
+  readonly lodHysteresis?: unknown;
+}
+
+const FLOAT_ATTRIBUTE_KEYS = [
+  'position',
+  'normal',
+  'uv',
+  'tangent',
+  'uv1',
+  'uv2',
+  'uv3',
+  'uv4',
+  'uv5',
+  'uv6',
+  'uv7',
+  'color',
+] as const;
+
+const EXTRA_UV_KEYS = ['uv1', 'uv2', 'uv3', 'uv4', 'uv5', 'uv6', 'uv7'] as const;
+
+function isEmptyIndexSource(value: unknown): boolean {
+  return (
+    (Array.isArray(value) && value.length === 0) ||
+    (ArrayBuffer.isView(value) && value.byteLength === 0)
+  );
+}
+
+function vertexAttributesFor(raw: unknown): VertexAttributeMap | undefined {
+  const source = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const attributes: VertexAttributeMap = {};
-  for (const key of [
-    'position',
-    'normal',
-    'uv',
-    'tangent',
-    'uv1',
-    'uv2',
-    'uv3',
-    'uv4',
-    'uv5',
-    'uv6',
-    'uv7',
-    'color',
-  ] as const) {
-    const value = floatArray(sourceAttributes[key]);
-    if (sourceAttributes[key] !== undefined && value === undefined) return undefined;
+  for (const key of FLOAT_ATTRIBUTE_KEYS) {
+    const value = floatArray(source[key]);
+    if (source[key] !== undefined && value === undefined) return undefined;
     if (value !== undefined) attributes[key] = value;
   }
-  const skinIndex = integerArray(sourceAttributes.skinIndex);
-  const skinWeight = floatArray(sourceAttributes.skinWeight);
+  const skinIndex = integerArray(source.skinIndex);
+  const skinWeight = floatArray(source.skinWeight);
   if (
-    (sourceAttributes.skinIndex !== undefined && skinIndex === undefined) ||
-    (sourceAttributes.skinWeight !== undefined && skinWeight === undefined)
+    (source.skinIndex !== undefined && skinIndex === undefined) ||
+    (source.skinWeight !== undefined && skinWeight === undefined)
   )
     return undefined;
   if (skinIndex !== undefined) attributes.skinIndex = skinIndex;
   if (skinWeight !== undefined) attributes.skinWeight = skinWeight;
-  const stride = parts.floatsPerVertex ?? 0;
-  const vertexCount = stride > 0 ? vertices.length / stride : vertices.length;
-  const submeshes = submeshesFor(parts.submeshes, vertexCount, indices?.length ?? 0);
-  if (parts.submeshes?.some((section) => section.cardLayout !== undefined)) return undefined;
-  if (
-    parts.cardLayout !== undefined &&
-    (!validateMeshCardLayout(parts.cardLayout).ok ||
-      !admitsMeshCardLayout({
+  return attributes;
+}
+
+function admitsCardLayoutFor(
+  parts: MeshParts,
+  submeshes: readonly Submesh[],
+  attributes: VertexAttributeMap,
+): boolean {
+  if (parts.submeshes?.some((section) => section.cardLayout !== undefined)) return false;
+  return (
+    parts.cardLayout === undefined ||
+    (validateMeshCardLayout(parts.cardLayout).ok &&
+      admitsMeshCardLayout({
         submeshes,
         morphTargets: parts.morphTargets,
         skinIndex: attributes.skinIndex,
       }))
-  )
+  );
+}
+
+function isLodHysteresis(value: unknown): value is number | undefined {
+  return (
+    value === undefined ||
+    (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1)
+  );
+}
+
+/** Splits interleaved UV sets beyond the first into their own attribute streams. */
+function unpackExtraUvSets(
+  attributes: VertexAttributeMap,
+  vertices: Float32Array,
+  stride: number,
+  uvSetCount: number,
+): boolean {
+  const vertexCount = vertices.length / stride;
+  const hasSkin = stride === 18 + (uvSetCount - 1) * 2;
+  const firstOffset = hasSkin ? 18 : PROCEDURAL_FLOATS_PER_VERTEX;
+  for (let set = 1; set < uvSetCount; set += 1) {
+    const key = EXTRA_UV_KEYS[set - 1];
+    if (key === undefined) return false;
+    const values = new Float32Array(vertexCount * 2);
+    const sourceOffset = firstOffset + (set - 1) * 2;
+    for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+      const source = vertex * stride + sourceOffset;
+      values[vertex * 2] = vertices[source] ?? 0;
+      values[vertex * 2 + 1] = vertices[source + 1] ?? 0;
+    }
+    attributes[key] = values;
+  }
+  return true;
+}
+
+interface MeshStreams {
+  readonly vertices: Float32Array;
+  readonly indices: Uint16Array | Uint32Array | undefined;
+  readonly attributes: VertexAttributeMap;
+  readonly stride: number;
+  readonly submeshes: readonly Submesh[];
+}
+
+/** Vertex, index and attribute streams plus the submesh table that partitions them. */
+function meshStreamsFor(parts: MeshParts): MeshStreams | undefined {
+  const vertices = floatArray(parts.vertices);
+  if (vertices === undefined) return undefined;
+  const indices = indexArray(parts.indices);
+  if (parts.indices !== undefined && indices === undefined && !isEmptyIndexSource(parts.indices))
     return undefined;
-  const materialSlots = materialSlotsFor(parts.materialSlots, submeshes, refs);
-  if (materialSlots === undefined) return undefined;
-  const aabb = floatArray(parts.aabb) ?? deriveAabb(vertices, stride);
-  if (aabb === undefined) return undefined;
-  const morph = morphTargets(parts.morphTargets);
+  const attributes = vertexAttributesFor(parts.attributes);
+  if (attributes === undefined) return undefined;
+  const stride = parts.floatsPerVertex ?? 0;
+  const vertexCount = stride > 0 ? vertices.length / stride : vertices.length;
+  const submeshes = submeshesFor(parts.submeshes, vertexCount, indices?.length ?? 0);
+  const uvSetCount = parts.uvSetCount ?? 1;
+  if (stride > 0 && uvSetCount > 1 && !unpackExtraUvSets(attributes, vertices, stride, uvSetCount))
+    return undefined;
+  return { vertices, indices, attributes, stride, submeshes };
+}
+
+interface MorphStreams {
+  readonly targets: readonly MorphTarget[] | undefined;
+  readonly weights: Float32Array | undefined;
+}
+
+function morphStreamsFor(parts: MeshParts): MorphStreams | undefined {
+  const targets = morphTargets(parts.morphTargets);
   const weights = floatArray(parts.morphWeights);
   if (
-    (parts.morphTargets !== undefined && morph === undefined) ||
+    (parts.morphTargets !== undefined && targets === undefined) ||
     (parts.morphWeights !== undefined && weights === undefined)
   )
     return undefined;
+  if (targets !== undefined && weights !== undefined && targets.length !== weights.length)
+    return undefined;
+  return { targets, weights };
+}
+
+function collisionFor(
+  raw: unknown,
+  streams: MeshStreams,
+  materialSlots: readonly MeshMaterialSlot[],
+  morph: readonly MorphTarget[] | undefined,
+): ReturnType<typeof validateMeshCollisionAttachment> | undefined {
+  if (raw === undefined) return undefined;
+  return validateMeshCollisionAttachment(
+    {
+      kind: 'mesh',
+      vertices: streams.vertices,
+      attributes: streams.attributes,
+      submeshes: streams.submeshes,
+      materialSlots,
+      ...(streams.indices === undefined ? {} : { indices: streams.indices }),
+      ...(morph === undefined ? {} : { morphTargets: morph }),
+    },
+    raw,
+  );
+}
+
+function meshFromParts(parts: MeshParts, refs: readonly string[]): MeshAsset | undefined {
+  const streams = meshStreamsFor(parts);
+  if (streams === undefined) return undefined;
+  const { vertices, indices, attributes, submeshes } = streams;
+  if (!admitsCardLayoutFor(parts, submeshes, attributes)) return undefined;
+  const materialSlots = materialSlotsFor(parts.materialSlots, submeshes, refs);
+  if (materialSlots === undefined) return undefined;
+  const aabb = floatArray(parts.aabb) ?? deriveAabb(vertices, streams.stride);
+  if (aabb === undefined) return undefined;
+  const morph = morphStreamsFor(parts);
+  if (morph === undefined) return undefined;
   const lods = meshLods(parts.lods, refs);
   const lodHysteresis = parts.lodHysteresis;
-  if (
-    lods === false ||
-    (lodHysteresis !== undefined &&
-      (typeof lodHysteresis !== 'number' ||
-        !Number.isFinite(lodHysteresis) ||
-        lodHysteresis < 0 ||
-        lodHysteresis >= 1))
-  )
-    return undefined;
-  if (morph !== undefined && weights !== undefined && morph.length !== weights.length)
-    return undefined;
-  const uvSetCount = parts.uvSetCount ?? 1;
-  if (stride > 0 && uvSetCount > 1) {
-    const hasSkin = stride === 18 + (uvSetCount - 1) * 2;
-    const firstOffset = hasSkin ? 18 : PROCEDURAL_FLOATS_PER_VERTEX;
-    const extraUvKeys = ['uv1', 'uv2', 'uv3', 'uv4', 'uv5', 'uv6', 'uv7'] as const;
-    for (let set = 1; set < uvSetCount; set += 1) {
-      const key = extraUvKeys[set - 1];
-      if (key === undefined) return undefined;
-      const values = new Float32Array(vertexCount * 2);
-      const sourceOffset = firstOffset + (set - 1) * 2;
-      for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-        const source = vertex * stride + sourceOffset;
-        values[vertex * 2] = vertices[source] ?? 0;
-        values[vertex * 2 + 1] = vertices[source + 1] ?? 0;
-      }
-      attributes[key] = values;
-    }
-  }
-  const collision =
-    parts.collision === undefined
-      ? undefined
-      : validateMeshCollisionAttachment(
-          {
-            kind: 'mesh',
-            vertices,
-            attributes,
-            submeshes,
-            materialSlots,
-            ...(indices === undefined ? {} : { indices }),
-            ...(morph === undefined ? {} : { morphTargets: morph }),
-          },
-          parts.collision,
-        );
+  if (lods === false || !isLodHysteresis(lodHysteresis)) return undefined;
+  const collision = collisionFor(parts.collision, streams, materialSlots, morph.targets);
   if (collision !== undefined && !collision.ok) return undefined;
   const mesh: MeshAsset = {
     kind: 'mesh',
@@ -324,8 +382,8 @@ function meshFromParts(
     ...(collision?.ok ? { collision: collision.value } : {}),
     ...(parts.cardLayout === undefined ? {} : { cardLayout: parts.cardLayout }),
     materialSlots,
-    ...(morph === undefined ? {} : { morphTargets: morph }),
-    ...(weights === undefined ? {} : { morphWeights: weights }),
+    ...(morph.targets === undefined ? {} : { morphTargets: morph.targets }),
+    ...(morph.weights === undefined ? {} : { morphWeights: morph.weights }),
     ...(lods === undefined ? {} : { lods }),
     ...(lodHysteresis === undefined ? {} : { lodHysteresis }),
   };

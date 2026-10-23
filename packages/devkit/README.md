@@ -668,11 +668,14 @@ export default {
 ```
 
 > [!IMPORTANT]
-> DevKit also closes the Engine builtin-mesh dependency boundary. During a
-> standalone build it adds a generated Pack descriptor only for builtin mesh
-> GUIDs absent from the project; the Geometry decoder turns those descriptors
-> into validated primitive meshes. Project-authored descriptors remain the
-> single declaration, so the generated Pack never creates a GUID collision.
+> forge.json `assetLibraries` mounts read-only asset directories from installed
+> packages (for example `@forgeax/engine/content`). DevKit resolves each
+> specifier to its package's `forgeax.library.assetRoot` (Engine facades follow
+> the project's Engine binding or installed `@forgeax/engine` closure), scans and
+> cooks it with the project roots, and gives its sources the Catalog identity
+> `<specifier>/<path>`. Unresolvable entries fail with
+> `project-asset-library-unresolved`; packages without a valid asset root fail with
+> `project-asset-library-invalid`. Authoring writes stay inside project roots.
 
 ```bash
 forgeax project build --root ./games/my-game \
@@ -1833,8 +1836,7 @@ material slots without transferring vertex/index buffers. For a direct
 instance `effectiveValues` as
 `meta.properties`, retaining current Registry facts in `meta`. It requires the
 Pack output GUID to match the Catalog GUID and reports a structured source
-failure rather than showing empty properties. Internal delivery containers, including
-Engine-generated builtin meshes, retain their live Registry inspection without
+failure rather than showing empty properties. Internal delivery containers retain their live Registry inspection without
 inventing an authored output key or source revision from the filename. Direct provider calls without a
 session handle retain offline Pack inspection, including source identity and
 revision. ScriptablePack inspection does not re-evaluate `build`. Rebuild tools

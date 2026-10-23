@@ -270,3 +270,65 @@ describe('cluster binner scratch path', () => {
     ]);
   });
 });
+
+describe('cluster binner perspective light bounds', () => {
+  // Reference: project the four view-space XY corners of the sphere's view AABB on
+  // both depth faces, exactly as the general (non-fast-path) projection does.
+  function cornerProjectedBounds(center: readonly number[], radius: number, proj: Float32Array) {
+    const [vx = 0, vy = 0, vz = 0] = center;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const z of [vz - radius, Math.min(vz + radius, -1e-5)]) {
+      for (const x of [vx - radius, vx + radius]) {
+        for (const y of [vy - radius, vy + radius]) {
+          const cx = (proj[0] ?? 0) * x + (proj[4] ?? 0) * y + (proj[8] ?? 0) * z + (proj[12] ?? 0);
+          const cy = (proj[1] ?? 0) * x + (proj[5] ?? 0) * y + (proj[9] ?? 0) * z + (proj[13] ?? 0);
+          const cw =
+            (proj[3] ?? 0) * x + (proj[7] ?? 0) * y + (proj[11] ?? 0) * z + (proj[15] ?? 0);
+          minX = Math.min(minX, cx / cw);
+          maxX = Math.max(maxX, cx / cw);
+          minY = Math.min(minY, cy / cw);
+          maxY = Math.max(maxY, cy / cw);
+        }
+      }
+    }
+    const clamp = (v: number) => Math.min(Math.max(v, -1), 1);
+    return { minX: clamp(minX), maxX: clamp(maxX), minY: clamp(minY), maxY: clamp(maxY) };
+  }
+
+  it('includes the off-axis light center in projected XY bounds', () => {
+    const view = mat4.identity(mat4.create());
+    const proj = mat4.perspective(mat4.create(), Math.PI / 2, 1, 0.1, 100);
+    const aabb = clusterSpaceObjectAabb(vec3.create(-5, 2, -10), 1, view, proj);
+
+    expect(aabb.min[0]).toBeCloseTo(-6 / 9, 6);
+    expect(aabb.max[0]).toBeCloseTo(-4 / 11, 6);
+    expect(aabb.min[1]).toBeCloseTo(1 / 11, 6);
+    expect(aabb.max[1]).toBeCloseTo(3 / 9, 6);
+  });
+
+  it('matches corner projection for positive and negative off-axis centers', () => {
+    const view = mat4.identity(mat4.create());
+    const proj = mat4.perspective(mat4.create(), Math.PI / 3, 16 / 9, 0.1, 100);
+    for (const center of [
+      [-3, 1.5, -8],
+      [4, -2, -12],
+      [0.5, 3, -6],
+      [-1, -1, -20],
+    ]) {
+      const aabb = clusterSpaceObjectAabb(
+        vec3.create(center[0], center[1], center[2]),
+        1.5,
+        view,
+        proj,
+      );
+      const expected = cornerProjectedBounds(center, 1.5, proj);
+      expect(aabb.min[0]).toBeCloseTo(expected.minX, 5);
+      expect(aabb.max[0]).toBeCloseTo(expected.maxX, 5);
+      expect(aabb.min[1]).toBeCloseTo(expected.minY, 5);
+      expect(aabb.max[1]).toBeCloseTo(expected.maxY, 5);
+    }
+  });
+});

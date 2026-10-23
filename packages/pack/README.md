@@ -336,24 +336,13 @@ source.
 
 Pack or external source plus Meta owns author facts. DDC and Catalog are derived projections; they are not author databases or write authorities.
 
-## Engine builtin mesh descriptors
+## Engine Content library
 
-The Engine-owned primitive mesh identities are published from one UUIDv5 table
-(`@forgeax/engine-pack/builtin`). A standalone DevKit build materializes only
-the missing rows as an ordinary Pack v2 tuple; Geometry then derives the mesh
-payload from the `procedural-*` token at load time.
-
-| Descriptor | GUID source | Geometry token |
-|:--|:--|:--|
-| Cube | `HANDLE_CUBE` | `procedural-cube` |
-| Triangle | `HANDLE_TRIANGLE` | `procedural-triangle` |
-| Quad | `HANDLE_QUAD` | `procedural-quad` |
-| Sphere | `HANDLE_SPHERE` | `procedural-sphere` |
-| Nine-slice quad | `HANDLE_NINESLICE_QUAD` | `procedural-nine-slice-quad` |
-| Cylinder | `HANDLE_CYLINDER` | `procedural-cylinder` |
-
-This keeps the runtime registry generic while ensuring a packaged game can
-resolve legacy scene references without a second process-static asset owner.
+Engine-native assets are ordinary `*.pack.ts` sources in
+[`@forgeax/engine-content`](../content/README.md), mounted explicitly through
+forge.json `assetLibraries`. Their GUIDs derive from the library Pack namespaces
+like any project Pack; there is no separate builtin namespace, token payload or
+generated descriptor file.
 
 > [!IMPORTANT]
 > The pack contract has one material authoring shape: a `MaterialAsset` payload. The cook stage resolves inheritance, values, texture coordinates, module references, artifact bytes, and a receipt into one record. Runtime consumers use the GUID and catalog locator; they do not author a second shader resource.
@@ -592,12 +581,12 @@ if (!result.ok) throw result.error; // PackError with .code 'pack-guid-malformed
 const guid = result.value;
 
 // Build / CI: validate an asset directory
-const scanResult = await scan(["apps/hello/cube/assets"]);
+const scanResult = await scan(["apps/hello/room/assets"]);
 if (!scanResult.ok) throw scanResult.error; // PackError with .code/.hint/.detail
 console.log(scanResult.value); // PackEntry[]
 
 // Build hosts can retain one validated inventory and project paths from it.
-const inventory = await scanInventory(["apps/hello/cube/assets"]);
+const inventory = await scanInventory(["apps/hello/room/assets"]);
 if (!inventory.ok) throw inventory.error;
 console.log(inventory.value.paths, inventory.value.declarations);
 ```
@@ -744,7 +733,6 @@ and included in the program-set identity; the producer must recook incomplete ge
 | `AssetGuid.format` | `(guid: AssetGuid) => string` | Format as lowercase dash-separated UUID string |
 | `AssetGuid.equals` | `(a: AssetGuid, b: AssetGuid) => boolean` | Constant-time equality |
 | `AssetGuid.random` | `() => AssetGuid` | Generate a random UUIDv7 GUID |
-| `deriveBuiltin` | `(name: string) => AssetGuid` | Derive a deterministic UUIDv5 synchronously from the exact UTF-8 name within the ForgeaX namespace; shares the internal SHA-1 kernel with `AssetGuid.derive` |
 
 ## `PackErrorCode` -- 13-member closed union
 
@@ -930,7 +918,6 @@ unique copy of authored program content.
 | `.` | Re-exports from all subpaths |
 | `./schema` | Compiled ajv validators for `.meta.json` and `.pack.json` |
 | `./guid` | `AssetGuid` and `PackageId` brands; UUID parse/format utilities and synchronous `AssetGuid.derive(packageId, sourceKey)` |
-| `./builtin` | ForgeaX namespace, synchronous `deriveBuiltin(name)`, builtin GUIDs and mesh descriptors |
 | `./errors` | `PackError` class + `PackErrorCode` closed union + `PackErrorDetail` discriminated union |
 | `./bridge` | `AssetRegistry` GUID bridge helpers |
 | `./scanner` | File tree scanner with fail-fast 7-step validation chain |

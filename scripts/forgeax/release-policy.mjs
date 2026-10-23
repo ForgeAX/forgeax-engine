@@ -64,19 +64,34 @@ export function developmentVersion(stable, currentNext, source) {
   return version;
 }
 
-/** Stable must be an ancestor of every rc source so promotion is a fast-forward. */
-export function assertReleaseSource(version, source, branchTip, ancestor, stableTip) {
+/**
+ * Stable must be an ancestor of every rc source so promotion is a fast-forward.
+ * A stable version may also be prepared from the exact rc tip before `stable`
+ * moves; its explicit Promotion fast-forwards `stable` to that source.
+ * Returns the branch that admitted the source.
+ */
+export function assertReleaseSource(version, source, tips, ancestor) {
   const policy = releasePolicy(version);
-  if (!/^[0-9a-f]{40}$/.test(source) || !ancestor(source, branchTip)) {
+  const sha = /^[0-9a-f]{40}$/.test(source);
+  const containsStable = sha && tips.stable !== undefined && ancestor(tips.stable, source);
+  if (!sha || tips[policy.branch] === undefined || !ancestor(source, tips[policy.branch])) {
+    if (policy.channel === 'stable' && source === tips.rc && containsStable) return 'rc';
     throw new Error(`release-source-not-on-${policy.branch}: ${source}`);
   }
   if (policy.channel === 'next' && !version.endsWith(`.${source.slice(0, 12)}`)) {
     throw new Error('release-development-source-mismatch');
   }
-  if (policy.channel === 'rc' && (stableTip === undefined || !ancestor(stableTip, source))) {
+  if (policy.channel === 'rc' && !containsStable) {
     throw new Error('release-rc-missing-stable');
   }
-  return policy;
+  return policy.branch;
+}
+
+/** The stable version an rc line tests. */
+export function stableVersionOf(version) {
+  const { policy, core } = parse(version);
+  if (policy.channel !== 'rc') throw new Error(`release-version-not-rc: ${version}`);
+  return core.join('.');
 }
 
 export function assertChannelAdvance(version, current) {
@@ -109,28 +124,34 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const policy = releasePolicy(version);
   const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
   const history = git('rev-parse', '--is-shallow-repository') === 'true' ? ['--unshallow'] : [];
-  const branches = policy.channel === 'rc' ? [policy.branch, 'stable'] : [policy.branch];
-  // Explicit refspecs also create tracking refs in a single-branch checkout.
-  const refspecs = branches.map((branch) => `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
-  git('fetch', '--no-tags', ...history, 'origin', ...refspecs);
-  const tip = git('rev-parse', `origin/${policy.branch}`);
-  const stableTip = policy.channel === 'rc' ? git('rev-parse', 'origin/stable') : undefined;
-  const source = requested || tip;
-  assertReleaseSource(
-    version,
-    source,
-    tip,
-    (sha, head) => {
-      try {
-        git('merge-base', '--is-ancestor', sha, head);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    stableTip,
-  );
+  const branches = policy.channel === 'next' ? ['main'] : ['stable', 'rc'];
+  // Explicit refspecs also create tracking refs in a single-branch checkout. A
+  // stable release from `stable` does not depend on an open rc line existing.
+  const tips = {};
+  for (const branch of branches) {
+    try {
+      git(
+        'fetch',
+        '--no-tags',
+        ...(Object.keys(tips).length === 0 ? history : []),
+        'origin',
+        `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+      );
+      tips[branch] = git('rev-parse', `origin/${branch}`);
+    } catch (error) {
+      if (branch === policy.branch || branch === 'stable') throw error;
+    }
+  }
+  const source = requested || tips[policy.branch];
+  const sourceBranch = assertReleaseSource(version, source, tips, (sha, head) => {
+    try {
+      git('merge-base', '--is-ancestor', sha, head);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   process.stdout.write(
-    `source_sha=${source}\nsource_branch=${policy.branch}\nchannel=${policy.channel}\n`,
+    `source_sha=${source}\nsource_branch=${sourceBranch}\nchannel=${policy.channel}\n`,
   );
 }

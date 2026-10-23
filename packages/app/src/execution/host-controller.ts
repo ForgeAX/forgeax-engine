@@ -56,6 +56,12 @@ export interface CreateWorkerExecutionAppOptions {
   readonly selection: ExecutionSelection;
 }
 
+/** One Engine Worker reply variant, selected by its closed `kind`. */
+type HostMessage<K extends EngineToHostMessage['kind']> = Extract<
+  EngineToHostMessage,
+  { readonly kind: K }
+>;
+
 function lifecycleError(code: 'app-not-started' | 'app-already-running'): AppErrorType {
   return new AppError({
     code,
@@ -779,404 +785,456 @@ export async function createWorkerExecutionApp(
     pending.cancelResolve?.(true);
     return undefined;
   };
+  const postSurfaceFailure = (
+    message: HostMessage<'surface-request'>,
+    error: AppErrorType,
+  ): void => {
+    session.post({
+      kind: 'surface-result',
+      worldIdentity: message.worldIdentity,
+      requestId: message.requestId,
+      result: err({
+        code: error.code,
+        expected: error.expected,
+        hint: error.hint,
+        detail: error.detail,
+      }),
+    });
+  };
+  const onRenderError = (message: HostMessage<'render-error'>): void => {
+    if (
+      message.identity.epoch !== renderEpoch ||
+      message.worldIdentity !== report.world.identity ||
+      state === 'stopped' ||
+      state === 'faulted'
+    )
+      return;
+    const error = new AppError({
+      code: 'app-system-update-failed',
+      expected: APP_EXPECTED['app-system-update-failed'],
+      hint: APP_ERROR_HINTS['app-system-update-failed'],
+      detail: {
+        cause: {
+          ...message.error,
+          renderIdentity: message.identity,
+          worldIdentity: message.worldIdentity,
+          ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
+          ...(message.omittedBeforeListenerCount === undefined
+            ? {}
+            : { omittedBeforeListenerCount: message.omittedBeforeListenerCount }),
+        },
+      },
+    });
+    lastError = error;
+    fanout.fire(error);
+  };
+  const onSurfaceRequest = (message: HostMessage<'surface-request'>): void => {
+    if (
+      options.selection.render.enabled ||
+      message.worldIdentity !== report.world.identity ||
+      message.requestId <= lastSurfaceRequestId ||
+      state === 'stopped' ||
+      state === 'faulted'
+    ) {
+      postSurfaceFailure(message, lifecycleError('app-not-started'));
+      return;
+    }
+    lastSurfaceRequestId = message.requestId;
+    try {
+      options.appOptions.input?.clear?.();
+      const offscreen = replaceCanvas();
+      session.post(
+        {
+          kind: 'surface-result',
+          worldIdentity: message.worldIdentity,
+          requestId: message.requestId,
+          result: ok(offscreen),
+        },
+        [offscreen],
+      );
+    } catch (cause) {
+      postSurfaceFailure(
+        message,
+        new AppError({
+          code: 'app-system-update-failed',
+          expected: APP_EXPECTED['app-system-update-failed'],
+          hint: APP_ERROR_HINTS['app-system-update-failed'],
+          detail: { cause },
+        }),
+      );
+    }
+  };
+  const onRenderReady = (message: HostMessage<'render-ready'>): void => {
+    if (message.epoch !== renderEpoch || state === 'stopped' || state === 'faulted') return;
+    const recovered = report.render?.state === 'rebuilding';
+    if (report.render !== undefined)
+      report = {
+        ...report,
+        render: {
+          ...report.render,
+          state: 'alive',
+          ...(message.capabilities === undefined ? {} : { capabilities: message.capabilities }),
+          ...(message.limits === undefined ? {} : { limits: message.limits }),
+        },
+      };
+    if (recovered && ledger.hasCreditInFlight && report.world.identity !== null)
+      armFrameAdmission(report.world.identity, ledger.inspect().submitted);
+    if (state === 'running') scheduleFrame();
+  };
+  const onRenderLost = (message: HostMessage<'render-lost'>): void => {
+    if (message.epoch <= renderEpoch || state === 'stopped' || state === 'faulted') return;
+    renderEpoch = message.epoch;
+    renderRecoveryFloor = ledger.inspect().completed;
+    clearFrameAdmissionWatchdog();
+    report = {
+      ...report,
+      render: { epoch: renderEpoch, state: 'rebuilding', submittedFrame: 0, completedFrame: 0 },
+    };
+    const offscreen = replaceCanvas();
+    session.post({ kind: 'render-replace', epoch: renderEpoch, canvas: offscreen }, [offscreen]);
+  };
+  // Render Worker frame facts belong to the current render epoch and World.
+  const acceptsRenderFrame = (
+    message: HostMessage<'render-submitted' | 'render-complete'>,
+  ): boolean =>
+    message.epoch === renderEpoch &&
+    message.frame.worldIdentity === report.world.identity &&
+    report.render?.state !== 'rebuilding' &&
+    state !== 'stopped' &&
+    state !== 'faulted';
+  const onRenderSubmitted = (message: HostMessage<'render-submitted'>): void => {
+    if (!acceptsRenderFrame(message)) return;
+    if (message.frame.frameId <= (report.render?.submittedFrame ?? 0)) return;
+    report = {
+      ...report,
+      render: {
+        ...report.render,
+        epoch: renderEpoch,
+        state: 'alive',
+        submittedFrame: message.frame.frameId,
+        completedFrame: report.render?.completedFrame ?? 0,
+      },
+    };
+    publishBrowserFrameSubmitted(canvas, message.frame);
+  };
+  const onRenderComplete = (message: HostMessage<'render-complete'>): void => {
+    traceAdmission('host-ack-entry', 'callback', message);
+    if (!acceptsRenderFrame(message)) return;
+    if (message.frame.frameId <= (report.render?.completedFrame ?? 0)) return;
+    report = {
+      ...report,
+      render: {
+        ...report.render,
+        epoch: renderEpoch,
+        state: 'alive',
+        submittedFrame: report.render?.submittedFrame ?? message.frame.frameId,
+        completedFrame: message.frame.frameId,
+      },
+    };
+    traceAdmission('host-ack-accepted', 'render-complete', message);
+    publishBrowserFrameCompleted(canvas, {
+      ...message.frame,
+      deviceGeneration: message.frame.deviceGeneration ?? 0,
+      presentation: message.frame.presentation ?? 'pending',
+    });
+    if (state === 'running') scheduleFrame();
+  };
+  const onFrameSubmitted = (message: HostMessage<'frame-submitted'>): void => {
+    const admission = frameAdmission;
+    if (
+      admission === undefined ||
+      admission.session !== session ||
+      admission.worldIdentity !== report.world.identity ||
+      admission.worldIdentity !== message.worldIdentity ||
+      admission.frameId !== message.frameId
+    ) {
+      return;
+    }
+    clearFrameAdmissionWatchdog(admission);
+    publishBrowserFrameSubmitted(canvas, message);
+  };
+  const recordRenderRejection = (
+    message: HostMessage<'frame-complete' | 'simulation-complete'>,
+  ): AppErrorType | undefined => {
+    if (message.kind !== 'simulation-complete' || message.renderRejection === undefined)
+      return undefined;
+    const rejection = new AppError({
+      code: 'app-system-update-failed',
+      expected: 'a frame reaches Renderer queue acceptance',
+      hint: 'the World completed but this frame was aborted; retain gameplay isolation while the next frame retries',
+      detail: { cause: message.renderRejection },
+    });
+    lastError = rejection;
+    return rejection;
+  };
+  // Engine-only rejection settles simulation credit without accepting a
+  // picture. Keep the reset for its retry. Split rendering has already
+  // accepted this reset into its publication; replacement seeds a new baseline.
+  const settleTemporalReset = (
+    message: HostMessage<'frame-complete' | 'simulation-complete'>,
+  ): void => {
+    if (
+      temporalResetAfterFrame !== undefined &&
+      message.frameId > temporalResetAfterFrame &&
+      (message.kind !== 'simulation-complete' || message.renderRejection === undefined)
+    )
+      temporalResetAfterFrame = undefined;
+  };
+  const publishWorkerFrameCompleted = (message: HostMessage<'frame-complete'>): void => {
+    publishBrowserFrameCompleted(canvas, {
+      frameId: message.frameId,
+      deviceGeneration: message.deviceGeneration ?? 0,
+      ...(message.shadowWorkload === undefined ? {} : { shadowWorkload: message.shadowWorkload }),
+      ...(message.graphGeneration === undefined
+        ? {}
+        : { graphGeneration: message.graphGeneration }),
+      ...(message.barrelDistortion === undefined
+        ? {}
+        : { barrelDistortion: message.barrelDistortion }),
+      worldIdentity: message.worldIdentity,
+      // Completion without the Render receipt's explicit presentation fact
+      // is not evidence that the active scene is visible. Fail closed so a
+      // protocol omission cannot dismiss the startup screen.
+      presentation: message.presentation ?? 'pending',
+      ...(message.presentation !== 'pending' || message.presentationPendingReason === undefined
+        ? {}
+        : { presentationPendingReason: message.presentationPendingReason }),
+    });
+  };
+  const closeWorkerReportedPhases = (
+    message: HostMessage<'frame-complete' | 'simulation-complete'>,
+  ): void => {
+    if (hostFrameOpen) frameProfile?.endPhase();
+    if (!profileFrameOpen) return;
+    frameProfile?.recordSkip({
+      source: 'app',
+      phase: 'engine-update',
+      reason: `worker-report:${message.engineUpdateMs.toFixed(3)}ms`,
+    });
+    frameProfile?.recordSkip({
+      source: 'app',
+      phase: 'kernel-wait',
+      reason: `worker-report:${message.kernelWaitMs.toFixed(3)}ms`,
+    });
+  };
+  // Host-owned audio and gamepad feedback consume the Worker's frame intents.
+  const consumeWorkerFrameIntents = (
+    message: HostMessage<'frame-complete' | 'simulation-complete'>,
+  ): number => {
+    const audioStarted = performance.now();
+    const audioProfileOpen = profileFrameOpen
+      ? (frameProfile?.beginPhase('app', 'host-audio').ok ?? false)
+      : false;
+    for (const intent of message.audioIntents ?? []) {
+      const rejected = audio.consume(intent);
+      if (rejected) rejectedAudioPublications.set(`${rejected.owner}:${rejected.handle}`, rejected);
+    }
+    (options.appOptions.input ?? inputHandle?.backend)?.dispatchFeedback?.(
+      message.feedbackIntents ?? [],
+    );
+    if (audioProfileOpen) frameProfile?.endPhase();
+    return performance.now() - audioStarted;
+  };
+  const recordWorkerFramePerformance = (
+    message: HostMessage<'frame-complete' | 'simulation-complete'>,
+    audioMs: number,
+  ): void => {
+    report = {
+      ...report,
+      performance: {
+        ...report.performance,
+        hostFrameMs: hostFrameMeasurements.add(performance.now() - frameSentAt),
+        engineUpdateMs: engineMeasurements.add(message.engineUpdateMs),
+        kernelWaitMs: kernelMeasurements.add(message.kernelWaitMs),
+        hostAudioMs: audioMeasurements.add(audioMs + musicFeedbackMs),
+      },
+    };
+    if (message.kernelDispatch !== undefined) {
+      report = { ...report, kernelDispatch: message.kernelDispatch };
+    }
+  };
+  const finishHostFrameProfile = (): void => {
+    if (profileFrameOpen) frameProfile?.endFrame();
+    frameProfile = undefined;
+    profileFrameOpen = false;
+    hostFrameOpen = false;
+  };
+  const onWorkerFrameCompletion = (
+    message: HostMessage<'frame-complete' | 'simulation-complete'>,
+  ): void => {
+    traceAdmission('host-ack-entry', 'callback', message);
+    if (ledger.complete(message) !== 'accepted') return;
+    traceAdmission('host-ack-accepted', 'simulation-credit', message);
+    const renderRejectionError = recordRenderRejection(message);
+    settleTemporalReset(message);
+    if (message.kind === 'frame-complete') publishWorkerFrameCompleted(message);
+    report = { ...report, frame: ledger.inspect() };
+    clearFrameAdmissionWatchdog({
+      session,
+      worldIdentity: message.worldIdentity,
+      frameId: message.frameId,
+    });
+    closeWorkerReportedPhases(message);
+    const audioMs = consumeWorkerFrameIntents(message);
+    recordWorkerFramePerformance(message, audioMs);
+    finishHostFrameProfile();
+    if (state === 'running') scheduleFrame();
+    if (renderRejectionError !== undefined) fanout.fire(renderRejectionError);
+  };
+  // A failed replacement audio consumer faults the rebuild terminally.
+  const replaceHostAudio = (message: HostMessage<'rebuilt'>): boolean => {
+    audio.dispose();
+    rejectedAudioPublications.clear();
+    try {
+      audio = createAudio();
+      return true;
+    } catch (cause) {
+      const error = new AppError({
+        code: 'app-plugin-activation-failed',
+        expected: APP_EXPECTED['app-plugin-activation-failed'],
+        hint: APP_ERROR_HINTS['app-plugin-activation-failed'],
+        detail: { cause },
+      });
+      rebuildResolve?.(err(error));
+      rebuildResolve = undefined;
+      terminalFault({
+        kind: 'fault',
+        source: 'rebuild',
+        code: error.code,
+        expected: error.expected,
+        hint: error.hint,
+        detail: error.detail,
+        worldIdentity: message.worldIdentity,
+        partialWrite: false,
+        retryable: true,
+      });
+      return false;
+    }
+  };
+  const onRebuilt = (message: HostMessage<'rebuilt'>): void => {
+    clearFrameAdmissionWatchdog();
+    rejectPendingInspections(
+      new Error('The previous World was replaced before inspection execution.'),
+    );
+    if (!replaceHostAudio(message)) return;
+    ledger = new FrameCreditLedger(message.worldIdentity);
+    renderRecoveryFloor = 0;
+    hostFrameMeasurements.clear();
+    engineMeasurements.clear();
+    kernelMeasurements.clear();
+    audioMeasurements.clear();
+    state = 'idle';
+    frameDue = false;
+    resumeAfterHostShow = false;
+    temporalResetAfterFrame = undefined;
+    const freshReport = createExecutionReport(report.capabilities, report.workers);
+    report = {
+      ...report,
+      ...freshReport,
+      audio: report.audio,
+      // The rebuilt ACK follows complete source, kernel and renderer startup.
+      // Its earlier render-ready event was ignored while the old World was faulted.
+      ...(report.render === undefined
+        ? {}
+        : {
+            render: {
+              epoch: renderEpoch,
+              state: 'alive' as const,
+              submittedFrame: 0,
+              completedFrame: 0,
+            },
+          }),
+      world: { ...freshReport.world, identity: message.worldIdentity },
+      frame: ledger.inspect(),
+    };
+    rebuildResolve?.(ok(cloneExecutionReport(report)));
+    rebuildResolve = undefined;
+    rebuildInFlight = undefined;
+  };
+  const onHostControl = (message: HostMessage<'host-control'>): void => {
+    if (message.command === 'set-pointer-lock-allowed') {
+      input.setPointerLockAllowed?.(message.allowed);
+    }
+  };
+  const onInspectResult = (message: HostMessage<'inspect-result'>): void => {
+    const pending = liveInspection(message);
+    if (pending === undefined) return;
+    pendingInspections.delete(message.requestId);
+    pending.startedResolve();
+    pending.cancelResolve?.(true);
+    if (message.result.ok) pending.resolve(message.result.value);
+    else pending.reject(message.result.error);
+  };
+  const onInspectCanceled = (message: HostMessage<'inspect-canceled'>): void => {
+    const pending = liveInspection(message);
+    if (pending === undefined) return;
+    pending.cancelResolve?.(message.admitted);
+    pending.cancelResolve = undefined;
+    if (message.admitted) {
+      // Admission is authoritative. The cancel() witness lets the caller
+      // stop waiting, while the result Promise remains pending until the
+      // Worker posts inspect-result and closes the execution.
+      pending.startedResolve();
+      return;
+    }
+    pendingInspections.delete(message.requestId);
+    const cancelled = Object.assign(
+      new Error('The inspection was cancelled before Worker admission'),
+      { code: 'live-eval-cancelled-before-execution' },
+    );
+    pending.reject(cancelled);
+    pending.startedReject(cancelled);
+  };
   session.listen((message: EngineToHostMessage) => {
     if (disposal !== undefined) return;
-    if (
-      message.kind === 'render-complete' ||
-      message.kind === 'simulation-complete' ||
-      message.kind === 'frame-complete'
-    )
-      traceAdmission('host-ack-entry', 'callback', message);
     switch (message.kind) {
       // Startup readiness and the disposal ACK belong to the Worker session.
       case 'ready':
       case 'disposed':
         return;
-      case 'render-error': {
-        if (
-          message.identity.epoch !== renderEpoch ||
-          message.worldIdentity !== report.world.identity ||
-          state === 'stopped' ||
-          state === 'faulted'
-        )
-          return;
-        const error = new AppError({
-          code: 'app-system-update-failed',
-          expected: APP_EXPECTED['app-system-update-failed'],
-          hint: APP_ERROR_HINTS['app-system-update-failed'],
-          detail: {
-            cause: {
-              ...message.error,
-              renderIdentity: message.identity,
-              worldIdentity: message.worldIdentity,
-              ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
-              ...(message.omittedBeforeListenerCount === undefined
-                ? {}
-                : { omittedBeforeListenerCount: message.omittedBeforeListenerCount }),
-            },
-          },
-        });
-        lastError = error;
-        fanout.fire(error);
+      case 'render-error':
+        onRenderError(message);
         return;
-      }
-      case 'surface-request': {
-        if (
-          options.selection.render.enabled ||
-          message.worldIdentity !== report.world.identity ||
-          message.requestId <= lastSurfaceRequestId ||
-          state === 'stopped' ||
-          state === 'faulted'
-        ) {
-          const error = lifecycleError('app-not-started');
-          session.post({
-            kind: 'surface-result',
-            worldIdentity: message.worldIdentity,
-            requestId: message.requestId,
-            result: err({
-              code: error.code,
-              expected: error.expected,
-              hint: error.hint,
-              detail: error.detail,
-            }),
-          });
-          return;
-        }
-        lastSurfaceRequestId = message.requestId;
-        try {
-          options.appOptions.input?.clear?.();
-          const offscreen = replaceCanvas();
-          session.post(
-            {
-              kind: 'surface-result',
-              worldIdentity: message.worldIdentity,
-              requestId: message.requestId,
-              result: ok(offscreen),
-            },
-            [offscreen],
-          );
-        } catch (cause) {
-          const error = new AppError({
-            code: 'app-system-update-failed',
-            expected: APP_EXPECTED['app-system-update-failed'],
-            hint: APP_ERROR_HINTS['app-system-update-failed'],
-            detail: { cause },
-          });
-          session.post({
-            kind: 'surface-result',
-            worldIdentity: message.worldIdentity,
-            requestId: message.requestId,
-            result: err({
-              code: error.code,
-              expected: error.expected,
-              hint: error.hint,
-              detail: error.detail,
-            }),
-          });
-        }
+      case 'surface-request':
+        onSurfaceRequest(message);
         return;
-      }
-      case 'render-ready': {
-        if (message.epoch !== renderEpoch || state === 'stopped' || state === 'faulted') return;
-        const recovered = report.render?.state === 'rebuilding';
-        if (report.render !== undefined)
-          report = {
-            ...report,
-            render: {
-              ...report.render,
-              state: 'alive',
-              ...(message.capabilities === undefined ? {} : { capabilities: message.capabilities }),
-              ...(message.limits === undefined ? {} : { limits: message.limits }),
-            },
-          };
-        if (recovered && ledger.hasCreditInFlight && report.world.identity !== null)
-          armFrameAdmission(report.world.identity, ledger.inspect().submitted);
-        if (state === 'running') scheduleFrame();
+      case 'render-ready':
+        onRenderReady(message);
         return;
-      }
-      case 'render-lost': {
-        if (message.epoch <= renderEpoch || state === 'stopped' || state === 'faulted') return;
-        renderEpoch = message.epoch;
-        renderRecoveryFloor = ledger.inspect().completed;
-        clearFrameAdmissionWatchdog();
-        report = {
-          ...report,
-          render: { epoch: renderEpoch, state: 'rebuilding', submittedFrame: 0, completedFrame: 0 },
-        };
-        const offscreen = replaceCanvas();
-        session.post({ kind: 'render-replace', epoch: renderEpoch, canvas: offscreen }, [
-          offscreen,
-        ]);
+      case 'render-lost':
+        onRenderLost(message);
         return;
-      }
       case 'render-submitted':
+        onRenderSubmitted(message);
+        return;
       case 'render-complete':
-        if (
-          message.epoch !== renderEpoch ||
-          message.frame.worldIdentity !== report.world.identity ||
-          report.render?.state === 'rebuilding' ||
-          state === 'stopped' ||
-          state === 'faulted'
-        )
-          return;
-        if (message.kind === 'render-submitted') {
-          if (message.frame.frameId <= (report.render?.submittedFrame ?? 0)) return;
-          report = {
-            ...report,
-            render: {
-              ...report.render,
-              epoch: renderEpoch,
-              state: 'alive',
-              submittedFrame: message.frame.frameId,
-              completedFrame: report.render?.completedFrame ?? 0,
-            },
-          };
-          publishBrowserFrameSubmitted(canvas, message.frame);
-        } else {
-          if (message.frame.frameId <= (report.render?.completedFrame ?? 0)) return;
-          report = {
-            ...report,
-            render: {
-              ...report.render,
-              epoch: renderEpoch,
-              state: 'alive',
-              submittedFrame: report.render?.submittedFrame ?? message.frame.frameId,
-              completedFrame: message.frame.frameId,
-            },
-          };
-          traceAdmission('host-ack-accepted', 'render-complete', message);
-          publishBrowserFrameCompleted(canvas, {
-            ...message.frame,
-            deviceGeneration: message.frame.deviceGeneration ?? 0,
-            presentation: message.frame.presentation ?? 'pending',
-          });
-          if (state === 'running') scheduleFrame();
-        }
+        onRenderComplete(message);
         return;
-      case 'frame-submitted': {
-        const admission = frameAdmission;
-        if (
-          admission === undefined ||
-          admission.session !== session ||
-          admission.worldIdentity !== report.world.identity ||
-          admission.worldIdentity !== message.worldIdentity ||
-          admission.frameId !== message.frameId
-        ) {
-          return;
-        }
-        clearFrameAdmissionWatchdog(admission);
-        publishBrowserFrameSubmitted(canvas, message);
+      case 'frame-submitted':
+        onFrameSubmitted(message);
         return;
-      }
       case 'frame-complete':
-      case 'simulation-complete': {
-        if (ledger.complete(message) !== 'accepted') return;
-        traceAdmission('host-ack-accepted', 'simulation-credit', message);
-        let renderRejectionError: AppErrorType | undefined;
-        if (message.kind === 'simulation-complete' && message.renderRejection !== undefined) {
-          const rejection = new AppError({
-            code: 'app-system-update-failed',
-            expected: 'a frame reaches Renderer queue acceptance',
-            hint: 'the World completed but this frame was aborted; retain gameplay isolation while the next frame retries',
-            detail: { cause: message.renderRejection },
-          });
-          lastError = rejection;
-          renderRejectionError = rejection;
-        }
-        // Engine-only rejection settles simulation credit without accepting a
-        // picture. Keep the reset for its retry. Split rendering has already
-        // accepted this reset into its publication; replacement seeds a new baseline.
-        if (
-          temporalResetAfterFrame !== undefined &&
-          message.frameId > temporalResetAfterFrame &&
-          (message.kind !== 'simulation-complete' || message.renderRejection === undefined)
-        )
-          temporalResetAfterFrame = undefined;
-        if (message.kind === 'frame-complete')
-          publishBrowserFrameCompleted(canvas, {
-            frameId: message.frameId,
-            deviceGeneration: message.deviceGeneration ?? 0,
-            ...(message.shadowWorkload === undefined
-              ? {}
-              : { shadowWorkload: message.shadowWorkload }),
-            ...(message.graphGeneration === undefined
-              ? {}
-              : { graphGeneration: message.graphGeneration }),
-            ...(message.barrelDistortion === undefined
-              ? {}
-              : { barrelDistortion: message.barrelDistortion }),
-            worldIdentity: message.worldIdentity,
-            // Completion without the Render receipt's explicit presentation fact
-            // is not evidence that the active scene is visible. Fail closed so a
-            // protocol omission cannot dismiss the startup screen.
-            presentation: message.presentation ?? 'pending',
-            ...(message.presentation !== 'pending' ||
-            message.presentationPendingReason === undefined
-              ? {}
-              : { presentationPendingReason: message.presentationPendingReason }),
-          });
-        report = { ...report, frame: ledger.inspect() };
-        clearFrameAdmissionWatchdog({
-          session,
-          worldIdentity: message.worldIdentity,
-          frameId: message.frameId,
-        });
-        if (hostFrameOpen) frameProfile?.endPhase();
-        if (profileFrameOpen) {
-          frameProfile?.recordSkip({
-            source: 'app',
-            phase: 'engine-update',
-            reason: `worker-report:${message.engineUpdateMs.toFixed(3)}ms`,
-          });
-          frameProfile?.recordSkip({
-            source: 'app',
-            phase: 'kernel-wait',
-            reason: `worker-report:${message.kernelWaitMs.toFixed(3)}ms`,
-          });
-        }
-        const audioStarted = performance.now();
-        const audioProfileOpen = profileFrameOpen
-          ? (frameProfile?.beginPhase('app', 'host-audio').ok ?? false)
-          : false;
-        for (const intent of message.audioIntents ?? []) {
-          const rejected = audio.consume(intent);
-          if (rejected)
-            rejectedAudioPublications.set(`${rejected.owner}:${rejected.handle}`, rejected);
-        }
-        (options.appOptions.input ?? inputHandle?.backend)?.dispatchFeedback?.(
-          message.feedbackIntents ?? [],
-        );
-        if (audioProfileOpen) frameProfile?.endPhase();
-        const audioMs = performance.now() - audioStarted;
-        report = {
-          ...report,
-          performance: {
-            ...report.performance,
-            hostFrameMs: hostFrameMeasurements.add(performance.now() - frameSentAt),
-            engineUpdateMs: engineMeasurements.add(message.engineUpdateMs),
-            kernelWaitMs: kernelMeasurements.add(message.kernelWaitMs),
-            hostAudioMs: audioMeasurements.add(audioMs + musicFeedbackMs),
-          },
-        };
-        if (message.kernelDispatch !== undefined) {
-          report = { ...report, kernelDispatch: message.kernelDispatch };
-        }
-        if (profileFrameOpen) frameProfile?.endFrame();
-        frameProfile = undefined;
-        profileFrameOpen = false;
-        hostFrameOpen = false;
-        if (state === 'running') scheduleFrame();
-        if (renderRejectionError !== undefined) fanout.fire(renderRejectionError);
+      case 'simulation-complete':
+        onWorkerFrameCompletion(message);
         return;
-      }
       case 'fault':
         terminalFault(message);
         return;
-      case 'rebuilt': {
-        clearFrameAdmissionWatchdog();
-        rejectPendingInspections(
-          new Error('The previous World was replaced before inspection execution.'),
-        );
-        audio.dispose();
-        rejectedAudioPublications.clear();
-        try {
-          audio = createAudio();
-        } catch (cause) {
-          const error = new AppError({
-            code: 'app-plugin-activation-failed',
-            expected: APP_EXPECTED['app-plugin-activation-failed'],
-            hint: APP_ERROR_HINTS['app-plugin-activation-failed'],
-            detail: { cause },
-          });
-          rebuildResolve?.(err(error));
-          rebuildResolve = undefined;
-          terminalFault({
-            kind: 'fault',
-            source: 'rebuild',
-            code: error.code,
-            expected: error.expected,
-            hint: error.hint,
-            detail: error.detail,
-            worldIdentity: message.worldIdentity,
-            partialWrite: false,
-            retryable: true,
-          });
-          return;
-        }
-        ledger = new FrameCreditLedger(message.worldIdentity);
-        renderRecoveryFloor = 0;
-        hostFrameMeasurements.clear();
-        engineMeasurements.clear();
-        kernelMeasurements.clear();
-        audioMeasurements.clear();
-        state = 'idle';
-        frameDue = false;
-        resumeAfterHostShow = false;
-        temporalResetAfterFrame = undefined;
-        const freshReport = createExecutionReport(report.capabilities, report.workers);
-        report = {
-          ...report,
-          ...freshReport,
-          audio: report.audio,
-          // The rebuilt ACK follows complete source, kernel and renderer startup.
-          // Its earlier render-ready event was ignored while the old World was faulted.
-          ...(report.render === undefined
-            ? {}
-            : {
-                render: {
-                  epoch: renderEpoch,
-                  state: 'alive' as const,
-                  submittedFrame: 0,
-                  completedFrame: 0,
-                },
-              }),
-          world: { ...freshReport.world, identity: message.worldIdentity },
-          frame: ledger.inspect(),
-        };
-        rebuildResolve?.(ok(cloneExecutionReport(report)));
-        rebuildResolve = undefined;
-        rebuildInFlight = undefined;
+      case 'rebuilt':
+        onRebuilt(message);
         return;
-      }
       case 'host-control':
-        if (message.command === 'set-pointer-lock-allowed') {
-          input.setPointerLockAllowed?.(message.allowed);
-        }
+        onHostControl(message);
         return;
       case 'inspect-started':
         liveInspection(message)?.startedResolve();
         return;
-      case 'inspect-result': {
-        const pending = liveInspection(message);
-        if (pending === undefined) return;
-        pendingInspections.delete(message.requestId);
-        pending.startedResolve();
-        pending.cancelResolve?.(true);
-        if (message.result.ok) pending.resolve(message.result.value);
-        else pending.reject(message.result.error);
+      case 'inspect-result':
+        onInspectResult(message);
         return;
-      }
-      case 'inspect-canceled': {
-        const pending = liveInspection(message);
-        if (pending === undefined) return;
-        pending.cancelResolve?.(message.admitted);
-        pending.cancelResolve = undefined;
-        if (message.admitted) {
-          // Admission is authoritative. The cancel() witness lets the caller
-          // stop waiting, while the result Promise remains pending until the
-          // Worker posts inspect-result and closes the execution.
-          pending.startedResolve();
-          return;
-        }
-        pendingInspections.delete(message.requestId);
-        const cancelled = Object.assign(
-          new Error('The inspection was cancelled before Worker admission'),
-          { code: 'live-eval-cancelled-before-execution' },
-        );
-        pending.reject(cancelled);
-        pending.startedReject(cancelled);
+      case 'inspect-canceled':
+        onInspectCanceled(message);
         return;
-      }
     }
   });
 

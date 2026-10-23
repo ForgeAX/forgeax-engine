@@ -42,6 +42,7 @@ async function fixture(): Promise<string> {
     name: 'Preview Port Fixture',
     roots: {},
     assetRoots: [],
+    assetLibraries: [],
     packageJson: { name: 'preview-port-fixture' },
   };
   await Promise.all([

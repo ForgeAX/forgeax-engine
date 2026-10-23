@@ -61,13 +61,16 @@ export async function distanceFieldMeshDigest(
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Explicit preparation work. Never invoked by Renderer or on an ordinary frame path. */
-export async function buildMeshDistanceField(
+type FieldTriangle = [FieldVec3, FieldVec3, FieldVec3];
+type FieldTriple = [number, number, number];
+type FieldFailure = Result<never, DistanceFieldError>;
+
+function sourceShapeFailure(
   positions: ArrayLike<number>,
   indices: ArrayLike<number>,
-  options: { readonly resolution?: number; readonly twoSided?: boolean } = {},
-): Promise<Result<GeometricDistanceField, DistanceFieldError>> {
-  const { resolution = 24, twoSided = false } = options;
+  resolution: number,
+  twoSided: boolean,
+): FieldFailure | undefined {
   if (typeof twoSided !== 'boolean') return distanceFieldFailure('twoSided must be boolean');
   if (!Number.isInteger(resolution) || resolution < 8 || resolution > 64)
     return distanceFieldFailure('resolution must be an integer in 8..64', 'distance-field-limit');
@@ -85,6 +88,16 @@ export async function buildMeshDistanceField(
       'at most 1048576 source vertices; 1024 signed or 65536 two-sided triangles',
       'distance-field-limit',
     );
+  return undefined;
+}
+
+interface WeldedPoints {
+  readonly points: FieldVec3[];
+  /** Position-equal vertices share one id, so seams do not read as open edges. */
+  readonly welded: number[];
+}
+
+function weldPositions(positions: ArrayLike<number>): Result<WeldedPoints, DistanceFieldError> {
   const points: FieldVec3[] = [],
     welded: number[] = [],
     weld = new Map<string, number>();
@@ -104,8 +117,14 @@ export async function buildMeshDistanceField(
     points.push(p);
     welded.push(id);
   }
-  const triangles: [FieldVec3, FieldVec3, FieldVec3][] = [],
-    edges = new Map<string, { count: number; balance: number }>();
+  return ok({ points, welded });
+}
+
+function resolveTriangles(
+  indices: ArrayLike<number>,
+  points: readonly FieldVec3[],
+): Result<FieldTriangle[], DistanceFieldError> {
+  const triangles: FieldTriangle[] = [];
   for (let i = 0; i < indices.length; i += 3) {
     const ids = [indices[i] ?? -1, indices[i + 1] ?? -1, indices[i + 2] ?? -1];
     if (ids.some((v) => !Number.isInteger(v) || v < 0 || v >= points.length))
@@ -116,9 +135,17 @@ export async function buildMeshDistanceField(
     if (length(cross(sub(b, a), sub(c, a))) === 0)
       return distanceFieldFailure('degenerate triangle');
     triangles.push([a, b, c]);
-    for (let e = 0; !twoSided && e < 3; e++) {
-      const x = item(welded, item(ids, e)),
-        y = item(welded, item(ids, (e + 1) % 3)),
+  }
+  return ok(triangles);
+}
+
+/** Every welded edge is shared by exactly two triangles with opposite directions. */
+function isClosedConsistentlyWound(indices: ArrayLike<number>, welded: readonly number[]): boolean {
+  const edges = new Map<string, { count: number; balance: number }>();
+  for (let i = 0; i < indices.length; i += 3) {
+    for (let e = 0; e < 3; e++) {
+      const x = item(welded, item(indices, i + e)),
+        y = item(welded, item(indices, i + ((e + 1) % 3))),
         key = `${Math.min(x, y)}:${Math.max(x, y)}`;
       const edge = edges.get(key) ?? { count: 0, balance: 0 };
       edge.count++;
@@ -126,7 +153,15 @@ export async function buildMeshDistanceField(
       edges.set(key, edge);
     }
   }
-  if (!twoSided && [...edges.values()].some((e) => e.count !== 2 || e.balance !== 0))
+  return ![...edges.values()].some((e) => e.count !== 2 || e.balance !== 0);
+}
+
+function signedSolidFailure(
+  indices: ArrayLike<number>,
+  welded: readonly number[],
+  triangles: readonly FieldTriangle[],
+): FieldFailure | undefined {
+  if (!isClosedConsistentlyWound(indices, welded))
     return distanceFieldFailure(
       'open, non-manifold or inconsistently wound edges',
       'distance-field-unsupported',
@@ -136,44 +171,75 @@ export async function buildMeshDistanceField(
     (sum, [a, b, c]) => sum + dot(sub(a, anchor), cross(sub(b, anchor), sub(c, anchor))),
     0,
   );
-  if (!twoSided && volume6 <= 0)
+  if (volume6 <= 0)
     return distanceFieldFailure(
       'closed mesh must be outward wound with positive volume',
       'distance-field-unsupported',
     );
-  const min: [number, number, number] = [Infinity, Infinity, Infinity],
-    max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  return undefined;
+}
+
+function triangleBounds(triangles: readonly FieldTriangle[]): {
+  readonly min: FieldTriple;
+  readonly max: FieldTriple;
+} {
+  const min: FieldTriple = [Infinity, Infinity, Infinity],
+    max: FieldTriple = [-Infinity, -Infinity, -Infinity];
   for (const [a, b, c] of triangles)
     for (const p of [a, b, c])
       for (const axis of [0, 1, 2] as const) {
         min[axis] = Math.min(min[axis], p[axis]);
         max[axis] = Math.max(max[axis], p[axis]);
       }
-  const spacing = Math.fround(Math.max(...max.map((v, i) => v - item(min, i))) / resolution);
-  if (!Number.isFinite(spacing) || spacing <= 0)
-    return distanceFieldFailure('invalid field extent');
-  const origin = min.map((v) => Math.fround(v - spacing)) as [number, number, number];
-  const dimensions = max.map((v, i) => Math.ceil((v - item(min, i)) / spacing) + 3) as [
-    number,
-    number,
-    number,
-  ];
+  return { min, max };
+}
+
+interface SampleGrid {
+  readonly origin: FieldTriple;
+  readonly dimensions: FieldTriple;
+  readonly spacing: number;
+}
+
+/** Generalized winding number of the closed surface around `p`, in turns. */
+function windingAround(triangles: readonly FieldTriangle[], p: FieldVec3): number {
+  let angle = 0;
+  for (const [a, b, c] of triangles) {
+    const u = sub(a, p),
+      v = sub(b, p),
+      w = sub(c, p),
+      lu = length(u),
+      lv = length(v),
+      lw = length(w);
+    angle +=
+      2 *
+      Math.atan2(
+        dot(u, cross(v, w)),
+        lu * lv * lw + dot(u, v) * lw + dot(v, w) * lu + dot(w, u) * lv,
+      );
+  }
+  return Math.abs(angle) / (4 * Math.PI);
+}
+
+interface SampledField {
+  readonly values: Float32Array;
+  readonly interiorSamples: number;
+  readonly rounding: number;
+}
+
+function sampleSignedDistances(
+  triangles: readonly FieldTriangle[],
+  grid: SampleGrid,
+  surfaceEpsilon: number,
+  twoSided: boolean,
+): Result<SampledField, DistanceFieldError> {
+  const { origin, dimensions, spacing } = grid;
   const count = dimensions[0] * dimensions[1] * dimensions[2];
-  if (!twoSided && count * triangles.length > 32_000_000)
-    return distanceFieldFailure(
-      'voxel/triangle preparation budget exceeded',
-      'distance-field-limit',
-    );
   const query = createTriangleQuery(triangles);
   // A bounded allowance per sample caps all closest-point primitive evaluations at 32M.
   const queryBudget = Math.floor(32_000_000 / count);
   const values = new Float32Array(count);
   let interiorSamples = 0,
     rounding = 0;
-  const surfaceEpsilon = Math.max(
-    spacing * 1e-7,
-    Math.max(...min.map(Math.abs), ...max.map(Math.abs)) * 1e-7,
-  );
   for (let z = 0; z < dimensions[2]; z++)
     for (let y = 0; y < dimensions[1]; y++)
       for (let x = 0; x < dimensions[0]; x++) {
@@ -189,23 +255,7 @@ export async function buildMeshDistanceField(
             'distance-field-limit',
           );
         const nearest = Math.sqrt(distanceSquared);
-        let angle = 0;
-        if (!twoSided)
-          for (const [a, b, c] of triangles) {
-            const u = sub(a, p),
-              v = sub(b, p),
-              w = sub(c, p),
-              lu = length(u),
-              lv = length(v),
-              lw = length(w);
-            angle +=
-              2 *
-              Math.atan2(
-                dot(u, cross(v, w)),
-                lu * lv * lw + dot(u, v) * lw + dot(v, w) * lu + dot(w, u) * lv,
-              );
-          }
-        const winding = Math.abs(angle) / (4 * Math.PI);
+        const winding = twoSided ? 0 : windingAround(triangles, p);
         if (nearest > surfaceEpsilon && (winding > 1.01 || (winding > 0.01 && winding < 0.99)))
           return distanceFieldFailure(
             'ambiguous sampled winding; intersecting or nested shells are not qualified',
@@ -217,48 +267,106 @@ export async function buildMeshDistanceField(
         rounding = Math.max(rounding, Math.abs(signed - sample));
         if (sample < 0) interiorSamples++;
       }
-  if (!twoSided && interiorSamples === 0)
+  return ok({ values, interiorSamples, rounding });
+}
+
+/** Whether any sample within two cells of `cell` lies inside the solid. */
+function hasNearbyInteriorSample(
+  values: Float32Array,
+  dimensions: FieldTriple,
+  cell: readonly number[],
+): boolean {
+  let supported = false;
+  for (let dz = -2; dz <= 2; dz++)
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = item(cell, 0) + dx,
+          y = item(cell, 1) + dy,
+          z = item(cell, 2) + dz;
+        if (
+          x >= 0 &&
+          y >= 0 &&
+          z >= 0 &&
+          x < dimensions[0] &&
+          y < dimensions[1] &&
+          z < dimensions[2] &&
+          item(values, (z * dimensions[1] + y) * dimensions[0] + x) < 0
+        )
+          supported = true;
+      }
+  return supported;
+}
+
+// Bounded surface coverage diagnostic. It is not a proof about every sub-voxel feature.
+function interiorSupportFailure(
+  triangles: readonly FieldTriangle[],
+  sampled: SampledField,
+  grid: SampleGrid,
+): FieldFailure | undefined {
+  if (sampled.interiorSamples === 0)
     return distanceFieldFailure(
       'thin solid has no interior voxel support',
       'distance-field-unsupported',
     );
-  // Bounded surface coverage diagnostic. It is not a proof about every sub-voxel feature.
-  if (!twoSided)
-    for (const [a, b, c] of triangles) {
-      const center: FieldVec3 = [
-        (a[0] + b[0] + c[0]) / 3,
-        (a[1] + b[1] + c[1]) / 3,
-        (a[2] + b[2] + c[2]) / 3,
-      ];
-      const cell = center.map((v, i) => Math.floor((v - item(origin, i)) / spacing));
-      let supported = false;
-      for (let dz = -2; dz <= 2; dz++)
-        for (let dy = -2; dy <= 2; dy++)
-          for (let dx = -2; dx <= 2; dx++) {
-            const x = item(cell, 0) + dx,
-              y = item(cell, 1) + dy,
-              z = item(cell, 2) + dz;
-            if (
-              x >= 0 &&
-              y >= 0 &&
-              z >= 0 &&
-              x < dimensions[0] &&
-              y < dimensions[1] &&
-              z < dimensions[2] &&
-              item(values, (z * dimensions[1] + y) * dimensions[0] + x) < 0
-            )
-              supported = true;
-          }
-      if (!supported)
-        return distanceFieldFailure(
-          'triangle centroid has no nearby interior voxel support',
-          'distance-field-unsupported',
-        );
-    }
-  const errorBound = Math.fround(
-    (Math.sqrt(3) * spacing) / 2 + rounding + surfaceEpsilon * 4 + spacing * 1e-5,
+  for (const [a, b, c] of triangles) {
+    const center: FieldVec3 = [
+      (a[0] + b[0] + c[0]) / 3,
+      (a[1] + b[1] + c[1]) / 3,
+      (a[2] + b[2] + c[2]) / 3,
+    ];
+    const cell = center.map((v, i) => Math.floor((v - item(grid.origin, i)) / grid.spacing));
+    if (!hasNearbyInteriorSample(sampled.values, grid.dimensions, cell))
+      return distanceFieldFailure(
+        'triangle centroid has no nearby interior voxel support',
+        'distance-field-unsupported',
+      );
+  }
+  return undefined;
+}
+
+/** Explicit preparation work. Never invoked by Renderer or on an ordinary frame path. */
+export async function buildMeshDistanceField(
+  positions: ArrayLike<number>,
+  indices: ArrayLike<number>,
+  options: { readonly resolution?: number; readonly twoSided?: boolean } = {},
+): Promise<Result<GeometricDistanceField, DistanceFieldError>> {
+  const { resolution = 24, twoSided = false } = options;
+  const shapeFailure = sourceShapeFailure(positions, indices, resolution, twoSided);
+  if (shapeFailure !== undefined) return shapeFailure;
+  const weldResult = weldPositions(positions);
+  if (!weldResult.ok) return weldResult;
+  const { points, welded } = weldResult.value;
+  const trianglesResult = resolveTriangles(indices, points);
+  if (!trianglesResult.ok) return trianglesResult;
+  const triangles = trianglesResult.value;
+  const solidFailure = twoSided ? undefined : signedSolidFailure(indices, welded, triangles);
+  if (solidFailure !== undefined) return solidFailure;
+  const { min, max } = triangleBounds(triangles);
+  const spacing = Math.fround(Math.max(...max.map((v, i) => v - item(min, i))) / resolution);
+  if (!Number.isFinite(spacing) || spacing <= 0)
+    return distanceFieldFailure('invalid field extent');
+  const origin = min.map((v) => Math.fround(v - spacing)) as FieldTriple;
+  const dimensions = max.map((v, i) => Math.ceil((v - item(min, i)) / spacing) + 3) as FieldTriple;
+  const count = dimensions[0] * dimensions[1] * dimensions[2];
+  if (!twoSided && count * triangles.length > 32_000_000)
+    return distanceFieldFailure(
+      'voxel/triangle preparation budget exceeded',
+      'distance-field-limit',
+    );
+  const grid: SampleGrid = { origin, dimensions, spacing };
+  const surfaceEpsilon = Math.max(
+    spacing * 1e-7,
+    Math.max(...min.map(Math.abs), ...max.map(Math.abs)) * 1e-7,
   );
-  const storage = brickDistanceFieldValues(dimensions, values);
+  const sampledResult = sampleSignedDistances(triangles, grid, surfaceEpsilon, twoSided);
+  if (!sampledResult.ok) return sampledResult;
+  const sampled = sampledResult.value;
+  const supportFailure = twoSided ? undefined : interiorSupportFailure(triangles, sampled, grid);
+  if (supportFailure !== undefined) return supportFailure;
+  const errorBound = Math.fround(
+    (Math.sqrt(3) * spacing) / 2 + sampled.rounding + surfaceEpsilon * 4 + spacing * 1e-5,
+  );
+  const storage = brickDistanceFieldValues(dimensions, sampled.values);
   if (!storage)
     return distanceFieldFailure('distance-field storage exceeds 32 MiB', 'distance-field-limit');
   return ok({
@@ -269,7 +377,7 @@ export async function buildMeshDistanceField(
     spacing,
     ...storage,
     bounds: { min, max },
-    quality: { negativeSamples: interiorSamples, testedTriangles: triangles.length },
+    quality: { negativeSamples: sampled.interiorSamples, testedTriangles: triangles.length },
   });
 }
 

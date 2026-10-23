@@ -278,6 +278,12 @@ const handle = loaded.value;
 // Bind directly to MeshRenderer.materials; release the caller reference after binding.
 ```
 
+For a quick visible surface, a project that mounts Engine Content
+(`assetLibraries`) can load `EngineContent.materials.default` — a Standard
+material with a mipmapped checker base color — or any `EngineContent.meshes.*`
+mesh, whose `Default` slot already defaults to that material. Author a project
+material with `parent` set to it to override values.
+
 For a custom module, put `passes[].program.module` in the root contract. The
 shader build publishes the module; the material cook publishes the record and
 artifact. The application only performs the catalog load and readiness check.

@@ -1094,7 +1094,7 @@ describe('material shader color-domain contract', () => {
   it('routes HDR sprite targets to fs_main_hdr while unorm targets use fs_main', () => {
     const source = [
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-renderer.ts'), 'utf8'),
-      readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready.ts'), 'utf8'),
+      readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready-passes.ts'), 'utf8'),
     ]
       .join('\n')
       .replaceAll('\r\n', '\n');

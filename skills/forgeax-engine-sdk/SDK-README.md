@@ -151,22 +151,22 @@ from real built bytes and reports build time. unlink restores default resolution
 | Surface | Paths | Build Engine first? | Use |
 |:--|:--|:--:|:--|
 | Full ZIP built SDK | bin, packages, templates, skills, store/pnpm | No | Offline game creation, testing, execution, builds, delivery. |
-| npm carrier built SDK | bin, packages, templates, skills | No | Publishable size; locked game dependencies install online. |
-| Engine source | source/engine | After source edits | Inspect/extend packages, CLI, rules, and skills. |
+| npm carrier built SDK | bin, templates, skills | No | Small online bootstrap; locked game dependencies, including Engine, install from npm. |
+| Engine source | source/engine (full ZIP only) | After source edits | Inspect/extend packages, CLI, rules, and skills. |
 
 packages/name is a bare built npm package with manifest, README, dist, and resources at its root, without tarballs or a nested package directory.
 
 ```text
 forgeax-sdk/
 ├── bin/forgeax
-├── packages/<package>/
+├── packages/<package>/         # Full ZIP only.
 ├── templates/empty/
 ├── templates/game-3d/
 ├── store/pnpm/                 # Full ZIP only.
 ├── skills/<forgeax-engine-skill>/
-├── source/engine/
+├── source/engine/              # Full ZIP only.
 ├── schemas/
-├── toolchain/wasm/
+├── toolchain/wasm/             # Full ZIP only.
 ├── sdk-manifest.json
 └── AGENTS.md
 ```

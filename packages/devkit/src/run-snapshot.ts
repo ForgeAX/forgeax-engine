@@ -139,6 +139,15 @@ class SnapshotChangedError extends Error {}
 
 const SNAPSHOT_ATTEMPTS = 3;
 
+/**
+ * A package's published payload. npm-packlist also lists dependencies that
+ * declared bundles reach outside the package (pnpm siblings, as `../`); those
+ * are separate installed packages that the dependency traversal copies itself.
+ */
+async function packageFiles(root: string): Promise<string[]> {
+  return (await packlist(root)).filter((file) => !file.startsWith('../')).sort();
+}
+
 function stamp(info: BigIntStats): { stamp: string; mode: number; size: number } {
   return {
     stamp: [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs, info.mode].join(':'),
@@ -870,9 +879,11 @@ async function packageFileMatches(source: string, installed: string): Promise<bo
 }
 
 async function packagePayloadMatches(source: string, installed: string): Promise<boolean> {
-  const [sourceFiles, installedFiles] = await Promise.all([packlist(source), packlist(installed)]);
-  const files = [...sourceFiles].sort();
-  if (JSON.stringify(files) !== JSON.stringify([...installedFiles].sort())) return false;
+  const [files, installedFiles] = await Promise.all([
+    packageFiles(source),
+    packageFiles(installed),
+  ]);
+  if (JSON.stringify(files) !== JSON.stringify(installedFiles)) return false;
   for (const file of files)
     if (!(await packageFileMatches(join(source, file), join(installed, file)))) return false;
   return true;
@@ -1428,7 +1439,7 @@ async function planSnapshot(
       if (dependencyTarget !== destination) links.push({ target: dependencyTarget, destination });
       if (!existing) {
         // The package's published payload owns dependency inputs, not its checkout.
-        for (const file of (await packlist(installed)).sort()) {
+        for (const file of await packageFiles(installed)) {
           if (file.split('/').some((part) => part !== 'node_modules' && omitted.has(part)))
             continue;
           // packlist includes declared npm bundles. Keep their physical layout:

@@ -1,4 +1,11 @@
-import { Disabled, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  Disabled,
+  defineComponent,
+  type EntityHandle,
+  type SchemaOf,
+  type ShapeOf,
+  type World,
+} from '@forgeax/engine-ecs';
 import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
@@ -158,6 +165,99 @@ function environmentAt(
     }));
 }
 
+type AcousticRegionData = ShapeOf<SchemaOf<typeof AcousticRegion>>;
+
+interface RouteRequest {
+  readonly entity: number;
+  readonly routes: AcousticRoutes;
+  readonly fingerprint: string;
+}
+
+function isFiniteAffine(matrix: Float32Array | undefined): matrix is Float32Array {
+  return (
+    matrix !== undefined &&
+    matrix.length === 16 &&
+    [...matrix].every(Number.isFinite) &&
+    matrix[3] === 0 &&
+    matrix[7] === 0 &&
+    matrix[11] === 0 &&
+    matrix[15] === 1
+  );
+}
+
+/** Determinant of the affine matrix's linear 3x3 part. */
+function linearDeterminant(matrix: Float32Array): number {
+  return (
+    (matrix[0] ?? 0) *
+      ((matrix[5] ?? 0) * (matrix[10] ?? 0) - (matrix[9] ?? 0) * (matrix[6] ?? 0)) -
+    (matrix[4] ?? 0) *
+      ((matrix[1] ?? 0) * (matrix[10] ?? 0) - (matrix[9] ?? 0) * (matrix[2] ?? 0)) +
+    (matrix[8] ?? 0) * ((matrix[1] ?? 0) * (matrix[6] ?? 0) - (matrix[5] ?? 0) * (matrix[2] ?? 0))
+  );
+}
+
+function isValidRegionDeclaration(data: AcousticRegionData, matrix: Float32Array): boolean {
+  return !(
+    Math.abs(linearDeterminant(matrix)) <= 1e-8 ||
+    !Object.values(AcousticShapeValue).includes(data.shape as 0 | 1) ||
+    ![...data.halfExtents, data.radius].every((n) => Number.isFinite(n) && n > 0) ||
+    !Number.isFinite(data.blendDistance) ||
+    data.blendDistance < 0 ||
+    !Number.isFinite(data.wet) ||
+    data.wet < 0 ||
+    data.wet > 1 ||
+    !Number.isFinite(data.sendGain) ||
+    data.sendGain < 0 ||
+    [data.sourceBus, data.listenerWetBus, data.listenerSendBus, data.listenerSendTarget].some(
+      (s) => s.length > 128,
+    ) ||
+    !!data.listenerSendBus !== !!data.listenerSendTarget
+  );
+}
+
+/** Fill `next` with enabled regions, reusing cached inverses whose fields and pose are unchanged. */
+function collectRegions(
+  world: World,
+  cached: ReadonlyMap<number, Region>,
+  next: Map<number, Region>,
+): Result<void, AudioError> {
+  const query = world.query({ read: [AcousticRegion], optional: [GlobalTransform] });
+  if (!query.ok) return acousticFailure('region query unavailable');
+  for (const row of query.value) {
+    const data = row.get(AcousticRegion);
+    if (!data.enabled) continue;
+    if (next.size >= 128) return acousticFailure('at most 128 enabled regions per World');
+    const matrix = row.get(GlobalTransform)?.world;
+    if (!isFiniteAffine(matrix))
+      return acousticFailure('region requires a finite affine propagated Transform');
+    if (!isValidRegionDeclaration(data, matrix))
+      return acousticFailure('invalid region shape, dimensions, transform or wet/send declaration');
+    const fields = {
+      shape: data.shape,
+      halfExtents: [...data.halfExtents],
+      radius: data.radius,
+      priority: data.priority,
+      blendDistance: data.blendDistance,
+      sourceBus: data.sourceBus,
+      listenerWetBus: data.listenerWetBus,
+      wet: data.wet,
+      listenerSendBus: data.listenerSendBus,
+      listenerSendTarget: data.listenerSendTarget,
+      sendGain: data.sendGain,
+    };
+    const fingerprint = JSON.stringify([fields, [...matrix]]);
+    const region = cached.get(row.entity);
+    if (region?.fingerprint === fingerprint) next.set(row.entity, region);
+    else {
+      const inverse = mat4.invert(mat4.create(), matrix);
+      if (!inverse.every(Number.isFinite))
+        return acousticFailure('region inverse must fit the finite native float range');
+      next.set(row.entity, { ...fields, entity: row.entity, fingerprint, inverse });
+    }
+  }
+  return ok(undefined);
+}
+
 function createPlayingSources(world: World) {
   const query = world.query({ read: [AudioSource], optional: [GlobalTransform] });
   if (!query.ok) return;
@@ -169,12 +269,70 @@ function createPlayingSources(world: World) {
   };
 }
 
+type PlayingSources = NonNullable<ReturnType<typeof createPlayingSources>>;
+
+/** Consume AudioSource/Disabled mutations into the playing-voice selection. */
+function syncPlayingSources(sources: PlayingSources): void {
+  const batch = sources.projection.read();
+  for (const index of batch.indices) {
+    const entity = sources.projection.entity(index);
+    const row = entity === undefined ? undefined : sources.query.at(entity);
+    if (row?.get(AudioSource).playing === true) sources.playing.set(index, row.entity);
+    else sources.playing.delete(index);
+  }
+  batch.accept();
+}
+
+/** Route each playing voice; queue only routes whose published fingerprint changed. */
+function collectRouteRequests(
+  ordered: readonly Region[],
+  sources: PlayingSources,
+  previous: ReadonlyMap<number, string>,
+  requests: RouteRequest[],
+  alive: Set<number>,
+): Result<void, AudioError> {
+  // Spatial mixing samples the selected playing voices; discovering that
+  // selection consumes ECS mutations, never a scan of all clip consumers.
+  for (const entity of sources.playing.values()) {
+    const row = sources.query.at(entity);
+    if (row === undefined) continue;
+    if (ordered.length && alive.size >= 256)
+      return acousticFailure('at most 256 playing regional sources per World');
+    alive.add(row.entity);
+    const routes = routesAt(ordered, row.get(GlobalTransform)?.world);
+    const fingerprint = JSON.stringify(routes);
+    if (
+      previous.get(row.entity) !== fingerprint &&
+      (previous.has(row.entity) || routes !== FALLBACK)
+    )
+      requests.push({ entity: row.entity, routes, fingerprint });
+  }
+  return ok(undefined);
+}
+
+function validateRouteRequests(requests: readonly RouteRequest[]): Result<void, AudioError> {
+  for (const request of requests) {
+    const valid = validateAcousticRoutes(request.routes);
+    if (!valid.ok) return valid;
+  }
+  return ok(undefined);
+}
+
+function firstListenerMatrix(world: World): Float32Array | undefined {
+  const listeners = world.query({ read: [GlobalTransform], with: [AudioListener] });
+  if (listeners.ok)
+    for (const row of listeners.value) {
+      return row.get(GlobalTransform).world;
+    }
+  return undefined;
+}
+
 /** Per-World projection. Unchanged fields/poses produce no control publications. */
 export function createAcousticRegionSystem() {
   let regions = new Map<number, Region>();
   const previous = new Map<number, string>();
   let environment = '[]';
-  let sources: ReturnType<typeof createPlayingSources>;
+  let sources: PlayingSources | undefined;
   return {
     reset(backend: AudioBackend): void {
       for (const entity of previous.keys()) backend.setAcousticRoutes(entity, FALLBACK);
@@ -186,72 +344,8 @@ export function createAcousticRegionSystem() {
     },
     update(world: World, backend: AudioBackend): Result<void, AudioError> {
       const next = new Map<number, Region>();
-      const query = world.query({ read: [AcousticRegion], optional: [GlobalTransform] });
-      if (!query.ok) return acousticFailure('region query unavailable');
-      for (const row of query.value) {
-        const data = row.get(AcousticRegion);
-        if (!data.enabled) continue;
-        if (next.size >= 128) return acousticFailure('at most 128 enabled regions per World');
-        const matrix = row.get(GlobalTransform)?.world;
-        if (
-          !matrix ||
-          matrix.length !== 16 ||
-          ![...matrix].every(Number.isFinite) ||
-          matrix[3] !== 0 ||
-          matrix[7] !== 0 ||
-          matrix[11] !== 0 ||
-          matrix[15] !== 1
-        )
-          return acousticFailure('region requires a finite affine propagated Transform');
-        const determinant =
-          (matrix[0] ?? 0) *
-            ((matrix[5] ?? 0) * (matrix[10] ?? 0) - (matrix[9] ?? 0) * (matrix[6] ?? 0)) -
-          (matrix[4] ?? 0) *
-            ((matrix[1] ?? 0) * (matrix[10] ?? 0) - (matrix[9] ?? 0) * (matrix[2] ?? 0)) +
-          (matrix[8] ?? 0) *
-            ((matrix[1] ?? 0) * (matrix[6] ?? 0) - (matrix[5] ?? 0) * (matrix[2] ?? 0));
-        if (
-          Math.abs(determinant) <= 1e-8 ||
-          !Object.values(AcousticShapeValue).includes(data.shape as 0 | 1) ||
-          ![...data.halfExtents, data.radius].every((n) => Number.isFinite(n) && n > 0) ||
-          !Number.isFinite(data.blendDistance) ||
-          data.blendDistance < 0 ||
-          !Number.isFinite(data.wet) ||
-          data.wet < 0 ||
-          data.wet > 1 ||
-          !Number.isFinite(data.sendGain) ||
-          data.sendGain < 0 ||
-          [data.sourceBus, data.listenerWetBus, data.listenerSendBus, data.listenerSendTarget].some(
-            (s) => s.length > 128,
-          ) ||
-          !!data.listenerSendBus !== !!data.listenerSendTarget
-        )
-          return acousticFailure(
-            'invalid region shape, dimensions, transform or wet/send declaration',
-          );
-        const fields = {
-          shape: data.shape,
-          halfExtents: [...data.halfExtents],
-          radius: data.radius,
-          priority: data.priority,
-          blendDistance: data.blendDistance,
-          sourceBus: data.sourceBus,
-          listenerWetBus: data.listenerWetBus,
-          wet: data.wet,
-          listenerSendBus: data.listenerSendBus,
-          listenerSendTarget: data.listenerSendTarget,
-          sendGain: data.sendGain,
-        };
-        const fingerprint = JSON.stringify([fields, [...matrix]]);
-        const cached = regions.get(row.entity);
-        if (cached?.fingerprint === fingerprint) next.set(row.entity, cached);
-        else {
-          const inverse = mat4.invert(mat4.create(), matrix);
-          if (!inverse.every(Number.isFinite))
-            return acousticFailure('region inverse must fit the finite native float range');
-          next.set(row.entity, { ...fields, entity: row.entity, fingerprint, inverse });
-        }
-      }
+      const collected = collectRegions(world, regions, next);
+      if (!collected.ok) return collected;
       const ordered = [...next.values()].sort((a, b) => a.entity - b.entity);
       if (!ordered.length && !previous.size && environment === '[]') {
         regions = next;
@@ -259,44 +353,14 @@ export function createAcousticRegionSystem() {
       }
       if (sources?.world !== world) sources = createPlayingSources(world);
       if (sources === undefined) return acousticFailure('source query unavailable');
-      const batch = sources.projection.read();
-      for (const index of batch.indices) {
-        const entity = sources.projection.entity(index);
-        const row = entity === undefined ? undefined : sources.query.at(entity);
-        if (row?.get(AudioSource).playing === true) sources.playing.set(index, row.entity);
-        else sources.playing.delete(index);
-      }
-      batch.accept();
-      const requests: { entity: number; routes: AcousticRoutes; fingerprint: string }[] = [];
+      syncPlayingSources(sources);
+      const requests: RouteRequest[] = [];
       const alive = new Set<number>();
-      // Spatial mixing samples the selected playing voices; discovering that
-      // selection consumes ECS mutations, never a scan of all clip consumers.
-      for (const entity of sources.playing.values()) {
-        const row = sources.query.at(entity);
-        if (row === undefined) continue;
-        if (ordered.length && alive.size >= 256)
-          return acousticFailure('at most 256 playing regional sources per World');
-        alive.add(row.entity);
-        const routes = routesAt(ordered, row.get(GlobalTransform)?.world);
-        const fingerprint = JSON.stringify(routes);
-        if (
-          previous.get(row.entity) !== fingerprint &&
-          (previous.has(row.entity) || routes !== FALLBACK)
-        )
-          requests.push({ entity: row.entity, routes, fingerprint });
-      }
-      let listenerMatrix: Float32Array | undefined;
-      const listeners = world.query({ read: [GlobalTransform], with: [AudioListener] });
-      if (listeners.ok)
-        for (const row of listeners.value) {
-          listenerMatrix = row.get(GlobalTransform).world;
-          break;
-        }
-      const env = environmentAt(ordered, listenerMatrix);
-      for (const request of requests) {
-        const valid = validateAcousticRoutes(request.routes);
-        if (!valid.ok) return valid;
-      }
+      const routed = collectRouteRequests(ordered, sources, previous, requests, alive);
+      if (!routed.ok) return routed;
+      const env = environmentAt(ordered, firstListenerMatrix(world));
+      const validRoutes = validateRouteRequests(requests);
+      if (!validRoutes.ok) return validRoutes;
       const validEnvironment = validateAcousticEnvironment(env);
       if (!validEnvironment.ok) return validEnvironment;
       const envFingerprint = JSON.stringify(env);

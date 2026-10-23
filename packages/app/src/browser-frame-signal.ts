@@ -20,6 +20,12 @@ export interface BrowserFrameSubmitted {
   readonly deviceGeneration: number;
   /** Compiled graph identity paired with this submitted picture. */
   readonly graphGeneration?: number;
+  /**
+   * Render Worker cadence: milliseconds between the start of the previous
+   * draw and this one on the Render Worker clock. Absent for the first draw
+   * of a session and for in-process execution.
+   */
+  readonly renderDrawIntervalMs?: number;
   /** World/session identity owned by the active App execution. */
   readonly worldIdentity?: string;
   /**
@@ -47,6 +53,12 @@ export interface BrowserFrameCompleted {
   readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
   readonly presentation: import('@forgeax/engine-render').FramePresentation;
   readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
+  /**
+   * Render Worker milliseconds from queue submission to completion of this
+   * frame (GPU completion plus in-order completion of earlier frames).
+   * Absent for in-process execution.
+   */
+  readonly renderSubmitToCompleteMs?: number;
 }
 
 const submittedFrame = Symbol('forgeax.submitted-frame');

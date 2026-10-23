@@ -21,7 +21,14 @@ function fixture(run) {
     // its real scripts and sources, and isolate the native-tool requirement.
     writeFileSync(
       join(root, 'package.json'),
-      JSON.stringify({ ...manifest, dependencies: {}, packageManager }),
+      JSON.stringify({
+        ...manifest,
+        dependencies: {},
+        devDependencies: {},
+        peerDependencies: {},
+        peerDependenciesMeta: {},
+        packageManager,
+      }),
     );
     writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages: []\n');
     const env = { ...process.env, PATH: dirname(process.execPath), CI: 'true' };

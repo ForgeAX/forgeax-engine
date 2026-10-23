@@ -26,14 +26,12 @@ const CHANNELS = {
     'packages/types/src',
   ],
   compiled: ['apps/hello', 'scripts'],
-  json: ['apps/hello', 'packages/runtime/assets/builtin'],
+  json: ['apps/hello'],
 };
 
 const FIXTURES = [
-  'apps/hello/cube/assets/cube-mesh.pack.json',
   'apps/hello/room/assets/room.pack.json',
   'apps/hello/scene-nesting/assets/outer-scene.pack.json',
-  'packages/runtime/assets/builtin/cube.pack.json',
 ];
 
 function walk(root, extensions, files = []) {

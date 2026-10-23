@@ -637,6 +637,38 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   if (typeof profile !== 'object' || profile === null) return 'RenderProfile must be a POD object';
   const unknownKey = Object.keys(profile).find((key) => !RENDER_PROFILE_KEYS.has(key));
   if (unknownKey !== undefined) return `RenderProfile contains unsupported field '${unknownKey}'`;
+  let failure = validateStandardPipelineSelection(profile);
+  if (failure !== undefined) return failure;
+  failure = validateVolumetricFogProfile(profile.volumetricFog);
+  if (failure !== undefined) return failure;
+  failure = validateDiagnosticFlags(profile);
+  if (failure !== undefined) return failure;
+  failure = validateGbufferBatchOrderDiagnostic(profile.gbufferBatchOrderDiagnostic);
+  if (failure !== undefined) return failure;
+  if (profile.visibleSurface === true && profile.renderPath !== 'deferred')
+    return 'Visible surfaces require the Standard deferred path';
+  failure = validateProbePlacementProfile(profile);
+  if (failure !== undefined) return failure;
+  failure = validateDiffuseGiProfile(profile);
+  if (failure !== undefined) return failure;
+  for (const field of ['pbr', 'ibl'] as const) {
+    if (typeof profile[field] !== 'boolean') return `RenderProfile.${field} must be boolean`;
+  }
+  failure = validateSsaoProfile(profile);
+  if (failure !== undefined) return failure;
+  const stages = STANDARD_POST_STAGE_NAMES;
+  if (
+    !Array.isArray(profile.postStages) ||
+    profile.postStages.length !== stages.length ||
+    stages.some((stage, index) => profile.postStages[index] !== stage)
+  ) {
+    return 'RenderProfile.postStages must preserve the Standard post stage order';
+  }
+  return undefined;
+}
+
+/** Pipeline identity, light budget, render path and subsurface quality. */
+function validateStandardPipelineSelection(profile: RenderProfile): string | undefined {
   if (profile.pipelineId !== STANDARD_PIPELINE_ID) {
     return `RenderProfile.pipelineId must be '${STANDARD_PIPELINE_ID}'`;
   }
@@ -652,19 +684,26 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
     profile.subsurfaceQuality !== 'high'
   )
     return 'RenderProfile.subsurfaceQuality must be low or high';
-  if (profile.volumetricFog !== undefined) {
-    const volume = profile.volumetricFog;
-    if (
-      typeof volume !== 'object' ||
-      volume === null ||
-      Array.isArray(volume) ||
-      Object.keys(volume).some((key) => !['quality', 'depth', 'tileSize'].includes(key)) ||
-      (volume.quality !== 'low' && volume.quality !== 'high') ||
-      (volume.depth !== 48 && volume.depth !== 64) ||
-      (volume.tileSize !== 4 && volume.tileSize !== 16)
-    )
-      return 'RenderProfile.volumetricFog requires quality low/high, depth 48/64 and tileSize 4/16';
-  }
+  return undefined;
+}
+
+function validateVolumetricFogProfile(volume: RenderProfile['volumetricFog']): string | undefined {
+  if (volume === undefined) return undefined;
+  if (
+    typeof volume !== 'object' ||
+    volume === null ||
+    Array.isArray(volume) ||
+    Object.keys(volume).some((key) => !['quality', 'depth', 'tileSize'].includes(key)) ||
+    (volume.quality !== 'low' && volume.quality !== 'high') ||
+    (volume.depth !== 48 && volume.depth !== 64) ||
+    (volume.tileSize !== 4 && volume.tileSize !== 16)
+  )
+    return 'RenderProfile.volumetricFog requires quality low/high, depth 48/64 and tileSize 4/16';
+  return undefined;
+}
+
+/** Optional boolean switches for experiments and diagnostics. */
+function validateDiagnosticFlags(profile: RenderProfile): string | undefined {
   if (
     profile.featureReadOnlyDepthBatching !== undefined &&
     typeof profile.featureReadOnlyDepthBatching !== 'boolean'
@@ -679,90 +718,108 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
     return 'RenderProfile.visibleSurface must be boolean';
   if (profile.gpuOcclusion !== undefined && typeof profile.gpuOcclusion !== 'boolean')
     return 'RenderProfile.gpuOcclusion must be boolean';
-  if (profile.gbufferBatchOrderDiagnostic !== undefined) {
-    const diagnostic = profile.gbufferBatchOrderDiagnostic;
-    if (
-      typeof diagnostic !== 'object' ||
-      diagnostic === null ||
-      Array.isArray(diagnostic) ||
-      Object.keys(diagnostic).some((key) => key !== 'order' && key !== 'programDigests') ||
-      (diagnostic.order !== 'near' && diagnostic.order !== 'far') ||
-      !Array.isArray(diagnostic.programDigests) ||
-      diagnostic.programDigests.length > 128 ||
-      !diagnostic.programDigests.every(
-        (digest) => typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(digest),
-      )
+  return undefined;
+}
+
+function validateGbufferBatchOrderDiagnostic(
+  diagnostic: RenderProfile['gbufferBatchOrderDiagnostic'],
+): string | undefined {
+  if (diagnostic === undefined) return undefined;
+  if (
+    typeof diagnostic !== 'object' ||
+    diagnostic === null ||
+    Array.isArray(diagnostic) ||
+    Object.keys(diagnostic).some((key) => key !== 'order' && key !== 'programDigests') ||
+    (diagnostic.order !== 'near' && diagnostic.order !== 'far') ||
+    !Array.isArray(diagnostic.programDigests) ||
+    diagnostic.programDigests.length > 128 ||
+    !diagnostic.programDigests.every(
+      (digest) => typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(digest),
     )
-      return 'RenderProfile.gbufferBatchOrderDiagnostic requires near/far order and up to 128 audited SHA-256 programDigests';
+  )
+    return 'RenderProfile.gbufferBatchOrderDiagnostic requires near/far order and up to 128 audited SHA-256 programDigests';
+  return undefined;
+}
+
+function validateProbePlacementProfile(profile: RenderProfile): string | undefined {
+  const placement = profile.probePlacement;
+  if (placement === undefined) return undefined;
+  if (
+    typeof placement !== 'object' ||
+    placement === null ||
+    Array.isArray(placement) ||
+    Object.keys(placement).some((key) => !['seeds', 'global'].includes(key))
+  )
+    return 'Probe placement requires one seeds/global configuration object';
+  const seeds = placement.seeds;
+  if (profile.renderPath !== 'deferred') return 'Probe placement requires Standard deferred';
+  if (
+    !Array.isArray(seeds) ||
+    seeds.length < 1 ||
+    seeds.length > 4096 ||
+    new Set(seeds.map((seed) => seed?.id)).size !== seeds.length ||
+    !seeds.every(validProbeSeed)
+  )
+    return 'Probe placement requires 1..4096 unique nonzero u32 seed identities/generations, finite positions, bounded positive cells and explicit traced eligibility';
+  return validateGlobalProbes(placement.global, seeds);
+}
+
+/** Is a seed a closed record with u32 identity, finite position, bounded cell and traced flag? */
+function validProbeSeed(
+  seed: NonNullable<RenderProfile['probePlacement']>['seeds'][number],
+): boolean {
+  return !(
+    typeof seed !== 'object' ||
+    seed === null ||
+    Object.keys(seed).some(
+      (key) => !['id', 'generation', 'position', 'cellSize', 'traced'].includes(key),
+    ) ||
+    ![seed.id, seed.generation].every((v) => Number.isInteger(v) && v > 0 && v <= 0xffffffff) ||
+    typeof seed.traced !== 'boolean' ||
+    !Array.isArray(seed.position) ||
+    seed.position.length !== 3 ||
+    !seed.position.every(
+      (v: unknown) =>
+        typeof v === 'number' && Number.isFinite(Math.fround(v)) && Math.abs(v) < 1e30,
+    ) ||
+    typeof seed.cellSize !== 'number' ||
+    !(Math.fround(seed.cellSize) > 1e-20 && Math.fround(seed.cellSize) < 1e20)
+  );
+}
+
+function validateGlobalProbes(
+  global: NonNullable<RenderProfile['probePlacement']>['global'],
+  seeds: NonNullable<RenderProfile['probePlacement']>['seeds'],
+): string | undefined {
+  if (global === undefined) return undefined;
+  const region = validateGlobalSdfRegion(global, ['rayResolution', 'tMax', 'cards']);
+  if (!region.ok) return region.error.detail.cause;
+  if (
+    !Number.isInteger(global.rayResolution) ||
+    global.rayResolution < 1 ||
+    global.rayResolution > 256 ||
+    seeds.length * global.rayResolution ** 2 > RAY_REFERENCE_LIMIT ||
+    !(Math.fround(global.tMax) >= 2 ** -126 && Math.fround(global.tMax) < 1e30) ||
+    seeds.some((seed) => seed.position.some((v: number) => Math.abs(v) + global.tMax >= 1e30))
+  )
+    return 'Global probes require 1..256 ray texels/axis within the query ray limit and finite normal f32 endpoints';
+  if (global.cards !== undefined) {
+    const cards = validateCardCapture(global.cards);
+    if (!cards.ok) return cards.error.detail.cause;
   }
-  if (profile.visibleSurface === true && profile.renderPath !== 'deferred')
-    return 'Visible surfaces require the Standard deferred path';
-  if (profile.probePlacement !== undefined) {
-    const placement = profile.probePlacement;
-    if (
-      typeof placement !== 'object' ||
-      placement === null ||
-      Array.isArray(placement) ||
-      Object.keys(placement).some((key) => !['seeds', 'global'].includes(key))
-    )
-      return 'Probe placement requires one seeds/global configuration object';
-    const seeds = placement.seeds;
-    if (profile.renderPath !== 'deferred') return 'Probe placement requires Standard deferred';
-    if (
-      !Array.isArray(seeds) ||
-      seeds.length < 1 ||
-      seeds.length > 4096 ||
-      new Set(seeds.map((seed) => seed?.id)).size !== seeds.length ||
-      seeds.some(
-        (seed) =>
-          typeof seed !== 'object' ||
-          seed === null ||
-          Object.keys(seed).some(
-            (key) => !['id', 'generation', 'position', 'cellSize', 'traced'].includes(key),
-          ) ||
-          ![seed.id, seed.generation].every(
-            (v) => Number.isInteger(v) && v > 0 && v <= 0xffffffff,
-          ) ||
-          typeof seed.traced !== 'boolean' ||
-          !Array.isArray(seed.position) ||
-          seed.position.length !== 3 ||
-          !seed.position.every(
-            (v: unknown) =>
-              typeof v === 'number' && Number.isFinite(Math.fround(v)) && Math.abs(v) < 1e30,
-          ) ||
-          typeof seed.cellSize !== 'number' ||
-          !(Math.fround(seed.cellSize) > 1e-20 && Math.fround(seed.cellSize) < 1e20),
-      )
-    )
-      return 'Probe placement requires 1..4096 unique nonzero u32 seed identities/generations, finite positions, bounded positive cells and explicit traced eligibility';
-    const global = placement.global;
-    if (global !== undefined) {
-      const region = validateGlobalSdfRegion(global, ['rayResolution', 'tMax', 'cards']);
-      if (!region.ok) return region.error.detail.cause;
-      if (
-        !Number.isInteger(global.rayResolution) ||
-        global.rayResolution < 1 ||
-        global.rayResolution > 256 ||
-        seeds.length * global.rayResolution ** 2 > RAY_REFERENCE_LIMIT ||
-        !(Math.fround(global.tMax) >= 2 ** -126 && Math.fround(global.tMax) < 1e30) ||
-        seeds.some((seed) => seed.position.some((v: number) => Math.abs(v) + global.tMax >= 1e30))
-      )
-        return 'Global probes require 1..256 ray texels/axis within the query ray limit and finite normal f32 endpoints';
-      if (global.cards !== undefined) {
-        const cards = validateCardCapture(global.cards);
-        if (!cards.ok) return cards.error.detail.cause;
-      }
-    }
-  }
-  if (profile.diffuseGi !== undefined) {
-    const gi = validateDiffuseGi(profile.diffuseGi);
-    if (!gi.ok) return gi.error.detail.cause;
-    if (profile.renderPath !== 'deferred' || profile.ibl || !profile.pbr)
-      return 'Diffuse GI requires deferred PBR with IBL disabled';
-  }
-  for (const field of ['pbr', 'ibl'] as const) {
-    if (typeof profile[field] !== 'boolean') return `RenderProfile.${field} must be boolean`;
-  }
+  return undefined;
+}
+
+function validateDiffuseGiProfile(profile: RenderProfile): string | undefined {
+  if (profile.diffuseGi === undefined) return undefined;
+  const gi = validateDiffuseGi(profile.diffuseGi);
+  if (!gi.ok) return gi.error.detail.cause;
+  if (profile.renderPath !== 'deferred' || profile.ibl || !profile.pbr)
+    return 'Diffuse GI requires deferred PBR with IBL disabled';
+  return undefined;
+}
+
+function validateSsaoProfile(profile: RenderProfile): string | undefined {
   if (
     typeof profile.ssao !== 'boolean' &&
     (typeof profile.ssao !== 'object' || profile.ssao === null || Array.isArray(profile.ssao))
@@ -780,14 +837,6 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   }
   if (profile.ssao !== false && profile.renderPath !== 'deferred')
     return 'SSAO needs current depth and normals: set renderPath to deferred';
-  const stages = STANDARD_POST_STAGE_NAMES;
-  if (
-    !Array.isArray(profile.postStages) ||
-    profile.postStages.length !== stages.length ||
-    stages.some((stage, index) => profile.postStages[index] !== stage)
-  ) {
-    return 'RenderProfile.postStages must preserve the Standard post stage order';
-  }
   return undefined;
 }
 

@@ -371,6 +371,264 @@ function validateOutputSourceKeys(meta: RunImportMeta): ImportErrorType | undefi
   });
 }
 
+function declaredOutputSourceKeys(meta: RunImportMeta): string[] {
+  return meta.subAssets.flatMap((subAsset) =>
+    subAsset.sourceKey === undefined ? [] : [subAsset.sourceKey],
+  );
+}
+
+function importInputFingerprint(
+  dependencies: ReadonlySet<string>,
+  materialCookFingerprints: readonly string[],
+): string {
+  return `source:${[...dependencies].sort().join('|')}${materialCookFingerprints.length === 0 ? '' : `|native:${materialCookFingerprints.join('|')}`}`;
+}
+
+function finalizationFailure(e: unknown, meta: RunImportMeta): ImportErrorType {
+  const reason = e instanceof Error ? e.message : String(e);
+  return new ImportError({
+    code: 'import-internal-error',
+    expected: `importer "${meta.importer}" finalization to produce complete CookProduct digests`,
+    hint: IMPORT_ERROR_HINTS['import-internal-error'],
+    detail: { reason: `finalization/digest: ${reason}` },
+  });
+}
+
+type ImportStep<T> = { readonly ok: true; readonly value: T } | ReturnType<typeof errResult>;
+
+function sourceOverrideFailure(
+  error: Extract<ReturnType<typeof validateSourceOverrideMap>, { ok: false }>['error'],
+  declaredSourceKeys: readonly string[],
+): ImportErrorType {
+  const failure = new ImportError({
+    code: error.code,
+    expected: error.expected,
+    hint: IMPORT_ERROR_HINTS[error.code],
+    detail: {
+      sourceKey: error.actual,
+      declaredSourceKeys,
+      reason: error.hint,
+    },
+  });
+  if (error.actual !== undefined) {
+    Object.assign(failure, { actual: error.actual });
+  }
+  return failure;
+}
+
+function hostImageDecoder(fs: ImportRunnerFs): ImportContext['decodeImage'] {
+  return (
+    fs.decodeImage ??
+    (async () => {
+      throw new Error(
+        'ImportRunnerFs.decodeImage was not provided; gltfImporter texture extraction requires the host (vite-plugin-pack / cli-gltf / test) to bind decodeImage when constructing the ImportRunnerFs',
+      );
+    })
+  );
+}
+
+function importContextSubAssets(meta: RunImportMeta): ImportContext['subAssets'] {
+  return meta.subAssets.map(({ guid, sourceIndex, sourceKey, kind }) => ({
+    guid,
+    sourceIndex,
+    ...(sourceKey === undefined ? {} : { sourceKey }),
+    kind,
+  }));
+}
+
+/** Admit the importer's untyped return as a structured ImportProduct; malformed shapes throw. */
+function admitImporterResult(imported: unknown, meta: RunImportMeta): ImportStep<ImportProduct> {
+  const result = imported as
+    | { readonly ok: boolean; readonly value?: ImportProduct; readonly error?: ImportErrorType }
+    | undefined;
+  if (result === undefined || result === null || typeof result !== 'object' || !('ok' in result)) {
+    throw new Error(
+      'importer returned a legacy or malformed result; expected ImportResult<ImportProduct>',
+    );
+  }
+  if (!result.ok) {
+    if (result.error === undefined) throw new Error('importer returned an invalid failure result');
+    if (result.error instanceof ImportError) return errResult(result.error);
+    return errResult(
+      new ImportError({
+        code: 'import-internal-error',
+        expected: `importer "${meta.importer}" to return a structured ImportError`,
+        hint: IMPORT_ERROR_HINTS['import-internal-error'],
+        detail: { reason: String(result.error) },
+      }),
+    );
+  }
+  if (result.value === undefined) throw new Error('importer returned an invalid success result');
+  assertImportProductShape(result.value);
+  return { ok: true, value: result.value };
+}
+
+function assertImportProductShape(value: ImportProduct): void {
+  if (
+    value === undefined ||
+    !Array.isArray(value.assets) ||
+    !Array.isArray(value.sourceDependencies) ||
+    'artifacts' in value
+  ) {
+    throw new Error('importer returned an invalid ImportProduct');
+  }
+  for (const asset of value.assets) {
+    if (
+      asset === null ||
+      typeof asset !== 'object' ||
+      !('artifacts' in asset) ||
+      asset.artifacts === null ||
+      typeof asset.artifacts !== 'object' ||
+      Array.isArray(asset.artifacts)
+    ) {
+      throw new Error('importer returned an asset without local artifacts');
+    }
+  }
+}
+
+function importerThrowFailure(e: unknown, meta: RunImportMeta): ImportErrorType {
+  if (e instanceof ImportError) return e;
+  const message = e instanceof Error ? e.message : String(e);
+  // D-5: a module-LOAD failure rides `.detail.loadError`; a conversion THROW
+  // rides `.detail.reason`. Same `import-internal-error` code (no new closed
+  // union member); AI users branch on the `.detail` shape.
+  if (isModuleLoadFailure(e)) {
+    return new ImportError({
+      code: 'import-internal-error',
+      expected: `importer module "${meta.importer}" to load (module + native addon present)`,
+      hint: IMPORT_ERROR_HINTS['import-internal-error'],
+      detail: { loadError: message },
+    });
+  }
+  return new ImportError({
+    code: 'import-internal-error',
+    expected: `importer "${meta.importer}" to convert the source without throwing`,
+    hint: IMPORT_ERROR_HINTS['import-internal-error'],
+    detail: { reason: message },
+  });
+}
+
+type ProducedAsset = ImportProduct['assets'][number];
+
+/** The authored LOD level identity, whichever field the producer used. */
+function lodLevelMeshGuid(level: { readonly mesh?: unknown; readonly meshGuid?: unknown }): string {
+  if (typeof level.meshGuid === 'string') return level.meshGuid;
+  return typeof level.mesh === 'string' ? level.mesh : JSON.stringify(level.mesh);
+}
+
+function meshLodFailure(asset: ProducedAsset, meta: RunImportMeta): ImportErrorType | undefined {
+  if (asset.kind !== 'mesh' || asset.payload === null || typeof asset.payload !== 'object')
+    return undefined;
+  const payload = asset.payload as {
+    readonly lods?: readonly {
+      readonly mesh?: unknown;
+      readonly meshGuid?: unknown;
+      readonly screenCoverage?: unknown;
+    }[];
+    readonly lodHysteresis?: unknown;
+  };
+  if (payload.lods === undefined) return undefined;
+  const lods = payload.lods.map((level) => ({
+    meshGuid: lodLevelMeshGuid(level),
+    screenCoverage: level.screenCoverage,
+  }));
+  const validated = validateMeshLodContract({
+    lods: lods as readonly { meshGuid: string; screenCoverage: number }[],
+    ...(payload.lodHysteresis === undefined
+      ? {}
+      : { lodHysteresis: payload.lodHysteresis as number }),
+  });
+  if (validated.ok) return undefined;
+  return new ImportError({
+    code: validated.error.code,
+    expected: 'MeshAsset LOD facts to satisfy the shared contract',
+    hint: IMPORT_ERROR_HINTS[validated.error.code],
+    detail: {
+      meshLodSourceKey: declarationsSourceKey(meta.subAssets, asset.guid),
+      reason: validated.error.reason,
+      ...(validated.error.code === 'mesh-lod-topology-change'
+        ? {
+            previousIndices: validated.error.previousIndices,
+            nextIndices: validated.error.nextIndices,
+          }
+        : {}),
+    },
+  });
+}
+
+// GUID import-stable iron law: the produced GUID set must be a superset of
+// the declared set, and must not contain any GUID the meta never declared.
+function producedGuidFailure(
+  produced: readonly ProducedAsset[],
+  meta: RunImportMeta,
+): ImportErrorType | undefined {
+  const declared = new Set(meta.subAssets.map((s) => s.guid));
+  const producedGuids = new Set(produced.map((a) => a.guid));
+
+  const unexpectedGuids = [...producedGuids].filter((g) => !declared.has(g));
+  if (unexpectedGuids.length > 0) {
+    return new ImportError({
+      code: 'guid-mismatch',
+      expected: 'every produced GUID to be declared in meta.subAssets[]',
+      hint: IMPORT_ERROR_HINTS['guid-mismatch'],
+      detail: { unexpectedGuids },
+    });
+  }
+
+  const missingGuids = [...declared].filter((g) => !producedGuids.has(g));
+  if (produced.length > 0 && missingGuids.length === 0) return undefined;
+  return new ImportError({
+    code: 'import-produced-no-assets',
+    expected:
+      produced.length === 0
+        ? 'the importer to produce at least one ImportedAsset'
+        : 'the produced GUID set to be a superset of meta.subAssets[]',
+    hint: IMPORT_ERROR_HINTS['import-produced-no-assets'],
+    detail: { missingGuids },
+  });
+}
+
+function materialCookFailure(error: unknown): ImportErrorType {
+  if (error instanceof ImportError) return error;
+  return new ImportError({
+    code: 'import-internal-error',
+    expected: 'the registered material cooker to finish before source publication',
+    hint: 'repair the imported material or its cooker and rebuild the source package',
+    detail: { reason: error instanceof Error ? error.message : String(error) },
+  });
+}
+
+function ddcPackFor(meta: RunImportMeta, assets: readonly ProducedAsset[]): DdcPack {
+  const declarations = new Map(
+    meta.subAssets.map((declaration) => [declaration.guid, declaration]),
+  );
+  return {
+    schemaVersion: '2.0.0',
+    kind: 'internal-text-package',
+    ...(meta.packageId !== undefined ? { packageId: meta.packageId } : {}),
+    ...(meta.provenance !== undefined ? { provenance: meta.provenance } : {}),
+    ...(meta.revision !== undefined ? { revision: meta.revision } : {}),
+    ...(meta.diagnostics !== undefined ? { diagnostics: meta.diagnostics } : {}),
+    assets: assets.map((a) => ({
+      guid: a.guid,
+      kind: a.kind,
+      ...declarationFields(declarations.get(a.guid)),
+      ...(a.name !== undefined ? { name: a.name } : {}),
+      // bug-20260610: mesh / scene / animation-clip payloads carry Float32Array
+      // / Uint16Array / Uint32Array fields. JSON.stringify on a typed array
+      // serialises to `{ "0": v0, "1": v1, ... }` (a plain object), which the
+      // runtime mesh / animation loaders reject (`vertexData instanceof
+      // Float32Array` and `Array.isArray(vertexData)` both fail). Convert
+      // every typed-array field to a plain Array here so the pack is JSON-
+      // roundtrip safe end-to-end.  This matches the convention every
+      // existing pack-fixture test uses (`vertices: Array.from(...)`).
+      payload: normaliseForPack(a.payload as unknown) as Record<string, unknown>,
+      refs: a.refs.map((r) => r.guid),
+      artifacts: a.artifacts,
+    })),
+  };
+}
+
 /**
  * Run the importer for one parsed meta sidecar and produce its DDC.
  *
@@ -405,25 +663,10 @@ export async function runImport(
   const sourceKeyError = validateOutputSourceKeys(meta);
   if (sourceKeyError !== undefined) return errResult(sourceKeyError);
 
-  const declaredSourceKeys = meta.subAssets.flatMap((subAsset) =>
-    subAsset.sourceKey === undefined ? [] : [subAsset.sourceKey],
-  );
+  const declaredSourceKeys = declaredOutputSourceKeys(meta);
   const sourceOverridesResult = validateSourceOverrideMap(meta.sourceOverrides, declaredSourceKeys);
   if (!sourceOverridesResult.ok) {
-    const error = new ImportError({
-      code: sourceOverridesResult.error.code,
-      expected: sourceOverridesResult.error.expected,
-      hint: IMPORT_ERROR_HINTS[sourceOverridesResult.error.code],
-      detail: {
-        sourceKey: sourceOverridesResult.error.actual,
-        declaredSourceKeys,
-        reason: sourceOverridesResult.error.hint,
-      },
-    });
-    if (sourceOverridesResult.error.actual !== undefined) {
-      Object.assign(error, { actual: sourceOverridesResult.error.actual });
-    }
-    return errResult(error);
+    return errResult(sourceOverrideFailure(sourceOverridesResult.error, declaredSourceKeys));
   }
 
   const importer = registry.get(meta.importer);
@@ -488,26 +731,14 @@ export async function runImport(
     };
   };
 
-  const decodeImage: ImportContext['decodeImage'] =
-    fs.decodeImage ??
-    (async () => {
-      throw new Error(
-        'ImportRunnerFs.decodeImage was not provided; gltfImporter texture extraction requires the host (vite-plugin-pack / cli-gltf / test) to bind decodeImage when constructing the ImportRunnerFs',
-      );
-    });
-
+  const decodeImage: ImportContext['decodeImage'] = hostImageDecoder(fs);
   const canonicalSourceOverrides = canonicalizeSourceOverrides(sourceOverridesResult.value);
   const ctx: ImportContext = {
     source: meta.source,
     readSource: () => readSource(meta.source),
     readSibling,
     decodeImage,
-    subAssets: meta.subAssets.map(({ guid, sourceIndex, sourceKey, kind }) => ({
-      guid,
-      sourceIndex,
-      ...(sourceKey === undefined ? {} : { sourceKey }),
-      kind,
-    })),
+    subAssets: importContextSubAssets(meta),
     importSettings: meta.importSettings ?? {},
     ...(canonicalSourceOverrides === undefined
       ? {}
@@ -534,166 +765,21 @@ export async function runImport(
 
   let product: ImportProduct;
   try {
-    const imported = (await importer.import(ctx)) as
-      | { readonly ok: boolean; readonly value?: ImportProduct; readonly error?: ImportErrorType }
-      | undefined;
-    if (
-      imported === undefined ||
-      imported === null ||
-      typeof imported !== 'object' ||
-      !('ok' in imported)
-    ) {
-      throw new Error(
-        'importer returned a legacy or malformed result; expected ImportResult<ImportProduct>',
-      );
-    } else {
-      if (!imported.ok) {
-        if (imported.error === undefined)
-          throw new Error('importer returned an invalid failure result');
-        if (imported.error instanceof ImportError) return errResult(imported.error);
-        return errResult(
-          new ImportError({
-            code: 'import-internal-error',
-            expected: `importer "${meta.importer}" to return a structured ImportError`,
-            hint: IMPORT_ERROR_HINTS['import-internal-error'],
-            detail: { reason: String(imported.error) },
-          }),
-        );
-      }
-      if (imported.value === undefined)
-        throw new Error('importer returned an invalid success result');
-      const value = imported.value;
-      if (
-        value === undefined ||
-        !Array.isArray(value.assets) ||
-        !Array.isArray(value.sourceDependencies) ||
-        'artifacts' in value
-      ) {
-        throw new Error('importer returned an invalid ImportProduct');
-      }
-      for (const asset of value.assets) {
-        if (
-          asset === null ||
-          typeof asset !== 'object' ||
-          !('artifacts' in asset) ||
-          asset.artifacts === null ||
-          typeof asset.artifacts !== 'object' ||
-          Array.isArray(asset.artifacts)
-        ) {
-          throw new Error('importer returned an asset without local artifacts');
-        }
-      }
-      product = value;
-    }
+    const admitted = admitImporterResult(await importer.import(ctx), meta);
+    if (!admitted.ok) return admitted;
+    product = admitted.value;
   } catch (e) {
-    if (e instanceof ImportError) return errResult(e);
-    const message = e instanceof Error ? e.message : String(e);
-    // D-5: a module-LOAD failure rides `.detail.loadError`; a conversion THROW
-    // rides `.detail.reason`. Same `import-internal-error` code (no new closed
-    // union member); AI users branch on the `.detail` shape.
-    if (isModuleLoadFailure(e)) {
-      return errResult(
-        new ImportError({
-          code: 'import-internal-error',
-          expected: `importer module "${meta.importer}" to load (module + native addon present)`,
-          hint: IMPORT_ERROR_HINTS['import-internal-error'],
-          detail: { loadError: message },
-        }),
-      );
-    }
-    return errResult(
-      new ImportError({
-        code: 'import-internal-error',
-        expected: `importer "${meta.importer}" to convert the source without throwing`,
-        hint: IMPORT_ERROR_HINTS['import-internal-error'],
-        detail: { reason: message },
-      }),
-    );
+    return errResult(importerThrowFailure(e, meta));
   }
-
-  const produced = product.assets;
 
   // LOD is a producer-authored MeshAsset fact. Validate it once at the
   // import boundary so malformed coverage never reaches DDC or runtime.
-  for (const asset of produced) {
-    if (asset.kind !== 'mesh' || asset.payload === null || typeof asset.payload !== 'object')
-      continue;
-    const payload = asset.payload as {
-      readonly lods?: readonly {
-        readonly mesh?: unknown;
-        readonly meshGuid?: unknown;
-        readonly screenCoverage?: unknown;
-      }[];
-      readonly lodHysteresis?: unknown;
-    };
-    if (payload.lods === undefined) continue;
-    const lods = payload.lods.map((level) => ({
-      meshGuid:
-        typeof level.meshGuid === 'string'
-          ? level.meshGuid
-          : typeof level.mesh === 'string'
-            ? level.mesh
-            : JSON.stringify(level.mesh),
-      screenCoverage: level.screenCoverage,
-    }));
-    const validated = validateMeshLodContract({
-      lods: lods as readonly { meshGuid: string; screenCoverage: number }[],
-      ...(payload.lodHysteresis === undefined
-        ? {}
-        : { lodHysteresis: payload.lodHysteresis as number }),
-    });
-    if (!validated.ok) {
-      return errResult(
-        new ImportError({
-          code: validated.error.code,
-          expected: 'MeshAsset LOD facts to satisfy the shared contract',
-          hint: IMPORT_ERROR_HINTS[validated.error.code],
-          detail: {
-            meshLodSourceKey: declarationsSourceKey(meta.subAssets, asset.guid),
-            reason: validated.error.reason,
-            ...(validated.error.code === 'mesh-lod-topology-change'
-              ? {
-                  previousIndices: validated.error.previousIndices,
-                  nextIndices: validated.error.nextIndices,
-                }
-              : {}),
-          },
-        }),
-      );
-    }
+  for (const asset of product.assets) {
+    const lodError = meshLodFailure(asset, meta);
+    if (lodError !== undefined) return errResult(lodError);
   }
-
-  // GUID import-stable iron law: the produced GUID set must be a superset of
-  // the declared set, and must not contain any GUID the meta never declared.
-  const declared = new Set(meta.subAssets.map((s) => s.guid));
-  const producedGuids = new Set(produced.map((a) => a.guid));
-
-  const unexpectedGuids = [...producedGuids].filter((g) => !declared.has(g));
-  if (unexpectedGuids.length > 0) {
-    return errResult(
-      new ImportError({
-        code: 'guid-mismatch',
-        expected: 'every produced GUID to be declared in meta.subAssets[]',
-        hint: IMPORT_ERROR_HINTS['guid-mismatch'],
-        detail: { unexpectedGuids },
-      }),
-    );
-  }
-
-  const missingGuids = [...declared].filter((g) => !producedGuids.has(g));
-  if (produced.length === 0 || missingGuids.length > 0) {
-    return errResult(
-      new ImportError({
-        code: 'import-produced-no-assets',
-        expected:
-          produced.length === 0
-            ? 'the importer to produce at least one ImportedAsset'
-            : 'the produced GUID set to be a superset of meta.subAssets[]',
-        hint: IMPORT_ERROR_HINTS['import-produced-no-assets'],
-        detail: { missingGuids },
-      }),
-    );
-  }
+  const guidError = producedGuidFailure(product.assets, meta);
+  if (guidError !== undefined) return errResult(guidError);
 
   let materialCookFingerprints: readonly string[];
   try {
@@ -703,38 +789,19 @@ export async function runImport(
     if (materialCookFingerprints.length > 0)
       for (const path of product.sourceDependencies) dependencies.add(dependencyIdentity(fs, path));
   } catch (error) {
-    if (error instanceof ImportError) return errResult(error);
-    return errResult(
-      new ImportError({
-        code: 'import-internal-error',
-        expected: 'the registered material cooker to finish before source publication',
-        hint: 'repair the imported material or its cooker and rebuild the source package',
-        detail: { reason: error instanceof Error ? error.message : String(error) },
-      }),
-    );
+    return errResult(materialCookFailure(error));
   }
 
-  const declarations = new Map(
-    meta.subAssets.map((declaration) => [declaration.guid, declaration]),
-  );
   const productWithDependencies = {
     ...product,
     sourceDependencies: [...dependencies],
   };
-  const inputFingerprint = `source:${[...dependencies].sort().join('|')}${materialCookFingerprints.length === 0 ? '' : `|native:${materialCookFingerprints.join('|')}`}`;
+  const inputFingerprint = importInputFingerprint(dependencies, materialCookFingerprints);
   let cookProducts: readonly CookProduct[];
   try {
     cookProducts = await finalizeImportProducts(productWithDependencies, inputFingerprint);
   } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return errResult(
-      new ImportError({
-        code: 'import-internal-error',
-        expected: `importer "${meta.importer}" finalization to produce complete CookProduct digests`,
-        hint: IMPORT_ERROR_HINTS['import-internal-error'],
-        detail: { reason: `finalization/digest: ${reason}` },
-      }),
-    );
+    return errResult(finalizationFailure(e, meta));
   }
   const terminalProduct = createImportProduct({
     ...productWithDependencies,
@@ -768,36 +835,7 @@ export async function runImport(
     };
   }
 
-  const assets = productWithDependencies.assets.map((a) => {
-    const outputFields = declarationFields(declarations.get(a.guid));
-    return {
-      guid: a.guid,
-      kind: a.kind,
-      ...outputFields,
-      ...(a.name !== undefined ? { name: a.name } : {}),
-      // bug-20260610: mesh / scene / animation-clip payloads carry Float32Array
-      // / Uint16Array / Uint32Array fields. JSON.stringify on a typed array
-      // serialises to `{ "0": v0, "1": v1, ... }` (a plain object), which the
-      // runtime mesh / animation loaders reject (`vertexData instanceof
-      // Float32Array` and `Array.isArray(vertexData)` both fail). Convert
-      // every typed-array field to a plain Array here so the pack is JSON-
-      // roundtrip safe end-to-end.  This matches the convention every
-      // existing pack-fixture test uses (`vertices: Array.from(...)`).
-      payload: normaliseForPack(a.payload as unknown) as Record<string, unknown>,
-      refs: a.refs.map((r) => r.guid),
-      artifacts: a.artifacts,
-    };
-  });
-
-  const pack: DdcPack = {
-    schemaVersion: '2.0.0',
-    kind: 'internal-text-package',
-    ...(meta.packageId !== undefined ? { packageId: meta.packageId } : {}),
-    ...(meta.provenance !== undefined ? { provenance: meta.provenance } : {}),
-    ...(meta.revision !== undefined ? { revision: meta.revision } : {}),
-    ...(meta.diagnostics !== undefined ? { diagnostics: meta.diagnostics } : {}),
-    assets,
-  };
+  const pack = ddcPackFor(meta, productWithDependencies.assets);
 
   return {
     ok: true,

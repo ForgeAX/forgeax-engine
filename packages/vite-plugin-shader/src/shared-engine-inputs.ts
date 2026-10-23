@@ -11,10 +11,12 @@ import {
 } from '@forgeax/engine-shader';
 import { SURFACE_SLOT_MODULE } from './engine-inputs/load-engine-shader-entries.js';
 import {
-  engineShaderSourceDigest,
-  PACKAGED_SOURCE_RECORD,
-  type PackagedSourceRecord,
-} from './engine-inputs/source-digest.js';
+  decodePackagedProfiles,
+  PACKAGED_PROFILES_FILE,
+  type PackagedProfiles,
+  packagedProfilePublication,
+} from './engine-inputs/packaged-profiles.js';
+import { engineShaderSourceDigest } from './engine-inputs/source-digest.js';
 import type { ShaderManifestPublication } from './manifest-publication.js';
 
 export interface ShaderManifestInput extends Omit<ManifestEntry, 'glsl'> {
@@ -83,9 +85,12 @@ const reportedStaleProfiles = new Set<string>();
 type PackagedEngineShaderInputs = ReturnType<typeof readNodePublication> & {
   readonly imports: Record<string, string>;
 };
-// One current publication per physical base/point profile. A server owns its
-// authored state, while Editor, cancelled Play and replacement Play consume
-// the same immutable engine fleet. Replaced profile bytes retire this entry.
+// One decoded container and one current publication per physical base/point
+// profile. A server owns its authored state, while Editor, cancelled Play and
+// replacement Play consume the same immutable engine fleet. A profile entry is
+// reused only for the container digest it was verified from.
+let packagedContainer: { readonly digest: string; readonly container: PackagedProfiles } | null =
+  null;
 const packagedEngineInputs = new Map<
   string,
   { readonly digest: string; readonly input: PackagedEngineShaderInputs }
@@ -98,25 +103,17 @@ const packagedEngineInputs = new Map<
  * bindings no longer match the renderer, so any mismatch compiles from source.
  */
 export function packagedProfileMatchesSource(
-  inputRoot: string,
+  recordedDigest: string | undefined,
   shaderSourceRoot: string | undefined,
+  label: string,
 ): boolean {
-  let recorded: string | undefined;
-  try {
-    const record = JSON.parse(
-      readFileSync(resolve(inputRoot, PACKAGED_SOURCE_RECORD), 'utf8'),
-    ) as Partial<PackagedSourceRecord>;
-    recorded = record.shaderSourceDigest;
-  } catch {
-    recorded = undefined;
-  }
   const current =
     shaderSourceRoot === undefined ? undefined : engineShaderSourceDigest(shaderSourceRoot);
-  if (recorded !== undefined && recorded === current) return true;
-  if (!reportedStaleProfiles.has(inputRoot)) {
-    reportedStaleProfiles.add(inputRoot);
+  if (recordedDigest !== undefined && recordedDigest === current) return true;
+  if (!reportedStaleProfiles.has(label)) {
+    reportedStaleProfiles.add(label);
     console.warn(
-      `[forgeax-shader] packaged engine shader profile ${inputRoot} was not prepared from the current engine WGSL sources; compiling engine shaders from source. Re-prepare or delete the profile to silence this.`,
+      `[forgeax-shader] packaged engine shader profile ${label} was not prepared from the current engine WGSL sources; compiling engine shaders from source. Re-prepare or delete the profile to silence this.`,
     );
   }
   return false;
@@ -135,11 +132,9 @@ export function loadPackagedEngineShaderInputs(
     return null;
   }
   // SSAO is an independent utility entry, not a material compilation axis.
-  const profile = `${pointShadows ? 'point' : 'base'}-ssao`;
-  const inputRoot = resolve(packageRoot, 'dist/engine-inputs', profile);
-  const manifestPath = resolve(inputRoot, 'manifest.json');
-  const importsPath = resolve(inputRoot, 'imports.json');
-  if (!existsSync(manifestPath) || !existsSync(importsPath)) return null;
+  const profile = pointShadows ? 'point-ssao' : 'base-ssao';
+  const containerPath = resolve(packageRoot, 'dist/engine-inputs', PACKAGED_PROFILES_FILE);
+  if (!existsSync(containerPath)) return null;
   let shaderSourceRoot: string | undefined;
   try {
     shaderSourceRoot = resolve(
@@ -149,55 +144,51 @@ export function loadPackagedEngineShaderInputs(
   } catch {
     shaderSourceRoot = undefined;
   }
-  if (!packagedProfileMatchesSource(inputRoot, shaderSourceRoot)) return null;
-  const manifestBytes = readFileSync(manifestPath);
-  const importBytes = readFileSync(importsPath);
-  const digest = createHash('sha256')
-    .update(manifestBytes)
-    .update('\0')
-    .update(importBytes)
-    .digest('hex');
-  const cached = packagedEngineInputs.get(inputRoot);
+  const bytes = readFileSync(containerPath);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  if (packagedContainer?.digest !== digest) {
+    const container = decodePackagedProfiles(bytes);
+    // A container from another transport producer is stale even when its WGSL
+    // digest is unchanged. Keep the existing complete source-build fallback.
+    if (container === undefined) {
+      console.warn(
+        `[forgeax-shader] packaged profile container version is obsolete: ${containerPath}; compiling from source`,
+      );
+      return null;
+    }
+    packagedContainer = { digest, container };
+  }
+  const { container } = packagedContainer;
+  const label = `${containerPath}#${profile}`;
+  if (!packagedProfileMatchesSource(container.shaderSourceDigest, shaderSourceRoot, label)) {
+    return null;
+  }
+  const cached = packagedEngineInputs.get(profile);
   if (cached?.digest === digest) {
     return {
       ...cached.input,
       entries: projectOptionalEngineEntries(cached.input.entries, hdrpSsao),
     };
   }
-  const publication = JSON.parse(manifestBytes.toString('utf8'));
-  // A profile prepared by an older transport producer is stale even when its
-  // WGSL digest is unchanged. Keep the existing complete source-build fallback.
+  const publication = packagedProfilePublication(container, profile);
+  if (publication === undefined) return null;
   if (
     publication.schemaVersion !== SHADER_MANIFEST_PUBLICATION_VERSION ||
     !Array.isArray(publication.receipts)
   ) {
     console.warn(
-      `[forgeax-shader] packaged publication version is obsolete: ${manifestPath}; compiling from source`,
+      `[forgeax-shader] packaged publication version is obsolete: ${label}; compiling from source`,
     );
     return null;
   }
   const manifest = readNodePublication(publication);
-  const imports = JSON.parse(importBytes.toString('utf8')) as Record<string, string>;
-  if (manifest.entries === undefined || manifest.materialShaders === undefined) {
-    throw new Error(`packaged engine shader manifest is incomplete: ${manifestPath}`);
-  }
-  if (
-    !hasUsablePackagedEngineShaderInputs(
-      manifest as {
-        readonly entries: ShaderManifestInput[];
-        readonly materialShaders: MaterialShaderManifestEntry[];
-      },
-    )
-  ) {
-    return null;
-  }
+  const imports = container.imports;
+  if (!hasUsablePackagedEngineShaderInputs(manifest)) return null;
   if (typeof imports[SURFACE_SLOT_MODULE] !== 'string') {
-    throw new Error(
-      `packaged engine shader imports are missing ${SURFACE_SLOT_MODULE}: ${importsPath}`,
-    );
+    throw new Error(`packaged engine shader imports are missing ${SURFACE_SLOT_MODULE}: ${label}`);
   }
   const input = { ...manifest, imports };
-  packagedEngineInputs.set(inputRoot, { digest, input });
+  packagedEngineInputs.set(profile, { digest, input });
   return {
     entries: projectOptionalEngineEntries(manifest.entries, hdrpSsao),
     materialShaders: manifest.materialShaders,

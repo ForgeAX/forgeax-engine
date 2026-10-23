@@ -1105,6 +1105,12 @@ describe('SDK verifier template contract', () => {
     expect(candidateWorkflow).not.toContain('FORGEAX_BROWSER_CI_LIGHTWEIGHT');
     expect(candidateWorkflow).not.toContain('quick');
     expect(promotionWorkflow).toContain('candidate_run_id:');
+    // An rc Promotion prepares its stable Candidate beside rc publication, and
+    // only an explicit stable Promotion fast-forwards `stable`.
+    expect(promotionWorkflow).toMatch(/prepare-stable-candidate:\n {4}needs: resolve-candidate\n/);
+    expect(promotionWorkflow).toContain('actions/workflows/sdk-release-candidate.yml/dispatches');
+    expect(promotionWorkflow).toContain(`git push origin "\${SOURCE_SHA}:refs/heads/stable"`);
+    expect(promotionWorkflow).not.toMatch(/git push (--force|-f)/);
     expect(promotionWorkflow).toContain('sdk-candidate.mjs verify');
     expect(promotionWorkflow).toContain('--candidate "$RUNNER_TEMP/sdk-candidate"');
     expect(promotionWorkflow).toContain('NPM_CONFIG_LOGLEVEL: error');

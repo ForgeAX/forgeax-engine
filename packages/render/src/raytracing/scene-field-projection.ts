@@ -135,11 +135,17 @@ export interface SceneFieldDeformingSource {
   readonly slot: number;
 }
 
+type FieldBudget = { readonly maxInstances: number; readonly maxFieldBytes: number };
+type FieldSceneSource = RenderSceneSlot['snapshot'];
+type FieldDraw = NonNullable<FieldSceneSource['gpuDrivenDraws']>[number];
+type FieldSection = MeshAsset['submeshes'][number];
+type FieldMaterial = SceneFieldSource['materials'][number];
+
 /** Complete CPU projection only: no camera filtering, device work, cache or publication. */
 export function projectSceneFields(
   slots: FrameList<RenderSceneSlot>,
   worlds: readonly RenderResourceScope[],
-  budget: { readonly maxInstances: number; readonly maxFieldBytes: number },
+  budget: FieldBudget,
   assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ): Result<
@@ -152,38 +158,53 @@ export function projectSceneFields(
 > {
   const admittedBudget = validateSceneFieldBudget(budget);
   if (!admittedBudget.ok) return admittedBudget;
-  const instances: SdfMeshInstance[] = [],
-    sources: SceneFieldSource[] = [],
-    deforming: SceneFieldDeformingSource[] = [];
-  const fields = new Map<AttachedField, AttachedField>(),
-    meshes = new Map<MeshAsset, number>();
-  const seenSlots = new Set<number>(),
-    seenEntities = new Set<string>();
-  let fieldBytes = 0;
+  const projector = new SceneFieldProjector(worlds, budget, assets, frame);
   for (const slot of [...slots].sort((a, b) => a.slot - b.slot)) {
+    const failure = projector.admitSlot(slot);
+    if (failure !== undefined) return failure;
+  }
+  return ok({
+    instances: projector.instances,
+    sources: projector.sources,
+    deforming: projector.deforming,
+  });
+}
+
+/** One complete projection roster with its unique geometry, field and owner indices. */
+class SceneFieldProjector {
+  readonly instances: SdfMeshInstance[] = [];
+  readonly sources: SceneFieldSource[] = [];
+  readonly deforming: SceneFieldDeformingSource[] = [];
+  private readonly fields = new Map<AttachedField, AttachedField>();
+  private readonly meshes = new Map<MeshAsset, number>();
+  private readonly seenSlots = new Set<number>();
+  private readonly seenEntities = new Set<string>();
+  private fieldBytes = 0;
+
+  constructor(
+    private readonly worlds: readonly RenderResourceScope[],
+    private readonly budget: FieldBudget,
+    private readonly assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
+    private readonly frame:
+      | { readonly materials: MaterialFrame; readonly meshes: MeshFrame }
+      | undefined,
+  ) {}
+
+  /** Admit one scene slot; returns the first failure, if any. */
+  admitSlot(slot: RenderSceneSlot): Result<never, RayReferenceError> | undefined {
     const source = slot.snapshot;
-    if (source.glyph !== undefined) continue;
+    if (source.glyph !== undefined) return undefined;
     if (source.assetHandle === undefined)
       return rayReferenceFailure('retained field has no Mesh source');
-    const geometry = frame?.meshes.get(slot.worldId, source.assetHandle);
+    const geometry = this.frame?.meshes.get(slot.worldId, source.assetHandle);
     const bindings =
       geometry === undefined
         ? source
         : effectiveMeshMaterials(source, geometry, meshMaterialGeometry(source));
-    if (source.authorVisible === false) continue;
-    if (
-      ![slot.slot, slot.generation, slot.worldId, slot.entityKey].every(
-        (v) => Number.isInteger(v) && v >= 0 && v <= 0xffff_ffff,
-      ) ||
-      source.worldId !== slot.worldId ||
-      source.entityKey !== slot.entityKey ||
-      seenSlots.has(slot.slot) ||
-      seenEntities.has(`${slot.worldId}:${slot.entityKey}`)
-    )
-      return rayReferenceFailure('retained field requires unique, matching scene owner identities');
-    seenSlots.add(slot.slot);
-    seenEntities.add(`${slot.worldId}:${slot.entityKey}`);
-    const scope = worlds[slot.worldId];
+    if (source.authorVisible === false) return undefined;
+    const identity = this.admitOwnerIdentity(slot);
+    if (identity !== undefined) return identity;
+    const scope = this.worlds[slot.worldId];
     if (scope === undefined)
       return rayReferenceFailure('retained field has no matching resource scope');
     const assetRevision = scope.assetRevision(source.assetHandle);
@@ -194,31 +215,75 @@ export function projectSceneFields(
       );
     const mesh = resolved.value,
       field = mesh.distanceField;
-    if (
-      source.skinBinding !== undefined ||
-      source.morph !== undefined ||
-      mesh.morphWeights !== undefined ||
-      mesh.morphTargets !== undefined
-    ) {
-      deforming.push({ worldId: slot.worldId, entityKey: slot.entityKey, slot: slot.slot });
-      continue;
+    if (isDeformingFieldSource(source, mesh)) {
+      this.deforming.push({ worldId: slot.worldId, entityKey: slot.entityKey, slot: slot.slot });
+      return undefined;
     }
     if (field === undefined)
       return rayReferenceFailure(
         'retained mesh has no admitted distance field; rebuild its producer',
       );
-    if (
-      source.spriteInstances !== undefined ||
-      source.pointsLines !== undefined ||
-      slot.pointsLines !== undefined ||
-      (source.lods?.length ?? 0) > 0 ||
-      (mesh.lods?.length ?? 0) > 0
-    )
+    if (hasUnqualifiedFieldGeometry(slot, mesh))
       return rayReferenceFailure(
         'retained fields require base meshes without LOD, sprites or points/lines',
       );
     const count = source.instances?.instanceCount ?? 1;
-    if (!Number.isSafeInteger(count) || count < 1 || count > budget.maxInstances - instances.length)
+    const roster = this.instanceRosterFailure(source, count);
+    if (roster !== undefined) return roster;
+    const geometryId = this.admitGeometry(mesh, field);
+    if (!geometryId.ok) return geometryId;
+    const fieldSnapshot = this.admitFieldSnapshot(field);
+    if (!fieldSnapshot.ok) return fieldSnapshot;
+    const materials = this.sectionMaterials(source, bindings, mesh, field, scope);
+    if (!materials.ok) return materials;
+    const firstInstance = this.instances.length;
+    const placed = this.placeInstances(source, count, geometryId.value, fieldSnapshot.value);
+    if (placed !== undefined) return placed;
+    this.sources.push({
+      worldId: slot.worldId,
+      entityKey: slot.entityKey,
+      slot: slot.slot,
+      generation: slot.generation,
+      scope,
+      assetHandle: source.assetHandle,
+      assetRevision,
+      mesh,
+      field,
+      fieldSnapshot: fieldSnapshot.value,
+      firstInstance,
+      instances: detachedInstanceIdentity(source),
+      materials: materials.value,
+    });
+    return undefined;
+  }
+
+  private admitOwnerIdentity(slot: RenderSceneSlot): Result<never, RayReferenceError> | undefined {
+    const source = slot.snapshot;
+    const entity = `${slot.worldId}:${slot.entityKey}`;
+    if (
+      ![slot.slot, slot.generation, slot.worldId, slot.entityKey].every(
+        (v) => Number.isInteger(v) && v >= 0 && v <= 0xffff_ffff,
+      ) ||
+      source.worldId !== slot.worldId ||
+      source.entityKey !== slot.entityKey ||
+      this.seenSlots.has(slot.slot) ||
+      this.seenEntities.has(entity)
+    )
+      return rayReferenceFailure('retained field requires unique, matching scene owner identities');
+    this.seenSlots.add(slot.slot);
+    this.seenEntities.add(entity);
+    return undefined;
+  }
+
+  private instanceRosterFailure(
+    source: FieldSceneSource,
+    count: number,
+  ): Result<never, RayReferenceError> | undefined {
+    if (
+      !Number.isSafeInteger(count) ||
+      count < 1 ||
+      count > this.budget.maxInstances - this.instances.length
+    )
       return rayReferenceFailure(
         'complete retained field roster exceeds its instance budget',
         true,
@@ -233,208 +298,166 @@ export function projectSceneFields(
       return rayReferenceFailure(
         'retained instances require complete matrices and unique nonzero owner generations',
       );
-    let geometryId = meshes.get(mesh);
-    if (geometryId === undefined) {
-      const validSource = meshDistanceFieldSource(mesh, {
-        sectionSidedness: field.sectionSidedness,
-      });
-      if (!validSource.ok) return rayReferenceFailure(validSource.error.detail.reason);
-      geometryId = meshes.size;
-      meshes.set(mesh, geometryId);
-    }
-    let fieldSnapshot = fields.get(field);
-    if (fieldSnapshot === undefined) {
-      const artifact = field.artifact,
-        codec = artifact?.assetCodec;
-      if (
-        artifact?.integrity.algorithm !== 'sha256' ||
-        !/^sha256:[a-f0-9]{64}$/.test(artifact.integrity.digest) ||
-        codec?.name !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.name ||
-        codec.version !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.version ||
-        codec.profile !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.profile ||
-        codec.container !== undefined ||
-        field.policy.kind !== 'sampled-visibility'
-      )
-        return rayReferenceFailure(
-          'retained field requires its admitted sampled-visibility artifact Integrity and Codec',
-        );
-      const valid = validateMeshDistanceField(field);
-      if (!valid.ok) return rayReferenceFailure(valid.error.detail.reason);
-      const bytes = field.bricks.byteLength + field.values.byteLength;
-      if (bytes > budget.maxFieldBytes - fieldBytes)
-        return rayReferenceFailure(
-          'complete unique retained field snapshots exceed the byte budget',
-          true,
-        );
-      fieldBytes += bytes;
-      fieldSnapshot = structuredClone(field);
-      fields.set(field, fieldSnapshot);
-    }
-    const materials: SceneFieldSource['materials'][number][] = [];
+    return undefined;
+  }
+
+  private admitGeometry(mesh: MeshAsset, field: AttachedField): Result<number, RayReferenceError> {
+    const known = this.meshes.get(mesh);
+    if (known !== undefined) return ok(known);
+    const validSource = meshDistanceFieldSource(mesh, {
+      sectionSidedness: field.sectionSidedness,
+    });
+    if (!validSource.ok) return rayReferenceFailure(validSource.error.detail.reason);
+    const geometryId = this.meshes.size;
+    this.meshes.set(mesh, geometryId);
+    return ok(geometryId);
+  }
+
+  /** One detached snapshot per unique admitted field, within the byte budget. */
+  private admitFieldSnapshot(field: AttachedField): Result<AttachedField, RayReferenceError> {
+    const known = this.fields.get(field);
+    if (known !== undefined) return ok(known);
+    if (!hasAdmittedFieldArtifact(field))
+      return rayReferenceFailure(
+        'retained field requires its admitted sampled-visibility artifact Integrity and Codec',
+      );
+    const valid = validateMeshDistanceField(field);
+    if (!valid.ok) return rayReferenceFailure(valid.error.detail.reason);
+    const bytes = field.bricks.byteLength + field.values.byteLength;
+    if (bytes > this.budget.maxFieldBytes - this.fieldBytes)
+      return rayReferenceFailure(
+        'complete unique retained field snapshots exceed the byte budget',
+        true,
+      );
+    this.fieldBytes += bytes;
+    const snapshot = structuredClone(field);
+    this.fields.set(field, snapshot);
+    return ok(snapshot);
+  }
+
+  private sectionMaterials(
+    source: FieldSceneSource,
+    bindings: Pick<FieldSceneSource, 'material' | 'materials'>,
+    mesh: MeshAsset,
+    field: AttachedField,
+    scope: RenderResourceScope,
+  ): Result<FieldMaterial[], RayReferenceError> {
+    const draws = sectionDraws(source, mesh);
+    if (!draws.ok) return draws;
+    const materials: FieldMaterial[] = [];
     let first = 0;
-    // Draws may be absent or filtered by backend preparation. Actual Mesh
-    // sections own coverage; present draw ranges can only contradict it.
-    const draws = new Map<number, NonNullable<typeof source.gpuDrivenDraws>[number]>();
-    for (const [index, draw] of (source.gpuDrivenDraws ?? []).entries()) {
-      const section = gpuDrivenSourceDrawItemIndex(draw, index);
-      if (
-        !Number.isInteger(section) ||
-        section < 0 ||
-        section >= mesh.submeshes.length ||
-        draws.has(section)
-      )
-        return rayReferenceFailure('retained draw has no unique actual mesh section');
-      draws.set(section, draw);
-    }
     for (const [sectionIndex, section] of mesh.submeshes.entries()) {
       const resource = bindings.materials[section.materialSlot] ?? bindings.material;
-      const material = frame?.materials.get(resource)?.snapshot ?? resource.snapshot,
-        handle = material.materialHandle;
-      if (
-        !Number.isInteger(section.materialSlot) ||
-        section.materialSlot < 0 ||
-        material === undefined ||
-        handle === undefined
-      )
-        return rayReferenceFailure(
-          'every actual mesh section must resolve its effective material slot',
-        );
-      const shared = handle as AssetHandle<'material'>;
-      const payload = scope.resolveAsset<MaterialAsset>(shared);
-      if (!payload.ok || payload.value.kind !== 'material')
-        return rayReferenceFailure(
-          'retained field material handle is unavailable in its resource scope',
-        );
-      const projection = assets.getMaterialProjectionForPayload(payload.value);
-      if (
-        !isNativePlacementMaterial(material, projection, payload.value) ||
-        (material.surfaceModel !== undefined && material.surfaceModel !== 'standard')
-      )
-        return rayReferenceFailure(
-          'retained field requires accepted native Standard material provenance',
-        );
-      const passes = projection?.passes ?? payload.value.passes ?? [];
-      const color = passes.filter(
-        (pass) =>
-          !/shadow|depth/i.test(
-            String(
-              (pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined)
-                ?.LightMode ?? pass.name,
-            ),
-          ),
-      );
-      const values = {
-        ...Object.fromEntries(
-          (payload.value.parameters ?? []).map((parameter) => [
-            parameter.name,
-            'default' in parameter ? parameter.default : undefined,
-          ]),
-        ),
-        ...payload.value.values,
-      };
-      const coverage = admitRayMaterialValues(values, String(handle), 'retained-mesh-field');
-      if (!coverage.ok) return rayReferenceFailure(coverage.error.detail.requirement);
-      const scalar = (name: string, fallback: number) =>
-        values[name] === undefined
-          ? fallback
-          : typeof values[name] === 'number'
-            ? values[name]
-            : NaN;
-      const alphaCutoff = scalar('alphaCutoff', 0),
-        displacementScale = scalar('displacementScale', 1),
-        displacementBias = scalar('displacementBias', 0);
-      const clipping = values.clippingControl;
-      const clipped = (value: unknown) =>
-        value !== undefined && (!Array.isArray(value) || value[0] !== 0);
-      const actualDisplacement = standardDisplacementRadius([
-        {
-          ...material,
-          standardTextureMask: materialStandardTextureMask(
-            payload.value.parameters,
-            'forgeax::default-standard-pbr',
-            values,
-          ),
-          paramSnapshot: { displacementScale, displacementBias },
-        },
-      ]);
-      if (
-        material.transparent === true ||
-        material.renderState?.blend !== undefined ||
-        color.some((pass) => pass.renderState?.blend !== undefined) ||
-        standardDisplacementRadius([material]) !== 0 ||
-        actualDisplacement !== 0 ||
-        clipped(clipping) ||
-        clipped(material.paramSnapshot?.clippingControl) ||
-        !Number.isFinite(alphaCutoff) ||
-        alphaCutoff < 0 ||
-        alphaCutoff > 1
-      )
-        return rayReferenceFailure(
-          'retained field rejects transparent, displaced or locally clipped material coverage',
-        );
-      const sidedness = field.sectionSidedness[sectionIndex];
-      for (const state of [material.renderState, ...color.map((pass) => pass.renderState)]) {
-        const cull = state?.cullMode ?? 'back';
-        if ((cull !== 'back' && cull !== 'none') || Number(cull === 'none') !== sidedness)
-          return rayReferenceFailure(
-            'retained material sidedness differs from its cooked whole-mesh field; recook the producer',
-          );
-      }
-      const draw = draws.get(sectionIndex);
-      const offset = mesh.indices === undefined ? first : section.indexOffset;
-      const elements = mesh.indices === undefined ? section.vertexCount : section.indexCount;
-      if (
-        draw !== undefined &&
-        (gpuDrivenSourceDrawItemIndex(draw, sectionIndex) !== sectionIndex ||
-          draw.kind !== (mesh.indices === undefined ? 'non-indexed' : 'indexed') ||
-          draw.topology !== section.topology ||
-          draw.materialSlot !== section.materialSlot ||
-          draw.first !== offset ||
-          draw.count !== elements ||
-          draw.baseVertex !== 0 ||
-          (draw.lodRanges?.length ?? 0) > 0)
-      )
+      const material = this.sectionMaterial(resource, section, field, sectionIndex, scope);
+      if (!material.ok) return material;
+      const draw = draws.value.get(sectionIndex);
+      if (draw !== undefined && !drawMatchesSection(draw, sectionIndex, mesh, section, first))
         return rayReferenceFailure(
           'retained draw subset or range disagrees with its actual whole-mesh field',
         );
       first += section.vertexCount;
-      const {
+      materials.push(material.value);
+    }
+    return ok(materials);
+  }
+
+  /** Resolve and qualify one section's effective native Standard material. */
+  private sectionMaterial(
+    resource: MaterialResource,
+    section: FieldSection,
+    field: AttachedField,
+    sectionIndex: number,
+    scope: RenderResourceScope,
+  ): Result<FieldMaterial, RayReferenceError> {
+    const material = this.frame?.materials.get(resource)?.snapshot ?? resource.snapshot,
+      handle = material.materialHandle;
+    if (
+      !Number.isInteger(section.materialSlot) ||
+      section.materialSlot < 0 ||
+      material === undefined ||
+      handle === undefined
+    )
+      return rayReferenceFailure(
+        'every actual mesh section must resolve its effective material slot',
+      );
+    const payload = scope.resolveAsset<MaterialAsset>(handle as AssetHandle<'material'>);
+    if (!payload.ok || payload.value.kind !== 'material')
+      return rayReferenceFailure(
+        'retained field material handle is unavailable in its resource scope',
+      );
+    const projection = this.assets.getMaterialProjectionForPayload(payload.value);
+    if (
+      !isNativePlacementMaterial(material, projection, payload.value) ||
+      (material.surfaceModel !== undefined && material.surfaceModel !== 'standard')
+    )
+      return rayReferenceFailure(
+        'retained field requires accepted native Standard material provenance',
+      );
+    const color = (projection?.passes ?? payload.value.passes ?? []).filter((pass) =>
+      isColorPass(pass),
+    );
+    const values = materialFieldValues(payload.value);
+    const coverage = admitRayMaterialValues(values, String(handle), 'retained-mesh-field');
+    if (!coverage.ok) return rayReferenceFailure(coverage.error.detail.requirement);
+    const alphaCutoff = materialScalar(values, 'alphaCutoff', 0),
+      displacementScale = materialScalar(values, 'displacementScale', 1),
+      displacementBias = materialScalar(values, 'displacementBias', 0);
+    const clipping = values.clippingControl;
+    if (
+      rejectsOpaqueCoverage(material, color, clipping) ||
+      displacedCoverage(material, payload.value, values, displacementScale, displacementBias) ||
+      !isUnitInterval(alphaCutoff)
+    )
+      return rayReferenceFailure(
+        'retained field rejects transparent, displaced or locally clipped material coverage',
+      );
+    if (!matchesFieldSidedness(material, color, field.sectionSidedness[sectionIndex]))
+      return rayReferenceFailure(
+        'retained material sidedness differs from its cooked whole-mesh field; recook the producer',
+      );
+    const {
+      materialShaderId,
+      materialProgramKeys,
+      materialSurfacePrograms,
+      renderState,
+      paramSnapshot,
+      textureHandles,
+      textureCoordinates,
+    } = material;
+    return ok({
+      resource,
+      materialSlot: section.materialSlot,
+      handle,
+      payload: payload.value,
+      projection,
+      alphaCoverageOmitted: alphaCutoff > 0,
+      snapshot: material,
+      facts: structuredClone({
         materialShaderId,
         materialProgramKeys,
         materialSurfacePrograms,
         renderState,
-        paramSnapshot,
+        paramSnapshot: {
+          ...paramSnapshot,
+          alphaCutoff,
+          displacementScale,
+          displacementBias,
+          ...(Array.isArray(clipping) ? { clippingControl: clipping } : {}),
+        },
         textureHandles,
         textureCoordinates,
-      } = material;
-      materials.push({
-        resource,
-        materialSlot: section.materialSlot,
-        handle,
-        payload: payload.value,
-        projection,
-        alphaCoverageOmitted: alphaCutoff > 0,
-        snapshot: material,
-        facts: structuredClone({
-          materialShaderId,
-          materialProgramKeys,
-          materialSurfacePrograms,
-          renderState,
-          paramSnapshot: {
-            ...paramSnapshot,
-            alphaCutoff,
-            displacementScale,
-            displacementBias,
-            ...(Array.isArray(clipping) ? { clippingControl: clipping } : {}),
-          },
-          textureHandles,
-          textureCoordinates,
-        }),
-      });
-    }
+      }),
+    });
+  }
+
+  private placeInstances(
+    source: FieldSceneSource,
+    count: number,
+    geometryId: number,
+    fieldSnapshot: AttachedField,
+  ): Result<never, RayReferenceError> | undefined {
     const root = fieldTransform(source.transform.world);
     if (!root.ok) return root;
-    const firstInstance = instances.length;
     for (let ordinal = 0; ordinal < count; ordinal++) {
       const transform =
         source.instances === undefined
@@ -447,39 +470,195 @@ export function projectSceneFields(
               ),
             );
       if (!transform.ok) return transform;
-      instances.push({
-        instanceId: instances.length,
+      this.instances.push({
+        instanceId: this.instances.length,
         geometryId,
         mask: 255,
         transform: transform.value,
         field: fieldSnapshot,
       });
     }
-    const {
-      transforms: _transforms,
-      dirtyRanges: _dirty,
-      ...identity
-    } = source.instances ?? { transforms: undefined, dirtyRanges: undefined };
-    sources.push({
-      worldId: slot.worldId,
-      entityKey: slot.entityKey,
-      slot: slot.slot,
-      generation: slot.generation,
-      scope,
-      assetHandle: source.assetHandle,
-      assetRevision,
-      mesh,
-      field,
-      fieldSnapshot,
-      firstInstance,
-      instances:
-        source.instances === undefined
-          ? undefined
-          : (structuredClone(identity) as Omit<InstancesSnapshot, 'transforms' | 'dirtyRanges'>),
-      materials,
-    });
+    return undefined;
   }
-  return ok({ instances, sources, deforming });
+}
+
+/** Skinned or morphed sources have no rest-pose field that stays valid while animating. */
+function isDeformingFieldSource(source: FieldSceneSource, mesh: MeshAsset): boolean {
+  return (
+    source.skinBinding !== undefined ||
+    source.morph !== undefined ||
+    mesh.morphWeights !== undefined ||
+    mesh.morphTargets !== undefined
+  );
+}
+
+function hasUnqualifiedFieldGeometry(slot: RenderSceneSlot, mesh: MeshAsset): boolean {
+  const source = slot.snapshot;
+  return (
+    source.spriteInstances !== undefined ||
+    source.pointsLines !== undefined ||
+    slot.pointsLines !== undefined ||
+    (source.lods?.length ?? 0) > 0 ||
+    (mesh.lods?.length ?? 0) > 0
+  );
+}
+
+function hasAdmittedFieldArtifact(field: AttachedField): boolean {
+  const artifact = field.artifact,
+    codec = artifact?.assetCodec;
+  return (
+    artifact?.integrity.algorithm === 'sha256' &&
+    /^sha256:[a-f0-9]{64}$/.test(artifact.integrity.digest) &&
+    codec?.name === MESH_VISIBILITY_DISTANCE_FIELD_CODEC.name &&
+    codec.version === MESH_VISIBILITY_DISTANCE_FIELD_CODEC.version &&
+    codec.profile === MESH_VISIBILITY_DISTANCE_FIELD_CODEC.profile &&
+    codec.container === undefined &&
+    field.policy.kind === 'sampled-visibility'
+  );
+}
+
+// Draws may be absent or filtered by backend preparation. Actual Mesh
+// sections own coverage; present draw ranges can only contradict it.
+function sectionDraws(
+  source: FieldSceneSource,
+  mesh: MeshAsset,
+): Result<Map<number, FieldDraw>, RayReferenceError> {
+  const draws = new Map<number, FieldDraw>();
+  for (const [index, draw] of (source.gpuDrivenDraws ?? []).entries()) {
+    const section = gpuDrivenSourceDrawItemIndex(draw, index);
+    if (
+      !Number.isInteger(section) ||
+      section < 0 ||
+      section >= mesh.submeshes.length ||
+      draws.has(section)
+    )
+      return rayReferenceFailure('retained draw has no unique actual mesh section');
+    draws.set(section, draw);
+  }
+  return ok(draws);
+}
+
+/** Does a present draw cover exactly this whole section of the actual mesh? */
+function drawMatchesSection(
+  draw: FieldDraw,
+  sectionIndex: number,
+  mesh: MeshAsset,
+  section: FieldSection,
+  first: number,
+): boolean {
+  const indexed = mesh.indices !== undefined;
+  return (
+    gpuDrivenSourceDrawItemIndex(draw, sectionIndex) === sectionIndex &&
+    draw.kind === (indexed ? 'indexed' : 'non-indexed') &&
+    draw.topology === section.topology &&
+    draw.materialSlot === section.materialSlot &&
+    draw.first === (indexed ? section.indexOffset : first) &&
+    draw.count === (indexed ? section.indexCount : section.vertexCount) &&
+    draw.baseVertex === 0 &&
+    (draw.lodRanges?.length ?? 0) === 0
+  );
+}
+
+/** Shadow and depth passes never contribute color coverage. */
+function isColorPass(pass: {
+  readonly name: string;
+  readonly renderState?: { readonly tags?: unknown } | undefined;
+}): boolean {
+  return !/shadow|depth/i.test(
+    String(
+      (pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined)?.LightMode ??
+        pass.name,
+    ),
+  );
+}
+
+/** Declared parameter defaults overlaid by authored values. */
+function materialFieldValues(payload: MaterialAsset): Record<string, unknown> {
+  return {
+    ...Object.fromEntries(
+      (payload.parameters ?? []).map((parameter) => [
+        parameter.name,
+        'default' in parameter ? parameter.default : undefined,
+      ]),
+    ),
+    ...payload.values,
+  };
+}
+
+function materialScalar(
+  values: Readonly<Record<string, unknown>>,
+  name: string,
+  fallback: number,
+): number {
+  const value = values[name];
+  if (value === undefined) return fallback;
+  return typeof value === 'number' ? value : NaN;
+}
+
+function isUnitInterval(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+/** Instance owner identity without per-frame transforms, detached from the source. */
+function detachedInstanceIdentity(
+  source: FieldSceneSource,
+): Omit<InstancesSnapshot, 'transforms' | 'dirtyRanges'> | undefined {
+  if (source.instances === undefined) return undefined;
+  const { transforms: _transforms, dirtyRanges: _dirty, ...identity } = source.instances;
+  return structuredClone(identity);
+}
+
+function isLocallyClipped(value: unknown): boolean {
+  return value !== undefined && (!Array.isArray(value) || value[0] !== 0);
+}
+
+/** Transparent, blended or locally clipped coverage cannot be a closed field surface. */
+function rejectsOpaqueCoverage(
+  material: MaterialSnapshot,
+  color: readonly { readonly renderState?: { readonly blend?: unknown } | undefined }[],
+  clipping: unknown,
+): boolean {
+  return (
+    material.transparent === true ||
+    material.renderState?.blend !== undefined ||
+    color.some((pass) => pass.renderState?.blend !== undefined) ||
+    isLocallyClipped(clipping) ||
+    isLocallyClipped(material.paramSnapshot?.clippingControl)
+  );
+}
+
+/** Does either the accepted or the authored Standard displacement move the surface? */
+function displacedCoverage(
+  material: MaterialSnapshot,
+  payload: MaterialAsset,
+  values: Readonly<Record<string, unknown>>,
+  displacementScale: number,
+  displacementBias: number,
+): boolean {
+  const actualDisplacement = standardDisplacementRadius([
+    {
+      ...material,
+      standardTextureMask: materialStandardTextureMask(
+        payload.parameters,
+        'forgeax::default-standard-pbr',
+        values,
+      ),
+      paramSnapshot: { displacementScale, displacementBias },
+    },
+  ]);
+  return standardDisplacementRadius([material]) !== 0 || actualDisplacement !== 0;
+}
+
+function matchesFieldSidedness(
+  material: MaterialSnapshot,
+  color: readonly { readonly renderState?: MaterialSnapshot['renderState'] }[],
+  sidedness: number | undefined,
+): boolean {
+  for (const state of [material.renderState, ...color.map((pass) => pass.renderState)]) {
+    const cull = state?.cullMode ?? 'back';
+    if ((cull !== 'back' && cull !== 'none') || Number(cull === 'none') !== sidedness) return false;
+  }
+  return true;
 }
 
 /** Qualify accepted producer provenance, never a cooked hash or ABI resemblance. */
@@ -503,15 +682,7 @@ export function isNativePlacementMaterial(
           source.surface.dynamicInput !== undefined))
     )
       return false;
-    const color = (source.passes ?? []).filter(
-      (pass) =>
-        !/shadow|depth/i.test(
-          String(
-            (pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined)?.LightMode ??
-              pass.name,
-          ),
-        ),
-    );
+    const color = (source.passes ?? []).filter((pass) => isColorPass(pass));
     return (
       color.length > 0 &&
       material.materialShaderId === 'forgeax::default-standard-pbr' &&
@@ -532,10 +703,7 @@ export function isNativePlacementMaterial(
       (projection.surface.model !== 'standard' || projection.surface.dynamicInput !== undefined))
   )
     return false;
-  const color = projection.passes.filter((pass) => {
-    const tags = pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined;
-    return !/shadow|depth/i.test(String(tags?.LightMode ?? pass.name));
-  });
+  const color = projection.passes.filter((pass) => isColorPass(pass));
   const first = color[0];
   if (
     first === undefined ||

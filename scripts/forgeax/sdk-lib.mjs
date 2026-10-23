@@ -22,6 +22,8 @@ import { sdkGpuStage } from './sdk-stage.mjs';
 export const SDK_MANIFEST_VERSION = '1.9.0';
 export const SDK_SOURCE_ROOT = 'source/engine';
 export const SDK_SOURCE_FORMAT = 'git-archive-public-snapshot';
+/** Full-ZIP surfaces the npm carrier omits; games install the same Engine bytes from npm. */
+export const SDK_ZIP_ONLY_PATHS = Object.freeze(['store', 'packages', 'source', 'toolchain/wasm']);
 
 const SDK_REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 

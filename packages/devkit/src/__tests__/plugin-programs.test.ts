@@ -122,6 +122,7 @@ async function distHostFixture() {
     name: 'Dist Host',
     roots: { host: guid },
     assetRoots: ['host.pack.json'],
+    assetLibraries: [],
     packageJson: {},
   };
   return { root, temporary, facts, sourcePath, files };
@@ -445,6 +446,7 @@ describe('plugin program projection', () => {
         name: 'Native test',
         roots: { host: guid },
         assetRoots: ['assets'],
+        assetLibraries: [],
         packageJson: {},
       },
       'host',

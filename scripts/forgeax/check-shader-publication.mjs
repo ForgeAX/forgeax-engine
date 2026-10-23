@@ -5,16 +5,27 @@ import { pathToFileURL } from 'node:url';
 
 // Run in a fresh, --expose-gc --max-old-space-size=512 process. This exercises
 // JSON/fetch admission of the real complete fleet without constructing a GPU.
-const [profilePath] = process.argv.slice(2);
-if (!profilePath || typeof globalThis.gc !== 'function') {
+const [containerPath, profile] = process.argv.slice(2);
+if (!containerPath || !profile || typeof globalThis.gc !== 'function') {
   throw new Error(
-    'usage: node --expose-gc --max-old-space-size=512 scripts/forgeax/check-shader-publication.mjs <manifest.json>',
+    'usage: node --expose-gc --max-old-space-size=512 scripts/forgeax/check-shader-publication.mjs <profiles.json.gz> <profile>',
   );
 }
 const { ShaderRegistry, SHADER_MANIFEST_PUBLICATION_VERSION } = await import(
   pathToFileURL(resolve('packages/shader/dist/index.mjs')).href
 );
-const text = await readFile(profilePath, 'utf8');
+const { decodePackagedProfiles, packagedProfilePublication } = await import(
+  pathToFileURL(resolve('packages/vite-plugin-shader/dist/packaged-profiles.mjs')).href
+);
+// Only the profile's wire text survives this scope, so the retained-heap bound
+// measures registry admission rather than the pooled container.
+const text = await (async () => {
+  const container = decodePackagedProfiles(await readFile(containerPath));
+  assert.ok(container, `obsolete packaged profile container: ${containerPath}`);
+  const rebuilt = packagedProfilePublication(container, profile);
+  assert.ok(rebuilt, `packaged profile is missing: ${profile}`);
+  return JSON.stringify(rebuilt);
+})();
 const publication = JSON.parse(text);
 assert.equal(publication.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
 const originalFetch = globalThis.fetch;
@@ -51,7 +62,8 @@ assert.equal(
 );
 console.log(
   JSON.stringify({
-    profilePath,
+    containerPath,
+    profile,
     wireBytes: Buffer.byteLength(text),
     materialCount: materials.length,
     variantCount: materials.reduce((sum, row) => sum + row.variants.length, 0),

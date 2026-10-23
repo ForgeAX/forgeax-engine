@@ -4,14 +4,12 @@
 // biome-ignore-all lint/complexity/useLiteralKeys: literal-key accesses from original source files
 // biome-ignore-all lint/style/noNonNullAssertion: non-null assertions from original source files
 //
-// Source files (N=12):
-//   - packages/pack/src/__tests__/builtin.test.ts
+// Source files (N=10):
 //   - packages/pack/src/__tests__/gltf-meta-schema.test.ts
 //   - packages/pack/src/__tests__/material-asset-validator.test.ts
 //   - packages/pack/src/__tests__/scanner-material-step7.test.ts
 //   - packages/pack/src/__tests__/scene-schema.test.ts
 //   - packages/pack/src/atlas/__tests__/shelf-pack.test.ts
-//   - packages/pack/src/__tests__/builtin.test.ts
 //   - packages/pack/src/__tests__/errors.test.ts
 //   - packages/pack/src/__tests__/guid.test.ts
 //   - packages/pack/src/__tests__/scanner-fail-fast.test.ts
@@ -28,12 +26,6 @@ import type { PackErrorCode, PackErrorDetail } from '@forgeax/engine-types';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AtlasImageInput, AtlasRegion } from '../atlas/shelf-pack.js';
 import { shelfPack } from '../atlas/shelf-pack.js';
-import {
-  BUILTIN_HANDLE_CUBE,
-  BUILTIN_HANDLE_TRIANGLE,
-  deriveBuiltin,
-  FORGEAX_NAMESPACE,
-} from '../builtin.js';
 import { runCliAsset } from '../cli-asset.js';
 import { PackError } from '../errors.js';
 import { AssetGuid } from '../guid.js';
@@ -53,70 +45,6 @@ const V1_WHITELIST = new Set([
   'texture2d',
   'sampler',
 ]);
-
-{
-  // ─── from builtin.test.ts (src/__tests__) ───
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-  describe('builtin.test.ts (src/__tests__)', () => {
-    describe('BUILTIN_HANDLE_QUAD', () => {
-      it('is exported and is a valid UUIDv5 string', async () => {
-        const mod = (await import('../builtin.js')) as Record<string, unknown>;
-        const quad = mod['BUILTIN_HANDLE_QUAD'];
-        expect(typeof quad).toBe('string');
-        expect(UUID_RE.test(quad as string)).toBe(true);
-      });
-
-      it('equals deriveBuiltin(HANDLE_QUAD) result (UUIDv5 deterministic)', async () => {
-        const mod = (await import('../builtin.js')) as Record<string, unknown>;
-        const quad = mod['BUILTIN_HANDLE_QUAD'] as string;
-        const _deriveBuiltin = mod.deriveBuiltin as (name: string) => Uint8Array;
-        const rawUuidBytes = _deriveBuiltin('HANDLE_QUAD');
-        const AssetGuidMod = (await import('../guid.js')) as Record<string, unknown>;
-        const format = (AssetGuidMod.AssetGuid as Record<string, unknown>).format as (
-          guid: Uint8Array,
-        ) => string;
-        expect(quad).toBe(format(rawUuidBytes));
-      });
-
-      it('is distinct from BUILTIN_HANDLE_CUBE and BUILTIN_HANDLE_TRIANGLE', async () => {
-        const mod = (await import('../builtin.js')) as Record<string, unknown>;
-        const quad = mod['BUILTIN_HANDLE_QUAD'];
-        const cube = mod['BUILTIN_HANDLE_CUBE'];
-        const triangle = mod['BUILTIN_HANDLE_TRIANGLE'];
-        expect(quad).not.toBe(cube);
-        expect(quad).not.toBe(triangle);
-        expect(cube).not.toBe(triangle);
-      });
-    });
-
-    describe('BUILTIN_HANDLE_CUBE / BUILTIN_HANDLE_TRIANGLE (regression)', () => {
-      it('CUBE constant is deterministic UUIDv5', async () => {
-        const mod = (await import('../builtin.js')) as Record<string, unknown>;
-        const cube = mod['BUILTIN_HANDLE_CUBE'] as string;
-        const _deriveBuiltin = mod.deriveBuiltin as (name: string) => Uint8Array;
-        const raw = _deriveBuiltin('HANDLE_CUBE');
-        const AssetGuidMod = (await import('../guid.js')) as Record<string, unknown>;
-        const format = (AssetGuidMod.AssetGuid as Record<string, unknown>).format as (
-          guid: Uint8Array,
-        ) => string;
-        expect(cube).toBe(format(raw));
-      });
-
-      it('TRIANGLE constant is deterministic UUIDv5', async () => {
-        const mod = (await import('../builtin.js')) as Record<string, unknown>;
-        const triangle = mod['BUILTIN_HANDLE_TRIANGLE'] as string;
-        const _deriveBuiltin = mod.deriveBuiltin as (name: string) => Uint8Array;
-        const raw = _deriveBuiltin('HANDLE_TRIANGLE');
-        const AssetGuidMod = (await import('../guid.js')) as Record<string, unknown>;
-        const format = (AssetGuidMod.AssetGuid as Record<string, unknown>).format as (
-          guid: Uint8Array,
-        ) => string;
-        expect(triangle).toBe(format(raw));
-      });
-    });
-  });
-}
 
 {
   describe('w4 producer conformance matrix', () => {
@@ -902,77 +830,6 @@ const V1_WHITELIST = new Set([
         expect(outcome.error.detail.width).toBe(5000);
         expect(outcome.error.detail.height).toBe(5000);
         expect(outcome.error.detail.maxAtlasSize).toBe(4096);
-      });
-    });
-  });
-}
-
-{
-  // ─── from builtin.test.ts (__tests__/) ───
-
-  describe('builtin.test.ts (__tests__/)', () => {
-    describe('FORGEAX_NAMESPACE', () => {
-      it('is a valid AssetGuid', () => {
-        expect(FORGEAX_NAMESPACE).toBeInstanceOf(Uint8Array);
-        expect(FORGEAX_NAMESPACE.length).toBe(16);
-      });
-
-      it('is not the RFC 4122 X.500 namespace (6ba7b814-9dad-11d1-80b4-00c04fd430c8)', () => {
-        const x500Result = AssetGuid.parse('6ba7b814-9dad-11d1-80b4-00c04fd430c8');
-        if (!x500Result.ok) throw new Error('expected ok');
-        expect(AssetGuid.equals(FORGEAX_NAMESPACE, x500Result.value)).toBe(false);
-      });
-
-      it('matches the expected forgeax namespace UUID', () => {
-        const expected = AssetGuid.parse('9a09805a-7623-482e-b322-9fc3591f2a38');
-        if (!expected.ok) throw new Error('expected ok');
-        expect(AssetGuid.equals(FORGEAX_NAMESPACE, expected.value)).toBe(true);
-      });
-    });
-
-    describe('deriveBuiltin', () => {
-      it('HANDLE_CUBE derives fixed bytes (snapshot)', async () => {
-        const guid = deriveBuiltin('HANDLE_CUBE');
-        expect(AssetGuid.format(guid)).toMatchInlineSnapshot(
-          '"cbe42beb-8975-5096-b3a1-3dda4cb4c077"',
-        );
-      });
-
-      it('HANDLE_TRIANGLE derives fixed bytes (snapshot)', async () => {
-        const guid = deriveBuiltin('HANDLE_TRIANGLE');
-        expect(AssetGuid.format(guid)).toMatchInlineSnapshot(
-          '"22592f07-d967-5116-b29c-fa9781929ba8"',
-        );
-      });
-
-      it('same name always derives same bytes', async () => {
-        const a = deriveBuiltin('HANDLE_CUBE');
-        const b = deriveBuiltin('HANDLE_CUBE');
-        expect(AssetGuid.equals(a, b)).toBe(true);
-      });
-
-      it('different names derive different GUIDs', async () => {
-        const cube = deriveBuiltin('HANDLE_CUBE');
-        const tri = deriveBuiltin('HANDLE_TRIANGLE');
-        expect(AssetGuid.equals(cube, tri)).toBe(false);
-      });
-    });
-
-    describe('BUILTIN_HANDLE_CUBE constant', () => {
-      it("matches deriveBuiltin('HANDLE_CUBE')", async () => {
-        const derived = deriveBuiltin('HANDLE_CUBE');
-        const constant = AssetGuid.parse(BUILTIN_HANDLE_CUBE);
-        if (!constant.ok) throw new Error('expected ok');
-        expect(AssetGuid.equals(derived, constant.value)).toBe(true);
-      });
-    });
-
-    describe('BUILTIN_HANDLE_TRIANGLE constant', () => {
-      it("matches deriveBuiltin('HANDLE_TRIANGLE')", async () => {
-        const derived = deriveBuiltin('HANDLE_TRIANGLE');
-        const constant = AssetGuid.parse(BUILTIN_HANDLE_TRIANGLE);
-        if (!constant.ok) throw new Error('expected ok');
-        expect(AssetGuid.equals(derived, constant.value)).toBe(true);
       });
     });
   });

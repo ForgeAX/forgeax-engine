@@ -60,16 +60,25 @@ describe('recovery candidate preparation contract', () => {
   it('keeps graph preparation outside draw, record, execute, and submit', () => {
     const start = recoveryCandidateSource.indexOf('const prepareRecoveryGraphCandidate');
     const end = recoveryCandidateSource.indexOf('const submitCandidateSetup', start);
-    const prepare = recoveryCandidateSource.slice(start, end);
-
-    expect(prepare).toContain('prepareFrameLighting');
-    expect(prepare).toContain('ensureCompiledFrameGraph');
-    expect(prepare).toContain("kind: 'no-seed'");
-    expect(prepare).toContain("kind: 'failed'");
-    expect(prepare).toContain("kind: 'ready'");
-    expect(prepare).not.toMatch(
-      /\.draw\(|recordFrame\(|executeCompiledFrameGraph|queue\.submit|\.finish\(/,
+    const entry = recoveryCandidateSource.slice(start, end);
+    const buildStart = recoveryCandidateSource.indexOf('class RecoveryCandidateBuild');
+    const buildEnd = recoveryCandidateSource.indexOf(
+      'function withoutTemporalSnapshots',
+      buildStart,
     );
+    const build = recoveryCandidateSource.slice(buildStart, buildEnd);
+
+    expect(entry).toContain("kind: 'no-seed'");
+    expect(entry).toContain('new RecoveryCandidateBuild(');
+    expect(build).toContain('prepareFrameLighting');
+    expect(build).toContain('ensureCompiledFrameGraph');
+    expect(build).toContain("kind: 'failed'");
+    expect(build).toContain("kind: 'ready'");
+    for (const prepare of [entry, build]) {
+      expect(prepare).not.toMatch(
+        /\.draw\(|recordFrame\(|executeCompiledFrameGraph|queue\.submit|\.finish\(/,
+      );
+    }
   });
 
   it('keeps active generation bindings unchanged until publication', () => {
@@ -176,15 +185,20 @@ describe('recovery candidate preparation contract', () => {
   });
 
   it('rehydrates Surface dynamic page bytes before candidate GPU preparation', () => {
-    const start = recoveryCandidateSource.indexOf('let recoverySurfaceDynamicInput =');
-    const end = recoveryCandidateSource.indexOf(
-      'if (candidateGpuDrivenScene.state !== undefined)',
+    const start = recoveryCandidateSource.indexOf('private recoverSurfaceDynamicInput()');
+    const end = recoveryCandidateSource.indexOf('private prepareGpuDriven(', start);
+    const surface = recoveryCandidateSource.slice(start, end);
+    expect(surface).toContain('page.bytes.set(source.page.bytes)');
+    expect(surface.indexOf('page.bytes.set(source.page.bytes)')).toBeLessThan(
+      surface.indexOf('return ok({'),
+    );
+    const ready = recoveryCandidateSource.slice(
+      recoveryCandidateSource.indexOf('private prepareReady()'),
       start,
     );
-    const surface = recoveryCandidateSource.slice(start, end);
-    expect(surface).toContain('candidateSurfacePage.bytes.set(source.page.bytes)');
-    expect(surface.indexOf('candidateSurfacePage.bytes.set(source.page.bytes)')).toBeLessThan(
-      surface.indexOf('recoverySurfaceDynamicInput = {'),
+    expect(ready.indexOf('this.recoverSurfaceDynamicInput()')).toBeGreaterThanOrEqual(0);
+    expect(ready.indexOf('this.recoverSurfaceDynamicInput()')).toBeLessThan(
+      ready.indexOf('this.prepareGpuDriven('),
     );
   });
 

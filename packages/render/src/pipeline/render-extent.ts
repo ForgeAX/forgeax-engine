@@ -30,6 +30,23 @@ export function renderExtentSize(
   return { width: extent.outputWidth, height: extent.outputHeight };
 }
 
+/** A view's internal graph size: the surface itself unless an extent rescales it. */
+export function renderInternalSize(view: {
+  readonly extent?: RenderExtent | undefined;
+}): 'surface' | { readonly width: number; readonly height: number } {
+  return view.extent === undefined ? 'surface' : renderExtentSize(view.extent, 'internal');
+}
+
+/** The same internal size as explicit dimensions, for copies and dispatch extents. */
+export function renderInternalCopySize(view: {
+  readonly extent?: RenderExtent | undefined;
+  readonly surface: { readonly width: number; readonly height: number };
+}): { readonly width: number; readonly height: number } {
+  return view.extent === undefined
+    ? { width: view.surface.width, height: view.surface.height }
+    : renderExtentSize(view.extent, 'internal');
+}
+
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 1;
 const SCALE_STEPS = 32;

@@ -27,6 +27,7 @@ import { normalizeExecutionBootstrapUrl } from './bootstrap-url';
 import { cloneExecutionReport } from './control';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { type EngineWorkerSession, startEngineWorker } from './engine-worker';
+import { forwardGpuStub } from './gpu-stub';
 import { createMeasurementSeries } from './measurement';
 import {
   type EngineToHostMessage,
@@ -159,6 +160,7 @@ export async function createWorkerExecutionApp(
       ...(executionOptions.diagnostics === undefined
         ? {}
         : { diagnostics: executionOptions.diagnostics }),
+      ...forwardGpuStub(options.appOptions),
       ...(options.appOptions.pipelineLibrary === undefined
         ? {}
         : { pipelineLibrary: options.appOptions.pipelineLibrary }),

@@ -81,15 +81,146 @@ const kinds = [
   'indexData',
 ] as const;
 
-function merge(destination: PreparedPlanResources, source: PreparedPlanResources): void {
+type Kind = (typeof kinds)[number];
+type Owner = RenderFeatureNativeResourceDomain;
+
+/**
+ * Domain entries of one session scope, kept across frames. A retained domain
+ * is indexed once when it first appears, instead of being copied into fresh
+ * frame maps every frame; an entry is visible only while its owner is live in
+ * the current admission, and owners that were not live are pruned when the
+ * planning stage reports its scopes.
+ */
+interface PersistentScope {
+  /** Domains may share a name only with the identical reference. */
+  readonly entries: Record<
+    Kind,
+    Map<string, { readonly reference: unknown; readonly owners: Set<Owner> }>
+  >;
+  readonly owners: Map<Owner, readonly (readonly [Kind, string])[]>;
+  /** Owners retained or admitted by any admission of `frame`. */
+  readonly seen: Set<Owner>;
+  frame: number;
+}
+const persistentScopes = new WeakMap<
+  RenderFeatureGpuPrepareSession,
+  Map<string, PersistentScope>
+>();
+function persistentScope(
+  session: RenderFeatureGpuPrepareSession,
+  scope: string,
+  frame: number,
+): PersistentScope {
+  let scopes = persistentScopes.get(session);
+  if (scopes === undefined) {
+    scopes = new Map();
+    persistentScopes.set(session, scopes);
+  }
+  let state = scopes.get(scope);
+  if (state === undefined) {
+    state = {
+      entries: Object.fromEntries(
+        kinds.map((kind) => [kind, new Map()]),
+      ) as PersistentScope['entries'],
+      owners: new Map(),
+      seen: new Set(),
+      frame,
+    };
+    scopes.set(scope, state);
+  }
+  if (state.frame !== frame) {
+    // Several admissions may plan one frame; prune only at the next frame,
+    // dropping owners that none of them retained.
+    for (const owner of [...state.owners.keys()])
+      if (!state.seen.has(owner)) evictOwner(state, owner);
+    state.seen.clear();
+    state.frame = frame;
+  }
+  return state;
+}
+
+/** Frame-local entries first, then live domain entries, then the inherited scope. */
+class LiveDomainLookup<T> extends Map<string, T> {
+  constructor(
+    private readonly domains: Map<
+      string,
+      { readonly reference: unknown; readonly owners: Set<Owner> }
+    >,
+    private readonly live: ReadonlySet<Owner>,
+    private readonly parent: ReadonlyMap<string, T> | undefined,
+  ) {
+    super();
+  }
+  override get(name: string): T | undefined {
+    const local = super.get(name);
+    if (local !== undefined) return local;
+    const entry = this.domains.get(name);
+    if (entry !== undefined)
+      for (const owner of entry.owners) if (this.live.has(owner)) return entry.reference as T;
+    return this.parent?.get(name);
+  }
+}
+
+function admitDomain(
+  persistent: PersistentScope,
+  live: ReadonlySet<Owner>,
+  local: PreparedPlanResources,
+  owner: Owner,
+  source: PreparedPlanResources,
+): void {
+  if (persistent.owners.has(owner)) {
+    persistent.seen.add(owner);
+    return;
+  }
+  let shared = true;
+  for (const kind of kinds)
+    for (const [name, reference] of source[kind]) {
+      const previous = persistent.entries[kind].get(name);
+      const framePrevious = Map.prototype.get.call(local[kind], name);
+      const differs = previous !== undefined && previous.reference !== reference;
+      if (
+        (differs && [...previous.owners].some((other) => live.has(other))) ||
+        (framePrevious !== undefined && framePrevious !== reference)
+      )
+        throw new Error(`Native resource admission replaces an active name: ${name}`);
+      if (differs && [...previous.owners].some((other) => persistent.seen.has(other)))
+        shared = false;
+    }
+  if (!shared) {
+    // Another admission of this frame owns these names: keep this domain local.
+    for (const kind of kinds)
+      for (const [name, reference] of source[kind])
+        Map.prototype.set.call(local[kind], name, reference);
+    return;
+  }
+  const names: (readonly [Kind, string])[] = [];
   for (const kind of kinds) {
-    const target = destination[kind] as Map<string, unknown>;
+    const target = persistent.entries[kind];
     for (const [name, reference] of source[kind]) {
       const previous = target.get(name);
-      if (previous !== undefined && previous !== reference)
-        throw new Error(`Native resource admission replaces an active name: ${name}`);
-      target.set(name, reference);
+      if (previous !== undefined && previous.reference === reference) previous.owners.add(owner);
+      else {
+        // Replaced owners are evicted whole; retaining one later re-indexes
+        // and re-checks it instead of trusting a partially overwritten index.
+        if (previous !== undefined)
+          for (const other of [...previous.owners]) evictOwner(persistent, other);
+        target.set(name, { reference, owners: new Set([owner]) });
+      }
+      names.push([kind, name]);
     }
+  }
+  persistent.owners.set(owner, names);
+  persistent.seen.add(owner);
+}
+
+function evictOwner(persistent: PersistentScope, owner: Owner): void {
+  const names = persistent.owners.get(owner);
+  if (names === undefined) return;
+  persistent.owners.delete(owner);
+  for (const [kind, name] of names) {
+    const entry = persistent.entries[kind].get(name);
+    if (entry === undefined || !entry.owners.delete(owner)) continue;
+    if (entry.owners.size === 0) persistent.entries[kind].delete(name);
   }
 }
 
@@ -97,6 +228,8 @@ function merge(destination: PreparedPlanResources, source: PreparedPlanResources
  * existing candidate and completion leases. It is not a declaration cache. */
 export function createNativeResourceAdmission(input: {
   readonly gpu: RenderFeatureGpuPrepareSession;
+  /** Host frame number; retained domain indexes are pruned between frames. */
+  readonly frame: number;
   readonly isActive: () => boolean;
   readonly prepare: (
     resources: readonly RenderFeatureResourceDeclaration[],
@@ -110,6 +243,23 @@ export function createNativeResourceAdmission(input: {
   readonly requestsPreparation: () => boolean;
 } {
   const scopes = new Map<string, PreparedPlanResources>();
+  const live = new Set<Owner>();
+  const liveScope = (
+    key: string,
+    parent: PreparedPlanResources | undefined,
+  ): PreparedPlanResources => {
+    const persistent = persistentScope(input.gpu, key, input.frame);
+    return Object.fromEntries(
+      kinds.map((kind) => [
+        kind,
+        new LiveDomainLookup(
+          persistent.entries[kind],
+          live,
+          parent?.[kind] as ReadonlyMap<string, unknown> | undefined,
+        ),
+      ]),
+    ) as unknown as PreparedPlanResources;
+  };
   let preparationRequested = false;
   const programs = new Map<string, { readonly descriptor: object; readonly wait: boolean }>();
   const scopeState = (scope: RenderFeatureWorkScope) => {
@@ -117,7 +267,7 @@ export function createNativeResourceAdmission(input: {
     const key = featureScopeKey(scope);
     let state = scopes.get(key);
     if (state === undefined) {
-      state = createPreparedResourceMaps(scope === 'frame' ? undefined : scopes.get('frame'));
+      state = liveScope(key, scope === 'frame' ? undefined : scopes.get('frame'));
       scopes.set(key, state);
     }
     return state;
@@ -129,7 +279,7 @@ export function createNativeResourceAdmission(input: {
       const key = featureScopeKey(scope);
       let state = scopes.get(key);
       if (state === undefined && scope !== 'frame' && scopes.has('frame')) {
-        state = createPreparedResourceMaps(scopes.get('frame'));
+        state = liveScope(key, scopes.get('frame'));
         scopes.set(key, state);
       }
       return state;
@@ -158,7 +308,14 @@ export function createNativeResourceAdmission(input: {
         const retained = input.gpu.retainResourceDomain(domain.gpu);
         if (!retained.ok) throw retained.error;
         if (!retained.value) return false;
-        merge(state, domain.prepared);
+        admitDomain(
+          persistentScope(input.gpu, domain.scope, input.frame),
+          live,
+          state,
+          token,
+          domain.prepared,
+        );
+        live.add(token);
         return true;
       },
       admit: (scope, resources) => {
@@ -207,7 +364,14 @@ export function createNativeResourceAdmission(input: {
           prepared: owned,
           gpu: captured.value,
         });
-        merge(state, owned);
+        admitDomain(
+          persistentScope(input.gpu, featureScopeKey(scope), input.frame),
+          live,
+          state,
+          token,
+          owned,
+        );
+        live.add(token);
         return token;
       },
       upload: (scope, name, offset, data) => {

@@ -620,6 +620,13 @@ function sameShadowBundleView(a: ShadowBundleViewKey, b: ShadowBundleViewKey): b
   );
 }
 
+/** Accepted static material binding retained with an alpha-mask or custom shadow row. */
+interface RetainedShadowMaterial {
+  readonly entry: MaterialBgAssemblyCacheEntry;
+  readonly handle: number | undefined;
+  readonly shader: string | undefined;
+}
+
 const retainedShadowBundles = new WeakMap<
   object,
   {
@@ -631,6 +638,8 @@ const retainedShadowBundles = new WeakMap<
         readonly projection: GpuDrivenShadowBatchProjection;
         readonly bundle: RenderBundle;
         readonly pipeline: RenderPipeline;
+        /** Accepted static material binding of an alpha-mask or custom row. */
+        readonly material?: RetainedShadowMaterial;
       }
     >;
   }
@@ -669,6 +678,7 @@ function prepareGpuDrivenShadowIfPublished(
   let previousProjection: GpuDrivenShadowBatchProjection | undefined;
   let previousPipeline: RenderPipeline | undefined;
   let previousMaterial: MaterialBgAssemblyCacheEntry | undefined;
+  let previousRowMaterial: RetainedShadowMaterial | undefined;
   let previousPipelineState: typeof c.pipelineState | undefined;
   let previousFallback: typeof c.pipelineState.skylightFallback | undefined;
   // Opaque standard rows depend only on their retained batch and projection plus
@@ -695,6 +705,47 @@ function prepareGpuDrivenShadowIfPublished(
     retainedShadowBundles.set(viewSubmission.view, retainedView);
   }
   const validatedPipelines = new Map<RenderPipeline, boolean>();
+  // A retained static material binding is revalidated once per invocation.
+  const validatedMaterials = new Map<MaterialBgAssemblyCacheEntry, boolean>();
+  // A failed revalidation's query is the same row's recording query; use it once.
+  let rejected: { projection: GpuDrivenShadowBatchProjection; group: BindGroup | null } | undefined;
+  const queryMaterialGroup = (projection: GpuDrivenShadowBatchProjection): BindGroup | null => {
+    if (rejected?.projection === projection) {
+      const { group } = rejected;
+      rejected = undefined;
+      return group;
+    }
+    return projection.shadowArtifact.material !== SHADOW_CASTER_SHADER_ID
+      ? ensureGpuDrivenCustomShadowMaterialBg(c, projection)
+      : ensureGpuDrivenAlphaMaskMaterialBg(c, projection);
+  };
+  const materialCurrent = (
+    retained: RetainedShadowMaterial | undefined,
+    projection: GpuDrivenShadowBatchProjection,
+  ): boolean => {
+    if (retained === undefined) return true;
+    const entry = retained.entry;
+    let current = validatedMaterials.get(entry);
+    if (current === undefined) {
+      // Each invocation still queries the current artifact, schema and layout
+      // once per shared binding, exactly as a recorded row would.
+      const group = queryMaterialGroup(projection);
+      current =
+        group === entry.bindGroup &&
+        entry.material === projection.material &&
+        c.materialBgAssemblyCache.get(
+          retained.handle === undefined ? undefined : c.world.identity,
+          retained.handle,
+          retained.shader,
+        ) === entry &&
+        entry.materialBuffer === c.pipelineState.materialUniformBuffer.buffer &&
+        entry.sceneMaterialBuffer === c.gpuDrivenStandardPbrFrameResources?.sceneMaterialBuffer &&
+        materialBindingResourcesCurrent(entry, c.world, c.store, c.runtime, projection.material);
+      validatedMaterials.set(entry, current);
+      if (!current) rejected = { projection, group };
+    }
+    return current;
+  };
   for (const batch of viewSubmission.plan.batches) {
     if (batch.visibleCapacity === 0) continue;
     const projection: GpuDrivenShadowBatchProjection | undefined = projections.get(batch.batchId);
@@ -721,12 +772,19 @@ function prepareGpuDrivenShadowIfPublished(
           ) === retainedRow.pipeline;
         validatedPipelines.set(retainedRow.pipeline, current);
       }
-      validRow = current;
+      validRow = current && materialCurrent(retainedRow.material, projection);
     }
     if (validRow && retainedRow !== undefined) {
       previousBatch = batch;
       previousProjection = projection;
       previousPipeline = retainedRow.pipeline;
+      if (retainedRow.material !== undefined) {
+        // Adjacent rows may share this validated binding, exactly as if recorded.
+        previousMaterial = retainedRow.material.entry;
+        previousRowMaterial = retainedRow.material;
+        previousPipelineState = c.pipelineState;
+        previousFallback = c.pipelineState.skylightFallback;
+      }
       bundles.push(retainedRow.bundle);
       if (workload !== undefined) {
         if (batch.key.drawKind === 'indexed')
@@ -792,6 +850,7 @@ function prepareGpuDrivenShadowIfPublished(
       });
     }
     let materialGroup: BindGroup | null;
+    let rowMaterial: RetainedShadowMaterial | undefined;
     if (!reuseAdjacentShadow) {
       if (shadowArtifact.material !== SHADOW_CASTER_SHADER_ID) {
         materialGroup = ensureGpuDrivenCustomShadowMaterialBg(c, projection);
@@ -837,11 +896,9 @@ function prepareGpuDrivenShadowIfPublished(
           c.gpuDrivenStandardPbrFrameResources?.sceneMaterialBuffer
       ) {
         materialGroup = previousMaterial.bindGroup;
+        rowMaterial = previousRowMaterial;
       } else {
-        materialGroup =
-          shadowArtifact.material !== SHADOW_CASTER_SHADER_ID
-            ? ensureGpuDrivenCustomShadowMaterialBg(c, projection)
-            : ensureGpuDrivenAlphaMaskMaterialBg(c, projection);
+        materialGroup = queryMaterialGroup(projection);
         const handle = staticSources ? projection.material.materialHandle : undefined;
         const shader = staticSources
           ? shadowArtifact.material !== SHADOW_CASTER_SHADER_ID
@@ -867,6 +924,11 @@ function prepareGpuDrivenShadowIfPublished(
             : undefined;
         previousPipelineState = c.pipelineState;
         previousFallback = c.pipelineState.skylightFallback;
+        previousRowMaterial =
+          previousMaterial === undefined || handle === undefined
+            ? undefined
+            : { entry: previousMaterial, handle, shader };
+        rowMaterial = previousRowMaterial;
       }
     } else {
       opaqueMaterialGroup ??= ensureSpotShadowMaterialBg(c);
@@ -912,6 +974,14 @@ function prepareGpuDrivenShadowIfPublished(
       materialGroup === opaqueMaterialGroup
     )
       retainedView.rows.set(batch.batchId, { batch, projection, bundle, pipeline });
+    else if (retainedView !== undefined && rowMaterial?.entry.bindGroup === materialGroup)
+      retainedView.rows.set(batch.batchId, {
+        batch,
+        projection,
+        bundle,
+        pipeline,
+        material: rowMaterial,
+      });
     else retainedView?.rows.delete(batch.batchId);
     if (workload !== undefined) {
       if (physical.indexed) workload.indexedIndirect += physical.windows.length;

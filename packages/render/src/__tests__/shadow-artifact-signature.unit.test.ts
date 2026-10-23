@@ -1,7 +1,10 @@
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
-import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import type { PreparedBatch } from '../gpu-driven/production-raster-prepare';
+import {
+  observeShadowArtifacts,
+  type ShadowArtifactObservations,
+} from '../gpu-driven/production-raster-support';
 
 function batch(program = 'static-caster', generation = 1): PreparedBatch {
   const artifact = {
@@ -24,16 +27,11 @@ function batch(program = 'static-caster', generation = 1): PreparedBatch {
 }
 
 function observer() {
-  const production = Object.create(GpuDrivenProduction.prototype) as {
-    observedShadowArtifacts: ReadonlyMap<string, string | undefined>;
-    observeShadowArtifacts(
-      batches: readonly PreparedBatch[],
-      artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
-    ): ReadonlyMap<string, string | undefined>;
+  let observed: ShadowArtifactObservations = new Map();
+  return (batches: readonly PreparedBatch[]) => {
+    observed = observeShadowArtifacts(observed, batches);
+    return observed;
   };
-  production.observedShadowArtifacts = new Map();
-  return (batches: readonly PreparedBatch[]) =>
-    production.observeShadowArtifacts(batches, undefined);
 }
 
 describe('shadow program publication observation', () => {

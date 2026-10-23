@@ -593,3 +593,10 @@ export { _internal_getRawDevice, disposeDevice } from './device';
 // explicit failure + proposition 5 consistent abstraction across both
 // browser-direct and rhi-wgpu wasm dual paths).
 export { translateErrorEventToRhiError } from './internal/error-translation';
+export {
+  captureWebGpuStubProfile,
+  DEFAULT_WEBGPU_STUB_PROFILE,
+  installedWebGpuStub,
+  installWebGpuStub,
+  type WebGpuStubProfile,
+} from './stub';

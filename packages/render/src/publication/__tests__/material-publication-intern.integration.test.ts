@@ -266,7 +266,7 @@ it('reuses owned projections only for equal, validated content and rechecks rece
   expect(isOwnedRenderFeatureProgramData(first)).toBe(true);
   // A fresh Worker clone with equal content reuses the owned copy.
   expect(admission.admit(structuredClone(receivedProjection()), material, available)).toBe(first);
-  expect(admission.size).toEqual({ projections: 1, programs: 1 });
+  expect(admission.size).toEqual({ projections: 1, programs: 1, retainedPrograms: 1 });
   // Receiver state and the material's own passes are never cached.
   expect(admission.admit(structuredClone(receivedProjection()), material, () => false)).toBe(
     undefined,
@@ -298,4 +298,64 @@ it('reuses owned projections only for equal, validated content and rechecks rece
   const shared = structuredClone(receivedProjection());
   expect(admission.admit(shared, material, available, aliases)).toBe(first);
   expect(aliases.get(shared)).toBe(first);
+});
+
+it('retains validated program rows beyond their projection, bounded by recency', () => {
+  const admission = new PublicationMaterialProjectionAdmission({ retainedPrograms: 2 });
+  const available = () => true;
+  const projection = (key: string) => {
+    const value = structuredClone(receivedProjection()) as unknown as {
+      materialGuid: string;
+      passes: { programs: { specializationKey: string; artifactHash: string }[] }[];
+    };
+    const program = value.passes[0]?.programs[0];
+    if (program === undefined) throw new Error('Missing program');
+    value.materialGuid = `material/${key}`;
+    program.specializationKey = `program/${key}`;
+    program.artifactHash = `sha256:${key}`;
+    return value;
+  };
+  const first = admission.admit(projection('a'), material, available);
+  expect(first).toBeDefined();
+  expect(admission.size.retainedPrograms).toBe(1);
+  // A later material with the same program shares the retained row.
+  const copy = admission.admit({ ...projection('a'), materialGuid: 'copy' }, material, available);
+  expect(copy?.passes[0]?.programs[0]).toBe(first?.passes[0]?.programs[0]);
+  expect(admission.size.retainedPrograms).toBe(1);
+  admission.admit(projection('b'), material, available);
+  admission.admit(projection('c'), material, available);
+  expect(admission.size.retainedPrograms).toBe(2);
+  admission.clear();
+  expect(admission.size.retainedPrograms).toBe(0);
+  expect(() => new PublicationMaterialProjectionAdmission({ retainedPrograms: -1 })).toThrow(
+    RangeError,
+  );
+});
+
+it('shares the validated program closure across runtime copies with distinct values', () => {
+  const admission = new PublicationMaterialProjectionAdmission();
+  const available = () => true;
+  const owned = Array.from({ length: 6 }, (_, factor) =>
+    admission.admit(
+      { ...structuredClone(receivedProjection()), runtimeValues: { factor } },
+      material,
+      available,
+    ),
+  );
+  const row = owned[0]?.passes[0]?.programs[0];
+  expect(row).toBeDefined();
+  for (const projection of owned) {
+    expect(projection).toBeDefined();
+    expect(projection?.passes[0]?.programs[0]).toBe(row);
+  }
+  expect(new Set(owned).size).toBe(owned.length);
+  expect(owned[5]?.runtimeValues).toEqual({ factor: 5 });
+  // Equal values still return the owned projection itself.
+  expect(
+    admission.admit(
+      { ...structuredClone(receivedProjection()), runtimeValues: { factor: 5 } },
+      material,
+      available,
+    ),
+  ).toBe(owned[5]);
 });

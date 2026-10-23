@@ -62,7 +62,7 @@ import {
   GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
   GPU_DRIVEN_LOD_LEVEL_CAPACITY,
 } from './batch-layout';
-import type { GpuDrivenCandidate, SubmissionPlan } from './batch-topology';
+import type { GpuDrivenBatch, GpuDrivenCandidate, SubmissionPlan } from './batch-topology';
 import { hasFixedTaskHeaders } from './fixed-task-plan';
 import {
   LOD_PROJECTION_WGSL,
@@ -1358,6 +1358,14 @@ function encodedViewTopology(
       ? previous
       : undefined;
   const candidateBases = fixed ? new Uint32Array(plan.batches.length) : undefined;
+  // Rows are matched by owner, so an insertion does not re-encode later rows;
+  // a moved row only rewrites its candidate base word.
+  let previousRows: Map<GpuDrivenBatch, number> | undefined;
+  if (reusable?.plan !== undefined) {
+    previousRows = new Map();
+    let row = 0;
+    for (const batch of reusable.plan.batches) previousRows.set(batch, row++);
+  }
   if (owner === undefined) {
     owner = new WeakMap();
     encodedTopologies.set(scene, owner);
@@ -1387,14 +1395,16 @@ function encodedViewTopology(
     }
     offsets.push(offset + 48);
     if (candidateBases !== undefined) candidateBases[index] = candidateIndex;
-    if (
+    const previousRow =
       reusable !== undefined &&
       batch.materialAddress !== undefined &&
-      batch.geometryAddress !== undefined &&
-      reusable.plan?.batches.at(index) === batch &&
-      reusable.candidateBases?.[index] === candidateIndex
-    ) {
-      batchBytes.set(reusable.batchBytes.subarray(offset, offset + BATCH_STRIDE), offset);
+      batch.geometryAddress !== undefined
+        ? previousRows?.get(batch)
+        : undefined;
+    if (reusable !== undefined && previousRow !== undefined) {
+      const source = previousRow * BATCH_STRIDE;
+      batchBytes.set(reusable.batchBytes.subarray(source, source + BATCH_STRIDE), offset);
+      batches.setUint32(offset + 28, candidateIndex, true);
       candidateIndex += batch.candidates.length;
       continue;
     }
@@ -2046,6 +2056,12 @@ export class GpuDrivenView {
         buffersRebuilt ||
         (this.skinActive && this.skinBindGroup === undefined)
       ) {
+        // Graph passes read the current scene bindings and imports at execute
+        // time, so a scene or input buffer swap alone does not recompile them.
+        const graphShapeChanged =
+          this.bindGroup === undefined ||
+          buffersRebuilt ||
+          (this.skinActive && this.skinBindGroup === undefined);
         const entries = [
           { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
           { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
@@ -2078,7 +2094,7 @@ export class GpuDrivenView {
           this.skinBindGroup = taskBinding.value;
         }
         this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 2;
-        this.resourceGeneration += 1;
+        if (graphShapeChanged) this.resourceGeneration += 1;
       }
       this.plan = plan;
       this.sceneInputs = sharedInput.value.buffer;
@@ -2597,19 +2613,24 @@ export class GpuDrivenView {
     }
     const importBuffer = (
       name: string,
-      buffer: Buffer,
+      buffer: Buffer | (() => Buffer),
       size: number,
       usage: number,
       resolveBefore?: () => void,
     ) =>
       builder.importBuffer(name, { size, usage }, () => {
         resolveBefore?.();
-        return buffer;
+        return typeof buffer === 'function' ? buffer() : buffer;
       });
+    // Scene and input buffers may be replaced without a new graph; resolve
+    // the current ones when the graph executes.
+    const live = (current: () => Buffer | undefined, fallback: Buffer) => () =>
+      current() ?? fallback;
+    const liveBindGroup = () => this.bindGroup ?? bindGroup;
     const scenePrefix = labelPrefix === 'gpu-driven' ? 'gpu-scene' : `${labelPrefix}.scene`;
     const primitive = importBuffer(
       `${scenePrefix}.primitive`,
-      this.scenePrimitive as Buffer,
+      live(() => this.scenePrimitive, this.scenePrimitive as Buffer),
       this.sceneCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
       resolveDrawResources,
@@ -2617,28 +2638,28 @@ export class GpuDrivenView {
     if (!primitive.ok) return primitive;
     const transform = importBuffer(
       `${scenePrefix}.transform`,
-      this.sceneTransform as Buffer,
+      live(() => this.sceneTransform, this.sceneTransform as Buffer),
       this.sceneCapacity * GPU_SCENE_LAYOUTS.transform.stride,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!transform.ok) return transform;
     const instance = importBuffer(
       `${scenePrefix}.instance`,
-      this.sceneInstance as Buffer,
+      live(() => this.sceneInstance, this.sceneInstance as Buffer),
       this.sceneCapacity * GPU_SCENE_LAYOUTS.instance.stride,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!instance.ok) return instance;
     const material = importBuffer(
       `${scenePrefix}.material`,
-      this.sceneMaterial as Buffer,
+      live(() => this.sceneMaterial, this.sceneMaterial as Buffer),
       this.sceneMaterialBytes,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!material.ok) return material;
     const candidates = importBuffer(
       `${labelPrefix}.candidates`,
-      this.sceneInputs as Buffer,
+      live(() => this.sceneInputs, this.sceneInputs as Buffer),
       this.sceneInputBytes,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     );
@@ -2748,7 +2769,10 @@ export class GpuDrivenView {
           executeIf: taskEnabled,
           encode: ({ pass }) => {
             pass.setPipeline(pipeline);
-            pass.setBindGroup(0, stage === 3 ? bindGroup : taskBinding);
+            pass.setBindGroup(
+              0,
+              stage === 3 ? liveBindGroup() : (this.skinBindGroup ?? taskBinding),
+            );
             if (stage === 4) {
               pass.dispatchWorkgroupsIndirect(buffers.indirect, this.skinDispatchBase() * 4);
             } else if (stage === 1 || stage === 3) {
@@ -2773,7 +2797,7 @@ export class GpuDrivenView {
       ...(executeIf === undefined ? {} : { executeIf }),
       encode: ({ pass }) => {
         pass.setPipeline(this.resetPipeline);
-        pass.setBindGroup(0, bindGroup);
+        pass.setBindGroup(0, liveBindGroup());
         pass.dispatchWorkgroups(
           Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
         );
@@ -2806,7 +2830,7 @@ export class GpuDrivenView {
         // the frustum cull is what the disabled camera cull would draw.
         const cameraPipeline = cameraCull === undefined ? undefined : this.shadowCameraCullPipeline;
         pass.setPipeline(cameraPipeline ?? this.cullPipeline);
-        pass.setBindGroup(0, bindGroup);
+        pass.setBindGroup(0, liveBindGroup());
         if (cameraCull !== undefined && cameraPipeline !== undefined) {
           pass.setBindGroup(
             1,
@@ -2830,7 +2854,7 @@ export class GpuDrivenView {
       ...(executeIf === undefined ? {} : { executeIf }),
       encode: ({ pass }) => {
         pass.setPipeline(this.finalizePipeline);
-        pass.setBindGroup(0, bindGroup);
+        pass.setBindGroup(0, liveBindGroup());
         pass.dispatchWorkgroups(
           Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
         );
@@ -2941,7 +2965,7 @@ export class GpuDrivenView {
         ...(executeIf === undefined ? {} : { executeIf }),
         encode: ({ pass, resources: graphResources }) => {
           pass.setPipeline(this.lateCullPipeline);
-          pass.setBindGroup(0, bindGroup);
+          pass.setBindGroup(0, liveBindGroup());
           pass.setBindGroup(1, this.pyramidBindGroup(graphResources.textureView(pyramid).unwrap()));
           pass.dispatchWorkgroups(
             Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE),
@@ -2963,7 +2987,7 @@ export class GpuDrivenView {
         ...(executeIf === undefined ? {} : { executeIf }),
         encode: ({ pass }) => {
           pass.setPipeline(this.lateFinalizePipeline);
-          pass.setBindGroup(0, bindGroup);
+          pass.setBindGroup(0, liveBindGroup());
           pass.dispatchWorkgroups(
             Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
           );

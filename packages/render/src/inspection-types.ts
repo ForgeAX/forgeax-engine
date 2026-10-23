@@ -282,6 +282,17 @@ export interface RenderFeatureGraphInspection {
   readonly compilePrimaryCauses: Readonly<Record<string, number>>;
   /** All changed dependencies; multiple entries can describe one compilation. */
   readonly compileChangedDependencies: Readonly<Record<string, number>>;
+  /** Graphs compiled for a frame that did not submit, promoted again without a compile. */
+  readonly unsubmittedGraphReuses?: number;
+  /** Last 32 compiles: bounded before/after values of their first changed dependencies. */
+  readonly recentCompileChanges?: readonly {
+    readonly frame: number;
+    readonly changes: readonly {
+      readonly dependency: string;
+      readonly before: string;
+      readonly after: string;
+    }[];
+  }[];
   readonly candidatesWithPreparedBatches: number;
   readonly preparedKeyChanges: number;
   readonly accepted: number;
@@ -492,6 +503,8 @@ export interface GpuDrivenStructureMetrics {
 }
 
 export interface GpuDrivenProductionInspection {
+  /** Diagnostic: inputs that replaced the GPU-driven raster graph identity. */
+  readonly graphIdentityChanges?: Readonly<Record<string, number>>;
   /** Requested diagnostic and reference-order changes, never GPU execution counts. */
   readonly gbufferBatchOrderDiagnostic?: GBufferOrderDiagnosticInspection;
   /** Exact producer-selected Surface artifact prepared for the last candidate. */

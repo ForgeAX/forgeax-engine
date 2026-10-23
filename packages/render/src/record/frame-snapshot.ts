@@ -601,6 +601,14 @@ export interface RenderFrameState {
         };
       }
     | undefined;
+  /**
+   * A compiled graph whose frame did not submit (for example, while its new
+   * pipelines were still preparing). The next frame with the same topology key
+   * promotes it again instead of compiling an identical graph.
+   */
+  unsubmittedCompiledFrameGraph?:
+    | { readonly installed: InstalledFrameGraph; readonly deviceGeneration: number | undefined }
+    | undefined;
   /** DoF graph/params detached at the same successful-submit boundary. */
   depthOfFieldAccepted?:
     | {

@@ -963,25 +963,8 @@ async function saveImage(cdp, out, name, signal) {
   };
 }
 
-export async function runSimulatorGameplayBenchmark(options, dependencies = {}) {
-  const config = configuration(options),
-    emit = dependencies.emit ?? ((value) => console.log(JSON.stringify(value)));
-  const now = dependencies.now ?? (() => performance.now()),
-    sleep = dependencies.sleep ?? pause;
-  const verify = dependencies.verify ?? verifyNativePublication,
-    connect = dependencies.connect ?? connectCdp;
-  const discover =
-    dependencies.discover ??
-    (async (endpoint, signal) => {
-      const response = await fetch(endpoint, {
-        redirect: 'error',
-        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
-      });
-      check(response.ok, 'endpoint-unavailable');
-      return response.json();
-    });
-  await mkdir(config.out, { mode: 0o700 });
-  const report = {
+function createRunReport(config) {
+  return {
     schemaVersion: 'forgeax-gameplay-run/1',
     host: 'official-wechat-simulator',
     window: config.window,
@@ -1007,6 +990,41 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
       ...(config.nativeReleaseWitness ? { nativeReleaseObserverReleased: null } : {}),
     },
   };
+}
+
+function failureRecord(error) {
+  return {
+    code: codeOf(error),
+    ...(error.detail === undefined ? {} : { detail: error.detail }),
+  };
+}
+
+function releaseTouchProbe({ token }) {
+  const probe = globalThis.GameGlobal?.__gameContextWindow?.__forgeaxSimulatorTouchProbe;
+  return probe?.token === token
+    ? probe.release()
+    : { failure: { code: 'touch-observer-replaced' } };
+}
+
+export async function runSimulatorGameplayBenchmark(options, dependencies = {}) {
+  const config = configuration(options),
+    emit = dependencies.emit ?? ((value) => console.log(JSON.stringify(value)));
+  const now = dependencies.now ?? (() => performance.now()),
+    sleep = dependencies.sleep ?? pause;
+  const verify = dependencies.verify ?? verifyNativePublication,
+    connect = dependencies.connect ?? connectCdp;
+  const discover =
+    dependencies.discover ??
+    (async (endpoint, signal) => {
+      const response = await fetch(endpoint, {
+        redirect: 'error',
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+      });
+      check(response.ok, 'endpoint-unavailable');
+      return response.json();
+    });
+  await mkdir(config.out, { mode: 0o700 });
+  const report = createRunReport(config);
   const signal = AbortSignal.any([
     dependencies.signal ?? new AbortController().signal,
     AbortSignal.timeout(300000),
@@ -1094,19 +1112,20 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
             : 'native-release-unproven';
       return released;
     } catch (error) {
-      sample.failure = {
-        code: codeOf(error),
-        ...(error.detail === undefined ? {} : { detail: error.detail }),
-      };
+      sample.failure = failureRecord(error);
       evidence.outcome = 'native-evidence-invalid';
       report.cleanup.nativeContactsReleased = false;
       return false;
     }
   };
-  try {
-    const publication = await verify(config.project, config.manifestSha256, config.publication);
-    report.source = publication.source;
-    report.publication = publication;
+  const inspectGeometry = () =>
+    evaluate(
+      cdp,
+      inspectSimulator,
+      { canvasSelector: config.canvasSelector, geometry: true },
+      runSignal,
+    );
+  const connectSelectedTarget = async () => {
     let targets;
     try {
       targets = await discover(config.endpoint, signal);
@@ -1135,27 +1154,17 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
         });
       },
     });
+  };
+  const waitForOrdinaryGameReadiness = async () => {
     const deadline = now() + 120000;
-    let state;
     for (;;) {
-      state = await evaluate(
-        cdp,
-        inspectSimulator,
-        { canvasSelector: config.canvasSelector, geometry: true },
-        runSignal,
-      );
-      if (state.renderer?.phase === 'ready' && state.observer?.readyCompletions >= 60) break;
+      const state = await inspectGeometry();
+      if (state.renderer?.phase === 'ready' && state.observer?.readyCompletions >= 60) return state;
       check(now() < deadline, 'ordinary-game-readiness-timeout');
       await sleep(250, runSignal);
     }
-    identity = validateState(state, config.targetPath);
-    check(!state.observer.armed && !state.observer.ended, 'benchmark-realm-already-used');
-    const controls = controlGeometry(state);
-    report.before = state;
-    report.extent = state.extent;
-    report.driver = state.driver;
-    report.geometry = controls;
-    report.images = [await saveImage(cdp, config.out, 'controls.png', runSignal)];
+  };
+  const qualifyNativeContacts = async (state, controls) => {
     probeToken = randomUUID();
     await evaluate(cdp, installNativeTouchProbe, { token: probeToken }, runSignal);
     emit({ phase: 'qualifying-native-contacts', window: config.window });
@@ -1174,40 +1183,27 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
           mode: 0o600,
         }),
     });
-    report.nativeTouch = await evaluate(
-      cdp,
-      ({ token }) => {
-        const probe = globalThis.GameGlobal?.__gameContextWindow?.__forgeaxSimulatorTouchProbe;
-        return probe?.token === token
-          ? probe.release()
-          : { failure: { code: 'touch-observer-replaced' } };
-      },
-      { token: probeToken },
-      runSignal,
-    );
+    report.nativeTouch = await evaluate(cdp, releaseTouchProbe, { token: probeToken }, runSignal);
     check(
       report.nativeTouch.released && !report.nativeTouch.failure,
       'touch-observer-release-failed',
     );
     report.cleanup.touchObserverReleased = true;
     probeToken = null;
-    if (config.nativeReleaseWitness) {
-      releaseToken = randomUUID();
-      report.cleanup.nativeReleaseObserverReleased = false;
-      await evaluate(
-        cdp,
-        nativeReleaseWitness,
-        { action: 'install', token: releaseToken },
-        runSignal,
-      );
-    }
-    report.images.push(await saveImage(cdp, config.out, 'before.png', runSignal));
-    report.beforeTiming = await evaluate(
+  };
+  const installNativeReleaseWitness = async () => {
+    releaseToken = randomUUID();
+    report.cleanup.nativeReleaseObserverReleased = false;
+    await evaluate(
       cdp,
-      inspectSimulator,
-      { canvasSelector: config.canvasSelector, geometry: true },
+      nativeReleaseWitness,
+      { action: 'install', token: releaseToken },
       runSignal,
     );
+  };
+  const captureBeforeTiming = async (state, controls) => {
+    report.images.push(await saveImage(cdp, config.out, 'before.png', runSignal));
+    report.beforeTiming = await inspectGeometry();
     validateState(report.beforeTiming, config.targetPath, identity);
     assertGameplayRegion(report.beforeTiming.player, 8);
     check(
@@ -1215,13 +1211,8 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
         JSON.stringify(report.beforeTiming.extent) === JSON.stringify(state.extent),
       'geometry-changed-before-timing',
     );
-    const timeline = createGameplayTimeline({
-      geometry: controls.css,
-      coordinateSpace: controls.coordinateSpace,
-      phaseMs: config.phaseMs,
-    });
-    report.workload = timeline.workload;
-    await json('timeline.json', timeline);
+  };
+  const armTiming = async (timeline) => {
     const beforeArm = now();
     // arm may execute even when its CDP acknowledgement is lost.
     armed = true;
@@ -1250,8 +1241,7 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
       },
       runSignal,
     );
-    const afterArm = now(),
-      offset = (beforeArm + afterArm) / 2 - timing.nowMs;
+    const afterArm = now();
     // Use the upper clock-alignment bound before admitting any diagnostic read.
     timingEndsAt = afterArm + timing.endMs - timing.nowMs;
     report.clockAlignment = {
@@ -1276,14 +1266,9 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
       report.clockAlignment.uncertaintyMs <= config.maxLatenessMs,
       'clock-alignment-too-uncertain',
     );
-    emit({ phase: 'timing-armed', window: config.window, durationMs: timeline.durationMs });
-    report.inputDispatch = await (dependencies.execute ?? executeTimeline)(timeline, dispatch, {
-      startAt: offset + timing.startMs,
-      maxLatenessMs: config.maxLatenessMs,
-      signal: runSignal,
-    });
-    check(report.inputDispatch.success, 'input-timeline-incomplete', report.inputDispatch.failure);
-    await sleep(offset + timing.endMs + 250 - now(), runSignal);
+    return { timing, offset: (beforeArm + afterArm) / 2 - timing.nowMs };
+  };
+  const waitForPostWindowRelease = async () => {
     // No Runtime.evaluate, inspection, capture or profiler ran between arm and here.
     const releaseDeadline = now() + 15000;
     for (;;) {
@@ -1295,6 +1280,8 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
       await sleep(80, runSignal);
     }
     assertGameplayRegion(report.releaseWitness.player, 13.59);
+  };
+  const drainCapture = async () => {
     report.capture = await evaluate(
       cdp,
       async () => await globalThis.GameGlobal.__gameContextWindow.__gameplayBenchmark.drain(),
@@ -1308,12 +1295,9 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
       'capture-incomplete',
       report.capture.failure,
     );
-    report.after = await evaluate(
-      cdp,
-      inspectSimulator,
-      { canvasSelector: config.canvasSelector, geometry: true },
-      runSignal,
-    );
+  };
+  const verifyFinalState = async (controls) => {
+    report.after = await inspectGeometry();
     validateState(report.after, config.targetPath, identity);
     check(neutral(report.after.player), 'final-input-not-neutral');
     check(report.after.player.grounded === true, 'final-player-not-landed');
@@ -1328,161 +1312,199 @@ export async function runSimulatorGameplayBenchmark(options, dependencies = {}) 
       config.publication,
     );
     report.publicationReverified = true;
+  };
+  const runBenchmark = async () => {
+    const publication = await verify(config.project, config.manifestSha256, config.publication);
+    report.source = publication.source;
+    report.publication = publication;
+    await connectSelectedTarget();
+    const state = await waitForOrdinaryGameReadiness();
+    identity = validateState(state, config.targetPath);
+    check(!state.observer.armed && !state.observer.ended, 'benchmark-realm-already-used');
+    const controls = controlGeometry(state);
+    report.before = state;
+    report.extent = state.extent;
+    report.driver = state.driver;
+    report.geometry = controls;
+    report.images = [await saveImage(cdp, config.out, 'controls.png', runSignal)];
+    await qualifyNativeContacts(state, controls);
+    if (config.nativeReleaseWitness) await installNativeReleaseWitness();
+    await captureBeforeTiming(state, controls);
+    const timeline = createGameplayTimeline({
+      geometry: controls.css,
+      coordinateSpace: controls.coordinateSpace,
+      phaseMs: config.phaseMs,
+    });
+    report.workload = timeline.workload;
+    await json('timeline.json', timeline);
+    const { timing, offset } = await armTiming(timeline);
+    emit({ phase: 'timing-armed', window: config.window, durationMs: timeline.durationMs });
+    report.inputDispatch = await (dependencies.execute ?? executeTimeline)(timeline, dispatch, {
+      startAt: offset + timing.startMs,
+      maxLatenessMs: config.maxLatenessMs,
+      signal: runSignal,
+    });
+    check(report.inputDispatch.success, 'input-timeline-incomplete', report.inputDispatch.failure);
+    await sleep(offset + timing.endMs + 250 - now(), runSignal);
+    await waitForPostWindowRelease();
+    await drainCapture();
+    await verifyFinalState(controls);
     report.success = true;
-  } catch (error) {
-    report.failure = {
-      code: codeOf(error),
-      ...(error.detail === undefined ? {} : { detail: error.detail }),
-    };
-  } finally {
-    if (dispatch) {
-      try {
-        const nativeReleased = await observeNativeRelease('before-final-cleanup');
-        if (!nativeReleased) {
-          try {
-            await dispatch.release();
-          } finally {
-            await observeNativeRelease('after-final-cleanup');
-          }
+  };
+  const awaitNativeContactRelease = async () => {
+    report.cleanup.nativeContactsReleased = false;
+    const deadline = now() + 1500;
+    for (;;) {
+      report.nativeReleaseWitness = await evaluate(
+        cdp,
+        inspectSimulator,
+        { probeToken, inputOnly: true, compact: true },
+        undefined,
+        Math.max(1, deadline - now()),
+      );
+      const witness = report.nativeReleaseWitness;
+      check(
+        witness.touch && !witness.touch.failure && !witness.touch.released,
+        witness.touch?.failure ?? 'native-touch-evidence-missing',
+        { stage: 'cleanup.native-input', last: witness },
+      );
+      if (witness.touch.activeCount === 0 && neutral(witness.player)) {
+        report.cleanup.nativeContactsReleased = true;
+        break;
+      }
+      check(now() < deadline, 'native-input-release-timeout', {
+        stage: 'cleanup.native-input',
+        expected: {
+          activeNativeContacts: 0,
+          controls: { horizontal: 0, vertical: 0, run: false },
+        },
+        last: witness,
+      });
+      await sleep(Math.min(50, deadline - now()));
+    }
+  };
+  const releaseContacts = async () => {
+    try {
+      const nativeReleased = await observeNativeRelease('before-final-cleanup');
+      if (!nativeReleased) {
+        try {
+          await dispatch.release();
+        } finally {
+          await observeNativeRelease('after-final-cleanup');
         }
-        report.inputCleanup = dispatch.wireMetrics();
-        check(report.inputCleanup.releaseConfirmed, 'input-release-unconfirmed');
-        if (cdp && probeToken) {
-          report.cleanup.nativeContactsReleased = false;
-          const deadline = now() + 1500;
-          for (;;) {
-            report.nativeReleaseWitness = await evaluate(
-              cdp,
-              inspectSimulator,
-              { probeToken, inputOnly: true, compact: true },
-              undefined,
-              Math.max(1, deadline - now()),
-            );
-            const witness = report.nativeReleaseWitness;
-            check(
-              witness.touch && !witness.touch.failure && !witness.touch.released,
-              witness.touch?.failure ?? 'native-touch-evidence-missing',
-              { stage: 'cleanup.native-input', last: witness },
-            );
-            if (witness.touch.activeCount === 0 && neutral(witness.player)) {
-              report.cleanup.nativeContactsReleased = true;
-              break;
-            }
-            check(now() < deadline, 'native-input-release-timeout', {
-              stage: 'cleanup.native-input',
-              expected: {
-                activeNativeContacts: 0,
-                controls: { horizontal: 0, vertical: 0, run: false },
-              },
-              last: witness,
-            });
-            await sleep(Math.min(50, deadline - now()));
-          }
-        }
-        report.cleanup.contactsReleased = true;
-      } catch (error) {
-        report.inputCleanup = dispatch.wireMetrics();
-        report.cleanup.contactsReleased = false;
-        report.errors.push({
-          stage: 'contact-release',
-          code: codeOf(error),
-          message: error.message,
-          ...(error.detail === undefined ? {} : { detail: error.detail }),
-        });
       }
+      report.inputCleanup = dispatch.wireMetrics();
+      check(report.inputCleanup.releaseConfirmed, 'input-release-unconfirmed');
+      if (cdp && probeToken) await awaitNativeContactRelease();
+      report.cleanup.contactsReleased = true;
+    } catch (error) {
+      report.inputCleanup = dispatch.wireMetrics();
+      report.cleanup.contactsReleased = false;
+      report.errors.push({
+        stage: 'contact-release',
+        code: codeOf(error),
+        message: error.message,
+        ...(error.detail === undefined ? {} : { detail: error.detail }),
+      });
     }
-    if (cdp && probeToken) {
-      try {
-        const result = await evaluate(
-          cdp,
-          ({ token }) => {
-            const probe = globalThis.GameGlobal?.__gameContextWindow?.__forgeaxSimulatorTouchProbe;
-            return probe?.token === token
-              ? probe.release()
-              : { failure: { code: 'touch-observer-replaced' } };
-          },
-          { token: probeToken },
-        );
-        report.nativeTouch = result;
-        report.cleanup.touchObserverReleased = result.released && !result.failure;
-      } catch (error) {
-        report.cleanup.touchObserverReleased = false;
-        report.errors.push({ stage: 'touch-observer-release', code: codeOf(error) });
+  };
+  const releaseTouchObserver = async () => {
+    try {
+      const result = await evaluate(cdp, releaseTouchProbe, { token: probeToken });
+      report.nativeTouch = result;
+      report.cleanup.touchObserverReleased = result.released && !result.failure;
+    } catch (error) {
+      report.cleanup.touchObserverReleased = false;
+      report.errors.push({ stage: 'touch-observer-release', code: codeOf(error) });
+    }
+  };
+  const abortAndDrainCapture = async () => {
+    try {
+      report.capture = await evaluate(
+        cdp,
+        async () => {
+          const observer = globalThis.GameGlobal.__gameContextWindow.__gameplayBenchmark;
+          observer.abort();
+          return await observer.drain();
+        },
+        null,
+        undefined,
+        20000,
+      );
+      report.cleanup.drained = report.capture.drain?.success === true;
+    } catch (error) {
+      report.cleanup.drained = false;
+      report.errors.push({ stage: 'drain', code: codeOf(error) });
+    }
+  };
+  const releaseNativeReleaseObserver = async () => {
+    try {
+      report.nativeReleaseObserver = await evaluate(cdp, nativeReleaseWitness, {
+        action: 'release',
+        token: releaseToken,
+      });
+      report.cleanup.nativeReleaseObserverReleased =
+        report.nativeReleaseObserver.released === true;
+      if (report.nativeReleaseObserver.failure) {
+        report.cleanup.nativeContactsReleased = false;
+        if (report.terminalNativeRelease)
+          report.terminalNativeRelease.outcome = 'native-evidence-invalid';
+        report.success = false;
+        report.failure ??= {
+          code: 'native-release-evidence-invalid',
+          detail: report.nativeReleaseObserver.failure,
+        };
       }
+    } catch (error) {
+      report.cleanup.nativeReleaseObserverReleased = false;
+      report.errors.push({ stage: 'native-release-observer-release', code: codeOf(error) });
     }
-    if (cdp && armed && !report.capture) {
-      try {
-        report.capture = await evaluate(
-          cdp,
-          async () => {
-            const observer = globalThis.GameGlobal.__gameContextWindow.__gameplayBenchmark;
-            observer.abort();
-            return await observer.drain();
-          },
-          null,
-          undefined,
-          20000,
-        );
-        report.cleanup.drained = report.capture.drain?.success === true;
-      } catch (error) {
-        report.cleanup.drained = false;
-        report.errors.push({ stage: 'drain', code: codeOf(error) });
+  };
+  const closeSocket = async () => {
+    try {
+      report.cleanup.socketClosed = await cdp.close();
+    } catch {
+      report.cleanup.socketClosed = false;
+    }
+  };
+  const writeAnalysis = async () => {
+    try {
+      report.analysis = analyzeGameplay(report);
+      if (report.analysis.status !== 'complete') {
+        report.success = false;
+        report.failure ??= { code: 'analysis-incomplete', detail: report.analysis.errors };
       }
+      await json('analysis.json', report.analysis);
+      await writeFile(join(config.out, 'analysis.md'), formatAnalysis(report), {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    } catch (error) {
+      report.success = false;
+      report.failure ??= { code: 'analysis-failed' };
+      report.errors.push({ stage: 'analysis', code: codeOf(error) });
     }
-    if (cdp && releaseToken) {
-      try {
-        report.nativeReleaseObserver = await evaluate(cdp, nativeReleaseWitness, {
-          action: 'release',
-          token: releaseToken,
-        });
-        report.cleanup.nativeReleaseObserverReleased =
-          report.nativeReleaseObserver.released === true;
-        if (report.nativeReleaseObserver.failure) {
-          report.cleanup.nativeContactsReleased = false;
-          if (report.terminalNativeRelease)
-            report.terminalNativeRelease.outcome = 'native-evidence-invalid';
-          report.success = false;
-          report.failure ??= {
-            code: 'native-release-evidence-invalid',
-            detail: report.nativeReleaseObserver.failure,
-          };
-        }
-      } catch (error) {
-        report.cleanup.nativeReleaseObserverReleased = false;
-        report.errors.push({ stage: 'native-release-observer-release', code: codeOf(error) });
-      }
-    }
-    if (cdp) {
-      try {
-        report.cleanup.socketClosed = await cdp.close();
-      } catch {
-        report.cleanup.socketClosed = false;
-      }
-    }
+  };
+  const cleanUp = async () => {
+    if (dispatch) await releaseContacts();
+    if (cdp && probeToken) await releaseTouchObserver();
+    if (cdp && armed && !report.capture) await abortAndDrainCapture();
+    if (cdp && releaseToken) await releaseNativeReleaseObserver();
+    if (cdp) await closeSocket();
     if (Object.values(report.cleanup).includes(false)) {
       report.success = false;
       report.failure ??= { code: 'cleanup-incomplete' };
     }
     report.endedAtUtc = new Date().toISOString();
-    if (report.capture?.schemaVersion === 'forgeax-gameplay-capture/1') {
-      try {
-        report.analysis = analyzeGameplay(report);
-        if (report.analysis.status !== 'complete') {
-          report.success = false;
-          report.failure ??= { code: 'analysis-incomplete', detail: report.analysis.errors };
-        }
-        await json('analysis.json', report.analysis);
-        await writeFile(join(config.out, 'analysis.md'), formatAnalysis(report), {
-          flag: 'wx',
-          mode: 0o600,
-        });
-      } catch (error) {
-        report.success = false;
-        report.failure ??= { code: 'analysis-failed' };
-        report.errors.push({ stage: 'analysis', code: codeOf(error) });
-      }
-    }
+    if (report.capture?.schemaVersion === 'forgeax-gameplay-capture/1') await writeAnalysis();
     await json('report.json', report);
+  };
+  try {
+    await runBenchmark();
+  } catch (error) {
+    report.failure = failureRecord(error);
+  } finally {
+    await cleanUp();
   }
   emit({
     phase: 'complete',

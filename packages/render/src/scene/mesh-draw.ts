@@ -6,6 +6,22 @@ import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
 // Pose-only source replacements share one weak instance table per Mesh version.
 const draws = new WeakMap<MeshGeometry, WeakMap<RenderableSnapshot, RenderableSnapshot>>();
 
+/**
+ * The effective draw materials only, without a draw snapshot. Pose-only
+ * replacements reuse the per-Mesh override binding, so temporal and GPU Scene
+ * readers avoid rebuilding the complete draw row for every moved instance.
+ */
+export function meshDrawMaterials(
+  source: RenderableSnapshot,
+  meshes: MeshFrame,
+): Pick<RenderableSnapshot, 'material' | 'materials'> {
+  if (source.terrain !== undefined || source.materialOverrides === undefined) return source;
+  const mesh = meshes.get(source.worldId, source.assetHandle);
+  return mesh === undefined
+    ? source
+    : effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
+}
+
 /** Draw consumption combines instance facts with the frame's shared geometry and bindings. */
 export function meshDrawSnapshot(
   source: RenderableSnapshot,

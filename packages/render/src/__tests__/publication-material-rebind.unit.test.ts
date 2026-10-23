@@ -7,11 +7,10 @@ import {
 import { defaultMaterialSnapshot } from '../render-system-extract';
 
 const entryPoints = Object.freeze({ vertex: 'vs_main', fragment: 'fs_main' });
+const artifact = { paramSchema: undefined, program: { entryPoints } };
 const registry = {
-  findMaterialArtifact: () => ({
-    ok: true,
-    value: { paramSchema: undefined, program: { entryPoints } },
-  }),
+  findMaterialArtifact: () => ({ ok: true, value: artifact }),
+  materialArtifact: () => artifact,
 } as never;
 
 const material = {

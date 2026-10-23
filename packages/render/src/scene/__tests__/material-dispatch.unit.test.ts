@@ -1,5 +1,5 @@
 import { vec3 } from '@forgeax/engine-math';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
@@ -757,4 +757,105 @@ it('keeps the query and dispatch list when a pose-only republication rebinds the
   const moved = owner.query(slots);
   expect(moved).not.toBe(first);
   expect([...moved].every((entry) => entry.layer === 3)).toBe(true);
+});
+
+it.each([
+  false,
+  true,
+])('change-driven Pass queries match a complete query through random membership edits (resolver %s)', async (withResolver) => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const cube = createPrimitiveMesh('cube').unwrap();
+  const resources = Array.from(
+    { length: 9 },
+    (_, i) => new MaterialResource(material(i + 1, 1000 + (i % 4) * 500, i % 2 === 0)),
+  );
+  const byHandle = new Map(
+    resources.map((resource) => [resource.snapshot.materialHandle, resource]),
+  );
+  const resolver = withResolver
+    ? (_world: number, handle: number) => byHandle.get(handle) ?? (resources[0] as MaterialResource)
+    : undefined;
+  const incremental = new MaterialDispatch(resolver);
+  const complete = new MaterialDispatch(resolver);
+  const changeDriven = vi.spyOn(
+    incremental as unknown as { queryIncrementally(): boolean },
+    'queryIncrementally',
+  );
+  const twoSlots = { ...cube, materialSlots: [{ slotName: 'first' }, { slotName: 'second' }] };
+  const meshes = new MeshFrame()
+    .with(0, 1, twoSlots, [resources[1] as MaterialResource, resources[2] as MaterialResource])
+    .with(0, 2, twoSlots, [resources[3] as MaterialResource, resources[4] as MaterialResource]);
+  const meshDefaults = new Map([
+    [1, resources[1]],
+    [2, resources[3]],
+  ]);
+  // Effective resources of a row: direct, or its Mesh slot defaults and overrides.
+  const uses = (snapshot: RenderableSnapshot, resource: MaterialResource) =>
+    snapshot.materialOverrides === undefined
+      ? snapshot.material === resource
+      : snapshot.materialOverrides[1] === resource ||
+        (!withResolver && meshDefaults.get(snapshot.assetHandle ?? 0) === resource);
+  const rows = new Map<number, RenderSceneSlot>();
+  const describe = (frame: ReturnType<MaterialDispatch['query']>) =>
+    [...frame].map(
+      (entry) =>
+        `${entry.materialHandle}:${entry.entityIndex}:${entry.renderableIndex}:${entry.queue}:${entry.tags.LightMode}`,
+    );
+  let state = withResolver ? 11 : 7;
+  for (let step = 0; step < 900; step++) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const id = state % 211;
+    const resource = resources[(state >>> 9) % resources.length];
+    if (resource === undefined) throw new Error('missing fixture material');
+    if (step % 61 === 0)
+      // Retire every row of one material so its Passes and counts leave the frame.
+      for (const [key, row] of [...rows])
+        if (uses(row.snapshot, resource)) {
+          for (const owner of [incremental, complete]) owner.remove(key);
+          rows.delete(key);
+        }
+    const edits = 1 + ((state >>> 20) % 4);
+    for (let edit = 0; edit < edits; edit++) {
+      const target = (id + edit * 37) % 211;
+      if ((state >>> 4) % 9 === 0) {
+        for (const owner of [incremental, complete]) owner.remove(target);
+        rows.delete(target);
+      } else if (step % 97 === 0 && edit === 0) {
+        resource.adopt(
+          material(resource.snapshot.materialHandle ?? 0, 1000 + ((state >>> 16) % 5) * 250, true),
+        );
+        for (const owner of [incremental, complete]) owner.adopt(resource);
+      } else {
+        const row = slot(target, resource, (state >>> 12) % 3 !== 0);
+        const kind = (state >>> (14 + edit)) % 11;
+        const snapshot: RenderableSnapshot =
+          kind === 0
+            ? { ...row.snapshot, authorVisible: false }
+            : kind < 5
+              ? {
+                  ...row.snapshot,
+                  assetHandle: 1 + (kind % 2),
+                  materialOverrides: [undefined, resources[(kind * 3 + edit) % 9]],
+                }
+              : row.snapshot;
+        rows.set(target, { ...row, snapshot });
+        for (const owner of [incremental, complete]) owner.bind(target, snapshot);
+      }
+    }
+    const slots = fixedSlots([...rows.values()].sort((a, b) => a.slot - b.slot));
+    // The reference owner always rebuilds its complete projection.
+    (complete as unknown as { invalidateQuery(): void }).invalidateQuery();
+    const expected = query(complete, slots, meshes);
+    const actual = query(incremental, slots, meshes);
+    expect(describe(actual)).toEqual(describe(expected));
+    for (const resource of resources)
+      expect(incremental.materials().get(resource)?.bindings).toBe(
+        complete.materials().get(resource)?.bindings,
+      );
+  }
+  // Most queries follow membership-only edits and take the change-driven path.
+  expect(
+    changeDriven.mock.results.filter((result) => result.value === true).length,
+  ).toBeGreaterThan(700);
 });

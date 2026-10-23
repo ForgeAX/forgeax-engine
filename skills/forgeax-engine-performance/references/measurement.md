@@ -120,6 +120,25 @@ message's local node table before selecting global definitions. Restore declared
 buffer capacity when the storage codec trims trailing zero bytes. That artifact
 codec is not evidence that production Worker transport compresses each frame.
 
+## CPU-only measurement with the WebGPU stub
+
+Use `?forgeax-gpu-stub=1` (or `createApp({ gpuStub })`) when the host has no usable
+GPU, or to remove GPU cost from a CPU comparison. The Engine keeps `rhi-webgpu`, the
+profiled caps and the selected Worker topology; only GPU execution, browser
+WebGPU/Dawn work and readback contents disappear.
+
+- Compare only stub against stub on the same host, build and workload. Record the
+  stub profile with the backend facts; a stub capture is a different target from
+  any real-GPU capture.
+- Valid: per-owner CPU attribution, Worker task costs, allocation/GC, simulation
+  and render preparation counts. Invalid: FPS targets, GPU timestamps, pixel or
+  GPU-completion pacing, and conclusions that depend on GPU readback contents.
+- Without GPU back-pressure the frame rate is bounded by CPU and display callbacks;
+  do not read faster frames as an improvement.
+- Do not use software WebGPU adapters (SwiftShader, `--enable-unsafe-webgpu` without
+  a GPU) or `rhi-null` as a substitute: the former emulates the GPU on the measured
+  CPU, the latter changes backend kind, caps and render branches.
+
 ## Use the correct clock and denominator
 
 | Observation | Supports | Does not establish |

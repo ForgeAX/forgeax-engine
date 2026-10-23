@@ -90,3 +90,50 @@ describe('raster graph dependency projections', () => {
     expect(recovered.recording).not.toBe(first.recording);
   });
 });
+
+describe('stock-recorder raster classes', () => {
+  it('keeps the recording identity while a built class is absent and rebuilds for a new one', () => {
+    const owner = new RasterGraphIdentity(),
+      bindings = {};
+    const update = (...keys: string[]) =>
+      owner.update(
+        {},
+        1,
+        resources,
+        keys.map((key) => ({ classKey: `mesh/${key}`, recordingClassKey: key })),
+        bindings,
+        undefined,
+      ).recording;
+    const base = update('a');
+    owner.built(['a']);
+    const grown = update('a', 'b');
+    expect(grown).not.toBe(base);
+    owner.built(['a', 'b']);
+    // The grenade-like class disappears and returns: the built graph still holds it.
+    expect(update('a')).toBe(grown);
+    expect(update('a', 'b')).toBe(grown);
+    // A graph rebuilt for another dependency holds only the then-live classes.
+    owner.built(['a']);
+    const returned = update('a', 'b');
+    expect(returned).not.toBe(grown);
+  });
+
+  it('bounds the absent classes a graph may retain', () => {
+    const owner = new RasterGraphIdentity(),
+      bindings = {};
+    const update = (keys: readonly string[]) =>
+      owner.update(
+        {},
+        1,
+        resources,
+        keys.map((key) => ({ classKey: key, recordingClassKey: key })),
+        bindings,
+        undefined,
+      ).recording;
+    const all = Array.from({ length: 40 }, (_, index) => `class-${index}`);
+    const full = update(all);
+    owner.built(all);
+    expect(update(all.slice(0, 8))).toBe(full);
+    expect(update(all.slice(0, 7))).not.toBe(full);
+  });
+});

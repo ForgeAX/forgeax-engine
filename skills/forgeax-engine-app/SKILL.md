@@ -128,6 +128,15 @@ Edit World and Renderer identity; `app.stop()` and `renderer.dispose()` are
 not relocation APIs. `app.stop()` only stops frame scheduling; `app.dispose()`
 drains the plugin realm and releases the renderer.
 
+## WebGPU stub for GPU-less CPU diagnostics
+
+`createApp(canvas, { gpuStub: profile })` installs the `rhi-webgpu` stub in the main
+realm before execution capability probing and forwards the profile to the Engine
+and Render Workers, which install it before their Renderer exists. Worker WebGPU
+counts as available, so the selected topology matches a GPU host. Generated hosts
+map `?forgeax-gpu-stub=1` to `DEFAULT_WEBGPU_STUB_PROFILE`. CPU attribution only;
+see the [performance skill](../forgeax-engine-performance/references/measurement.md#cpu-only-measurement-with-the-webgpu-stub).
+
 ## Optional CPU profiling
 
 Attach `@forgeax/engine-profiler` to the App or Renderer assembly when a bounded CPU artifact is

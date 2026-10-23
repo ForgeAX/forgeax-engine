@@ -187,6 +187,7 @@ export {
   AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITIES,
+  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
   ambientOcclusionParameters,

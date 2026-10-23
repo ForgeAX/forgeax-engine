@@ -137,7 +137,29 @@ the Render owner contract. Neither produces synthetic ticks.
 - Provider seam injection via `gpu?: GPU` parameter (research §F-6 webgpu-utils + CTS consensus); default routes through `globalThis.navigator.gpu`.
 - dawn.node real-GPU coverage: `src/__tests__/dawn-real-gpu.dawn.test.ts` (4 D-S3 triggers, candidate proposition 6 monitoring).
 
-## Intentional differences (vs spec / wgpu)
+## WebGPU stub
+
+`installWebGpuStub(profile)` replaces the calling realm's `navigator.gpu` and
+`'webgpu'` canvas contexts with a no-op `GPU` that reports `profile`'s adapter
+features, limits, info and preferred canvas format. Every ambient consumer keeps
+this package's ordinary path (`caps.backendKind === 'webgpu'`, profile-derived
+caps), but nothing reaches a GPU, Dawn or a software rasterizer: submissions and
+`onSubmittedWorkDone` complete immediately, pipelines and shaders succeed without
+validation, and mapped ranges are zero-filled. Use it for CPU-side engine and game
+cost on hosts without a usable GPU, or to remove GPU cost on a GPU host. It is
+never pixel, GPU-time or FPS acceptance evidence.
+
+| Export | Contract |
+|:--|:--|
+| `DEFAULT_WEBGPU_STUB_PROFILE` | Chrome 155 on an Apple M4 Pro (Metal 3), captured 2026-10-22. |
+| `captureWebGpuStubProfile(gpu, name)` | Captures a structured-cloneable profile from a real `GPU`; `null` without an adapter. |
+| `installWebGpuStub(profile)` | Idempotent per realm. Install before any backend selection in each realm that creates a Renderer. |
+| `installedWebGpuStub()` | Installed profile name, or `undefined`. |
+
+`createApp({ gpuStub })` installs it in the main realm and every execution Worker;
+generated hosts map `?forgeax-gpu-stub=1` to the default profile. Unlike
+`rhi-null`, which validates RHI ownership structurally for unit tests, the stub
+exists to keep the real browser WebGPU path while removing GPU work.
 
 - **`'x' in src` guard transit**: spec `?: T` vs forgeax `?: T | undefined` differ under `exactOptionalPropertyTypes:true`; the shim guards each field per F-3 anti-pattern 2.
 - **`device.lost` single source**: this package only forwards the spec Promise; fan-out is the engine's job (`LostListenerRegistry`).

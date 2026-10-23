@@ -22,6 +22,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import { err, ok } from '@forgeax/engine-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
+import { forwardGpuStub } from './gpu-stub';
 import type { EngineToHostMessage, ExecutionFrameMessage, ExecutionInitMessage } from './protocol';
 import {
   MESH_RESIDENCY_REQUEST_LIMIT,
@@ -94,13 +95,14 @@ export class SourceRenderWorker {
     | Parameters<typeof createDynamicGeometrySourceHost>[0]['capturePipelinePreparation']
     | undefined;
   private readonly publishedFrames = new Map<number, { frameId: number; fixedStep: number }>();
+  private capacityWaiters: (() => void)[] = [];
   private readonly meshResidency: SourceMeshResidency;
   readonly dynamicGeometry: ReturnType<typeof createDynamicGeometrySourceHost>;
   constructor(
     private readonly world: World,
     private readonly assets: AssetRegistry,
     private readonly init: ExecutionInitMessage,
-    private readonly post: (message: EngineToHostMessage) => void,
+    private readonly post: (message: EngineToHostMessage, transfer?: Transferable[]) => void,
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
   ) {
@@ -349,6 +351,9 @@ export class SourceRenderWorker {
             this.targets,
             message.limits,
             this.publicationCapacity,
+            // Prepared-mesh references are disabled: a retired-then-reacquired handle
+            // can be referenced after the receiver dropped its prepared payload.
+            // Full asset rows are sent until that ownership is redesigned.
           );
           ready = true;
           this.inspectionReady = true;
@@ -386,7 +391,6 @@ export class SourceRenderWorker {
             failure(cause, undefined, false);
             return;
           }
-          this.post({ kind: 'render-submitted', epoch, frame: message.frame });
         } else if (message.kind === 'completed') {
           clearTimeout(this.deadline);
           const submitted = this.publishedFrames.get(message.revision);
@@ -400,6 +404,7 @@ export class SourceRenderWorker {
             return;
           }
           this.publishedFrames.delete(message.revision);
+          this.releaseCapacityWaiters();
           const proof = message.meshConsumption;
           if (proof !== undefined) {
             if (
@@ -441,7 +446,6 @@ export class SourceRenderWorker {
               observation: message.gpuPassTiming,
             };
           }
-          this.post({ kind: 'render-complete', epoch, frame: message.frame });
           if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
         }
       };
@@ -450,11 +454,16 @@ export class SourceRenderWorker {
         return;
       }
       this.initializationSent = true;
+      // Render notices go straight to the Host; the Host port precedes the session's first notice.
+      const hostChannel = new MessageChannel();
+      this.post({ kind: 'render-host-port', epoch, port: hostChannel.port2 }, [hostChannel.port2]);
       worker.postMessage(
         {
           kind: 'init',
+          hostPort: hostChannel.port1,
           worldIdentity: this.world.identity,
           ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
+          ...forwardGpuStub(this.init),
           ...(this.init.diagnostics?.shadowWorkload === true ? { shadowWorkload: true } : {}),
           ...(this.init.diagnostics?.gpuPassTiming === undefined
             ? {}
@@ -498,7 +507,7 @@ export class SourceRenderWorker {
             : { shaderManifestUrl: this.init.shaderManifestUrl }),
           ...(this.init.build === undefined ? {} : { build: this.init.build }),
         } satisfies RenderWorkerInput,
-        [canvas],
+        [canvas, hostChannel.port1],
       );
       // The same failure owner handles a GPU queue that never completes.
       this.armFrameDeadline = () => {
@@ -513,6 +522,21 @@ export class SourceRenderWorker {
   }
   get hasPublicationCapacity(): boolean {
     return this.publishedFrames.size < this.publicationCapacity;
+  }
+  /**
+   * Host credit returns directly from the Render Worker, so a Host frame can
+   * arrive before this Engine has processed the matching completion. Resolve
+   * once a completion (or session end) frees a publication slot.
+   */
+  waitForPublicationCapacity(): Promise<void> {
+    if (this.hasPublicationCapacity || this.disposed) return Promise.resolve();
+    return new Promise((resolve) => this.capacityWaiters.push(resolve));
+  }
+  private releaseCapacityWaiters(): void {
+    if (this.capacityWaiters.length === 0) return;
+    const waiters = this.capacityWaiters;
+    this.capacityWaiters = [];
+    for (const resolve of waiters) resolve();
   }
   publish(frame: ExecutionFrameMessage, sampleTimeSeconds: number): void {
     const publisher = this.publisher,
@@ -845,6 +869,7 @@ export class SourceRenderWorker {
       this.meshResidency.clear('Render Worker session ended');
     }
     this.publishedFrames.clear();
+    this.releaseCapacityWaiters();
     for (const request of this.inspectionRequests.values())
       request.finish(rendererInspectionFailure('session-ended'));
     for (const request of this.terrainRequests.values())

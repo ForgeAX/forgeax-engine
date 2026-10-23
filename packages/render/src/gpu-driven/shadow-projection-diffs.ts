@@ -1,4 +1,4 @@
-import type { GpuDrivenBatchBinding } from './batch-topology';
+import type { GpuDrivenBatch, GpuDrivenBatchBinding, SubmissionPlan } from './batch-topology';
 import type { BatchExecutions } from './material-artifacts';
 import type { FilteredProductionPlan } from './production-raster-prepare';
 
@@ -13,6 +13,17 @@ export function filteredRows(filtered: FilteredProductionPlan): ReadonlyMap<numb
     filteredRowsById.set(filtered, rows);
   }
   return rows;
+}
+
+/** Batch owners of one immutable plan, indexed at most once. */
+const ownersByPlan = new WeakMap<SubmissionPlan, ReadonlySet<GpuDrivenBatch>>();
+function planOwners(plan: SubmissionPlan): ReadonlySet<GpuDrivenBatch> {
+  let owners = ownersByPlan.get(plan);
+  if (owners === undefined) {
+    owners = new Set(plan.batches);
+    ownersByPlan.set(plan, owners);
+  }
+  return owners;
 }
 
 /**
@@ -46,6 +57,31 @@ export class ShadowProjectionDiffs {
       this.rows.set(previous, diff);
     }
     return diff;
+  }
+
+  /**
+   * Whether a batch owner of the previous projection is unchanged: the same
+   * object, with an unchanged filtered row and shadow execution.
+   */
+  retainedOwners(
+    previousPlan: SubmissionPlan,
+    previousFiltered: FilteredProductionPlan,
+    previousExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions> | undefined,
+  ): ((batch: GpuDrivenBatch) => boolean) | undefined {
+    if (previousExecutions === undefined) return undefined;
+    const owners = planOwners(previousPlan);
+    const changedRows =
+      previousFiltered === this.filtered
+        ? undefined
+        : new Set(this.rowsChangedSince(previousFiltered).changed.map((row) => row.batch.batchId));
+    const changedBindings =
+      previousExecutions === this.batchExecutions
+        ? undefined
+        : this.executionsChangedSince(previousExecutions);
+    return (batch) =>
+      owners.has(batch) &&
+      changedRows?.has(batch.batchId) !== true &&
+      (batch.binding === undefined || changedBindings?.has(batch.binding) !== true);
   }
 
   executionsChangedSince(

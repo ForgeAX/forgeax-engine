@@ -495,13 +495,9 @@ describe('Main GPU-driven prepared visible windows', () => {
       create.mockClear();
       r.record(f.prepare());
       expect(create).not.toHaveBeenCalled();
-      expect(recordings.windows).toHaveLength(6);
-      for (const [pass, call] of recordings.windows.entries()) {
-        for (const [batch, binding] of call.entries()) {
-          expect(binding).toBe(first[pass]?.[batch]);
-        }
-      }
-      expect(f.production.inspect().preparedBundleHits).toBe(6);
+      // Unchanged runs replay their retained native commands without
+      // resolving visible windows again.
+      expect(recordings.windows).toHaveLength(0);
       expect(f.production.inspect().encodedIndirectDraws).toBe(36);
     } finally {
       recordings.restore();

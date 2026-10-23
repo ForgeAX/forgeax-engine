@@ -31,6 +31,7 @@ interface Request {
   readonly prepared: Promise<Prepared>;
   readonly entity: number | undefined;
   readonly meshHandle: number;
+  readonly revision: number;
   ready: boolean;
   consumedCompletion?: number;
   consumedOrder?: number;
@@ -220,6 +221,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       prepared,
       entity: input.entity,
       meshHandle: Number(input.meshHandle),
+      revision: input.assetRevision,
       ready: false,
       finish,
       fail,
@@ -430,6 +432,32 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     const bindings = this.byEntity.get(request.entity);
     bindings?.delete(requestId);
     if (bindings?.size === 0) this.byEntity.delete(request.entity);
+  }
+  /**
+   * The newest request for this mesh handle is ready with exactly this
+   * revision, in the current session, and the receiver keeps its payload until
+   * the next publication adopts it (no request to evict it has been sent).
+   */
+  holdsPrepared(meshHandle: number, revision: number): boolean {
+    let latest: Request | undefined;
+    let latestId = -1;
+    for (const [requestId, request] of this.requests)
+      if (request.meshHandle === meshHandle && requestId > latestId) {
+        latest = request;
+        latestId = requestId;
+      }
+    const live = this.session();
+    return (
+      latest !== undefined &&
+      latest.ready &&
+      latest.revision === revision &&
+      latest.ended === undefined &&
+      latest.failure === undefined &&
+      (latest.release === undefined || !latest.release.evict) &&
+      live?.source === latest.session.source &&
+      live.epoch === latest.session.epoch &&
+      live.generation === latest.session.generation
+    );
   }
   publishedFixedStep(world: World): number | undefined {
     return world === this.world ? this.fixedStep : undefined;

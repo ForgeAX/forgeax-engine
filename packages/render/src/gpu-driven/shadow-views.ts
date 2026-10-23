@@ -1698,13 +1698,17 @@ export class ShadowViewStatePool {
     if (!this.activeKeys.has(key)) return undefined;
     const record = this.records.get(key);
     if (record === undefined) return undefined;
-    let selection = viewSelections.get(record.plan);
-    if (selection === undefined) {
-      selection = new GpuDrawSelection(record.plan.batches);
-      viewSelections.set(record.plan, selection);
-    }
+    const plan = record.plan;
     return {
-      selection,
+      // Built only for a recording that actually consumes the selection.
+      get selection() {
+        let selection = viewSelections.get(plan);
+        if (selection === undefined) {
+          selection = new GpuDrawSelection(plan.batches);
+          viewSelections.set(plan, selection);
+        }
+        return selection;
+      },
       identity: record.identity,
       cache: record.cache,
       generation: record.generation,

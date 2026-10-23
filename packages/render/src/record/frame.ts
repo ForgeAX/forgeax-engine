@@ -4002,7 +4002,11 @@ export function* prepareFrameRecording(
     // queue submission succeeds. This runs for every early-return path as
     // well, so a swapchain, encoder, or graph failure cannot leave a
     // non-submitted candidate as the next frame's accepted graph.
-    settleCompiledFrameGraphCandidate(frameState, submitted);
+    settleCompiledFrameGraphCandidate(
+      frameState,
+      submitted,
+      !submitted && frameState.pipelinePreparationPending === true,
+    );
     if (volumeInspectionReady && (submitted || volumeSubmissionAttempted)) {
       updateVolumetricFogInspection(
         frameState,

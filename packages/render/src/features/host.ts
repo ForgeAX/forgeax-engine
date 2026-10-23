@@ -2015,6 +2015,7 @@ export function runRenderFeatureFrame(
                 ? undefined
                 : createNativeResourceAdmission({
                     gpu,
+                    frame: input.frameNumber,
                     isActive: () => nativePlanningOpen,
                     prepare: (resources, keys, inherited) =>
                       preparePlanResources(

@@ -109,6 +109,11 @@ export function createRenderPublisher(
   targetOwner?: RenderPublicationTargetOwner,
   limits?: Readonly<Record<string, number>>,
   maxInFlight: 2 | 3 | 4 = 2,
+  /**
+   * True when the receiver already holds this exact mesh revision from a ready
+   * residency preparation that stays until this publication is adopted.
+   */
+  preparedMesh?: (handle: number, revision: number) => boolean,
 ) {
   world.bindAssets(assets).unwrap();
   const assetObserver = assets.observe().unwrap();
@@ -747,6 +752,30 @@ export function createRenderPublisher(
                   ([id]) => (materialHolds.get(id) ?? materialRecords.get(id)?.holds ?? 0) > 0,
                 )
                 .map(([id, value]) => ({ id, value }));
+        // A mesh revision the receiver already holds from a ready preparation
+        // crosses once: send its identity, not a second cloned payload.
+        const preparedRows: {
+          handle: number;
+          revision: number;
+          guid?: string;
+          sourceKey?: string;
+        }[] = [];
+        const sentAssetRows =
+          preparedMesh === undefined
+            ? [...assetRows]
+            : [...assetRows].filter(([handle, value, revision]) => {
+                if (value.kind !== 'mesh' || !preparedMesh(handle as number, revision)) return true;
+                const guid = runtimeAssetSource(assets, handle);
+                const sourceKey = guid === undefined ? undefined : assets.sourceKeyOf(guid);
+                preparedRows.push({
+                  handle: handle as number,
+                  revision,
+                  ...(guid === undefined ? {} : { guid }),
+                  ...(sourceKey === undefined ? {} : { sourceKey }),
+                });
+                return false;
+              });
+        observation?.fact('preparedAssets', preparedRows.length);
         const upsertColumn = new Uint32Array(buffer(0, upserts.length * 4), 0, upserts.length);
         upsertColumn.set(upserts);
         const removedColumn = new Uint32Array(buffer(1, removed.size * 4), 0, removed.size);
@@ -792,7 +821,8 @@ export function createRenderPublisher(
           transformEntities,
           transforms: matrices,
           retiredJoints: retiredJointColumn,
-          assets: [...assetRows].map(([handle, value, revision]) => {
+          ...(preparedRows.length === 0 ? {} : { preparedAssets: preparedRows }),
+          assets: sentAssetRows.map(([handle, value, revision]) => {
             // Runtime content is a projection, so GUID identity stays with the
             // underlying catalogued payload rather than the projected object.
             const guid = runtimeAssetSource(assets, handle);

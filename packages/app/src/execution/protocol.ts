@@ -154,6 +154,8 @@ export interface ExecutionInitMessage {
   readonly time?: import('@forgeax/engine-ecs').TimePolicy;
   readonly animation?: import('@forgeax/engine-animation').AnimationPlaybackOptions;
   readonly diagnostics?: import('./types').ExecutionDiagnosticsOptions;
+  /** Installed in the Engine Worker and forwarded to the Render Worker realm. */
+  readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
   /** Renderer-realm display output color space; the Renderer owns negotiation. */
   readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
@@ -302,6 +304,11 @@ export interface ExecutionRenderErrorMessage {
 export type EngineToHostMessage =
   | { readonly kind: 'kernel-worker'; readonly workerId: number; readonly port: MessagePort }
   | { readonly kind: 'kernel-retire'; readonly workerId: number }
+  /**
+   * The Render Worker session posts its render-submitted / render-complete
+   * notices on this port, so Host credit never queues behind an Engine World tick.
+   */
+  | { readonly kind: 'render-host-port'; readonly epoch: number; readonly port: MessagePort }
   | { readonly kind: 'surface-request'; readonly worldIdentity: string; readonly requestId: number }
   | { readonly kind: 'disposed'; readonly error?: unknown }
   | ExecutionSimulationCompletion

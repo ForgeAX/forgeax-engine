@@ -17,6 +17,7 @@ Object.defineProperty(globalThis, 'navigator', {
 globalThis.postMessage = (data) => parentPort.postMessage({ fixture: 'product', data });
 globalThis.close = () => parentPort.close();
 let loaded = false;
+let hostPort;
 const pictures = new Map();
 parentPort.on('message', async (message) => {
   if (message.fixture === 'load') {
@@ -32,6 +33,7 @@ parentPort.on('message', async (message) => {
   }
   if (message.kind === 'init') {
     if (!loaded) throw new Error('Fixture init arrived before module load completed');
+    hostPort = message.hostPort;
     // Controlled CPU ready response: real GPU initialization is intentionally not invoked.
     parentPort.postMessage({
       fixture: 'product',
@@ -80,6 +82,19 @@ parentPort.on('message', async (message) => {
       },
       buffers,
     );
+    hostPort?.postMessage({
+      kind: submitted ? 'render-submitted' : 'render-complete',
+      epoch: p.epoch,
+      frame: {
+        kind: submitted ? 'frame-submitted' : 'frame-complete',
+        worldIdentity: picture.worldIdentity,
+        frameId: picture.frameId,
+        deviceGeneration: 1,
+        presentation: 'ready',
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+      },
+    });
     if (!submitted) pictures.delete(message.frameId);
     return;
   }

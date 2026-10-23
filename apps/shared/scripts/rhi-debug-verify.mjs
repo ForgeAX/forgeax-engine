@@ -524,23 +524,33 @@ async function awaitPackIndex(portUrl, timeoutMs) {
 
 /** @param {VerifyOptions} opts */
 export async function verifyDemoCapture(opts) {
+  const options = resolveVerifyOptions(opts);
+  validateVerifyOptions(options);
+  const browserLaunch = resolveBrowserLaunchOrFail(options.label);
+  const browserCapture = await captureInBrowser(options, browserLaunch);
+  await sleep(500);
+
+  const { tape, tapeAbs, selectedWorkIndex } = decodeCapturedTape(options, browserCapture.captured);
+  assertTapeContract(options.label, options.assertTape, tape);
+  const { work, dawnBackend } = await replaySelectedWork(options.label, tape, selectedWorkIndex);
+  const backend = {
+    browser: { ...browserLaunch, adapterProbe: browserCapture.browserWebGpuReport },
+    dawn: dawnBackend,
+  };
+  if (options.mode === 'structural') {
+    return finishStructuralVerification(options.label, tape, work, browserCapture, backend);
+  }
+  return verifyPixelCapture(options, browserCapture, { work, tapeAbs, selectedWorkIndex, backend });
+}
+
+/** @param {VerifyOptions} opts */
+function resolveVerifyOptions(opts) {
   const {
-    pkg,
-    label,
-    mode,
-    liveHook,
-    browserReplayHook,
-    capturePrepareHook,
-    reportHook,
     pixelVerdictOwner = 'node-dawn',
-    workIndex,
     epsilon = 0.02,
     maxChannelEpsilon = 0.1,
     coveredEpsilon = 0.03,
     allowEmptyFrame = false,
-    assertCapture,
-    assertTape,
-    assertPixels,
     appDir = REPO_ROOT,
     waitForPackIndex = false,
     packReadinessTimeoutMs = VITE_READINESS_TIMEOUT_MS,
@@ -549,7 +559,24 @@ export async function verifyDemoCapture(opts) {
     navigationWaitUntil = 'networkidle',
     urlSuffix = '',
   } = opts;
+  return {
+    ...opts,
+    pixelVerdictOwner,
+    epsilon,
+    maxChannelEpsilon,
+    coveredEpsilon,
+    allowEmptyFrame,
+    appDir,
+    waitForPackIndex,
+    packReadinessTimeoutMs,
+    warmupMs,
+    hookReadyTimeoutMs,
+    navigationWaitUntil,
+    urlSuffix,
+  };
+}
 
+function validateVerifyOptions({ label, mode, liveHook, pixelVerdictOwner, browserReplayHook }) {
   if (mode === 'pixel' && !liveHook) {
     fail(2, `[${label}] pixel mode requires a liveHook (window fn returning live RGBA)`);
   }
@@ -563,109 +590,160 @@ export async function verifyDemoCapture(opts) {
         `never fall back to Node Dawn or live pixels`,
     );
   }
+}
 
-  let browserLaunch;
+function resolveBrowserLaunchOrFail(label) {
   try {
-    browserLaunch = resolveBrowserWebGpuLaunch();
+    return resolveBrowserWebGpuLaunch();
   } catch (error) {
     fail(2, `[${label}] browser WebGPU backend setup failed: ${error?.message ?? error}`);
   }
+}
 
-  // --- 1. spawn vite dev with the capture flag --------------------------------
+/**
+ * Steps 1-3 own the Vite process and browser: every exit path releases both
+ * before a structured failure terminates the verifier.
+ */
+async function captureInBrowser(options, browserLaunch) {
+  const vite = startCaptureVite(options.pkg);
+  const session = { browser: undefined, collectPageDiagnostics: undefined };
+  let result;
+  let ownedFailure;
+  try {
+    const portUrl = await awaitViteReady(options.label, vite);
+    console.log(`[${options.label}] dev server: ${portUrl}`);
+    if (options.waitForPackIndex) {
+      const packReadiness = await awaitPackIndex(portUrl, options.packReadinessTimeoutMs);
+      console.log(
+        `[${options.label}] pack catalog=${packReadiness.kind} ` +
+          `status=${packReadiness.status} wait=${packReadiness.elapsedMs}ms`,
+      );
+    }
+    result = await captureFromPage(options, browserLaunch, portUrl, session);
+  } catch (error) {
+    ownedFailure = await toOwnedFailure(options.label, error, session.collectPageDiagnostics);
+  }
+  const cleanupFailure = await releaseCaptureResources(session.browser, vite.stop);
+  if (ownedFailure !== undefined || cleanupFailure !== undefined) {
+    const code = ownedFailure?.code ?? 2;
+    const message = ownedFailure?.message ?? `[${options.label}] owned resource cleanup failed`;
+    const cleanupDetail = cleanupFailure === undefined ? '' : `; ${cleanupFailure.message}`;
+    fail(code, `${message}${cleanupDetail}`);
+  }
+  return result;
+}
+
+// --- 1. spawn vite dev with the capture flag --------------------------------
+function startCaptureVite(pkg) {
   const [manager, ...managerArgs] = pnpmCommand();
-  const viteProc = spawn(manager, [...managerArgs, '-F', pkg, 'dev'], {
+  const proc = spawn(manager, [...managerArgs, '-F', pkg, 'dev'], {
     cwd: REPO_ROOT,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, FORGEAX_ENGINE_RHI_DEBUG: '1' },
   });
-  const stopVite = createOwnedProcessGroupStopper(viteProc);
-  let portUrl = null;
-  let viteOutput = '';
-  let viteSpawnError;
-  let viteExit;
+  const vite = {
+    proc,
+    stop: createOwnedProcessGroupStopper(proc),
+    portUrl: null,
+    output: '',
+    spawnError: undefined,
+    exit: undefined,
+  };
   const observeViteOutput = (stream, chunk) => {
     const text = chunk.toString();
-    viteOutput = `${viteOutput}${text}`.slice(-8192);
+    vite.output = `${vite.output}${text}`.slice(-8192);
     process[stream === 'stdout' ? 'stdout' : 'stderr'].write(`[vite${stream === 'stderr' ? '-err' : ''}] ${text}`);
     // Vite emits ANSI color/style sequences around both the Local label and
     // the URL. Strip them before parsing so readiness does not depend on the
     // terminal formatter or runner output mode.
-    const plain = viteOutput.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+    const plain = vite.output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
     const m = plain.match(/Local:\s+(https?:\/\/[^\s]+)/);
-    if (m) portUrl = m[1];
+    if (m) vite.portUrl = m[1];
   };
-  viteProc.stdout.on('data', (chunk) => {
+  proc.stdout.on('data', (chunk) => {
     observeViteOutput('stdout', chunk);
   });
-  viteProc.stderr.on('data', (chunk) => observeViteOutput('stderr', chunk));
-  viteProc.once('error', (error) => { viteSpawnError = error; });
-  viteProc.once('exit', (code, signal) => { viteExit = { code, signal }; });
+  proc.stderr.on('data', (chunk) => observeViteOutput('stderr', chunk));
+  proc.once('error', (error) => { vite.spawnError = error; });
+  proc.once('exit', (code, signal) => { vite.exit = { code, signal }; });
+  return vite;
+}
 
-  const viteDiagnostics = (elapsedMs) => ({
+function viteDiagnostics(vite, elapsedMs) {
+  return {
     elapsedMs,
-    pid: viteProc.pid ?? null,
-    spawnError: viteSpawnError === undefined ? null : String(viteSpawnError),
-    exit: viteExit ?? null,
-    output: viteOutput.trim() || 'none',
-  });
+    pid: vite.proc.pid ?? null,
+    spawnError: vite.spawnError === undefined ? null : String(vite.spawnError),
+    exit: vite.exit ?? null,
+    output: vite.output.trim() || 'none',
+  };
+}
 
-  let browser;
-  let page;
-  let collectPageDiagnostics;
-  let captured;
-  let livePixelsB64 = null;
-  let liveDims = null;
-  let browserReplay;
-  let producerReport;
-  let browserWebGpuReport;
-  let ownedFailure;
-  let cleanupFailure;
+async function awaitViteReady(label, vite) {
+  const readinessStartedAt = Date.now();
+  while (
+    !vite.portUrl
+    && vite.spawnError === undefined
+    && vite.exit === undefined
+    && Date.now() - readinessStartedAt < VITE_READINESS_TIMEOUT_MS
+  ) await sleep(200);
+  const elapsedMs = Date.now() - readinessStartedAt;
+  if (vite.spawnError !== undefined) {
+    throw new VerifyFailure(
+      2,
+      `[${label}] vite failed to spawn: ${JSON.stringify(viteDiagnostics(vite, elapsedMs))}`,
+      vite.spawnError,
+    );
+  }
+  if (vite.exit !== undefined && !vite.portUrl) {
+    throw new VerifyFailure(
+      2,
+      `[${label}] vite exited before becoming ready: ${JSON.stringify(viteDiagnostics(vite, elapsedMs))}`,
+    );
+  }
+  if (!vite.portUrl) {
+    throw new VerifyFailure(
+      2,
+      `[${label}] vite did not become ready within ${VITE_READINESS_TIMEOUT_MS}ms: ${JSON.stringify(viteDiagnostics(vite, elapsedMs))}`,
+    );
+  }
+  return vite.portUrl;
+}
 
-  try {
-    const readinessStartedAt = Date.now();
-    while (
-      !portUrl
-      && viteSpawnError === undefined
-      && viteExit === undefined
-      && Date.now() - readinessStartedAt < VITE_READINESS_TIMEOUT_MS
-    ) await sleep(200);
-    const elapsedMs = Date.now() - readinessStartedAt;
-    if (viteSpawnError !== undefined) {
-      throw new VerifyFailure(
-        2,
-        `[${label}] vite failed to spawn: ${JSON.stringify(viteDiagnostics(elapsedMs))}`,
-        viteSpawnError,
-      );
-    }
-    if (viteExit !== undefined && !portUrl) {
-      throw new VerifyFailure(
-        2,
-        `[${label}] vite exited before becoming ready: ${JSON.stringify(viteDiagnostics(elapsedMs))}`,
-      );
-    }
-    if (!portUrl) {
-      throw new VerifyFailure(
-        2,
-        `[${label}] vite did not become ready within ${VITE_READINESS_TIMEOUT_MS}ms: ${JSON.stringify(viteDiagnostics(elapsedMs))}`,
-      );
-    }
-    console.log(`[${label}] dev server: ${portUrl}`);
-    if (waitForPackIndex) {
-      const packReadiness = await awaitPackIndex(portUrl, packReadinessTimeoutMs);
-      console.log(
-        `[${label}] pack catalog=${packReadiness.kind} ` +
-          `status=${packReadiness.status} wait=${packReadiness.elapsedMs}ms`,
-      );
-    }
+async function captureFromPage(options, browserLaunch, portUrl, session) {
+  const { label } = options;
+  session.browser = await launchCaptureBrowser(label, browserLaunch);
+  const page = await (await session.browser.newContext()).newPage();
+  const observed = observeCapturePage(page, session.browser);
+  const requiredHooks = [options.capturePrepareHook, options.liveHook, options.browserReplayHook].filter(
+    (hook) => typeof hook === 'string',
+  );
+  const collectDiagnostics = () => collectPageDiagnostics(page, requiredHooks, observed, options.appDir);
+  session.collectPageDiagnostics = collectDiagnostics;
 
-    // --- 2. launch headless Chrome with WebGPU ----------------------------------
+  const captureUrl = options.urlSuffix.length === 0 ? portUrl : new URL(options.urlSuffix, portUrl).toString();
+  // Vite's HTTP-ready response can precede a large cooked shader transform.
+  // Runtime admission below owns the separate hook deadline.
+  await page.goto(captureUrl, { waitUntil: options.navigationWaitUntil, timeout: 120_000 });
+  await page.waitForTimeout(options.warmupMs);
+
+  await requireCaptureFrameHook(page, options, collectDiagnostics);
+  const browserWebGpuReport = await probeAlignedBrowserWebGpu(page, label, browserLaunch);
+  await waitForCaptureHooks(page, options, requiredHooks, collectDiagnostics);
+  const capture = await captureLiveFrame(page, options, collectDiagnostics);
+  reportBrowserCaptureMessages(label, capture.captured, observed);
+  return { ...capture, browserWebGpuReport };
+}
+
+// --- 2. launch headless Chrome with WebGPU ----------------------------------
+async function launchCaptureBrowser(label, browserLaunch) {
   try {
     const chromeChannel = process.env.FORGEAX_CHROME_CHANNEL ?? browserLaunchConfig.channel;
     const browserHeadless = !['0', 'false'].includes(
       (process.env.FORGEAX_BROWSER_HEADLESS ?? '1').toLowerCase(),
     );
-    browser = await chromium.launch({
+    const browser = await chromium.launch({
       headless: browserHeadless,
       ...(chromeChannel === undefined ? {} : { channel: chromeChannel }),
       args: browserLaunch.args,
@@ -676,14 +754,24 @@ export async function verifyDemoCapture(opts) {
         `requestedBackend=${browserLaunch.requestedBackend} selectedBackend=${browserLaunch.selectedBackend} ` +
         `comparisonMode=${browserLaunch.comparisonMode} args=${JSON.stringify(browserLaunch.args)}`,
     );
+    return browser;
   } catch (e) {
-      throw new VerifyFailure(2, `[${label}] could not launch Chrome with WebGPU: ${e?.message ?? e}`);
+    throw new VerifyFailure(2, `[${label}] could not launch Chrome with WebGPU: ${e?.message ?? e}`);
   }
+}
 
-  page = await (await browser.newContext()).newPage();
-  const errors = [];
-  const warnings = [];
-  const networkDiagnostics = [];
+function isObservedBootstrapRequest(url) {
+  return (
+    url.includes('/shaders/manifest.json') ||
+    url.includes('/pack-index.json') ||
+    url.includes('/__pack/') ||
+    url.includes('/__import/')
+  );
+}
+
+function observeCapturePage(page, browser) {
+  const observed = { errors: [], warnings: [], networkDiagnostics: [] };
+  const { errors, warnings, networkDiagnostics } = observed;
   const requestStartedAt = new Map();
   page.on('pageerror', (e) => errors.push(`PAGEERROR: ${e.message}`));
   page.on('console', (msg) => {
@@ -697,12 +785,7 @@ export async function verifyDemoCapture(opts) {
     }
   });
   page.on('request', (request) => {
-    if (
-      request.url().includes('/shaders/manifest.json') ||
-      request.url().includes('/pack-index.json') ||
-      request.url().includes('/__pack/') ||
-      request.url().includes('/__import/')
-    ) {
+    if (isObservedBootstrapRequest(request.url())) {
       requestStartedAt.set(request, Date.now());
       networkDiagnostics.push({ kind: 'request.start', url: request.url() });
     }
@@ -730,65 +813,60 @@ export async function verifyDemoCapture(opts) {
   page.on('crash', () => errors.push('PAGE-CRASHED'));
   page.on('close', () => errors.push('PAGE-CLOSED'));
   browser.on('disconnected', () => errors.push('BROWSER-DISCONNECTED'));
+  return observed;
+}
 
-  const requiredHooks = [capturePrepareHook, liveHook, browserReplayHook].filter(
-    (hook) => typeof hook === 'string',
-  );
-  const pageBootstrapDiagnostics = async () => {
-    try {
-      return await page.evaluate((hooks) => ({
-        documentReadyState: document.readyState,
-        hasGpu: navigator.gpu !== undefined,
-        captureFrame: typeof globalThis.__forgeax?.captureFrame === 'function',
-        bootstrapStage: globalThis.__forgeaxBootstrapStage ?? null,
-        bootstrapFailure: globalThis.__forgeaxBootstrapFailure ?? null,
-        rendererBootstrap: globalThis.__forgeaxRendererBootstrap ?? null,
-        shaderManifest: globalThis.__forgeaxShaderManifest ?? null,
-        captureHooks: Object.fromEntries(
-          hooks.map((hook) => [hook, typeof globalThis[hook] === 'function']),
-        ),
-      }), requiredHooks);
-    } catch (error) {
-      return { evaluateError: error?.message ?? String(error) };
-    }
+async function pageBootstrapDiagnostics(page, requiredHooks) {
+  try {
+    return await page.evaluate((hooks) => ({
+      documentReadyState: document.readyState,
+      hasGpu: navigator.gpu !== undefined,
+      captureFrame: typeof globalThis.__forgeax?.captureFrame === 'function',
+      bootstrapStage: globalThis.__forgeaxBootstrapStage ?? null,
+      bootstrapFailure: globalThis.__forgeaxBootstrapFailure ?? null,
+      rendererBootstrap: globalThis.__forgeaxRendererBootstrap ?? null,
+      shaderManifest: globalThis.__forgeaxShaderManifest ?? null,
+      captureHooks: Object.fromEntries(
+        hooks.map((hook) => [hook, typeof globalThis[hook] === 'function']),
+      ),
+    }), requiredHooks);
+  } catch (error) {
+    return { evaluateError: error?.message ?? String(error) };
+  }
+}
+
+async function collectPageDiagnostics(page, requiredHooks, observed, appDir) {
+  const diagnostics = await pageBootstrapDiagnostics(page, requiredHooks);
+  const errorSnapshot = [...observed.errors];
+  const warningSnapshot = [...observed.warnings];
+  let screenshotPath;
+  try {
+    const diagnosticDir = resolve(appDir, '.forgeax-debug');
+    mkdirSync(diagnosticDir, { recursive: true });
+    screenshotPath = resolve(diagnosticDir, `bootstrap-failure-${Date.now()}.png`);
+    // Screenshot is supplementary evidence only. Do not let Playwright's
+    // font readiness wait add another 30s to a bounded bootstrap failure.
+    await page.screenshot({ path: screenshotPath, timeout: 5000 });
+  } catch (error) {
+    screenshotPath = `unavailable: ${error?.message ?? error}`;
+  }
+  return {
+    ...diagnostics,
+    errors: errorSnapshot,
+    warnings: warningSnapshot,
+    networkDiagnostics: observed.networkDiagnostics,
+    screenshotPath,
   };
-  collectPageDiagnostics = async () => {
-    const diagnostics = await pageBootstrapDiagnostics();
-    const errorSnapshot = [...errors];
-    const warningSnapshot = [...warnings];
-    let screenshotPath;
-    try {
-      const diagnosticDir = resolve(appDir, '.forgeax-debug');
-      mkdirSync(diagnosticDir, { recursive: true });
-      screenshotPath = resolve(diagnosticDir, `bootstrap-failure-${Date.now()}.png`);
-      // Screenshot is supplementary evidence only. Do not let Playwright's
-      // font readiness wait add another 30s to a bounded bootstrap failure.
-      await page.screenshot({ path: screenshotPath, timeout: 5000 });
-    } catch (error) {
-      screenshotPath = `unavailable: ${error?.message ?? error}`;
-    }
-    return {
-      ...diagnostics,
-      errors: errorSnapshot,
-      warnings: warningSnapshot,
-      networkDiagnostics,
-      screenshotPath,
-    };
-  };
+}
 
-  const captureUrl = urlSuffix.length === 0 ? portUrl : new URL(urlSuffix, portUrl).toString();
-  // Vite's HTTP-ready response can precede a large cooked shader transform.
-  // Runtime admission below owns the separate hook deadline.
-  await page.goto(captureUrl, { waitUntil: navigationWaitUntil, timeout: 120_000 });
-  await page.waitForTimeout(warmupMs);
-
+async function requireCaptureFrameHook(page, { label, hookReadyTimeoutMs }, collectDiagnostics) {
   const hasCapture = await page.waitForFunction(
     () => typeof globalThis.__forgeax?.captureFrame === 'function',
     undefined,
     { timeout: hookReadyTimeoutMs },
   ).then(() => true, () => false);
   if (!hasCapture) {
-    const diagnostics = await collectPageDiagnostics();
+    const diagnostics = await collectDiagnostics();
     throw new VerifyFailure(
       1,
       `[${label}] RED -- window.__forgeax.captureFrame missing. Suspect: demo did not ` +
@@ -796,73 +874,80 @@ export async function verifyDemoCapture(opts) {
         `diagnostics=${JSON.stringify(diagnostics)}`,
     );
   }
+}
+
+/** Runs inside the page: keep this function self-contained. */
+async function probeBrowserWebGpuAdapter() {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) {
+    return { available: false, reason: 'requestAdapter returned null' };
+  }
+  let adapterInfo = null;
+  let adapterInfoSource = 'unavailable';
+  let adapterInfoError = null;
+  let rawInfo;
+  try {
+    rawInfo = adapter.info;
+  } catch (error) {
+    adapterInfoError = error?.message ?? String(error);
+  }
+  if (rawInfo !== undefined && rawInfo !== null) {
+    adapterInfoSource = 'GPUAdapter.info';
+  } else if (typeof adapter.requestAdapterInfo === 'function') {
+    try {
+      rawInfo = await adapter.requestAdapterInfo();
+      if (rawInfo !== undefined && rawInfo !== null) {
+        adapterInfoSource = 'GPUAdapter.requestAdapterInfo';
+      }
+    } catch (error) {
+      adapterInfoError = error?.message ?? String(error);
+    }
+  }
+  if (rawInfo !== undefined && rawInfo !== null) {
+    const fields = [
+      'backendType',
+      'vendor',
+      'architecture',
+      'device',
+      'description',
+      'runtimeService',
+      'isFallbackAdapter',
+      'subgroupMinSize',
+      'subgroupMaxSize',
+    ];
+    adapterInfo = {};
+    for (const field of fields) {
+      try {
+        const value = rawInfo[field];
+        if (value !== undefined) adapterInfo[field] = value;
+      } catch {
+        // Keep the projection bounded when a browser exposes a throwing getter.
+      }
+    }
+  }
+  return {
+    available: true,
+    adapterInfo,
+    adapterInfoSource,
+    adapterInfoError,
+    features: [...adapter.features].sort(),
+    limits: {
+      maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
+      maxBindGroups: adapter.limits.maxBindGroups,
+      maxUniformBufferBindingSize: adapter.limits.maxUniformBufferBindingSize,
+    },
+    isFallbackAdapter: adapter.isFallbackAdapter ?? null,
+  };
+}
+
+async function probeAlignedBrowserWebGpu(page, label, browserLaunch) {
   const hasGpu = await page.evaluate(() => navigator.gpu !== undefined);
   if (!hasGpu) {
     throw new VerifyFailure(2, `[${label}] ENVIRONMENT_BLOCKED -- Chromium has no navigator.gpu`);
   }
+  let probe;
   try {
-    browserWebGpuReport = await page.evaluate(async () => {
-      const adapter = await navigator.gpu.requestAdapter();
-      if (adapter === null) {
-        return { available: false, reason: 'requestAdapter returned null' };
-      }
-      let adapterInfo = null;
-      let adapterInfoSource = 'unavailable';
-      let adapterInfoError = null;
-      let rawInfo;
-      try {
-        rawInfo = adapter.info;
-      } catch (error) {
-        adapterInfoError = error?.message ?? String(error);
-      }
-      if (rawInfo !== undefined && rawInfo !== null) {
-        adapterInfoSource = 'GPUAdapter.info';
-      } else if (typeof adapter.requestAdapterInfo === 'function') {
-        try {
-          rawInfo = await adapter.requestAdapterInfo();
-          if (rawInfo !== undefined && rawInfo !== null) {
-            adapterInfoSource = 'GPUAdapter.requestAdapterInfo';
-          }
-        } catch (error) {
-          adapterInfoError = error?.message ?? String(error);
-        }
-      }
-      if (rawInfo !== undefined && rawInfo !== null) {
-        const fields = [
-          'backendType',
-          'vendor',
-          'architecture',
-          'device',
-          'description',
-          'runtimeService',
-          'isFallbackAdapter',
-          'subgroupMinSize',
-          'subgroupMaxSize',
-        ];
-        adapterInfo = {};
-        for (const field of fields) {
-          try {
-            const value = rawInfo[field];
-            if (value !== undefined) adapterInfo[field] = value;
-          } catch {
-            // Keep the projection bounded when a browser exposes a throwing getter.
-          }
-        }
-      }
-      return {
-        available: true,
-        adapterInfo,
-        adapterInfoSource,
-        adapterInfoError,
-        features: [...adapter.features].sort(),
-        limits: {
-          maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
-          maxBindGroups: adapter.limits.maxBindGroups,
-          maxUniformBufferBindingSize: adapter.limits.maxUniformBufferBindingSize,
-        },
-        isFallbackAdapter: adapter.isFallbackAdapter ?? null,
-      };
-    });
+    probe = await page.evaluate(probeBrowserWebGpuAdapter);
   } catch (error) {
     throw new VerifyFailure(
       2,
@@ -872,11 +957,11 @@ export async function verifyDemoCapture(opts) {
   }
   const browserAlignment = classifyBrowserWebGpuAlignment({
     selectedBackend: browserLaunch.selectedBackend,
-    adapterInfo: browserWebGpuReport.adapterInfo,
-    adapterInfoSource: browserWebGpuReport.adapterInfoSource,
+    adapterInfo: probe.adapterInfo,
+    adapterInfoSource: probe.adapterInfoSource,
   });
-  browserWebGpuReport = {
-    ...browserWebGpuReport,
+  const browserWebGpuReport = {
+    ...probe,
     identityScope: 'independent-probe',
     carrierIdentity: 'unknown/unverified',
     alignment: browserAlignment,
@@ -889,6 +974,12 @@ export async function verifyDemoCapture(opts) {
       ...browserWebGpuReport,
     })}`,
   );
+  assertBrowserWebGpuAlignment(label, browserLaunch, browserWebGpuReport);
+  return browserWebGpuReport;
+}
+
+function assertBrowserWebGpuAlignment(label, browserLaunch, browserWebGpuReport) {
+  const browserAlignment = browserWebGpuReport.alignment;
   if (!browserWebGpuReport.available) {
     throw new VerifyFailure(
       2,
@@ -909,54 +1000,63 @@ export async function verifyDemoCapture(opts) {
         `the carrier adapter identity is not confirmed by the browser API`,
     );
   }
-  if (requiredHooks.length > 0) {
-    try {
-      await page.waitForFunction(
-        (hooks) => hooks.every((hook) => typeof globalThis[hook] === 'function'),
-        requiredHooks,
-        { timeout: hookReadyTimeoutMs },
-      );
-    } catch (e) {
-      const diagnostics = await collectPageDiagnostics();
-      throw new VerifyFailure(
-        1,
-        `[${label}] RED -- capture hook readiness timed out after ${hookReadyTimeoutMs}ms: ` +
-          `${requiredHooks.join(', ')}; diagnostics=${JSON.stringify(diagnostics)}`,
-      );
-    }
-  }
+}
 
-  // --- 3. capture the frame (and, in pixel mode, the live pixels) -------------
-  // Critical for pixel mode: take the live readback in the SAME page.evaluate
-  // transaction immediately after captureFrame resolves, before tape upload can
-  // yield to another rAF, so both images describe the same GPU state.
+async function waitForCaptureHooks(page, { label, hookReadyTimeoutMs }, requiredHooks, collectDiagnostics) {
+  if (requiredHooks.length === 0) return;
+  try {
+    await page.waitForFunction(
+      (hooks) => hooks.every((hook) => typeof globalThis[hook] === 'function'),
+      requiredHooks,
+      { timeout: hookReadyTimeoutMs },
+    );
+  } catch (e) {
+    const diagnostics = await collectDiagnostics();
+    throw new VerifyFailure(
+      1,
+      `[${label}] RED -- capture hook readiness timed out after ${hookReadyTimeoutMs}ms: ` +
+        `${requiredHooks.join(', ')}; diagnostics=${JSON.stringify(diagnostics)}`,
+    );
+  }
+}
+
+// --- 3. capture the frame (and, in pixel mode, the live pixels) -------------
+// Critical for pixel mode: take the live readback in the SAME page.evaluate
+// transaction immediately after captureFrame resolves, before tape upload can
+// yield to another rAF, so both images describe the same GPU state.
+async function captureLiveFrame(page, options, collectDiagnostics) {
   try {
     const result = await page.evaluate(runCaptureLiveUploadTransaction, {
-      mode,
-      liveHook,
-      browserReplayHook,
-      capturePrepareHook,
-      reportHook,
+      mode: options.mode,
+      liveHook: options.liveHook,
+      browserReplayHook: options.browserReplayHook,
+      capturePrepareHook: options.capturePrepareHook,
+      reportHook: options.reportHook,
       rawTapeRoute: RAW_TAPE_ROUTE,
       tapeMime: RHITAPE_MIME,
     });
-    captured = result.artifact;
-    livePixelsB64 = result.live;
-    liveDims = result.dims;
-    browserReplay = result.browserReplay;
-    producerReport = result.producerReport;
+    const captured = result.artifact;
     captured.preparationMs = result.preparationMs;
     captured.completedFrames = result.completedFrames;
     captured.transmissionInspection = result.transmissionInspection;
+    return {
+      captured,
+      livePixelsB64: result.live,
+      liveDims: result.dims,
+      browserReplay: result.browserReplay,
+      producerReport: result.producerReport,
+    };
   } catch (e) {
-    const diagnostics = await collectPageDiagnostics();
+    const diagnostics = await collectDiagnostics();
     throw new VerifyFailure(
       1,
-      `[${label}] RED -- capture/live-readback threw: ${e?.message ?? e}; ` +
+      `[${options.label}] RED -- capture/live-readback threw: ${e?.message ?? e}; ` +
         `diagnostics=${JSON.stringify(diagnostics)}`,
     );
   }
+}
 
+function reportBrowserCaptureMessages(label, captured, { errors, warnings }) {
   console.log(`[${label}] captureFrame result: ${JSON.stringify(captured)}`);
   if (errors.length) {
     throw new VerifyFailure(1, `[${label}] RED -- browser errors during capture: ${errors.slice(0, 8).join('\n')}`);
@@ -965,51 +1065,45 @@ export async function verifyDemoCapture(opts) {
     console.log(`[${label}] browser warnings during capture:`);
     warnings.slice(0, 8).forEach((warning) => console.log(`  ${warning}`));
   }
+}
 
-  } catch (error) {
-    if (error instanceof VerifyFailure) {
-      ownedFailure = error;
-    } else {
-      let diagnostics = '';
-      if (collectPageDiagnostics !== undefined) {
-        try {
-          diagnostics = `; diagnostics=${JSON.stringify(await collectPageDiagnostics())}`;
-        } catch (diagnosticError) {
-          diagnostics = `; diagnostics unavailable: ${diagnosticError?.message ?? diagnosticError}`;
-        }
-      }
-      ownedFailure = new VerifyFailure(
-        2,
-        `[${label}] harness exception: ${error?.message ?? error}${diagnostics}`,
-        error,
-      );
-    }
-  } finally {
+async function toOwnedFailure(label, error, collectDiagnostics) {
+  if (error instanceof VerifyFailure) return error;
+  let diagnostics = '';
+  if (collectDiagnostics !== undefined) {
     try {
-      await closeBrowserBounded(browser);
-    } catch (error) {
-      cleanupFailure = new Error(`browser cleanup failed: ${error?.message ?? error}`);
-    } finally {
-      try {
-        await stopVite();
-      } catch (error) {
-        const detail = `Vite cleanup failed: ${error?.message ?? error}`;
-        cleanupFailure = cleanupFailure === undefined
-          ? new Error(detail)
-          : new Error(`${cleanupFailure.message}; ${detail}`);
-      }
+      diagnostics = `; diagnostics=${JSON.stringify(await collectDiagnostics())}`;
+    } catch (diagnosticError) {
+      diagnostics = `; diagnostics unavailable: ${diagnosticError?.message ?? diagnosticError}`;
     }
   }
+  return new VerifyFailure(
+    2,
+    `[${label}] harness exception: ${error?.message ?? error}${diagnostics}`,
+    error,
+  );
+}
 
-  if (ownedFailure !== undefined || cleanupFailure !== undefined) {
-    const code = ownedFailure?.code ?? 2;
-    const message = ownedFailure?.message ?? `[${label}] owned resource cleanup failed`;
-    const cleanupDetail = cleanupFailure === undefined ? '' : `; ${cleanupFailure.message}`;
-    fail(code, `${message}${cleanupDetail}`);
+async function releaseCaptureResources(browser, stopVite) {
+  let cleanupFailure;
+  try {
+    await closeBrowserBounded(browser);
+  } catch (error) {
+    cleanupFailure = new Error(`browser cleanup failed: ${error?.message ?? error}`);
   }
-  await sleep(500);
+  try {
+    await stopVite();
+  } catch (error) {
+    const detail = `Vite cleanup failed: ${error?.message ?? error}`;
+    cleanupFailure = cleanupFailure === undefined
+      ? new Error(detail)
+      : new Error(`${cleanupFailure.message}; ${detail}`);
+  }
+  return cleanupFailure;
+}
 
-  // --- 4. validate the single raw artifact and strict-decode it ----------------
+// --- 4. validate the single raw artifact and strict-decode it ----------------
+function decodeCapturedTape({ label, appDir, mode, workIndex, assertCapture }, captured) {
   const missing = ['runId', 'kind', 'digest', 'path'].filter(
     (k) => typeof captured?.[k] !== 'string' || captured[k].length === 0,
   );
@@ -1017,12 +1111,8 @@ export async function verifyDemoCapture(opts) {
     fail(1, `[${label}] RED -- captureFrame missing field(s): ${missing.join(', ')}`);
   }
 
-  const resolveArtifact = (rel) => {
-    const inApp = resolve(appDir, rel);
-    if (existsSync(inApp)) return inApp;
-    return resolve(REPO_ROOT, rel);
-  };
-  const tapeAbs = resolveArtifact(captured.path);
+  const inApp = resolve(appDir, captured.path);
+  const tapeAbs = existsSync(inApp) ? inApp : resolve(REPO_ROOT, captured.path);
   if (!existsSync(tapeAbs)) {
     fail(1, `[${label}] RED -- raw .rhitape path missing on disk: ${tapeAbs}`);
   }
@@ -1063,21 +1153,26 @@ export async function verifyDemoCapture(opts) {
       fail(1, `[${label}] RED -- capture contract failed: ${e?.message ?? e}`);
     }
   }
+  return { tape, tapeAbs, selectedWorkIndex };
+}
 
-  // --- 5. strict-decoded artifact -> fresh Dawn replay ------------------------
-  if (assertTape !== undefined) {
-    try {
-      assertTape({
-        tape: {
-          ...tape,
-          bootstrap: tape.bootstrap,
-          blobPool: new Map(tape.blobs.map((blob) => [blob.hash, blob.bytes])),
-        },
-      });
-    } catch (e) {
-      fail(1, `[${label}] RED -- tape contract failed: ${e?.message ?? e}`);
-    }
+// --- 5. strict-decoded artifact -> fresh Dawn replay ------------------------
+function assertTapeContract(label, assertTape, tape) {
+  if (assertTape === undefined) return;
+  try {
+    assertTape({
+      tape: {
+        ...tape,
+        bootstrap: tape.bootstrap,
+        blobPool: new Map(tape.blobs.map((blob) => [blob.hash, blob.bytes])),
+      },
+    });
+  } catch (e) {
+    fail(1, `[${label}] RED -- tape contract failed: ${e?.message ?? e}`);
   }
+}
+
+async function replaySelectedWork(label, tape, selectedWorkIndex) {
   const dawnSelection = process.platform === 'darwin' ? { backend: 'metal' } : {};
   const { freshDevice, rhiWebgpu, backend: dawnBackend, dispose } = await bootstrapDawn(
     label,
@@ -1117,24 +1212,66 @@ export async function verifyDemoCapture(opts) {
       await dispose();
     }
   }
+  return { work, dawnBackend };
+}
 
-  if (mode === 'structural') {
-    await assertStructural({ label, tape, work });
-    green(label, `structural -- capture+replay+inspect workIndex=${work.workIndex} (runId=${captured.runId})`);
-    return {
-      runId: captured.runId,
-      preparationMs: captured.preparationMs,
-      submittedFrames: captured.completedFrames,
-      transmissionInspection: captured.transmissionInspection,
-      ...(producerReport === undefined ? {} : { producerReport }),
-      backend: {
-        browser: { ...browserLaunch, adapterProbe: browserWebGpuReport },
-        dawn: dawnBackend,
-      },
-    };
-  }
+async function finishStructuralVerification(label, tape, work, browserCapture, backend) {
+  const { captured, producerReport } = browserCapture;
+  await assertStructural({ label, tape, work });
+  green(label, `structural -- capture+replay+inspect workIndex=${work.workIndex} (runId=${captured.runId})`);
+  return {
+    runId: captured.runId,
+    preparationMs: captured.preparationMs,
+    submittedFrames: captured.completedFrames,
+    transmissionInspection: captured.transmissionInspection,
+    ...(producerReport === undefined ? {} : { producerReport }),
+    backend,
+  };
+}
 
-  // --- 6. pixel comparison (static demos) -------------------------------------
+// --- 6. pixel comparison (static demos) -------------------------------------
+async function verifyPixelCapture(options, browserCapture, { work, tapeAbs, selectedWorkIndex, backend }) {
+  const { label } = options;
+  const { captured } = browserCapture;
+  const pixels = readComparedPixels(label, work, browserCapture);
+  const browserFresh = compareBrowserReplay(options, browserCapture.browserReplay, selectedWorkIndex, pixels);
+  assertLivePixels(options, pixels);
+
+  const best = bestAlignmentDelta(pixels.live, pixels.replay, pixels.width, pixels.height, normalizedRgbDelta);
+
+  // Whole-frame mean alone is too lenient: a demo whose subject covers a small
+  // fraction of a mostly-black frame can hide a large per-pixel error in the
+  // subject under a tiny mean (the sRGB gap read 0.046 mean while the cube was
+  // visibly ~2.7x too dark). Also compute the worst single-channel delta and the
+  // mean restricted to non-background pixels, on the best-aligned buffer, and
+  // gate on all three so a localized fidelity break cannot pass.
+  const local = localMetrics(pixels.live, best.applied, pixels.width, options.maxChannelEpsilon);
+  logNodeDawnPixelDelta(label, best, local);
+  writeComparisonPngs(label, dirname(tapeAbs), pixels, best.applied);
+
+  const verdict = evaluatePixelVerdict({
+    owner: options.pixelVerdictOwner,
+    nodeDawn: { best, local },
+    browserFresh,
+    epsilon: options.epsilon,
+    maxChannelEpsilon: options.maxChannelEpsilon,
+    coveredEpsilon: options.coveredEpsilon,
+  });
+  assertPixelVerdict(options, verdict, pixels, captured.runId);
+  return {
+    runId: captured.runId,
+    width: pixels.width,
+    height: pixels.height,
+    preparationMs: captured.preparationMs,
+    submittedFrames: captured.completedFrames,
+    transmissionInspection: captured.transmissionInspection,
+    backend,
+    ...(browserCapture.producerReport === undefined ? {} : { producerReport: browserCapture.producerReport }),
+    pixel: pixelResult(verdict, { best, local }, browserFresh),
+  };
+}
+
+function readComparedPixels(label, work, { livePixelsB64, liveDims }) {
   const rtRes = work.attachment;
   if (rtRes === undefined || rtRes.kind !== 'texture' || rtRes.width === undefined || rtRes.height === undefined) {
     fail(1, `[${label}] RED -- replayed work attachment readback is unavailable`);
@@ -1152,64 +1289,68 @@ export async function verifyDemoCapture(opts) {
         `Suspect: RT size disagreement between live canvas and replayed attachment.`,
     );
   }
+  return { live: livePixels, replay: replayPixels, width: rw, height: rh };
+}
 
-  let browserReplayPixels;
-  let browserReplayBest;
-  let browserReplayLocal;
-  if (browserReplay !== undefined) {
-    if (browserReplay.workIndex !== selectedWorkIndex) {
-      fail(
-        1,
-        `[${label}] RED -- browser replay selected workIndex ${browserReplay.workIndex} ` +
-          `but Node replay selected ${selectedWorkIndex}`,
-      );
-    }
-    if (
-      browserReplay.dims.width !== rw ||
-      browserReplay.dims.height !== rh
-    ) {
-      fail(
-        1,
-        `[${label}] RED -- browser replay dimensions ${browserReplay.dims.width}x${browserReplay.dims.height} ` +
-          `do not match Node replay ${rw}x${rh}`,
-      );
-    }
-    browserReplayPixels = Uint8Array.from(Buffer.from(browserReplay.pixels, 'base64'));
-    if (browserReplayPixels.length !== replayPixels.length) {
-      fail(
-        1,
-        `[${label}] RED -- browser replay pixel buffer size ${browserReplayPixels.length} ` +
-          `does not match Node replay ${replayPixels.length}`,
-      );
-    }
-    browserReplayBest = bestAlignmentDelta(livePixels, browserReplayPixels, rw, rh, normalizedRgbDelta);
-    browserReplayLocal = localMetrics(
-      livePixels,
-      browserReplayBest.applied,
-      rw,
-      maxChannelEpsilon,
-    );
-    console.log(
-      `[${label}] browser fresh pixel delta: mean=${browserReplayBest.delta.toFixed(5)} ` +
-        `via '${browserReplayBest.name}' ` +
-        `(identity=${browserReplayBest.all.identity.toFixed(5)} ` +
-        `yflip=${browserReplayBest.all.yflip.toFixed(5)} ` +
-        `bgra=${browserReplayBest.all.bgra.toFixed(5)} ` +
-        `both=${browserReplayBest.all.both.toFixed(5)})`,
-    );
-    console.log(
-      `[${label}] browser fresh localized: maxChannelDelta=${browserReplayLocal.maxDelta.toFixed(5)} ` +
-        `coveredMean=${browserReplayLocal.coveredMean.toFixed(5)} ` +
-        `(over ${browserReplayLocal.coveredFrac.toFixed(3)} non-bg coverage) ` +
-        `maxWitness=${JSON.stringify(browserReplayLocal.maxWitness)} ` +
-        `overChannelEpsilonCount=${browserReplayLocal.overChannelEpsilonCount} ` +
-        `overChannelEpsilonBbox=${JSON.stringify(browserReplayLocal.overChannelEpsilonBbox)}`,
+function compareBrowserReplay({ label, maxChannelEpsilon }, browserReplay, selectedWorkIndex, pixels) {
+  if (browserReplay === undefined) return undefined;
+  const rw = pixels.width;
+  const rh = pixels.height;
+  if (browserReplay.workIndex !== selectedWorkIndex) {
+    fail(
+      1,
+      `[${label}] RED -- browser replay selected workIndex ${browserReplay.workIndex} ` +
+        `but Node replay selected ${selectedWorkIndex}`,
     );
   }
+  if (
+    browserReplay.dims.width !== rw ||
+    browserReplay.dims.height !== rh
+  ) {
+    fail(
+      1,
+      `[${label}] RED -- browser replay dimensions ${browserReplay.dims.width}x${browserReplay.dims.height} ` +
+        `do not match Node replay ${rw}x${rh}`,
+    );
+  }
+  const browserReplayPixels = Uint8Array.from(Buffer.from(browserReplay.pixels, 'base64'));
+  if (browserReplayPixels.length !== pixels.replay.length) {
+    fail(
+      1,
+      `[${label}] RED -- browser replay pixel buffer size ${browserReplayPixels.length} ` +
+        `does not match Node replay ${pixels.replay.length}`,
+    );
+  }
+  const best = bestAlignmentDelta(pixels.live, browserReplayPixels, rw, rh, normalizedRgbDelta);
+  const local = localMetrics(
+    pixels.live,
+    best.applied,
+    rw,
+    maxChannelEpsilon,
+  );
+  console.log(
+    `[${label}] browser fresh pixel delta: mean=${best.delta.toFixed(5)} ` +
+      `via '${best.name}' ` +
+      `(identity=${best.all.identity.toFixed(5)} ` +
+      `yflip=${best.all.yflip.toFixed(5)} ` +
+      `bgra=${best.all.bgra.toFixed(5)} ` +
+      `both=${best.all.both.toFixed(5)})`,
+  );
+  console.log(
+    `[${label}] browser fresh localized: maxChannelDelta=${local.maxDelta.toFixed(5)} ` +
+      `coveredMean=${local.coveredMean.toFixed(5)} ` +
+      `(over ${local.coveredFrac.toFixed(3)} non-bg coverage) ` +
+      `maxWitness=${JSON.stringify(local.maxWitness)} ` +
+      `overChannelEpsilonCount=${local.overChannelEpsilonCount} ` +
+      `overChannelEpsilonBbox=${JSON.stringify(local.overChannelEpsilonBbox)}`,
+  );
+  return { best, local };
+}
 
+function assertLivePixels({ label, assertPixels, allowEmptyFrame }, pixels) {
   if (assertPixels !== undefined) {
     try {
-      assertPixels({ pixels: livePixels, width: rw, height: rh });
+      assertPixels({ pixels: pixels.live, width: pixels.width, height: pixels.height });
     } catch (e) {
       fail(1, `[${label}] RED -- live pixel contract failed: ${e?.message ?? e}`);
     }
@@ -1222,7 +1363,7 @@ export async function verifyDemoCapture(opts) {
   // A pixel-mode demo must produce visible output; require a minimum lit
   // coverage. (Demos that legitimately render near-black are not pixel-mode
   // candidates.) Reuse localMetrics' background test via a quick coverage scan.
-  const liveCoverage = litCoverage(livePixels);
+  const liveCoverage = litCoverage(pixels.live);
   if (!allowEmptyFrame && liveCoverage < 0.001) {
     fail(
       1,
@@ -1232,17 +1373,9 @@ export async function verifyDemoCapture(opts) {
         `slow to first-paint, gate it structurally instead of pixel.`,
     );
   }
+}
 
-  const best = bestAlignmentDelta(livePixels, replayPixels, rw, rh, normalizedRgbDelta);
-
-  // Whole-frame mean alone is too lenient: a demo whose subject covers a small
-  // fraction of a mostly-black frame can hide a large per-pixel error in the
-  // subject under a tiny mean (the sRGB gap read 0.046 mean while the cube was
-  // visibly ~2.7x too dark). Also compute the worst single-channel delta and the
-  // mean restricted to non-background pixels, on the best-aligned buffer, and
-  // gate on all three so a localized fidelity break cannot pass.
-  const local = localMetrics(livePixels, best.applied, rw, maxChannelEpsilon);
-
+function logNodeDawnPixelDelta(label, best, local) {
   console.log(
     `[${label}] pixel delta: mean=${best.delta.toFixed(5)} via '${best.name}' ` +
       `(identity=${best.all.identity.toFixed(5)} yflip=${best.all.yflip.toFixed(5)} ` +
@@ -1255,17 +1388,19 @@ export async function verifyDemoCapture(opts) {
       `overChannelEpsilonCount=${local.overChannelEpsilonCount} ` +
       `overChannelEpsilonBbox=${JSON.stringify(local.overChannelEpsilonBbox)}`,
   );
+}
 
-  // Dump live / replay / side-by-side PNGs so a human can eyeball "replay ==
-  // demo". The replay buffer is written under its best-fit alignment so the two
-  // panes are directly comparable (any residual gap is real fidelity, not a flip
-  // or channel-order artefact). Written next to the tape under .forgeax-debug.
-  const pngDir = dirname(tapeAbs);
-  const replayAligned = best.applied;
+// Dump live / replay / side-by-side PNGs so a human can eyeball "replay ==
+// demo". The replay buffer is written under its best-fit alignment so the two
+// panes are directly comparable (any residual gap is real fidelity, not a flip
+// or channel-order artefact). Written next to the tape under .forgeax-debug.
+function writeComparisonPngs(label, pngDir, pixels, replayAligned) {
+  const rw = pixels.width;
+  const rh = pixels.height;
   try {
-    writeFileSync(resolve(pngDir, 'live.png'), encodePng(rw, rh, livePixels));
+    writeFileSync(resolve(pngDir, 'live.png'), encodePng(rw, rh, pixels.live));
     writeFileSync(resolve(pngDir, 'replay.png'), encodePng(rw, rh, replayAligned));
-    const sbs = sideBySide(livePixels, replayAligned, rw, rh);
+    const sbs = sideBySide(pixels.live, replayAligned, rw, rh);
     writeFileSync(resolve(pngDir, 'compare.png'), encodePng(sbs.width, sbs.height, sbs.pixels));
     console.log(
       `[${label}] wrote PNGs: ${resolve(pngDir, 'compare.png')} ` +
@@ -1274,17 +1409,9 @@ export async function verifyDemoCapture(opts) {
   } catch (e) {
     console.log(`[${label}] (non-fatal) PNG dump skipped: ${e?.message ?? e}`);
   }
+}
 
-  const verdict = evaluatePixelVerdict({
-    owner: pixelVerdictOwner,
-    nodeDawn: { best, local },
-    browserFresh: browserReplayBest === undefined || browserReplayLocal === undefined
-      ? undefined
-      : { best: browserReplayBest, local: browserReplayLocal },
-    epsilon,
-    maxChannelEpsilon,
-    coveredEpsilon,
-  });
+function assertPixelVerdict({ label, epsilon, maxChannelEpsilon, coveredEpsilon }, verdict, pixels, runId) {
   const verdictBest = verdict.selected.best;
   const verdictLocal = verdict.selected.local;
   console.log(`[${label}] pixel verdict owner: ${verdict.owner}`);
@@ -1294,7 +1421,7 @@ export async function verifyDemoCapture(opts) {
       `[${label}] RED -- ${verdict.owner} replay does NOT match the live demo render: ` +
         `${verdict.failures.join('; ')} (best alignment '${verdictBest.name}'). ` +
         `Node Dawn remains mandatory evidence; ` +
-        `inspect .forgeax-debug/${captured.runId}/compare.png.`,
+        `inspect .forgeax-debug/${runId}/compare.png.`,
     );
   }
   green(
@@ -1302,40 +1429,30 @@ export async function verifyDemoCapture(opts) {
     `pixel[${verdict.owner}] -- mean ${verdictBest.delta.toFixed(5)}<=${epsilon}, ` +
       `maxChannel ${verdictLocal.maxDelta.toFixed(5)}<=${maxChannelEpsilon}, ` +
       `coveredMean ${verdictLocal.coveredMean.toFixed(5)}<=${coveredEpsilon} via '${verdictBest.name}' ` +
-    `(${rw}x${rh}, runId=${captured.runId})`,
+    `(${pixels.width}x${pixels.height}, runId=${runId})`,
   );
+}
+
+function pixelResult(verdict, nodeDawn, browserFresh) {
   return {
-    runId: captured.runId,
-    width: rw,
-    height: rh,
-    preparationMs: captured.preparationMs,
-    submittedFrames: captured.completedFrames,
-    transmissionInspection: captured.transmissionInspection,
-    backend: {
-      browser: { ...browserLaunch, adapterProbe: browserWebGpuReport },
-      dawn: dawnBackend,
+    owner: verdict.owner,
+    mean: verdict.selected.best.delta,
+    maxChannelDelta: verdict.selected.local.maxDelta,
+    coveredMean: verdict.selected.local.coveredMean,
+    nodeDawn: {
+      mean: nodeDawn.best.delta,
+      maxChannelDelta: nodeDawn.local.maxDelta,
+      coveredMean: nodeDawn.local.coveredMean,
     },
-    ...(producerReport === undefined ? {} : { producerReport }),
-    pixel: {
-      owner: verdict.owner,
-      mean: verdictBest.delta,
-      maxChannelDelta: verdictLocal.maxDelta,
-      coveredMean: verdictLocal.coveredMean,
-      nodeDawn: {
-        mean: best.delta,
-        maxChannelDelta: local.maxDelta,
-        coveredMean: local.coveredMean,
-      },
-      ...(browserReplayBest === undefined || browserReplayLocal === undefined
-        ? {}
-        : {
-            browserFresh: {
-              mean: browserReplayBest.delta,
-              maxChannelDelta: browserReplayLocal.maxDelta,
-              coveredMean: browserReplayLocal.coveredMean,
-            },
-          }),
-    },
+    ...(browserFresh === undefined
+      ? {}
+      : {
+          browserFresh: {
+            mean: browserFresh.best.delta,
+            maxChannelDelta: browserFresh.local.maxDelta,
+            coveredMean: browserFresh.local.coveredMean,
+          },
+        }),
   };
 }
 

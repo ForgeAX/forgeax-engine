@@ -869,6 +869,7 @@ function hostSource(
 import { createProfiler } from '@forgeax/engine/profiler';
 import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
+import { DEFAULT_WEBGPU_STUB_PROFILE } from '@forgeax/engine/rhi-webgpu';
 import { inspectUi } from '@forgeax/engine/ui';
 import { Context, startNativePlugin } from '@forgeax/engine/plugin';
 import { ShaderRegistry } from '@forgeax/engine/shader';
@@ -1353,6 +1354,8 @@ const dynamicGeometryMeshBudgetBytes = query.has('forgeax-dynamic-mesh-budget-by
 const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
 const rhiCaptureRequested =
   query.get('forgeax-rhi-capture') === '1' || ${JSON.stringify(rhiCaptureEnabled)};
+// CPU-only diagnostics on hosts without a usable GPU: keep the WebGPU path, drop GPU work.
+const gpuStub = query.get('forgeax-gpu-stub') === '1' ? DEFAULT_WEBGPU_STUB_PROFILE : undefined;
 // A profiler is an inert, bounded capability until a caller starts a capture.
 // Create it in both live execution placements so the persistent CLI can inspect the
 // actual realm; the Worker receives only the structured diagnostics switches.
@@ -1511,6 +1514,7 @@ const appBootstrapPlugin = {
               },
             },
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
+            ...(gpuStub === undefined ? {} : { gpuStub }),
           }
         : {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
@@ -1533,6 +1537,7 @@ const appBootstrapPlugin = {
             ...(workspaceMode ? { features: [ensureVfxRuntimeHost().feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature] }),
             ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
+            ...(gpuStub === undefined ? {} : { gpuStub }),
           },
       workerExecution ? { ...bundler, importTransport: undefined } : bundler,
     );

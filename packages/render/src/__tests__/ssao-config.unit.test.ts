@@ -2,6 +2,11 @@ import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { AmbientOcclusion, ambientOcclusionParameters } from '../components/ambient-occlusion';
 import {
+  AMBIENT_OCCLUSION_ALGORITHMS,
+  AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_SSAO,
+} from '../index';
+import {
   getSsaoParameters,
   resolveSsaoParameters,
   SSAO_DEFAULT_BIAS,
@@ -105,5 +110,20 @@ it.each([
   expect(resolveSsaoParameters({ [name]: value })).toMatchObject({
     ok: false,
     error: { code: 'ssao-parameter-invalid', detail: { paramName: name } },
+  });
+});
+
+describe('AmbientOcclusion public algorithm encodings', () => {
+  it('names every closed algorithm from the package entry', () => {
+    const named = { ssao: AMBIENT_OCCLUSION_SSAO, gtao: AMBIENT_OCCLUSION_GTAO };
+    expect(Object.keys(named).sort()).toEqual([...AMBIENT_OCCLUSION_ALGORITHMS].sort());
+    const world = new World();
+    for (const [algorithm, encoded] of Object.entries(named)) {
+      const entity = world
+        .spawn({ component: AmbientOcclusion, data: { algorithm: encoded } })
+        .unwrap();
+      const data = world.get(entity, AmbientOcclusion).unwrap();
+      expect(ambientOcclusionParameters(data).unwrap().algorithm).toBe(algorithm);
+    }
   });
 });

@@ -409,3 +409,158 @@ it.each([
   f.store.destroyAll();
   f.publisher.dispose();
 });
+
+it('sends a prepared mesh revision once and adopts the receiver-held payload', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'prepared-reference', epoch: 1 };
+  const held = new Set<string>();
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    (handle, revision) => held.has(`${handle}:${revision}`),
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const mesh = assets.read(meshHandle).unwrap();
+  const prepared = receiver.prepareMesh({ ...identity, meshHandle, mesh, revision: 1 }).unwrap();
+  held.add(`${meshHandle}:1`);
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const candidate = publisher.prepare(0).unwrap();
+  const packet = structuredClone(candidate.packet);
+  expect(packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
+  expect(packet.preparedAssets).toEqual([
+    expect.objectContaining({ handle: meshHandle, revision: 1 }),
+  ]);
+  candidate.accept();
+  const accepted = receiver.accept(packet).unwrap();
+  expect(accepted.resources.resolveAsset(meshHandle).unwrap()).toBe(prepared.mesh);
+  prepared.release();
+  publisher.dispose();
+});
+
+it('rejects a prepared mesh reference the receiver does not hold', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'prepared-reference-missing', epoch: 1 };
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    () => true,
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const packet = structuredClone(publisher.prepare(0).unwrap().packet);
+  expect(receiver.accept(packet).error?.detail.reason).toBe('revision');
+  publisher.dispose();
+});
+
+it('keeps a released prepared payload adoptable for a queued publication', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'prepared-reference-released', epoch: 1 };
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    () => true,
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const mesh = assets.read(meshHandle).unwrap();
+  const prepared = receiver.prepareMesh({ ...identity, meshHandle, mesh, revision: 1 }).unwrap();
+  prepared.release();
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const packet = structuredClone(publisher.prepare(0).unwrap().packet);
+  expect(receiver.accept(packet).unwrap().resources.resolveAsset(meshHandle).unwrap()).toBe(
+    prepared.mesh,
+  );
+  publisher.dispose();
+});
+
+it('adopts a referenced revision after a newer revision of the same handle was prepared', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'prepared-reference-superseded', epoch: 1 };
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    () => true,
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const mesh = assets.read(meshHandle).unwrap();
+  const first = receiver.prepareMesh({ ...identity, meshHandle, mesh, revision: 1 }).unwrap();
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const packet = structuredClone(publisher.prepare(0).unwrap().packet);
+  expect(packet.preparedAssets).toEqual([
+    expect.objectContaining({ handle: meshHandle, revision: 1 }),
+  ]);
+  // The next revision's mesh-prepare is handled before the queued draw adopts revision 1.
+  const next = createBoxGeometry(2, 2, 2).unwrap();
+  receiver.prepareMesh({ ...identity, meshHandle, mesh: next, revision: 2 }).unwrap();
+  expect(receiver.accept(packet).unwrap().resources.resolveAsset(meshHandle).unwrap()).toBe(
+    first.mesh,
+  );
+  publisher.dispose();
+});

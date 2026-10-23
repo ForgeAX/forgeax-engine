@@ -214,6 +214,8 @@ describe('standalone host', () => {
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
+            // Both placements receive the stub selected by ?forgeax-gpu-stub=1.
+            expect(call.split('...(gpuStub === undefined ? {} : { gpuStub }),')).toHaveLength(3);
             // Both execution placements receive the admitted AssetRegistry content budget.
             expect(call.split(`assetBudgetBytes: ${budget * 16},`)).toHaveLength(3);
             expect(call.split(`time: ${JSON.stringify(time)},`)).toHaveLength(3);
@@ -237,6 +239,7 @@ describe('standalone host', () => {
                   animation: {},
                   dynamicGeometryMeshBudgetBytes: budget,
                   pipelineLibrary,
+                  gpuStub: undefined,
                   executionWorkers: {},
                   programDeliveryChannel: 'test',
                   isolateVfxViewGraph: false,

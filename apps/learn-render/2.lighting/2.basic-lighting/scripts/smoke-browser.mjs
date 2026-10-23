@@ -1957,6 +1957,1032 @@ if (
   process.exit(1);
 }
 
+const LOG_PREFIX = '[learn-render 2.2 basic-lighting]';
+const BLUE_TEXEL = [0, 64, 255, 255];
+const BASE_COLOR_CHECKER_BYTES = [
+  0, 64, 255, 255,
+  255, 255, 255, 255,
+  255, 255, 255, 255,
+  0, 64, 255, 255,
+];
+const METALLIC_ROUGHNESS_CHECKER_BYTES = [
+  0, 0, 255, 255,
+  0, 255, 0, 255,
+  0, 255, 0, 255,
+  0, 0, 255, 255,
+];
+const BLUE_CORNER_BYTES = [
+  0, 64, 255, 255,
+  0, 0, 0, 255,
+  0, 0, 0, 255,
+  0, 0, 0, 255,
+];
+const NORMAL_CHECKER_BYTES = [
+  255, 128, 255, 255,
+  128, 255, 128, 255,
+  128, 128, 255, 255,
+  255, 255, 128, 255,
+];
+const IDENTITY_UV0_COORDINATES = [0, 0, 1, 1, 0, 0, 1, 1];
+const UV1_COORDINATES = [0, 0, 1, 1, 1, 0, 1, 1];
+const QUARTER_TRANSFORM_COORDINATES = [0.25, 0.25, 0, 0, 0, 0, 1, 1];
+const materialUploadFalsified = [
+  materialMetallic,
+  materialRoughness,
+  materialBaseColor,
+  materialBaseColorTexture,
+  materialBaseColorTextureSampler,
+  materialBaseColorTextureUvTransform,
+  materialBaseColorTextureUvSet,
+  materialMetallicRoughnessTexture,
+  materialMetallicRoughnessTextureSampler,
+  materialMetallicRoughnessTextureUvTransform,
+  materialMetallicRoughnessTextureUvSet,
+  materialEmissive,
+  materialEmissiveIntensity,
+  materialEmissiveTexture,
+  materialEmissiveTextureSampler,
+  materialEmissiveTextureUvTransform,
+  materialEmissiveTextureUvSet,
+  materialClearcoat,
+  materialNormalScale,
+  materialNormalTexture,
+  materialNormalTextureUvSet,
+  materialNormalTextureSampler,
+  materialNormalTextureUvTransform,
+  materialNormalTextureMagFilter,
+  materialNormalTextureMinFilter,
+  materialNormalTextureMipmapFilter,
+  materialNormalTextureAddressModeU,
+  materialNormalTextureAddressModeV,
+  materialNormalTextureAddressModeW,
+  materialNormalTextureSamplerLodMinClamp,
+  materialNormalTextureSamplerLodMaxClamp,
+  materialNormalTextureSamplerMaxAnisotropy,
+  materialOcclusionStrength,
+  materialOcclusionTextureSampler,
+  materialOcclusionTextureUvTransform,
+  materialOcclusionTextureUvSet,
+  materialSpecularColor,
+  materialSpecularColorTexture,
+  materialSpecularColorTextureSampler,
+  materialSpecularColorTextureUvTransform,
+  materialSpecularColorTextureUvSet,
+].some((value) => value !== '');
+// Every normal-texture falsifier except the UV set selects an explicit sampler.
+const normalTextureSamplerFalsified = [
+  materialNormalTexture,
+  materialNormalTextureSampler,
+  materialNormalTextureUvTransform,
+  materialNormalTextureMagFilter,
+  materialNormalTextureMinFilter,
+  materialNormalTextureMipmapFilter,
+  materialNormalTextureAddressModeU,
+  materialNormalTextureAddressModeV,
+  materialNormalTextureAddressModeW,
+  materialNormalTextureSamplerLodMinClamp,
+  materialNormalTextureSamplerLodMaxClamp,
+  materialNormalTextureSamplerMaxAnisotropy,
+].some((value) => value !== '');
+const normalTextureFalsified = normalTextureSamplerFalsified || materialNormalTextureUvSet !== '';
+const occlusionTextureFalsified = [
+  materialOcclusionTextureSampler,
+  materialOcclusionTextureUvTransform,
+  materialOcclusionTextureUvSet,
+].some((value) => value !== '');
+const specularColorTextureFalsified = [
+  materialSpecularColorTexture,
+  materialSpecularColorTextureSampler,
+  materialSpecularColorTextureUvTransform,
+  materialSpecularColorTextureUvSet,
+].some((value) => value !== '');
+
+function differs(actual, expected, epsilon) {
+  return actual.some((value, index) => Math.abs(value - expected[index]) > epsilon);
+}
+
+function seededBytes(tape, handleId) {
+  const seed = tape.events.find(
+    (candidate) => candidate.kind === 'initialData' && candidate.handleId === handleId,
+  );
+  const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
+  return data === undefined ? undefined : new Uint8Array(data);
+}
+
+function bytesEqual(bytes, expectedBytes) {
+  return (
+    bytes !== undefined &&
+    bytes.length === expectedBytes.length &&
+    bytes.every((value, index) => value === expectedBytes[index])
+  );
+}
+
+function isRgba8Texture(event, width, height) {
+  return (
+    event.kind === 'createTexture' &&
+    event.desc?.format === 'rgba8unorm' &&
+    event.desc?.size?.width === width &&
+    event.desc?.size?.height === height
+  );
+}
+
+function requireSeededTexture(tape, width, height, expectedBytes, missingMessage) {
+  const texture = tape.events.find(
+    (event) =>
+      isRgba8Texture(event, width, height) &&
+      bytesEqual(seededBytes(tape, event.handleId), expectedBytes),
+  );
+  if (texture === undefined) {
+    throw new Error(missingMessage);
+  }
+  return texture;
+}
+
+function isNearestClampSampler(event) {
+  return (
+    event.kind === 'createSampler' &&
+    event.desc?.magFilter === 'nearest' &&
+    event.desc?.minFilter === 'nearest' &&
+    event.desc?.mipmapFilter === 'nearest' &&
+    event.desc?.addressModeU === 'clamp-to-edge' &&
+    event.desc?.addressModeV === 'clamp-to-edge' &&
+    event.desc?.addressModeW === 'clamp-to-edge'
+  );
+}
+
+function requireNearestClampSampler(tape, missingMessage) {
+  const sampler = tape.events.find(isNearestClampSampler);
+  if (sampler === undefined) {
+    throw new Error(missingMessage);
+  }
+  return sampler;
+}
+
+// `sampler === undefined` accepts any sampler at `samplerBinding`.
+function requireTextureBindGroup(tape, texture, sampler, samplerBinding, textureBinding, missingMessage) {
+  const view = tape.events.find(
+    (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
+  );
+  const binding = tape.events.find(
+    (event) =>
+      event.kind === 'createBindGroup' &&
+      event.entries.some((entry) => entry.binding === samplerBinding && entry.resourceKind === 'sampler') &&
+      event.entries.some((entry) => entry.binding === textureBinding && entry.resourceKind === 'textureView') &&
+      (sampler === undefined || event.resourceHandleIds.includes(sampler.handleId)) &&
+      view !== undefined &&
+      event.resourceHandleIds.includes(view.resultHandleId),
+  );
+  if (binding === undefined) {
+    throw new Error(missingMessage);
+  }
+}
+
+function isUv1VertexPipeline(event) {
+  return (
+    event.kind === 'createRenderPipeline' &&
+    event.desc?.vertex?.buffers?.some(
+      (buffer) =>
+        buffer.arrayStride === 56 &&
+        buffer.attributes?.some((attribute) => attribute.shaderLocation === 6 && attribute.offset === 48),
+    )
+  );
+}
+
+function hasUniformUv1(uv1Floats, u, v) {
+  if (uv1Floats === undefined || uv1Floats.length !== 24 * 14) {
+    return false;
+  }
+  return Array.from({ length: 24 }, (_, index) => {
+    const offset = index * 14 + 12;
+    return uv1Floats[offset] === u && uv1Floats[offset + 1] === v;
+  }).every((value) => value);
+}
+
+function assertUv1VertexStream(tape, u, v) {
+  if (tape.events.find(isUv1VertexPipeline) === undefined) {
+    throw new Error(
+      'capture tape is missing the 56-byte real UV1 vertex layout at shader location 6 offset 48',
+    );
+  }
+  const uv1Buffer = tape.events.find(
+    (event) => event.kind === 'createBuffer' && event.desc?.size === 1344,
+  );
+  const uv1Seed = uv1Buffer === undefined
+    ? undefined
+    : tape.events.find((event) => event.kind === 'initialData' && event.handleId === uv1Buffer.handleId);
+  const uv1Data = uv1Seed === undefined ? undefined : tape.blobPool.get(uv1Seed.dataHash);
+  const uv1Floats = uv1Data === undefined ? undefined : new Float32Array(uv1Data);
+  if (!hasUniformUv1(uv1Floats, u, v)) {
+    throw new Error(
+      `capture tape is missing the producer-owned UV1=[${u},${v}] bytes in the 14-float mesh stride`,
+    );
+  }
+}
+
+function assertTextureCoordinates(materialFloats, start, expected, name, byteRange) {
+  const actual = Array.from(materialFloats.slice(start, start + 8));
+  if (differs(actual, expected, 1e-6)) {
+    throw new Error(
+      `capture tape ${name} coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets ${byteRange}`,
+    );
+  }
+  return actual;
+}
+
+function assertMetallicRoughnessChannels(materialFloats, label, expectedChannels) {
+  const materialChannels = [materialFloats[4], materialFloats[6], materialFloats[7]];
+  if (differs(materialChannels, expectedChannels, 1e-6)) {
+    const [metallic, metallicChannel, roughnessChannel] = expectedChannels;
+    throw new Error(
+      `capture tape ${label} material=${JSON.stringify(materialChannels)}; expected metallic=${metallic}, metallicChannel=${metallicChannel}, roughnessChannel=${roughnessChannel} at global byte offsets 16,24,28`,
+    );
+  }
+}
+
+function findStandardMaterialUpload(tape) {
+  const materialBuffer = tape.events.find(
+    (event) =>
+      event.kind === 'createBuffer' && event.desc?.size === 524288 && event.desc?.usage === 76,
+  );
+  const materialUpload = materialBuffer === undefined
+    ? undefined
+    : tape.events.find(
+        (event) =>
+          event.kind === 'writeBuffer' &&
+          event.handleId === materialBuffer.handleId &&
+          event.bufferOffset === 0 &&
+          event.size === 512,
+      );
+  return materialUpload === undefined ? undefined : tape.blobPool.get(materialUpload.dataHash);
+}
+
+function readClusterLightFloats(tape) {
+  const lightDataBuffer = tape.events.find(
+    (event) =>
+      event.kind === 'createBuffer' && event.desc?.size === 20480 && event.desc?.usage === 136,
+  );
+  const upload = lightDataBuffer === undefined
+    ? undefined
+    : tape.events.find(
+        (event) =>
+          event.kind === 'writeBuffer' &&
+          event.handleId === lightDataBuffer.handleId &&
+          event.bufferOffset === 0 &&
+          event.size >= 80,
+      );
+  const data = upload === undefined ? undefined : tape.blobPool.get(upload.dataHash);
+  if (data === undefined || data.byteLength < 80) {
+    throw new Error(
+      'capture tape is missing the unified Cluster light_data upload at buffer offset 0',
+    );
+  }
+  return new Float32Array(data);
+}
+
+function assertAlphaCutoffTape(tape) {
+  const materialData = findStandardMaterialUpload(tape);
+  if (materialData === undefined || materialData.byteLength < 72) {
+    throw new Error(
+      'capture tape is missing the 512-byte Standard PBR material upload for alpha cutoff',
+    );
+  }
+  const actual = new Float32Array(materialData)[17];
+  if (Math.abs(actual - 0.5) > 1e-6) {
+    throw new Error(
+      `capture tape material alphaCutoff=${actual}; expected 0.5 at global byte offset 68`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialAlphaCutoff=${actual} materialUBO byteOffset=68 baseColorAlpha=0.25`,
+  );
+}
+
+function requireAlphaBlendPipeline(tape) {
+  const blendPipeline = tape.events.find(
+    (event) =>
+      event.kind === 'createRenderPipeline' &&
+      event.desc?.fragment?.targets?.[0]?.blend !== undefined,
+  );
+  if (blendPipeline === undefined) {
+    throw new Error('capture tape is missing the producer-owned alpha blend pipeline');
+  }
+  const blend = blendPipeline.desc.fragment.targets[0].blend;
+  const expectedColor = {
+    srcFactor: 'src-alpha',
+    dstFactor: 'one-minus-src-alpha',
+    operation: 'add',
+  };
+  const expectedAlpha = {
+    srcFactor: 'one',
+    dstFactor: 'one-minus-src-alpha',
+    operation: 'add',
+  };
+  if (
+    JSON.stringify(blend.color) !== JSON.stringify(expectedColor) ||
+    JSON.stringify(blend.alpha) !== JSON.stringify(expectedAlpha) ||
+    blendPipeline.desc?.depthStencil?.depthWriteEnabled !== false
+  ) {
+    throw new Error(
+      `capture tape alpha blend state drifted: ${JSON.stringify({ blend, depthWriteEnabled: blendPipeline.desc?.depthStencil?.depthWriteEnabled })}`,
+    );
+  }
+  return blendPipeline;
+}
+
+function assertAlphaBlendTape(tape) {
+  const blendPipeline = requireAlphaBlendPipeline(tape);
+  const blendPipelineUse = tape.events.find(
+    (event) => event.kind === 'setPipeline' && event.pipelineHandleId === blendPipeline.handleId,
+  );
+  if (blendPipelineUse === undefined) {
+    throw new Error('capture tape alpha blend pipeline was never selected for a draw');
+  }
+  const materialData = findStandardMaterialUpload(tape);
+  if (materialData === undefined || materialData.byteLength < 16) {
+    throw new Error('capture tape is missing the alpha-blend Standard PBR material upload');
+  }
+  const baseColorAlpha = new Float32Array(materialData)[3];
+  if (Math.abs(baseColorAlpha - 0.5) > 1e-6) {
+    throw new Error(
+      `capture tape alpha blend baseColor alpha=${baseColorAlpha}; expected 0.5 at global byte offset 12`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialAlphaBlend=${alphaBlend} baseColorAlpha=${baseColorAlpha} blend=src-alpha/one-minus-src-alpha depthWriteEnabled=false queue=3000`,
+  );
+}
+
+function assertEmissiveTextureCoordinatesTape(materialFloats) {
+  if (materialEmissiveTextureUvTransform !== '') {
+    const actual = assertTextureCoordinates(materialFloats, 56, QUARTER_TRANSFORM_COORDINATES, 'emissiveTexture', '224..252');
+    console.log(
+      `${LOG_PREFIX} tape materialEmissiveTextureUvTransform=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=224,228,232,236,240,244,248,252`,
+    );
+  }
+  if (materialEmissiveTextureUvSet !== '') {
+    const actual = assertTextureCoordinates(materialFloats, 56, UV1_COORDINATES, 'emissiveTexture', '224..252');
+    console.log(
+      `${LOG_PREFIX} tape materialEmissiveTextureUvSet=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=224,228,232,236,240,244,248,252`,
+    );
+  }
+}
+
+function assertBaseColorFactorTape(materialFloats) {
+  const actual = [materialFloats[0], materialFloats[1], materialFloats[2], materialFloats[3]];
+  const authored = materialBaseColor === 'warm' ? [1.0, 0.5, 0.31] : [0.2, 0.5, 1.0];
+  const expected = [...authored.map(srgbToLinear), 1.0];
+  if (differs(actual, expected, 1e-6)) {
+    throw new Error(
+      `capture tape material baseColor=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 0,4,8,12`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialBaseColor=${materialBaseColor} baseColor=${JSON.stringify(actual)} materialUBO byteOffsets=0,4,8,12`,
+  );
+}
+
+function assertBaseColorTextureTape(tape) {
+  const texture = requireSeededTexture(tape, 1, 1, BLUE_TEXEL,
+    'capture tape is missing the blue 1x1 baseColorTexture initialData payload',
+  );
+  requireTextureBindGroup(tape, texture, undefined, 1, 2,
+    'capture tape is missing the engine-managed baseColorTexture bindings at 1/2',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialBaseColorTexture=blue payload=${JSON.stringify(BLUE_TEXEL)} colorSpace=linear engineManagedRegion=baseColorTexture bindings=1/2`,
+  );
+}
+
+function assertBaseColorTextureSamplerTape(tape) {
+  const texture = requireSeededTexture(tape, 2, 2, BASE_COLOR_CHECKER_BYTES,
+    'capture tape is missing the 2x2 baseColorTexture sampler checker initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the baseColorTexture sampler nearest/clamp-to-edge descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 1, 2,
+    'capture tape is missing the engine-managed baseColorTexture sampler bindings at 1/2',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialBaseColorTextureSampler=nearest payload=${JSON.stringify(BASE_COLOR_CHECKER_BYTES)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=baseColorTexture bindings=1/2`,
+  );
+}
+
+function assertBaseColorTextureUvTransformTape(tape, materialFloats) {
+  const actual = assertTextureCoordinates(materialFloats, 24, QUARTER_TRANSFORM_COORDINATES, 'baseColorTexture', '384..412');
+  const texture = requireSeededTexture(tape, 2, 2, BASE_COLOR_CHECKER_BYTES,
+    'capture tape is missing the 2x2 baseColorTexture UV-transform checker initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the baseColorTexture UV-transform nearest/clamp-to-edge sampler descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 1, 2,
+    'capture tape is missing the engine-managed baseColorTexture UV-transform bindings at 1/2',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialBaseColorTextureUvTransform=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(BASE_COLOR_CHECKER_BYTES)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=baseColorTexture bindings=1/2 materialUBO byteOffsets=384,388,392,396,400,404,408,412`,
+  );
+}
+
+function assertBaseColorTextureUvSetTape(tape, materialFloats) {
+  const actual = assertTextureCoordinates(materialFloats, 24, UV1_COORDINATES, 'baseColorTexture', '384..412');
+  const texture = requireSeededTexture(tape, 2, 2, BASE_COLOR_CHECKER_BYTES,
+    'capture tape is missing the 2x2 baseColorTexture UV-set checker initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the baseColorTexture UV-set nearest/clamp-to-edge sampler descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 1, 2,
+    'capture tape is missing the engine-managed baseColorTexture UV-set bindings at 1/2',
+  );
+  assertUv1VertexStream(tape, 0.25, 0.25);
+  console.log(
+    `${LOG_PREFIX} tape materialBaseColorTextureUvSet=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(BASE_COLOR_CHECKER_BYTES)} sampler=nearest/clamp-to-edge engineManagedRegion=baseColorTexture bindings=1/2 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.25,0.25] materialUBO byteOffsets=384,388,392,396,400,404,408,412`,
+  );
+}
+
+function assertBaseColorTape(tape, materialFloats) {
+  if (materialBaseColor !== '') {
+    assertBaseColorFactorTape(materialFloats);
+  }
+  if (materialBaseColorTexture !== '') {
+    assertBaseColorTextureTape(tape);
+  }
+  if (materialBaseColorTextureSampler !== '') {
+    assertBaseColorTextureSamplerTape(tape);
+  }
+  if (materialBaseColorTextureUvTransform !== '') {
+    assertBaseColorTextureUvTransformTape(tape, materialFloats);
+  }
+  if (materialBaseColorTextureUvSet !== '') {
+    assertBaseColorTextureUvSetTape(tape, materialFloats);
+  }
+}
+
+function assertMetallicChannelTape(tape, materialFloats) {
+  assertMetallicRoughnessChannels(materialFloats, 'metallicChannel', [0.5, 0, 1]);
+  const expectedBytes = [255, 255, 0, 255];
+  const texture = requireSeededTexture(tape, 1, 1, expectedBytes,
+    'capture tape is missing the red 1x1 metallicChannel initialData payload',
+  );
+  requireTextureBindGroup(tape, texture, undefined, 3, 4,
+    'capture tape is missing the engine-managed metallicChannel texture bindings at 3/4',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialMetallicChannel=${materialMetallicChannel} payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=red roughnessChannel=green byteOffsets=16,24,28`,
+  );
+}
+
+function assertRoughnessChannelTape(tape, materialFloats) {
+  assertMetallicRoughnessChannels(materialFloats, 'roughnessChannel', [0.5, 2, 2]);
+  const expectedBytes = [0, 0, 255, 255];
+  const texture = requireSeededTexture(tape, 1, 1, expectedBytes,
+    'capture tape is missing the blue 1x1 roughnessChannel initialData payload',
+  );
+  requireTextureBindGroup(tape, texture, undefined, 3, 4,
+    'capture tape is missing the engine-managed roughnessChannel texture bindings at 3/4',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialRoughnessChannel=${materialRoughnessChannel} payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=blue roughnessChannel=blue byteOffsets=16,24,28`,
+  );
+}
+
+function assertMetallicRoughnessTextureTape(tape, materialFloats) {
+  assertMetallicRoughnessChannels(materialFloats, 'metallicRoughness', [0.5, 2, 1]);
+  const expectedBytes = [0, 0, 255, 255];
+  const texture = requireSeededTexture(tape, 1, 1, expectedBytes,
+    'capture tape is missing the blue 1x1 metallicRoughnessTexture initialData payload',
+  );
+  requireTextureBindGroup(tape, texture, undefined, 3, 4,
+    'capture tape is missing the engine-managed metallicRoughnessTexture bindings at 3/4',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialMetallicRoughnessTexture=blue payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=blue roughnessChannel=green byteOffsets=16,24,28`,
+  );
+}
+
+function assertMetallicRoughnessTextureSamplerTape(tape, materialFloats) {
+  assertMetallicRoughnessChannels(materialFloats, 'metallicRoughness sampler', [0.5, 2, 1]);
+  const texture = requireSeededTexture(tape, 2, 2, METALLIC_ROUGHNESS_CHECKER_BYTES,
+    'capture tape is missing the 2x2 metallicRoughnessTexture checker initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the metallicRoughnessTexture nearest/clamp-to-edge sampler descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 3, 4,
+    'capture tape is missing the engine-managed metallicRoughnessTexture sampler/texture bindings at 3/4',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialMetallicRoughnessTextureSampler=nearest payload=${JSON.stringify(METALLIC_ROUGHNESS_CHECKER_BYTES)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=blue roughnessChannel=green byteOffsets=16,24,28`,
+  );
+}
+
+function assertMetallicRoughnessTextureUvTransformTape(tape, materialFloats) {
+  const actual = assertTextureCoordinates(materialFloats, 32, [0.75, 0.25, 0, 0, 0, 0, 1, 1], 'metallicRoughnessTexture', '128..156');
+  const texture = requireSeededTexture(tape, 2, 2, METALLIC_ROUGHNESS_CHECKER_BYTES,
+    'capture tape is missing the 2x2 metallicRoughnessTexture transform checker initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the metallicRoughnessTexture transform nearest/clamp-to-edge sampler descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 3, 4,
+    'capture tape is missing the engine-managed metallicRoughnessTexture transform bindings at 3/4',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialMetallicRoughnessTextureUvTransform=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(METALLIC_ROUGHNESS_CHECKER_BYTES)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO byteOffsets=128,132,136,140,144,148,152,156`,
+  );
+}
+
+function assertMetallicRoughnessTextureUvSetTape(tape, materialFloats) {
+  const actual = assertTextureCoordinates(materialFloats, 32, UV1_COORDINATES, 'metallicRoughnessTexture', '128..156');
+  const texture = requireSeededTexture(tape, 2, 2, METALLIC_ROUGHNESS_CHECKER_BYTES,
+    'capture tape is missing the 2x2 metallicRoughnessTexture UV-set checker initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the metallicRoughnessTexture UV-set nearest/clamp-to-edge sampler descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 3, 4,
+    'capture tape is missing the engine-managed metallicRoughnessTexture UV-set bindings at 3/4',
+  );
+  assertUv1VertexStream(tape, 0.75, 0.25);
+  console.log(
+    `${LOG_PREFIX} tape materialMetallicRoughnessTextureUvSet=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(METALLIC_ROUGHNESS_CHECKER_BYTES)} sampler=nearest/clamp-to-edge engineManagedRegion=metallicRoughnessTexture bindings=3/4 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.75,0.25] materialUBO byteOffsets=128,132,136,140,144,148,152,156`,
+  );
+}
+
+function assertMetallicFactorTape(materialFloats) {
+  const actual = materialFloats[4];
+  const expected = materialMetallic === 'dielectric' ? 0.0 : 1.0;
+  if (Math.abs(actual - expected) > 1e-6) {
+    throw new Error(
+      `capture tape material metallic=${actual}; expected ${expected} at global byte offset 16`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialMetallic=${materialMetallic} metallic=${actual} materialUBO byteOffset=16`,
+  );
+}
+
+function assertRoughnessFactorTape(materialFloats) {
+  const actual = materialFloats[5];
+  const expected = materialRoughness === 'smooth' ? 0.2 : 0.8;
+  if (Math.abs(actual - expected) > 1e-6) {
+    throw new Error(
+      `capture tape material roughness=${actual}; expected ${expected} at global byte offset 20`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialRoughness=${materialRoughness} roughness=${actual} materialUBO byteOffset=20`,
+  );
+}
+
+function assertMetallicRoughnessTape(tape, materialFloats) {
+  if (materialMetallicChannel !== '') {
+    assertMetallicChannelTape(tape, materialFloats);
+  }
+  if (materialRoughnessChannel !== '') {
+    assertRoughnessChannelTape(tape, materialFloats);
+  }
+  if (materialMetallicRoughnessTexture !== '') {
+    assertMetallicRoughnessTextureTape(tape, materialFloats);
+  }
+  if (materialMetallicRoughnessTextureSampler !== '') {
+    assertMetallicRoughnessTextureSamplerTape(tape, materialFloats);
+  }
+  if (materialMetallicRoughnessTextureUvTransform !== '') {
+    assertMetallicRoughnessTextureUvTransformTape(tape, materialFloats);
+  }
+  if (materialMetallicRoughnessTextureUvSet !== '') {
+    assertMetallicRoughnessTextureUvSetTape(tape, materialFloats);
+  }
+  if (materialMetallic !== '') {
+    assertMetallicFactorTape(materialFloats);
+  }
+  if (materialRoughness !== '') {
+    assertRoughnessFactorTape(materialFloats);
+  }
+}
+
+function assertEmissiveFactorTape(materialFloats) {
+  const actual = [materialFloats[12], materialFloats[13], materialFloats[14]];
+  const authored = materialEmissive === 'red' ? [1.0, 0.05, 0.02] : [0.02, 0.2, 1.0];
+  const expected = authored.map(srgbToLinear);
+  if (differs(actual, expected, 1e-6)) {
+    throw new Error(
+      `capture tape material emissive=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 48,52,56`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialEmissive=${materialEmissive} emissive=${JSON.stringify(actual)} materialUBO byteOffsets=48,52,56 emissiveIntensity=${materialFloats[15]}`,
+  );
+}
+
+function assertEmissiveIntensityTape(materialFloats) {
+  const emissive = [materialFloats[12], materialFloats[13], materialFloats[14]];
+  const expectedEmissive = [1.0, 0.05, 0.02].map(srgbToLinear);
+  if (differs(emissive, expectedEmissive, 1e-6)) {
+    throw new Error(
+      `capture tape material emissive=${JSON.stringify(emissive)}; expected ${JSON.stringify(expectedEmissive)} for the intensity witness`,
+    );
+  }
+  const actual = materialFloats[15];
+  const expected = 2.0;
+  if (Math.abs(actual - expected) > 1e-6) {
+    throw new Error(
+      `capture tape material emissiveIntensity=${actual}; expected ${expected} at global byte offset 60`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialEmissiveIntensity=${materialEmissiveIntensity} emissiveIntensity=${actual} materialUBO byteOffset=60 emissive=${JSON.stringify(emissive)}`,
+  );
+}
+
+function assertClearcoatTape(materialFloats) {
+  const actual = [materialFloats[18], materialFloats[19]];
+  const expected = [1.0, 0.05];
+  if (differs(actual, expected, 1e-6)) {
+    throw new Error(
+      `capture tape material clearcoat=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 72,76`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialClearcoat=${materialClearcoat} clearcoat=${actual[0]} clearcoatRoughness=${actual[1]} materialUBO byteOffsets=72,76`,
+  );
+}
+
+function assertNormalScaleTape(materialFloats) {
+  const actual = Array.from(materialFloats.slice(24, 26));
+  const expected = [0.0, 0.0];
+  if (differs(actual, expected, 1e-6)) {
+    throw new Error(
+      `capture tape material normalScale=${actual}; expected ${expected} at global byte offsets 96,100`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialNormalScale=${materialNormalScale} normalScale=${actual} materialUBO byteOffsets=96,100 texture=rg-normal`,
+  );
+}
+
+function assertEmissiveAndSurfaceFactorsTape(materialFloats) {
+  if (materialEmissive !== '') {
+    assertEmissiveFactorTape(materialFloats);
+  }
+  if (materialEmissiveIntensity !== '') {
+    assertEmissiveIntensityTape(materialFloats);
+  }
+  if (materialClearcoat !== '') {
+    assertClearcoatTape(materialFloats);
+  }
+  if (materialNormalScale !== '') {
+    assertNormalScaleTape(materialFloats);
+  }
+}
+
+function expectedNormalTextureCoordinates() {
+  if (materialNormalTextureUvTransform !== '') {
+    return QUARTER_TRANSFORM_COORDINATES;
+  }
+  return materialNormalTextureUvSet === '' ? IDENTITY_UV0_COORDINATES : UV1_COORDINATES;
+}
+
+function expectedNormalFilter(selectedFilter) {
+  return materialNormalTextureSamplerMaxAnisotropy !== '' || selectedFilter === 'linear'
+    ? 'linear'
+    : 'nearest';
+}
+
+function expectedNormalAddressMode(selectedMode) {
+  return selectedMode === 'repeat' ? 'repeat' : 'clamp-to-edge';
+}
+
+function normalSamplerLodMatches(desc) {
+  const lodMin = materialNormalTextureSamplerLodMinClamp;
+  const lodMax = materialNormalTextureSamplerLodMaxClamp;
+  const maxAnisotropy = materialNormalTextureSamplerMaxAnisotropy;
+  return (
+    (lodMin === '' || desc?.lodMinClamp === (lodMin === '1' ? 1 : 0)) &&
+    (lodMin === '' || desc?.lodMaxClamp === 1) &&
+    (lodMax === '' || desc?.lodMinClamp === 0) &&
+    (lodMax === '' || desc?.lodMaxClamp === (lodMax === '1' ? 1 : 0)) &&
+    (maxAnisotropy === '' || desc?.maxAnisotropy === (maxAnisotropy === '1' ? 16 : undefined))
+  );
+}
+
+function isNormalTextureSampler(event) {
+  return (
+    event.kind === 'createSampler' &&
+    event.desc?.magFilter === expectedNormalFilter(materialNormalTextureMagFilter) &&
+    event.desc?.minFilter === expectedNormalFilter(materialNormalTextureMinFilter) &&
+    event.desc?.mipmapFilter === expectedNormalFilter(materialNormalTextureMipmapFilter) &&
+    event.desc?.addressModeU === expectedNormalAddressMode(materialNormalTextureAddressModeU) &&
+    event.desc?.addressModeV === expectedNormalAddressMode(materialNormalTextureAddressModeV) &&
+    event.desc?.addressModeW === expectedNormalAddressMode(materialNormalTextureAddressModeW) &&
+    normalSamplerLodMatches(event.desc)
+  );
+}
+
+// Reports the highest-priority normal-texture falsifier that is set.
+function normalTextureProfile() {
+  if (materialNormalTextureSamplerMaxAnisotropy !== '') return 'max-anisotropy';
+  if (materialNormalTextureSamplerLodMaxClamp !== '') return 'lod-max-clamp';
+  if (materialNormalTextureSamplerLodMinClamp !== '') return 'lod-min-clamp';
+  if (materialNormalTextureAddressModeW !== '') return 'address-mode-w';
+  if (materialNormalTextureAddressModeV !== '') return 'address-mode-v';
+  if (materialNormalTextureAddressModeU !== '') return 'address-mode-u';
+  if (materialNormalTextureMipmapFilter !== '') return 'mipmap-filter';
+  if (materialNormalTextureMinFilter !== '') return 'min-filter';
+  if (materialNormalTextureMagFilter !== '') return 'mag-filter';
+  if (materialNormalTexture !== '') return 'texture';
+  if (materialNormalTextureUvTransform !== '') return 'uv-transform';
+  if (materialNormalTextureSampler !== '') return 'sampler';
+  return 'uv-set';
+}
+
+function normalTextureLodMinClampLabel() {
+  if (materialNormalTextureSamplerMaxAnisotropy !== '' || materialNormalTextureSamplerLodMaxClamp !== '') {
+    return '0';
+  }
+  return materialNormalTextureSamplerLodMinClamp === '' ? 'default' : materialNormalTextureSamplerLodMinClamp;
+}
+
+function normalTextureLodMaxClampLabel() {
+  if (materialNormalTextureSamplerMaxAnisotropy !== '') return '1';
+  if (materialNormalTextureSamplerLodMaxClamp !== '') return materialNormalTextureSamplerLodMaxClamp;
+  return materialNormalTextureSamplerLodMinClamp === '' ? 'default' : '1';
+}
+
+function normalTextureMaxAnisotropyLabel() {
+  if (materialNormalTextureSamplerMaxAnisotropy === '') return 'default';
+  return materialNormalTextureSamplerMaxAnisotropy === '1' ? '16' : '1';
+}
+
+function normalTextureSamplerLog() {
+  return `sampler=${materialNormalTextureMagFilter || materialNormalTextureSampler || 'nearest'} minFilter=${materialNormalTextureMinFilter || 'nearest'} mipmapFilter=${materialNormalTextureMipmapFilter || 'nearest'} addressModeU=clamp-to-edge addressModeV=${materialNormalTextureAddressModeV || 'clamp-to-edge'} addressModeW=${materialNormalTextureAddressModeW || 'clamp-to-edge'} lodMinClamp=${normalTextureLodMinClampLabel()} lodMaxClamp=${normalTextureLodMaxClampLabel()} maxAnisotropy=${normalTextureMaxAnisotropyLabel()}`;
+}
+
+function assertNormalTextureTape(tape, materialFloats) {
+  const actual = assertTextureCoordinates(materialFloats, 40, expectedNormalTextureCoordinates(), 'normalTexture', '160..188');
+  const tilt = materialNormalTexture === 'tilt';
+  const expectedBytes = tilt ? [128, 255, 128, 255] : NORMAL_CHECKER_BYTES;
+  const expectedSize = tilt ? 1 : 2;
+  const texture = requireSeededTexture(tape, expectedSize, expectedSize, expectedBytes,
+    `capture tape is missing the ${expectedSize}x${expectedSize} linear normalTexture initialData payload`,
+  );
+  const sampler = normalTextureSamplerFalsified ? tape.events.find(isNormalTextureSampler) : undefined;
+  if (normalTextureSamplerFalsified && sampler === undefined) {
+    throw new Error('capture tape is missing the normalTexture sampler descriptor');
+  }
+  requireTextureBindGroup(tape, texture, sampler, 5, 6,
+    'capture tape is missing the engine-managed normalTexture bindings at 5/6',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialNormalTexture profile=${normalTextureProfile()} ${normalTextureSamplerLog()} coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=normalTexture bindings=5/6 materialUBO byteOffsets=160,164,168,172,176,180,184,188`,
+  );
+}
+
+function requireBlackOcclusionTexture(tape) {
+  const blackTexel = [0, 0, 0, 255];
+  const texture = tape.events.find(
+    (event) =>
+      isRgba8Texture(event, 1, 1) &&
+      event.desc?.usage === 23 &&
+      bytesEqual(seededBytes(tape, event.handleId), blackTexel),
+  );
+  if (texture === undefined) {
+    throw new Error('capture tape is missing the 1x1 black linear occlusion texture payload');
+  }
+  return texture;
+}
+
+function assertOcclusionTextureUvSetTape(tape, materialFloats, occlusionStrength) {
+  const coordinates = assertTextureCoordinates(materialFloats, 64, UV1_COORDINATES, 'occlusionTexture', '256..284');
+  assertUv1VertexStream(tape, 0.75, 0.75);
+  console.log(
+    `${LOG_PREFIX} tape materialOcclusionTextureUvSet=1 coordinates=${JSON.stringify(coordinates)} occlusionStrength=${occlusionStrength} texture=rgba8unorm 1x1 black sampler=nearest/clamp-to-edge engineManagedRegion=occlusionTexture bindings=18/19 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.75,0.75] materialUBO byteOffsets=256,260,264,268,272,276,280,284`,
+  );
+}
+
+function assertOcclusionTextureUvTransformTape(materialFloats, occlusionStrength) {
+  const coordinates = assertTextureCoordinates(materialFloats, 64, QUARTER_TRANSFORM_COORDINATES, 'occlusionTexture', '256..284');
+  console.log(
+    `${LOG_PREFIX} tape materialOcclusionTextureUvTransform=1 coordinates=${JSON.stringify(coordinates)} occlusionStrength=${occlusionStrength} texture=rgba8unorm 1x1 black sampler=nearest/clamp-to-edge engineManagedRegion=occlusionTexture bindings=18/19 materialUBO byteOffsets=256,260,264,268,272,276,280,284`,
+  );
+}
+
+function assertOcclusionTextureTape(tape, materialFloats, texture, occlusionStrength) {
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the occlusionTexture sampler nearest/clamp-to-edge descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 18, 19,
+    'capture tape is missing the engine-managed occlusionTexture bindings at 18/19',
+  );
+  if (materialOcclusionTextureUvSet !== '') {
+    assertOcclusionTextureUvSetTape(tape, materialFloats, occlusionStrength);
+  } else if (materialOcclusionTextureUvTransform !== '') {
+    assertOcclusionTextureUvTransformTape(materialFloats, occlusionStrength);
+  } else {
+    console.log(
+      `${LOG_PREFIX} tape materialOcclusionTextureSampler=nearest occlusionStrength=${occlusionStrength} texture=rgba8unorm 1x1 black sampler=nearest/clamp-to-edge engineManagedRegion=occlusionTexture bindings=18/19 materialUBO byteOffset=64`,
+    );
+  }
+}
+
+function assertOcclusionTape(tape, materialFloats) {
+  const actual = materialFloats[16];
+  const expectedStrength = materialOcclusionStrength === '' ? 1 : 0;
+  if (Math.abs(actual - expectedStrength) > 1e-6) {
+    throw new Error(
+      `capture tape material occlusionStrength=${actual}; expected ${expectedStrength} at global byte offset 64`,
+    );
+  }
+  const texture = requireBlackOcclusionTexture(tape);
+  if (occlusionTextureFalsified) {
+    assertOcclusionTextureTape(tape, materialFloats, texture, actual);
+  } else {
+    console.log(
+      `${LOG_PREFIX} tape materialOcclusionStrength=zero occlusionStrength=${actual} materialUBO byteOffset=64 texture=rgba8unorm 1x1 black`,
+    );
+  }
+}
+
+function assertSpecularColorFactorTape(materialFloats) {
+  const actual = [materialFloats[20], materialFloats[21], materialFloats[22]];
+  const expected = [0.0, srgbToLinear(0.8), 1.0];
+  if (differs(actual, expected, 1e-6)) {
+    throw new Error(
+      `capture tape material specularColor=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 80,84,88`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape materialSpecularColor=cool specularColor=${JSON.stringify(actual)} materialUBO byteOffsets=80,84,88`,
+  );
+}
+
+function assertSpecularColorTextureCoordinatesTape(tape, materialFloats) {
+  if (materialSpecularColorTextureUvTransform !== '') {
+    const actual = assertTextureCoordinates(materialFloats, 48, QUARTER_TRANSFORM_COORDINATES, 'specularColorTexture', '192..220');
+    console.log(
+      `${LOG_PREFIX} tape materialSpecularColorTextureUvTransform=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=192,196,200,204,208,212,216,220`,
+    );
+  } else if (materialSpecularColorTextureUvSet !== '') {
+    const actual = assertTextureCoordinates(materialFloats, 48, UV1_COORDINATES, 'specularColorTexture', '192..220');
+    assertUv1VertexStream(tape, 0.75, 0.75);
+    console.log(
+      `${LOG_PREFIX} tape materialSpecularColorTextureUvSet=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=192,196,200,204,208,212,216,220 texture=rgba8unorm 2x2 sampler=nearest/clamp-to-edge userRegion=specularColorTexture bindings=7/8 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.75,0.75]`,
+    );
+  }
+}
+
+function assertSpecularColorTextureTape(tape, materialFloats) {
+  const singleTexel = materialSpecularColorTextureUvTransform === '' && materialSpecularColorTextureUvSet === '';
+  const expectedBytes = singleTexel ? BLUE_TEXEL : BLUE_CORNER_BYTES;
+  const expectedSize = singleTexel ? 1 : 2;
+  const texture = requireSeededTexture(tape, expectedSize, expectedSize, expectedBytes,
+    'capture tape is missing the expected specularColorTexture initialData payload',
+  );
+  const sampler = requireNearestClampSampler(tape,
+    'capture tape is missing the specularColorTexture sampler nearest/clamp-to-edge descriptor',
+  );
+  requireTextureBindGroup(tape, texture, sampler, 7, 8,
+    'capture tape is missing the specularColorTexture user-region bindings at 7/8',
+  );
+  assertSpecularColorTextureCoordinatesTape(tape, materialFloats);
+  console.log(
+    `${LOG_PREFIX} tape materialSpecularColorTexture=${materialSpecularColorTexture === '' ? 'default' : 'blue'} sampler=nearest payload=${JSON.stringify(expectedBytes)} colorSpace=linear sampler=nearest/clamp-to-edge userRegion=specularColorTexture bindings=7/8`,
+  );
+}
+
+function assertEmissiveTextureTape(tape) {
+  const singleTexel = materialEmissiveTextureUvTransform === '' && materialEmissiveTextureUvSet === '';
+  const expectedBytes = singleTexel ? BLUE_TEXEL : BLUE_CORNER_BYTES;
+  const expectedSize = singleTexel ? 1 : 2;
+  const texture = requireSeededTexture(tape, expectedSize, expectedSize, expectedBytes,
+    'capture tape is missing the blue 1x1 emissiveTexture initialData payload',
+  );
+  const sampler = materialEmissiveTextureSampler === ''
+    ? undefined
+    : requireNearestClampSampler(tape, 'capture tape is missing the emissiveTexture nearest sampler descriptor');
+  requireTextureBindGroup(tape, texture, sampler, 16, 17,
+    'capture tape is missing the engine-managed emissiveTexture bindings at 16/17',
+  );
+  console.log(
+    `${LOG_PREFIX} tape materialEmissiveTexture=blue payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=emissiveTexture bindings=16/17 sampler=${materialEmissiveTextureSampler || 'default'} uvTransform=${materialEmissiveTextureUvTransform || 'default'} uvSet=${materialEmissiveTextureUvSet || 'default'}`,
+  );
+}
+
+function assertTextureSlotsTape(tape, materialFloats) {
+  if (normalTextureFalsified) {
+    assertNormalTextureTape(tape, materialFloats);
+  }
+  if (materialOcclusionStrength !== '' || occlusionTextureFalsified) {
+    assertOcclusionTape(tape, materialFloats);
+  }
+  if (materialSpecularColor !== '') {
+    assertSpecularColorFactorTape(materialFloats);
+  }
+  if (specularColorTextureFalsified) {
+    assertSpecularColorTextureTape(tape, materialFloats);
+  }
+  if (materialEmissiveTexture !== '') {
+    assertEmissiveTextureTape(tape);
+  }
+}
+
+function assertMaterialUploadTape(tape) {
+  const materialData = findStandardMaterialUpload(tape);
+  if (materialData === undefined || materialData.byteLength < 80) {
+    throw new Error('capture tape is missing the 512-byte Standard PBR material upload');
+  }
+  const materialFloats = new Float32Array(materialData);
+  assertEmissiveTextureCoordinatesTape(materialFloats);
+  assertBaseColorTape(tape, materialFloats);
+  assertMetallicRoughnessTape(tape, materialFloats);
+  assertEmissiveAndSurfaceFactorsTape(materialFloats);
+  assertTextureSlotsTape(tape, materialFloats);
+}
+
+function assertPointLightPositionTape(floats) {
+  const expected = pointLightPosition === 'near' ? [0.9, 0.8, 1.6] : [1.5, 1.0, 2.4];
+  const actual = [floats[0], floats[1], floats[2]];
+  if (differs(actual, expected, 1e-5)) {
+    throw new Error(
+      `capture tape Cluster light_data position=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at byte offsets 0,4,8`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape clusterLightData position=${pointLightPosition} position=${JSON.stringify(actual)} byteOffsets=0,4,8`,
+  );
+}
+
+function assertPointLightIntensityTape(floats) {
+  const actual = floats[4];
+  const expected = Number.parseFloat(pointLightIntensity);
+  if (
+    Math.abs(actual - expected) > 1e-6 ||
+    Math.abs(floats[5] - expected) > 1e-6 ||
+    Math.abs(floats[6] - expected) > 1e-6
+  ) {
+    throw new Error(
+      `capture tape Cluster light_data color*intensity=[${floats[4]},${floats[5]},${floats[6]}]; expected ${expected} at byte offset 16`,
+    );
+  }
+  console.log(`${LOG_PREFIX} tape clusterLightData intensity=${actual} byteOffset=16`);
+}
+
+function assertPointLightRangeTape(floats) {
+  const actual = floats[3];
+  const range = Number.parseFloat(pointLightRange);
+  const expected = 1 / (range * range);
+  if (Math.abs(actual - expected) > 1e-6) {
+    throw new Error(
+      `capture tape Cluster light_data invRangeSquared=${actual}; expected ${expected} for range ${range} at byte offset 12`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape clusterLightData range=${range} invRangeSquared=${actual} byteOffset=12`,
+  );
+}
+
+function assertPointLightColorTape(floats) {
+  const expectedColor = pointLightColor === 'amber' ? [1.0, 0.8, 0.6] : [1.0, 0.85, 0.7];
+  const expectedIntensity = 100;
+  const actual = [floats[4], floats[5], floats[6]];
+  const expected = expectedColor.map((value) => value * expectedIntensity);
+  if (differs(actual, expected, 1e-5)) {
+    throw new Error(
+      `capture tape Cluster light_data colorTimesIntensity=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at byte offsets 16,20,24`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} tape clusterLightData color=${pointLightColor} colorTimesIntensity=${JSON.stringify(actual)} byteOffsets=16,20,24`,
+  );
+}
+
+function assertBasicLightingTape({ tape }) {
+  const floats = readClusterLightFloats(tape);
+  if (alphaCutoff !== '') {
+    assertAlphaCutoffTape(tape);
+  }
+  if (alphaBlend !== '') {
+    assertAlphaBlendTape(tape);
+  }
+  if (materialUploadFalsified) {
+    assertMaterialUploadTape(tape);
+  }
+  if (pointLightPosition !== '') {
+    assertPointLightPositionTape(floats);
+  }
+  if (pointLightIntensity !== '') {
+    assertPointLightIntensityTape(floats);
+  }
+  if (pointLightRange !== '') {
+    assertPointLightRangeTape(floats);
+  }
+  if (pointLightColor !== '') {
+    assertPointLightColorTape(floats);
+  }
+}
+
 await verifyDemoCapture({
   pkg: '@forgeax/app-learn-render-2-lighting-2-basic-lighting',
   label: 'learn-render 2.2 basic-lighting',
@@ -1964,1487 +2990,9 @@ await verifyDemoCapture({
   liveHook: '__captureBasicLighting',
   rtIdx: 0,
   appDir: dirname(here),
-  assertTape: pointLightIntensity === '' && pointLightRange === '' && pointLightColor === '' && pointLightPosition === '' && materialMetallic === '' && materialRoughness === '' && materialBaseColor === '' && materialBaseColorTexture === '' && materialBaseColorTextureSampler === '' && materialBaseColorTextureUvTransform === '' && materialBaseColorTextureUvSet === '' && materialMetallicRoughnessTexture === '' && materialMetallicRoughnessTextureSampler === '' && materialMetallicRoughnessTextureUvTransform === '' && materialMetallicRoughnessTextureUvSet === '' && materialMetallicChannel === '' && materialRoughnessChannel === '' && materialEmissive === '' && materialEmissiveIntensity === '' && materialEmissiveTexture === '' && materialEmissiveTextureSampler === '' && materialEmissiveTextureUvTransform === '' && materialEmissiveTextureUvSet === '' && materialClearcoat === '' && materialNormalScale === '' && materialNormalTexture === '' && materialNormalTextureUvSet === '' && materialNormalTextureSampler === '' && materialNormalTextureUvTransform === '' && materialNormalTextureMagFilter === '' && materialNormalTextureMinFilter === '' && materialNormalTextureMipmapFilter === '' && materialNormalTextureAddressModeU === '' && materialNormalTextureAddressModeV === '' && materialNormalTextureAddressModeW === '' && materialNormalTextureSamplerLodMinClamp === '' && materialNormalTextureSamplerLodMaxClamp === '' && materialNormalTextureSamplerMaxAnisotropy === '' && materialOcclusionStrength === '' && materialOcclusionTextureSampler === '' && materialOcclusionTextureUvTransform === '' && materialOcclusionTextureUvSet === '' && materialSpecularColor === '' && materialSpecularColorTexture === '' && materialSpecularColorTextureSampler === '' && materialSpecularColorTextureUvTransform === '' && materialSpecularColorTextureUvSet === '' && alphaCutoff === '' && alphaBlend === ''
-    ? undefined
-    : ({ tape }) => {
-        const lightDataBuffer = tape.events.find(
-          (event) =>
-            event.kind === 'createBuffer' &&
-            event.desc?.size === 20480 &&
-            event.desc?.usage === 136,
-        );
-        const upload = lightDataBuffer === undefined
-          ? undefined
-          : tape.events.find(
-              (event) =>
-                event.kind === 'writeBuffer' &&
-                event.handleId === lightDataBuffer.handleId &&
-                event.bufferOffset === 0 &&
-                event.size >= 80,
-            );
-        const data = upload === undefined ? undefined : tape.blobPool.get(upload.dataHash);
-        if (data === undefined || data.byteLength < 80) {
-          throw new Error(
-            'capture tape is missing the unified Cluster light_data upload at buffer offset 0',
-          );
-        }
-        const floats = new Float32Array(data);
-        if (alphaCutoff !== '') {
-          const materialBuffer = tape.events.find(
-            (event) =>
-              event.kind === 'createBuffer' &&
-              event.desc?.size === 524288 &&
-              event.desc?.usage === 76,
-          );
-          const materialUpload = materialBuffer === undefined
-            ? undefined
-            : tape.events.find(
-                (event) =>
-                  event.kind === 'writeBuffer' &&
-                  event.handleId === materialBuffer.handleId &&
-                  event.bufferOffset === 0 &&
-                  event.size === 512,
-              );
-          const materialData = materialUpload === undefined
-            ? undefined
-            : tape.blobPool.get(materialUpload.dataHash);
-          if (materialData === undefined || materialData.byteLength < 72) {
-            throw new Error(
-              'capture tape is missing the 512-byte Standard PBR material upload for alpha cutoff',
-            );
-          }
-          const actual = new Float32Array(materialData)[17];
-          if (Math.abs(actual - 0.5) > 1e-6) {
-            throw new Error(
-              `capture tape material alphaCutoff=${actual}; expected 0.5 at global byte offset 68`,
-            );
-          }
-          console.log(
-            `[learn-render 2.2 basic-lighting] tape materialAlphaCutoff=${actual} materialUBO byteOffset=68 baseColorAlpha=0.25`,
-          );
-        }
-        if (alphaBlend !== '') {
-          const blendPipeline = tape.events.find(
-            (event) =>
-              event.kind === 'createRenderPipeline' &&
-              event.desc?.fragment?.targets?.[0]?.blend !== undefined,
-          );
-          if (blendPipeline === undefined) {
-            throw new Error('capture tape is missing the producer-owned alpha blend pipeline');
-          }
-          const blend = blendPipeline.desc.fragment.targets[0].blend;
-          const expectedColor = {
-            srcFactor: 'src-alpha',
-            dstFactor: 'one-minus-src-alpha',
-            operation: 'add',
-          };
-          const expectedAlpha = {
-            srcFactor: 'one',
-            dstFactor: 'one-minus-src-alpha',
-            operation: 'add',
-          };
-          if (
-            JSON.stringify(blend.color) !== JSON.stringify(expectedColor) ||
-            JSON.stringify(blend.alpha) !== JSON.stringify(expectedAlpha) ||
-            blendPipeline.desc?.depthStencil?.depthWriteEnabled !== false
-          ) {
-            throw new Error(
-              `capture tape alpha blend state drifted: ${JSON.stringify({ blend, depthWriteEnabled: blendPipeline.desc?.depthStencil?.depthWriteEnabled })}`,
-            );
-          }
-          const blendPipelineUse = tape.events.find(
-            (event) =>
-              event.kind === 'setPipeline' && event.pipelineHandleId === blendPipeline.handleId,
-          );
-          if (blendPipelineUse === undefined) {
-            throw new Error('capture tape alpha blend pipeline was never selected for a draw');
-          }
-          const materialBuffer = tape.events.find(
-            (event) =>
-              event.kind === 'createBuffer' &&
-              event.desc?.size === 524288 &&
-              event.desc?.usage === 76,
-          );
-          const materialUpload = materialBuffer === undefined
-            ? undefined
-            : tape.events.find(
-                (event) =>
-                  event.kind === 'writeBuffer' &&
-                  event.handleId === materialBuffer.handleId &&
-                  event.bufferOffset === 0 &&
-                  event.size === 512,
-              );
-          const materialData = materialUpload === undefined
-            ? undefined
-            : tape.blobPool.get(materialUpload.dataHash);
-          if (materialData === undefined || materialData.byteLength < 16) {
-            throw new Error('capture tape is missing the alpha-blend Standard PBR material upload');
-          }
-          const baseColorAlpha = new Float32Array(materialData)[3];
-          if (Math.abs(baseColorAlpha - 0.5) > 1e-6) {
-            throw new Error(
-              `capture tape alpha blend baseColor alpha=${baseColorAlpha}; expected 0.5 at global byte offset 12`,
-            );
-          }
-          console.log(
-            `[learn-render 2.2 basic-lighting] tape materialAlphaBlend=${alphaBlend} baseColorAlpha=${baseColorAlpha} blend=src-alpha/one-minus-src-alpha depthWriteEnabled=false queue=3000`,
-          );
-        }
-        if (materialMetallic !== '' || materialRoughness !== '' || materialBaseColor !== '' || materialBaseColorTexture !== '' || materialBaseColorTextureSampler !== '' || materialBaseColorTextureUvTransform !== '' || materialBaseColorTextureUvSet !== '' || materialMetallicRoughnessTexture !== '' || materialMetallicRoughnessTextureSampler !== '' || materialMetallicRoughnessTextureUvTransform !== '' || materialMetallicRoughnessTextureUvSet !== '' || materialEmissive !== '' || materialEmissiveIntensity !== '' || materialEmissiveTexture !== '' || materialEmissiveTextureSampler !== '' || materialEmissiveTextureUvTransform !== '' || materialEmissiveTextureUvSet !== '' || materialClearcoat !== '' || materialNormalScale !== '' || materialNormalTexture !== '' || materialNormalTextureUvSet !== '' || materialNormalTextureSampler !== '' || materialNormalTextureUvTransform !== '' || materialNormalTextureMagFilter !== '' || materialNormalTextureMinFilter !== '' || materialNormalTextureMipmapFilter !== '' || materialNormalTextureAddressModeU !== '' || materialNormalTextureAddressModeV !== '' || materialNormalTextureAddressModeW !== '' || materialNormalTextureSamplerLodMinClamp !== '' || materialNormalTextureSamplerLodMaxClamp !== '' || materialNormalTextureSamplerMaxAnisotropy !== '' || materialOcclusionStrength !== '' || materialOcclusionTextureSampler !== '' || materialOcclusionTextureUvTransform !== '' || materialOcclusionTextureUvSet !== '' || materialSpecularColor !== '' || materialSpecularColorTexture !== '' || materialSpecularColorTextureSampler !== '' || materialSpecularColorTextureUvTransform !== '' || materialSpecularColorTextureUvSet !== '') {
-          const materialBuffer = tape.events.find(
-            (event) =>
-              event.kind === 'createBuffer' &&
-              event.desc?.size === 524288 &&
-              event.desc?.usage === 76,
-          );
-          const materialUpload = materialBuffer === undefined
-            ? undefined
-            : tape.events.find(
-                (event) =>
-                  event.kind === 'writeBuffer' &&
-                  event.handleId === materialBuffer.handleId &&
-                  event.bufferOffset === 0 &&
-                  event.size === 512,
-              );
-          const materialData = materialUpload === undefined ? undefined : tape.blobPool.get(materialUpload.dataHash);
-          if (materialData === undefined || materialData.byteLength < 80) {
-            throw new Error('capture tape is missing the 512-byte Standard PBR material upload');
-          }
-          const materialFloats = new Float32Array(materialData);
-          if (materialEmissiveTextureUvTransform !== '') {
-            const actual = Array.from(materialFloats.slice(56, 64));
-            const expected = [0.25, 0.25, 0, 0, 0, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape emissiveTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 224..252`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialEmissiveTextureUvTransform=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=224,228,232,236,240,244,248,252`,
-            );
-          }
-          if (materialEmissiveTextureUvSet !== '') {
-            const actual = Array.from(materialFloats.slice(56, 64));
-            const expected = [0, 0, 1, 1, 1, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape emissiveTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 224..252`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialEmissiveTextureUvSet=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=224,228,232,236,240,244,248,252`,
-            );
-          }
-          if (materialBaseColor !== '') {
-            const actual = [materialFloats[0], materialFloats[1], materialFloats[2], materialFloats[3]];
-            const authored = materialBaseColor === 'warm' ? [1.0, 0.5, 0.31] : [0.2, 0.5, 1.0];
-            const expected = [...authored.map(srgbToLinear), 1.0];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape material baseColor=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 0,4,8,12`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialBaseColor=${materialBaseColor} baseColor=${JSON.stringify(actual)} materialUBO byteOffsets=0,4,8,12`,
-            );
-          }
-          if (materialBaseColorTexture !== '') {
-            const expectedBytes = [0, 64, 255, 255];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 1 ||
-                event.desc?.size?.height !== 1
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the blue 1x1 baseColorTexture initialData payload',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 1 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 2 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed baseColorTexture bindings at 1/2',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialBaseColorTexture=blue payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=baseColorTexture bindings=1/2`,
-            );
-          }
-          if (materialBaseColorTextureSampler !== '') {
-            const expectedBytes = [
-              0, 64, 255, 255,
-              255, 255, 255, 255,
-              255, 255, 255, 255,
-              0, 64, 255, 255,
-            ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 2 ||
-                event.desc?.size?.height !== 2
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the 2x2 baseColorTexture sampler checker initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the baseColorTexture sampler nearest/clamp-to-edge descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 1 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 2 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed baseColorTexture sampler bindings at 1/2',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialBaseColorTextureSampler=nearest payload=${JSON.stringify(expectedBytes)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=baseColorTexture bindings=1/2`,
-            );
-          }
-          if (materialBaseColorTextureUvTransform !== '') {
-            const actual = Array.from(materialFloats.slice(24, 32));
-            const expected = [0.25, 0.25, 0, 0, 0, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape baseColorTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 384..412`,
-              );
-            }
-            const expectedBytes = [
-              0, 64, 255, 255,
-              255, 255, 255, 255,
-              255, 255, 255, 255,
-              0, 64, 255, 255,
-            ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 2 ||
-                event.desc?.size?.height !== 2
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the 2x2 baseColorTexture UV-transform checker initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the baseColorTexture UV-transform nearest/clamp-to-edge sampler descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 1 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 2 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed baseColorTexture UV-transform bindings at 1/2',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialBaseColorTextureUvTransform=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(expectedBytes)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=baseColorTexture bindings=1/2 materialUBO byteOffsets=384,388,392,396,400,404,408,412`,
-            );
-          }
-          if (materialBaseColorTextureUvSet !== '') {
-            const actual = Array.from(materialFloats.slice(24, 32));
-            const expected = [0, 0, 1, 1, 1, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape baseColorTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 384..412`,
-              );
-            }
-            const expectedBytes = [
-              0, 64, 255, 255,
-              255, 255, 255, 255,
-              255, 255, 255, 255,
-              0, 64, 255, 255,
-            ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 2 ||
-                event.desc?.size?.height !== 2
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the 2x2 baseColorTexture UV-set checker initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the baseColorTexture UV-set nearest/clamp-to-edge sampler descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 1 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 2 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed baseColorTexture UV-set bindings at 1/2',
-              );
-            }
-            const uv1Pipeline = tape.events.find(
-              (event) =>
-                event.kind === 'createRenderPipeline' &&
-                event.desc?.vertex?.buffers?.some(
-                  (buffer) =>
-                    buffer.arrayStride === 56 &&
-                    buffer.attributes?.some(
-                      (attribute) => attribute.shaderLocation === 6 && attribute.offset === 48,
-                    ),
-                ),
-            );
-            if (uv1Pipeline === undefined) {
-              throw new Error(
-                'capture tape is missing the 56-byte real UV1 vertex layout at shader location 6 offset 48',
-              );
-            }
-            const uv1Buffer = tape.events.find(
-              (event) => event.kind === 'createBuffer' && event.desc?.size === 1344,
-            );
-            const uv1Seed = uv1Buffer === undefined
-              ? undefined
-              : tape.events.find(
-                  (event) => event.kind === 'initialData' && event.handleId === uv1Buffer.handleId,
-                );
-            const uv1Data = uv1Seed === undefined ? undefined : tape.blobPool.get(uv1Seed.dataHash);
-            const uv1Floats = uv1Data === undefined ? undefined : new Float32Array(uv1Data);
-            if (
-              uv1Floats === undefined ||
-              uv1Floats.length !== 24 * 14 ||
-              Array.from({ length: 24 }, (_, index) => {
-                const offset = index * 14 + 12;
-                return uv1Floats[offset] === 0.25 && uv1Floats[offset + 1] === 0.25;
-              }).some((value) => !value)
-            ) {
-              throw new Error(
-                'capture tape is missing the producer-owned UV1=[0.25,0.25] bytes in the 14-float mesh stride',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialBaseColorTextureUvSet=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(expectedBytes)} sampler=nearest/clamp-to-edge engineManagedRegion=baseColorTexture bindings=1/2 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.25,0.25] materialUBO byteOffsets=384,388,392,396,400,404,408,412`,
-            );
-          }
-          if (materialMetallicChannel !== '') {
-            const materialChannels = [materialFloats[4], materialFloats[6], materialFloats[7]];
-            const expectedChannels = [0.5, 0, 1];
-            if (materialChannels.some((value, index) => Math.abs(value - expectedChannels[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape metallicChannel material=${JSON.stringify(materialChannels)}; expected metallic=0.5, metallicChannel=0, roughnessChannel=1 at global byte offsets 16,24,28`,
-              );
-            }
-            const expectedBytes = [255, 255, 0, 255];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 1 ||
-                event.desc?.size?.height !== 1
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the red 1x1 metallicChannel initialData payload',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 3 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 4 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed metallicChannel texture bindings at 3/4',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialMetallicChannel=${materialMetallicChannel} payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=red roughnessChannel=green byteOffsets=16,24,28`,
-            );
-          }
-          if (materialRoughnessChannel !== '') {
-            const materialChannels = [materialFloats[4], materialFloats[6], materialFloats[7]];
-            const expectedChannels = [0.5, 2, 2];
-            if (materialChannels.some((value, index) => Math.abs(value - expectedChannels[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape roughnessChannel material=${JSON.stringify(materialChannels)}; expected metallic=0.5, metallicChannel=2, roughnessChannel=2 at global byte offsets 16,24,28`,
-              );
-            }
-            const expectedBytes = [0, 0, 255, 255];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 1 ||
-                event.desc?.size?.height !== 1
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the blue 1x1 roughnessChannel initialData payload',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 3 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 4 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed roughnessChannel texture bindings at 3/4',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialRoughnessChannel=${materialRoughnessChannel} payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=blue roughnessChannel=blue byteOffsets=16,24,28`,
-            );
-          }
-          if (materialMetallicRoughnessTexture !== '') {
-            const materialChannels = [materialFloats[4], materialFloats[6], materialFloats[7]];
-            const expectedChannels = [0.5, 2, 1];
-            if (materialChannels.some((value, index) => Math.abs(value - expectedChannels[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape metallicRoughness material=${JSON.stringify(materialChannels)}; expected metallic=0.5, metallicChannel=2, roughnessChannel=1 at global byte offsets 16,24,28`,
-              );
-            }
-            const expectedBytes = [0, 0, 255, 255];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 1 ||
-                event.desc?.size?.height !== 1
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the blue 1x1 metallicRoughnessTexture initialData payload',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 3 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 4 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed metallicRoughnessTexture bindings at 3/4',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialMetallicRoughnessTexture=blue payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=blue roughnessChannel=green byteOffsets=16,24,28`,
-            );
-          }
-          if (materialMetallicRoughnessTextureSampler !== '') {
-            const materialChannels = [materialFloats[4], materialFloats[6], materialFloats[7]];
-            const expectedChannels = [0.5, 2, 1];
-            if (materialChannels.some((value, index) => Math.abs(value - expectedChannels[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape metallicRoughness sampler material=${JSON.stringify(materialChannels)}; expected metallic=0.5, metallicChannel=2, roughnessChannel=1 at global byte offsets 16,24,28`,
-              );
-            }
-            const expectedBytes = [
-              0, 0, 255, 255,
-              0, 255, 0, 255,
-              0, 255, 0, 255,
-              0, 0, 255, 255,
-            ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 2 ||
-                event.desc?.size?.height !== 2
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the 2x2 metallicRoughnessTexture checker initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the metallicRoughnessTexture nearest/clamp-to-edge sampler descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 3 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 4 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed metallicRoughnessTexture sampler/texture bindings at 3/4',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialMetallicRoughnessTextureSampler=nearest payload=${JSON.stringify(expectedBytes)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO metallic=0.5 metallicChannel=blue roughnessChannel=green byteOffsets=16,24,28`,
-            );
-          }
-          if (materialMetallicRoughnessTextureUvTransform !== '') {
-            const actual = Array.from(materialFloats.slice(32, 40));
-            const expected = [0.75, 0.25, 0, 0, 0, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape metallicRoughnessTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 128..156`,
-              );
-            }
-            const expectedBytes = [
-              0, 0, 255, 255,
-              0, 255, 0, 255,
-              0, 255, 0, 255,
-              0, 0, 255, 255,
-            ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 2 ||
-                event.desc?.size?.height !== 2
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the 2x2 metallicRoughnessTexture transform checker initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the metallicRoughnessTexture transform nearest/clamp-to-edge sampler descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 3 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 4 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed metallicRoughnessTexture transform bindings at 3/4',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialMetallicRoughnessTextureUvTransform=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(expectedBytes)} colorSpace=linear sampler=nearest/clamp-to-edge engineManagedRegion=metallicRoughnessTexture bindings=3/4 materialUBO byteOffsets=128,132,136,140,144,148,152,156`,
-            );
-          }
-          if (materialMetallicRoughnessTextureUvSet !== '') {
-            const actual = Array.from(materialFloats.slice(32, 40));
-            const expected = [0, 0, 1, 1, 1, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape metallicRoughnessTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 128..156`,
-              );
-            }
-            const expectedBytes = [
-              0, 0, 255, 255,
-              0, 255, 0, 255,
-              0, 255, 0, 255,
-              0, 0, 255, 255,
-            ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== 2 ||
-                event.desc?.size?.height !== 2
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the 2x2 metallicRoughnessTexture UV-set checker initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the metallicRoughnessTexture UV-set nearest/clamp-to-edge sampler descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 3 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 4 && entry.resourceKind === 'textureView') &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed metallicRoughnessTexture UV-set bindings at 3/4',
-              );
-            }
-            const uv1Pipeline = tape.events.find(
-              (event) =>
-                event.kind === 'createRenderPipeline' &&
-                event.desc?.vertex?.buffers?.some(
-                  (buffer) =>
-                    buffer.arrayStride === 56 &&
-                    buffer.attributes?.some(
-                      (attribute) => attribute.shaderLocation === 6 && attribute.offset === 48,
-                    ),
-                ),
-            );
-            if (uv1Pipeline === undefined) {
-              throw new Error(
-                'capture tape is missing the 56-byte real UV1 vertex layout at shader location 6 offset 48',
-              );
-            }
-            const uv1Buffer = tape.events.find(
-              (event) => event.kind === 'createBuffer' && event.desc?.size === 1344,
-            );
-            const uv1Seed = uv1Buffer === undefined
-              ? undefined
-              : tape.events.find(
-                  (event) =>
-                    event.kind === 'initialData' && event.handleId === uv1Buffer.handleId,
-                );
-            const uv1Data = uv1Seed === undefined ? undefined : tape.blobPool.get(uv1Seed.dataHash);
-            const uv1Floats = uv1Data === undefined ? undefined : new Float32Array(uv1Data);
-            if (
-              uv1Floats === undefined ||
-              uv1Floats.length !== 24 * 14 ||
-              Array.from({ length: 24 }, (_, index) => {
-                const offset = index * 14 + 12;
-                return uv1Floats[offset] === 0.75 && uv1Floats[offset + 1] === 0.25;
-              }).some((value) => !value)
-            ) {
-              throw new Error(
-                'capture tape is missing the producer-owned UV1=[0.75,0.25] bytes in the 14-float mesh stride',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialMetallicRoughnessTextureUvSet=1 coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(expectedBytes)} sampler=nearest/clamp-to-edge engineManagedRegion=metallicRoughnessTexture bindings=3/4 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.75,0.25] materialUBO byteOffsets=128,132,136,140,144,148,152,156`,
-            );
-          }
-          if (materialMetallic !== '') {
-            const actual = materialFloats[4];
-            const expected = materialMetallic === 'dielectric' ? 0.0 : 1.0;
-            if (Math.abs(actual - expected) > 1e-6) {
-              throw new Error(
-                `capture tape material metallic=${actual}; expected ${expected} at global byte offset 16`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialMetallic=${materialMetallic} metallic=${actual} materialUBO byteOffset=16`,
-            );
-          }
-          if (materialRoughness !== '') {
-            const actual = materialFloats[5];
-            const expected = materialRoughness === 'smooth' ? 0.2 : 0.8;
-            if (Math.abs(actual - expected) > 1e-6) {
-              throw new Error(
-                `capture tape material roughness=${actual}; expected ${expected} at global byte offset 20`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialRoughness=${materialRoughness} roughness=${actual} materialUBO byteOffset=20`,
-            );
-          }
-          if (materialEmissive !== '') {
-            const actual = [materialFloats[12], materialFloats[13], materialFloats[14]];
-            const authored = materialEmissive === 'red' ? [1.0, 0.05, 0.02] : [0.02, 0.2, 1.0];
-            const expected = authored.map(srgbToLinear);
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape material emissive=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 48,52,56`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialEmissive=${materialEmissive} emissive=${JSON.stringify(actual)} materialUBO byteOffsets=48,52,56 emissiveIntensity=${materialFloats[15]}`,
-            );
-          }
-          if (materialEmissiveIntensity !== '') {
-            const emissive = [materialFloats[12], materialFloats[13], materialFloats[14]];
-            const expectedEmissive = [1.0, 0.05, 0.02].map(srgbToLinear);
-            if (emissive.some((value, index) => Math.abs(value - expectedEmissive[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape material emissive=${JSON.stringify(emissive)}; expected ${JSON.stringify(expectedEmissive)} for the intensity witness`,
-              );
-            }
-            const actual = materialFloats[15];
-            const expected = 2.0;
-            if (Math.abs(actual - expected) > 1e-6) {
-              throw new Error(
-                `capture tape material emissiveIntensity=${actual}; expected ${expected} at global byte offset 60`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialEmissiveIntensity=${materialEmissiveIntensity} emissiveIntensity=${actual} materialUBO byteOffset=60 emissive=${JSON.stringify(emissive)}`,
-            );
-          }
-          if (materialClearcoat !== '') {
-            const actual = [materialFloats[18], materialFloats[19]];
-            const expected = [1.0, 0.05];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape material clearcoat=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 72,76`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialClearcoat=${materialClearcoat} clearcoat=${actual[0]} clearcoatRoughness=${actual[1]} materialUBO byteOffsets=72,76`,
-            );
-          }
-          if (materialNormalScale !== '') {
-            const actual = Array.from(materialFloats.slice(24, 26));
-            const expected = [0.0, 0.0];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape material normalScale=${actual}; expected ${expected} at global byte offsets 96,100`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialNormalScale=${materialNormalScale} normalScale=${actual} materialUBO byteOffsets=96,100 texture=rg-normal`,
-            );
-          }
-          if (materialNormalTexture !== '' || materialNormalTextureUvSet !== '' || materialNormalTextureSampler !== '' || materialNormalTextureUvTransform !== '' || materialNormalTextureMagFilter !== '' || materialNormalTextureMinFilter !== '' || materialNormalTextureMipmapFilter !== '' || materialNormalTextureAddressModeU !== '' || materialNormalTextureAddressModeV !== '' || materialNormalTextureAddressModeW !== '' || materialNormalTextureSamplerLodMinClamp !== '' || materialNormalTextureSamplerLodMaxClamp !== '' || materialNormalTextureSamplerMaxAnisotropy !== '') {
-            const actual = Array.from(materialFloats.slice(40, 48));
-            const expected = materialNormalTextureUvTransform !== ''
-              ? [0.25, 0.25, 0, 0, 0, 0, 1, 1]
-              : materialNormalTextureUvSet === ''
-              ? [0, 0, 1, 1, 0, 0, 1, 1]
-              : [0, 0, 1, 1, 1, 0, 1, 1];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape normalTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 160..188`,
-              );
-            }
-            const expectedBytes = materialNormalTexture === 'tilt'
-              ? [128, 255, 128, 255]
-              : [
-                  255, 128, 255, 255,
-                  128, 255, 128, 255,
-                  128, 128, 255, 255,
-                  255, 255, 128, 255,
-                ];
-            const expectedWidth = materialNormalTexture === 'tilt' ? 1 : 2;
-            const expectedHeight = materialNormalTexture === 'tilt' ? 1 : 2;
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== expectedWidth ||
-                event.desc?.size?.height !== expectedHeight
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(`capture tape is missing the ${expectedWidth}x${expectedHeight} linear normalTexture initialData payload`);
-            }
-            const sampler = materialNormalTexture === '' && materialNormalTextureSampler === '' && materialNormalTextureUvTransform === '' && materialNormalTextureMagFilter === '' && materialNormalTextureMinFilter === '' && materialNormalTextureMipmapFilter === '' && materialNormalTextureAddressModeU === '' && materialNormalTextureAddressModeV === '' && materialNormalTextureAddressModeW === '' && materialNormalTextureSamplerLodMinClamp === '' && materialNormalTextureSamplerLodMaxClamp === '' && materialNormalTextureSamplerMaxAnisotropy === ''
-              ? undefined
-              : tape.events.find(
-                  (event) =>
-                    event.kind === 'createSampler' &&
-                    event.desc?.magFilter === (materialNormalTextureSamplerMaxAnisotropy !== '' || materialNormalTextureMagFilter === 'linear' ? 'linear' : 'nearest') &&
-                    event.desc?.minFilter === (materialNormalTextureSamplerMaxAnisotropy !== '' || materialNormalTextureMinFilter === 'linear' ? 'linear' : 'nearest') &&
-                    event.desc?.mipmapFilter === (materialNormalTextureSamplerMaxAnisotropy !== '' || materialNormalTextureMipmapFilter === 'linear' ? 'linear' : 'nearest') &&
-                    event.desc?.addressModeU === (materialNormalTextureAddressModeU === 'repeat' ? 'repeat' : 'clamp-to-edge') &&
-                    event.desc?.addressModeV === (materialNormalTextureAddressModeV === 'repeat' ? 'repeat' : 'clamp-to-edge') &&
-                    event.desc?.addressModeW === (materialNormalTextureAddressModeW === 'repeat' ? 'repeat' : 'clamp-to-edge') &&
-                    (materialNormalTextureSamplerLodMinClamp === '' || event.desc?.lodMinClamp === (materialNormalTextureSamplerLodMinClamp === '1' ? 1 : 0)) &&
-                    (materialNormalTextureSamplerLodMinClamp === '' || event.desc?.lodMaxClamp === 1) &&
-                    (materialNormalTextureSamplerLodMaxClamp === '' || event.desc?.lodMinClamp === 0) &&
-                    (materialNormalTextureSamplerLodMaxClamp === '' || event.desc?.lodMaxClamp === (materialNormalTextureSamplerLodMaxClamp === '1' ? 1 : 0)) &&
-                    (materialNormalTextureSamplerMaxAnisotropy === '' || event.desc?.maxAnisotropy === (materialNormalTextureSamplerMaxAnisotropy === '1' ? 16 : undefined)),
-                );
-            if ((materialNormalTexture !== '' || materialNormalTextureSampler !== '' || materialNormalTextureUvTransform !== '' || materialNormalTextureMagFilter !== '' || materialNormalTextureMinFilter !== '' || materialNormalTextureMipmapFilter !== '' || materialNormalTextureAddressModeU !== '' || materialNormalTextureAddressModeV !== '' || materialNormalTextureAddressModeW !== '' || materialNormalTextureSamplerLodMinClamp !== '' || materialNormalTextureSamplerLodMaxClamp !== '' || materialNormalTextureSamplerMaxAnisotropy !== '') && sampler === undefined) {
-              throw new Error('capture tape is missing the normalTexture sampler descriptor');
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some((entry) => entry.binding === 5 && entry.resourceKind === 'sampler') &&
-                event.entries.some((entry) => entry.binding === 6 && entry.resourceKind === 'textureView') &&
-                (sampler === undefined || event.resourceHandleIds.includes(sampler.handleId)) &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId),
-            );
-            if (binding === undefined) {
-              throw new Error('capture tape is missing the engine-managed normalTexture bindings at 5/6');
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialNormalTexture profile=${materialNormalTextureSamplerMaxAnisotropy !== '' ? 'max-anisotropy' : materialNormalTextureSamplerLodMaxClamp !== '' ? 'lod-max-clamp' : materialNormalTextureSamplerLodMinClamp !== '' ? 'lod-min-clamp' : materialNormalTextureAddressModeW !== '' ? 'address-mode-w' : materialNormalTextureAddressModeV !== '' ? 'address-mode-v' : materialNormalTextureAddressModeU !== '' ? 'address-mode-u' : materialNormalTextureMipmapFilter !== '' ? 'mipmap-filter' : materialNormalTextureMinFilter !== '' ? 'min-filter' : materialNormalTextureMagFilter !== '' ? 'mag-filter' : materialNormalTexture !== '' ? 'texture' : materialNormalTextureUvTransform !== '' ? 'uv-transform' : materialNormalTextureSampler !== '' ? 'sampler' : 'uv-set'} sampler=${materialNormalTextureMagFilter || materialNormalTextureSampler || 'nearest'} minFilter=${materialNormalTextureMinFilter || 'nearest'} mipmapFilter=${materialNormalTextureMipmapFilter || 'nearest'} addressModeU=clamp-to-edge addressModeV=${materialNormalTextureAddressModeV || 'clamp-to-edge'} addressModeW=${materialNormalTextureAddressModeW || 'clamp-to-edge'} lodMinClamp=${materialNormalTextureSamplerMaxAnisotropy !== '' ? '0' : materialNormalTextureSamplerLodMaxClamp !== '' ? '0' : materialNormalTextureSamplerLodMinClamp === '' ? 'default' : materialNormalTextureSamplerLodMinClamp} lodMaxClamp=${materialNormalTextureSamplerMaxAnisotropy !== '' ? '1' : materialNormalTextureSamplerLodMaxClamp !== '' ? materialNormalTextureSamplerLodMaxClamp : materialNormalTextureSamplerLodMinClamp === '' ? 'default' : '1'} maxAnisotropy=${materialNormalTextureSamplerMaxAnisotropy === '' ? 'default' : materialNormalTextureSamplerMaxAnisotropy === '1' ? '16' : '1'} coordinates=${JSON.stringify(actual)} payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=normalTexture bindings=5/6 materialUBO byteOffsets=160,164,168,172,176,180,184,188`,
-            );
-          }
-          if (
-            materialOcclusionStrength !== '' ||
-            materialOcclusionTextureSampler !== '' ||
-            materialOcclusionTextureUvTransform !== '' ||
-            materialOcclusionTextureUvSet !== ''
-          ) {
-            const actual = materialFloats[16];
-            const expectedStrength = materialOcclusionStrength === '' ? 1 : 0;
-            if (Math.abs(actual - expectedStrength) > 1e-6) {
-              throw new Error(
-                `capture tape material occlusionStrength=${actual}; expected ${expectedStrength} at global byte offset 64`,
-              );
-            }
-            const texture = tape.events
-              .filter(
-                (event) =>
-                  event.kind === 'createTexture' &&
-                  event.desc?.format === 'rgba8unorm' &&
-                  event.desc?.size?.width === 1 &&
-                  event.desc?.size?.height === 1 &&
-                  event.desc?.usage === 23,
-              )
-              .find((event) => {
-                const seed = tape.events.find(
-                  (candidate) =>
-                    candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-                );
-                const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-                const bytes = data === undefined ? undefined : new Uint8Array(data);
-                return (
-                  bytes !== undefined &&
-                  bytes.length === 4 &&
-                  bytes.every((value, index) => value === (index === 3 ? 255 : 0))
-                );
-              });
-            const seed = texture === undefined
-              ? undefined
-              : tape.events.find(
-                  (event) => event.kind === 'initialData' && event.handleId === texture.handleId,
-                );
-            const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-            const bytes = data === undefined ? undefined : new Uint8Array(data);
-            if (
-              bytes === undefined ||
-              bytes.length !== 4 ||
-              bytes.some((value, index) => value !== (index === 3 ? 255 : 0))
-            ) {
-              throw new Error('capture tape is missing the 1x1 black linear occlusion texture payload');
-            }
-            if (
-              materialOcclusionTextureSampler !== '' ||
-              materialOcclusionTextureUvTransform !== '' ||
-              materialOcclusionTextureUvSet !== ''
-            ) {
-              const sampler = tape.events.find(
-                (event) =>
-                  event.kind === 'createSampler' &&
-                  event.desc?.magFilter === 'nearest' &&
-                  event.desc?.minFilter === 'nearest' &&
-                  event.desc?.mipmapFilter === 'nearest' &&
-                  event.desc?.addressModeU === 'clamp-to-edge' &&
-                  event.desc?.addressModeV === 'clamp-to-edge' &&
-                  event.desc?.addressModeW === 'clamp-to-edge',
-              );
-              if (sampler === undefined) {
-                throw new Error(
-                  'capture tape is missing the occlusionTexture sampler nearest/clamp-to-edge descriptor',
-                );
-              }
-              const view = tape.events.find(
-                (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-              );
-              const binding = tape.events.find(
-                (event) =>
-                  event.kind === 'createBindGroup' &&
-                  event.entries.some(
-                    (entry) => entry.binding === 18 && entry.resourceKind === 'sampler',
-                  ) &&
-                  event.entries.some(
-                    (entry) => entry.binding === 19 && entry.resourceKind === 'textureView',
-                  ) &&
-                  view !== undefined &&
-                  event.resourceHandleIds.includes(view.resultHandleId) &&
-                  event.resourceHandleIds.includes(sampler.handleId),
-              );
-              if (binding === undefined) {
-                throw new Error(
-                  'capture tape is missing the engine-managed occlusionTexture bindings at 18/19',
-                );
-              }
-              if (materialOcclusionTextureUvSet !== '') {
-                const coordinates = Array.from(materialFloats.slice(64, 72));
-                const expectedCoordinates = [0, 0, 1, 1, 1, 0, 1, 1];
-                if (
-                  coordinates.some(
-                    (value, index) => Math.abs(value - expectedCoordinates[index]) > 1e-6,
-                  )
-                ) {
-                  throw new Error(
-                    `capture tape occlusionTexture coordinates=${JSON.stringify(coordinates)}; expected ${JSON.stringify(expectedCoordinates)} at global byte offsets 256..284`,
-                  );
-                }
-                const uv1Pipeline = tape.events.find(
-                  (event) =>
-                    event.kind === 'createRenderPipeline' &&
-                    event.desc?.vertex?.buffers?.some(
-                      (buffer) =>
-                        buffer.arrayStride === 56 &&
-                        buffer.attributes?.some(
-                          (attribute) => attribute.shaderLocation === 6 && attribute.offset === 48,
-                        ),
-                    ),
-                );
-                if (uv1Pipeline === undefined) {
-                  throw new Error(
-                    'capture tape is missing the 56-byte real UV1 vertex layout at shader location 6 offset 48',
-                  );
-                }
-                const uv1Buffer = tape.events.find(
-                  (event) => event.kind === 'createBuffer' && event.desc?.size === 1344,
-                );
-                const uv1Seed = uv1Buffer === undefined
-                  ? undefined
-                  : tape.events.find(
-                      (event) => event.kind === 'initialData' && event.handleId === uv1Buffer.handleId,
-                    );
-                const uv1Data = uv1Seed === undefined ? undefined : tape.blobPool.get(uv1Seed.dataHash);
-                const uv1Floats = uv1Data === undefined ? undefined : new Float32Array(uv1Data);
-                if (
-                  uv1Floats === undefined ||
-                  uv1Floats.length !== 24 * 14 ||
-                  Array.from({ length: 24 }, (_, index) => {
-                    const offset = index * 14 + 12;
-                    return uv1Floats[offset] === 0.75 && uv1Floats[offset + 1] === 0.75;
-                  }).some((value) => !value)
-                ) {
-                  throw new Error(
-                    'capture tape is missing the producer-owned UV1=[0.75,0.75] bytes in the 14-float mesh stride',
-                  );
-                }
-                console.log(
-                  `[learn-render 2.2 basic-lighting] tape materialOcclusionTextureUvSet=1 coordinates=${JSON.stringify(coordinates)} occlusionStrength=${actual} texture=rgba8unorm 1x1 black sampler=nearest/clamp-to-edge engineManagedRegion=occlusionTexture bindings=18/19 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.75,0.75] materialUBO byteOffsets=256,260,264,268,272,276,280,284`,
-                );
-              } else if (materialOcclusionTextureUvTransform !== '') {
-                const coordinates = Array.from(materialFloats.slice(64, 72));
-                const expectedCoordinates = [0.25, 0.25, 0, 0, 0, 0, 1, 1];
-                if (
-                  coordinates.some(
-                    (value, index) => Math.abs(value - expectedCoordinates[index]) > 1e-6,
-                  )
-                ) {
-                  throw new Error(
-                    `capture tape occlusionTexture coordinates=${JSON.stringify(coordinates)}; expected ${JSON.stringify(expectedCoordinates)} at global byte offsets 256..284`,
-                  );
-                }
-                console.log(
-                  `[learn-render 2.2 basic-lighting] tape materialOcclusionTextureUvTransform=1 coordinates=${JSON.stringify(coordinates)} occlusionStrength=${actual} texture=rgba8unorm 1x1 black sampler=nearest/clamp-to-edge engineManagedRegion=occlusionTexture bindings=18/19 materialUBO byteOffsets=256,260,264,268,272,276,280,284`,
-                );
-              } else {
-                console.log(
-                  `[learn-render 2.2 basic-lighting] tape materialOcclusionTextureSampler=nearest occlusionStrength=${actual} texture=rgba8unorm 1x1 black sampler=nearest/clamp-to-edge engineManagedRegion=occlusionTexture bindings=18/19 materialUBO byteOffset=64`,
-                );
-              }
-            } else {
-              console.log(
-                `[learn-render 2.2 basic-lighting] tape materialOcclusionStrength=zero occlusionStrength=${actual} materialUBO byteOffset=64 texture=rgba8unorm 1x1 black`,
-              );
-            }
-          }
-          if (materialSpecularColor !== '') {
-            const actual = [materialFloats[20], materialFloats[21], materialFloats[22]];
-            const expected = [0.0, srgbToLinear(0.8), 1.0];
-            if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-              throw new Error(
-                `capture tape material specularColor=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 80,84,88`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialSpecularColor=cool specularColor=${JSON.stringify(actual)} materialUBO byteOffsets=80,84,88`,
-            );
-          }
-          if (
-            materialSpecularColorTexture !== '' ||
-            materialSpecularColorTextureSampler !== '' ||
-            materialSpecularColorTextureUvTransform !== '' ||
-            materialSpecularColorTextureUvSet !== ''
-          ) {
-            const expectedBytes = materialSpecularColorTextureUvTransform === '' && materialSpecularColorTextureUvSet === ''
-              ? [0, 64, 255, 255]
-              : [
-                  0, 64, 255, 255,
-                  0, 0, 0, 255,
-                  0, 0, 0, 255,
-                  0, 0, 0, 255,
-                ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== (materialSpecularColorTextureUvTransform === '' && materialSpecularColorTextureUvSet === '' ? 1 : 2) ||
-                event.desc?.size?.height !== (materialSpecularColorTextureUvTransform === '' && materialSpecularColorTextureUvSet === '' ? 1 : 2)
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return (
-                bytes !== undefined &&
-                bytes.length === expectedBytes.length &&
-                bytes.every((value, index) => value === expectedBytes[index])
-              );
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the expected specularColorTexture initialData payload',
-              );
-            }
-            const sampler = tape.events.find(
-              (event) =>
-                event.kind === 'createSampler' &&
-                event.desc?.magFilter === 'nearest' &&
-                event.desc?.minFilter === 'nearest' &&
-                event.desc?.mipmapFilter === 'nearest' &&
-                event.desc?.addressModeU === 'clamp-to-edge' &&
-                event.desc?.addressModeV === 'clamp-to-edge' &&
-                event.desc?.addressModeW === 'clamp-to-edge',
-            );
-            if (sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the specularColorTexture sampler nearest/clamp-to-edge descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some(
-                  (entry) => entry.binding === 7 && entry.resourceKind === 'sampler',
-                ) &&
-                event.entries.some(
-                  (entry) => entry.binding === 8 && entry.resourceKind === 'textureView',
-                ) &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId) &&
-                event.resourceHandleIds.includes(sampler.handleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the specularColorTexture user-region bindings at 7/8',
-              );
-            }
-            if (materialSpecularColorTextureUvTransform !== '') {
-              const actual = Array.from(materialFloats.slice(48, 56));
-              const expected = [0.25, 0.25, 0, 0, 0, 0, 1, 1];
-              if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-                throw new Error(
-                  `capture tape specularColorTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 192..220`,
-                );
-              }
-              console.log(
-                `[learn-render 2.2 basic-lighting] tape materialSpecularColorTextureUvTransform=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=192,196,200,204,208,212,216,220`,
-              );
-            } else if (materialSpecularColorTextureUvSet !== '') {
-              const actual = Array.from(materialFloats.slice(48, 56));
-              const expected = [0, 0, 1, 1, 1, 0, 1, 1];
-              if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6)) {
-                throw new Error(
-                  `capture tape specularColorTexture coordinates=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at global byte offsets 192..220`,
-                );
-              }
-              const uv1Pipeline = tape.events.find(
-                (event) =>
-                  event.kind === 'createRenderPipeline' &&
-                  event.desc?.vertex?.buffers?.some(
-                    (buffer) =>
-                      buffer.arrayStride === 56 &&
-                      buffer.attributes?.some(
-                        (attribute) => attribute.shaderLocation === 6 && attribute.offset === 48,
-                      ),
-                  ),
-              );
-              if (uv1Pipeline === undefined) {
-                throw new Error(
-                  'capture tape is missing the 56-byte real UV1 vertex layout at shader location 6 offset 48',
-                );
-              }
-              const uv1Buffer = tape.events.find(
-                (event) => event.kind === 'createBuffer' && event.desc?.size === 1344,
-              );
-              const uv1Seed = uv1Buffer === undefined
-                ? undefined
-                : tape.events.find(
-                    (event) => event.kind === 'initialData' && event.handleId === uv1Buffer.handleId,
-                  );
-              const uv1Data = uv1Seed === undefined ? undefined : tape.blobPool.get(uv1Seed.dataHash);
-              const uv1Floats = uv1Data === undefined ? undefined : new Float32Array(uv1Data);
-              if (
-                uv1Floats === undefined ||
-                uv1Floats.length !== 24 * 14 ||
-                Array.from({ length: 24 }, (_, index) => {
-                  const offset = index * 14 + 12;
-                  return uv1Floats[offset] === 0.75 && uv1Floats[offset + 1] === 0.75;
-                }).some((value) => !value)
-              ) {
-                throw new Error(
-                  'capture tape is missing the producer-owned UV1=[0.75,0.75] bytes in the 14-float mesh stride',
-                );
-              }
-              console.log(
-                `[learn-render 2.2 basic-lighting] tape materialSpecularColorTextureUvSet=1 coordinates=${JSON.stringify(actual)} materialUBO byteOffsets=192,196,200,204,208,212,216,220 texture=rgba8unorm 2x2 sampler=nearest/clamp-to-edge userRegion=specularColorTexture bindings=7/8 vertexStride=56 uv1Location=6 uv1Offset=48 uv1=[0.75,0.75]`,
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialSpecularColorTexture=${materialSpecularColorTexture === '' ? 'default' : 'blue'} sampler=nearest payload=${JSON.stringify(expectedBytes)} colorSpace=linear sampler=nearest/clamp-to-edge userRegion=specularColorTexture bindings=7/8`,
-            );
-          }
-          if (materialEmissiveTexture !== '') {
-            const expectedBytes = materialEmissiveTextureUvTransform === '' && materialEmissiveTextureUvSet === ''
-              ? [0, 64, 255, 255]
-              : [
-                  0, 64, 255, 255,
-                  0, 0, 0, 255,
-                  0, 0, 0, 255,
-                  0, 0, 0, 255,
-                ];
-            const texture = tape.events.find((event) => {
-              if (
-                event.kind !== 'createTexture' ||
-                event.desc?.format !== 'rgba8unorm' ||
-                event.desc?.size?.width !== (materialEmissiveTextureUvTransform === '' && materialEmissiveTextureUvSet === '' ? 1 : 2) ||
-                event.desc?.size?.height !== (materialEmissiveTextureUvTransform === '' && materialEmissiveTextureUvSet === '' ? 1 : 2)
-              ) {
-                return false;
-              }
-              const seed = tape.events.find(
-                (candidate) => candidate.kind === 'initialData' && candidate.handleId === event.handleId,
-              );
-              const data = seed === undefined ? undefined : tape.blobPool.get(seed.dataHash);
-              const bytes = data === undefined ? undefined : new Uint8Array(data);
-              return bytes !== undefined && bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
-            });
-            if (texture === undefined) {
-              throw new Error(
-                'capture tape is missing the blue 1x1 emissiveTexture initialData payload',
-              );
-            }
-            const sampler = materialEmissiveTextureSampler === ''
-              ? undefined
-              : tape.events.find(
-                  (event) =>
-                    event.kind === 'createSampler' &&
-                    event.desc?.magFilter === 'nearest' &&
-                    event.desc?.minFilter === 'nearest' &&
-                    event.desc?.mipmapFilter === 'nearest' &&
-                    event.desc?.addressModeU === 'clamp-to-edge' &&
-                    event.desc?.addressModeV === 'clamp-to-edge' &&
-                    event.desc?.addressModeW === 'clamp-to-edge',
-                );
-            if (materialEmissiveTextureSampler !== '' && sampler === undefined) {
-              throw new Error(
-                'capture tape is missing the emissiveTexture nearest sampler descriptor',
-              );
-            }
-            const view = tape.events.find(
-              (event) => event.kind === 'createTextureView' && event.sourceHandleId === texture.handleId,
-            );
-            const binding = tape.events.find(
-              (event) =>
-                event.kind === 'createBindGroup' &&
-                event.entries.some(
-                  (entry) => entry.binding === 16 && entry.resourceKind === 'sampler',
-                ) &&
-                event.entries.some(
-                  (entry) => entry.binding === 17 && entry.resourceKind === 'textureView',
-                ) &&
-                (sampler === undefined || event.resourceHandleIds.includes(sampler.handleId)) &&
-                view !== undefined &&
-                event.resourceHandleIds.includes(view.resultHandleId),
-            );
-            if (binding === undefined) {
-              throw new Error(
-                'capture tape is missing the engine-managed emissiveTexture bindings at 16/17',
-              );
-            }
-            console.log(
-              `[learn-render 2.2 basic-lighting] tape materialEmissiveTexture=blue payload=${JSON.stringify(expectedBytes)} colorSpace=linear engineManagedRegion=emissiveTexture bindings=16/17 sampler=${materialEmissiveTextureSampler || 'default'} uvTransform=${materialEmissiveTextureUvTransform || 'default'} uvSet=${materialEmissiveTextureUvSet || 'default'}`,
-            );
-          }
-        }
-        if (pointLightPosition !== '') {
-          const expected = pointLightPosition === 'near' ? [0.9, 0.8, 1.6] : [1.5, 1.0, 2.4];
-          const actual = [floats[0], floats[1], floats[2]];
-          if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-5)) {
-            throw new Error(
-              `capture tape Cluster light_data position=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at byte offsets 0,4,8`,
-            );
-          }
-          console.log(
-            `[learn-render 2.2 basic-lighting] tape clusterLightData position=${pointLightPosition} position=${JSON.stringify(actual)} byteOffsets=0,4,8`,
-          );
-        }
-        if (pointLightIntensity !== '') {
-          const actual = floats[4];
-          const expected = Number.parseFloat(pointLightIntensity);
-          if (
-            Math.abs(actual - expected) > 1e-6 ||
-            Math.abs(floats[5] - expected) > 1e-6 ||
-            Math.abs(floats[6] - expected) > 1e-6
-          ) {
-            throw new Error(
-              `capture tape Cluster light_data color*intensity=[${floats[4]},${floats[5]},${floats[6]}]; expected ${expected} at byte offset 16`,
-            );
-          }
-          console.log(
-            `[learn-render 2.2 basic-lighting] tape clusterLightData intensity=${actual} byteOffset=16`,
-          );
-        }
-        if (pointLightRange !== '') {
-          const actual = floats[3];
-          const range = Number.parseFloat(pointLightRange);
-          const expected = 1 / (range * range);
-          if (Math.abs(actual - expected) > 1e-6) {
-            throw new Error(
-              `capture tape Cluster light_data invRangeSquared=${actual}; expected ${expected} for range ${range} at byte offset 12`,
-            );
-          }
-          console.log(
-            `[learn-render 2.2 basic-lighting] tape clusterLightData range=${range} invRangeSquared=${actual} byteOffset=12`,
-          );
-        }
-        if (pointLightColor !== '') {
-          const expectedColor = pointLightColor === 'amber' ? [1.0, 0.8, 0.6] : [1.0, 0.85, 0.7];
-          const expectedIntensity = 100;
-          const actual = [floats[4], floats[5], floats[6]];
-          const expected = expectedColor.map((value) => value * expectedIntensity);
-          if (actual.some((value, index) => Math.abs(value - expected[index]) > 1e-5)) {
-            throw new Error(
-              `capture tape Cluster light_data colorTimesIntensity=${JSON.stringify(actual)}; expected ${JSON.stringify(expected)} at byte offsets 16,20,24`,
-            );
-          }
-          console.log(
-            `[learn-render 2.2 basic-lighting] tape clusterLightData color=${pointLightColor} colorTimesIntensity=${JSON.stringify(actual)} byteOffsets=16,20,24`,
-          );
-        }
-      },
+  assertTape:
+    !materialUploadFalsified &&
+    [pointLightIntensity, pointLightRange, pointLightColor, pointLightPosition, materialMetallicChannel, materialRoughnessChannel, alphaCutoff, alphaBlend].every((value) => value === '')
+      ? undefined
+      : assertBasicLightingTape,
 });

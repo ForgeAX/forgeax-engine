@@ -39,7 +39,13 @@ import {
 import { validateCanonicalKitReceipt } from '@forgeax/engine-preview';
 import type { SsrAdmissionIdentity } from '@forgeax/engine-render';
 import { createMaterialPackCooker, listMaterialSourcePaths } from '@forgeax/engine-shader-compiler';
-import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
+import {
+  createStandaloneRuntimeAssetBinding,
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  type Importer,
+  type LoadProgressLabels,
+  resolveLoadProgressLabels,
+} from '@forgeax/engine-types';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
@@ -443,16 +449,20 @@ async function hostEngineAliases(
   const hostRoot = binding?.backend.context.get('devkitBackend')?.hostPackageRoot;
   if (hostRoot === undefined) return [];
   const hostManifest = JSON.parse(await readFile(resolve(hostRoot, 'package.json'), 'utf8'));
-  // A generic presentation package need not use Engine. Only an explicit
-  // Engine dependency selects a paired runtime and its singleton vocabulary.
+  // An Engine-aware presentation borrows the executing source Host's vocabulary.
+  // Its installed dependency supplies the default when no source workspace runs.
   if (hostManifest.dependencies?.['@forgeax/engine'] === undefined) return [];
-  const hostRequire = createRequire(resolve(hostRoot, 'package.json'));
-  const engineRoot = dirname(hostRequire.resolve('@forgeax/engine/package.json'));
+  const presentationRequire = createRequire(resolve(hostRoot, 'package.json'));
+  const engineRoot =
+    (await engineWorkspacePackages()).get('@forgeax/engine')?.root ??
+    dirname(presentationRequire.resolve('@forgeax/engine/package.json'));
   const manifest = JSON.parse(await readFile(resolve(engineRoot, 'package.json'), 'utf8'));
   const engineRequire = createRequire(resolve(engineRoot, 'package.json'));
   const local = await readEngineBinding(projectRoot);
   if (!local.ok) hostBindingError(`${local.error.code}: ${local.error.hint}`);
-  const localPackages = await engineWorkspacePackages(local.value?.path);
+  const localPackages = local.value
+    ? await engineWorkspacePackages(local.value.path)
+    : new Map<string, EngineWorkspacePackage>();
   const projectRequire = createRequire(resolve(projectRoot, 'package.json'));
   const projectEngineRequire = local.value?.path
     ? undefined
@@ -802,6 +812,25 @@ const bridge = {
 `;
 }
 
+/** Generated startup-cover binding to the Engine load progress model (see App README). */
+function startupProgressSource(appOptions: DevKitAppOptions): string {
+  return `// The startup cover renders the Engine load progress model from navigation start.
+const startupCover = bootstrapRoot === 'project-bootstrap' && recipeValue === null ? globalThis.__forgeaxStartup : undefined;
+let finishStartupFrame;
+if (startupCover?.progress !== undefined) {
+  beginLoadSession('startup', ENGINE_STARTUP_PHASES, { startedAt: 0 });
+  addLoadWork('engine-code', { total: 1, done: 1 });
+  const loadingLabels = resolveLoadProgressLabels(${JSON.stringify(appOptions.loadingLabels ?? null)} ?? undefined);
+  const stopStartupProgress = subscribeLoadProgress((snapshot) => startupCover.progress(describeLoadProgress(snapshot, loadingLabels)));
+  startupCover.onEntered?.(() => {
+    finishStartupFrame?.();
+    stopStartupProgress();
+    endLoadSession('startup');
+  });
+}
+`;
+}
+
 function hostSource(
   facts: ProjectFacts,
   bootstrapRoot: BootstrapRoot,
@@ -831,7 +860,7 @@ function hostSource(
       : JSON.stringify(facts.startupTimeoutMs);
   return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\nimport { decodeDocumentText } from '@forgeax/engine/codec';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { activateExecutionRoot, addLoadWork, assembleAssetRuntime, beginLoadSession, beginLoadWork, describeLoadProgress, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
 import { DEFAULT_WEBGPU_STUB_PROFILE } from '@forgeax/engine/rhi-webgpu';
 import { inspectUi } from '@forgeax/engine/ui';
@@ -1328,7 +1357,7 @@ const workspaceTarget = query.has('forgeaxWorkspace') && !workerExecution && boo
 const workspaceGame = workspaceTarget && query.get('forgeaxWorkspace') === 'game';
 const workspaceMode = workspaceTarget && !workspaceGame;
 const recipeValue = query.get('forgeax-tool-recipe');
-const snapshotValue = query.get('forgeax-tool-snapshot');
+${startupProgressSource(appOptions)}const snapshotValue = query.get('forgeax-tool-snapshot');
 const runIdValue = query.get('forgeax-tool-run-id');
 const appState: { current?: App | import('@forgeax/engine/app').ExecutionApp } = {};
 let disposeFrontendHost;
@@ -1426,9 +1455,12 @@ const appBootstrapPlugin = {
     ${
       appOptions.pipelineLibrary === undefined
         ? ''
-        : `const pipelineLibraryResponse = await fetch(pipelineLibraryUrl);
+        : `const finishPipelineLibraryRead = beginLoadWork('downloads', 'pipeline-library.json');
+    const pipelineLibraryResponse = await fetch(pipelineLibraryUrl);
     if (!pipelineLibraryResponse.ok) throw new Error('Pipeline library load failed: ' + pipelineLibraryResponse.status);
-    const pipelineLibraryText = await decodeDocumentText(new Uint8Array(await pipelineLibraryResponse.arrayBuffer()));
+    const pipelineLibraryBytes = new Uint8Array(await pipelineLibraryResponse.arrayBuffer());
+    finishPipelineLibraryRead();
+    const pipelineLibraryText = await decodeDocumentText(pipelineLibraryBytes);
     if (!pipelineLibraryText.ok) throw new Error('Pipeline library decode failed: ' + pipelineLibraryText.error.code);
     const pipelineLibrary = JSON.parse(pipelineLibraryText.value);`
     }
@@ -1976,6 +2008,7 @@ if (query.has('forgeax-tool-replay')) {
         __forgeaxStartup?: { readonly prepare?: () => void };
       }
     ).__forgeaxStartup?.prepare?.();
+    finishStartupFrame = beginLoadWork('first-frame');
   }
   if (workspaceGame) await activateWorkspace?.();
   if (!appStarted) app.start().unwrap();
@@ -1987,10 +2020,14 @@ if (query.has('forgeax-tool-replay')) {
 `;
 }
 
-function htmlSource(title: string, startupScreen = true): string {
-  return hostStartupDocument(title).replace(
+function htmlSource(
+  title: string,
+  startupScreen = true,
+  labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+): string {
+  return hostStartupDocument(title, labels).replace(
     '  </body>',
-    `    <script>${hostStartupScript(startupScreen)}</script>
+    `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
     <script>
       (() => {
         // This inert marker keeps generated pages inspectable by older hosts
@@ -2867,7 +2904,11 @@ export async function createViteConfig(
       writePipelineLibrary(generated, cookerSession.appOptions),
       writeFile(
         resolve(generated, 'index.html'),
-        htmlSource(facts.name, bootstrapRoot === 'project-bootstrap'),
+        htmlSource(
+          facts.name,
+          bootstrapRoot === 'project-bootstrap',
+          resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
+        ),
       ),
       writeFile(
         resolve(generated, 'main.ts'),

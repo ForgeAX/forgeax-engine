@@ -36,7 +36,13 @@ import {
   createPublicationAssets,
   type RendererHostAssembly,
 } from '@forgeax/engine-runtime/internal/renderer-host';
-import { err } from '@forgeax/engine-types';
+import {
+  addLoadWork,
+  beginLoadTimeline,
+  beginLoadWork,
+  bindLoadProgressScope,
+  err,
+} from '@forgeax/engine-types';
 import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from '../assets-runtime-assembly';
 import { syncCameraAspect } from '../canvas-policy';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
@@ -72,6 +78,7 @@ import type {
   ExecutionSimulationCompletion,
   ExecutionSurfaceResultMessage,
   HostToEngineMessage,
+  RetainedExecutionInit,
 } from './protocol';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
@@ -114,7 +121,7 @@ interface WorkerRealm {
   };
   renderWorker?: SourceRenderWorker;
   publicationTargets?: RenderPublicationTargetOwner;
-  readonly init: ExecutionInitMessage;
+  readonly init: RetainedExecutionInit;
   assetAssembly: AssetRuntimeAssembly | undefined;
   readonly pendingAudioIntents: AudioIntentQueue;
   audioBackend: ReturnType<typeof createAudioIntentBackend> | undefined;
@@ -525,7 +532,7 @@ function createRealmWorld(init: ExecutionInitMessage): World {
   });
 }
 
-function createRealmCandidate(init: ExecutionInitMessage, world: World): WorkerRealm {
+function createRealmCandidate(init: RetainedExecutionInit, world: World): WorkerRealm {
   const profiler = init.diagnostics?.profiler === true ? createProfiler() : undefined;
   const profilerCatalog = profiler?.registerPhaseCatalog('app', APP_PHASE_CATALOG);
   return {
@@ -593,6 +600,7 @@ function realmBundlerOptions(init: ExecutionInitMessage): BundlerOptions | undef
 function realmRendererOptions(
   candidate: WorkerRealm,
   prepared: PreparedExecutionBootstrap,
+  pipelineLibrary: ExecutionInitMessage['pipelineLibrary'],
 ): RendererOptions {
   const { init, profiler } = candidate;
   return {
@@ -608,7 +616,7 @@ function realmRendererOptions(
     ...(init.diagnostics?.gpuPassTiming === undefined
       ? {}
       : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
-    ...(init.pipelineLibrary === undefined ? {} : { pipelineLibrary: init.pipelineLibrary }),
+    ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
     ...(init.outputColorSpace === undefined ? {} : { outputColorSpace: init.outputColorSpace }),
     ...(init.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
@@ -852,13 +860,18 @@ function adoptStagedRenderWorker(
 async function startAdoptedRenderWorker(
   candidate: WorkerRealm,
   renderWorker: SourceRenderWorker,
+  pipelineLibrary: ExecutionInitMessage['pipelineLibrary'],
 ): Promise<void> {
-  await renderWorker.start(candidate.init.canvas);
+  await renderWorker.start(candidate.init.canvas, pipelineLibrary);
   if (candidate.init.diagnostics?.rhiCapture === true) candidate.rhiCapture = renderWorker;
 }
 
-async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
+async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
+  // Realm-owned facts exclude the library forwarded to the renderer for this start.
+  const { pipelineLibrary, ...init } = startup;
+  const endImport = beginLoadTimeline('boot', 'bootstrap-import');
   const preparedResult = await prepareBootstrapEntry(init.bootstrapUrl, init.bootstrapData);
+  endImport();
   if (!preparedResult.ok) {
     postBootstrapFault(preparedResult.error);
     return false;
@@ -876,20 +889,29 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
   const previousRenderer = renderer;
   let previousSurfaceReleased = false;
   let stagedRenderWorker: SourceRenderWorker | undefined;
+  // Load progress: Renderer creation belongs to starting workers; plugin
+  // bootstrap through World commit builds the scene.
+  const rendererWork = beginLoadWork('workers');
+  let sceneWork: (() => void) | undefined;
   try {
     previousSurfaceReleased = releasePreviousSurface(previousRenderer);
     const bundler = realmBundlerOptions(init);
-    const rendererOptions = realmRendererOptions(candidate, prepared);
+    const rendererOptions = realmRendererOptions(candidate, prepared, pipelineLibrary);
     await attachRealmRhiRecorder(candidate, rendererOptions);
     const split = init.workers.render.enabled;
     if (split) prepareSplitSource(candidate, prepared);
+    const endRenderer = beginLoadTimeline('boot', 'renderer');
     const host = await constructRealmRendererHost(init, rendererOptions, bundler);
     candidateRenderer = host?.renderer;
     if (candidateRenderer !== undefined) await prepared.configureRenderer?.(candidateRenderer);
+    rendererWork();
+    endRenderer();
+    sceneWork = beginLoadWork('scene');
     const catalogSource = realmCatalogSource(init);
     const assets = host?.assets ?? (await createRealmPublicationAssets(init, bundler));
     candidate.assetAssembly = admitRealmAssetAssembly(init, assets, catalogSource);
     stagedRenderWorker = stageSourceRenderWorker(candidate, assets, sourceFeatures);
+    const endPlugins = beginLoadTimeline('boot', 'plugin-bootstrap');
     const pluginContext = await createWorldContext(
       nextWorld,
       workerEngineProfile({
@@ -911,14 +933,18 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
         ),
       }),
     );
+    endPlugins();
     candidate.pluginContext = pluginContext;
     rendererLifecycleTransferred = true;
     // A non-split realm never stages a Render Worker, so preload is a no-op there.
     const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
-    if (prepared.root)
+    if (prepared.root) {
+      const endRoot = beginLoadTimeline('boot', 'root-activation');
       await activateExecutionRoot(pluginContext, prepared.root, {
         timeoutMs: init.startupTimeoutMs,
       });
+      endRoot();
+    }
     if (candidateRenderer !== undefined)
       applyRendererOrderDiagnostic(
         candidateRenderer,
@@ -927,6 +953,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       );
     const activeRenderer = candidateRenderer;
     const previousRealm = realm;
+    const endCommit = beginLoadTimeline('boot', 'world-commit');
     await candidate.kernelPool?.ready();
     const committed =
       candidateRenderer === undefined
@@ -944,8 +971,12 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
     if (split) {
       const adopted = adoptStagedRenderWorker(candidate, stagedRenderWorker, stagedRenderFailure);
       stagedRenderWorker = undefined;
-      await startAdoptedRenderWorker(candidate, adopted);
+      const renderWorkerWork = beginLoadWork('workers');
+      await startAdoptedRenderWorker(candidate, adopted, pipelineLibrary);
+      renderWorkerWork();
     }
+    sceneWork?.();
+    endCommit();
     inputBackend.revokeInjectedLease();
     realm = candidate;
     renderer = activeRenderer;
@@ -962,12 +993,17 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
     if (previousSurfaceReleased) previousRenderer?.restoreSurface();
     throw cause;
   } finally {
+    // A failed or superseded realm settles its load work too.
+    rendererWork();
+    sceneWork?.();
     await stagedRenderWorker?.dispose();
   }
 }
 
 async function initialize(message: ExecutionInitMessage): Promise<void> {
   try {
+    if (message.loadProgressScope !== undefined) bindLoadProgressScope(message.loadProgressScope);
+    addLoadWork('workers', { done: 1 });
     installCarriedGpuStub(message);
     if (!(await createRealm(message))) return;
     scope.postMessage({
@@ -1414,7 +1450,13 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
     const canvas = message.canvas ?? activeRealm.canvas;
     if (canvas === undefined) throw new Error('World rebuild requires a fresh rendering canvas');
     await activeRealm.renderWorker?.dispose();
-    const init: ExecutionInitMessage = { ...activeRealm.init, canvas };
+    const init: ExecutionInitMessage = {
+      ...activeRealm.init,
+      canvas,
+      ...(message.pipelineLibrary === undefined
+        ? {}
+        : { pipelineLibrary: message.pipelineLibrary }),
+    };
     if (!(await createRealm(init))) return;
     scope.postMessage({
       kind: 'rebuilt',
@@ -1447,7 +1489,7 @@ scope.onmessage = (event): void => {
     }
     case 'render-replace':
       void realm?.renderWorker
-        ?.replace(message.epoch, message.canvas)
+        ?.replace(message.epoch, message.canvas, message.pipelineLibrary)
         .catch((cause) =>
           postFault(
             'runtime',

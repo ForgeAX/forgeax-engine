@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { addLoadWork, err, loadProgressScope, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
 import { forwardGpuStub } from './gpu-stub';
@@ -12,6 +12,12 @@ import type {
   HostToEngineMessage,
 } from './protocol';
 import { shutdownWorker } from './worker-shutdown';
+
+/** Bind the Worker realm to this page's load progress, when the page has one. */
+export function loadProgressInit(): { readonly loadProgressScope?: string } {
+  const scope = loadProgressScope();
+  return scope === undefined ? {} : { loadProgressScope: scope };
+}
 
 export interface EngineWorkerSession {
   readonly worker: Worker;
@@ -286,8 +292,11 @@ export async function startEngineWorker(
     ...(options.assetBudgetBytes === undefined
       ? {}
       : { assetBudgetBytes: options.assetBudgetBytes }),
+    ...loadProgressInit(),
     workers: options.workers,
   };
+  // One Engine Worker to start; its realm reports completion once it runs.
+  addLoadWork('workers', { total: 1 });
   worker.postMessage(init, [
     offscreen,
     ...(options.bootstrapPort === undefined ? [] : [options.bootstrapPort]),

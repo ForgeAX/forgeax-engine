@@ -48,10 +48,14 @@ export async function verifySdkSourceEdit({ sdkRoot, output, env = process.env }
     pathToFileURL(resolve(sourceRoot, 'packages/devkit/dist/index.mjs')).href
   );
   const { build, preview } = await load('vite');
+  const { createBackendHost } = await import(
+    pathToFileURL(resolve(sourceRoot, 'packages/host/dist/backend.mjs')).href
+  );
   const playwright = await load('playwright');
   const { chromium } = playwright.default ?? playwright;
   let browser;
   let server;
+  let backend;
   try {
     await writeFile(source, edited);
     await sdkStage('rebuild only @forgeax/engine-math', () =>
@@ -102,12 +106,32 @@ export async function verifySdkSourceEdit({ sdkRoot, output, env = process.env }
     await writeFile(resolve(game, 'worker.ts'), `${imports} self.postMessage(${sample});`);
     const facts = await devkit.readProjectFacts(game);
     assert(facts.ok, JSON.stringify(facts));
+    backend = await createBackendHost();
+    await (
+      await backend.context.plugin({
+        name: 'sdk-source-edit:presentation',
+        provide: ['devkitBackend'],
+        apply(ctx) {
+          ctx.provide('devkitBackend', {
+            host: backend,
+            root: sdkRoot,
+            hostPackageRoot: resolve(sdkRoot, 'tools/view'),
+            assertCurrent: async () => {},
+          });
+        },
+      })
+    ).await();
+    // The embedded View's installed Engine must not replace the source Host graph.
+    const presentation = await devkit.createViteConfig(facts.value, 'serve', '/', {
+      host: { backend },
+    });
     const config = await devkit.createViteConfig(facts.value, 'build');
     const built = resolve(output, 'web');
     // Exercise the production Engine resolver in main and Vite's native Worker
     // pipeline. This numeric/ECS probe has no authored Packs or render graph.
     await build({
       ...config,
+      resolve: presentation.resolve,
       root: game,
       configFile: false,
       plugins: config.plugins.filter(
@@ -162,6 +186,7 @@ export async function verifySdkSourceEdit({ sdkRoot, output, env = process.env }
       node: true,
       browser: true,
       worker: true,
+      embeddedViewHost: true,
       projectManifestUnchanged: true,
     };
     await writeFile(resolve(output, 'result.json'), `${JSON.stringify(evidence, null, 2)}\n`);
@@ -176,9 +201,13 @@ export async function verifySdkSourceEdit({ sdkRoot, output, env = process.env }
             server.httpServer.close((error) => (error ? reject(error) : accept())),
           );
       } finally {
-        await writeFile(source, original);
-        await rm(dist, { recursive: true, force: true });
-        await cp(backup, dist, { recursive: true });
+        try {
+          await backend?.dispose();
+        } finally {
+          await writeFile(source, original);
+          await rm(dist, { recursive: true, force: true });
+          await cp(backup, dist, { recursive: true });
+        }
       }
     }
   }

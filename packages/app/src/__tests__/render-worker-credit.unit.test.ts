@@ -824,6 +824,55 @@ it('uses the App startup budget for child initialization and still bounds a stal
   }
 });
 
+it('forwards the startup pipeline library only with the start that supplies it', async () => {
+  vi.stubGlobal('Worker', CreditWorker);
+  const world = new World();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const canvas = {} as OffscreenCanvas;
+  const pipelineLibrary = {
+    version: 1 as const,
+    backend: 'webgpu' as const,
+    shaders: [],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  };
+  for (const resupplied of [undefined, pipelineLibrary]) {
+    const source = new SourceRenderWorker(
+      world,
+      assets,
+      {
+        kind: 'init',
+        canvas,
+        bootstrapUrl: '',
+        workers: workerSelection({ engine: true, render: true, kernels: false }),
+        startupTimeoutMs: 90_000,
+      },
+      () => {},
+    );
+    try {
+      await source.start(canvas, pipelineLibrary);
+      expect(CreditWorker.current.init?.pipelineLibrary).toBe(pipelineLibrary);
+      const lost = CreditWorker.current;
+      lost.emit({
+        kind: 'failed',
+        recoverable: true,
+        stage: 'draw',
+        error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
+      });
+      // Replacement carries only what the Host supplies with it; nothing was retained.
+      await source.replace(2, canvas, resupplied);
+      expect(CreditWorker.current).not.toBe(lost);
+      expect(CreditWorker.current.init?.pipelineLibrary).toBe(resupplied);
+    } finally {
+      await source.dispose();
+    }
+  }
+});
+
 it('reads remote bounds without advancing a frame and retires pending reads on disposal', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();

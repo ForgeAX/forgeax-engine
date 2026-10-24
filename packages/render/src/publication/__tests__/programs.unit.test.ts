@@ -238,3 +238,21 @@ it('rejects conflicting programs atomically and preserves the installed shader',
     ]),
   ).toThrow('mismatched');
 });
+
+it('shares equal ABI facts between separately received programs without freezing the input', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const first = structuredClone(program('forgeax::interned-a'));
+  const second = structuredClone(program('forgeax::interned-b'));
+  installPublicationPrograms(assets, [first]);
+  installPublicationPrograms(assets, [second]);
+  const a = assets.shaderRegistry.findMaterialArtifact(first.key).unwrap();
+  const b = assets.shaderRegistry.findMaterialArtifact(second.key).unwrap();
+  // Two Worker clones of equal facts resolve to one canonical receipt and schema.
+  expect(b.receipt).toBe(a.receipt);
+  expect(b.paramSchema).toBe(a.paramSchema);
+  expect(Object.isFrozen(a.receipt)).toBe(true);
+  // The received rows stay the caller's mutable values.
+  expect(Object.isFrozen(first.shader.receipt)).toBe(false);
+});

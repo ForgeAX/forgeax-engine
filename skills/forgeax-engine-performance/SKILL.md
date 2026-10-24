@@ -18,6 +18,7 @@ and reusable analysis, rather than another delivery state machine.
 | Current question | Read |
 | --- | --- |
 | Establish a baseline, qualify fresh product defaults, separate CPU/GPU clocks or compare captures | [Measurement](references/measurement.md) |
+| Startup / level-load attribution: Worker boot, fetches, decodes, shader/pipeline creation, first frame, game marks | [Load timeline](references/measurement.md#load-timeline-startup-and-level-loading) |
 | Measure CPU-side cost on a host without a usable GPU | [WebGPU stub](references/measurement.md#cpu-only-measurement-with-the-webgpu-stub) |
 | Measure cache hit/miss, invalidation, rebuild and maintenance populations | [Cache measurement](references/measurement.md#cache-populations-and-window-deltas) |
 | Extreme picture intervals, Worker task costs, completion waits or catch-up bursts | [Slow frames and scheduling](references/slow-frames.md) |

@@ -94,7 +94,7 @@ if ([...names].some((name) => name.startsWith('@forgeax/engine-')))
   throw new Error('release-focused-package-forbidden');
 const umbrella = packageArchives.find(({ manifest }) => manifest.name === '@forgeax/engine');
 if (umbrella === undefined) throw new Error('npm-umbrella-package-missing');
-if (!names.has('@forgeax/view')) throw new Error('npm-view-tool-package-missing');
+if (names.size !== 1) throw new Error('npm-publication-roster-invalid');
 if (carrier.manifest.name !== '@forgeax/engine-sdk') throw new Error('npm-sdk-carrier-name');
 
 for (const item of all) {
@@ -109,13 +109,12 @@ for (const item of all) {
   ]) {
     for (const [name, range] of Object.entries(item.manifest[section] ?? {})) {
       if (typeof range !== 'string') continue;
+      if (name === '@forgeax/view') throw new Error('npm-standalone-view-dependency-forbidden');
       if (/^(workspace|file|link):/.test(range)) {
         throw new Error(`npm-workspace-specifier: ${item.manifest.name} -> ${name}@${range}`);
       }
       if (
-        (name === '@forgeax/engine' ||
-          name.startsWith('@forgeax/engine-') ||
-          name === '@forgeax/view') &&
+        (name === '@forgeax/engine' || name.startsWith('@forgeax/engine-')) &&
         range !== version
       ) {
         throw new Error(
@@ -125,13 +124,6 @@ for (const item of all) {
     }
   }
 }
-const umbrellaDependencies = new Set(Object.keys(umbrella.manifest.dependencies ?? {}));
-for (const name of names) {
-  if (name !== '@forgeax/engine' && name !== '@forgeax/view' && !umbrellaDependencies.has(name)) {
-    throw new Error(`npm-umbrella-dependency-missing: ${name}`);
-  }
-}
-
 function metadata(item, registry) {
   const address = registry.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
@@ -196,7 +188,10 @@ const registry = createServer(async (request, response) => {
         .end(JSON.stringify(metadata(item, registry)));
       return;
     }
-    if (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk') {
+    if (
+      name === '@forgeax/view' ||
+      (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk')
+    ) {
       recordRegistryRequest(request, 404, 'forbidden-focused-package');
       response.writeHead(404).end();
       return;

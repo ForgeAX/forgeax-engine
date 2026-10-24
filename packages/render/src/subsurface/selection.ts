@@ -39,12 +39,18 @@ export class SubsurfaceSelection {
   private distinct = 0;
 
   add(source: Pick<RenderableSnapshot, 'material' | 'materials'>, materials: MaterialFrame): void {
-    for (const resource of source.materials.length === 0 ? [source.material] : source.materials) {
-      if (this.members.has(resource)) continue;
-      const value = profile(materials.get(resource)?.snapshot);
-      this.members.set(resource, value);
-      this.adjust(value, 1);
-    }
+    // Runs per renderable each frame: no one-element array for the default slot.
+    const slots = source.materials;
+    if (slots.length === 0) this.addMember(source.material, materials);
+    for (let index = 0; index < slots.length; index++)
+      this.addMember(slots[index] as MaterialResource, materials);
+  }
+
+  private addMember(resource: MaterialResource, materials: MaterialFrame): void {
+    if (this.members.has(resource)) return;
+    const value = profile(materials.get(resource)?.snapshot);
+    this.members.set(resource, value);
+    this.adjust(value, 1);
   }
 
   adopt(materials: MaterialFrame): void {

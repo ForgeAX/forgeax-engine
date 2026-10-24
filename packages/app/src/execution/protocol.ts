@@ -160,12 +160,22 @@ export interface ExecutionInitMessage {
   readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
   /** Renderer-realm display output color space; the Renderer owns negotiation. */
   readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
-  /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
+  /**
+   * Captured exact pipeline recipes, prepared before renderer initialization completes.
+   * The Host supplies them with every message that starts a Renderer realm (`init`,
+   * `rebuild`, `render-replace`); startup records drop them after handing them
+   * to the active Renderer owner.
+   */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly dynamicGeometryMeshBudgetBytes?: number;
   readonly assetBudgetBytes?: number;
+  /** Page load progress scope; Worker realms report load work to it. */
+  readonly loadProgressScope?: string;
   readonly workers: import('./types').ExecutionSelection;
 }
+
+/** Realm-retained startup facts. Startup-only payloads are supplied by each starting message. */
+export type RetainedExecutionInit = Omit<ExecutionInitMessage, 'pipelineLibrary'>;
 
 export interface ExecutionHostControlMessage {
   readonly kind: 'host-control';
@@ -189,6 +199,14 @@ export interface ExecutionRebuildMessage {
   readonly kind: 'rebuild';
   readonly canvas?: OffscreenCanvas;
   readonly worldIdentity: string;
+  readonly pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'];
+}
+
+export interface ExecutionRenderReplaceMessage {
+  readonly kind: 'render-replace';
+  readonly epoch: number;
+  readonly canvas: OffscreenCanvas;
+  readonly pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'];
 }
 
 export interface ExecutionRebuiltMessage {
@@ -263,7 +281,7 @@ export interface ExecutionSurfaceResultMessage {
 
 export type HostToEngineMessage =
   | ExecutionSurfaceResultMessage
-  | { readonly kind: 'render-replace'; readonly epoch: number; readonly canvas: OffscreenCanvas }
+  | ExecutionRenderReplaceMessage
   | ExecutionInitMessage
   | ExecutionFrameMessage
   | ExecutionRebuildMessage

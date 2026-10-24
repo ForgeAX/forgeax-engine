@@ -161,6 +161,14 @@ Read `profiler.phaseCatalog` for the App/Render owner relation. Use
 `validateProfileCapture` and `buildProfileModel` from the profiler package for offline analysis;
 do not recreate phase lists or turn this capability into an ECS, GPU, UI, or RPC surface.
 
+## Load timeline
+
+Loading is recorded by default at negligible cost; nothing needs to be attached.
+Mark game milestones with `markLoadTimeline('home-ready')` / `markLoadTimeline('map-ready')`
+from `@forgeax/engine/app` in any realm, and read every realm with
+`await collectLoadTimeline()` or `globalThis.__forgeaxLoadTimeline.collect()`.
+Record kinds and limits: [performance measurement](../forgeax-engine-performance/references/measurement.md#load-timeline-startup-and-level-loading).
+
 ## Render-owned evidence boundary
 
 Render inspection and profiling are the evidence boundary. App exposes the

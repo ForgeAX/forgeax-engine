@@ -1,8 +1,13 @@
 import { type AssetRegistry, runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import { validateMaterialCookProgramContext } from '@forgeax/engine-pack/material-cook';
-import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
+import {
+  MaterialArtifactRegistry,
+  type MaterialShaderEntry,
+  ShaderRegistry,
+} from '@forgeax/engine-shader';
 import {
   getAdmittedParamSchemaInterface,
+  internJson,
   isMaterialProgramAbi,
   type MaterialAsset,
   type ParamSchemaEntry,
@@ -282,7 +287,10 @@ export class PublicationMaterialProjectionAdmission {
         return true;
       }
       if (!validPublicationProjectionProgram(program)) return false;
-      const ownedProgram = ownRenderFeatureProgramData(row);
+      // The ABI is held as canonical deep-frozen JSON shared with every equal
+      // ABI node; ownership keeps it by identity.
+      const abi = canonicalCopy(row.abi);
+      const ownedProgram = ownRenderFeatureProgramData(abi === undefined ? row : { ...row, abi });
       if (programKey !== undefined && isOwnedRenderFeatureProgramData(ownedProgram)) {
         this.#programs.add(programKey, ownedProgram);
         this.#retain(ownedProgram);
@@ -455,6 +463,33 @@ export function rebindPublicationMaterialSchemas(
   return input;
 }
 
+/**
+ * Worker clones give every received program private copies of ABI facts that
+ * repeat across programs (bindings, field names, entry reads, vertex inputs).
+ * A private copy of each fact becomes canonical deep-frozen JSON held once
+ * per realm, and the registry keeps deep-frozen receipts and entry reads by
+ * identity, so equal facts of different programs share one node. The caller's
+ * row is not frozen, and the WGSL source string is not part of any key.
+ */
+function canonicalShaderEntry(shader: MaterialShaderEntry): MaterialShaderEntry {
+  const receipt = canonicalCopy(shader.receipt);
+  const entryPoints = canonicalCopy(shader.entryPoints);
+  const paramSchema = canonicalCopy(shader.paramSchema);
+  return {
+    ...shader,
+    ...(receipt === undefined ? {} : { receipt }),
+    ...(entryPoints === undefined ? {} : { entryPoints }),
+    ...(paramSchema === undefined ? {} : { paramSchema }),
+  };
+}
+
+/** The canonical node equal to a private copy of `value`, or undefined when it is not plain JSON. */
+function canonicalCopy<T>(value: T): T | undefined {
+  return value === null || typeof value !== 'object'
+    ? undefined
+    : internJson(structuredClone(value as T & object));
+}
+
 /** Admit immutable producer artifacts before the full Renderer prepares their pipelines. */
 export function installPublicationPrograms(
   assets: AssetRegistry,
@@ -492,7 +527,11 @@ export function installPublicationPrograms(
     }
     if (!previous.ok) {
       shaders ??= new ShaderRegistry({ manifestUrl: undefined });
-      shaders.installMaterialArtifact(row.key, row.shader, assets.shaderRegistry);
+      shaders.installMaterialArtifact(
+        row.key,
+        canonicalShaderEntry(row.shader),
+        assets.shaderRegistry,
+      );
     }
     if (row.artifact !== undefined) {
       const existing = assets.getMaterialArtifact(row.key);

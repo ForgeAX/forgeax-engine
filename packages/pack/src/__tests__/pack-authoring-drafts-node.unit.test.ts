@@ -140,6 +140,74 @@ describe('source refresh after external writes', () => {
   const scaled = (source: string) =>
     source.replace('parameters:[', "parameters:[{name:'scale',type:'f32',default:2},");
 
+  it('opens the settled source when an initial truncated read finishes after the write', async () => {
+    const { root, source } = await setup();
+    const path = join(root, 'scene.pack.ts');
+    await writeFile(path, '');
+    let reads = 0;
+    const manager = createFileSystemPackDrafts({
+      gameRoot: root,
+      sourceOptions: async (_path, text) => {
+        reads++;
+        // Complete the actual disk write after the opening read, before its parse.
+        if (text === '') await writeFile(path, source);
+        return {};
+      },
+    });
+    try {
+      const opened = await manager.execute({ action: 'open', sourcePath: 'scene.pack.ts' });
+      expect(opened).toMatchObject({ sourcePath: 'scene.pack.ts', unsaved: false });
+      expect(opened).not.toHaveProperty('error');
+      expect(reads).toBe(2);
+      expect(await readFile(path, 'utf8')).toBe(source);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('keeps a stable unsupported initial source as an error without retrying it', async () => {
+    const { root } = await setup();
+    await writeFile(join(root, 'scene.pack.ts'), '');
+    let reads = 0;
+    const manager = createFileSystemPackDrafts({
+      gameRoot: root,
+      sourceOptions: async () => {
+        reads++;
+        return {};
+      },
+    });
+    try {
+      await expect(
+        manager.execute({ action: 'open', sourcePath: 'scene.pack.ts' }),
+      ).rejects.toMatchObject({ code: 'pack-source-mutation-unsupported' });
+      expect(reads).toBe(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('bounds an opening whose source keeps changing instead of admitting a stale draft', async () => {
+    const { root, source } = await setup();
+    let reads = 0;
+    const manager = createFileSystemPackDrafts({
+      gameRoot: root,
+      sourceOptions: async () => {
+        await writeFile(join(root, 'scene.pack.ts'), `${source}\n// write ${++reads}`);
+        return {};
+      },
+    });
+    try {
+      await expect(
+        manager.execute({ action: 'open', sourcePath: 'scene.pack.ts' }),
+      ).rejects.toMatchObject({ code: 'pack-source-revision-conflict' });
+      expect(reads).toBeGreaterThan(1);
+      expect(reads).toBeLessThanOrEqual(8);
+      expect(await manager.hasSource('scene.pack.ts')).toBe(false);
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('clears a truncated-read failure once the complete source parses', async () => {
     const { root, source } = await setup();
     const manager = createFileSystemPackDrafts({ gameRoot: root });

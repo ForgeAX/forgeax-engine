@@ -215,7 +215,7 @@ mirror still requires mandatory source qualification before npm publication.
 Each mirrored channel advances only its own public branch (development to
 `main`, stable to `stable`). The rc test line skips the source stages.
 
-The three existing npm tarballs upload concurrently under `candidate` without
+The two npm tarballs upload concurrently under `candidate` without
 rebuilding. One joint gate verifies public metadata and exact downloaded bytes;
 a fresh registry consumer must pass before each package's `latest`, `rc` or `next`
 advances. These channel tags remain separate registry writes. Candidate cleanup
@@ -249,6 +249,12 @@ journey rather than adding another CI job.
 Npm extraction renames `.gitignore` to `.npmignore`. SDK installation restores
 the original path only after matching the manifest's byte count and SHA-256;
 an authored `.npmignore` collision or changed bytes fails before target adoption.
+
+Package READMEs and skills provide SDK documentation; the distribution has no
+separate `docs/` directory.
+
+The SDK contract gate retains the wgpu source-key regression for CI metadata
+removal. The Source consumer still checks WASM provenance during its cold rebuild.
 
 The source snapshot is not a nested Git checkout and intentionally excludes
 `forgeax-engine-assets`. It carries `.forgeax-public-distribution`, which makes
@@ -352,7 +358,7 @@ and the `dev start` endpoint lifecycle described in the CI operating guide.
 It stops a discovered daemon even when startup fails and retains the failed
 consumer directory so cleanup cannot erase the original diagnostic.
 
-The Promotion workflow publishes only complete Engine, View tool and SDK carrier
+The Promotion workflow publishes only complete Engine and SDK carrier
 tarballs with `NPM_TOKEN`. Focused Engine modules and their transitive runtime
 requirements are inside the Engine tarball. Source package boundaries remain
 available in the SDK's bare `packages/` inventory.
@@ -386,7 +392,7 @@ shasum -a 256 artifacts/sdk-a/forgeax-sdk-v1.2.3.zip artifacts/sdk-b/forgeax-sdk
 ```
 
 The ZIP digests must match. The Candidate workflow independently compares a
-sorted SHA-256 inventory of both `npm/` trees, including the complete Engine, View and SDK carrier tarballs. The rebuild lane uploads its inventory and `seal`
+sorted SHA-256 inventory of both `npm/` trees, including the complete Engine and SDK carrier tarballs. The rebuild lane uploads its inventory and `seal`
 compares it with the exact seed. A mismatch in either evidence set blocks
 publication. Critical-path timing and its measured/estimated split live in
 `scripts/ci/README.md` §SDK Candidate critical path.

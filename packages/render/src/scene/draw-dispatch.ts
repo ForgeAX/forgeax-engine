@@ -6,10 +6,11 @@ import type { MaterialFrame } from './material-dispatch';
  * A direct dispatch depends only on each row's identity, layer, caster flag,
  * index and selected material resources within one fixed MaterialFrame. Rows of
  * moving entities keep these facts while their snapshots change every frame.
+ * Active frame consumers own the output; this cache must not pin old row sets.
  */
 const projectedDispatches = new WeakMap<
   MaterialFrame,
-  { facts: unknown[]; value: DispatchList }[]
+  { facts: unknown[]; value: WeakRef<DispatchList> }[]
 >();
 
 function directDispatchFacts(draws: readonly ValidatedRenderable[]): unknown[] {
@@ -50,15 +51,20 @@ export function projectDrawDispatch(
   const facts = directDispatchFacts(draws);
   let retained = projectedDispatches.get(materials);
   const hit = retained?.find((entry) => sameFacts(entry.facts, facts));
-  if (hit !== undefined) return hit.value;
+  const cached = hit?.value.deref();
+  if (cached !== undefined) return cached;
   const value = projectFreshDrawDispatch(draws, materials);
+  if (hit !== undefined) {
+    hit.value = new WeakRef(value);
+    return value;
+  }
   if (retained === undefined) {
     retained = [];
     projectedDispatches.set(materials, retained);
   }
   // Each scene pass projects its own row set; keep a small bounded roster.
   if (retained.length >= 8) retained.shift();
-  retained.push({ facts, value });
+  retained.push({ facts, value: new WeakRef(value) });
   return value;
 }
 

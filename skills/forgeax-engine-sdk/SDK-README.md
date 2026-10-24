@@ -37,6 +37,11 @@ the same locked Engine versions from npm. Both surfaces share the pnpm lockfile 
 pnpm-workspace.yaml allowBuilds policy. sdk-manifest.json records the store layout
 created by the pinned pnpm release.
 
+The SDK includes the built View workspace under tools/view/. init installs it
+from that local directory alongside Engine in .forgeax/cli-runtime; no separate
+View npm package is required. Use bin/forgeax.mjs backend start and view start
+with this SDK's CLI. Games continue to depend only on Engine.
+
 game-3d is a content-bearing reference, not production artwork. Original/high-fidelity games replace
 visible content and forge.json/package/GUID/sourceKey/plugin identity, while reusing runtime code according to
 Template Disposition. Generated typecheck runs pnpm exec tsc --noEmit;
@@ -164,6 +169,18 @@ The project manifest remains dependency authority. doctor checks workspace build
 SDK packages, and invalid workspace:* consumer dependencies. status derives its digest
 from real built bytes and reports build time. unlink restores default resolution.
 
+To use embedded View with this source Engine, start its backend through the source
+CLI from your workspace directory. The source Host supplies the Engine graph; View
+continues to use the SDK's built tool. Stop an existing backend before switching:
+
+```bash
+node /path/to/sdk/source/engine/packages/devkit/dist/cli.mjs backend start --host-pack /path/to/sdk/tools/view/host.pack.json
+node /path/to/sdk/source/engine/packages/devkit/dist/cli.mjs view start
+```
+
+Each opened game must bind to that same source Engine. A conflicting prebuilt game
+remains an error; View does not silently change the game's Engine selection.
+
 ## SDK surfaces
 
 | Surface | Paths | Build Engine first? | Use |
@@ -183,6 +200,7 @@ forgeax-sdk/
 ├── store/pnpm/                 # Full ZIP only.
 ├── skills/<forgeax-engine-skill>/
 ├── source/engine/              # Both transports; includes prebuilt packages/*/dist.
+├── tools/view/                 # Built View workspace, installed locally by init.
 ├── schemas/
 ├── toolchain/wasm/             # Full ZIP only.
 ├── sdk-manifest.json
@@ -193,13 +211,19 @@ Read [AGENTS.md](AGENTS.md), then the [SDK capability tour](skills/forgeax-engin
 
 ## Source snapshot
 
-source/engine excludes Git metadata, Harness state, and private assets. It includes public source/docs/rules/skills and prebuilt wgpu/FBX/Basis WASM:
+source/engine excludes Git metadata, each expanded repository's .github/, Harness
+state, and private assets. Package READMEs and skills provide documentation;
+there is no separate SDK docs/ directory. It includes editable source, rules,
+skills and prebuilt wgpu/FBX/Basis WASM:
 
 ```bash
 cd source/engine
 pnpm install
 pnpm build:engine
 ```
+
+Read the [DevKit contract](source/engine/packages/devkit/README.md) for CLI and
+project operations, and the focused package READMEs for Engine APIs.
 
 ## Integrity
 

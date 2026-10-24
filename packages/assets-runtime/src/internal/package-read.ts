@@ -1,5 +1,12 @@
 import type { PackageFetcher, PackageRequest, PackageResponse } from '@forgeax/engine-types';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  addLoadWork,
+  err,
+  loadTimelineNow,
+  ok,
+  type Result,
+  recordLoadTimeline,
+} from '@forgeax/engine-types';
 import { traceAssetLoadPhase } from '../registry/load-trace.js';
 import { readDocumentJson } from './retained-pack-json.js';
 
@@ -67,12 +74,42 @@ function pause(ms: number, signal: AbortSignal | null | undefined): Promise<void
   });
 }
 
-/** Read one package resource in full through `body`, so a body reset is retried too. */
+/** Load progress item: the file name of a package URL. */
+function itemName(url: string): string {
+  const path = url.split(/[?#]/, 1)[0] ?? url;
+  return path.slice(path.lastIndexOf('/') + 1) || url;
+}
+
+/** Transfer size announced by response headers (compressed size when encoded). */
+interface TransferSize {
+  bytes: number;
+}
+
+/**
+ * Read one package resource in full through `body`, so a body reset is retried
+ * too. Each read is one unit of `downloads` load work, sized by Content-Length.
+ */
 export async function readPackage<T>(
   fetcher: PackageFetcher,
   url: string,
   body: (response: PackageResponse) => Promise<T>,
   init?: PackageRequest,
+): Promise<Result<T, PackageReadFailure>> {
+  addLoadWork('downloads', { total: 1, item: itemName(url) });
+  const size: TransferSize = { bytes: 0 };
+  try {
+    return await readAdmittedPackage(fetcher, url, body, init, size);
+  } finally {
+    addLoadWork('downloads', { done: 1, bytes: size.bytes });
+  }
+}
+
+async function readAdmittedPackage<T>(
+  fetcher: PackageFetcher,
+  url: string,
+  body: (response: PackageResponse) => Promise<T>,
+  init: PackageRequest | undefined,
+  size: TransferSize,
 ): Promise<Result<T, PackageReadFailure>> {
   const trace = (phase: string) =>
     traceAssetLoadPhase(phase, {
@@ -80,6 +117,7 @@ export async function readPackage<T>(
       detail: { activeTransfers: pendingTransfers, queuedTransfers: transferWaiters.length },
     });
   trace('package.slot.wait');
+  const requested = loadTimelineNow();
   const release = await transferSlot(init?.signal);
   if (release === undefined) {
     trace('package.transfer.complete');
@@ -90,7 +128,7 @@ export async function readPackage<T>(
     if (init?.signal?.aborted) {
       return err({ observed: 'AbortError: aborted', attempts: 0, malformed: false });
     }
-    return await readPackageTransfer(fetcher, url, body, init);
+    return await readPackageTransfer(fetcher, url, body, init, size, requested);
   } finally {
     release();
     trace('package.transfer.complete');
@@ -101,8 +139,11 @@ async function readPackageTransfer<T>(
   fetcher: PackageFetcher,
   url: string,
   body: (response: PackageResponse) => Promise<T>,
-  init?: PackageRequest,
+  init: PackageRequest | undefined,
+  size: TransferSize,
+  requested: number,
 ): Promise<Result<T, PackageReadFailure>> {
+  const admitted = loadTimelineNow();
   for (let attempt = 1; ; attempt++) {
     let observed: string;
     let retryable: boolean;
@@ -116,8 +157,10 @@ async function readPackageTransfer<T>(
         : fetcher(url, { cache: 'reload', ...init }));
       traceAssetLoadPhase('package.headers.complete', { packageUrl: url });
       if (response.ok) {
+        announceSize(response, size);
         const value = await body(response);
         traceAssetLoadPhase('package.body.complete', { packageUrl: url });
+        recordPackageFetch(url, requested, admitted, attempt, value, response);
         return ok(value);
       }
       observed = `HTTP ${response.status}`;
@@ -141,6 +184,44 @@ async function readPackageTransfer<T>(
     await pause(delay, init?.signal);
     if (init?.signal?.aborted) return err({ observed, attempts: attempt, malformed });
   }
+}
+
+function announceSize(response: PackageResponse, size: TransferSize): void {
+  const length = Number(response.headers?.get?.('content-length') ?? Number.NaN);
+  if (size.bytes > 0 || !Number.isFinite(length) || length <= 0) return;
+  size.bytes = length;
+  addLoadWork('downloads', { totalBytes: length });
+}
+/**
+ * Load timeline span from transfer-slot admission to body completion. `bytes`
+ * is the decoded body length of binary reads; `contentLength` is the response
+ * header (the transfer size when the server compresses), when present.
+ */
+function recordPackageFetch(
+  url: string,
+  requested: number,
+  admitted: number,
+  attempts: number,
+  value: unknown,
+  response: PackageResponse,
+): void {
+  let contentLength = Number.NaN;
+  try {
+    // Native and test fetchers may omit headers; diagnostics never fail a completed read.
+    contentLength = Number(response.headers?.get?.('content-length') ?? Number.NaN);
+  } catch {}
+  recordLoadTimeline(
+    'fetch',
+    url,
+    admitted,
+    loadTimelineNow(),
+    ArrayBuffer.isView(value) || value instanceof ArrayBuffer ? value.byteLength : undefined,
+    {
+      queuedMs: admitted - requested,
+      attempts,
+      ...(Number.isFinite(contentLength) ? { contentLength } : {}),
+    },
+  );
 }
 
 export const bytesOf = async (response: PackageResponse): Promise<Uint8Array> =>

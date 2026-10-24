@@ -266,7 +266,9 @@ export function addTargetCaptureGraphPasses(
         for (const request of requests) {
           const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
           const selfSampling = new Map<number, Set<number>>();
-          for (const [index, row] of internal.validatedOrdered.entries()) {
+          let nextIndex = 0;
+          for (const row of internal.validatedOrdered) {
+            const index = nextIndex++;
             for (const slot of internal.materialSlotIndices[index] ?? []) {
               const material = internal.materialSlots[slot];
               if (material === undefined) throw new Error('Capture has no submitted material');

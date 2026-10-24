@@ -63,6 +63,10 @@ atomically updates TS defaults, direct JSON fields or instance overrides.
 Revisions derive from file bytes. Refresh performs field-level three-way merging;
 conflicts and write failures preserve edits. Managers retain at most 32 documents,
 confine real source paths and serialize saves to the same physical file.
+Initial open and refresh re-read a source that changes during parsing within a
+bounded number of rounds, including a coalesced truncate/write notification.
+An unchanged unsupported declaration remains an error; a continuously changing
+opening fails with a source revision conflict instead of admitting stale bytes.
 
 ## Runtime schema validation
 

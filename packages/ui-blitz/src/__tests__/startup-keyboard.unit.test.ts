@@ -170,7 +170,7 @@ it('enters slow Reload, reads fatal diagnostics and restores the ordinary guide 
   failed.startup.bindSession('world-failed');
   failed.startup.prepare();
   expect(failed.ui.document.querySelector('#forgeax-loading-status')?.textContent).toBe(
-    'Preparing scene…',
+    'Waiting for the first frame',
   );
   const failure = {
     code: 'plugin-startup-failed',

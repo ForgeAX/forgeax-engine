@@ -1222,6 +1222,47 @@ separate from Host worker feature detection. The fields follow the
 are checked by the [ExecutionReport validator](src/execution/schema.ts) and
 [JSON schema](schema/execution-report.schema.json).
 
+## Load progress
+
+One page-level model reports what is loading and how far it is. Engine
+producers add work in whichever realm does it; Worker realms post cumulative
+counters to their page (bound by `ExecutionInitMessage.loadProgressScope`) at
+most every 100 ms, so the stub and a real GPU report the same work.
+
+| Phase | Producer | Units |
+|:--|:--|:--|
+| `engine-code` | Generated host module start (the cover counts page script bytes before it) | 1 |
+| `workers` | Engine Worker spawn/start, Renderer creation, Render Worker start | workers and renderers started |
+| `downloads` | Every package read (catalog, Pack, artifact, Bundle range, loader binary) and the pipeline library document | files; bytes from `Content-Length` (transfer size) |
+| `assets` | Every new `AssetRegistry.load` (decode, programs and adoption included) | assets loaded |
+| `pipelines` | Pipeline-library preparation (whole batch upfront) and every async pipeline compilation | pipelines compiled |
+| `scene` | Plugin bootstrap, root activation and World commit | 1 per realm creation |
+| `first-frame` | Startup cover `prepare()` until it has entered | 1 |
+
+| Entry | Purpose |
+|:--|:--|
+| `beginLoadSession(id, phases, { startedAt? })` | Start measuring on the page; work unfinished at that moment, including work in flight, belongs to the session. |
+| `addLoadPhases(phases)` | Add App phases and weights to the active session. |
+| `addLoadWork(phase, { total?, done?, totalBytes?, bytes?, item? })` | Report increments from any realm. Undeclared phases are shown with weight 0. |
+| `beginLoadWork(phase, item?)` | One indeterminate unit; returns its idempotent completion. |
+| `endLoadSession(id)` | Finish at 100% and notify subscribers at once. |
+| `readLoadProgress()` / `subscribeLoadProgress(listener)` | Current `LoadProgressSnapshot`; subscribers are coalesced to 10 Hz. |
+| `describeLoadProgress(snapshot, labels?)` / `resolveLoadProgressLabels(input)` | Plain-words view (`activity`, `detail`, `percent`, `elapsed`) with English defaults and App labels. |
+
+Phase state is derived from counters: no work is `pending`, unfinished work is
+`active`, finished work is `done`. A phase may still discover work until it is
+settled, so its fraction is `done / (total + 1)` (the smaller of that and byte
+completion). It settles when its known work is finished and it is declared
+`bounded` (the producer reports its whole total first), when the session's last
+declared phase gets work, or when the session ends; phases without any work
+also settle at the last phase. Fractions are held at their session maximum;
+overall progress is their weighted mean and never decreases while totals grow. The
+current phase is the most recently activated phase with unfinished work; a
+shown phase that is still active stays at least 1 s before a newer one replaces
+it, so overlapping work (downloads during a map stage) stays readable.
+The generated host renders the `startup` session (`ENGINE_STARTUP_PHASES`) on
+its cover; games run their own sessions for later loads.
+
 ## Boundaries
 
 - `createApp` returns `Result`; inspect `.ok`, `.error.code`, and `.error.hint` rather than swallowing failures.
@@ -1552,6 +1593,13 @@ complete WeChat project/RHI/UI/Worker target is qualified. See
 [WeChat development](../../skills/forgeax-engine-wechat/SKILL.md) for that evidence.
 
 ## Renderer inspection through public App eval
+
+A startup `pipelineLibrary` remains owned by the Host and the active Renderer.
+With a Render Worker, the Engine Worker forwards it during initialization and
+retains only the remaining startup facts. The Host resupplies the library for
+Renderer replacement and World rebuild, so releasing the Engine Worker's copy
+does not remove recovery input. A failed or disposed child startup releases its
+one-shot forwarding field as well.
 
 `app.remoteEval` executes in the selected Engine realm. Its `execution` root
 exposes `inspectRenderer({ signal?, fields?, pipelineLibrary? })` (type `ExecutionRendererInspectionContext`):

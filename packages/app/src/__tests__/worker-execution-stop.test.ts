@@ -247,9 +247,22 @@ describe('Worker ExecutionApp terminal stop', () => {
       cloneNode: vi.fn(() => replacement),
       replaceWith: vi.fn(),
     } as unknown as HTMLCanvasElement;
+    // The Host resupplies its startup-only pipeline library with every rebuild.
+    const pipelineLibrary = {
+      version: 1 as const,
+      backend: 'webgpu' as const,
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
     const result = await createWorkerExecutionApp({
       canvas,
-      appOptions: { execution: { bootstrap: 'https://example.test/game.js' } },
+      appOptions: {
+        execution: { bootstrap: 'https://example.test/game.js' },
+        ...(render ? { pipelineLibrary } : {}),
+      },
       capabilities,
       selection: workerSelection({ render, kernels: false }),
     });
@@ -281,7 +294,12 @@ describe('Worker ExecutionApp terminal stop', () => {
       expect(probes.platformDispose).toHaveBeenCalledTimes(1);
       expect(result.value.canvas).toBe(replacement);
       expect(probes.sessionPost).toHaveBeenCalledWith(
-        { kind: 'rebuild', worldIdentity: 'worker-world', canvas: offscreen },
+        {
+          kind: 'rebuild',
+          worldIdentity: 'worker-world',
+          canvas: offscreen,
+          ...(render ? { pipelineLibrary } : {}),
+        },
         [offscreen],
       );
       probes.sessionListeners[0]?.({
@@ -298,6 +316,48 @@ describe('Worker ExecutionApp terminal stop', () => {
       result.value.input?.clear?.();
       expect(currentClear).toHaveBeenCalledOnce();
       expect(oldClear).not.toHaveBeenCalled();
+    } finally {
+      await result.value.dispose();
+    }
+  });
+
+  it('resupplies the Host pipeline library when replacing a lost Render Worker', async () => {
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const offscreen = {} as OffscreenCanvas;
+    const replacement = {
+      transferControlToOffscreen: vi.fn(() => offscreen),
+    } as unknown as HTMLCanvasElement;
+    const canvas = {
+      cloneNode: vi.fn(() => replacement),
+      replaceWith: vi.fn(),
+    } as unknown as HTMLCanvasElement;
+    const pipelineLibrary = {
+      version: 1 as const,
+      backend: 'webgpu' as const,
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const result = await createWorkerExecutionApp({
+      canvas,
+      appOptions: { execution: { bootstrap: 'https://example.test/game.js' }, pipelineLibrary },
+      capabilities,
+      selection: workerSelection({ render: true, kernels: false }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    try {
+      probes.sessionListeners[0]?.({
+        kind: 'render-lost',
+        epoch: 2,
+        detail: 'replacement fixture',
+      });
+      expect(probes.sessionPost).toHaveBeenCalledWith(
+        { kind: 'render-replace', epoch: 2, canvas: offscreen, pipelineLibrary },
+        [offscreen],
+      );
     } finally {
       await result.value.dispose();
     }

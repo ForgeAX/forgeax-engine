@@ -7,7 +7,7 @@ import {
   releasePlatformResources,
 } from '@forgeax/engine-platform';
 import { createBrowserPlatform } from '@forgeax/engine-platform-browser';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { beginLoadTimeline, err, ok, type Result } from '@forgeax/engine-types';
 import {
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
@@ -143,6 +143,8 @@ export async function createWorkerExecutionApp(
   let renderEpoch = 1;
   let lastSurfaceRequestId = 0;
   let started: Awaited<ReturnType<typeof startEngineWorker>>;
+  // Main-realm view of Worker boot: spawn, module load, realm creation and ready.
+  const endWorkerBoot = beginLoadTimeline('boot', 'engine-worker');
   try {
     resetBrowserFrameProgress(canvas);
     started = await startEngineWorker({
@@ -186,6 +188,7 @@ export async function createWorkerExecutionApp(
     releaseAfterFailure(cause, () => platform.dispose());
     throw cause;
   }
+  endWorkerBoot(undefined, { ok: started.ok });
   if (!started.ok) {
     releaseAfterFailure(started.error, () => platform.dispose());
     return started;
@@ -899,7 +902,17 @@ export async function createWorkerExecutionApp(
       render: { epoch: renderEpoch, state: 'rebuilding', submittedFrame: 0, completedFrame: 0 },
     };
     const offscreen = replaceCanvas();
-    session.post({ kind: 'render-replace', epoch: renderEpoch, canvas: offscreen }, [offscreen]);
+    session.post(
+      {
+        kind: 'render-replace',
+        epoch: renderEpoch,
+        canvas: offscreen,
+        ...(options.appOptions.pipelineLibrary === undefined
+          ? {}
+          : { pipelineLibrary: options.appOptions.pipelineLibrary }),
+      },
+      [offscreen],
+    );
   };
   // Render Worker frame facts belong to the current render epoch and World.
   const acceptsRenderFrame = (
@@ -1338,7 +1351,14 @@ export async function createWorkerExecutionApp(
           };
         }
         session.post(
-          { kind: 'rebuild', worldIdentity: report.world.identity as string, canvas: offscreen },
+          {
+            kind: 'rebuild',
+            worldIdentity: report.world.identity as string,
+            canvas: offscreen,
+            ...(options.appOptions.pipelineLibrary === undefined
+              ? {}
+              : { pipelineLibrary: options.appOptions.pipelineLibrary }),
+          },
           [offscreen],
         );
         if (startupTimeoutMs !== null) {

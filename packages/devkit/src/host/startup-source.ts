@@ -1,4 +1,6 @@
 /** Shared author markup and one startup lifecycle, emitted statically for each host. */
+import { DEFAULT_LOAD_PROGRESS_LABELS, type LoadProgressLabels } from '@forgeax/engine-types';
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -8,10 +10,22 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-/** Whole UI document, before any game program is loaded. */
-export function hostStartupDocument(title: string): string {
+/** Script-safe JSON literal for an inline classic script. */
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value).replaceAll('<', '\\u003c');
+}
+
+/**
+ * Whole UI document, before any game program is loaded. The cover first shows
+ * the engine-code phase, which is the work in progress at first paint.
+ */
+export function hostStartupDocument(
+  title: string,
+  labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+): string {
+  const status = labels.phases['engine-code'] ?? labels.loading;
   return `<!doctype html>
-<html lang="en">
+<html lang="${escapeHtml(labels.lang)}">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -31,6 +45,9 @@ export function hostStartupDocument(title: string): string {
       #forgeax-loading-title { margin: 0; color: #f5f7fa; font-size: clamp(20px, 4vw, 30px); font-weight: 500; letter-spacing: 0.02em; }
       #forgeax-loading-spinner { width: 22px; height: 22px; border: 2px solid rgb(230 235 245 / 20%); border-top-color: rgb(230 235 245 / 78%); border-radius: 50%; animation: forgeax-loading-spin 900ms linear infinite; }
       #forgeax-loading-status { margin: 0; color: rgb(230 235 245 / 72%); }
+      #forgeax-loading-progress { width: min(360px, 80vw); height: 4px; border-radius: 2px; overflow: hidden; background: rgb(230 235 245 / 14%); }
+      #forgeax-loading-fill { width: 0; height: 100%; background: rgb(230 235 245 / 78%); transition: width 200ms linear; }
+      #forgeax-loading-detail, #forgeax-loading-meta { margin: 0; min-height: 1.5em; max-width: 100%; overflow: hidden; color: rgb(230 235 245 / 52%); font-size: 13px; }
       #forgeax-loading-slow, #forgeax-loading-reload { display: none; }
       #forgeax-loading-reload, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
       #forgeax-fatal { position: absolute; inset: 0; z-index: 2147483647; display: none; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #0b0d10; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; }
@@ -38,7 +55,7 @@ export function hostStartupDocument(title: string): string {
       #forgeax-fatal-message { margin: 0; font-size: 18px; }
       #forgeax-fatal-details { max-height: 45vh; overflow: auto; white-space: pre-wrap; }
       @keyframes forgeax-loading-spin { to { transform: rotate(360deg); } }
-      @media (prefers-reduced-motion: reduce) { #forgeax-loading { transition: none; } #forgeax-loading-spinner { animation: none; } }
+      @media (prefers-reduced-motion: reduce) { #forgeax-loading, #forgeax-loading-fill { transition: none; } #forgeax-loading-spinner { animation: none; } }
     </style>
   </head>
   <body>
@@ -48,9 +65,12 @@ export function hostStartupDocument(title: string): string {
       <div id="forgeax-loading-content">
         <h1 id="forgeax-loading-title">${escapeHtml(title)}</h1>
         <div id="forgeax-loading-spinner" aria-hidden="true"></div>
-        <p id="forgeax-loading-status">Loading…</p>
-        <p id="forgeax-loading-slow">Still loading. You can keep waiting or reload.</p>
-        <button id="forgeax-loading-reload" type="button">Reload</button>
+        <p id="forgeax-loading-status">${escapeHtml(status)}</p>
+        <div id="forgeax-loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="forgeax-loading-status"><div id="forgeax-loading-fill"></div></div>
+        <p id="forgeax-loading-detail"></p>
+        <p id="forgeax-loading-meta">0%</p>
+        <p id="forgeax-loading-slow">${escapeHtml(labels.slow)}</p>
+        <button id="forgeax-loading-reload" type="button">${escapeHtml(labels.reload)}</button>
       </div>
     </div>
     <div id="forgeax-fatal" role="alert">
@@ -72,9 +92,14 @@ export function hostStartupDocument(title: string): string {
  * ports: document, events, surface(), now(), visible(), reload(), reducedMotion.
  * Omit the expression for real browser DOM/window. The result exposes the
  * existing prepare/enter/fail/destroy/bindInput/bindSession lifecycle plus
- * submitted(detail) and visibilityChanged() for native App/Platform facts.
+ * submitted(detail) and visibilityChanged() for native App/Platform facts,
+ * progress(view) for the Engine load progress model and onEntered(callback).
  */
-export function hostStartupScript(startupScreen = true, hostExpression = 'undefined'): string {
+export function hostStartupScript(
+  startupScreen = true,
+  hostExpression = 'undefined',
+  labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+): string {
   const startupEnabled = startupScreen ? 'true' : 'false';
   return `
       ((host) => {
@@ -88,6 +113,11 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
         const loadingStatus = document.querySelector('#forgeax-loading-status');
         const loadingSlow = document.querySelector('#forgeax-loading-slow');
         const loadingReload = document.querySelector('#forgeax-loading-reload');
+        const loadingDetail = document.querySelector('#forgeax-loading-detail');
+        const loadingProgress = document.querySelector('#forgeax-loading-progress');
+        const loadingFill = document.querySelector('#forgeax-loading-fill');
+        const loadingMeta = document.querySelector('#forgeax-loading-meta');
+        const labels = ${scriptJson(labels)};
         const fatal = document.querySelector('#forgeax-fatal');
         const fatalMessage = document.querySelector('#forgeax-fatal-message');
         const fatalDetails = document.querySelector('#forgeax-fatal-details');
@@ -117,6 +147,14 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
         let fadeTimer;
         let slowRemainingMs = 15000;
         let slowVisibleSince;
+        // Progress view: the Engine model drives it once the game module runs;
+        // before that, the cover counts the page's downloaded script bytes.
+        let elapsedTimer;
+        let progressBound = false;
+        let shownPercent = 0;
+        let shownElapsed = '';
+        let lastView;
+        let enteredCallbacks = [];
         let latestSubmitted;
         // A completion may legally lag behind a later submission. Keep the
         // submitted frame identities for the active device generation so a
@@ -255,8 +293,10 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           stopFadeCanvasWatch();
           clearStartupTimeout(slowTimer);
           clearStartupTimeout(fadeTimer);
+          clearStartupTimeout(elapsedTimer);
           slowTimer = undefined;
           fadeTimer = undefined;
+          elapsedTimer = undefined;
           slowVisibleSince = undefined;
           submittedFrames = new Set();
         };
@@ -269,6 +309,61 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
         };
         const isForeground = () => host?.visible?.() ?? (
           typeof document !== 'object' || document === null || document.visibilityState !== 'hidden');
+        const startedAt = host === undefined ? 0 : clockNow();
+        const showText = (node, text) => {
+          if (node !== null && isElement(node) && node.textContent !== text) node.textContent = text;
+        };
+        const megabytes = (bytes) => (bytes / 1048576).toFixed(1) + ' MB';
+        const scriptBytes = () => {
+          if (typeof performance !== 'object' || performance === null || typeof performance.getEntriesByType !== 'function') return 0;
+          let bytes = 0;
+          for (const entry of performance.getEntriesByType('resource')) {
+            if (entry.initiatorType === 'script' || /\\.m?js(\\?|$)/.test(entry.name)) bytes += entry.transferSize || entry.encodedBodySize || 0;
+          }
+          return bytes;
+        };
+        const showMeta = () => showText(loadingMeta, shownPercent + '%' + (shownElapsed === '' ? '' : ' · ' + shownElapsed));
+        const showPercent = (percent) => {
+          shownPercent = Math.max(shownPercent, percent);
+          showMeta();
+          if (loadingFill !== null && isElement(loadingFill)) loadingFill.style.width = shownPercent + '%';
+          setAttribute(loadingProgress, 'aria-valuenow', String(shownPercent));
+        };
+        const tickElapsed = () => {
+          elapsedTimer = undefined;
+          if (!gamePage || (phase !== 'loading' && phase !== 'preparing')) return;
+          const seconds = Math.max(0, Math.floor((clockNow() - startedAt) / 1000));
+          shownElapsed = String(labels.elapsed).replace('{seconds}', String(seconds));
+          showMeta();
+          if (!progressBound) {
+            const bytes = scriptBytes();
+            if (bytes > 0) showText(loadingDetail, megabytes(bytes));
+          }
+          elapsedTimer = setStartupTimeout(tickElapsed, 500);
+        };
+        const progress = (view) => {
+          if (!gamePage || (phase !== 'loading' && phase !== 'preparing')) return;
+          if (view === null || typeof view !== 'object') return;
+          progressBound = true;
+          lastView = view;
+          showText(loadingStatus, typeof view.activity === 'string' ? view.activity : labels.loading);
+          showText(loadingDetail, typeof view.detail === 'string' ? view.detail : '');
+          if (Number.isFinite(view.percent)) showPercent(Math.max(0, Math.min(100, Math.floor(view.percent))));
+        };
+        const onEntered = (callback) => {
+          if (typeof callback === 'function') enteredCallbacks.push(callback);
+        };
+        const runEntered = () => {
+          const callbacks = enteredCallbacks;
+          enteredCallbacks = [];
+          for (const callback of callbacks) {
+            try {
+              callback();
+            } catch {
+              // An App progress owner must not block entering the game.
+            }
+          }
+        };
         // Receipt observation outlives the loading overlay. It does not request
         // render frames or sample rAF; one timer updates text only when changed.
         const frameRate = (() => {
@@ -353,6 +448,7 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           setDisplay(loadingReload, 'inline-block');
         };
         const armSlowTimer = () => {
+          if (gamePage && elapsedTimer === undefined) tickElapsed();
           if (!gamePage || (phase !== 'loading' && phase !== 'preparing') || !isForeground()) return;
           accountForegroundTime();
           clearStartupTimeout(slowTimer);
@@ -507,7 +603,7 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           phase = 'preparing';
           latestSubmitted = undefined;
           submittedFrames = new Set();
-          setText(loadingStatus, 'Preparing scene…');
+          setText(loadingStatus, labels.phases['first-frame'] ?? labels.loading);
           armSlowTimer();
         };
         const enter = (event) => {
@@ -545,11 +641,13 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           // The game is presentable now; the fade is cosmetic and must not
           // swallow the first player or scripted input.
           setInputEnabled(true);
+          runEntered();
           const fadeGeneration = sessionGeneration;
           const fadeCanvas = latestSubmitted.canvas;
           // The hidden overlay keeps neither focus nor its Reload activation:
           // Enter/Space during the fade belong to the game alone.
           setLoadingControls(false);
+          showPercent(100);
           setAttribute(loading, 'data-fading', 'true');
           setAttribute(loading, 'aria-hidden', 'true');
           watchFadeCanvas(fadeCanvas);
@@ -739,7 +837,9 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
             setDisplay(fatal, 'none');
             setAttribute(loading, 'aria-hidden', 'false');
             setAttribute(loading, 'data-fading', 'false');
-            setText(loadingStatus, 'Loading…');
+            // A rebound session keeps showing the latest measured work.
+            if (lastView === undefined) setText(loadingStatus, labels.loading);
+            else progress(lastView);
             armSlowTimer();
           }
         };
@@ -752,6 +852,8 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           bindSession,
           submitted: (detail) => onSubmitted({ target: currentCanvas(), detail }),
           visibilityChanged: onVisibilityChange,
+          progress,
+          onEntered,
         });
         if (host === undefined) globalThis.__forgeaxStartup = startup;
         return startup;

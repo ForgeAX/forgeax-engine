@@ -1466,7 +1466,7 @@ describe('standalone host', () => {
     unbound.startup.destroy();
 
     page.startup.prepare();
-    expect(page.loadingStatus.textContent).toBe('Preparing scene…');
+    expect(page.loadingStatus.textContent).toBe('Waiting for the first frame');
     page.canvas.dispatch('forgeax:frame-submitted', {
       detail: { frameId: 2, deviceGeneration: 1, worldIdentity: 'session-a' },
     });
@@ -1491,7 +1491,7 @@ describe('standalone host', () => {
     staleFade?.();
     expect(page.loading.style.display).toBe('grid');
     page.startup.prepare();
-    expect(page.loadingStatus.textContent).toBe('Preparing scene…');
+    expect(page.loadingStatus.textContent).toBe('Waiting for the first frame');
 
     page.canvas.dispatch('forgeax:frame-submitted', {
       detail: { frameId: 3, deviceGeneration: 2, worldIdentity: 'session-b' },
@@ -1661,7 +1661,7 @@ describe('standalone host', () => {
     expect(play.loading.style.display).not.toBe('none');
     play.startup.bindSession('play-world');
     play.startup.prepare();
-    expect(play.loadingStatus.textContent).toBe('Preparing scene…');
+    expect(play.loadingStatus.textContent).toBe('Waiting for the first frame');
     play.canvas.dispatch('forgeax:frame-submitted', {
       detail: { worldIdentity: 'play-world', deviceGeneration: 0, frameId: 1 },
     });

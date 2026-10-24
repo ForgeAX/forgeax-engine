@@ -68,6 +68,32 @@ function assertReceiverCoverage(
 }
 
 describe('directional shadow guard-band retention', () => {
+  it('keeps nested camera reads independent and releases scratch after a throwing getter', () => {
+    const view = camera(4, 0.2);
+    const expected = computeDirectionalCsm(direction, config, view);
+    assert(expected);
+    const nestedCamera = {
+      ...view,
+      get fov() {
+        computeDirectionalCsm(direction, config, camera(1000, 1.2));
+        return view.fov;
+      },
+    };
+    const actual = computeDirectionalCsm(direction, config, nestedCamera);
+    expect(actual).toEqual(expected);
+    const saved = actual?.lightViewProj.map((matrix) => matrix.slice());
+    expect(() =>
+      computeDirectionalCsm(direction, config, {
+        ...view,
+        get fov(): number {
+          throw new Error('camera read failed');
+        },
+      }),
+    ).toThrow('camera read failed');
+    expect(computeDirectionalCsm(direction, config, view)).toEqual(expected);
+    expect(actual?.lightViewProj).toEqual(saved);
+  });
+
   it('keeps translated and rotated receivers covered while crossing snapped page boundaries', () => {
     const first = computeDirectionalCsm(direction, config, camera());
     assert(first);

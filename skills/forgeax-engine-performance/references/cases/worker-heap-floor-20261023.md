@@ -131,3 +131,53 @@ flowchart LR
   low-memory OOM risk, remains an Engine retained-representation problem.
 - No real-GPU frame pacing was measured; the report's uneven animation is not yet
   shown to be fixed.
+
+## Takeover counterexamples (2026-10-24)
+
+The follow-up reviewed the unfinished Engine candidates against `8459203f9`.
+These are correctness and measurement findings; combined performance numbers
+require the final matched Game build.
+
+| Candidate boundary | Counterexample reproduced | Decision |
+| --- | --- | --- |
+| Shared JSON facts | A canonical child ID immediately followed by a field-name length can collide with a different ID/length pair; valid material ABI extension fields exercise the original decoder | Terminate child IDs and preserve exact JSON observations; reject sparse/accessor/cyclic input before sharing |
+| Material uniform upload | A nested queue callback overwrites module-global target scratch used by an outer upload | Traverse the existing physical-page owner without shared per-invocation target arrays |
+| Cascade camera math | A camera getter recursively computes another cascade or throws | Keep independent scratch for each active depth and release it in `finally` |
+| Public ECS read wrappers | Reusing a wrapper changes the documented identity returned by a public read | Exclude that candidate; preserve the public contract and investigate transient consumers instead |
+| Catalog sharing | General descriptor qualification reduces retained values but adds cold decode work and transient allocation | Drop the structural and string-only candidates after the bounded owner comparison below |
+
+The Catalog experiment used the same 27 MB, 24,133-row JSON fixture in fresh
+Node processes with four balanced pairs and matching decoded fact digests.
+Structural sharing retained 20.96 MiB versus 33.81 MiB, but decode grew from
+22.4 to 244.8 ms. String-only sharing retained 28.43 MiB and decoded in 55.9 ms;
+its end-of-decode heap observation also grew by 10.4 MiB. These are owner-level
+measurements, not browser loading or peak-memory claims. Neither candidate was
+kept: the follow-up retained the larger PackReader and startup-lifetime work
+without adding another Catalog cache for the smaller saving.
+
+The old collector began after loading, which can still be BUY. New comparisons
+wait for observed LIVE, retain the full roster and actual combat counters, and
+label boundary snapshots separately from continuous workload evidence. Natural
+GC requires exact target markers and a common CPU interval qualified against
+native command clock brackets. Preserve original streamed bytes, loss status
+and close receipts; stop tracing before diagnostic forced collection. A missing
+Major GC in a short window has zero count and an unknown mean pause.
+
+```mermaid
+---
+title: "Natural GC and retained heap are separate observations in the Dust2 follow-up"
+---
+sequenceDiagram
+    participant G as Game and its Workers
+    participant C as Owned collector
+    participant T as Native trace stream
+    Note over G,T: Legend: LIVE is real combat. Forced collection is a post-window diagnostic
+    G-->>C: Loaded BUY, then observed LIVE and combat counters
+    C->>G: Mark exact targets and start CPU observation
+    G->>T: Natural MinorGC and MajorGC events in the common interval
+    C->>G: Stop CPU observation and retain terminal counters
+    C->>T: End tracing, drain exact bytes and record completeness
+    C->>G: Force collection only after the natural-GC interval ends
+    G-->>C: JS heap floor and separate backing-storage observation
+    Note over C,T: Trace pauses and sampled CPU weights are separate. Backing storage is not RSS
+```

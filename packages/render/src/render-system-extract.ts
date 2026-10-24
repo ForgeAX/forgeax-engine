@@ -2813,6 +2813,21 @@ export interface DirectionalCsmResult {
 /** Pages per directional cascade edge; a cascade center snaps to whole pages. */
 const DIRECTIONAL_SHADOW_PAGES = 16;
 
+/** Cascade calls may reenter through public camera getters. */
+function createSliceSphereScratch() {
+  return {
+    inverse: mat4.create(),
+    world: mat4.create(),
+    axis: vec3.create(),
+    forward: vec3.create(),
+    origin: vec3.create(),
+    right: vec3.create(),
+    up: vec3.create(),
+  };
+}
+const sliceSphereFrames = [createSliceSphereScratch()];
+let sliceSphereDepth = 0;
+
 /**
  * World-space bounding sphere of the camera view slice between view depths
  * `near` and `far`. The radius derives only from the projection parameters,
@@ -2823,13 +2838,38 @@ function cascadeSliceSphere(
   near: number,
   far: number,
 ): { readonly center: Vec3; readonly radius: number } {
+  let scratch = sliceSphereFrames[sliceSphereDepth];
+  if (scratch === undefined) {
+    scratch = createSliceSphereScratch();
+    sliceSphereFrames[sliceSphereDepth] = scratch;
+  }
+  sliceSphereDepth++;
+  try {
+    return computeSliceSphere(camera, near, far, scratch);
+  } finally {
+    sliceSphereDepth--;
+  }
+}
+
+function computeSliceSphere(
+  camera: CsmCameraData,
+  near: number,
+  far: number,
+  scratch: ReturnType<typeof createSliceSphereScratch>,
+): { readonly center: Vec3; readonly radius: number } {
   // A singular camera transform reads as identity, matching mat4.invert.
-  const world = mat4.invert(mat4.create(), mat4.invert(mat4.create(), camera.world));
+  // Every scratch below is fully overwritten before it is read.
+  const world = mat4.invert(scratch.world, mat4.invert(scratch.inverse, camera.world));
   const forward = vec3.normalize(
-    vec3.create(),
-    vec3.create(-(world[8] ?? 0), -(world[9] ?? 0), -(world[10] ?? 1)),
+    scratch.forward,
+    vec3.set(scratch.axis, -(world[8] as number), -(world[9] as number), -(world[10] as number)),
   );
-  const origin = vec3.create(world[12] ?? 0, world[13] ?? 0, world[14] ?? 0);
+  const origin = vec3.set(
+    scratch.origin,
+    world[12] as number,
+    world[13] as number,
+    world[14] as number,
+  );
   let depth: number;
   let radius: number;
   let offsetX = 0;
@@ -2858,26 +2898,26 @@ function cascadeSliceSphere(
     radius = Math.sqrt((far - depth) ** 2 + far * far * slope) + Math.hypot(shearX, shearY) * far;
   }
   const right = vec3.normalize(
-    vec3.create(),
-    vec3.create(world[0] ?? 1, world[1] ?? 0, world[2] ?? 0),
+    scratch.right,
+    vec3.set(scratch.axis, world[0] as number, world[1] as number, world[2] as number),
   );
   const up = vec3.normalize(
-    vec3.create(),
-    vec3.create(world[4] ?? 0, world[5] ?? 1, world[6] ?? 0),
+    scratch.up,
+    vec3.set(scratch.axis, world[4] as number, world[5] as number, world[6] as number),
   );
   const center = vec3.create(
-    (origin[0] ?? 0) +
-      (forward[0] ?? 0) * depth +
-      (right[0] ?? 0) * offsetX +
-      (up[0] ?? 0) * offsetY,
-    (origin[1] ?? 0) +
-      (forward[1] ?? 0) * depth +
-      (right[1] ?? 0) * offsetX +
-      (up[1] ?? 0) * offsetY,
-    (origin[2] ?? 0) +
-      (forward[2] ?? 0) * depth +
-      (right[2] ?? 0) * offsetX +
-      (up[2] ?? 0) * offsetY,
+    (origin[0] as number) +
+      (forward[0] as number) * depth +
+      (right[0] as number) * offsetX +
+      (up[0] as number) * offsetY,
+    (origin[1] as number) +
+      (forward[1] as number) * depth +
+      (right[1] as number) * offsetX +
+      (up[1] as number) * offsetY,
+    (origin[2] as number) +
+      (forward[2] as number) * depth +
+      (right[2] as number) * offsetX +
+      (up[2] as number) * offsetY,
   );
   return { center, radius };
 }

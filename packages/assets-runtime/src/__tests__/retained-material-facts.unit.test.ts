@@ -1,7 +1,7 @@
 import { createMaterialProgramSetDigest } from '@forgeax/engine-pack/material-cook';
 import { encodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import type { MaterialProgramAbi } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { cloneRetainedPackPayload } from '../internal/retained-material-facts.js';
 import { parseRetainedPackJson, readRetainedPackJson } from '../internal/retained-pack-json.js';
 import { createMaterialLoader } from '../material/loader.js';
@@ -48,6 +48,25 @@ function parsed(text = JSON.stringify(publication())) {
 }
 
 describe('retained material publication facts', () => {
+  it('preserves distinct extension content through the actual parsed-package admission path', async () => {
+    vi.resetModules();
+    const { parseRetainedPackJson: parseFresh } = await import('../internal/retained-pack-json.js');
+    const extension = {
+      prime: Array.from({ length: 12 }, (_, value) => ({ value })),
+      left: { a: { value: 0 }, 'foos19:abcdefghijklmnop': 7 },
+      right: { a: { value: 11 }, foo: 'abcdefghijklmnopn7,' },
+    };
+    // The extension is visited first. In the old package-local interner its
+    // children get ids 1..12, making the following two object keys collide.
+    const extended = { extension, ...abi };
+    const pack = parseFresh(JSON.stringify(publication([extended]))) as Publication;
+    const result = pack.assets[0]?.payload.cooked.programs[0]?.selections[0]?.abi as
+      | typeof extended
+      | undefined;
+    expect(result).toEqual(extended);
+    expect(result?.extension.right).not.toBe(result?.extension.left);
+  });
+
   it('retains shared program tables before freezing either material record', () => {
     const source = publication();
     const pack = parsed(JSON.stringify(encodeMaterialProgramWire(source)));

@@ -1880,7 +1880,9 @@ export class GpuDrivenProduction {
       ? undefined
       : new Map<MeshGpuHandles, ImportedMeshBuffers>();
     const pipelineShapes = new Map<string, ProjectedRasterPipelines>();
-    for (const [liveIndex, prepared] of frame.filtered.batches.entries()) {
+    let nextLiveIndex = 0;
+    for (const prepared of frame.filtered.batches) {
+      const liveIndex = nextLiveIndex++;
       const live = frame.liveRasterBatches[liveIndex];
       const classKey = target.rendererRecording ? live?.recordingClassKey : live?.classKey;
       if (classKey === undefined || rasterClasses.has(classKey)) continue;

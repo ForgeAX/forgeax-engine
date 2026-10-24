@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "2.0.0"
+      "const": "3.0.0"
     },
     "candidateId": {
       "type": "string",
@@ -45,7 +45,8 @@
     },
     "npmPackages": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 2,
+      "maxItems": 2,
       "items": {
         "$ref": "#/$defs/npmPackage"
       }
@@ -94,7 +95,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "enum": ["@forgeax/engine", "@forgeax/view", "@forgeax/engine-sdk"]
+          "enum": ["@forgeax/engine", "@forgeax/engine-sdk"]
         },
         "version": {
           "type": "string",

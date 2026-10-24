@@ -44,7 +44,6 @@ async function createFixture(version = '1.2.3') {
   await createArchive(join(root, 'npm'), '@forgeax/engine-sdk', version);
   const sdkArchive = join(root, `forgeax-sdk-v${version}.zip`);
   await writeFile(sdkArchive, 'sealed SDK archive bytes');
-  await createArchive(join(root, 'npm', 'packages'), '@forgeax/view', version);
   const gates = [];
   for (const name of ['npm-consumer', 'archive-browser', 'reproducibility', 'collision']) {
     const path = join(root, `${name}.json`);
@@ -119,13 +118,20 @@ describe('sealed SDK candidates', () => {
     });
     expect(candidate.npmPackages.map(({ name }) => name)).toEqual([
       '@forgeax/engine',
-      '@forgeax/view',
       '@forgeax/engine-sdk',
     ]);
     expect(candidate.artifacts.map(({ path }) => path)).toContain('sdk-verify-result.json');
     await expect(
       validateCandidate({ candidateRoot: root, expectedVersion: '1.2.3' }),
     ).resolves.toMatchObject({ candidateId: `1.2.3-${'a'.repeat(12)}` });
+  });
+
+  it('rejects a separately published View instead of sealing a third product', async () => {
+    const { root, gates } = await createFixture();
+    await createArchive(join(root, 'npm', 'packages'), '@forgeax/view', '1.2.3');
+    await expect(
+      sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates }),
+    ).rejects.toThrow('sdk-candidate-npm-roster-foreign');
   });
 
   it('rejects focused package publication units before sealing', async () => {

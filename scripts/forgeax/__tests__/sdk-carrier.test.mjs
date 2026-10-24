@@ -24,6 +24,13 @@ test('the npm SDK omits Engine-owned bytes and retains verified references for e
     ...sourceFiles,
     'bin/forgeax.mjs': 'export {};\n',
     'templates/empty/forge.json': '{}\n',
+    'tools/view/package.json': JSON.stringify({
+      name: '@forgeax/view',
+      private: true,
+      version: '1.2.3',
+    }),
+    'tools/view/host.pack.json': '{"name":"SDK View"}\n',
+    'tools/view/dist/index.mjs': 'export const embeddedView = true;\n',
     'packages/math/dist/index.mjs': 'export const value = 1;\n',
     'store/pnpm/content': 'offline cache\n',
     'toolchain/wasm/pkg.wasm': '\0asm',

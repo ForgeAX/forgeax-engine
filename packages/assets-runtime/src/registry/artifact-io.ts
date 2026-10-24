@@ -1,7 +1,7 @@
 import { decompressZstd } from '@forgeax/engine-codec';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@forgeax/engine-types';
-import { encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
+import { beginLoadTimeline, encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
 import type { BundleTransferObservation } from '../internal/bundle-diagnostics.js';
 import { BundleStore } from '../internal/bundle-store.js';
@@ -310,6 +310,11 @@ export async function readArtifact(
     artifactKey: request.artifactKey,
     detail: { byteLength: bytes.byteLength },
   });
+  const endDecode = beginLoadTimeline('decode', url, {
+    stage: 'artifact',
+    encoding,
+    guid: request.guid,
+  });
   const decoded = await decodeOuter(bytes, request);
   if (!decoded.ok) return decoded;
   traceAssetLoadPhase('artifact.decode.complete', {
@@ -319,6 +324,7 @@ export async function readArtifact(
     detail: { byteLength: decoded.value.byteLength },
   });
   const verified = await verifyArtifactBytes(decoded.value, request);
+  endDecode(decoded.value.byteLength, { verified: verified.ok });
   traceAssetLoadPhase('artifact.verify.complete', {
     guid: request.guid,
     packageUrl: request.packageUrl,

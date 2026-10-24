@@ -162,3 +162,14 @@ test('browser focus conserves exact roster membership before launching Chrome', 
     }),
   );
 });
+
+test('View focus retains the complete named owner and rejects partial or invented selectors', () => {
+  assert.deepEqual(focusPlan('view', 'game3d').args, [
+    'scripts/ci/run-view-integration.mjs',
+    '--candidate',
+    '--group',
+    'game3d',
+  ]);
+  assert.throws(() => focusPlan('view', 'game3d --skip'), /unknown View integration group/);
+  assert.throws(() => focusPlan('view', 'typo'), /unknown View integration group/);
+});

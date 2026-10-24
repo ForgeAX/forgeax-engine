@@ -133,7 +133,9 @@ function replay(commands: readonly Command[], target: RhiRenderCommands, from = 
 }
 
 function recordBundle(segment: Segment, target: RhiRenderCommands): void {
-  for (const [index, command] of segment.commands.entries()) {
+  let nextIndex = 0;
+  for (const command of segment.commands) {
+    const index = nextIndex++;
     // A bundle retains every referenced resource even when a later setter
     // overwrites it. Omit only synthesized dead state, so deleting another
     // batch can retire its buffers without invalidating this bundle.
@@ -214,7 +216,9 @@ export class RenderBundleCache {
     const indirectSegmentIndex = (buffer: unknown, offset: number): number | undefined => {
       if (byIndirect === undefined) {
         byIndirect = new Map();
-        for (const [index, segment] of retainedSegments.entries()) {
+        let nextIndex = 0;
+        for (const segment of retainedSegments) {
+          const index = nextIndex++;
           const draw = indirectAnchor(segment.commands);
           if (draw === undefined) continue;
           let offsets = byIndirect.get(draw.args[0]);

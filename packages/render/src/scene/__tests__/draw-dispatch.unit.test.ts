@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { expect, it } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import { defaultMaterialSnapshot } from '../../render-system-extract';
@@ -27,4 +29,41 @@ it('reuses a direct dispatch while row identities and materials are unchanged', 
   const moved = projectDrawDispatch([row(2)], frame);
   expect(moved).not.toBe(first);
   expect([...moved].every((entry) => entry.layer === 2)).toBe(true);
+});
+
+it('releases unused dispatch history while its material frame remains alive', async () => {
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const material = new MaterialResource(defaultMaterialSnapshot(3));
+  const frame = new MaterialFrame(undefined).with(material);
+  const draw = {
+    source: {
+      worldId: 0,
+      entityKey: 9,
+      layer: 0,
+      shadowCaster: true,
+      material,
+      materials: [material],
+    },
+    renderableIndex: 0,
+    mesh: { submeshes: [{ materialSlot: 0 }] },
+    submeshIndices: [0],
+  } as never;
+  const [retired, retiredEntry] = (() => {
+    const dispatch = projectDrawDispatch([draw], frame);
+    const entry = [...dispatch][0];
+    if (entry === undefined) throw new Error('Expected material dispatch');
+    return [new WeakRef(dispatch), new WeakRef(entry)] as const;
+  })();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+  }
+  expect(retired.deref()).toBeUndefined();
+  expect(retiredEntry.deref()).toBeUndefined();
+  const active = projectDrawDispatch([draw], frame);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  gc();
+  expect(projectDrawDispatch([draw], frame)).toBe(active);
+  expect([...active].length).toBeGreaterThan(0);
 });

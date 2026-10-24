@@ -67,7 +67,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(
     resolve(root, 'sdk-manifest.json'),
     `${JSON.stringify({
-      schemaVersion: '1.10.0',
+      schemaVersion: '1.11.0',
       viewCommit: 'view-test',
       sdkVersion: '0.0.0-test',
       engineCommit: 'test',

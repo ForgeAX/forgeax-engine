@@ -14,6 +14,7 @@ import { dirname, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { brotliCompress, constants } from 'node:zlib';
+import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
@@ -288,6 +289,7 @@ export function wechatHostSource(
   rhiDebug = false,
   appOptions: DevKitAppOptions = {},
 ): string {
+  const loadingLabels = resolveLoadProgressLabels(appOptions.loadingLabels);
   return `import { createWechatPlatform, createWechatWasmHost, createWechatWgpuHost, createWechatInputBackend, createWechatAudioBackend, createWechatPackageFetcher } from '@forgeax/engine/platform-wechat';
 import { createBlitzUi, gpuShaders } from '@forgeax/engine/ui-blitz';
 import { inspectUi } from '@forgeax/engine/ui';
@@ -388,7 +390,7 @@ async function boot(identity, reload) {
   releases.push(() => uiLifetime.abort());
   ui = await createBlitzUi({
     wasm: uiWasm ??= createWechatWasmHost(native, 'payload/wasm/ui.wasm.br').unwrap(),
-    html: ${JSON.stringify(hostStartupDocument(facts.name).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
+    html: ${JSON.stringify(hostStartupDocument(facts.name, loadingLabels).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
     width: canvas.width, height: canvas.height, pixelRatio: display.pixelRatio,
     font: new Uint8Array(await (await fetcher('https://forgeax.package/ui-fonts/files/noto-sans-sc-latin-wght-normal.woff2')).arrayBuffer()),
     fontFamily: 'Noto Sans SC Variable',
@@ -401,7 +403,7 @@ async function boot(identity, reload) {
   const host = { document: ui.document, events: ui.document, surface: () => canvas,
     now: () => platform.now().unwrap(), visible: () => platform.visible(),
     reducedMotion: false, reload };
-  startup = ${hostStartupScript(true, 'host')};
+  startup = ${hostStartupScript(true, 'host', loadingLabels)};
   const input = createWechatInputBackend(wx, platform, { ui: ui.input, keyboard: wx,
     onError: error => console.warn('ForgeaX native input failed', error) }).unwrap();
   releases.push(() => input.detach());

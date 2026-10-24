@@ -20,6 +20,50 @@ import { allProjectNames } from './run-split-vitest-coverage.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const vitest = 'scripts/ci/run-vitest-projects.mjs';
 
+function unitFocusPlan(kind, selector) {
+  const projects = allProjectNames();
+  if (projects.includes(selector))
+    return {
+      args: [
+        vitest,
+        'run',
+        '--project',
+        selector,
+        '--passWithNoTests=false',
+        '--maxWorkers=1',
+        kind === 'type' ? '--typecheck.only' : '--typecheck.enabled=false',
+      ],
+    };
+  if (
+    selector.includes('..') ||
+    !/^(packages|apps|scripts)\/.+\.test\.(?:ts|mts|js|mjs)$/.test(selector) ||
+    !existsSync(join(root, selector))
+  )
+    throw new Error(`unknown ${kind} project or test file: ${selector}`);
+  if (kind === 'type') throw new Error('type focus selects an owning project');
+  const packageManifest = selector.startsWith('packages/')
+    ? join(root, ...selector.split('/').slice(0, 2), 'package.json')
+    : undefined;
+  const owner =
+    packageManifest && existsSync(packageManifest)
+      ? JSON.parse(readFileSync(packageManifest, 'utf8')).name
+      : undefined;
+  const projectArgs = projects.includes(owner)
+    ? ['--project', owner]
+    : ['--project=@forgeax/*', '--project=unit'];
+  return {
+    args: [
+      vitest,
+      'run',
+      ...projectArgs,
+      '--passWithNoTests=false',
+      '--maxWorkers=1',
+      '--typecheck.enabled=false',
+      selector,
+    ],
+  };
+}
+
 export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCount = 1 } = {}) {
   if (typeof selector !== 'string' || !selector || selector.startsWith('-'))
     throw new Error('an exact selector is required');
@@ -35,6 +79,16 @@ export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCo
       { cwd: root },
     );
     return { args: ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector] };
+  }
+  if (kind === 'view') {
+    const groups = JSON.parse(
+      execFileSync(process.execPath, ['scripts/ci/run-view-integration.mjs', '--list-groups'], {
+        cwd: root,
+        encoding: 'utf8',
+      }),
+    );
+    if (!groups.includes(selector)) throw new Error(`unknown View integration group: ${selector}`);
+    return { args: ['scripts/ci/run-view-integration.mjs', '--candidate', '--group', selector] };
   }
   if (kind === 'smoke') {
     frames = parseSmokeFrameBudget(frames);
@@ -58,49 +112,7 @@ export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCo
     if (!entry) throw new Error(`unknown smoke gate ID: ${selector}`);
     return { entry, apps: [dirname(entry.path)], frames };
   }
-  if (kind === 'unit' || kind === 'type') {
-    const projects = allProjectNames();
-    if (projects.includes(selector))
-      return {
-        args: [
-          vitest,
-          'run',
-          '--project',
-          selector,
-          '--passWithNoTests=false',
-          '--maxWorkers=1',
-          kind === 'type' ? '--typecheck.only' : '--typecheck.enabled=false',
-        ],
-      };
-    if (
-      selector.includes('..') ||
-      !/^(packages|apps|scripts)\/.+\.test\.(?:ts|mts|js|mjs)$/.test(selector) ||
-      !existsSync(join(root, selector))
-    )
-      throw new Error(`unknown ${kind} project or test file: ${selector}`);
-    if (kind === 'type') throw new Error('type focus selects an owning project');
-    const packageManifest = selector.startsWith('packages/')
-      ? join(root, ...selector.split('/').slice(0, 2), 'package.json')
-      : undefined;
-    const owner =
-      packageManifest && existsSync(packageManifest)
-        ? JSON.parse(readFileSync(packageManifest, 'utf8')).name
-        : undefined;
-    const projectArgs = projects.includes(owner)
-      ? ['--project', owner]
-      : ['--project=@forgeax/*', '--project=unit'];
-    return {
-      args: [
-        vitest,
-        'run',
-        ...projectArgs,
-        '--passWithNoTests=false',
-        '--maxWorkers=1',
-        '--typecheck.enabled=false',
-        selector,
-      ],
-    };
-  }
+  if (kind === 'unit' || kind === 'type') return unitFocusPlan(kind, selector);
   throw new Error(`unknown focus kind: ${kind}`);
 }
 
@@ -116,7 +128,7 @@ export async function main(argv = process.argv.slice(2)) {
       options[arg.slice(2)] = argv[++i];
     else
       throw new Error(
-        'usage: run-ci-focus.mjs --kind unit|type|browser|dawn|smoke --select EXACT_SELECTOR [--dry-run]',
+        'usage: run-ci-focus.mjs --kind unit|type|browser|dawn|smoke|view --select EXACT_SELECTOR [--dry-run]',
       );
   }
   const frames = parseSmokeFrameBudget(options.frames ?? process.env.SMOKE_MIN_FRAMES);
@@ -202,7 +214,10 @@ export async function main(argv = process.argv.slice(2)) {
         if (result.status !== 'pass')
           throw new Error(`smoke focus failed: ${JSON.stringify(result)}`);
       }
-    } else await run(plan.args, { nativeCoordinator: ['browser', 'dawn'].includes(options.kind) });
+    } else
+      await run(plan.args, {
+        nativeCoordinator: ['browser', 'dawn', 'view'].includes(options.kind),
+      });
     status = 'passed';
     return 0;
   } finally {

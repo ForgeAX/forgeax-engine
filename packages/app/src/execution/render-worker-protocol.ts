@@ -87,6 +87,7 @@ export type RenderWorkerInput =
       | 'pipelineLibrary'
       | 'dynamicGeometryMeshBudgetBytes'
       | 'assetBudgetBytes'
+      | 'loadProgressScope'
     > & {
       readonly kind: 'init';
       readonly identity: RenderPublicationIdentity;

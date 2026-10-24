@@ -195,6 +195,11 @@ Aliased ECS array views cannot be held across structural change or published as
 detached snapshots. Preserve raw/custom input observation; immutable-looking
 types and shallow freezing alone do not prove producer ownership.
 
+Preserve documented public wrapper identity when removing allocation. A transient
+consumer can use an existing semantic scalar-read capability without changing
+every public read. For reusable scratch, a camera getter or upload callback can
+reenter even when ordinary callers never do; test nested and throwing calls.
+
 ## Qualify reusable facts once at admission
 
 Private producer admission can capture and seal detached primitive facts once,
@@ -203,6 +208,18 @@ Consumers borrow only admitted facts. Raw/custom rows retain their original
 capture path; a TypeScript readonly type, shallow freeze or public brand field
 cannot establish this qualification. Repeating descriptor inspection at every
 lookup can cost more than the copying it replaces.
+
+Structural interning keys must delimit child IDs and adjacent field lengths;
+exact content comparison cannot be replaced by an ambiguous concatenation or
+an unchecked hash. Qualify descriptors before reading raw properties, and keep
+owned parsed/Worker-cloned JSON separate from caller-owned mutable input. The
+[takeover counterexamples](cases/worker-heap-floor-20261023.md#takeover-counterexamples-2026-10-24)
+record actual collisions and callback reentry.
+
+A weak read cache trades retention for a possible later fetch and parse. Compare
+post-GC storage, transient decode allocation, cold loading and delayed sibling
+reads after collection. A cache that does no per-frame work can still introduce
+a first-use stall; warm steady CPU alone cannot accept that tradeoff.
 
 | Recurring work | Move or remove it at this boundary | Lifetime limit |
 | --- | --- | --- |

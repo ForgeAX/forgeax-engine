@@ -226,18 +226,23 @@ export class ShadowMaterialContent {
   same(previous: ShadowMaterialContent | undefined): boolean {
     if (previous === this) return true;
     if (previous === undefined || previous.entries.size !== this.entries.size) return false;
-    for (const [material, scopes] of this.entries) {
+    // Runs for every shadow cache probe each frame: key iteration plus lookup
+    // and indexed resource loops allocate no entry tuples or callbacks.
+    for (const material of this.entries.keys()) {
+      const scopes = this.entries.get(material) as Map<RenderResourceScope, ShadowMaterialState>;
       const old = previous.entries.get(material);
       if (old === undefined || old.size !== scopes.size) return false;
-      for (const [scope, state] of scopes) {
+      for (const scope of scopes.keys()) {
+        const state = scopes.get(scope) as ShadowMaterialState;
         const before = old.get(scope);
         if (
           before === undefined ||
           !sameShadowMaterial(before.snapshot, state.snapshot) ||
-          before.resources.length !== state.resources.length ||
-          !state.resources.every((resource, index) => resource === before.resources[index])
+          before.resources.length !== state.resources.length
         )
           return false;
+        for (let index = 0; index < state.resources.length; index++)
+          if (state.resources[index] !== before.resources[index]) return false;
       }
     }
     return true;

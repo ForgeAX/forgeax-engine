@@ -9,8 +9,14 @@
 | Surface | Artifact | Consumer contract |
 |:--|:--|:--|
 | Engine | One `@forgeax/engine` npm tarball | Runtime, CLI, independent ESM facades, declarations, WASM, Workers and source maps; exact-version registry dependencies |
-| View | Independent `@forgeax/view` tool tarball | Exact-version Engine dependency; separate tool ownership |
-| SDK | `@forgeax/engine-sdk` carrier and full ZIP | Extends the same Engine artifact with templates, skills and editable source. npm reuses matching Engine bytes through exact-version dependency and verified artifact references; installation seeds source modules with those builds. The ZIP also adds the offline package store, bare packages and toolchain WASM copies (`SDK_ZIP_ONLY_PATHS`) |
+| SDK | `@forgeax/engine-sdk` carrier and full ZIP | Extends the same Engine artifact with templates, skills, editable source and the built View tool under `tools/view/`. npm reuses matching Engine bytes through exact-version dependency and verified artifact references; installation seeds source modules with those builds. The ZIP also adds the offline package store, bare packages and toolchain WASM copies (`SDK_ZIP_ONLY_PATHS`) |
+
+View remains a separately maintained source module and is delivered as a private
+SDK-local tool. SDK initialization installs it from `file:../../tools/view` in the
+CLI runtime; the public npm roster contains only Engine and SDK. Source snapshots
+exclude each expanded repository's `.github/`; package READMEs and skills own
+consumer documentation, without a separate SDK `docs/` copy.
+Candidate manifest schema 3.0.0 seals exactly these two npm publication units.
 
 `scripts/forgeax/engine-bundle.mjs` turns the installed lockfile graph into one
 standard npm package. It bundles only what a registry cannot supply again: every
@@ -39,7 +45,7 @@ Package LICENSE files travel with their bytes. Source and SDK package inventory
 remain modular; focused packages are excluded from the official npm roster.
 
 One Engine publication cannot expose half of its internal dependencies. Npm can
-still hold the whole artifact in validation. Independent Engine, View and SDK
+still hold the whole artifact in validation. Independent Engine and SDK
 products are separate npm publications; their tags are not a registry transaction.
 
 ## Channel policy
@@ -137,7 +143,7 @@ verification; each channel advances only its own public branch and checks versio
 order there. Npm does not wait for GitHub transport or mirror completion. The rc
 line skips source qualification and mirroring; paused mirroring still requires
 source qualification.
-The three npm products upload concurrently under `candidate`, then jointly verify
+The two npm products upload concurrently under `candidate`, then jointly verify
 exact public metadata and downloaded SHA-512 bytes. Before `latest`, `rc` or `next`
 moves, a fresh registry consumer installs the SDK, initializes it and exercises
 both templates through typecheck, tests, build, package and dev HTTP lifecycle.

@@ -127,6 +127,7 @@ const tool = manifest.packages.find((entry) => entry.name === '@forgeax/view');
 if (
   !tool ||
   tool.role !== 'tool' ||
+  tool.root !== 'tools/view' ||
   manifest.packages.filter((entry) => entry.role === 'tool').length !== 1
 )
   throw new Error('sdk-view-tool-inventory');
@@ -140,8 +141,15 @@ if (
   JSON.stringify(['@forgeax/engine', '@forgeax/view'])
 )
   throw new Error('sdk-tool-runtime-inputs');
-for (const version of Object.values(toolInputs.dependencies))
-  if (version !== manifest.sdkVersion) throw new Error('sdk-tool-runtime-version');
+if (
+  toolInputs.dependencies['@forgeax/engine'] !== manifest.sdkVersion ||
+  toolInputs.dependencies['@forgeax/view'] !== 'file:../../tools/view'
+)
+  throw new Error('sdk-tool-runtime-version');
+const embeddedView = JSON.parse(
+  await readFile(resolve(sdkRoot, tool.root, 'package.json'), 'utf8'),
+);
+if (embeddedView.private !== true) throw new Error('sdk-view-tool-must-be-private');
 await readFile(resolve(sdkRoot, tool.root, 'LICENSE'));
 const archivedSkillIds = (await readdir(resolve(sdkRoot, 'skills'), { withFileTypes: true }))
   .filter((entry) => entry.isDirectory())
@@ -167,10 +175,10 @@ for (const entry of manifest.skills) {
     throw new Error(`sdk-skill-artifact-closure: ${entry.id}`);
 }
 try {
-  await access(resolve(sdkRoot, 'docs', 'guides'));
-  throw new Error('sdk-legacy-guide-surface');
+  await access(resolve(sdkRoot, 'docs'));
+  throw new Error('sdk-legacy-docs-surface');
 } catch (cause) {
-  if (cause instanceof Error && cause.message === 'sdk-legacy-guide-surface') throw cause;
+  if (cause instanceof Error && cause.message === 'sdk-legacy-docs-surface') throw cause;
 }
 const expectedTemplates = SDK_TEMPLATES.map(({ id, sourceRoot: root }) => ({ id, root }));
 if (JSON.stringify(manifest.templates) !== JSON.stringify(expectedTemplates))

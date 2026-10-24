@@ -51,11 +51,23 @@ function sameTuple(left: AssetPublicationTuple, right: AssetPublicationTuple): b
   );
 }
 
+/**
+ * A verified Pack is a read cache, not an owner fact: decoders copy what they
+ * keep and shared immutable facts are retained by their own consumers. Sibling
+ * reads of one load burst reuse the held document; once no read has arrived for
+ * this window the documents are only weakly held, so a later read reuses a live
+ * document or fetches and verifies the same tuple again.
+ */
+const HOLD_AFTER_LAST_READ_MS = 2_000;
+
 export class PackReader {
   private readonly fetcher: PackageFetcher | undefined;
   private readonly lifetime = new AbortController();
-  private readonly verified = new Map<string, VerifiedPack>();
+  private readonly held = new Map<string, VerifiedPack>();
+  private readonly released = new Map<string, WeakRef<VerifiedPack>>();
   private readonly pending = new Map<string, Promise<Result<VerifiedPack, AssetLoadError>>>();
+  private lastRead = 0;
+  private releaseTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: PackReaderOptions = {}) {
     // An injected fetcher is an explicit transport lease and is fixed for the
@@ -72,15 +84,22 @@ export class PackReader {
   ): Promise<Result<VerifiedPack, AssetLoadError>> {
     if (signal.aborted || this.lifetime.signal.aborted) return err(assetLoadCancelled(packageUrl));
     const key = this.key(packageUrl, expected);
-    const cached = this.verified.get(key);
-    if (cached !== undefined) return ok(cached);
+    this.touch();
+    const cached = this.held.get(key) ?? this.released.get(key)?.deref();
+    if (cached !== undefined) {
+      this.held.set(key, cached);
+      return ok(cached);
+    }
     let request = this.pending.get(key);
     if (request === undefined) {
       const current = this.fetchAndVerify(packageUrl, expected, this.lifetime.signal, fetcher).then(
         (result) => {
           if (this.pending.get(key) === current) {
             this.pending.delete(key);
-            if (result.ok) this.verified.set(key, result.value);
+            if (result.ok) {
+              this.held.set(key, result.value);
+              this.touch();
+            }
           }
           return result;
         },
@@ -94,7 +113,44 @@ export class PackReader {
   dispose(): void {
     this.lifetime.abort();
     this.pending.clear();
-    this.verified.clear();
+    clearTimeout(this.releaseTimer);
+    this.releaseTimer = undefined;
+    this.held.clear();
+    this.released.clear();
+  }
+
+  /** Demote every held document to a weak reference now, e.g. under host memory pressure. */
+  trim(): void {
+    clearTimeout(this.releaseTimer);
+    this.releaseTimer = undefined;
+    this.release();
+  }
+
+  private touch(): void {
+    // Without WeakRef a released document could not be reused, so keep the
+    // original strong cache rather than re-reading every later Pack request.
+    if (typeof WeakRef !== 'function') return;
+    this.lastRead = Date.now();
+    if (this.releaseTimer === undefined) this.scheduleRelease(HOLD_AFTER_LAST_READ_MS);
+  }
+
+  private scheduleRelease(delay: number): void {
+    const timer = setTimeout(() => {
+      this.releaseTimer = undefined;
+      const idle = Date.now() - this.lastRead;
+      if (idle < HOLD_AFTER_LAST_READ_MS) this.scheduleRelease(HOLD_AFTER_LAST_READ_MS - idle);
+      else this.release();
+    }, delay);
+    (timer as { unref?: () => void }).unref?.();
+    this.releaseTimer = timer;
+  }
+
+  private release(): void {
+    if (typeof WeakRef !== 'function') return;
+    for (const [key, pack] of this.released)
+      if (pack.deref() === undefined) this.released.delete(key);
+    for (const [key, pack] of this.held) this.released.set(key, new WeakRef(pack));
+    this.held.clear();
   }
 
   private async fetchAndVerify(

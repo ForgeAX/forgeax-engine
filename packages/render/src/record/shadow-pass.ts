@@ -2048,7 +2048,9 @@ export function prepareShadowMaterialPipelines(
     }
   }
   for (const entry of c.pipelinePreparationEntries ?? []) {
-    for (const [submeshIndex, sm] of entry.mesh.submeshes.entries()) {
+    let nextSubmeshIndex = 0;
+    for (const sm of entry.mesh.submeshes) {
+      const submeshIndex = nextSubmeshIndex++;
       if (preparedHiddenDraws?.get(entry)?.has(submeshIndex)) continue;
       const accepted = shadowMaterial(c, entry.source, sm.materialSlot);
       const material = accepted.snapshot;

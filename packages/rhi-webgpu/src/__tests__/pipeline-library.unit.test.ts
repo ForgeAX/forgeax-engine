@@ -1,4 +1,5 @@
 import type { PipelineLibraryManifest, RenderPipelineDescriptor } from '@forgeax/engine-rhi';
+import { snapshotLoadTimeline } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { disposeDevice, makeRhiDevice } from '../device';
 import { createShaderModule, createShaderModuleImmediate } from '../index';
@@ -403,4 +404,24 @@ it('never qualifies a sync-only compute handle or an unresolved native compilati
   if (!('ok' in ready)) throw Error('completed compute recipe remained async');
   expect(ready.unwrap()).toBe(pipeline);
   expect(f.compute).toHaveBeenCalledTimes(1);
+});
+
+it('records native shader and pipeline creation on the load timeline, once per native call', async () => {
+  const before = snapshotLoadTimeline().records.length;
+  const f = await fixture();
+  const d = f.descriptor('timeline shader source');
+  f.device.createRenderPipeline(d).unwrap();
+  (await f.device.createRenderPipelineAsync({ ...d, label: 'async fog' })).unwrap();
+  // A cache hit performs no native work and records nothing.
+  f.device.createRenderPipeline(f.descriptor('timeline shader source')).unwrap();
+  const rows = snapshotLoadTimeline().records.slice(before);
+  expect(rows.filter((r) => r.kind === 'shader')).toEqual([
+    expect.objectContaining({ name: 'module', bytes: 'timeline shader source'.length }),
+  ]);
+  expect(
+    rows.filter((r) => r.kind === 'pipeline').map((r) => [r.name, r.detail?.mode, r.detail?.kind]),
+  ).toEqual([
+    ['fog', 'sync', 'render'],
+    ['async fog', 'async', 'render'],
+  ]);
 });

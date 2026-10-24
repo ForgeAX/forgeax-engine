@@ -147,6 +147,15 @@ process-tree cleanup and its actual TCP regression, and never terminate
 unrelated Node processes. For Import
 sidecar `EPERM`, compare the actual destination bytes: only an equivalent
 publication succeeds; mismatches retain the structured failure and rollback.
+For a View integration owner failure, use CI Focus `kind=view` with its exact
+`run-view-integration.mjs --list-groups` name (for example `game3d`). This retains
+the complete owner, real transport and capture assertions; a focused pass still
+cannot replace complete final-head CI. Preserve CLI timeout failures even when
+a fallback page screenshot is healthy.
+For a full Browser gate failure that passes CI Focus, select `browser_profile=ci`
+in the maintained workflow before attributing the difference to renderer code.
+Its default local workload differs from the full gate; keep the original
+lifecycle, pixel assertions and deadlines. See the [CI guide](../../scripts/ci/README.md).
 For SSR recovery compilation near its 20-second deadline, inspect the actual
 pipeline labels and admitted specs. Standard uses the material cache and exact
 LKG recovery requests; do not reintroduce the generic bootstrap matrix or widen

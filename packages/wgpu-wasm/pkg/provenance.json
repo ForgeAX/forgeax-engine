@@ -1,6 +1,6 @@
 {
   "schemaVersion": "wgpu-wasm-provenance/1",
-  "sourceContentKey": "sha256-93bf8d3804ae93d11d56b5e59c5446cc8b03a911246e39a51a3aa2142d2ad3f6",
+  "sourceContentKey": "sha256-a1e192933d0a7cb343e022fb278ae0aac4a8a6e09d5f7732a61ce81624bc3d8a",
   "artifactSha256": "b039e8eb44b8958cd97bc696a70357042d177fb138d66f23ce2d38c0559f7c62",
   "artifactBytes": 5445415,
   "glueSha256": "d1cb626bb19b70789c2a5165d6a7089edeca919cb948dfe2ab3ea69c90b06f0d",
@@ -8,7 +8,7 @@
   "toolchain": {
     "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
     "wasmPack": "wasm-pack 0.14.0",
-    "wasmBindgen": "wasm-bindgen 0.2.129"
+    "wasmBindgen": "unavailable"
   },
   "dependencies": {
     "wgpu": "30.0.1",
@@ -16,5 +16,5 @@
     "nagaOil": "0.23.0",
     "wasmBindgen": "0.2.129"
   },
-  "compilerFingerprint": "sha256-9087a36bd5366584f19fc80d30ae1f0393999dd2385ef6f81bf8a29cf3174376"
+  "compilerFingerprint": "sha256-ae1b54bd40d221df0ec344f3de968d6aeacd5c624f5961e8d29219a2130751e9"
 }

@@ -385,6 +385,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     },
     readArtifact: storedArtifact,
     trimReadCache: () => {
+      reader.trim();
       cache.trim();
       bundles.trim();
     },

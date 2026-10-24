@@ -33,13 +33,17 @@ describe('fullscreen RenderFeature plan', () => {
     const signature = postProcessShaderEntrySignature(entry);
     expect(signature.length).toBeLessThan(256);
     const scan = vi.spyOn(String.prototype, 'charCodeAt');
+    const serialize = vi.spyOn(JSON, 'stringify');
     try {
       for (let frame = 0; frame < 300; frame += 1) {
         expect(postProcessShaderEntrySignature(entry)).toBe(signature);
       }
       expect(scan).not.toHaveBeenCalled();
+      // Unchanged declarations reuse the derived string itself.
+      expect(serialize).not.toHaveBeenCalled();
     } finally {
       scan.mockRestore();
+      serialize.mockRestore();
     }
   });
 

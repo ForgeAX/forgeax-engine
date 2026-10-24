@@ -50,6 +50,8 @@ test('the official tool has one Engine version and no private workspace dependen
   try {
     await stageViewToolPackage(f.view, f.output, '1.2.3');
     const value = JSON.parse(await readFile(resolve(f.output, 'package.json')));
+    assert.equal(value.private, true, 'View is an SDK-local tool, never an npm publication');
+    assert.equal(value.version, '1.2.3');
     assert.equal(
       await readFile(resolve(f.output, 'dist/index.mjs'), 'utf8'),
       "export * from '@forgeax/engine/profiler';\n",

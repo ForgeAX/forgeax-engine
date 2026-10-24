@@ -302,7 +302,9 @@ function recordSpriteTransparentPbrDraws(
   if (passes !== undefined) {
     for (const entry of passes) add(entry.renderableIndex, entry.materialHandle);
   } else {
-    for (const [row, entry] of c.validatedOrdered.entries()) {
+    let nextRow = 0;
+    for (const entry of c.validatedOrdered) {
+      const row = nextRow++;
       if (matchedIndices !== null && !matchedIndices.has(entry.renderableIndex)) continue;
       if (isSprite(drawMaterial(c, row).materialShaderId)) continue;
       for (const slot of c.materialSlotIndices[row] ?? []) {

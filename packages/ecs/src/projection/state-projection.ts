@@ -73,7 +73,8 @@ export function createStateProjection(
     const archetype =
       record === undefined ? undefined : owner.getGraph().archetypes[record.archetypeId];
     if (archetype === undefined) return false;
-    for (const id of candidateIds) if (archetypeHasComponent(archetype, id)) return true;
+    for (let cursor = 0; cursor < candidateIds.length; cursor++)
+      if (archetypeHasComponent(archetype, candidateIds[cursor] as number)) return true;
     return false;
   }
 
@@ -128,7 +129,13 @@ export function createStateProjection(
       const token = ++readToken;
       const epoch = owner.getMutationEpoch();
       const structure = owner.getStructureEpoch();
-      if (stamped) for (const index of work) flags[index] = (flags[index] ?? 0) & ACCEPTED;
+      // Indexed loops: read/accept run once per frame and rarely reach the
+      // optimizing tier, where for-of would allocate one iterator result per index.
+      if (stamped)
+        for (let cursor = 0; cursor < work.length; cursor++) {
+          const index = work[cursor] as number;
+          flags[index] = (flags[index] ?? 0) & ACCEPTED;
+        }
       work.length = 0;
       scannedRows = 0;
       stamped = true;
@@ -191,7 +198,8 @@ export function createStateProjection(
           if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
           if (accepted) return;
           validate();
-          for (const index of work) {
+          for (let cursor = 0; cursor < work.length; cursor++) {
+            const index = work[cursor] as number;
             const state = flags[index] ?? 0;
             // Value-only writes cannot alter candidate membership. Reconcile
             // only identities carrying structural or explicit-baseline work.

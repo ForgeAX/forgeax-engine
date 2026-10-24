@@ -8,6 +8,7 @@ export { pluginProgramsBuild, pluginRuntimeProjection } from './build/plugin-pro
 import type { CreateAppOptions } from '@forgeax/engine-app';
 import type { ImporterRegistry } from '@forgeax/engine-import';
 import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
+import type { LoadProgressLabelInput } from '@forgeax/engine-types';
 
 /** Serializable project options sampled after the native build root starts. */
 export type DevKitAppOptions = Pick<
@@ -24,6 +25,11 @@ export type DevKitAppOptions = Pick<
    * The `forgeax-render-pipeline-capacity` query still overrides it.
    */
   readonly renderPipelineCapacity?: 2 | 3 | 4;
+  /**
+   * Startup cover text over the English defaults, including App phase names
+   * and `lang`; apps reuse the same labels with `describeLoadProgress`.
+   */
+  readonly loadingLabels?: LoadProgressLabelInput;
 };
 
 /**

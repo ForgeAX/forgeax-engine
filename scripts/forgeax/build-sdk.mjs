@@ -15,7 +15,7 @@ import {
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { bundleEngineArchive } from './engine-bundle.mjs';
 import { sdkLauncherSource } from './sdk-launcher.mjs';
@@ -226,7 +226,6 @@ await mkdir(resolve(stage, 'store', 'pnpm'), { recursive: true });
 await mkdir(resolve(stage, 'templates'), { recursive: true });
 await mkdir(resolve(stage, 'skills'), { recursive: true });
 await mkdir(resolve(stage, 'schemas'), { recursive: true });
-await mkdir(resolve(stage, 'docs'), { recursive: true });
 await mkdir(resolve(stage, 'licenses'), { recursive: true });
 await mkdir(resolve(stage, 'toolchain', 'wasm'), { recursive: true });
 await mkdir(packageArchives, { recursive: true });
@@ -294,16 +293,6 @@ for (const profile of ['base-ssao', 'point-ssao']) {
     ]),
   );
 }
-// build:engine already emits the complete declaration graph, including DevKit.
-const { createMigrationRoster } = await import(
-  pathToFileURL(resolve(root, 'packages/devkit/dist/index.mjs')).href
-);
-const packageMigrationRoster = {
-  schemaVersion: '2.0.0',
-  operations: createMigrationRoster().map((entry) => entry.operation),
-  source: 'packages/devkit/src/tools/migration.ts',
-};
-
 const publicPackages = [];
 for (const entry of await readdir(resolve(root, 'packages'), { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
@@ -396,16 +385,7 @@ try {
   await cp(canonicalKitBackup, canonicalKitPackageRoot, { recursive: true });
   await rm(canonicalKitBackupRoot, { recursive: true, force: true });
 }
-const toolStage = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-view-stage-'));
-try {
-  const packageRoot = resolve(toolStage, 'package');
-  await stageViewToolPackage(viewRoot, packageRoot, version);
-  await writePackageArchive(toolStage, resolve(packageArchives, `forgeax-view-${version}.tgz`), {
-    releaseVersion: version,
-  });
-} finally {
-  await rm(toolStage, { recursive: true, force: true });
-}
+await stageViewToolPackage(viewRoot, resolve(stage, 'tools/view'), version);
 for (const path of (await filesUnder(packageArchives)).filter((entry) => entry.endsWith('.tgz'))) {
   const { stdout } = await run('tar', ['-xOf', path, 'package/package.json']);
   const manifest = JSON.parse(stdout);
@@ -432,6 +412,7 @@ for (const path of (await filesUnder(packageArchives)).filter((entry) => entry.e
   });
 }
 for (const entry of publicPackages) {
+  if (entry.role === 'tool') continue;
   const archiveEntry = tarballs.get(entry.name);
   if (archiveEntry === undefined) throw new Error(`sdk-package-archive-missing: ${entry.name}`);
   const destination = resolve(stage, 'packages', entry.directory);
@@ -474,6 +455,10 @@ async function normalizeTemplateLockfile(template) {
 
 const registry = createServer(async (request, response) => {
   const url = request.url ?? '/';
+  if (decodeURIComponent(url.split('?', 1)[0]).startsWith('/@forgeax/view')) {
+    response.writeHead(404).end();
+    return;
+  }
   if (url.startsWith('/tarballs/')) {
     const item = [...tarballs.values()].find((entry) => basename(entry.path) === basename(url));
     if (item === undefined) {
@@ -540,7 +525,7 @@ try {
         private: true,
         type: 'module',
         packageManager,
-        dependencies: { '@forgeax/engine': version, '@forgeax/view': version },
+        dependencies: { '@forgeax/engine': version, '@forgeax/view': 'file:../../tools/view' },
       },
       null,
       2,
@@ -685,10 +670,6 @@ await writeFile(
   resolve(stage, 'bin', 'forgeax.cmd'),
   '@echo off\r\nnode "%~dp0forgeax.mjs" %*\r\n',
 );
-await writeFile(
-  resolve(stage, 'docs', 'TOOL-MIGRATION-ROSTER.json'),
-  `${JSON.stringify(packageMigrationRoster, null, 2)}\n`,
-);
 
 await Promise.all([
   cp(
@@ -699,7 +680,6 @@ await Promise.all([
     resolve(root, 'schemas/forgeax-dist.schema.json'),
     resolve(stage, 'schemas', 'forgeax-dist.schema.json'),
   ),
-  cp(resolve(root, 'packages', 'devkit', 'README.md'), resolve(stage, 'docs', 'DEVKIT.md')),
   cp(resolve(root, 'LICENSE'), resolve(stage, 'licenses', 'ForgeaX-Apache-2.0.txt')),
   cp(
     resolve(root, 'packages', 'codec', 'pkg', 'basis_transcoder.wasm'),
@@ -804,13 +784,16 @@ function artifactSummary(prefix) {
   const rows = artifacts.filter((row) => row.path.startsWith(`${prefix}/`));
   return { fileCount: rows.length, byteCount: rows.reduce((sum, row) => sum + row.bytes, 0) };
 }
-const packageRows = publicPackages.map((item) => ({
-  name: item.name,
-  role: item.role,
-  version: item.version,
-  root: `packages/${item.directory}`,
-  ...artifactSummary(`packages/${item.directory}`),
-}));
+const packageRows = publicPackages.map((item) => {
+  const packageRoot = item.role === 'tool' ? 'tools/view' : `packages/${item.directory}`;
+  return {
+    name: item.name,
+    role: item.role,
+    version: item.version,
+    root: packageRoot,
+    ...artifactSummary(packageRoot),
+  };
+});
 const skillRows = sdkSkillIds.map((id) => ({
   id,
   root: `skills/${id}`,

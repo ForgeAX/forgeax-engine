@@ -7,12 +7,12 @@ import { promisify } from 'node:util';
 
 import Ajv2020 from 'ajv/dist/2020.js';
 import { assertReleaseSource, releasePolicy } from './release-policy.mjs';
-import { filesUnder, sha256 } from './sdk-lib.mjs';
+import { filesUnder, SDK_NPM_PACKAGE_NAMES, sha256 } from './sdk-lib.mjs';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const candidateSchemaPath = resolve(repositoryRoot, 'schemas/sdk-candidate.schema.json');
-export const CANDIDATE_SCHEMA_VERSION = '2.0.0';
+export const CANDIDATE_SCHEMA_VERSION = '3.0.0';
 export const CANDIDATE_GATES = Object.freeze([
   'npm-consumer',
   'archive-browser',
@@ -117,7 +117,7 @@ async function listNpmArchives(candidateRoot) {
   const files = (await filesUnder(npmRoot)).filter((path) => path.endsWith('.tgz')).sort();
   if (files.length === 0) throw new Error('sdk-candidate-npm-archives-missing');
   const packages = await Promise.all(files.map(packageArchive));
-  const roster = ['@forgeax/engine', '@forgeax/view', '@forgeax/engine-sdk'];
+  const roster = SDK_NPM_PACKAGE_NAMES;
   if (packages.some(({ name }) => !roster.includes(name)))
     throw new Error('sdk-candidate-npm-roster-foreign');
   const ordered = roster.map((name) => packages.find((item) => item.name === name));
@@ -324,7 +324,7 @@ export async function validateCandidate({
   ) {
     throw new Error('sdk-candidate-npm-roster-mismatch');
   }
-  const expectedRoster = ['@forgeax/engine', '@forgeax/view', '@forgeax/engine-sdk'];
+  const expectedRoster = SDK_NPM_PACKAGE_NAMES;
   if (
     candidate.npmPackages.length !== expectedRoster.length ||
     candidate.npmPackages.some(

@@ -75,3 +75,36 @@ it('retries failed sampler creation on the same device', async () => {
   expect(buildFullscreenPostProcessPass(context, { source: '' })?.sampler).not.toBeNull();
   expect(create).toHaveBeenCalledTimes(2);
 });
+
+it('reuses one built fullscreen pass per device and declaration until its signature changes', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const layouts = vi.spyOn(device, 'createBindGroupLayout');
+  const context = {
+    device,
+    errorRegistry: {
+      fire: (error: RhiError) => {
+        throw error;
+      },
+    },
+  };
+  const entry = {
+    source: 'fn fs_main() {}',
+    reads: ['color' as string | { key: string; sampleType?: 'depth' }],
+  };
+  const first = buildFullscreenPostProcessPass(context, entry);
+  expect(buildFullscreenPostProcessPass(context, entry)).toBe(first);
+  expect(layouts).toHaveBeenCalledTimes(1);
+  // The multisampled-depth variant is a distinct layout of the same declaration.
+  const multisampled = buildFullscreenPostProcessPass(context, entry, true);
+  expect(multisampled).not.toBe(first);
+  expect(buildFullscreenPostProcessPass(context, entry, true)).toBe(multisampled);
+  // An in-place read edit changes the layout inputs and rebuilds.
+  entry.reads.push({ key: 'scene-depth', sampleType: 'depth' });
+  const withDepth = buildFullscreenPostProcessPass(context, entry);
+  expect(withDepth).not.toBe(first);
+  expect(withDepth?.depthSampler).not.toBeNull();
+  const nextDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  expect(buildFullscreenPostProcessPass({ ...context, device: nextDevice }, entry)).not.toBe(
+    withDepth,
+  );
+});

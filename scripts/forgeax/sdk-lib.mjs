@@ -19,7 +19,8 @@ import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { sdkGpuStage } from './sdk-stage.mjs';
 
-export const SDK_MANIFEST_VERSION = '1.10.0';
+export const SDK_MANIFEST_VERSION = '1.11.0';
+export const SDK_NPM_PACKAGE_NAMES = Object.freeze(['@forgeax/engine', '@forgeax/engine-sdk']);
 export const SDK_SOURCE_ROOT = 'source/engine';
 export const SDK_SOURCE_FORMAT = 'git-archive-public-snapshot';
 /** Full-ZIP surfaces the npm carrier omits; games install the same Engine bytes from npm. */
@@ -201,11 +202,16 @@ export function discoverSdkTemplates(templatesRoot = resolve(SDK_REPOSITORY_ROOT
 }
 
 export const SDK_TEMPLATES = discoverSdkTemplates();
-export const SDK_SOURCE_EXCLUDED_PATHS = Object.freeze(['.gitmodules', 'forgeax-engine-assets']);
 export const SDK_SOURCE_GIT_DEPENDENCIES = Object.freeze([
   'third_party/wgpu',
   'third_party/blitz',
   'tools/view',
+]);
+export const SDK_SOURCE_EXCLUDED_PATHS = Object.freeze([
+  '.gitmodules',
+  'forgeax-engine-assets',
+  '.github',
+  ...SDK_SOURCE_GIT_DEPENDENCIES.map((root) => `${root}/.github`),
 ]);
 export const SDK_RETIRED_PACKAGE_FILES = Object.freeze({
   '@forgeax/engine-vite-plugin-pack': Object.freeze([

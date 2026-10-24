@@ -258,6 +258,7 @@ Main entry: types plus pure functions over them (e.g. `Result` helpers, `isTrian
 | Enum alias pass-through | `TextureFormat` / `AddressMode` / `FilterMode` / `CompareFunction` / `PrimitiveTopology` | `@webgpu/types` namespace literal union pass-through |
 | Pass-based material types | `ParamSchemaEntry` / `MaterialAsset` / `MaterialPass` | ParamSchema entry shape + MaterialAsset with passes[] + pass descriptor; see MaterialAsset section below |
 | Managed asset contracts | `AssetHandle` / `AssetKind` / `AssetDecoderContribution` / `AssetError` | Runtime identity, kind-owned source admission and structured failures; see [`assets-runtime`](../assets-runtime/README.md) |
+| Load timeline | `markLoadTimeline` / `beginLoadTimeline` / `recordLoadTimeline` / `collectLoadTimeline` / `snapshotLoadTimeline` / `LoadTimelineRecord` | Default-on bounded per-realm load records collected across realms; see [load timeline](../../skills/forgeax-engine-performance/references/measurement.md#load-timeline-startup-and-level-loading) |
 | Remote error model | `RemoteErrorCode` / `RemoteError` | 5-member closed union (script-syntax-error / script-runtime-error / server-startup-failed / server-not-running / eval-result-not-serializable) + structured interface/detail; runtime class lives in `@forgeax/engine-remote/errors` (`implements RemoteError`); see [`@forgeax/engine-remote` README](../remote/README.md) for the full error model |
 
 ### Asset producer contract

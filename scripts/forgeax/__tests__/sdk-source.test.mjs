@@ -109,6 +109,8 @@ async function fixture(t) {
     await mkdir(path);
     await git(path, 'init', '-q');
     await git(path, 'config', 'core.autocrlf', 'true');
+    await mkdir(resolve(path, '.github/workflows'), { recursive: true });
+    await writeFile(resolve(path, '.github/workflows/ci.yml'), 'contributor-only: true\n');
   }
   await mkdir(resolve(upstream, 'wgpu/src'), { recursive: true });
   await writeFile(resolve(upstream, 'wgpu/src/lib.rs'), 'pub const VERSION: u32 = 1;\n');
@@ -135,6 +137,8 @@ async function fixture(t) {
   const view = resolve(temporary, 'view');
   await mkdir(view);
   await git(view, 'init', '-q');
+  await mkdir(resolve(view, '.github/workflows'), { recursive: true });
+  await writeFile(resolve(view, '.github/workflows/ci.yml'), 'contributor-only: true\n');
   for (const path of ['package.json', 'LICENSE', 'host.pack.json', 'scripts/build-tool.mjs']) {
     await mkdir(resolve(view, path, '..'), { recursive: true });
     await writeFile(resolve(view, path), path === 'LICENSE' ? 'Apache-2.0 View license\n' : '{}\n');
@@ -172,7 +176,15 @@ test('SDK archives the Engine gitlink revision, including licenses, without remo
     await readFile(resolve(destination, 'tools/view/LICENSE'), 'utf8'),
     'Apache-2.0 View license\n',
   );
-  for (const path of ['.git', '.gitmodules', `${dependency}/.git`, `${dependency}/untracked.txt`]) {
+  for (const path of [
+    '.git',
+    '.gitmodules',
+    `${dependency}/.git`,
+    `${dependency}/untracked.txt`,
+    ...['', 'third_party/wgpu/', 'third_party/blitz/', 'tools/view/'].map(
+      (root) => `${root}.github/workflows/ci.yml`,
+    ),
+  ]) {
     await assert.rejects(readFile(resolve(destination, path)), { code: 'ENOENT' });
   }
   await rm(root, { recursive: true });
@@ -247,6 +259,14 @@ test('public View source has a JS/license closure while wgpu retains its Rust cl
     path: `${source.root}/${relative(destination, path).split('\\').join('/')}`,
   }));
   assert.doesNotThrow(() => assertSourceDependencyInventory(source, artifacts));
+  for (const root of ['', 'third_party/wgpu/', 'third_party/blitz/', 'tools/view/']) {
+    const path = `${root}.github/workflows/ci.yml`;
+    assert.throws(
+      () =>
+        assertSourceDependencyInventory(source, [...artifacts, { path: `${source.root}/${path}` }]),
+      { message: `sdk-source-excluded-path: ${path}` },
+    );
+  }
   await assert.rejects(readFile(resolve(destination, 'tools/view/Cargo.toml')), { code: 'ENOENT' });
   for (const required of [
     'tools/view/LICENSE',

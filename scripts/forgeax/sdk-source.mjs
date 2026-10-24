@@ -139,6 +139,15 @@ export async function archiveEngineSource({ root, destination, commit }) {
 
 /** Validate each expanded repository against its own public source contract. */
 export function assertSourceDependencyInventory(source, artifacts) {
+  for (const { path } of artifacts) {
+    const relative = path.slice(source.root.length + 1);
+    if (
+      SDK_SOURCE_EXCLUDED_PATHS.some(
+        (excluded) => relative === excluded || relative.startsWith(`${excluded}/`),
+      )
+    )
+      throw new Error(`sdk-source-excluded-path: ${relative}`);
+  }
   if (
     JSON.stringify(source.gitDependencies.map((entry) => entry.root)) !==
     JSON.stringify(SDK_SOURCE_GIT_DEPENDENCIES)

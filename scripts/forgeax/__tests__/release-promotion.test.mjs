@@ -10,7 +10,6 @@ const release = async (options) => {
 
 const items = [
   { name: '@forgeax/engine', version: '1.2.3' },
-  { name: '@forgeax/view', version: '1.2.3' },
   { name: '@forgeax/engine-sdk', version: '1.2.3' },
 ];
 function operations(fail) {
@@ -41,7 +40,6 @@ test('all products upload before their joint visibility gate; pending bytes pres
   await assert.rejects(release(options), /pending validation/);
   assert.deepEqual(options.calls, [
     'upload:@forgeax/engine:candidate',
-    'upload:@forgeax/view:candidate',
     'upload:@forgeax/engine-sdk:candidate',
     'wait:@forgeax/engine:bytes',
   ]);
@@ -57,11 +55,7 @@ test('development promotion updates next only after consumer proof', async () =>
   const result = await release(options);
   assert.equal(result.tag, 'next');
   const tags = options.calls.filter((call) => call.startsWith('tag:'));
-  assert.deepEqual(tags, [
-    'tag:@forgeax/engine:next',
-    'tag:@forgeax/view:next',
-    'tag:@forgeax/engine-sdk:next',
-  ]);
+  assert.deepEqual(tags, ['tag:@forgeax/engine:next', 'tag:@forgeax/engine-sdk:next']);
   assert(options.calls.indexOf('consumer') < options.calls.indexOf(tags[0]));
 });
 
@@ -93,21 +87,19 @@ test('slow uploads run together and all bytes gate consumer verification and lat
     started,
     items.map((item) => item.name),
   );
-  uploads[2].resolve('sdk');
-  uploads[0].resolve('engine');
+  uploads[1].resolve('sdk');
   await new Promise(setImmediate);
   assert.deepEqual(options.calls, []);
-  uploads[1].resolve('view');
+  uploads[0].resolve('engine');
   await new Promise(setImmediate);
   assert.deepEqual(options.calls, ['wait:bytes']);
   visibility.resolve();
   const result = await promotion;
-  assert.deepEqual(result.reports, ['engine', 'view', 'sdk']);
+  assert.deepEqual(result.reports, ['engine', 'sdk']);
   assert.deepEqual(options.calls, [
     'wait:bytes',
     'consumer',
     'tag:@forgeax/engine:latest',
-    'tag:@forgeax/view:latest',
     'tag:@forgeax/engine-sdk:latest',
     'wait:latest',
   ]);
@@ -139,7 +131,6 @@ test('channel promotion alone moves tags in order and then verifies them', async
   assert.equal(result.tag, 'rc');
   assert.deepEqual(options.calls, [
     'tag:@forgeax/engine:rc',
-    'tag:@forgeax/view:rc',
     'tag:@forgeax/engine-sdk:rc',
     'wait:@forgeax/engine:rc',
   ]);

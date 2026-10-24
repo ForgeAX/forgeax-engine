@@ -39,9 +39,16 @@ test('SDK template discovery fails closed on orphan and invalid descriptors', as
 });
 
 test('SDK source contract keeps the source root and prebuilt WASM closure explicit', () => {
-  assert.equal(SDK_MANIFEST_VERSION, '1.10.0');
+  assert.equal(SDK_MANIFEST_VERSION, '1.11.0');
   assert.equal(SDK_SOURCE_FORMAT, 'git-archive-public-snapshot');
-  assert.deepEqual(SDK_SOURCE_EXCLUDED_PATHS, ['.gitmodules', 'forgeax-engine-assets']);
+  assert.deepEqual(SDK_SOURCE_EXCLUDED_PATHS, [
+    '.gitmodules',
+    'forgeax-engine-assets',
+    '.github',
+    'third_party/wgpu/.github',
+    'third_party/blitz/.github',
+    'tools/view/.github',
+  ]);
   assert.equal(SDK_SOURCE_ROOT, 'source/engine');
   assert.deepEqual(SDK_TEMPLATES, discoverSdkTemplates());
   assert.deepEqual(
@@ -125,6 +132,23 @@ test('SDK artifact schema admits exact Engine reuse references', async () => {
     true,
   );
   assert.equal(validate({ ...artifact, enginePath: '' }), false);
+});
+
+test('SDK package inventory admits the embedded View tool at its shipped path', async () => {
+  const schema = JSON.parse(
+    await readFile(new URL('../../schemas/sdk-manifest.schema.json', import.meta.url), 'utf8'),
+  );
+  const validate = new Ajv2020().compile(schema.$defs.package);
+  const tool = {
+    name: '@forgeax/view',
+    version: '1.2.3',
+    role: 'tool',
+    root: 'tools/view',
+    fileCount: 1,
+    byteCount: 1,
+  };
+  assert.equal(validate(tool), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...tool, root: 'tools/unknown' }), false);
 });
 
 test('SDK source schema admits every expanded maintained dependency', async () => {

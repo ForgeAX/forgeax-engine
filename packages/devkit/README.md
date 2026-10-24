@@ -1273,6 +1273,11 @@ The selected Engine also supplies imports in Vite-built Workers, including neste
 game Workers. Each Worker receives its own resolver instance and export conditions;
 an installed npm Engine cannot replace a healthy explicit source binding there.
 
+An Engine-aware presentation such as the SDK's embedded View borrows the executing
+source Host's Engine graph. Its own installed Engine dependency supplies the default
+for a packaged Host. The game must match that selected graph by binding or runtime
+bytes; a conflicting game Engine still fails before frontend startup.
+
 `forgeax project doctor` accepts third-party workspace and `file:` directory dependencies in
 registry/SDK games as well as games with a healthy local Engine binding. It checks the project and
 installed package identities against the active pnpm workspace state, importer, lock locators, and
@@ -1449,12 +1454,18 @@ game merely to remove an uncaught exception.
 
 | Phase | Host-owned contract | Cleanup boundary |
 |:--|:--|:--|
-| HTML → module | Static title, status, CSS spinner, and `noscript` text are present before the entry module is imported. | No App, GPU, WASM, or asset request is required to paint the first loading surface. |
-| Prepare | `prepare()` runs before `app.start()` and changes the status to `Preparing scene…`. Input is sampled through a closed gate and cleared. | Foreground-only slow-load accounting may show a wait/reload hint after 15 seconds; it never fails the game. |
+| HTML → module | Static title, the `engine-code` phase label, progress bar, CSS spinner, and `noscript` text are present before the entry module is imported. Until the module runs, the cover shows the page's downloaded script bytes and elapsed time. | No App, GPU, WASM, or asset request is required to paint the first loading surface. |
+| Progress | The generated module begins the `startup` load session ([App load progress](../app/README.md#load-progress)) and renders `describeLoadProgress` through `progress(view)` at most every 100 ms: current phase, counts/bytes/item, percent and elapsed time. | The view never moves backwards; the session ends with the first presentable frame, before the cosmetic fade completes. |
+| Prepare | `prepare()` runs before `app.start()`, starts the `first-frame` phase and changes the status to its label (`Waiting for the first frame`). Input is sampled through a closed gate and cleared. | Foreground-only slow-load accounting may show a wait/reload hint after 15 seconds; it never fails the game. |
 | Enter candidate | A matching submitted/completed frame identity, current canvas owner, World/session identity, device generation, `presentation: 'ready'`, and successful receipt `Result` are required. A submit or ACK alone is insufficient. | Gameplay input, `#game-ui` and the author pointer-lock policy reopen with this frame, and `<html data-forgeax-input>` changes from `closed` to `open`. The 150 ms fade is presentation only: the fading overlay is `inert`, passes hits to the canvas, gives up focus and detaches its Reload activation; reduced motion removes the transition. |
 | Entered | The fade completes and the overlay leaves layout. | Startup frame, visibility, input-capture, and timer listeners are removed. |
 | Failed | Entry errors, `app.onError`, resource errors, and rejected receipts render structured fatal diagnostics with `Reload`; arbitrary nested detail remains inspectable. | Loading/fade work and gameplay input are cleared; the fatal Reload listener is retained for the terminal page. |
 | Hidden/destroyed | Background tabs do not spend the slow-load budget or invent a completed frame. | `pagehide`, entered, and failed paths cancel pending timers and startup listeners. |
+
+Cover text comes from `devkitAppOptions.loadingLabels` (`lang`, `phases`,
+`loading`, `elapsed`, `slow`, `reload`) over the English defaults; the build
+validates it as strings and emits it into the HTML, the native WeChat cover and
+the generated module.
 
 Startup observes nonbubbling App receipts through the stable page capture path. Render Worker recovery can replace the transferred canvas; receipts from a retired or unrelated canvas cannot enter the game or reuse an old submission. Replacing the presenting canvas element during the fade (observed on its parent) restores preparation and closes input at once, which also releases any pointer lock; a new device generation or session does the same. Input reopens with the replacement's first ready frame. The App Host carries the closed input gate and the author pointer-lock policy onto the replacement canvas's input backend. `data-forgeax-input="open"` is the readiness signal for scripted real input: it is set only while startup admits gameplay input and is `closed` on loading, preparation, fatal and destroyed pages; waiting for the fade to finish is not required.
 
@@ -2267,13 +2278,15 @@ select that graph across all physical Engine packages. An explicitly bound game 
 must resolve to the same package roots or equal runtime bytes; equal version labels alone
 do not admit conflicting code. The failure is `host-assembly-invalid` before target boot.
 
-SDK manifest 1.10.0 distinguishes runtime/tool packages and records `viewCommit`. The existing
+SDK manifest 1.11.0 distinguishes runtime/tool packages and records `viewCommit`. View is a
+private built tool under SDK `tools/view/`, installed through `file:../../tools/view`;
+only Engine and SDK are npm publication units. The existing
 launcher and `project init` use `.forgeax/cli-runtime`, with dedicated `toolchain/cli-runtime`
 inputs. Readiness requires matching input bytes plus the Engine CLI and exported View Host
 Pack. Game template manifests do not install View. SDK init receipt 2.0.0 includes the
 tool input digest; old or partial installations require initialization again.
 
-The bundled View tool's publication inventory in `scripts/forgeax/sdk-view.mjs`
+The embedded View tool's file inventory in `scripts/forgeax/sdk-view.mjs`
 also owns its public Node probes and their local dependencies. Staging and test
 fixtures consume that same inventory. Installed probes retain their failure
 evidence helper; npm-pack tests load those helpers after removing the source

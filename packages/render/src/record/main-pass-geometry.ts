@@ -247,8 +247,9 @@ function gpuDrivenDrawIndicesBySubmesh(
   if (draws === undefined || draws.length === 0) return undefined;
   indices.length = 0;
   let hasStableSourceIdentity = false;
-  for (const [compactIndex, draw] of draws.entries()) {
-    const drawItemIndex = draw.drawItemIndex;
+  // Indexed loops: entries() tuples allocated per draw for every renderable.
+  for (let compactIndex = 0; compactIndex < draws.length; compactIndex++) {
+    const drawItemIndex = (draws[compactIndex] as (typeof draws)[number]).drawItemIndex;
     if (drawItemIndex === undefined) continue;
     hasStableSourceIdentity = true;
     if (
@@ -264,7 +265,8 @@ function gpuDrivenDrawIndicesBySubmesh(
   // geometry facts. New extracted snapshots never take this path.
   let nonIndexedFirst = 0;
   let drawCursor = 0;
-  for (const [submeshIndex, submesh] of mesh.submeshes.entries()) {
+  for (let submeshIndex = 0; submeshIndex < mesh.submeshes.length; submeshIndex++) {
+    const submesh = mesh.submeshes[submeshIndex] as (typeof mesh.submeshes)[number];
     const first = mesh.indexed ? submesh.indexOffset : nonIndexedFirst;
     const count = mesh.indexed ? submesh.indexCount : submesh.vertexCount;
     if (!mesh.indexed) nonIndexedFirst += submesh.vertexCount;
@@ -1350,7 +1352,9 @@ export function recordGeometryDraws(
     for (const entry of c.pipelinePreparationEntries ?? []) {
       const passes = entry.source.pipelinePreparation ?? [];
       const authoredVariantSet = variantSetFromDefines(passes.at(-1)?.defines);
-      for (const [submeshIndex, sm] of entry.mesh.submeshes.entries()) {
+      let nextSubmeshIndex = 0;
+      for (const sm of entry.mesh.submeshes) {
+        const submeshIndex = nextSubmeshIndex++;
         if (skipPreparationDraw?.(entry, submeshIndex)) continue;
         const material = c.materialFrame?.get(
           entry.source.materials[sm.materialSlot] ?? entry.source.material,

@@ -2017,7 +2017,9 @@ function buildProjectedSurfaceFrameRanges(
     const firstRow = candidateRow;
     candidateRow += prepared.batch.candidates.length;
     if (prepared.artifact.receipt?.surface?.model !== 'single-layer-medium') continue;
-    for (const [index, candidate] of prepared.batch.candidates.entries()) {
+    let nextIndex = 0;
+    for (const candidate of prepared.batch.candidates) {
+      const index = nextIndex++;
       const slot = scene.slotAt(candidate.primitiveIndex);
       const worldIdentity = slot === undefined ? undefined : scene.worldIdentities?.[slot.worldId];
       const frameIndex = firstRow + index;

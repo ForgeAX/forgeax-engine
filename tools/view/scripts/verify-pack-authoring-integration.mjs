@@ -132,6 +132,8 @@ try {
  assert.deepEqual(unparameterized.fields,[],'the scaffold const identity supports drafts without changing its syntax');
  await page.screenshot({path:join(output,'no-parameters-ui.png')});
  await writeFile(join(root,'assets/proof.pack.ts'),editableSource);
+ // Source publication and its websocket projection settle after the file write.
+ await generationParameters.getByRole('alert').waitFor({state:'detached',timeout:30000});
  assert.equal(await page.evaluate(()=>globalThis.__packRecoveryMarker),documentMarker,'source repair retains the View document');
  assert.equal(await generationParameters.getByRole('alert').count(),0,'source recovery clears the old open error');
  let draft=await call({action:'open',sourcePath});

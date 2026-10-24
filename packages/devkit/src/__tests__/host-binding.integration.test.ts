@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,6 +18,8 @@ import { Context, startNativePlugin } from '@forgeax/engine-plugin';
 import { createServer } from 'vite';
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
+import { findEngineWorkspaceRoot } from '../asset-libraries.js';
+import { engineUseLocalCommand } from '../engine-binding.js';
 import { createViteConfig, devKitHostBridge } from '../host.js';
 import { composeBoundHostAssembly, validateHostBinding } from '../host-binding.js';
 import { readProjectFacts } from '../project.js';
@@ -435,6 +437,98 @@ it('serves a package-owned frontend module when the game has no host package dep
     );
     expect(served.status).toBe(200);
     expect(await served.text()).toContain('package frontend');
+  } finally {
+    await server?.close();
+    await backend.dispose();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+it('uses the executing source Host Engine with an SDK-local presentation package', async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), 'forgeax-source-host-'));
+  const game = resolve(parent, 'game');
+  const tool = resolve(parent, 'tool');
+  const installed = resolve(parent, 'installed-engine');
+  const workspace = findEngineWorkspaceRoot();
+  if (!workspace) throw new Error('Source Host fixture requires its Engine workspace');
+  const backend = await createBackendHost();
+  let server: Awaited<ReturnType<typeof createServer>> | undefined;
+  try {
+    await mkdir(resolve(game, 'assets'), { recursive: true });
+    await mkdir(resolve(game, 'node_modules/@forgeax'), { recursive: true });
+    await mkdir(resolve(tool, 'node_modules/@forgeax'), { recursive: true });
+    await mkdir(resolve(installed, 'dist'), { recursive: true });
+    await writeFile(
+      resolve(installed, 'package.json'),
+      JSON.stringify({
+        name: '@forgeax/engine',
+        version: '0.0.0',
+        type: 'module',
+        dependencies: {},
+        exports: { '.': './dist/index.mjs', './package.json': './package.json' },
+      }),
+    );
+    await writeFile(resolve(installed, 'dist/index.mjs'), 'export const prebuilt = true;');
+    await symlink(installed, resolve(tool, 'node_modules/@forgeax/engine'), 'dir');
+    await symlink(installed, resolve(game, 'node_modules/@forgeax/engine'), 'dir');
+    await writeFile(
+      resolve(tool, 'package.json'),
+      JSON.stringify({
+        name: 'sdk-presentation',
+        private: true,
+        dependencies: { '@forgeax/engine': '0.0.0' },
+      }),
+    );
+    await writeFile(
+      resolve(game, 'package.json'),
+      JSON.stringify({ name: 'source-game', type: 'module' }),
+    );
+    await writeFile(
+      resolve(game, 'forge.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        id: 'source-game',
+        name: 'Source game',
+        roots: {},
+      }),
+    );
+    expect((await engineUseLocalCommand({ root: game, path: workspace })).ok).toBe(true);
+    await (
+      await backend.context.plugin({
+        name: 'fixture:source-host',
+        provide: ['devkitBackend'],
+        apply(ctx) {
+          ctx.provide('devkitBackend', {
+            host: backend,
+            root: parent,
+            hostPackageRoot: tool,
+            assertCurrent: async () => {},
+          });
+        },
+      })
+    ).await();
+    const facts = await readProjectFacts(game);
+    if (!facts.ok) throw facts.error;
+    const config = await createViteConfig(facts.value, 'serve', '/', { host: { backend } });
+    server = await createServer({
+      configFile: false,
+      root: game,
+      logLevel: 'silent',
+      resolve: { alias: config.resolve?.alias ?? [] },
+      optimizeDeps: { noDiscovery: true, include: [] },
+    });
+    const resolved = await server.pluginContainer.resolveId(
+      '@forgeax/engine-math',
+      resolve(game, 'entry.mjs'),
+    );
+    expect(resolved?.id).toBe(resolve(workspace, 'packages/math/dist/index.mjs'));
+    await rm(resolve(game, '.forgeax/engine-binding.json'));
+    await expect(
+      createViteConfig(facts.value, 'serve', '/', { host: { backend } }),
+    ).rejects.toMatchObject({
+      code: 'host-assembly-invalid',
+      detail: { reason: expect.stringContaining('frontend Engine source conflict') },
+    });
   } finally {
     await server?.close();
     await backend.dispose();

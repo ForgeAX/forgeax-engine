@@ -339,7 +339,9 @@ export function matchedMaterialsForRecordMode(
     mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color';
   const filtered = new Map<number, ReadonlySet<number>>();
   if (mode === 'transmission' && matchedMaterials === null) return filtered;
-  for (const [row, entry] of c.validatedOrdered.entries()) {
+  let nextRow = 0;
+  for (const entry of c.validatedOrdered) {
+    const row = nextRow++;
     const dispatchHandles = matchedMaterials?.get(entry.renderableIndex);
     if (!surfaceMode && matchedMaterials !== null && dispatchHandles === undefined) continue;
     let handles: Set<number> | undefined;
@@ -695,7 +697,9 @@ function selectEntityMaterials(
 ): Map<number, ReadonlySet<number>> {
   const entities = new Set(selection.entities);
   const selected = new Map<number, ReadonlySet<number>>();
-  for (const [index, entry] of c.validatedOrdered.entries()) {
+  let nextIndex = 0;
+  for (const entry of c.validatedOrdered) {
+    const index = nextIndex++;
     if (entry.source.worldId !== selection.worldId || !entities.has(entry.source.entityKey))
       continue;
     const handles = matchedMaterials?.get(entry.renderableIndex);
@@ -1013,8 +1017,11 @@ function publishGpuDrivenMaterialSlots(
   else resources.selectedMaterialSlots = selectedGpuMaterialSlots;
   if (c.cameraVisible === undefined) delete resources.cameraVisible;
   else resources.cameraVisible = c.cameraVisible;
+  // Rebuilt for every pass: keep each material's class map and refill it in
+  // place, then drop materials this pass no longer binds. The GPU-driven
+  // encoder only reads this table during the pass.
   const bindings = resources.materialSlotIndicesByBinding;
-  bindings.clear();
+  for (const classes of bindings.values()) classes.clear();
   for (let slot = 0; slot < c.materialSlots.length; slot++) {
     const binding = c.materialBindings[slot];
     if (binding === undefined) continue;
@@ -1026,6 +1033,8 @@ function publishGpuDrivenMaterialSlots(
     }
     classes.set(binding.resourceClass, slot);
   }
+  for (const resource of bindings.keys())
+    if (bindings.get(resource)?.size === 0) bindings.delete(resource);
 }
 
 /** Prepare a batch's exact physical material binding only when it is recorded. */
@@ -1158,11 +1167,18 @@ export function hasSsrSceneInputs(
   const selected = buildMatchedMaterialHandlesByRenderable(c.dispatch, DEFERRED_PASS_SELECTOR);
   if (selected === null) return false;
   let receivers = 0;
-  for (const [index, source] of c.renderables.entries()) {
+  let nextIndex = 0;
+  for (const source of c.renderables) {
+    const index = nextIndex++;
     const handles = selected.get(index);
     if (handles === undefined) continue;
-    for (const resource of source.materials.length === 0 ? [source.material] : source.materials) {
-      const material = read(resource);
+    const slots = source.materials;
+    for (let slot = 0; slot < Math.max(1, slots.length); slot++) {
+      const material = read(
+        slots.length === 0
+          ? source.material
+          : (slots[slot] as import('../material-resource').MaterialResource),
+      );
       if (!handles.has(material.materialHandle ?? 0) || !matchesRecordMode(material, 'opaque'))
         continue;
       if (material.deferredPass !== true) return false;

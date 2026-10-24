@@ -19,6 +19,7 @@ import {
   type AssetLoadError,
   type AssetReferenceOwner,
   type BuiltinAssetKind,
+  beginLoadWork,
   type CatalogEntry,
   type EngineMetrics,
   type ImageError,
@@ -1136,6 +1137,22 @@ export class AssetRegistry implements AssetReferenceOwner {
       );
     const source = this.#source;
     if (source === undefined) return catalogSourceUnconfigured();
+    // One unit of `assets` load work per new GUID load, settled on every outcome.
+    const finishLoadWork = beginLoadWork('assets', expectedKind);
+    try {
+      return await this.loadSource(source, key, kind, expectedKind, options);
+    } finally {
+      finishLoadWork();
+    }
+  }
+
+  private async loadSource(
+    source: AssetSource,
+    key: string,
+    kind: BuiltinAssetKind | AssetKind<unknown, string>,
+    expectedKind: string,
+    options: AssetLoadOptions,
+  ): Promise<Result<AssetHandle, RuntimeAssetError>> {
     const loaded =
       typeof kind === 'string'
         ? await source.load(key, kind, options)

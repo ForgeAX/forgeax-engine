@@ -1,5 +1,6 @@
 import type { FrameReceipt } from '@forgeax/engine-render';
 import { createBarrelDistortionMapping } from '@forgeax/engine-render';
+import { snapshotLoadTimeline } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -131,5 +132,37 @@ describe('publishBrowserFrameSubmitted', () => {
       graphGeneration: 8,
     });
     expect(received).toHaveLength(1);
+  });
+});
+
+describe('load timeline frame milestones', () => {
+  it('records the first completed and first presented frame once per canvas World', () => {
+    const before = snapshotLoadTimeline().records.length;
+    const canvas = new EventTarget() as HTMLCanvasElement;
+    const complete = (frameId: number, worldIdentity: string, presentation: 'pending' | 'ready') =>
+      publishBrowserFrameCompleted(canvas, {
+        frameId,
+        deviceGeneration: 1,
+        worldIdentity,
+        presentation,
+      });
+    publishBrowserFrameSubmitted(canvas, { frameId: 1, deviceGeneration: 1, worldIdentity: 'a' });
+    complete(1, 'a', 'pending');
+    complete(2, 'a', 'pending');
+    complete(3, 'a', 'ready');
+    complete(4, 'a', 'ready');
+    // A rebuilt World starts its own milestones.
+    complete(1, 'b', 'ready');
+    const rows = snapshotLoadTimeline()
+      .records.slice(before)
+      .map((r) => [r.kind, r.name, r.detail?.frameId, r.detail?.world]);
+    expect(rows).toEqual([
+      ['frame', 'first-completed-frame', 1, 'a'],
+      ['frame', 'first-presented-frame', 3, 'a'],
+      ['frame', 'first-completed-frame', 1, 'b'],
+      ['frame', 'first-presented-frame', 1, 'b'],
+    ]);
+    const first = snapshotLoadTimeline().records[before];
+    expect(first && first.end >= first.start).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import {
   type Result,
   RhiError,
 } from '@forgeax/engine-rhi';
+import { addLoadWork, beginLoadTimeline } from '@forgeax/engine-types';
 
 type Recipe = PipelineLibraryRender | PipelineLibraryCompute;
 type NativePipeline = GPURenderPipeline | GPUComputePipeline;
@@ -67,6 +68,13 @@ function pod(value: unknown, depth = 0): unknown {
 function identity(value: object): string {
   const { label: _label, ...semantic } = value as Record<string, unknown>;
   return JSON.stringify(pod(semantic));
+}
+/** Load progress item for the `index`-th preparation request (render recipes first). */
+function recipeLabel(manifest: PipelineLibraryManifest, index: number): string {
+  const renders = manifest.renderPipelines.length;
+  const recipe =
+    index < renders ? manifest.renderPipelines[index] : manifest.computePipelines[index - renders];
+  return recipe?.label ?? (index < renders ? 'render' : 'compute');
 }
 function failure(cause: unknown): RhiError {
   return cause instanceof RhiError
@@ -135,7 +143,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       this.counts.shaderHits++;
       return entry(this.shaders, id).handle;
     }
+    const endShader = beginLoadTimeline('shader', descriptor.label ?? 'shader');
     const handle = this.device.createShaderModule(descriptor);
+    endShader(descriptor.code.length);
     const bytes = descriptor.code.length * 2;
     if (this.shaders.length >= MAX_ENTRIES || this.counts.sourceBytes + bytes > MAX_SOURCE_BYTES) {
       this.counts.overflow++;
@@ -284,6 +294,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       this.counts.pipelineHits++;
       return program.handle;
     }
+    const endPipeline = beginLoadTimeline('pipeline', descriptor.label ?? kind, {
+      mode: 'sync',
+      kind,
+    });
     try {
       this.counts.synchronousCreations++;
       realmPipelineCreations++;
@@ -291,10 +305,12 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         kind === 'render'
           ? this.device.createRenderPipeline(descriptor as GPURenderPipelineDescriptor)
           : this.device.createComputePipeline(descriptor as GPUComputePipelineDescriptor);
+      endPipeline();
       if (program !== undefined) program.handle = handle;
       // A synchronous handle is usable, but it is never compilation-completion evidence.
       return handle;
     } catch (cause) {
+      endPipeline(undefined, { failed: true });
       this.counts.failures++;
       throw cause;
     }
@@ -303,13 +319,15 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   createRenderPipelineAsync(
     descriptor: GPURenderPipelineDescriptor,
   ): GPURenderPipeline | Promise<GPURenderPipeline> {
-    return this.createAsync('render', descriptor) as GPURenderPipeline | Promise<GPURenderPipeline>;
+    return this.createAsync('render', descriptor, true) as
+      | GPURenderPipeline
+      | Promise<GPURenderPipeline>;
   }
   // forgeax-async-whitelist: dom-native — exact native pipeline completion, adapter wraps failures in Result.
   createComputePipelineAsync(
     descriptor: GPUComputePipelineDescriptor,
   ): GPUComputePipeline | Promise<GPUComputePipeline> {
-    return this.createAsync('compute', this.computeDescriptor(descriptor)) as
+    return this.createAsync('compute', this.computeDescriptor(descriptor), true) as
       | GPUComputePipeline
       | Promise<GPUComputePipeline>;
   }
@@ -317,6 +335,8 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private createAsync(
     kind: 'render' | 'compute',
     descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
+    /** Report this compilation as load work; preparation reports its whole batch upfront. */
+    counted: boolean,
   ): NativePipeline | Promise<NativePipeline> {
     const program = this.program(kind, descriptor);
     if (program?.ready && program.handle !== undefined) {
@@ -327,11 +347,16 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       this.counts.pipelineHits++;
       return program.pending;
     }
+    if (counted) addLoadWork('pipelines', { total: 1 });
     const create = async () => {
       this.active();
       this.counts.asynchronousCreations++;
       realmPipelineCreations++;
       this.counts.compilationPending++;
+      const endPipeline = beginLoadTimeline('pipeline', descriptor.label ?? kind, {
+        mode: 'async',
+        kind,
+      });
       try {
         const handle =
           kind === 'render'
@@ -339,6 +364,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
             : await this.device.createComputePipelineAsync(
                 descriptor as GPUComputePipelineDescriptor,
               );
+        endPipeline();
         this.active();
         if (program !== undefined) {
           program.handle = handle;
@@ -347,6 +373,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         this.counts.compilationCompleted++;
         return handle;
       } catch (cause) {
+        endPipeline(undefined, { failed: true });
         if (program !== undefined) {
           delete program.handle;
           program.ready = false;
@@ -356,6 +383,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       } finally {
         this.counts.compilationPending--;
         if (program !== undefined) delete program.pending;
+        if (counted) addLoadWork('pipelines', { done: 1, item: descriptor.label ?? kind });
       }
     };
     const pending = Promise.resolve().then(create);
@@ -486,23 +514,32 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         ...manifest.renderPipelines.map(
           ({ fragment, ...d }) =>
             () =>
-              this.createRenderPipelineAsync({
-                ...d,
-                layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
-                vertex: stage(d.vertex),
-                ...(fragment === undefined ? {} : { fragment: stage(fragment) }),
-              }),
+              this.createAsync(
+                'render',
+                {
+                  ...d,
+                  layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
+                  vertex: stage(d.vertex),
+                  ...(fragment === undefined ? {} : { fragment: stage(fragment) }),
+                },
+                false,
+              ),
         ),
         ...manifest.computePipelines.map(
           (d) => () =>
-            this.createComputePipelineAsync({
-              ...d,
-              layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
-              compute: stage(d.compute),
-            }),
+            this.createAsync(
+              'compute',
+              this.computeDescriptor({
+                ...d,
+                layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
+                compute: stage(d.compute),
+              }),
+              false,
+            ),
         ),
       ];
       this.warmup.requested += requests.length;
+      addLoadWork('pipelines', { total: requests.length });
       let cursor = 0,
         firstError: unknown;
       // Await every started request, including failures and disposal. Never mark a partial import ready.
@@ -516,7 +553,8 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           },
           async () => {
             while (cursor < requests.length && !this.closed) {
-              const request = entry(requests, cursor++);
+              const index = cursor++;
+              const request = entry(requests, index);
               try {
                 await request();
                 this.warmup.completed++;
@@ -524,6 +562,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
                 this.warmup.failed++;
                 firstError ??= cause;
               }
+              addLoadWork('pipelines', { done: 1, item: recipeLabel(manifest, index) });
             }
           },
         ),

@@ -188,6 +188,15 @@ reads and prevents late cache refill. `invalidate`, `invalidateAll` and Catalog
 reconciliation affect source reads; accepted runtime content changes through
 explicit reload. `trimReadCache` drops disposable completed reads.
 
+Verified Pack documents are held strongly through a burst of sibling reads, then
+kept through weak references after two seconds without a read. When the host
+reports memory pressure, `trimReadCache` demotes those documents immediately.
+A live document can be reused; after collection, a later request fetches and
+verifies the same complete publication tuple again. Decoded runtime content and
+shared immutable material facts stay with their accepted consumers. This cache
+release never invalidates a publication or retires a live asset. Hosts without
+`WeakRef` retain the strong read cache.
+
 Transient network/body failures and HTTP 408/429/500/502/503/504 retry twice,
 after 250 ms and 750 ms, with `cache: 'reload'`. Aborts and permanent errors fail
 without retry. Cache reuse retains descriptor identity and integrity validation.

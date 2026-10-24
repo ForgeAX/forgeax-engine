@@ -29,6 +29,7 @@ import {
   constructRuntimeRendererHost,
   type RendererHostAssembly,
 } from '@forgeax/engine-runtime/internal/renderer-host';
+import { bindLoadProgressScope } from '@forgeax/engine-types';
 import {
   createRhiCapture,
   createRhiInstrumentation,
@@ -873,6 +874,7 @@ function createFeatureSynchronizer(
 async function receiveInit(message: InitMessage): Promise<void> {
   if (renderer !== undefined || busy) throw new Error('Duplicate Render Worker initialization');
   busy = true;
+  if (message.loadProgressScope !== undefined) bindLoadProgressScope(message.loadProgressScope);
   installCarriedGpuStub(message);
   adoptInitPolicies(message);
   const prepared = await prepareBootstrapEntry(message.bootstrapUrl, message.bootstrapData);

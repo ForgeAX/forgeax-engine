@@ -83,6 +83,26 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
     }
     return readPackDraftSource(path, source, sourceOptions);
   };
+  const readOpeningSource = async (path: { absolute: string; path: string }) => {
+    let text = await readFile(path.absolute, 'utf8');
+    for (let round = 0; ; round++) {
+      let source: PackDraftSource;
+      try {
+        source = await parse(path.path, text);
+      } catch (cause) {
+        // Initial legacy-source recovery has no draft for refreshEntry to settle.
+        // A coalesced write must not leave that opening on its truncated read.
+        const current = await readFile(path.absolute, 'utf8');
+        if (current === text || round >= MAX_REFRESH_ROUNDS) throw cause;
+        text = current;
+        continue;
+      }
+      const current = await readFile(path.absolute, 'utf8');
+      if (current === text) return source;
+      if (round >= MAX_REFRESH_ROUNDS) throw conflict(path.path, 'source changed while opening');
+      text = current;
+    }
+  };
   const refreshEntry = async (
     entry: Entry,
     onPrepared?: (snapshot: PackDraftSnapshot) => void,
@@ -179,7 +199,7 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
             'close an unused document before opening more than 32 drafts',
           );
         const pending = (async () => {
-          const source = await parse(path.path, await readFile(path.absolute, 'utf8'));
+          const source = await readOpeningSource(path);
           if (disposed) throw new Error('Pack authoring drafts were disposed while opening');
           const id = randomUUID();
           const owner = options.owner?.(source.document);

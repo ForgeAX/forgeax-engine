@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "1.10.0"
+      "const": "1.11.0"
     },
     "sdkVersion": {
       "type": "string",
@@ -131,7 +131,14 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": [".gitmodules", "forgeax-engine-assets"]
+            "enum": [
+              ".gitmodules",
+              "forgeax-engine-assets",
+              ".github",
+              "third_party/wgpu/.github",
+              "third_party/blitz/.github",
+              "tools/view/.github"
+            ]
           }
         },
         "fileCount": {
@@ -232,7 +239,7 @@
         },
         "root": {
           "type": "string",
-          "pattern": "^packages/[A-Za-z0-9._-]+$"
+          "pattern": "^(?:packages/[A-Za-z0-9._-]+|tools/view)$"
         },
         "fileCount": {
           "type": "integer",

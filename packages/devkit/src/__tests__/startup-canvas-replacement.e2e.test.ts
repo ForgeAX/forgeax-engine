@@ -477,7 +477,7 @@ it('enters the generated game after its canvas is replaced during startup', asyn
       };
     });
     // Editor Play admits input with its first ready frame while the overlay fades.
-    expect(playStartup).toEqual({ status: 'Preparing scene…', inputEnabled: true });
+    expect(playStartup).toEqual({ status: 'Waiting for the first frame', inputEnabled: true });
     record('play-loading-retirement');
     await playPage.locator('#forgeax-loading').waitFor({ state: 'hidden' });
     expect(await playPage.locator('#forgeax-loading').getAttribute('aria-hidden')).toBe('true');

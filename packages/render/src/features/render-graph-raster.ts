@@ -562,7 +562,9 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     const current = currentRenderFeaturePass(frame, featureIdentity, name, scope);
     if (current?.enabled === false) return;
     const activeSnapshot = current?.resolvedGraphics ?? snapshot;
-    for (const [drawIndex, draw] of descriptor.draws.entries()) {
+    let nextDrawIndex = 0;
+    for (const draw of descriptor.draws) {
+      const drawIndex = nextDrawIndex++;
       const activeDraw = current?.graphics?.draws[drawIndex] ?? draw;
       if (activeDraw.enabled === false) continue;
       const pipeline = resolved(activeSnapshot, activeDraw.pipeline);
@@ -573,7 +575,9 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
         if (lighting === undefined) throw missing(featureIdentity, order);
         pass.setBindGroup(2, lighting);
       }
-      for (const [group, reference] of activeDraw.bindings.entries()) {
+      let nextGroup = 0;
+      for (const reference of activeDraw.bindings) {
+        const group = nextGroup++;
         const binding = resolved(activeSnapshot, reference);
         if (binding?.kind !== 'bindings') throw missing(featureIdentity, order);
         const targetGroup = binding.descriptor?.values.group ?? group;

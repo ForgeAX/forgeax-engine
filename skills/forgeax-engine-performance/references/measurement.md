@@ -139,6 +139,38 @@ WebGPU/Dawn work and readback contents disappear.
   a GPU) or `rhi-null` as a substitute: the former emulates the GPU on the measured
   CPU, the latter changes backend kind, caps and render branches.
 
+## Load timeline (startup and level loading)
+
+Every realm records a bounded load timeline by default (`@forgeax/engine/types`
+`LoadTimelineRecord`; 16,384 records per realm, later rows counted as `dropped`).
+Recording is one clock read and one push; nothing is posted until collection.
+
+| Kind | Owner | Name / payload |
+| --- | --- | --- |
+| `boot` | App host and Engine Worker | `engine-worker` (main realm, spawn→ready); Worker `bootstrap-import`, `renderer`, `plugin-bootstrap`, `root-activation`, `world-commit` |
+| `fetch` | Assets package reads (catalog, Pack, artifact, Bundle) | URL; slot admission→body end; `bytes` decoded binary length; `detail.queuedMs`, `attempts`, `contentLength` |
+| `decode` | Assets | `stage: 'artifact'` outer zstd + integrity (CPU only); `stage: 'asset'` owner decoder including its awaited reads |
+| `shader` | WebGPU pipeline library | label; `bytes` WGSL characters; cache hits record nothing |
+| `pipeline` | WebGPU pipeline library | label; `detail.mode` `sync`/`async`, `detail.kind` `render`/`compute`; async spans end at native completion |
+| `frame` | App frame signal (main realm) | `first-completed-frame`, `first-presented-frame` per canvas World, starting at its first submission |
+| `mark` | Game or Engine | `markLoadTimeline('map-ready')`, any realm |
+
+Collect with `await globalThis.__forgeaxLoadTimeline.collect()` (or
+`collectLoadTimeline()` from `@forgeax/engine/app`) in any realm: each live realm
+answers over the page-scoped `forgeax:load-timeline:<scope>` BroadcastChannel within
+`timeoutMs` (default 250). Times are epoch milliseconds, so realms align without a
+handshake; assign records to phases by comparing with marks rather than storing a
+phase. The scope is the existing load-progress page identity forwarded during
+Worker initialization; another page of the same origin cannot answer collection.
+Unscoped native realms retain local records without opening a channel. Early
+Worker records survive scope adoption when subsequent work records or snapshots.
+A terminated Worker's records are gone.
+The stub and native WebGPU record through the same owners; under the stub,
+`shader` / `pipeline` spans contain no driver compilation, so their durations
+under-report real-GPU cost while counts, WGSL size and ordering stay comparable.
+Game-side drivers (for example Voxel Game `pnpm perf:load`) join this with browser
+network timing; the timeline is not a network capture.
+
 ## Use the correct clock and denominator
 
 | Observation | Supports | Does not establish |

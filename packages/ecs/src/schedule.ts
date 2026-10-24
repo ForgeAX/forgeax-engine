@@ -652,6 +652,27 @@ function abortOutstandingCommands(
   }
 }
 
+/** Apply only buffers that have an explicit graph edge into the next system. */
+function flushPredecessorCommands(
+  predecessors: ReadonlySet<string> | undefined,
+  world: World,
+  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>>,
+): void {
+  // Systems without inbound edges skip the iterator entirely.
+  if (predecessors === undefined || predecessors.size === 0) return;
+  for (const predecessor of predecessors) {
+    const producerCommands = commandsBySystem.get(predecessor);
+    if (producerCommands) {
+      try {
+        flushCommands(producerCommands, world);
+      } catch (error) {
+        abortOutstandingCommands(commandsBySystem);
+        throw error;
+      }
+    }
+  }
+}
+
 /**
  * Execute all systems in sorted order. Rebuilds schedule if dirty.
  * Each system receives its query results and a command buffer.
@@ -729,7 +750,8 @@ function runScheduleBody(
   const systemToSets = schedule.systemToSets;
 
   // Per-frame set runIf cache (D-5). Discarded at frame end — no cross-frame state.
-  const setRunIfCache = new Map<string, boolean>();
+  // Created on the first gated set so ungated schedules allocate nothing here.
+  let setRunIfCache: Map<string, boolean> | undefined;
 
   for (const name of schedule.sortedOrder) {
     if (selected && !selected.has(name)) continue;
@@ -737,18 +759,7 @@ function runScheduleBody(
     /* istanbul ignore next -- defensive: sortedOrder comes from systems Map keys */
     if (!record) continue;
 
-    // Apply only buffers that have an explicit graph edge into this system.
-    for (const predecessor of schedule.predecessors.get(name) ?? []) {
-      const producerCommands = commandsBySystem.get(predecessor);
-      if (producerCommands) {
-        try {
-          flushCommands(producerCommands, world);
-        } catch (error) {
-          abortOutstandingCommands(commandsBySystem);
-          throw error;
-        }
-      }
-    }
+    flushPredecessorCommands(schedule.predecessors.get(name), world, commandsBySystem);
 
     // Lazily initialize the persistent executable queries on first run.
     if (record.queries === null) {
@@ -766,6 +777,7 @@ function runScheduleBody(
       for (const setName of setNames) {
         const setRecord = schedule.sets.get(setName);
         if (setRecord?.runIf) {
+          setRunIfCache ??= new Map();
           let cached = setRunIfCache.get(setName);
           if (cached === undefined) {
             cached = setRecord.runIf(world);

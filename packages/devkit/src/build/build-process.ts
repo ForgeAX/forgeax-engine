@@ -117,6 +117,37 @@ let tail = Promise.resolve();
 let started = false;
 const runs = new Map<number, ToolRun<unknown>>();
 
+/** The closed set of public project App option keys. */
+const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
+  'dynamicGeometryMeshBudgetBytes',
+  'assetBudgetBytes',
+  'standardProfile',
+  'pipelineLibrary',
+  'time',
+  'renderPipelineCapacity',
+  'loadingLabels',
+]);
+
+const LOADING_LABEL_KEYS = new Set(['lang', 'loading', 'elapsed', 'slow', 'reload']);
+
+/** Optional loading labels are strings, plus a `phases` map of phase id to string. */
+function validateLoadingLabels(value: unknown): void {
+  if (value === undefined) return;
+  const record = (candidate: unknown): candidate is Record<string, unknown> =>
+    typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate);
+  const valid =
+    record(value) &&
+    Object.entries(value).every(([key, label]) =>
+      key === 'phases'
+        ? record(label) && Object.values(label).every((name) => typeof name === 'string')
+        : LOADING_LABEL_KEYS.has(key) && typeof label === 'string',
+    );
+  if (!valid)
+    throw new TypeError(
+      'devkitAppOptions.loadingLabels must contain lang/loading/elapsed/slow/reload strings and a phases string map',
+    );
+}
+
 /** Admit a closed data-only projection; World and Render retain their policies. */
 function projectAppOptions(value: unknown): DevKitAppOptions {
   if (value === undefined) return {};
@@ -124,15 +155,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     typeof value !== 'object' ||
     value === null ||
     (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
-    Reflect.ownKeys(value).some(
-      (key) =>
-        key !== 'dynamicGeometryMeshBudgetBytes' &&
-        key !== 'assetBudgetBytes' &&
-        key !== 'standardProfile' &&
-        key !== 'pipelineLibrary' &&
-        key !== 'time' &&
-        key !== 'renderPipelineCapacity',
-    )
+    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
@@ -158,6 +181,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     )
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
   }
+  validateLoadingLabels(options.loadingLabels);
   if (options.dynamicGeometryMeshBudgetBytes !== undefined)
     validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
   if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);

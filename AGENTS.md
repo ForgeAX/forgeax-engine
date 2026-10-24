@@ -167,7 +167,7 @@ This is the package-by-package change-time map: it answers **which boundary owns
 
 | Package | Core design idea / invariant |
 |---|---|
-| `engine` | User-facing runtime and CLI: root forwards the runtime entry, generated subpaths forward focused exports, and the CLI delegates to DevKit. One npm tarball carries every Engine owner and exact registry dependency declarations while independent ESM modules and physical owners preserve code and browser bundle boundaries. |
+| `engine` | User-facing runtime and CLI: root forwards the runtime entry, generated subpaths forward focused exports, and the CLI delegates to DevKit. One npm tarball carries every Engine owner and exact registry dependency declarations while independent ESM modules and physical owners preserve code and browser bundle boundaries. The complementary SDK adds editable source and its private built View tool; Engine and SDK are the two npm publication units. |
 | `types` | Shared WGSL scalar/vector byte layouts feed material, GPU Scene and VFX projections while each owner retains its vocabulary and struct padding. The main entry is the cross-package POD vocabulary: closed unions, `Result`, and phantom brands with no runtime constants or duplicated platform values. Its explicit Node-only `inspector-client` subpath owns the shared JSON-RPC wire client. |
 | `math` | Pure, out-parameter-first, SoA-friendly transforms over branded `Float32Array`; allocation and semantic type safety are explicit rather than hidden in objects. |
 | `ecs` | Schema-defined archetype World is the game-state and time authority. Token-scoped `Update`/`FixedUpdate` systems make mutation and scheduling explicit; a same-token ordering reference brackets each execution, including every catch-up tick; `createWorldContext` adapts reversible contributions into one Cordis realm, and `World.components` leases plugin component vocabulary per World. World owns non-asset managed payload identity and generation-checked reads; asset fields validate and lease identities from the injected runtime asset owner, without another payload catalogue. Queries keep independent observation cursors and incrementally match only their dense-table or sparse-archetype storage route. World-owned mutable epoch indices identify changed entities without clean table/block discovery. Derived numeric writes fence source observation until publication; unexpected partial writes poison the World, and physical mirror migrations re-resolve the source row before writeback. `QuerySpan` kernels add bounded data parallelism; structural work stays serial and partial-write failure poisons the World. |
@@ -380,11 +380,13 @@ with View absent. `pnpm build:tools` selects generic View plus ordinary source p
 not depend on View or React. `pnpm test:view -- --candidate` tests a proposed pair;
 formal `check_submodule_pins.py` still requires the final View pin on View main.
 
-The SDK installs Engine and `@forgeax/view` together in `.forgeax/cli-runtime` using
-`toolchain/cli-runtime` inputs. Games only install Engine. The public source archive
+The SDK embeds built View under `tools/view/` and installs it as a private local
+package alongside Engine in `.forgeax/cli-runtime`, using `toolchain/cli-runtime`
+inputs. Only Engine and SDK are public npm products. Games only install Engine. The public source archive
 expands the fixed View gitlink and includes its Apache-2.0 license. An installed tool's
 native frontend resolves the selected Host Engine graph; conflicting game Engine bytes
-are rejected before boot. Artifact pages are usable without a project; project pages
+are rejected before boot. An executing source Host supplies that graph even when the
+embedded tool has a prebuilt Engine dependency. Artifact pages are usable without a project; project pages
 retain Engine's existing project and target recovery.
 
 ## Assets submodule (contributor checkout only)
@@ -438,7 +440,8 @@ provenance share one version and Engine commit.
 | `source/engine/third_party/wgpu/` | Licensed source from the exact Engine gitlink, expanded without Git metadata for native Rust development. |
 | `sdk-manifest.json` | Per-file archive inventory plus the source snapshot and prebuilt-WASM summary. |
 
-The source snapshot is not a Git checkout and excludes `node_modules`, `.git`,
+The source snapshot is not a Git checkout and excludes every expanded repository's
+`.github/`, `node_modules`, `.git`,
 `pnpm build:engine` work there without WASM hydration. A source change needs its
 source gates, then a fresh SDK build and exact-ZIP verification. Exact-ZIP verification
 runs the unpacked template's renderer/UI/input/camera/animation/FixedTick path and omits

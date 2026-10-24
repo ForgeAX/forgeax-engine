@@ -34,7 +34,8 @@ export function currentContactOwner(
   )
     return undefined;
   const shape = shapes.get(collider);
-  return { entity: owner, body: parent, ...(shape ? { shape: shape.id } : {}) };
+  // One literal per branch: a conditional spread allocated a temporary per contact pair.
+  return shape ? { entity: owner, body: parent, shape: shape.id } : { entity: owner, body: parent };
 }
 
 /** Both projections share completed-step admission and retain atomic query failures. */

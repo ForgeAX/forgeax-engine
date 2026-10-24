@@ -603,7 +603,9 @@ export function uploadMeshSsboBatch(
   visibleSurfaceBases?: ReadonlyMap<number, number>,
   storageBuffer = true,
 ): number {
-  for (const [index, entry] of main.entries()) {
+  let nextIndex = 0;
+  for (const entry of main) {
+    const index = nextIndex++;
     stageMeshDraw(meshStorageBuffer, entry, false, visibleSurfaceBases, storageBuffer);
     if (foldDispatchPlan?.headBuckets.has(index))
       stageMeshDraw(meshStorageBuffer, entry, true, visibleSurfaceBases, storageBuffer);

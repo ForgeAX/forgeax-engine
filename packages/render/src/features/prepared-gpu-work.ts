@@ -486,19 +486,32 @@ export function equalDescriptorValue(left: unknown, right: unknown): boolean {
     }
     return true;
   }
-  if (typeof left === 'object' && typeof right === 'object') {
-    const leftRecord = left as Record<string, unknown>;
-    const rightRecord = right as Record<string, unknown>;
-    const leftKeys = Object.keys(leftRecord);
-    const rightKeys = Object.keys(rightRecord);
-    if (leftKeys.length !== rightKeys.length) return false;
-    for (const key of leftKeys) {
-      if (!Object.hasOwn(rightRecord, key)) return false;
-      if (!equalDescriptorValue(leftRecord[key], rightRecord[key])) return false;
-    }
-    return true;
-  }
+  if (typeof left === 'object' && typeof right === 'object')
+    return equalDescriptorRecords(
+      left as Record<string, unknown>,
+      right as Record<string, unknown>,
+    );
   return false;
+}
+
+/**
+ * Own-key walks instead of Object.keys arrays: publication admission compares
+ * every received projection this way, and each nested record would otherwise
+ * allocate two key arrays per frame.
+ */
+function equalDescriptorRecords(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  let leftCount = 0;
+  for (const key in left) {
+    if (!Object.hasOwn(left, key)) continue;
+    leftCount++;
+    if (!Object.hasOwn(right, key) || !equalDescriptorValue(left[key], right[key])) return false;
+  }
+  let rightCount = 0;
+  for (const key in right) if (Object.hasOwn(right, key)) rightCount++;
+  return leftCount === rightCount;
 }
 
 type ComputeAccessSummary = Omit<RenderFeatureResolvedGpuComputePass, 'dispatches'>;

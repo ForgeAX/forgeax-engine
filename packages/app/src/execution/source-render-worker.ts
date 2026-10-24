@@ -24,7 +24,12 @@ import {
 import { err, ok } from '@forgeax/engine-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
 import { forwardGpuStub } from './gpu-stub';
-import type { EngineToHostMessage, ExecutionFrameMessage, ExecutionInitMessage } from './protocol';
+import type {
+  EngineToHostMessage,
+  ExecutionFrameMessage,
+  ExecutionInitMessage,
+  RetainedExecutionInit,
+} from './protocol';
 import {
   MESH_RESIDENCY_REQUEST_LIMIT,
   type RenderWorkerInput,
@@ -103,7 +108,7 @@ export class SourceRenderWorker {
   constructor(
     private readonly world: World,
     private readonly assets: AssetRegistry,
-    private readonly init: ExecutionInitMessage,
+    private readonly init: RetainedExecutionInit,
     private readonly post: (message: EngineToHostMessage, transfer?: Transferable[]) => void,
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
@@ -182,7 +187,10 @@ export class SourceRenderWorker {
       this.preloadFailure = { kind: 'constructor', cause };
     }
   }
-  async start(canvas: OffscreenCanvas): Promise<void> {
+  async start(
+    canvas: OffscreenCanvas,
+    pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'],
+  ): Promise<void> {
     if (this.disposed) return;
     const epoch = this.epoch;
     const preloadFailure = this.preloadFailure;
@@ -194,6 +202,8 @@ export class SourceRenderWorker {
         name: 'forgeax-render',
       });
     this.worker = worker;
+    // Session closures outlive startup and must not capture the library.
+    this.startupPipelineLibrary = pipelineLibrary;
     await new Promise<void>((resolve, reject) => {
       let ready = false;
       const failure = (
@@ -485,9 +495,7 @@ export class SourceRenderWorker {
             ? {}
             : { renderTaskYield: this.init.diagnostics.renderTaskYield }),
           renderPipelineCapacity: this.publicationCapacity,
-          ...(this.init.pipelineLibrary === undefined
-            ? {}
-            : { pipelineLibrary: this.init.pipelineLibrary }),
+          ...this.takeStartupPipelineLibrary(),
           ...(this.init.outputColorSpace === undefined
             ? {}
             : { outputColorSpace: this.init.outputColorSpace }),
@@ -497,6 +505,9 @@ export class SourceRenderWorker {
           ...(this.init.assetBudgetBytes === undefined
             ? {}
             : { assetBudgetBytes: this.init.assetBudgetBytes }),
+          ...(this.init.loadProgressScope === undefined
+            ? {}
+            : { loadProgressScope: this.init.loadProgressScope }),
           bootstrapUrl: this.init.bootstrapUrl,
           ...(this.init.bootstrapData === undefined
             ? {}
@@ -517,6 +528,12 @@ export class SourceRenderWorker {
     });
   }
   private armFrameDeadline: () => void = () => {};
+  private startupPipelineLibrary: ExecutionInitMessage['pipelineLibrary'];
+  private takeStartupPipelineLibrary(): Pick<ExecutionInitMessage, 'pipelineLibrary'> {
+    const pipelineLibrary = this.startupPipelineLibrary;
+    this.startupPipelineLibrary = undefined;
+    return pipelineLibrary === undefined ? {} : { pipelineLibrary };
+  }
   get hasPublicationCapacity(): boolean {
     return this.inspectionReady && this.publishedFrames.size < this.publicationCapacity;
   }
@@ -878,11 +895,16 @@ export class SourceRenderWorker {
     | undefined {
     return this.latestGpuPassTiming;
   }
-  async replace(epoch: number, canvas: OffscreenCanvas): Promise<void> {
+  async replace(
+    epoch: number,
+    canvas: OffscreenCanvas,
+    pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'],
+  ): Promise<void> {
     if (epoch !== this.epoch || this.worker !== undefined || this.disposed) return;
-    await this.start(canvas);
+    await this.start(canvas, pipelineLibrary);
   }
   private clear(): void {
+    this.startupPipelineLibrary = undefined;
     this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
     this.inspectionReady = false;
     this.deviceGeneration = undefined;

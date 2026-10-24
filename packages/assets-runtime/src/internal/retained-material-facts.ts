@@ -1,4 +1,4 @@
-import { isMaterialProgramAbi, type MaterialProgramAbi } from '@forgeax/engine-types';
+import { internJson, isMaterialProgramAbi, type MaterialProgramAbi } from '@forgeax/engine-types';
 import {
   isRetainedMaterialPayload,
   isSharedMaterialAbi,
@@ -22,70 +22,6 @@ function freezeJson(root: object): void {
       if (child !== null && typeof child === 'object') pending.push(child);
     }
   }
-}
-
-/**
- * Realm-wide structural sharing of retained ABI JSON. Every ABI node is
- * canonicalized bottom-up: a node whose content equals an already retained
- * node is replaced by that node, so equal vertex inputs, slots, and rows are
- * held once across all ABIs and packages instead of once per ABI copy. A node
- * key spells its primitive fields exactly and refers to children by the id of
- * their canonical node, so it is injective and short. Canonical nodes are
- * frozen before they become shareable; the table holds them weakly.
- */
-const canonicalIds = new WeakMap<object, number>();
-const canonicalNodes = new Map<string, WeakRef<object>>();
-const collectedNodes =
-  typeof FinalizationRegistry === 'function'
-    ? new FinalizationRegistry<string>((key) => {
-        if (canonicalNodes.get(key)?.deref() === undefined) canonicalNodes.delete(key);
-      })
-    : undefined;
-let nextCanonicalId = 1;
-
-function leafKey(value: unknown): string | undefined {
-  switch (typeof value) {
-    case 'string':
-      return `s${value.length}:${value}`;
-    case 'number':
-      // JSON text cannot carry non-finite numbers; -0 stays distinct from 0.
-      return Number.isFinite(value) ? (Object.is(value, -0) ? 'n-0,' : `n${value},`) : undefined;
-    case 'boolean':
-      return value ? 't' : 'f';
-    default:
-      return value === null ? 'z' : undefined;
-  }
-}
-
-/** The canonical node equal to `node`, or undefined when it is not plain exact JSON. */
-function canonicalJsonNode(node: object): object | undefined {
-  if (canonicalIds.has(node)) return node;
-  const array = Array.isArray(node);
-  if (Object.getPrototypeOf(node) !== (array ? Array.prototype : Object.prototype))
-    return undefined;
-  const record = node as Record<string, unknown>;
-  let key = array ? '[' : '{';
-  for (const field of Object.keys(record)) {
-    if (!array) key += `${field.length}:${field}`;
-    const child = record[field];
-    if (child !== null && typeof child === 'object') {
-      const canonical = canonicalJsonNode(child);
-      if (canonical === undefined) return undefined;
-      if (canonical !== child) record[field] = canonical;
-      key += `#${canonicalIds.get(canonical)}`;
-    } else {
-      const leaf = leafKey(child);
-      if (leaf === undefined) return undefined;
-      key += leaf;
-    }
-  }
-  const known = canonicalNodes.get(key)?.deref();
-  if (known !== undefined) return known;
-  Object.freeze(node);
-  canonicalIds.set(node, nextCanonicalId++);
-  canonicalNodes.set(key, new WeakRef(node));
-  collectedNodes?.register(node, key);
-  return node;
 }
 
 /** Only freshly parsed resource-package JSON enters this owner. */
@@ -118,8 +54,9 @@ export function retainJsonMaterialFacts(assets: readonly unknown[]): void {
         let retained = abis.get(abi);
         if (retained === undefined) {
           retained = null;
+          // Equal ABI nodes are held once across ABIs and packages.
           if (isMaterialProgramAbi(abi)) {
-            const canonical = canonicalJsonNode(abi) as MaterialProgramAbi | undefined;
+            const canonical = internJson(abi) as MaterialProgramAbi | undefined;
             if (canonical !== undefined) {
               retained = canonical;
               shareFrozenMaterialAbi(retained);

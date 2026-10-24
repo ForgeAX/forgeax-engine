@@ -7,6 +7,7 @@
  */
 
 import { freezeBarrelDistortionMapping } from '@forgeax/engine-render';
+import { loadTimelineNow, recordLoadTimeline } from '@forgeax/engine-types';
 
 export const FORGEAX_FRAME_SUBMITTED_EVENT = 'forgeax:frame-submitted';
 export const FORGEAX_FRAME_COMPLETED_EVENT = 'forgeax:frame-completed';
@@ -113,6 +114,46 @@ declare global {
   }
 }
 
+/**
+ * Load timeline milestones per canvas and World: the first submitted frame
+ * starts the span, the first completed frame and the first presented (`ready`)
+ * frame end one each. A rebuilt World records its own milestones.
+ */
+interface FrameMilestones {
+  world: string;
+  firstSubmitted?: number;
+  completed: boolean;
+  presented: boolean;
+}
+const frameMilestones = new WeakMap<HTMLCanvasElement, FrameMilestones>();
+
+function milestonesFor(canvas: HTMLCanvasElement, world: string | undefined): FrameMilestones {
+  const key = world ?? '';
+  let current = frameMilestones.get(canvas);
+  if (current === undefined || current.world !== key) {
+    current = { world: key, completed: false, presented: false };
+    frameMilestones.set(canvas, current);
+  }
+  return current;
+}
+
+function recordFrameMilestone(canvas: HTMLCanvasElement, event: BrowserFrameCompleted): void {
+  const milestones = milestonesFor(canvas, event.worldIdentity);
+  const presented = event.presentation === 'ready';
+  if (milestones.completed && (milestones.presented || !presented)) return;
+  const end = loadTimelineNow();
+  const start = milestones.firstSubmitted ?? end;
+  const detail = { frameId: event.frameId, world: milestones.world };
+  if (!milestones.completed) {
+    milestones.completed = true;
+    recordLoadTimeline('frame', 'first-completed-frame', start, end, undefined, detail);
+  }
+  if (presented && !milestones.presented) {
+    milestones.presented = true;
+    recordLoadTimeline('frame', 'first-presented-frame', start, end, undefined, detail);
+  }
+}
+
 export function readBrowserFrameSubmitted(
   canvas: HTMLCanvasElement,
 ): BrowserFrameSubmitted | undefined {
@@ -138,6 +179,8 @@ export function publishBrowserFrameSubmitted(
     ...canvas.forgeaxFrameProgress,
     submitted: published,
   });
+  const milestones = milestonesFor(canvas, event.worldIdentity);
+  milestones.firstSubmitted ??= loadTimelineNow();
   // Dawn-node smoke canvases expose only the drawing-buffer surface; browser
   // event dispatch is optional there, while the internal snapshot remains.
   if (typeof CustomEvent === 'function' && typeof canvas.dispatchEvent === 'function') {
@@ -174,6 +217,7 @@ export function publishBrowserFrameCompleted(
     ...canvas.forgeaxFrameProgress,
     completed: published,
   });
+  recordFrameMilestone(canvas, event);
   if (typeof CustomEvent === 'function' && typeof canvas.dispatchEvent === 'function') {
     canvas.dispatchEvent(
       new CustomEvent(FORGEAX_FRAME_COMPLETED_EVENT, {

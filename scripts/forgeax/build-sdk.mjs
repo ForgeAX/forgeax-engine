@@ -40,15 +40,15 @@ import {
   SDK_SOURCE_WASM,
   SDK_TEMPLATE_RESOURCE_ALLOWLIST,
   SDK_TEMPLATES,
-  SDK_ZIP_ONLY_PATHS,
   sdkResourceManifest,
   sdkTemplateResourceManifest,
   sha256,
   stable,
+  stageSdkCarrier,
   streamFile,
   writePackageArchive,
 } from './sdk-lib.mjs';
-import { archiveEngineSource } from './sdk-source.mjs';
+import { archiveEngineSource, seedSourcePackageBuilds } from './sdk-source.mjs';
 import { sdkStage } from './sdk-stage.mjs';
 import { stageViewToolPackage } from './sdk-view.mjs';
 
@@ -555,6 +555,9 @@ try {
     [
       packageManager,
       'install',
+      // The producer writes this lockfile; the copied project policy freezes
+      // it only for consumers.
+      '--no-frozen-lockfile',
       '--ignore-scripts',
       '--child-concurrency=1',
       '--registry',
@@ -630,6 +633,9 @@ try {
       [
         packageManager,
         'install',
+        // This install generates the template lockfile (including its
+        // packageManagerDependencies); generated games then install it frozen.
+        '--no-frozen-lockfile',
         '--child-concurrency=1',
         '--registry',
         `http://127.0.0.1:${port}`,
@@ -758,6 +764,9 @@ await Promise.all(
   ),
 );
 await copySdkResources(sourceRoot, new Map([['preview-canonical-kit', canonicalKitRoot]]));
+await sdkStage('seed editable packages with release builds', () =>
+  seedSourcePackageBuilds({ repositoryRoot: root, sdkRoot: stage, sourceRoot }),
+);
 await writeFile(
   resolve(sourceRoot, '.forgeax-public-distribution'),
   'This marker selects the public SDK source install and build path.\n',
@@ -866,20 +875,9 @@ const carrierArchive = resolve(npmRoot, `forgeax-engine-sdk-${version}.tgz`);
 try {
   await mkdir(carrierPackage, { recursive: true });
   const carrierSdkRoot = resolve(carrierPackage, 'sdk');
-  // The ZIP is the offline product: it keeps the normalized pnpm store, bare
-  // packages and the Engine source snapshot. The npm carrier is the online
-  // bootstrap surface. Games and the CLI runtime install the same Engine bytes
-  // from the registry, and source development uses the ZIP or source mirror.
-  await cp(stage, carrierSdkRoot, {
-    recursive: true,
-    filter: (source) => !SDK_ZIP_ONLY_PATHS.some((path) => source === resolve(stage, path)),
-  });
-  const carrierManifestPath = resolve(carrierSdkRoot, 'sdk-manifest.json');
-  const carrierManifest = JSON.parse(await readFile(carrierManifestPath, 'utf8'));
-  carrierManifest.artifacts = carrierManifest.artifacts.filter(
-    ({ path }) => !SDK_ZIP_ONLY_PATHS.some((prefix) => path.startsWith(`${prefix}/`)),
-  );
-  await writeFile(carrierManifestPath, `${JSON.stringify(carrierManifest, null, 2)}\n`);
+  // Reuse the exact Engine archive instead of transporting its bytes twice.
+  // sdk install materializes the complete writable source baseline.
+  await stageSdkCarrier(stage, carrierSdkRoot, engineTarball.path);
   await writeFile(
     resolve(carrierPackage, 'package.json'),
     `${JSON.stringify(
@@ -897,6 +895,7 @@ try {
         keywords: ['forgeax', 'game-engine', 'game-sdk', 'webgpu'],
         engines: { node: '>=22.13.0' },
         files: ['README.md', 'sdk'],
+        dependencies: { '@forgeax/engine': version },
       },
       null,
       2,

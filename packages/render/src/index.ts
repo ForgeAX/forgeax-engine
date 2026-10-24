@@ -749,6 +749,7 @@ export {
   RenderPublicationError,
   type RenderPublicationIdentity,
   renderPublicationAssetTransfers,
+  renderPublicationBytes,
   renderPublicationTransfers,
 } from './publication/contract';
 export { createRenderPublisher, type RenderPublicationCandidate } from './publication/publisher';

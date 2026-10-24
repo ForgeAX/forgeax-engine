@@ -6,7 +6,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { assert, expect, it, vi } from 'vitest';
 import { createPublishedMeshResidencyHost } from '../../assembly/published-mesh-residency';
-import { MeshFilter, MeshRenderer } from '../../components';
+import { MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { createDynamicGeometryFrameBindings } from '../../record/dynamic-geometry-consumption';
 import type { FrameReceipt } from '../../render-contract';
@@ -452,6 +452,125 @@ it('sends a prepared mesh revision once and adopts the receiver-held payload', (
   const accepted = receiver.accept(packet).unwrap();
   expect(accepted.resources.resolveAsset(meshHandle).unwrap()).toBe(prepared.mesh);
   prepared.release();
+  publisher.dispose();
+});
+
+it('holds a new hidden renderable until its preparing mesh crosses once', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'preparing-reference', epoch: 1 };
+  const held = new Set<string>();
+  const preparing = new Set<number>();
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    (handle, revision) => held.has(`${handle}:${revision}`),
+    (handle) => preparing.has(handle),
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const visibleHandle = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
+  const spawn = (handle: typeof meshHandle, hidden: boolean) =>
+    world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: handle } },
+        { component: MeshRenderer, data: {} },
+        ...(hidden
+          ? [{ component: Visibility, data: { state: VisibilityStateValue.hidden } }]
+          : []),
+      )
+      .unwrap();
+  preparing.add(meshHandle);
+  preparing.add(visibleHandle);
+  spawn(meshHandle, true);
+  // A visible renderable never waits: it publishes its payload as before.
+  spawn(visibleHandle, false);
+  world.update(0).unwrap();
+  const first = publisher.prepare(0).unwrap();
+  expect(first.packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
+  expect(first.packet.assets.some((row) => row.handle === visibleHandle)).toBe(true);
+  first.accept();
+  receiver.accept(structuredClone(first.packet)).unwrap();
+  publisher.recycle(first.packet.revision, renderPublicationTransfers(first.packet)).unwrap();
+  // Still preparing on the next publication: still withheld.
+  world.update(0).unwrap();
+  const second = publisher.prepare(0).unwrap();
+  expect(second.packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
+  second.accept();
+  receiver.accept(structuredClone(second.packet)).unwrap();
+  publisher.recycle(second.packet.revision, renderPublicationTransfers(second.packet)).unwrap();
+  // Ready: the receiver holds the payload, so only its identity crosses.
+  const prepared = receiver
+    .prepareMesh({ ...identity, meshHandle, mesh: assets.read(meshHandle).unwrap(), revision: 1 })
+    .unwrap();
+  preparing.delete(meshHandle);
+  held.add(`${meshHandle}:1`);
+  world.update(0).unwrap();
+  const third = publisher.prepare(0).unwrap();
+  const packet = structuredClone(third.packet);
+  expect(packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
+  expect(packet.preparedAssets).toEqual([
+    expect.objectContaining({ handle: meshHandle, revision: 1 }),
+  ]);
+  third.accept();
+  const accepted = receiver.accept(packet).unwrap();
+  expect(accepted.resources.resolveAsset(meshHandle).unwrap()).toBe(prepared.mesh);
+  prepared.release();
+  publisher.dispose();
+});
+
+it('publishes a withheld hidden renderable normally when its preparation ends unfinished', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'preparing-cancelled', epoch: 1 };
+  const preparing = new Set<number>();
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [],
+    undefined,
+    undefined,
+    2,
+    () => false,
+    (handle) => preparing.has(handle),
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  preparing.add(meshHandle);
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+      { component: Visibility, data: { state: VisibilityStateValue.hidden } },
+    )
+    .unwrap();
+  world.update(0).unwrap();
+  const first = publisher.prepare(0).unwrap();
+  expect(first.packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
+  first.accept();
+  receiver.accept(structuredClone(first.packet)).unwrap();
+  publisher.recycle(first.packet.revision, renderPublicationTransfers(first.packet)).unwrap();
+  preparing.delete(meshHandle);
+  world.update(0).unwrap();
+  const second = publisher.prepare(0).unwrap();
+  expect(second.packet.assets.some((row) => row.handle === meshHandle)).toBe(true);
+  second.accept();
+  receiver.accept(structuredClone(second.packet)).unwrap();
+  publisher.recycle(second.packet.revision, renderPublicationTransfers(second.packet)).unwrap();
   publisher.dispose();
 });
 

@@ -106,10 +106,6 @@ function countPropagation(name: keyof TransformPropagationTrace): void {
 }
 
 interface Scratch {
-  position: Float32Array;
-  rotation: Float32Array;
-  scale: Float32Array;
-  shear: Float32Array;
   local: Mat4;
   parent: Mat4;
   candidate: Mat4;
@@ -255,10 +251,6 @@ function scratchFor(world: World): Scratch {
   const existing = SCRATCH.get(world);
   if (existing !== undefined) return existing;
   const created = {
-    position: new Float32Array(3),
-    rotation: new Float32Array(4),
-    scale: new Float32Array(3),
-    shear: new Float32Array(3),
     local: mat4.create(),
     parent: mat4.create(),
     candidate: mat4.create(),
@@ -283,32 +275,6 @@ function scratchFor(world: World): Scratch {
   return created;
 }
 
-function composeColumns(
-  position: ArrayLike<number>,
-  rotation: ArrayLike<number>,
-  scale: ArrayLike<number>,
-  shear: ArrayLike<number>,
-  out: Mat4,
-  scratch: Scratch,
-  positionStart = 0,
-  rotationStart = 0,
-): void {
-  scratch.position[0] = position[positionStart] ?? 0;
-  scratch.position[1] = position[positionStart + 1] ?? 0;
-  scratch.position[2] = position[positionStart + 2] ?? 0;
-  scratch.rotation[0] = rotation[rotationStart] ?? 0;
-  scratch.rotation[1] = rotation[rotationStart + 1] ?? 0;
-  scratch.rotation[2] = rotation[rotationStart + 2] ?? 0;
-  scratch.rotation[3] = rotation[rotationStart + 3] ?? 1;
-  scratch.scale[0] = scale[positionStart] ?? 1;
-  scratch.scale[1] = scale[positionStart + 1] ?? 1;
-  scratch.scale[2] = scale[positionStart + 2] ?? 1;
-  scratch.shear[0] = shear[positionStart] ?? 0;
-  scratch.shear[1] = shear[positionStart + 1] ?? 0;
-  scratch.shear[2] = shear[positionStart + 2] ?? 0;
-  mat4.compose(out, scratch.position, scratch.rotation, scratch.scale, scratch.shear);
-}
-
 function composeFlatColumns(
   positions: ArrayLike<number>,
   rotations: ArrayLike<number>,
@@ -317,10 +283,11 @@ function composeFlatColumns(
   worlds: Float32Array,
   count: number,
   worldBase: number,
+  sourceRow = 0,
 ): void {
   for (let row = 0; row < count; row += 1) {
-    const position = row * 3;
-    const rotation = row * 4;
+    const position = (sourceRow + row) * 3;
+    const rotation = (sourceRow + row) * 4;
     const world = (worldBase + row) * 16;
     const x = rotations[rotation] ?? 0;
     const y = rotations[rotation + 1] ?? 0;
@@ -560,17 +527,9 @@ function composeBindingRow(
   // uses the same numeric kernel but is intentionally counted separately.
   if ('parent' in (binding.read as object)) countPropagation('hierarchyRowsEvaluated');
   const local = transformColumns(binding);
-  const offset = row * 3;
-  composeColumns(
-    local.pos,
-    local.quat,
-    local.scale,
-    local.shear,
-    scratch.local,
-    scratch,
-    offset,
-    row * 4,
-  );
+  // The same column kernel as flat rows: monomorphic f32 reads straight from
+  // the Transform columns, with no per-row scratch copies.
+  composeFlatColumns(local.pos, local.quat, local.scale, local.shear, scratch.local, 1, 0, row);
   if (parentBinding === undefined) {
     scratch.candidate.set(scratch.local);
   } else {

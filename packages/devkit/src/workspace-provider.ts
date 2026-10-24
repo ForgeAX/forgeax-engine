@@ -17,6 +17,7 @@ import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backen
 import type { HostCallerIdentity } from '@forgeax/engine-host/transport';
 import { encodePackData } from '@forgeax/engine-pack/runtime';
 import { PACK_DRAFT_CHANGED_TOPIC } from '@forgeax/engine-pack/source';
+import { createScriptablePackMetadataCache } from '@forgeax/engine-pack/source-node';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
 import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { createServer as createViteServer, type InlineConfig, type ViteDevServer } from 'vite';
@@ -578,6 +579,8 @@ export function createDevKitWorkspaceProvider(
     options.viteServerFactory ?? ((config: InlineConfig) => createViteServer(config));
   let currentClose: (() => Promise<void>) | undefined;
   let disposed = false;
+  // Every Play re-reads and digests sources; unchanged closures skip metadata Workers.
+  const scriptablePackMetadata = createScriptablePackMetadataCache();
   const openings = new Set<Promise<unknown>>();
   const trackOpening = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = operation();
@@ -1266,6 +1269,7 @@ export function createDevKitWorkspaceProvider(
           strictPort: true,
         },
         host: binding,
+        scriptablePackMetadata,
       });
       timing('vite-config');
       await closeIfInactive();
@@ -1899,6 +1903,7 @@ export function createDevKitWorkspaceProvider(
         await currentClose?.();
       } finally {
         await Promise.allSettled(opening);
+        scriptablePackMetadata.clear();
       }
     },
   });

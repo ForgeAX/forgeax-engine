@@ -163,6 +163,7 @@ export class BatchRowAssembly {
    * this frame, so an edited plan re-joins only its new or changed rows.
    */
   private readonly pinsAdopted: boolean;
+  private readonly addressesProven: boolean;
 
   constructor(
     private readonly preparation: BatchPreparation,
@@ -182,6 +183,13 @@ export class BatchRowAssembly {
       materials !== undefined &&
       inputs.materials !== materials &&
       materials.adoptPins?.(inputs.pins) === true;
+    // An unchanged resource frame already resolved every retained address.
+    this.addressesProven =
+      this.pinsAdopted ||
+      (sameInputs &&
+        inputs?.fixedRows === true &&
+        materials !== undefined &&
+        inputs.materials === materials);
   }
 
   assemble(): PreparedBatchRows[] {
@@ -219,7 +227,7 @@ export class BatchRowAssembly {
       sameRetainedRow(retained, sourceBatch, execution, renderState, mesh);
     if (
       sameRetained &&
-      this.pinsAdopted &&
+      this.addressesProven &&
       retained.geometry === geometry &&
       retained.materialAddress !== undefined
     ) {

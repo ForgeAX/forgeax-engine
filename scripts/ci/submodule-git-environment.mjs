@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { gitHttpEnvironment } from '../lib/git-http-environment.mjs';
 
 // Carry the parent checkout's existing HTTP authorization into its submodule Git.
 export function submoduleGitEnvironment(root, path) {
@@ -25,17 +26,5 @@ export function submoduleGitEnvironment(root, path) {
   } catch {
     return environment;
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return environment;
-  const authorization = run(['config', '--get-urlmatch', 'http.extraheader', url.href]);
-  if (authorization.status === 0 && authorization.stdout.trim()) {
-    const index = Number(environment.GIT_CONFIG_COUNT ?? 0);
-    // extraheader is multivalued: clear headers retained by a child checkout
-    // before supplying the parent's current credential exactly once.
-    environment.GIT_CONFIG_COUNT = String(index + 2);
-    environment[`GIT_CONFIG_KEY_${index}`] = `http.${url.origin}/.extraheader`;
-    environment[`GIT_CONFIG_VALUE_${index}`] = '';
-    environment[`GIT_CONFIG_KEY_${index + 1}`] = `http.${url.origin}/.extraheader`;
-    environment[`GIT_CONFIG_VALUE_${index + 1}`] = authorization.stdout.trim();
-  }
-  return environment;
+  return gitHttpEnvironment(root, url.href);
 }

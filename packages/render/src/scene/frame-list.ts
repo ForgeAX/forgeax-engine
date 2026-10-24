@@ -121,9 +121,39 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
     const value = this.source.at(index);
     return this.project(value as T, index);
   }
-  *[Symbol.iterator](): Generator<U> {
-    let index = 0;
-    for (const value of this.source) yield this.project(value, index++);
+  [Symbol.iterator](): IterableIterator<U> {
+    return new ProjectionIterator(this.source[Symbol.iterator](), this.project);
+  }
+}
+
+/**
+ * Projects each source step into one reused result object; consumers read the
+ * value before the next step, so a walk allocates per walk, not per row.
+ */
+class ProjectionIterator<T, U> implements IterableIterator<U> {
+  #index = 0;
+  readonly #result: { value: U | undefined; done: boolean } = { value: undefined, done: false };
+  constructor(
+    private readonly source: Iterator<T>,
+    private readonly project: (value: T, index: number) => U,
+  ) {}
+  next(): IteratorResult<U> {
+    const step = this.source.next();
+    const result = this.#result;
+    if (step.done === true) {
+      result.value = undefined;
+      result.done = true;
+    } else result.value = this.project(step.value, this.#index++);
+    return result as IteratorResult<U>;
+  }
+  return(): IteratorResult<U> {
+    this.source.return?.();
+    this.#result.value = undefined;
+    this.#result.done = true;
+    return this.#result as IteratorResult<U>;
+  }
+  [Symbol.iterator](): IterableIterator<U> {
+    return this;
   }
 }
 
@@ -150,16 +180,15 @@ export class RetainedFrameProjection<T, U> extends FrameProjection<T, U> {
     this.values[index] = value;
     return value;
   }
-  override *[Symbol.iterator](): Generator<U> {
-    let index = 0;
-    for (const value of this.source) {
-      let projected = this.values[index];
-      if (projected === undefined) {
-        projected = this.retainedProject(value, index);
-        this.values[index] = projected;
-      }
-      yield projected;
-      index++;
+  readonly #retained = (value: T, index: number): U => {
+    let projected = this.values[index];
+    if (projected === undefined) {
+      projected = this.retainedProject(value, index);
+      this.values[index] = projected;
     }
+    return projected;
+  };
+  override [Symbol.iterator](): IterableIterator<U> {
+    return new ProjectionIterator(this.source[Symbol.iterator](), this.#retained);
   }
 }

@@ -14,6 +14,18 @@ The selected View package must provide both public page operations. An older
 View checkout will return an owner or operation failure; the adapter does not
 fall back to private Broker access.
 
+## Dependency floors
+
+The workspace's npm/Bun and pnpm overrides require Zod 4.6.7, body-parser 2.4.0
+and fast-uri 3.1.9 within their existing major versions. The SDK's Express
+dependency accepts the patched body-parser minor; its older locked copy can
+crash on trailing compressed request bytes
+([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)).
+The SDK's Ajv resolver also accepts the patched fast-uri version, which preserves
+scheme, host and relative-reference identity during normalization.
+Regenerate both workspace lockfiles when changing these policies. Keep normal
+compressed request handling enabled.
+
 ## View operating modes
 
 All modes use the same View and public Engine owner APIs. Platform behavior is

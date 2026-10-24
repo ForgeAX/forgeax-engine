@@ -239,6 +239,46 @@ With bounds, primary results contain fully enclosed events; crossing/terminal
 events remain in `wholeTrace`. Any malformed owned event still fails whole-trace
 validation. Repeated markers, conflicting ownership and invalid clocks exit 1.
 
+### Compare two heap profiles
+
+Compare the same population only: a retained floor (sampled, stopped after a forced
+full GC) against another retained floor, or churn (collected objects included)
+against churn. `--kind` is required; wrapper metadata that contradicts it fails.
+
+```sh
+node skills/forgeax-engine-performance/scripts/compare_heap_profiles.mjs \
+  before.json after.json --kind retained \
+  --before-pointer /profiles/1/heap --after-pointer /profiles/1/heap \
+  --before-symbols before-symbols.json --after-symbols after-symbols.json \
+  --top 30 --output retained-compare.json
+```
+
+Each side is attributed exactly like `analyze_heap_profile.mjs` (nearest symbolized
+caller owns unmapped and no-URL frames). Output rows carry before/after/delta bytes
+for the total, every package (`packages/<name>/`, a node_modules package, or the
+first two directories), and the top files, functions (`file#name`, line omitted so
+unrelated edits keep keys stable) and unresolved frames. `--inline-sources` accepts
+profiles whose call-frame URLs were already rewritten to source paths. Without symbols,
+unresolved keys use generated names and URL paths, which only match within one build.
+Deltas within a few sampling intervals times the square root of the sample count are
+sampling noise.
+
+### Keep a removed allocation removed (Node unit tests)
+
+`allocation_probe.mjs` exports `measureAllocations(fn, {calls, warmup, samplingInterval})`.
+It runs `fn` `warmup` times unmeasured (so optimized code and escape analysis are what
+is measured), then samples allocations, including collected objects, over `calls`
+invocations through the in-process inspector. Only bytes below its probe frame count.
+
+```js
+import { measureAllocations } from '../../skills/forgeax-engine-performance/scripts/allocation_probe.mjs';
+const { bytesPerCall } = await measureAllocations(() => composeInto(out, a, b));
+expect(bytesPerCall).toBeLessThan(4);
+```
+
+Assert with a margin: results are Poisson samples, Node's V8 is not the browser Worker,
+and inlining moves bytes between frames but not out of the probe subtree.
+
 ## GPU pass timing
 
 The source authority is the [GPU timing contract](../../../packages/render/src/record/gpu-pass-timing/contract.ts).

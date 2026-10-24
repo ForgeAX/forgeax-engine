@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, version as esbuildVersion } from 'esbuild';
 import { assertPortableRustArtifact, portableRustFlags } from '../../../scripts/lib/rust-build-paths.mjs';
+import { gitHttpEnvironment } from '../../../scripts/lib/git-http-environment.mjs';
 import { bundleRapierDeclarations } from './build-declarations.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -26,6 +27,7 @@ const inputs = [
   bindingsManifest,
   lockfile,
   '../../scripts/lib/rust-build-paths.mjs',
+  '../../scripts/lib/git-http-environment.mjs',
   ...(dimension === '3d' ? (await readdir(join(root, 'patches'))).sort().map((name) => `patches/${name}`) : []),
 ];
 const inputHashes = Object.fromEntries(
@@ -85,12 +87,12 @@ function run(command, args, cwd, extraEnv = {}) {
 }
 // Anonymous GitHub fetches can transiently answer 401/5xx under load; retry a
 // bounded number of times and never fall back to an interactive prompt.
-function fetchPinned(checkout, commit) {
+function fetchPinned(checkout, commit, environment) {
   const args = ['-c', 'core.longpaths=true', 'fetch', '--depth=1', 'origin', commit];
   for (let attempt = 1; ; attempt += 1) {
     const result = spawnSync('git', args, {
       cwd: checkout,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env: { ...environment, GIT_TERMINAL_PROMPT: '0' },
       stdio: 'inherit',
     });
     if (result.error) throw result.error;
@@ -124,7 +126,7 @@ for (const name of ['rapier', 'parry']) {
   const checkout = join(work, name);
   run('git', ['init', checkout], root);
   run('git', ['remote', 'add', 'origin', source[name].url], checkout);
-  fetchPinned(checkout, source[name].commit);
+  fetchPinned(checkout, source[name].commit, gitHttpEnvironment(root, source[name].url));
   run('git', ['checkout', '--detach', source[name].commit], checkout);
   // Preserve 2D's upstream behavior; the maintained solver patches belong to 3D.
   if (dimension === '3d') {

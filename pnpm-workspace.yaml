@@ -39,3 +39,8 @@ minimumReleaseAgeExclude:
   - "@forgeax/*"
 patchedDependencies:
   '@deepseek-ai/cordis@4.0.4': patches/@deepseek-ai__cordis@4.0.4.patch
+
+overrides:
+  body-parser: "^2.4.0"
+  fast-uri: "^3.1.9"
+  zod: "^4.6.7"

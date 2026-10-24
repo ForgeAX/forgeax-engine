@@ -11,7 +11,7 @@ it('locates the public portable CSS profile while retaining browser-only authori
     expect.objectContaining({
       code: 'unsupported-css-property',
       severity: 'error',
-      hint: expect.stringContaining('forgeax project check --json'),
+      hint: expect.stringContaining('forgeax project check --detail --json'),
     }),
   );
   expect(parseCssAuthoring(css, 'hud.ui.css', { browserExtensions: ['css'] }).diagnostics).toEqual(

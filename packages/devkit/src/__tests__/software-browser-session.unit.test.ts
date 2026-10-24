@@ -136,6 +136,30 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+type PageHandler = (value: unknown) => void;
+function pageHandler(event: string): PageHandler {
+  const call = [...browserMocks.page.on.mock.calls].reverse().find(([name]) => name === event) as
+    | [string, PageHandler]
+    | undefined;
+  if (call === undefined) throw new Error(`no ${event} listener`);
+  return call[1];
+}
+function emitRequest(url: string, status: number | null): void {
+  const request = {
+    url: () => url,
+    resourceType: () => 'fetch',
+    frame: () => undefined,
+    failure: () => null,
+  };
+  pageHandler('request')(request);
+  if (status !== null)
+    pageHandler('response')({
+      request: () => request,
+      status: () => status,
+      frame: () => undefined,
+    });
+}
+
 describe('software browser session', () => {
   it.each([
     { message: 'probe-script-failed', elapsedMs: 0 },
@@ -342,10 +366,21 @@ describe('software browser session', () => {
         target: { kind: 'single-html', path: candidate },
         launchProfile: 'release',
       });
+      emitRequest(pathToFileURL(candidate).href, 200);
+      emitRequest('https://cdn.example.com/font.woff2', 200);
+      emitRequest(pathToFileURL(resolve(root, 'release', 'late.bin')).href, null);
     } finally {
       await session.close();
       await browser.close();
     }
+    const report = JSON.parse(await readFile(session.reportPath, 'utf8'));
+    expect(report.ok).toBe(false);
+    expect(report.requests).toMatchObject({ total: 3, https: 1, pending: 1 });
+    expect(report.requests.notable.map(({ url }: { url: string }) => url)).toEqual([
+      'https://cdn.example.com/font.woff2',
+      pathToFileURL(resolve(root, 'release', 'late.bin')).href,
+    ]);
+    expect(report.requests.entries).toHaveLength(3);
   });
 
   it('keeps one page alive across ordered named checkpoint captures', async () => {
@@ -386,6 +421,8 @@ describe('software browser session', () => {
       }),
     );
 
+    emitRequest('http://127.0.0.1:43123/assets/ready.json', 200);
+    emitRequest('http://127.0.0.1:43123/assets/hung.bin', null);
     const first = await session.capture('spawn');
     expect(browserMocks.browser.close).not.toHaveBeenCalled();
     const second = await session.capture('boss-hit');
@@ -403,10 +440,18 @@ describe('software browser session', () => {
     expect(browserMocks.browser.close).toHaveBeenCalledTimes(1);
     expect(browserMocks.server.close).toHaveBeenCalledTimes(1);
     const report = JSON.parse(await readFile(session.reportPath, 'utf8'));
+    expect(report.requests.entries).toBeUndefined();
     expect(report).toMatchObject({
-      schemaVersion: '2.0.0',
+      schemaVersion: '3.0.0',
       ok: true,
       runId: 'ordered-checkpoints',
+      requests: {
+        total: 2,
+        failed: 0,
+        resourceMisses: 0,
+        pending: 1,
+        notable: [{ url: 'http://127.0.0.1:43123/assets/hung.bin', status: null, failed: false }],
+      },
       captures: [
         { index: 1, checkpoint: 'spawn', ok: true },
         { index: 2, checkpoint: 'boss-hit', ok: true },

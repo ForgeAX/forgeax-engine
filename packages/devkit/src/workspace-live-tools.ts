@@ -38,6 +38,7 @@ export function createWorkspaceLiveTools(defaultRoot?: string): readonly ToolCon
         ref: { type: 'string' },
         timeoutMs: { type: 'integer', ...(operation === 'verify' ? { minimum: 1 } : {}) },
         lease: { type: 'boolean' },
+        readyTimeoutMs: { type: 'integer', minimum: 0 },
         limit: { type: 'integer', minimum: 1, maximum: 100 },
         distance: { type: 'number' },
         lens: { type: 'object' },

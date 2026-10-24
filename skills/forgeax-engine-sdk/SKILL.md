@@ -8,6 +8,29 @@ description: >-
 
 # ForgeaX Engine SDK
 
+## Start here for game work
+
+The game-root `AGENTS.md` already gives the hard rules, default commands and routing.
+Reach a first correct edit with this short path, not by reading large skills up front:
+
+1. Signatures and import paths: `references/api-index.md` before
+   searching `node_modules` READMEs or `.d.ts` files.
+2. Recipes for an `empty` project (character, camera, physics boxes, lights, VFX burst,
+   HUD, playthrough state): copy from `references/gameplay-cookbook.md`.
+3. Commands: the **Quick contract** at the top of
+   [`forgeax-engine-cli`](../forgeax-engine-cli/SKILL.md); camera, lights and post
+   effects: the Quick contract of
+   [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md).
+4. Deeper needs: pick one row in the capability table below and read only that skill's
+   relevant section. Project layout, assets and setup live in the
+   [game project guide](references/game-project-guide.md); acceptance, release and
+   blocked checks in the [game delivery guide](references/game-delivery.md).
+
+Large skills (`forgeax-engine-cli`, `forgeax-engine-render-pipeline`,
+`forgeax-engine-debug`, `forgeax-engine-material`, `forgeax-engine-app`) are references:
+search them for the needed heading instead of reading them whole, and do not re-read a
+file already in context.
+
 ## First five minutes: understand before authoring
 
 SDK `init` and project `new` return the local `AGENTS.md` and this skill in
@@ -79,6 +102,12 @@ Run `forgeax help --tree --json`, then `forgeax help <command-path> --json`, bef
 Successful `new` also performs a two-second, best-effort check of the configured npm registry's `@forgeax/engine-sdk` channel tag (`next` for a development SDK, `latest` for stable; an rc SDK compares both `rc` and `latest`, so it is offered the promoted stable). Only a strictly newer semantic version produces a text warning; JSON always records `sdkUpdate` as `available`, `current`, `skipped`, or `unavailable`. Offline mode and `FORGEAX_DISABLE_UPDATE_CHECK=1` skip the query, and registry failure never rolls back a created game. Treat the warning as information, not migration authority: install the newer SDK in another directory, read its release notes, then migrate and test each existing game explicitly. Games remain pinned and are never rewritten by SDK discovery.
 
 ## SDK production and publication
+
+Both SDK transports include editable `source/engine/` with the same release's
+prebuilt package outputs. For a focused Engine change, install source dependencies,
+rebuild the changed owner and bind through `project engine use-local`; unchanged
+owners reuse their delivered builds. Follow the [local-Engine guide](references/browser-capture-and-local-engine.md)
+for binding and the SDK README for the partial rebuild commands.
 
 For an explicitly requested Engine/SDK change, SDK archive verification or SDK
 publication, read [SDK production](references/sdk-production.md). Its exact-ZIP

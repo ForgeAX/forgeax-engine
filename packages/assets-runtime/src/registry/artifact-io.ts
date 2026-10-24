@@ -3,6 +3,7 @@ import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@forgeax/engine-types';
 import { encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
+import type { BundleTransferObservation } from '../internal/bundle-diagnostics.js';
 import { BundleStore } from '../internal/bundle-store.js';
 import {
   bytesOf,
@@ -156,12 +157,28 @@ export async function readStoredArtifact(
   range?: ArtifactDescriptor['byteRange'],
   init?: PackageRequest,
   entry = false,
+  observe?: (response: BundleTransferObservation) => void,
 ): Promise<Result<Uint8Array, PackageReadFailure | AssetArtifactError>> {
   const window =
     entry && range !== undefined
       ? { ...init, headers: { range: `bytes=${range.offset}-${range.offset + range.length - 1}` } }
       : init;
-  const read = await readPackage(fetcher, url, bytesOf, window);
+  const read = await readPackage(
+    fetcher,
+    url,
+    async (response) => {
+      const bytes = await bytesOf(response);
+      const header = response.headers.get('content-length');
+      const length = header === null ? NaN : Number(header);
+      observe?.({
+        status: response.status,
+        entityBytes: bytes.byteLength,
+        contentLength: Number.isSafeInteger(length) && length >= 0 ? length : null,
+      });
+      return bytes;
+    },
+    window,
+  );
   if (!read.ok || range === undefined) return read;
   // A whole Bundle is always longer than one entry; the entry's owner verifies it.
   if (entry && read.value.byteLength === range.length) return read;
@@ -322,6 +339,10 @@ export class ArtifactReadCache {
     Promise<Result<Uint8Array, PackageReadFailure>> | WeakRef<Uint8Array>
   >();
 
+  inspectTransfers() {
+    return this.bundles.transfers.snapshot();
+  }
+
   readArtifact(
     request: ArtifactReadRequest,
     fetcher: ArtifactFetcher,
@@ -344,7 +365,20 @@ export class ArtifactReadCache {
           url,
           range,
           fetch: async (entry) => {
-            const read = await readStoredArtifact(request, fetcher, url, range, undefined, entry);
+            const read = await readStoredArtifact(
+              request,
+              fetcher,
+              url,
+              range,
+              undefined,
+              entry,
+              (response) =>
+                this.bundles.transfers.observe(
+                  `${url}\0${range.bundleDigest}`,
+                  entry ? range.length : undefined,
+                  response,
+                ),
+            );
             if (read.ok || 'code' in read.error)
               return read as Result<Uint8Array, AssetArtifactError>;
             return err(

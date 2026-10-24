@@ -69,6 +69,14 @@ const number = { type: 'number' } satisfies ToolJsonSchema;
 const integer = { type: 'integer' } satisfies ToolJsonSchema;
 const port = { type: 'integer', minimum: 0, maximum: 65_535 } satisfies ToolJsonSchema;
 const liveIdentity = { revision: string };
+const liveReady = {
+  readyTimeoutMs: {
+    type: 'integer',
+    minimum: 0,
+    description:
+      'Wait up to this many milliseconds for a reloading, replaced, or busy live runtime before running; 0 fails immediately. Default 120000.',
+  },
+} satisfies Readonly<Record<string, ToolJsonSchema>>;
 
 const schema = (
   properties: Readonly<Record<string, ToolJsonSchema>>,
@@ -103,7 +111,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     compress: boolean,
     json: boolean,
   }),
-  'project.preview': schema({ ...root, port, json: boolean }),
+  'project.preview': schema({ ...root, dist: string, port, json: boolean }),
   'project.capture': schema({
     ...root,
     output: string,
@@ -155,7 +163,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   ),
   'sdk.install': schema({ ...root, version: string }),
   'preview.analyze': schema({ ...root, artifact: string, json: boolean }),
-  'rhi.capture': schema({ ...root, output: string, json: boolean }),
+  'rhi.capture': schema({ ...root, ...liveReady, output: string, json: boolean }),
   'rhi.summary': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
   'rhi.timing': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
   'rhi.inspect': schema(
@@ -180,6 +188,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   ),
   'profile.capture': schema({
     ...root,
+    ...liveReady,
     output: string,
     frameLimit: integer,
     eventLimit: integer,
@@ -212,6 +221,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     {
       ...root,
       ...liveIdentity,
+      ...liveReady,
       output: string,
       checkpoint: string,
       requireUi: boolean,
@@ -223,20 +233,22 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'dev.reload': schema({ ...root }),
   'dev.stop': schema({ ...root }),
   'dev.eval': schema(
-    { ...root, ...liveIdentity, code: string, timeoutMs: integer, lease: boolean },
+    { ...root, ...liveIdentity, ...liveReady, code: string, timeoutMs: integer, lease: boolean },
     ['code', 'revision'],
   ),
   'dev.find': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     name: string,
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }),
-  'dev.camera.release': schema({ ...root, ...liveIdentity }),
-  'dev.camera.get': schema({ ...root, ...liveIdentity }),
+  'dev.camera.release': schema({ ...root, ...liveIdentity, ...liveReady }),
+  'dev.camera.get': schema({ ...root, ...liveIdentity, ...liveReady }),
   'dev.camera.set': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     position: { type: 'array', items: number, minItems: 3 },
     target: { type: 'array', items: number, minItems: 3 },
     up: { type: 'array', items: number, minItems: 3 },
@@ -246,6 +258,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'dev.focus': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     name: string,
     ref: string,
     distance: number,
@@ -256,6 +269,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'dev.capture': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     output: string,
     checkpoint: {
       type: 'string',

@@ -688,3 +688,44 @@ it.each([
     prepared.dispatch.map((entry) => prepared.rows[entry.renderableIndex]?.source.entityKey),
   ).toEqual([1, 2, 0]);
 });
+
+it('addresses each pass row once under the combined index with its last dispatch overlay', () => {
+  const f = fixture(1);
+  const first = request('Forward', { gpu: false });
+  const second = request('Forward', { gpu: false, passKind: 'temporal' });
+  const prepared = prepareScenePasses(
+    [first, second],
+    {
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: [],
+    },
+    f.dispatch.materials(),
+    f.gpu,
+    f.meshes,
+    f.worlds,
+    () => [],
+    [],
+    (mesh) => mesh,
+    f.project,
+    () => [],
+    (rows) => rows,
+    f.world,
+    undefined,
+  );
+  const perPass = prepared.rows.length / 2;
+  expect(perPass).toBeGreaterThan(0);
+  expect(prepared.rows.map((row) => row.renderableIndex)).toEqual(
+    Array.from({ length: perPass * 2 }, (_, index) => index),
+  );
+  expect(new Set(prepared.rows).size).toBe(prepared.rows.length);
+  for (const entry of prepared.dispatch) {
+    const row = prepared.rows[entry.renderableIndex];
+    expect(row?.renderState).toBe(entry.renderState);
+    expect(row?.stencilReference).toBe(entry.stencilReference);
+  }
+  expect(prepared.dispatch.map((entry) => entry.renderableIndex).sort((a, b) => a - b)).toEqual(
+    Array.from({ length: perPass * 2 }, (_, index) => index),
+  );
+});

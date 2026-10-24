@@ -145,6 +145,8 @@ export interface ShadowViewInspection {
   readonly candidateCount: number;
   readonly batchCount: number;
   readonly resourceGeneration: number;
+  /** Pass-list generation of the view; buffer growth does not advance it. */
+  readonly graphGeneration: number;
   /** World-space caster diameter below which the view skips a caster; 0 disables. */
   readonly minCasterDiameter: number;
   /** In-frustum casters the last observed GPU cull dropped below that diameter. */
@@ -1974,6 +1976,7 @@ export class ShadowViewStatePool {
             candidateCount: record.plan.candidateCount,
             batchCount: record.plan.batches.length,
             resourceGeneration: view.resourceGeneration,
+            graphGeneration: record.view.graphResourceGeneration,
             minCasterDiameter: record.minCasterDiameter,
             ...(record.lastCullingObservation === undefined
               ? {}

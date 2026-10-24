@@ -164,14 +164,14 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
       startup.submitted(ready);
       startup.enter(ready);
     });
-    await page.clock.runFor(149);
+    // The first ready frame admits input; the 150 ms fade is presentation only.
     expect(
       await page.evaluate(() => Reflect.get(globalThis, '__startupKeyboard').inputEnabled),
-    ).toBe(false);
+    ).toBe(true);
     expect(await page.locator('#game-ui').evaluate((node) => (node as HTMLElement).inert)).toBe(
-      true,
+      false,
     );
-    await page.clock.runFor(1);
+    await page.clock.runFor(150);
     expect(
       await page.evaluate(() => Reflect.get(globalThis, '__startupKeyboard').inputEnabled),
     ).toBe(true);
@@ -476,7 +476,8 @@ it('enters the generated game after its canvas is replaced during startup', asyn
         inputEnabled,
       };
     });
-    expect(playStartup).toEqual({ status: 'Preparing scene…', inputEnabled: false });
+    // Editor Play admits input with its first ready frame while the overlay fades.
+    expect(playStartup).toEqual({ status: 'Preparing scene…', inputEnabled: true });
     record('play-loading-retirement');
     await playPage.locator('#forgeax-loading').waitFor({ state: 'hidden' });
     expect(await playPage.locator('#forgeax-loading').getAttribute('aria-hidden')).toBe('true');

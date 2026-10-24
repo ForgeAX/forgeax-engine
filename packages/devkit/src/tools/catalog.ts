@@ -270,15 +270,24 @@ const operationTitles: Readonly<Record<string, string>> = {
   'asset.source.cold-cook': 'Cold-cook Pack source',
 };
 
+const PACK_READ_OPERATIONS: ReadonlySet<string> = new Set([
+  'asset.list',
+  'asset.inspect',
+  'asset.resolve',
+  'asset.verify',
+]);
+
 /** The Pack domain owns these descriptors; DevKit only projects them. */
 export const packAuthoringToolDescriptors: readonly ToolDescriptor[] =
   PACK_AUTHORING_OPERATION_DESCRIPTORS.map((operation) => ({
     id: operation.id,
     path: operationCommandPath(operation.id),
     title: operationTitles[operation.id] ?? operation.id,
-    summary: operation.readOnly
-      ? 'Reads Pack identity, topology, inheritance, or current readiness without building or writing.'
-      : 'Runs the Pack authoring gateway with requestId and revision CAS semantics.',
+    // The input schema, not the Pack readOnly flag, separates adapter-correlated
+    // reads from mutations that need caller requestId and revision CAS.
+    summary: PACK_READ_OPERATIONS.has(operation.id)
+      ? `${operationTitles[operation.id] ?? operation.id}.`
+      : `${operationTitles[operation.id] ?? 'Runs the Pack authoring gateway'} with requestId and revision CAS semantics.`,
     realm: 'build' as const,
     argsSchema:
       operation.id === 'asset.list'

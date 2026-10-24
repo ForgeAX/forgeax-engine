@@ -317,6 +317,24 @@ it('queries the layout again on the next invocation and preserves replacement er
   }
 });
 
+it('reuses the pipeline lookup when a retained material row is re-recorded', async () => {
+  const f = await fixture();
+  try {
+    f.run();
+    const first = f.draws[0]?.group;
+    f.pipelineLookup.mockClear();
+    f.replaceLayout();
+
+    f.run();
+
+    expect(f.pipelineLookup).toHaveBeenCalledTimes(1);
+    expect(f.draws[64]?.group).not.toBe(first);
+    expect(f.draws.slice(64)).toHaveLength(64);
+  } finally {
+    f.dispose();
+  }
+});
+
 it('binds A/B/A textures from each selected material instead of retaining the adjacent group', async () => {
   const f = await fixture(true);
   try {

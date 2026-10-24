@@ -9,6 +9,7 @@ import {
   type ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
 import { createDevkitCliStartup } from './cli-host.js';
+import { compactCliResult } from './cli-presentation.js';
 
 export interface UnifiedCliResult {
   readonly ok: boolean;
@@ -22,6 +23,16 @@ export interface UnifiedCliResult {
     readonly hint?: string;
     readonly detail?: unknown;
   };
+  /** Compact presentation only: value fields left out, restored by `flag`. */
+  readonly omitted?: { readonly fields: readonly string[]; readonly flag: '--detail' };
+}
+
+export interface UnifiedCliOptions {
+  /**
+   * `full` (default) returns owner values unchanged. `compact` is the `forgeax`
+   * process presentation: it bounds large values unless the call passes `--detail`.
+   */
+  readonly presentation?: 'full' | 'compact';
 }
 
 interface ParsedCli {
@@ -30,6 +41,7 @@ interface ParsedCli {
   readonly root: string;
   readonly json: boolean;
   readonly tree: boolean;
+  readonly detail: boolean;
   readonly helpRequested: boolean;
   readonly input?: unknown;
   readonly args: Record<string, unknown>;
@@ -50,12 +62,20 @@ function parseInput(raw: string, root: string): unknown {
   return JSON.parse(source) as unknown;
 }
 
+function booleanFlag(name: string, inline: string | undefined): boolean {
+  if (inline !== undefined && inline !== 'true' && inline !== 'false') {
+    throw new Error(`${name} expects true or false`);
+  }
+  return inline !== 'false';
+}
+
 function parseArgs(argv: readonly string[]): ParsedCli {
   const path: string[] = [];
   const args: Record<string, unknown> = {};
   let root = process.cwd();
   let json = false;
   let tree = false;
+  let detail = false;
   let input: unknown;
   let inputRaw: string | undefined;
   let inputSeen = false;
@@ -75,13 +95,11 @@ function parseArgs(argv: readonly string[]): ParsedCli {
       path.push(value);
       continue;
     }
-    if (value === '--json' || value === '--tree' || value === '--help') {
-      if (inline !== undefined && inline !== 'true' && inline !== 'false') {
-        throw new Error(`${value} expects true or false`);
-      }
-      const enabled = inline !== 'false';
+    if (value === '--json' || value === '--tree' || value === '--detail' || value === '--help') {
+      const enabled = booleanFlag(value, inline);
       if (value === '--json') json = enabled;
       else if (value === '--tree') tree = enabled;
+      else if (value === '--detail') detail = enabled;
       else args.help = enabled;
       continue;
     }
@@ -116,6 +134,7 @@ function parseArgs(argv: readonly string[]): ParsedCli {
     root,
     json,
     tree,
+    detail,
     helpRequested,
     ...(inputSeen ? { input } : {}),
     args,
@@ -240,7 +259,10 @@ function strictInputSchema(schema: ToolJsonSchema | undefined): ToolJsonSchema |
   return { ...schema, additionalProperties: false };
 }
 
-export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCliResult> {
+export async function runUnifiedCli(
+  argv: readonly string[],
+  options: UnifiedCliOptions = {},
+): Promise<UnifiedCliResult> {
   let startup: Awaited<ReturnType<typeof createHostStartup>> | undefined;
   let cli: ReturnType<typeof createDevkitCliStartup> | undefined;
   let rawCommand = '';
@@ -261,16 +283,20 @@ export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCli
     startup = await createHostStartup({ startupPlugins: [createToolApiPlugin(), cli.plugin] });
     if (!parsedResult.ok) throw parsedResult.error;
     const parsed = parsedResult.value;
+    const present = (result: UnifiedCliResult, args?: unknown): UnifiedCliResult =>
+      options.presentation === 'compact' && !parsed.detail
+        ? compactCliResult(result, { root: parsed.root, args, tree: parsed.tree })
+        : result;
     rawCommand = parsed.path.join(' ');
     const client = await cli.service.ready();
     let commandPath = parsed.path;
     let positionals = parsed.positionals;
     if (parsed.helpRequested) {
-      return {
+      return present({
         ok: true,
         command: rawCommand || 'help',
         value: client.help(parsed.path, parsed.tree),
-      };
+      });
     }
     if (parsed.path.length > 0) {
       for (let length = parsed.path.length; length > 0; length -= 1) {
@@ -293,11 +319,15 @@ export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCli
     }
     const command = commandPath.join(' ');
     if (commandPath.length === 0 || parsed.args.help === true) {
-      return { ok: true, command: command || 'help', value: client.help(commandPath, parsed.tree) };
+      return present({
+        ok: true,
+        command: command || 'help',
+        value: client.help(commandPath, parsed.tree),
+      });
     }
     const help = client.help(commandPath, false);
     if (help.leaf === undefined) {
-      return { ok: true, command, value: client.help(commandPath, parsed.tree) };
+      return present({ ok: true, command, value: client.help(commandPath, parsed.tree) });
     }
     const effectiveSchema = strictInputSchema(help.leaf?.inputSchema as ToolJsonSchema | undefined);
     const positional = positionalArgs(command, parsed.args, positionals);
@@ -324,7 +354,7 @@ export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCli
       if (!checked.ok) throw new Error(checked.error);
     }
     const terminal = await client.runPath(command, args);
-    return terminalResult(command, terminal);
+    return present(terminalResult(command, terminal), args);
   } catch (error) {
     return errorResult(error, rawCommand);
   } finally {

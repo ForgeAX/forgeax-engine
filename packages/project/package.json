@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@forgeax/engine-pack": "workspace:*",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

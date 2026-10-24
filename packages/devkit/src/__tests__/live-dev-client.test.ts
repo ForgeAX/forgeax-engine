@@ -265,11 +265,45 @@ describe('live command transport', () => {
 
   it('does not claim startup succeeded when the owner cannot operate', async () => {
     const root = await project();
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'live-test', type: 'module', forgeax: { startupTimeoutMs: 300 } }),
+    );
     await endpoint(root, { ok: true, value: { phase: 'waiting', error: 'App bootstrap failed' } });
     expect(await runUnifiedCli(['dev', 'start', '--root', root])).toMatchObject({
       ok: false,
       error: { code: 'live-not-ready' },
     });
+  });
+
+  it('waits for an existing owner to finish replacing its runtime', async () => {
+    const root = await project();
+    let polls = 0;
+    const server = createServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          ok: true,
+          value: { phase: ++polls < 4 ? 'reloading' : 'ready', revision: 'after-edit' },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    await writeFile(
+      join(root, '.forgeax/dev-session.json'),
+      JSON.stringify({
+        root,
+        endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        pid: process.pid,
+      }),
+    );
+    expect(await runUnifiedCli(['dev', 'start', '--root', root])).toMatchObject({
+      ok: true,
+      value: { phase: 'ready', revision: 'after-edit' },
+    });
+    expect(polls).toBe(4);
   });
 
   it('rejects an explicit backend change on an existing owner', async () => {

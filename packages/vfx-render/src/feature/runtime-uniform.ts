@@ -67,16 +67,18 @@ export function runtimeData(
   rendererIndex = 0,
   particleInputLanes = renderer?.materialInputs?.length ?? 0,
   meshDraw?: { readonly count: number; readonly firstIndex: number },
+  /** Projection runtime: the latest intent with no simulation delta or spawn. */
+  projection = false,
 ): Uint8Array {
   const data = target ?? createRuntimeStorage();
   const { floats, words } = data;
   if (target !== undefined) data.bytes.fill(0);
-  floats[0] = intent.fixedDelta;
+  floats[0] = projection ? 0 : intent.fixedDelta;
   words[1] = intent.phaseTick;
   words[2] = intent.seed;
   words[3] = intent.playCycle;
   words[4] = intent.emitter.capacity;
-  words[5] = intent.spawnCount;
+  words[5] = projection ? 0 : intent.spawnCount;
   words[6] = intent.firstParticleId;
   words[7] = intent.emitter.renderers.length;
   floats.set(camera.viewProjection, 8);

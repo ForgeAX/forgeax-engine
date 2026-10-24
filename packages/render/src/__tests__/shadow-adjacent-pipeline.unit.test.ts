@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import {
   deriveVertexBufferLayoutFromProjection,
   deriveVertexLayoutProjection,
@@ -12,6 +14,9 @@ import type { RenderSystemInternals } from '../record/render-context';
 import { encodeStaticShadowPass } from '../record/shadow-pass';
 import { replayShadowBundles } from './shadow-bundle.fixture';
 import { preparedShadowFixture } from './shadow-indirect.fixture';
+
+setFlagsFromString('--expose-gc');
+const gc = runInNewContext('gc') as () => void;
 
 type PipelineLookup = NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>;
 
@@ -482,6 +487,64 @@ it('observes raw in-place entry changes from the preceding callback', async () =
     expect(f.lookup.mock.calls.map((args) => args[16])).toEqual(['vs_main', 'vs_changed']);
     expect(f.draws).toHaveLength(2);
     expect(f.draws[0]?.pipeline).not.toBe(f.draws[1]?.pipeline);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('replays an unchanged view without visiting its rows and re-records a replaced projection map', async () => {
+  const f = await fixture();
+  try {
+    const submission = { view: f.shadowView, plan: { batches: f.batches } };
+    Object.assign(f.context, { gpuDrivenShadowViews: { submission: () => submission } });
+    const views = f.context.gpuDrivenShadowBatchProjections as Map<string, unknown>;
+    f.run();
+    const visited = vi.spyOn(f.projections, 'get');
+    f.run();
+    expect(visited).not.toHaveBeenCalled();
+    visited.mockRestore();
+    expect(f.draws).toHaveLength(128);
+    expect(f.draws.slice(64)).toEqual(f.draws.slice(0, 64));
+    // Each invocation still observes its actual PSO owner once.
+    expect(f.lookup).toHaveBeenCalledTimes(2);
+    const replaced = new Map(f.projections);
+    const first = defined(f.batches[0]);
+    replaced.set(first.batchId, { ...defined(replaced.get(first.batchId)) });
+    for (const key of views.keys()) views.set(key, replaced);
+    const revisited = vi.spyOn(replaced, 'get');
+    f.run();
+    expect(revisited).toHaveBeenCalledTimes(64);
+    expect(f.draws).toHaveLength(192);
+    expect(f.draws.slice(128)).toEqual(f.draws.slice(0, 64));
+  } finally {
+    f.dispose();
+  }
+});
+
+it('does not retain a superseded projection map or plan for replay', async () => {
+  const f = await fixture();
+  try {
+    const views = f.context.gpuDrivenShadowBatchProjections as Map<string, unknown>;
+    let submission: { view: unknown; plan: { batches: unknown } } | undefined = {
+      view: f.shadowView,
+      plan: { batches: f.batches },
+    };
+    const current = () => submission;
+    Object.assign(f.context, { gpuDrivenShadowViews: { submission: () => current() } });
+    let superseded: Map<number, unknown> | undefined = new Map(f.projections);
+    for (const key of views.keys()) views.set(key, superseded);
+    f.run();
+    const map = new WeakRef(superseded);
+    const plan = new WeakRef(submission.plan);
+    superseded = undefined;
+    for (const key of views.keys()) views.set(key, new Map(f.projections));
+    submission = { view: f.shadowView, plan: { batches: f.batches } };
+    f.run();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+    expect(map.deref()).toBeUndefined();
+    expect(plan.deref()).toBeUndefined();
+    expect(f.draws).toHaveLength(128);
   } finally {
     f.dispose();
   }

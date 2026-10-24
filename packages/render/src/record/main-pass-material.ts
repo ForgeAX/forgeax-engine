@@ -7,6 +7,7 @@ import {
 import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
+import { derivedRenderState } from '../material-render-state';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
 import { renderTextureSourceKey } from '../textures/source-token';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
@@ -190,12 +191,14 @@ export function geometryRenderStateForTopology(
   renderState: MaterialRenderState | undefined,
 ): MaterialRenderState | undefined {
   if (topology !== 'line-list' && topology !== 'line-strip') return renderState;
-  return {
-    ...renderState,
-    depthWriteEnabled: false,
-    depthCompare: 'less-equal',
-  };
+  return derivedRenderState(renderState, 'line', lineRenderState);
 }
+
+const lineRenderState = (renderState: MaterialRenderState | undefined): MaterialRenderState => ({
+  ...renderState,
+  depthWriteEnabled: false,
+  depthCompare: 'less-equal',
+});
 
 /**
  * feat-20260604-learn-render-4.10-anti-aliasing-msaa M2 / w9: pick the static

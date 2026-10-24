@@ -1107,10 +1107,11 @@ describe('GPU-driven production projection', () => {
       expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(4);
       expect(grown).toBe(first);
       expect(pipelineInvalidations).not.toHaveBeenCalled();
-      // Falsifier: crossing the power-of-two candidate capacity replaces the
-      // view buffers, which is a real graph resource dependency.
+      // Crossing the power-of-two candidate capacity replaces the view
+      // buffers; the graph resolves them when it executes and survives too.
       const replaced = spawn([5]);
-      expect(replaced).not.toBe(first);
+      expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(5);
+      expect(replaced).toBe(first);
     } finally {
       pipelineInvalidations.mockRestore();
       production.dispose();

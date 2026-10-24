@@ -168,6 +168,27 @@ export function renderPublicationTransfers(packet: RenderPublication): ArrayBuff
   ] as ArrayBuffer[];
 }
 
+/**
+ * Bytes one publication carries across the Worker boundary: the five frame
+ * columns (logical typed-view bytes) and the transferred asset buffers. The
+ * structured-cloned rows (objects, materials, programs, features) are not counted.
+ */
+export function renderPublicationBytes(packet: RenderPublication): {
+  readonly columns: number;
+  readonly assets: number;
+} {
+  const columns =
+    packet.upserts.byteLength +
+    packet.removed.byteLength +
+    packet.transformEntities.byteLength +
+    packet.transforms.byteLength +
+    packet.retiredJoints.byteLength;
+  let assets = 0;
+  if (packet.assets.length > 0 || packet.assetPatches.length > 0)
+    for (const buffer of renderPublicationAssetTransfers(packet)) assets += buffer.byteLength;
+  return { columns, assets };
+}
+
 /** Mesh copies stay with the receiver; only the five frame columns are recycled. */
 export function renderPublicationAssetTransfers(packet: RenderPublication): ArrayBuffer[] {
   const buffers = new Set<ArrayBuffer>();

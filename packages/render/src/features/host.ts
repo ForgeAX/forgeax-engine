@@ -435,17 +435,6 @@ function createPreparedGraphicsPrepare(
   };
 }
 
-function* preparedGraphicsReferences(
-  descriptor: import('./prepared-graphics').RenderFeatureGraphicsPassDescriptor,
-): IterableIterator<PreparedGraphicsReference> {
-  for (const draw of descriptor.draws) {
-    yield draw.pipeline;
-    yield* draw.bindings;
-    for (const vertex of draw.vertexData) yield vertex.resource;
-    if (draw.indexData !== undefined) yield draw.indexData.resource;
-  }
-}
-
 function resolveGraphicsSnapshot(
   resolver: PreparedGraphicsResolver,
   descriptor: import('./prepared-graphics').RenderFeatureGraphicsPassDescriptor,
@@ -460,14 +449,28 @@ function resolveGraphicsSnapshot(
     object,
     import('../prepare/prepared-graphics-resolver').PreparedGraphicsResolvedResource
   >();
-  for (const reference of preparedGraphicsReferences(descriptor)) {
-    if (resources.has(reference)) continue;
+  // Draw order: pipeline, bindings, vertex data, then index data.
+  const resolveReference = (reference: PreparedGraphicsReference): RenderError | undefined => {
+    if (resources.has(reference)) return undefined;
     const resolved = resolver.resolve(reference);
     if (!resolved.ok) {
       onResolutionFailure?.(reference, resolved.error);
-      return resolved;
+      return resolved.error;
     }
     resources.set(reference, resolved.value);
+    return undefined;
+  };
+  for (const draw of descriptor.draws) {
+    let failed = resolveReference(draw.pipeline);
+    for (let index = 0; failed === undefined && index < draw.bindings.length; index++)
+      failed = resolveReference(draw.bindings[index] as PreparedGraphicsReference);
+    for (let index = 0; failed === undefined && index < draw.vertexData.length; index++)
+      failed = resolveReference(
+        (draw.vertexData[index] as (typeof draw.vertexData)[number]).resource,
+      );
+    if (failed === undefined && draw.indexData !== undefined)
+      failed = resolveReference(draw.indexData.resource);
+    if (failed !== undefined) return err(failed);
   }
   // The native topology owner compares two completed private packets. Never
   // call a prior frame's live GPU session from that comparison: resolving can
@@ -700,10 +703,12 @@ function targetHandle(
 function targetFormat(
   name: string,
   targets: readonly RenderFeatureLogicalTarget[],
-  fallback: string | undefined,
+  fallback: string | undefined | (() => string | undefined),
 ): TextureFormat | undefined {
   const target = targets.find((candidate) => candidate.name === name);
-  return (target?.format ?? fallback) as TextureFormat | undefined;
+  return (target?.format ?? (typeof fallback === 'function' ? fallback() : fallback)) as
+    | TextureFormat
+    | undefined;
 }
 
 type PreparedResourceMaps = ReturnType<typeof createPreparedResourceMaps>;
@@ -1057,11 +1062,17 @@ function prepareGraphicsBindings(
   for (const resource of resources) {
     const program = maps.graphicsPrograms.get(resource.program);
     if (program === undefined) return planFailure(slot);
-    const values: Record<string, unknown> = { ...resource.values };
-    for (const [key, targetName] of Object.entries(resource.logicalTargets ?? {})) {
-      const target = targetHandle(targetName, targetsForResource(ownerName(resource.name)));
-      if (target === undefined || typeof target === 'string') return planFailure(slot);
-      values[key] = target;
+    // Values pass through unchanged unless logical targets must be bound;
+    // a producer's stable values object then stays provable by identity.
+    let values: Readonly<Record<string, unknown>> = resource.values;
+    if (resource.logicalTargets !== undefined) {
+      const bound: Record<string, unknown> = { ...resource.values };
+      for (const [key, targetName] of Object.entries(resource.logicalTargets)) {
+        const target = targetHandle(targetName, targetsForResource(ownerName(resource.name)));
+        if (target === undefined || typeof target === 'string') return planFailure(slot);
+        bound[key] = target;
+      }
+      values = bound;
     }
     const prepared = graphics.prepareBindings(ownerName(resource.name), {
       pipeline: program,
@@ -1264,6 +1275,21 @@ function projectPlanPasses(
 ): Result<RenderFeaturePlanExecution, RenderError> {
   const logical = logicalTargets(targets);
   const projected: RenderFeaturePlanExecutionPass[] = [];
+  // First declared color format per prepared program, indexed once per plan
+  // and only when a pass target lacks its own format.
+  let programFormats: Map<unknown, string | undefined> | undefined;
+  const programFormat = (program: unknown): string | undefined => {
+    if (programFormats === undefined) {
+      programFormats = new Map();
+      for (const resource of plan.resources) {
+        if (resource.kind !== 'graphics-program') continue;
+        const reference = prepared.graphicsPrograms.get(resource.name);
+        if (!programFormats.has(reference))
+          programFormats.set(reference, resource.program.colorFormats[0]);
+      }
+    }
+    return programFormats.get(program);
+  };
   for (const pass of plan.passes) {
     if (pass.kind === 'copy') {
       const resolve = (name: string) => {
@@ -1364,17 +1390,8 @@ function projectPlanPasses(
       if (!projected.ok) return projected;
       draws.push(projected.value);
     }
-    const fallbackFormat = (() => {
-      const firstProgram = prepared.graphicsPrograms.get(pass.draws[0]?.program ?? '');
-      const declaration = plan.resources.find(
-        (resource) =>
-          resource.kind === 'graphics-program' &&
-          prepared.graphicsPrograms.get(resource.name) === firstProgram,
-      );
-      return declaration?.kind === 'graphics-program'
-        ? declaration.program.colorFormats[0]
-        : undefined;
-    })();
+    const fallbackFormat = () =>
+      programFormat(prepared.graphicsPrograms.get(pass.draws[0]?.program ?? ''));
     const colors = (pass.kind === 'raster' ? pass.colorAttachments : []).map((attachment) => ({
       resource: targetHandle(attachment.target, targets),
       format: targetFormat(attachment.target, logical, fallbackFormat),
@@ -2027,8 +2044,12 @@ class FeatureFrameBatchBuilder {
       .map((view) => `${JSON.stringify([featureScopeKey({ view: view.identity })]).slice(0, -1)},`);
   }
 
-  readonly belongsToHeldView = (name: string): boolean =>
-    this.heldResourcePrefixes.some((prefix) => name.startsWith(prefix));
+  readonly belongsToHeldView = (name: string): boolean => {
+    const prefixes = this.heldResourcePrefixes;
+    for (let index = 0; index < prefixes.length; index++)
+      if (name.startsWith(prefixes[index] as string)) return true;
+    return false;
+  };
 
   get preparationPending(): boolean {
     return this.preparationPendingFeatureIdentity !== undefined;

@@ -231,33 +231,73 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
     }
     return undefined;
   }
-  *[Symbol.iterator](): Generator<GpuDrivenCandidate> {
-    // One reusable page stack per real consumer, not one generator per member.
-    const pages: Node<Page>[] = [];
-    for (const member of nodes(this.root)) {
-      const candidates = member.value.candidates;
-      if (isSingle(candidates)) {
-        yield candidates;
-        continue;
+  [Symbol.iterator](): IterableIterator<GpuDrivenCandidate> {
+    return new CandidateIterator(this.root);
+  }
+}
+
+/**
+ * Walks members, then each member's lanes, reusing one result object (consumers
+ * read each value before the next step): a walk allocates per walk, not per lane.
+ */
+class CandidateIterator implements IterableIterator<GpuDrivenCandidate> {
+  readonly #members: IterableIterator<Node<BatchMemberEntry>>;
+  readonly #pages: Node<Page>[] = [];
+  #page: Node<Page> | undefined;
+  #lanes: Page | undefined;
+  #lane = 0;
+  readonly #result: { value: GpuDrivenCandidate | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(root: Node<BatchMemberEntry> | undefined) {
+    this.#members = nodes(root);
+  }
+  #yield(value: GpuDrivenCandidate): IteratorResult<GpuDrivenCandidate> {
+    this.#result.value = value;
+    return this.#result as IteratorResult<GpuDrivenCandidate>;
+  }
+  next(): IteratorResult<GpuDrivenCandidate> {
+    for (;;) {
+      const lanes = this.#lanes;
+      if (lanes !== undefined) {
+        if (this.#lane < lanes.length)
+          return this.#yield(lanes[this.#lane++] as GpuDrivenCandidate);
+        this.#lanes = undefined;
       }
-      if (!(candidates instanceof CandidatePages)) {
-        for (let lane = 0; lane < candidates.length; lane++)
-          yield candidates[lane] as GpuDrivenCandidate;
-        continue;
-      }
-      let page = candidates.root;
-      while (page !== undefined || pages.length > 0) {
+      // Next page of the current paged member, in key order.
+      let page = this.#page;
+      if (page !== undefined || this.#pages.length > 0) {
         while (page !== undefined) {
-          pages.push(page);
+          this.#pages.push(page);
           page = page.left;
         }
-        const current = pages.pop();
-        if (current === undefined) break;
-        for (let lane = 0; lane < current.value.length; lane++)
-          yield current.value[lane] as GpuDrivenCandidate;
-        page = current.right;
+        const current = this.#pages.pop();
+        if (current !== undefined) {
+          this.#page = current.right;
+          this.#lanes = current.value;
+          this.#lane = 0;
+          continue;
+        }
+        this.#page = undefined;
+      }
+      const member = this.#members.next();
+      if (member.done === true) {
+        this.#result.value = undefined;
+        this.#result.done = true;
+        return this.#result as IteratorResult<GpuDrivenCandidate>;
+      }
+      const candidates = member.value.value.candidates;
+      if (isSingle(candidates)) return this.#yield(candidates);
+      if (candidates instanceof CandidatePages) this.#page = candidates.root;
+      else {
+        this.#lanes = candidates;
+        this.#lane = 0;
       }
     }
+  }
+  [Symbol.iterator](): IterableIterator<GpuDrivenCandidate> {
+    return this;
   }
 }
 

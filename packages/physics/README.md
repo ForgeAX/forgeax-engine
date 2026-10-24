@@ -289,7 +289,7 @@ from the new position, including against geometry at the destination.
 ```ts
 if (pw.hasBody(character)) {
   pw.teleport(character, authoritativePosition);
-  pw.moveAndSlide(character, unconfirmedInputDelta);
+  pw.moveAndSlide(character, unconfirmedInputDelta); // unconfirmedInputDelta: Vec3 from vec3.create()
 }
 ```
 
@@ -307,6 +307,7 @@ contact impulses to solid dynamic bodies while excluding sensors. Game code
 must not duplicate ordinary pushing with an additional contact impulse.
 
 ```ts
+import { vec3 } from '@forgeax/engine-math';
 import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 
 const character = world.spawn(
@@ -318,7 +319,8 @@ const character = world.spawn(
 
 // Once per FixedUpdate, after physicsSyncBackend and before physicsStepSimulation:
 const pw = world.getResource('PhysicsWorld'); // PhysicsWorld | PhysicsWorld2D
-const actual = pw.moveAndSlide(character, [dx, dy, dz]); // Transform + grounded written back
+// desiredDelta is a Vec3 (branded Float32Array); a plain [dx, dy, dz] array does not typecheck.
+const actual = pw.moveAndSlide(character, vec3.create(dx, dy, dz)); // Vec3; Transform + grounded written back
 ```
 
 Requirements: the entity must carry a kinematic `RigidBody`, a `Collider`, and a

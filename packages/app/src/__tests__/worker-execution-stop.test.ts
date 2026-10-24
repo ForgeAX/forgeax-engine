@@ -412,6 +412,37 @@ describe('Worker ExecutionApp terminal stop', () => {
     }
   });
 
+  it('keeps a closed input gate on a replacement presentation surface', async () => {
+    const replacement = {
+      transferControlToOffscreen: vi.fn(() => ({}) as OffscreenCanvas),
+    } as unknown as HTMLCanvasElement;
+    const canvas = {
+      cloneNode: vi.fn(() => replacement),
+      replaceWith: vi.fn(),
+    } as unknown as HTMLCanvasElement;
+    const result = await createWorkerExecutionApp({
+      canvas,
+      appOptions: { execution: { bootstrap: 'https://example.test/game.js' } },
+      capabilities,
+      selection: workerSelection({ render: false, kernels: false }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    try {
+      result.value.input?.setInputAllowed?.(false);
+      probes.inputAllowed.mockClear();
+      probes.sessionListeners[0]?.({
+        kind: 'surface-request',
+        requestId: 1,
+        worldIdentity: 'worker-world',
+      });
+      expect(vi.mocked(attachBrowserInputBackend).mock.calls.at(-1)?.[0]).toBe(replacement);
+      expect(probes.inputAllowed).toHaveBeenCalledExactlyOnceWith(false);
+    } finally {
+      await result.value.dispose();
+    }
+  });
+
   it('rejects an Engine surface request in a split Render execution', async () => {
     const canvas = { cloneNode: vi.fn(), replaceWith: vi.fn() } as unknown as HTMLCanvasElement;
     const result = await createWorkerExecutionApp({

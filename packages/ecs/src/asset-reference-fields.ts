@@ -6,8 +6,12 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import type { Component } from './component';
-import { componentDefinition } from './component-schema';
+import type { Component, FieldReflection } from './component';
+import { componentDeclaresField, componentDefinition } from './component-schema';
+
+const NO_ASSET_FIELDS: Result<undefined, AssetError> = Object.freeze(ok(undefined));
+const isAssetField = (field: FieldReflection): boolean =>
+  (field.arrayMeta?.elementType ?? field.type).startsWith('asset<');
 
 /** Visit references in the supplied binding only; never inspect existing holders. */
 export function visitAssetFields(
@@ -16,6 +20,7 @@ export function visitAssetFields(
   visit: (handle: number, target: string) => Result<void, AssetError>,
 ): Result<void, AssetError> {
   const fields = componentDefinition(component).fields;
+  if (!componentDeclaresField(component, isAssetField)) return NO_ASSET_FIELDS;
   for (const key of Object.keys(data)) {
     const field = fields[key];
     if (field === undefined) continue;
@@ -76,6 +81,7 @@ export function holdAssetFields(
   component: Component,
   data: Readonly<Record<string, unknown>>,
 ): Result<(() => void) | undefined, AssetError> {
+  if (!componentDeclaresField(component, isAssetField)) return NO_ASSET_FIELDS;
   let held: number[] | undefined;
   const release = () => {
     if (held !== undefined) for (const handle of held) releaseAssetReference(owner, handle);

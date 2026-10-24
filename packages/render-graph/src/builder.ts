@@ -71,6 +71,16 @@ const TEXTURE_USAGE = {
 
 let nextGeneration = 1;
 
+/**
+ * Realm-lifetime count of compiled render graphs (monotonic). Engine-owned
+ * frame diagnostics read it before and after a draw to report compiles per
+ * frame; it is not a stable public API.
+ * @internal
+ */
+export function renderGraphCompileCount(): number {
+  return nextGeneration - 1;
+}
+
 // Inspection retains its admitted format set; implementation-dependent depth and
 // unmodeled compressed allocations still report an unknown byte size.
 const KNOWN_TEXTURE_BYTE_FORMATS = new Set<GPUTextureFormat>([

@@ -7,6 +7,7 @@ export default {
     include: [
       'scripts/forgeax/__tests__/sdk-lib.test.mjs',
       'scripts/forgeax/__tests__/sdk-candidate.test.mjs',
+      'scripts/forgeax/__tests__/sdk-gameplay-cookbook.test.mjs',
     ],
     testTimeout: 30000,
   },

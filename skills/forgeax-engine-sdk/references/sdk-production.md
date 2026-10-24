@@ -229,14 +229,26 @@ response is terminal and must never be overwritten.
 
 ## Archive surfaces
 
-The full SDK ZIP contains all of these surfaces; the npm carrier contains only the first built-use row:
+Both transports support built use and source development. The ZIP adds offline dependencies:
 
 | Surface | Archive path | Contract |
 |:--|:--|:--|
 | Built use (full ZIP) | `bin/`, bare `packages/`, `templates/`, `skills/`, `store/pnpm/` | The CLI requires `empty` or `game-3d`, installs project-local Engine skills, and creates games without registry access. |
-| Built use (npm carrier) | `bin/`, `templates/`, `skills/` | The carrier omits the full-ZIP-only `SDK_ZIP_ONLY_PATHS` (`store/pnpm/`, bare `packages/`, `source/`, `toolchain/wasm/`); `new` and `init` use the exact lockfile against the npm registry, which also supplies the Engine bytes. |
-| Source development | `source/engine/` | Tracked Engine source and guidance, plus the pinned wgpu source expanded under `third_party/wgpu/`; private binary assets remain excluded. |
+| Built use (npm carrier) | `bin/`, `templates/`, `skills/` | The carrier omits `SDK_ZIP_ONLY_PATHS` (`store/pnpm/`, bare `packages/`, `toolchain/wasm/`); `new` and `init` install locked Engine bytes from npm. |
+| Source development (both transports) | `source/engine/` | Same-commit source, expanded pinned dependencies, checked WASM and release module builds. Install source dependencies, rebuild changed owners and bind through `project engine use-local`; other owners keep their prebuilt outputs. |
 | Prebuilt WASM | `source/engine/packages/{wgpu-wasm,fbx,codec}/pkg/` and `toolchain/wasm/` | Checked glue and binary outputs remove the default Rust/Emscripten hydration prerequisite. |
+
+The source verifier first edits and rebuilds only Math, binds a project and
+executes the public facades in Node, browser and Worker realms while checking
+all unchanged module builds. It restores the edited inputs and outputs, then
+cleans the seeded builds before the existing complete source-build and Preview
+gates. Npm consumers hash the installed source against its manifest before
+bootstrap; publishing rejects incomplete source. These checks retain one source
+journey rather than adding another CI job.
+
+Npm extraction renames `.gitignore` to `.npmignore`. SDK installation restores
+the original path only after matching the manifest's byte count and SHA-256;
+an authored `.npmignore` collision or changed bytes fails before target adoption.
 
 The source snapshot is not a nested Git checkout and intentionally excludes
 `forgeax-engine-assets`. It carries `.forgeax-public-distribution`, which makes
@@ -409,7 +421,7 @@ material compilation or package bytes. See the [SDK/Dawn workload evidence](../.
 | `sdk-template-resource-missing` / `sdk-template-resource-allowlist-drift` | Full template resource closure | Repair the template allowlist or its package-owned inputs; rebuild and rerun the verifier |
 | `sdk-skill-*` / `skill-verify-failed` | SDK root `skills/` or project-local mount projection | Repair the skill source/manifest or rerun `forgeax project skill install`; never patch mount copies |
 | `sdk-consumer-mutated-store` | SDK-backed pnpm package payloads | Repair package-content mutation; SQLite `index.db` hydration is the only cache exception |
-| `npm-sdk-carrier-zip-only-*` | npm carrier surface | Remove the full-ZIP-only paths (`SDK_ZIP_ONLY_PATHS`: `store/`, `packages/`, `source/`, `toolchain/wasm/`) from the carrier; keep them in the full ZIP and rebuild |
+| `npm-sdk-carrier-zip-only-*` | npm carrier surface | Remove the full-ZIP-only paths (`SDK_ZIP_ONLY_PATHS`: `store/`, `packages/`, `toolchain/wasm/`) from the carrier; retain editable source in both transports and rebuild |
 | `sdk-source-wasm-path` / `sdk-source-wasm-unmanifested` | Prebuilt source WASM closure | Restore the owning package `pkg/` outputs and rebuild; missing Blitz UI inputs use `prepare-ui-blitz` in every Candidate source producer, per [Host build inputs](../../../scripts/ci/README.md#cross-platform-host-build-inputs). |
 | `project-target-inside-sdk` | SDK and game ownership boundary | Choose a sibling directory or an absolute path outside the SDK; never turn the distribution into a game workspace |
 | `sdkUpdate.status=available` | Public npm selected channel tag | Consider a separate newer SDK install; review release notes and explicitly migrate/test each pinned game before changing Engine versions |
@@ -419,3 +431,13 @@ material compilation or package bytes. See the [SDK/Dawn workload evidence](../.
 Do not publish an archive verified before its final bytes were produced. Do not substitute a workspace-linked project for the verifier's extracted offline project.
 
 SDK PR browser owners use the existing Runner CPU-affinity envelope for independent inputs and all npm/archive qualifications. Diagnose quota and inherited mask through the [CI guide](../../../scripts/ci/README.md#sdk-consumers); retain full consumer execution and measure its effect on the final commit.
+
+## npm byte reuse
+
+The npm carrier depends on the exact SDK-version `@forgeax/engine`. Carrier staging
+indexes the actual bundled Engine tarball by byte count and SHA-256, omits matching
+payload files, and records their Engine-relative `enginePath` in each artifact row.
+The source inventory still describes the complete installed workspace. Installation
+checks Engine identity and each reused digest before adopting the target; it creates
+independent writable files so rebuilding a source owner cannot mutate registry builds.
+The ZIP retains its self-contained payload and has no external artifact references.

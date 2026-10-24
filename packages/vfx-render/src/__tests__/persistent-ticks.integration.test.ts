@@ -211,6 +211,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     feature.onSourceFrameSubmitted?.(retry.extracted, structuredClone(retry.plan.sourceFeedback));
     expect(runtime.snapshot()).toHaveLength(0);
     const presentation = frame([new World({ assets: new AssetRegistry() }), world]);
+    // The receiver dispatched this tick as queued work, so the committed retained row
+    // references it by sequence and still draws from the receiver's queued history.
+    expect(presentation.extracted.worlds.at(-1)?.retained[0]).not.toHaveProperty('intent');
     expect(particleName(presentation.plan)).toBe(particleName(first.plan));
     expect(planPasses(presentation.plan).filter((pass) => pass.kind === 'raster')).toHaveLength(1);
     expect(
@@ -402,9 +405,18 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     });
     expect(world.getResource(FixedTime).tick).toBe(fixedTick);
     expect(activeUpdates(initialFrame.plan)).toHaveLength(1);
-    expect(frame([world], 3).extracted.worlds[0]?.intents).toEqual(
-      initialFrame.extracted.worlds[0]?.intents,
-    );
+    // The still-queued tick is republished as a payload-free reference to the
+    // receiver's cached copy; it still plans the same update.
+    const republished = frame([world], 3);
+    const {
+      parameterBlock: _parameterBlock,
+      canonicalPayload: _canonicalPayload,
+      replayInput: _replayInput,
+      channelInputs: _channelInputs,
+      ...scalars
+    } = initialFrame.extracted.worlds[0]?.intents[0] as never as Record<string, unknown>;
+    expect(republished.extracted.worlds[0]?.intents).toEqual([{ ...scalars, payload: 'cached' }]);
+    expect(activeUpdates(republished.plan)).toHaveLength(1);
     world.update(1 / 60).unwrap();
     expect(runtime.snapshot()).toHaveLength(2);
     expect(runtime.snapshot()[1]).toMatchObject({
@@ -419,4 +431,54 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
   } finally {
     await context.fiber.dispose();
   }
+});
+
+it('resends a queued tick payload after a receiver miss or a discarded source publication', async () => {
+  const { createVfxIntentPublication, createVfxIntentPayloads, isVfxIntentReference } =
+    await import('../feature/intent-publication.js');
+  const ledger = createVfxIntentPublication();
+  const tick = (sequence: number) => ({
+    sequence,
+    player: 1,
+    emitter: { id: 'e' },
+    parameterBlock: new Uint8Array([sequence]),
+    canonicalPayload: new Uint8Array(),
+    replayInput: {},
+    channelInputs: [],
+  });
+  const session = '0:0';
+  expect(isVfxIntentReference(ledger.publish(session, tick(1), true, 10))).toBe(false);
+  expect(isVfxIntentReference(ledger.publish(session, tick(1), true, 11))).toBe(true);
+  // Field ticks are never referenced.
+  expect(isVfxIntentReference(ledger.publish(session, tick(2), false, 11))).toBe(false);
+  expect(isVfxIntentReference(ledger.publish(session, tick(2), false, 12))).toBe(false);
+  // A discarded publication that first carried a payload makes it unsent again.
+  expect(isVfxIntentReference(ledger.publish(session, tick(3), true, 12))).toBe(false);
+  ledger.discard(12);
+  expect(isVfxIntentReference(ledger.publish(session, tick(3), true, 13))).toBe(false);
+  // A receiver miss resends the payload.
+  ledger.forget(session, [1]);
+  expect(isVfxIntentReference(ledger.publish(session, tick(1), true, 14))).toBe(false);
+  // Ticks no longer queued and absent sessions are dropped.
+  ledger.retain(new Map([[session, new Set(['1:e:3'])]]));
+  expect(isVfxIntentReference(ledger.publish(session, tick(1), true, 15))).toBe(false);
+  expect(isVfxIntentReference(ledger.publish(session, tick(3), true, 15))).toBe(true);
+
+  // The receiver restores a reference from its session store, which survives device
+  // replacement but not a new render generation.
+  const payloads = createVfxIntentPayloads();
+  const full = tick(5);
+  payloads.begin(0, 0, [full]);
+  expect(payloads.resolve(0, full)).toBe(full);
+  const reference = ledger.publish(session, full, true, 16) && {
+    ...full,
+    payload: 'cached' as const,
+  };
+  payloads.begin(0, 0, [full]);
+  expect(payloads.resolve(0, reference)).toMatchObject({
+    sequence: 5,
+    parameterBlock: full.parameterBlock,
+  });
+  payloads.begin(0, 1, [full]);
+  expect(payloads.resolve(0, reference)).toBeUndefined();
 });

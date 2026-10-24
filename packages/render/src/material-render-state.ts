@@ -132,3 +132,49 @@ export function supportsGpuShadowRenderState(state?: MaterialRenderState): boole
   const raster = shadowCasterRenderState(state) ?? {};
   return Object.entries(state).every(([key, value]) => value === undefined || key in raster);
 }
+
+type DerivedRenderStates = Map<
+  string,
+  { readonly base: Readonly<Record<string, unknown>> | undefined; readonly value: unknown }
+>;
+const derivedStates = new WeakMap<object, DerivedRenderStates>();
+const UNDEFINED_STATE = {};
+
+function sameShallow(
+  state: MaterialRenderState | undefined,
+  copy: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  if (state === undefined || copy === undefined) return state === undefined && copy === undefined;
+  const source = state as Record<string, unknown>;
+  let count = 0;
+  for (const key in source) {
+    count++;
+    if (source[key] !== copy[key]) return false;
+  }
+  let copied = 0;
+  for (const _ in copy) copied++;
+  return copied === count;
+}
+
+/**
+ * One stable derived state per authored state and derivation, so identity-keyed
+ * pipeline caches hit instead of hashing a fresh object on every draw. In-place
+ * authored edits are observed by a shallow field check before reuse.
+ */
+export function derivedRenderState<T>(
+  state: MaterialRenderState | undefined,
+  variant: string,
+  derive: (state: MaterialRenderState | undefined) => T,
+): T {
+  const owner = state ?? UNDEFINED_STATE;
+  let states = derivedStates.get(owner);
+  if (states === undefined) {
+    states = new Map();
+    derivedStates.set(owner, states);
+  }
+  const cached = states.get(variant);
+  if (cached !== undefined && sameShallow(state, cached.base)) return cached.value as T;
+  const value = derive(state);
+  states.set(variant, { base: state === undefined ? undefined : { ...state }, value });
+  return value;
+}

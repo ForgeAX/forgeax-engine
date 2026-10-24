@@ -31,6 +31,7 @@ and reusable analysis, rather than another delivery state machine.
 | Sparse shader/layout caches, singleton fanout or cache lifetime | [Cache shape](references/cpu-submission.md#avoid-sparse-cache-trees) |
 | Full index copies for transaction rollback or abort | [Rollback maintenance](references/cpu-submission.md#scope-rollback-maintenance) |
 | Worker GC, short-lived allocation sources, heap/source attribution or retention | [GC and allocation ownership](references/gc.md) |
+| Resident Worker heap versus GC sawtooth, retained-floor attribution or small CPU effects under workload noise | [Heap floor case](references/cases/worker-heap-floor-20261023.md) |
 | Texture work, static features, shader variants or uniform-derived math | [Materials and shaders](references/materials-shaders.md) |
 | Shadow pass cost, coverage, resolution or sampling | [Shadows](references/shadows.md) |
 | Local smoke coverage, composite cost or temporal-safe screen bounds | [Local smoke footprint case](references/cases/local-smoke-footprint-20261016.md) |
@@ -80,6 +81,8 @@ browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
 | [analyze_gpu_timeline.mjs](scripts/analyze_gpu_timeline.mjs) | Existing GPU observations and same-report completion receipts; semantic interval overlap, measured envelopes and missing source population |
 | [analyze_heap_profile.mjs](scripts/analyze_heap_profile.mjs) | SamplingHeapProfile; conserved direct/ancestor/unresolved byte partitions and source owner distribution |
 | [symbolize_heap_profile.mjs](scripts/symbolize_heap_profile.mjs) | Captured script digests and frozen hidden maps; source locations authenticated to the selected profile |
+| [compare_heap_profiles.mjs](scripts/compare_heap_profiles.mjs) | Two retained or two churn heap profiles with symbols; before/after bytes per package, file, function and unresolved frame |
+| [allocation_probe.mjs](scripts/allocation_probe.mjs) | Node unit-test helper; sampled bytes per call of a warmed function, to keep a removed allocation removed |
 | [summarize_native_gc.mjs](scripts/summarize_native_gc.mjs) | Owned-thread native trace; Minor/Major/finalization durations and bounded allocation/promotion counters |
 | [compare_samples.mjs](scripts/compare_samples.mjs) | Raw sample arrays plus selected workload identity; matched descriptive statistics or explicit mismatch |
 

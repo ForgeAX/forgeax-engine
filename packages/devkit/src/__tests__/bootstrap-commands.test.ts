@@ -67,7 +67,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(
     resolve(root, 'sdk-manifest.json'),
     `${JSON.stringify({
-      schemaVersion: '1.9.0',
+      schemaVersion: '1.10.0',
       viewCommit: 'view-test',
       sdkVersion: '0.0.0-test',
       engineCommit: 'test',
@@ -123,7 +123,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(resolve(template, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
   await writeFile(
     resolve(template, 'pnpm-workspace.yaml'),
-    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: warn\nenableGlobalVirtualStore: false\n",
+    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: install\nfrozenLockfile: true\nenableGlobalVirtualStore: false\n",
   );
   await writeFile(resolve(template, '.npmrc'), 'public-hoist-pattern[]=@forgeax/engine-*\n');
   await writeFile(
@@ -144,7 +144,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(resolve(fullTemplate, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
   await writeFile(
     resolve(fullTemplate, 'pnpm-workspace.yaml'),
-    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: warn\nenableGlobalVirtualStore: false\n",
+    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: install\nfrozenLockfile: true\nenableGlobalVirtualStore: false\n",
   );
   const pnpm = resolve(bin, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
   const pnpmScript = resolve(bin, 'pnpm.mjs');
@@ -621,7 +621,8 @@ describe('newCommand', () => {
       allowBuilds: { esbuild: true },
       minimumReleaseAgeExclude: ['@forgeax/*'],
       trustLockfile: true,
-      verifyDepsBeforeRun: 'warn',
+      verifyDepsBeforeRun: 'install',
+      frozenLockfile: true,
       enableGlobalVirtualStore: false,
       storeDir: await realpath(resolve(sdk.root, 'store', 'pnpm')),
     });
@@ -736,7 +737,8 @@ describe('newCommand', () => {
       allowBuilds: { esbuild: true },
       minimumReleaseAgeExclude: ['@forgeax/*'],
       trustLockfile: true,
-      verifyDepsBeforeRun: 'warn',
+      verifyDepsBeforeRun: 'install',
+      frozenLockfile: true,
       enableGlobalVirtualStore: false,
       storeDir: await realpath(resolve(sdk.root, 'store', 'pnpm')),
     });

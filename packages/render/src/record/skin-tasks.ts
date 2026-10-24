@@ -144,6 +144,13 @@ const NO_CAPSULES = Object.freeze({ status: 'no-shadow-capsules' as const });
  * actual CPU draw demand; no Binding freshness, vertex copies or retained pose
  * results survive a recording. Numeric source/history ownership stays in Scene.
  */
+interface PaletteHistory {
+  /** The captured input root the palette was composed from. */
+  root: object;
+  count: number;
+  readonly palette: Float32Array;
+}
+
 export class SkinTasks {
   /** Actual successful current/previous matrix writes in this recording; excludes task headers. */
   paletteUploadBytes = 0;
@@ -218,6 +225,11 @@ export class SkinTasks {
     this.capsuleRowsUsed = 0;
     this.capsuleDemanded.clear();
     this.demanded.clear();
+    // Keep the last recording's palettes; drop slots not demanded since.
+    const stale = this.stalePalettes;
+    stale.clear();
+    this.stalePalettes = this.palettes;
+    this.palettes = stale;
     this.data.begin();
     this.auxiliary.begin();
   }
@@ -249,6 +261,9 @@ export class SkinTasks {
       this.current = current;
       this.previous = previous;
     }
+    // A palette composed for frames with the same inputs is the previous pose.
+    const history = this.stalePalettes.get(slot) ?? this.palettes.get(slot);
+    const previousRoot = frame.previous?.inputRoot();
     const flags = frame.current.palettes(
       slot,
       frame.previous,
@@ -256,7 +271,14 @@ export class SkinTasks {
       this.previous,
       this.matrix,
       this.inverse,
+      history !== undefined &&
+        previousRoot !== undefined &&
+        history.count === count &&
+        history.root === previousRoot
+        ? history.palette
+        : undefined,
     );
+    if (flags !== 0) this.rememberPalette(slot, frame.current.inputRoot(), count, history);
     if (flags === 0) {
       this.demanded.set(slot, -1);
       return undefined;
@@ -325,6 +347,28 @@ export class SkinTasks {
     row.auxiliarySize = this.storage ? 16 : 16320;
     this.demanded.set(slot, this.count++);
     return row;
+  }
+  /**
+   * The last composed current palette per demanded slot, for the next frame's
+   * previous pose. Bounded to the slots of the last two recordings.
+   */
+  private palettes = new Map<number, PaletteHistory>();
+  private stalePalettes = new Map<number, PaletteHistory>();
+  private rememberPalette(
+    slot: number,
+    root: object | undefined,
+    count: number,
+    history: PaletteHistory | undefined,
+  ): void {
+    if (root === undefined) return;
+    let entry = history;
+    if (entry === undefined || entry.palette.length < count * 16)
+      entry = { root, count, palette: new Float32Array(count * 16) };
+    entry.root = root;
+    entry.count = count;
+    entry.palette.set(this.current.subarray(0, count * 16));
+    this.palettes.set(slot, entry);
+    this.stalePalettes.delete(slot);
   }
   /** Actual capsule task scratch, scoped to the same fixed Scene/root pair. */
   capsules(record: RenderSceneSlot): CapsuleShadowSnapshot {

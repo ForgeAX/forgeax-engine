@@ -43,15 +43,12 @@ describe('raster graph dependency projections', () => {
       undefined,
     );
     expect(layout.raw).not.toBe(replaced.raw);
-    expect(layout.recording).not.toBe(replaced.recording);
+    // A new stock class is projected into the compiled graph, not recompiled.
+    expect(layout.recording).toBe(replaced.recording);
   });
 
-  it.each([
-    'resourceGeneration',
-    'candidateCapacity',
-    'batchCapacity',
-    'indirectCapacity',
-  ] as const)('invalidates both projections on %s replacement', (field) => {
+  it('invalidates both projections on a pass-list generation change', () => {
+    const field = 'resourceGeneration';
     const owner = new RasterGraphIdentity(),
       source = {},
       bindings = {},
@@ -69,18 +66,41 @@ describe('raster graph dependency projections', () => {
     expect(replacement.recording).not.toBe(first.recording);
   });
 
-  it('observes table and skin bindings even when the source publication is unchanged', () => {
+  it.each([
+    'candidateCapacity',
+    'batchCapacity',
+    'indirectCapacity',
+  ] as const)('keeps both projections when %s grows (view storage is resolved at execute time)', (field) => {
+    const owner = new RasterGraphIdentity(),
+      source = {},
+      bindings = {},
+      batches = [{ classKey: 'raw', recordingClassKey: 'stock' }];
+    const first = { ...owner.update(source, 1, resources, batches, bindings, undefined) };
+    const grown = owner.update(
+      source,
+      1,
+      { ...resources, [field]: resources[field] * 2 },
+      batches,
+      bindings,
+      undefined,
+    );
+    expect(grown.raw).toBe(first.raw);
+    expect(grown.recording).toBe(first.recording);
+  });
+
+  it('keeps the graph across table and skin binding replacement and observes scene identity', () => {
     const owner = new RasterGraphIdentity(),
       source = {},
       rigid = {},
       skin = {},
       batches = [{ classKey: 'raw', recordingClassKey: 'stock' }];
     const first = { ...owner.update(source, 1, resources, batches, rigid, skin) };
+    // Visible-window bindings are resolved per encode, never compiled in.
     const changedSkin = { ...owner.update(source, 1, resources, batches, rigid, {}) };
     expect(changedSkin.raw).toBe(first.raw);
-    expect(changedSkin.recording).not.toBe(first.recording);
+    expect(changedSkin.recording).toBe(first.recording);
     const changedTables = { ...owner.update(source, 1, resources, batches, {}, {}) };
-    expect(changedTables.recording).not.toBe(changedSkin.recording);
+    expect(changedTables.recording).toBe(changedSkin.recording);
     const scene = { ...owner.update(source, 2, resources, batches, rigid, skin) };
     expect(scene.raw).not.toBe(first.raw);
     expect(scene.recording).not.toBe(first.recording);
@@ -92,7 +112,7 @@ describe('raster graph dependency projections', () => {
 });
 
 describe('stock-recorder raster classes', () => {
-  it('keeps the recording identity while a built class is absent and rebuilds for a new one', () => {
+  it('keeps the recording identity when classes appear, disappear and return', () => {
     const owner = new RasterGraphIdentity(),
       bindings = {};
     const update = (...keys: string[]) =>
@@ -103,37 +123,25 @@ describe('stock-recorder raster classes', () => {
         keys.map((key) => ({ classKey: `mesh/${key}`, recordingClassKey: key })),
         bindings,
         undefined,
-      ).recording;
-    const base = update('a');
+      );
+    const base = update('a').recording;
     owner.built(['a']);
-    const grown = update('a', 'b');
-    expect(grown).not.toBe(base);
-    owner.built(['a', 'b']);
-    // The grenade-like class disappears and returns: the built graph still holds it.
-    expect(update('a')).toBe(grown);
-    expect(update('a', 'b')).toBe(grown);
-    // A graph rebuilt for another dependency holds only the then-live classes.
-    owner.built(['a']);
-    const returned = update('a', 'b');
-    expect(returned).not.toBe(grown);
-  });
-
-  it('bounds the absent classes a graph may retain', () => {
-    const owner = new RasterGraphIdentity(),
-      bindings = {};
-    const update = (keys: readonly string[]) =>
-      owner.update(
-        {},
-        1,
-        resources,
-        keys.map((key) => ({ classKey: key, recordingClassKey: key })),
-        bindings,
-        undefined,
-      ).recording;
-    const all = Array.from({ length: 40 }, (_, index) => `class-${index}`);
-    const full = update(all);
-    owner.built(all);
-    expect(update(all.slice(0, 8))).toBe(full);
-    expect(update(all.slice(0, 7))).not.toBe(full);
+    // A grenade-like class first seen in battle joins the compiled graph.
+    expect(update('a', 'b').recording).toBe(base);
+    expect(update('a').recording).toBe(base);
+    expect(update('a', 'b').recording).toBe(base);
+    expect(owner.changes.lateRecordingClasses).toBe(1);
+    // The raw projection still follows its class set.
+    expect(update('a', 'c').raw).not.toBe(update('a').raw);
+    // Only a pass-list generation change rebuilds the stock graph.
+    const rebuilt = owner.update(
+      {},
+      1,
+      { ...resources, resourceGeneration: 2 },
+      [{ classKey: 'mesh/a', recordingClassKey: 'a' }],
+      bindings,
+      undefined,
+    ).recording;
+    expect(rebuilt).not.toBe(base);
   });
 });

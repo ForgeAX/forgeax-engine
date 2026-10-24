@@ -10,7 +10,7 @@
 |:--|:--|:--|
 | Engine | One `@forgeax/engine` npm tarball | Runtime, CLI, independent ESM facades, declarations, WASM, Workers and source maps; exact-version registry dependencies |
 | View | Independent `@forgeax/view` tool tarball | Exact-version Engine dependency; separate tool ownership |
-| SDK | `@forgeax/engine-sdk` carrier and full ZIP | Same Engine artifact; templates and skills. The ZIP alone adds the offline package store, bare packages and source snapshot (`SDK_ZIP_ONLY_PATHS`) |
+| SDK | `@forgeax/engine-sdk` carrier and full ZIP | Extends the same Engine artifact with templates, skills and editable source. npm reuses matching Engine bytes through exact-version dependency and verified artifact references; installation seeds source modules with those builds. The ZIP also adds the offline package store, bare packages and toolchain WASM copies (`SDK_ZIP_ONLY_PATHS`) |
 
 `scripts/forgeax/engine-bundle.mjs` turns the installed lockfile graph into one
 standard npm package. It bundles only what a registry cannot supply again: every

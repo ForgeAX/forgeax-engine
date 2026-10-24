@@ -639,6 +639,77 @@ interface RetainedShadowBundleRow {
 interface RetainedShadowBundleView {
   readonly key: ShadowBundleViewKey;
   readonly rows: Map<number, RetainedShadowBundleRow>;
+  /** The last invocation, replayable while its plan and projections are unchanged. */
+  replay?: ShadowViewReplay | undefined;
+}
+
+/**
+ * One view's last fully retained invocation. Plan and projections are held
+ * weakly, so an unchanged view replays without retaining a superseded frame's
+ * inputs. Each distinct pipeline and material binding is still observed once.
+ */
+interface ShadowViewReplay {
+  readonly plan: WeakRef<SubmissionPlan>;
+  readonly projections: WeakRef<ReadonlyMap<number, GpuDrivenShadowBatchProjection>>;
+  readonly bundles: readonly RenderBundle[];
+  readonly pipelines: ReadonlyMap<RenderPipeline, RetainedShadowBundleRow>;
+  readonly materials: ReadonlyMap<MaterialBgAssemblyCacheEntry, RetainedShadowBundleRow>;
+  readonly workload: ShadowBundleWorkload;
+}
+
+/** Rows of the invocation being recorded; replayable only when every row is retained. */
+interface ShadowReplayCollector {
+  replayable: boolean;
+  readonly pipelines: Map<RenderPipeline, RetainedShadowBundleRow>;
+  readonly materials: Map<MaterialBgAssemblyCacheEntry, RetainedShadowBundleRow>;
+  readonly workload: ShadowBundleWorkload;
+}
+
+function collectShadowReplayRow(
+  collector: ShadowReplayCollector,
+  row: RetainedShadowBundleRow | undefined,
+): void {
+  if (!collector.replayable) return;
+  if (row === undefined) {
+    collector.replayable = false;
+    return;
+  }
+  if (!collector.pipelines.has(row.pipeline)) collector.pipelines.set(row.pipeline, row);
+  const material = row.material?.entry;
+  if (material !== undefined && !collector.materials.has(material))
+    collector.materials.set(material, row);
+  addShadowBundleWorkload(collector.workload, row.batch, row.projection);
+}
+
+/** The previous bundles of an unchanged view whose pipelines and bindings are still current. */
+function replayShadowView(
+  c: _InternalRenderPipelineContext,
+  identity: ShadowViewIdentity,
+  retainedView: RetainedShadowBundleView | undefined,
+  plan: SubmissionPlan,
+  projections: ReadonlyMap<number, GpuDrivenShadowBatchProjection>,
+  recording: ShadowBatchRecording,
+  validatedPipelines: Map<RenderPipeline, boolean>,
+): ShadowViewReplay | undefined {
+  const replay = retainedView?.replay;
+  if (retainedView !== undefined) retainedView.replay = undefined;
+  if (
+    replay === undefined ||
+    replay.plan.deref() !== plan ||
+    replay.projections.deref() !== projections
+  )
+    return undefined;
+  for (const row of replay.pipelines.values())
+    if (
+      retainedShadowPipeline(c, identity, row, row.batch, row.projection, validatedPipelines) ===
+      undefined
+    )
+      return undefined;
+  for (const row of replay.materials.values())
+    if (!retainedShadowMaterialCurrent(c, row.material, row.projection, recording))
+      return undefined;
+  if (retainedView !== undefined) retainedView.replay = replay;
+  return replay;
 }
 
 const retainedShadowBundles = new WeakMap<object, RetainedShadowBundleView>();
@@ -1206,6 +1277,30 @@ function prepareGpuDrivenShadowIfPublished(
     reuseAdjacentShadow,
   );
   const validatedPipelines = new Map<RenderPipeline, boolean>();
+  const replayed =
+    indirect === undefined
+      ? undefined
+      : replayShadowView(
+          c,
+          identity,
+          retainedView,
+          viewSubmission.plan,
+          projections,
+          recording,
+          validatedPipelines,
+        );
+  if (replayed !== undefined)
+    return {
+      view: viewSubmission.view,
+      bundles: replayed.bundles,
+      ...(workload === undefined ? {} : { workload: { ...replayed.workload } }),
+    };
+  const collector: ShadowReplayCollector = {
+    replayable: retainedView !== undefined,
+    pipelines: new Map(),
+    materials: new Map(),
+    workload: { indirect: 0, indexedIndirect: 0 },
+  };
   for (const batch of viewSubmission.plan.batches) {
     if (batch.visibleCapacity === 0) continue;
     const projection = requireShadowBatchProjection(projections, batch);
@@ -1225,25 +1320,36 @@ function prepareGpuDrivenShadowIfPublished(
     ) {
       adoptRetainedShadowRow(c, recording, batch, projection, retainedRow);
       bundles.push(retainedRow.bundle);
+      collectShadowReplayRow(collector, retainedRow);
     } else {
-      bundles.push(
-        recordShadowBatchBundle(
-          c,
-          identity,
-          viewSubmission.view,
-          batch,
-          projection,
-          validatedPipeline,
-          reuseAdjacentShadow,
-          recording,
-          observed,
-          retainedView,
-        ),
+      const bundle = recordShadowBatchBundle(
+        c,
+        identity,
+        viewSubmission.view,
+        batch,
+        projection,
+        validatedPipeline,
+        reuseAdjacentShadow,
+        recording,
+        observed,
+        retainedView,
       );
+      bundles.push(bundle);
+      const retained = retainedView?.rows.get(batch.batchId);
+      collectShadowReplayRow(collector, retained?.bundle === bundle ? retained : undefined);
     }
     addShadowBundleWorkload(workload, batch, projection);
   }
   trimRetainedShadowRows(retainedView, viewSubmission.plan.batches);
+  if (collector.replayable && retainedView !== undefined && indirect !== undefined)
+    retainedView.replay = {
+      plan: new WeakRef(viewSubmission.plan),
+      projections: new WeakRef(projections),
+      bundles,
+      pipelines: collector.pipelines,
+      materials: collector.materials,
+      workload: collector.workload,
+    };
   if (indirect === undefined)
     throw new RhiError({
       code: 'internal-error',

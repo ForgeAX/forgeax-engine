@@ -250,7 +250,8 @@ export function materialShaderTextureFieldNames(
   registry: AssetRegistry,
   shaderId: string,
 ): ReadonlySet<string> | undefined {
-  const lookup = registry.shaderRegistry.findMaterialArtifact(shaderId);
-  if (!lookup.ok) return undefined;
-  return lookup.value.paramSchemaProjection.derivedInterface.textureFieldNames;
+  // A miss is an expected per-material answer here; the optional lookup does
+  // not build the not-found diagnostic that lists every registered identifier.
+  return registry.shaderRegistry.materialArtifact(shaderId)?.paramSchemaProjection.derivedInterface
+    .textureFieldNames;
 }

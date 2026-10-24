@@ -115,11 +115,12 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_integrate(ct
       world.update(1 / 60).unwrap();
       frame();
     }
-    // The last acknowledged tick becomes the retained intent; the next frame
-    // carries it once, and the receiver adopts it on that frame's submission.
+    // The last acknowledged tick becomes the retained intent. The receiver already
+    // dispatched it as queued work, so it is adopted without carrying it again.
     world.update(0).unwrap();
     const carried = frame();
-    expect(retainedRows(carried.data).some((row) => row.intent !== undefined)).toBe(true);
+    expect(retainedRows(carried.data).every((row) => row.intent === undefined)).toBe(true);
+    expect(carried.draws).toBeGreaterThan(0);
     world.update(0).unwrap();
     const adopted = frame();
     const rows = retainedRows(adopted.data);

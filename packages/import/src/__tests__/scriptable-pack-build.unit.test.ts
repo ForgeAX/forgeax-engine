@@ -807,6 +807,40 @@ describe('ScriptablePack import bridge with optional parameters', () => {
   });
 
   it.each([
+    [
+      'AssetGuid.derive throw',
+      ({ packageId }: { readonly packageId: PackageId }) => {
+        AssetGuid.derive(packageId, 'material/rockLight');
+        return ok({});
+      },
+    ],
+    ['output key', () => ok({ 'material/rockLight': scene() })],
+  ] as const)('reports an invalid sourceKey from a %s with its Pack and kebab-case fix', async (_, build) => {
+    const result = await buildScriptablePack({
+      definition: definePack({
+        schemaVersion: '2.0.0',
+        packageId: id('01900000-0000-7000-8000-000000000071'),
+        build: build as never,
+      }),
+      sourcePath: 'assets/rocks.pack.ts',
+      outputs: producers(),
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'pack-source-key-invalid',
+        expected: expect.stringContaining('^[a-z0-9][a-z0-9._-]*'),
+        hint: expect.stringContaining('use kebab-case: "material/rock-light"'),
+        detail: {
+          sourcePath: 'assets/rocks.pack.ts',
+          sourceKey: 'material/rockLight',
+          suggestedSourceKey: 'material/rock-light',
+        },
+      },
+    });
+  });
+
+  it.each([
     false,
     true,
   ])('retains the fallback for an unstructured build throw (accessor: %s)', async (accessor) => {

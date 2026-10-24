@@ -134,7 +134,7 @@ owned by the game bootstrap, while the Gateway and Content Browser project the c
 
 ### Profile and diagnostics
 
-Run `forgeax project check --json` from a game project to read the complete
+Run `forgeax project check --detail --json` from a game project to read the complete
 current profile at `value.uiAuthoringProfile`, including
 `css.nativeProperties`, supported selectors, media features, HTML elements and
 custom-property prefixes. This report comes directly from the validator's table.

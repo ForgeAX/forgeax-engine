@@ -23,6 +23,50 @@ export interface BrowserFrameSubmitted {
    * of a session and for in-process execution.
    */
   readonly renderDrawIntervalMs?: number;
+  /**
+   * Always-on Render Worker stall accounting (Render Worker clock, 0.01 ms).
+   * The draw interval decomposes as previous turn (previous
+   * `renderDrawCpuMs` plus its post-submit tail) + `renderAwaitMs` +
+   * `renderQueuedMs`. All are absent for in-process execution.
+   *
+   * `renderDrawCpuMs`: draw start to queue submission of this frame.
+   */
+  readonly renderDrawCpuMs?: number;
+  /**
+   * Idle time waiting for this draw message: its arrival minus the end of the
+   * previous draw turn; 0 when it arrived while that turn was still running.
+   */
+  readonly renderAwaitMs?: number;
+  /** Draw start minus max(arrival, previous turn end): wait behind the serial drain. */
+  readonly renderQueuedMs?: number;
+  /** Engine Worker `world.update` milliseconds for the published frame. */
+  readonly engineUpdateMs?: number;
+  /** Engine Worker milliseconds waiting for publication credit before that update (0 = none). */
+  readonly engineCreditWaitMs?: number;
+  /** Render graphs compiled during this draw turn. */
+  readonly renderGraphCompiles?: number;
+  /** Native WebGPU pipelines created (sync + async) during this draw turn; 0 on other backends. */
+  readonly renderPipelineCreations?: number;
+  /**
+   * Largest contributor to this frame's draw interval: `render-cpu` (previous
+   * turn), `credit` / `simulation` (Engine credit wait / World update share of
+   * the await), `publication` (rest of the await: Host admission, vsync,
+   * transport) or `queue` (`renderQueuedMs`). Absent on the first draw.
+   */
+  readonly renderStallReason?: 'render-cpu' | 'credit' | 'simulation' | 'publication' | 'queue';
+  /**
+   * Render Worker RHI commands encoded since the previous submitted frame
+   * (draws, pipeline and bind group sets, bundle replays, buffer and texture
+   * writes and bytes, resource creation). CPU-side call counts, identical with
+   * the WebGPU stub and a real GPU. Absent for the first draw of a session and
+   * for in-process execution.
+   */
+  readonly rhiCommands?: import('@forgeax/engine-rhi-webgpu').RhiCommandCounts;
+  /**
+   * Bytes of the publication this frame drew: frame columns and transferred
+   * asset buffers (see `renderPublicationBytes`). Absent for in-process execution.
+   */
+  readonly publicationBytes?: { readonly columns: number; readonly assets: number };
   /** World/session identity owned by the active App execution. */
   readonly worldIdentity?: string;
   /**

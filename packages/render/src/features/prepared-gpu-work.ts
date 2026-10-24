@@ -13,7 +13,13 @@ import type {
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { type BindGroupLayoutDescriptor, err, ok, type Result } from '@forgeax/engine-types';
+import {
+  type BindGroupLayoutDescriptor,
+  err,
+  isDeepFrozenJson,
+  ok,
+  type Result,
+} from '@forgeax/engine-types';
 import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
@@ -495,6 +501,121 @@ export function equalDescriptorValue(left: unknown, right: unknown): boolean {
   return false;
 }
 
+type ComputeAccessSummary = Omit<RenderFeatureResolvedGpuComputePass, 'dispatches'>;
+/**
+ * The graph accesses of one compute pass are a pure function of its program,
+ * per-dispatch binding items and indirect buffer items (all immutable). The
+ * last proven summary is kept on the pass's first binding item (one pass owner)
+ * and reused while every item is identical.
+ */
+const computeAccessSummaries = new WeakMap<
+  BindingsItem,
+  {
+    readonly program: ProgramItem;
+    readonly bindings: readonly BindingsItem[];
+    readonly indirect: readonly (BufferItem | undefined)[];
+    readonly summary: ComputeAccessSummary;
+  }
+>();
+function sameItems<T>(left: readonly T[], right: readonly T[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
+}
+function computeAccessSummary(
+  featureIdentity: string,
+  program: ProgramItem,
+  dispatchBindings: readonly BindingsItem[],
+  indirectItems: readonly (BufferItem | undefined)[],
+): Result<ComputeAccessSummary, RenderError> {
+  const owner = dispatchBindings[0];
+  const cached = owner === undefined ? undefined : computeAccessSummaries.get(owner);
+  if (
+    cached !== undefined &&
+    cached.program === program &&
+    sameItems(cached.bindings, dispatchBindings) &&
+    sameItems(cached.indirect, indirectItems)
+  )
+    return ok(cached.summary);
+  const resolvedBuffers = new Map<BufferItem, Set<GraphBufferAccess>>();
+  for (const item of dispatchBindings) {
+    if (item === undefined) continue;
+    for (const entry of item.buffers) {
+      const access = program.bindingLayouts.get(entry.binding);
+      if (access === undefined) {
+        return err(
+          failure(
+            featureIdentity,
+            'resolve-gpu-compute',
+            'bindings',
+            item.name,
+            `buffer-layout-unavailable:${entry.binding}`,
+          ),
+        );
+      }
+      const derived = graphAccess(access.type);
+      const prior = resolvedBuffers.get(entry.item) ?? new Set<GraphBufferAccess>();
+      if (prior.size > 0 && !prior.has(derived)) {
+        if (prior.has('storage-read-write') || derived === 'storage-read-write') {
+          resolvedBuffers.set(entry.item, new Set(['storage-read-write']));
+          continue;
+        }
+        return err(
+          failure(
+            featureIdentity,
+            'resolve-gpu-compute',
+            'bindings',
+            item.name,
+            `buffer-access-conflict:${entry.binding}`,
+          ),
+        );
+      }
+      prior.add(derived);
+      resolvedBuffers.set(entry.item, prior);
+    }
+  }
+  for (const item of indirectItems) {
+    if (item === undefined) continue;
+    const accesses = resolvedBuffers.get(item) ?? new Set<GraphBufferAccess>();
+    accesses.add('indirect-read');
+    resolvedBuffers.set(item, accesses);
+  }
+  const sampledTargets = new Set<RenderFeatureComputeTarget>();
+  const storageTargets = new Set<RenderFeatureComputeTarget>();
+  for (const item of dispatchBindings) {
+    for (const entry of item?.entries ?? []) {
+      const target = entry.textureView?.logicalTarget;
+      if (target === undefined) continue;
+      const role = program.textureBindings.get(entry.binding) ?? 'sampled';
+      if (role === 'sampled') sampledTargets.add(target);
+      else storageTargets.add(target);
+    }
+  }
+  const summary: ComputeAccessSummary = Object.freeze({
+    sampledTargets: Object.freeze([...sampledTargets]),
+    storageTargets: Object.freeze([...storageTargets]),
+    buffers: Object.freeze(
+      [...resolvedBuffers].flatMap(([item, accesses]) =>
+        [...accesses].map((access) => ({
+          name: item.name,
+          buffer: item.buffer,
+          size: item.size,
+          physicalUsage: item.physicalUsage,
+          access,
+        })),
+      ),
+    ),
+  });
+  if (owner !== undefined)
+    computeAccessSummaries.set(owner, {
+      program,
+      bindings: [...dispatchBindings],
+      indirect: [...indirectItems],
+      summary,
+    });
+  return ok(summary);
+}
+
 function cloneDescriptorValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return Object.freeze(value.map((child) => cloneDescriptorValue(child)));
@@ -552,7 +673,8 @@ export function ownRenderFeatureProgramDataWith<T>(
  * The copy keeps the former clone semantics exactly (enumerable string keys,
  * accessor values read once, views copied as bytes); any non-JSON trait only
  * clears `state.plain`, so such a copy is detached but never marked owned.
- * Owned subtrees are already deeply frozen plain JSON and are shared, not copied.
+ * Owned subtrees and deep-frozen plain JSON subtrees are immutable and are
+ * shared, not copied.
  */
 function ownProgramNode(
   value: unknown,
@@ -566,7 +688,7 @@ function ownProgramNode(
     return value;
   }
   const node = value as object;
-  if (ownedProgramData.has(node)) return node;
+  if (adoptsByIdentity(node)) return node;
   if (reuse !== undefined) {
     const substitute = reuse(node);
     if (substitute !== undefined && ownedProgramData.has(substitute)) return substitute;
@@ -613,6 +735,19 @@ function ownProgramNode(
     else out[key] = copied;
   }
   return Object.freeze(out);
+}
+
+/**
+ * Owned data is shared as is. A deep-frozen plain JSON subtree can no longer
+ * change either, so owning it needs no copy: it is adopted by identity, and
+ * large cooked facts (material ABIs the asset owner retains frozen) stay one
+ * shared instance.
+ */
+function adoptsByIdentity(node: object): boolean {
+  if (ownedProgramData.has(node)) return true;
+  if (!isDeepFrozenJson(node)) return false;
+  ownedProgramData.add(node);
+  return true;
 }
 
 export function isOwnedRenderFeatureProgramData(value: unknown): boolean {
@@ -2080,7 +2215,8 @@ function createRenderFeatureGpuWorkSession(input: {
           ? undefined
           : bufferRefs.get(dispatch.indirect.buffer as object),
       );
-      for (const [index, dispatch] of descriptor.dispatches.entries()) {
+      for (let index = 0; index < descriptor.dispatches.length; index++) {
+        const dispatch = descriptor.dispatches[index] as (typeof descriptor.dispatches)[number];
         const indirectItem = indirectItems[index];
         const invalidDirect =
           dispatch.workgroups !== undefined &&
@@ -2120,7 +2256,8 @@ function createRenderFeatureGpuWorkSession(input: {
       }
       const resolvedDispatches: RenderFeatureResolvedGpuComputePass['dispatches'][number][] = [];
       let emptyDispatches = 0;
-      for (const [index, dispatch] of descriptor.dispatches.entries()) {
+      for (let index = 0; index < descriptor.dispatches.length; index++) {
+        const dispatch = descriptor.dispatches[index] as (typeof descriptor.dispatches)[number];
         const pipeline = program.pipelines.get(dispatch.entryPoint);
         const dispatchBinding = dispatchBindings[index];
         if (pipeline === undefined || dispatchBinding === undefined) continue;
@@ -2193,74 +2330,14 @@ function createRenderFeatureGpuWorkSession(input: {
           ),
         );
       }
-      const resolvedBuffers = new Map<BufferItem, Set<GraphBufferAccess>>();
-      for (const item of dispatchBindings) {
-        if (item === undefined) continue;
-        for (const entry of item.buffers) {
-          const access = program.bindingLayouts.get(entry.binding);
-          if (access === undefined) {
-            return err(
-              failure(
-                featureIdentity,
-                'resolve-gpu-compute',
-                'bindings',
-                item.name,
-                `buffer-layout-unavailable:${entry.binding}`,
-              ),
-            );
-          }
-          const derived = graphAccess(access.type);
-          const prior = resolvedBuffers.get(entry.item) ?? new Set<GraphBufferAccess>();
-          if (prior.size > 0 && !prior.has(derived)) {
-            if (prior.has('storage-read-write') || derived === 'storage-read-write') {
-              resolvedBuffers.set(entry.item, new Set(['storage-read-write']));
-              continue;
-            }
-            return err(
-              failure(
-                featureIdentity,
-                'resolve-gpu-compute',
-                'bindings',
-                item.name,
-                `buffer-access-conflict:${entry.binding}`,
-              ),
-            );
-          }
-          prior.add(derived);
-          resolvedBuffers.set(entry.item, prior);
-        }
-      }
-      for (const item of indirectItems) {
-        if (item === undefined) continue;
-        const accesses = resolvedBuffers.get(item) ?? new Set<GraphBufferAccess>();
-        accesses.add('indirect-read');
-        resolvedBuffers.set(item, accesses);
-      }
-      const sampledTargets = new Set<RenderFeatureComputeTarget>();
-      const storageTargets = new Set<RenderFeatureComputeTarget>();
-      for (const item of dispatchBindings) {
-        for (const entry of item?.entries ?? []) {
-          const target = entry.textureView?.logicalTarget;
-          if (target === undefined) continue;
-          const role = program.textureBindings.get(entry.binding) ?? 'sampled';
-          if (role === 'sampled') sampledTargets.add(target);
-          else storageTargets.add(target);
-        }
-      }
-      return ok({
-        sampledTargets: [...sampledTargets],
-        storageTargets: [...storageTargets],
-        buffers: [...resolvedBuffers].flatMap(([item, accesses]) =>
-          [...accesses].map((access) => ({
-            name: item.name,
-            buffer: item.buffer,
-            size: item.size,
-            physicalUsage: item.physicalUsage,
-            access,
-          })),
-        ),
-        dispatches: resolvedDispatches,
-      });
+      const access = computeAccessSummary(
+        featureIdentity,
+        program,
+        dispatchBindings as readonly BindingsItem[],
+        indirectItems,
+      );
+      if (!access.ok) return access;
+      return ok({ ...access.value, dispatches: resolvedDispatches });
     },
     resolveBuffer: (reference) => {
       const item = bufferRefs.get(reference as object);

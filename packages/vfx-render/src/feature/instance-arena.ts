@@ -61,6 +61,29 @@ interface Layout {
   lastUsed: number;
 }
 
+const ARENA_BINDING_VALUES = ['runtime', 'instances'] as const;
+type BindingValues = Extract<Resource, { readonly kind: 'graphics-bindings' }>['values'];
+/**
+ * Arena-mapped values of one frozen producer values object, reused while the
+ * mapped physical names match. Keyed weakly by the producer's own object.
+ */
+const mappedBindingValues = new WeakMap<
+  object,
+  {
+    readonly runtime: string | undefined;
+    readonly instances: string | undefined;
+    readonly values: BindingValues;
+  }
+>();
+
+function sameUsage(range: VfxArenaRange, resource: BufferResource): boolean {
+  const usage = range.layout.usage;
+  if (usage.length !== resource.usage.length) return false;
+  for (let index = 0; index < usage.length; index++)
+    if (usage[index] !== resource.usage[index]) return false;
+  return true;
+}
+
 function remapEntries<T>(entries: readonly T[], remap: (entry: T) => T): readonly T[] {
   let changed: T[] | undefined;
   for (let index = 0; index < entries.length; index++) {
@@ -83,6 +106,7 @@ export function createVfxInstanceArena() {
     string,
     { readonly source: Bindings; readonly resource: Bindings }
   >();
+  let spareBindingLayouts: typeof bindingLayouts = new Map();
   type FrameInput = {
     readonly liveOwners: ReadonlySet<string>;
     readonly generation: number;
@@ -164,7 +188,9 @@ export function createVfxInstanceArena() {
     // Ordinary arena declarations of this pack. Retained ranges are read from
     // the persistent index instead of being copied into per-frame maps.
     const shared = new Map<string, Range>();
-    const nextBindingLayouts: typeof bindingLayouts = new Map();
+    // The previous pack stays readable while the alternate table is refilled.
+    const nextBindingLayouts = spareBindingLayouts;
+    nextBindingLayouts.clear();
     const packed = input.work.map((work): RenderFeatureWork => {
       const scope = work.scope === 'frame' ? 'frame' : `view:${work.scope.view}`;
       const local = work.scope === 'frame' ? shared : new Map<string, Range>();
@@ -202,19 +228,15 @@ export function createVfxInstanceArena() {
           resources.push(resource);
           continue;
         }
-        const leaseKey = `${scope}:${resource.name}`;
-        let range = leases.get(leaseKey);
-        if (
-          range !== undefined &&
-          (range.size !== resource.size ||
-            range.layout.usage.length !== resource.usage.length ||
-            !resource.usage.every((usage, index) => usage === range?.layout.usage[index]))
-        ) {
+        // The scope/source index names exactly the lease `${scope}:${name}`.
+        let range = leaseIndex.get(scope)?.get(resource.name);
+        if (range !== undefined && (range.size !== resource.size || !sameUsage(range, resource))) {
           range.layout.slots[range.slot] = undefined;
           dropLease(range);
           range = undefined;
         }
         if (range === undefined) {
+          const leaseKey = `${scope}:${resource.name}`;
           const role = resource.name.slice(instance.prefix.length);
           const layoutKey = JSON.stringify([
             instance.program,
@@ -359,20 +381,32 @@ export function createVfxInstanceArena() {
                 },
           );
         } else if (resource.kind === 'graphics-bindings') {
-          let values: Record<string, unknown> | undefined;
-          for (const key of ['runtime', 'instances']) {
-            const name = resource.values[key];
-            const mapped = typeof name === 'string' ? range(name) : undefined;
-            if (mapped !== undefined) {
-              values ??= { ...resource.values };
-              values[key] = mapped.name;
-            }
+          const source = resource.values;
+          const runtimeName = source.runtime;
+          const instancesName = source.instances;
+          const runtime = typeof runtimeName === 'string' ? range(runtimeName)?.name : undefined;
+          const instances =
+            typeof instancesName === 'string' ? range(instancesName)?.name : undefined;
+          if (runtime === undefined && instances === undefined) {
+            resources.push(resource);
+            continue;
           }
-          resources.push(
-            values === undefined
-              ? resource
-              : { ...resource, values: values as typeof resource.values },
-          );
+          const prior = mappedBindingValues.get(source);
+          if (prior !== undefined && prior.runtime === runtime && prior.instances === instances) {
+            resources.push({ ...resource, values: prior.values });
+            continue;
+          }
+          const values: Record<string, unknown> = { ...source };
+          for (const key of ARENA_BINDING_VALUES) {
+            const mapped = key === 'runtime' ? runtime : instances;
+            if (mapped !== undefined) values[key] = mapped;
+          }
+          const remapped = values as BindingValues;
+          if (Object.isFrozen(source)) {
+            Object.freeze(remapped);
+            mappedBindingValues.set(source, { runtime, instances, values: remapped });
+          }
+          resources.push({ ...resource, values: remapped });
         } else resources.push(resource);
       }
       const passes = remapEntries(work.passes, (pass) => {
@@ -460,6 +494,7 @@ export function createVfxInstanceArena() {
         if (lease.layout === layout) dropLease(lease);
       });
     });
+    spareBindingLayouts = bindingLayouts;
     bindingLayouts = nextBindingLayouts;
     return packed;
   };

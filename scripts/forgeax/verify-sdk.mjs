@@ -23,9 +23,11 @@ import {
   verifySdkViewRuntime,
 } from './sdk-lib.mjs';
 import { SDK_ARCHIVE_VERIFY_GROUPS } from './sdk-pr-preflight.mjs';
+import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
 import { createSdkVerifierProcess } from './verify-sdk-process.mjs';
+import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
 let sourcePackageManager;
 const processRunner = createSdkVerifierProcess(() => sourcePackageManager);
@@ -303,6 +305,7 @@ for (const path of [
   'skills/forgeax-engine-assets/SKILL.md',
   'skills/forgeax-engine-cli/SKILL.md',
   'skills/forgeax-engine-rhi-debug/SKILL.md',
+  'skills/forgeax-engine-sdk/references/api-index.md',
   'skills/forgeax-engine-sdk/references/feature-catalog.md',
   'skills/forgeax-engine-sdk/references/sdk-production.md',
   'templates/empty/AGENTS.md',
@@ -385,6 +388,15 @@ const sourceBuildPnpm = (args) =>
 if (selected('source')) {
   await sdkStage('buildSourceSnapshot', async () => {
     await sourceBuildPnpm(['install', '--frozen-lockfile', '--ignore-scripts']);
+    await sdkStage('verify single-module source editing', () =>
+      verifySdkSourceEdit({ sdkRoot, output: resolve(unpackRoot, 'source-edit'), env: sourceEnv }),
+    );
+    // Keep the independent cold source-build proof after the seeded-package journey.
+    await execFileAsync(process.execPath, ['scripts/clean-build-outputs.mjs'], {
+      cwd: sourceRoot,
+      env: sourceEnv,
+      maxBuffer: 64 * 1024 * 1024,
+    });
     await sourceBuildPnpm(['build:engine']);
     await sourceBuildPnpm(['build:tools']);
     await sourceBuildPnpm(['build:app', 'preview']);
@@ -472,12 +484,16 @@ if (selected('project')) {
   }
   if (createdProjectEnvelope.value?.sdkUpdate?.status !== 'skipped')
     throw new Error('sdk-new-update-check-offline');
+  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/api-index.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/sdk-production.md'));
   const projectWorkspace = await readFile(resolve(project, 'pnpm-workspace.yaml'), 'utf8');
   if (!projectWorkspace.includes('trustLockfile: true'))
     throw new Error('sdk-game-lockfile-trust-missing');
-  if (!projectWorkspace.includes('verifyDepsBeforeRun: warn'))
+  if (
+    !projectWorkspace.includes('verifyDepsBeforeRun: install') ||
+    !projectWorkspace.includes('frozenLockfile: true')
+  )
     throw new Error('sdk-game-run-install-policy-missing');
   if (!projectWorkspace.includes('enableGlobalVirtualStore: false'))
     throw new Error('sdk-game-virtual-store-policy-missing');
@@ -547,8 +563,8 @@ if (selected('project')) {
     if (exists) throw new Error(`sdk-empty-source-layout-retired: ${retiredPath}`);
   }
   // Select the custom package identity before installation through the public
-  // CLI. Editing package.json afterwards genuinely invalidates pnpm's workspace
-  // state and requires an install; that warning is not an SDK bootstrap failure.
+  // CLI. A later package.json identity edit is reconciled once by the project's
+  // frozen `verifyDepsBeforeRun: install` policy; see sdk-project-identity.mjs.
   const interactiveLocalEnv = { ...offlineEnv, CI: '' };
   const renamedProjectDoctor = await execFileAsync(
     'pnpm',
@@ -561,6 +577,7 @@ if (selected('project')) {
   );
   if (renamedProjectDoctor.stderr.includes('node_modules are out of sync'))
     throw new Error('sdk-game-first-command-dependency-drift');
+  await verifyProjectIdentityReconcile(project, offlineEnv);
   const helpResult = await execFileAsync(
     'node',
     [resolve(sdkRoot, 'bin', 'forgeax.mjs'), 'help', 'dev'],

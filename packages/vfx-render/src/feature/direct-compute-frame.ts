@@ -10,8 +10,37 @@ interface Bucket {
   readonly program: string;
   readonly ranges: readonly VfxArenaRange[];
   readonly entries: readonly string[];
-  readonly bytes: Uint8Array;
+  /** Job rows written so far; grows to at most one full slab table. */
+  bytes: Uint8Array;
+  /** Word view of `bytes`, replaced only when the table grows. */
+  words: Uint32Array;
   count: number;
+}
+/** One job table holds at most sixteen 336-byte rows (one arena slab). */
+const JOB_BYTES = 336;
+const TABLE_BYTES = 16 * JOB_BYTES;
+const JOB_STRIDES_PREFIX = [112, 4, 24, 20, 4, 4] as const;
+/**
+ * Bucket key parts of retained range/entry lists. Callers pass the same frozen
+ * lists every frame, so their joined names are built once per list.
+ */
+const rangeKeys = new WeakMap<readonly VfxArenaRange[], string>();
+const entryKeys = new WeakMap<readonly string[], string>();
+function rangeKey(ranges: readonly VfxArenaRange[]): string {
+  let key = rangeKeys.get(ranges);
+  if (key === undefined) {
+    key = ranges.map((range) => range.name).join('|');
+    if (Object.isFrozen(ranges)) rangeKeys.set(ranges, key);
+  }
+  return key;
+}
+function entryKey(entries: readonly string[]): string {
+  let key = entryKeys.get(entries);
+  if (key === undefined) {
+    key = entries.join(',');
+    if (Object.isFrozen(entries)) entryKeys.set(entries, key);
+  }
+  return key;
 }
 interface Wave {
   readonly resets: Copy[];
@@ -34,45 +63,53 @@ export function createVfxDirectComputeFrame() {
     },
   ) => {
     if (input.entries.length === 0) return;
-    const key =
-      input.program +
-      '|' +
-      input.ranges.map((range) => range.name).join('|') +
-      '|' +
-      input.entries.join(',');
+    const key = `${input.program}|${rangeKey(input.ranges)}|${entryKey(input.entries)}`;
     let bucket = buckets.get(key);
     if (bucket === undefined) {
       bucket = {
         program: input.program,
         ranges: input.ranges,
         entries: input.entries,
-        bytes: new Uint8Array(16 * 336),
+        bytes: new Uint8Array(JOB_BYTES),
+        words: new Uint32Array(0),
         count: 0,
       };
+      bucket.words = new Uint32Array(bucket.bytes.buffer);
       buckets.set(key, bucket);
     }
     if (bucket.count >= 16) throw new RangeError('Direct VFX packet exceeds its arena slab');
-    const at = bucket.count++ * 336;
+    const at = bucket.count++ * JOB_BYTES;
+    if (at + JOB_BYTES > bucket.bytes.byteLength) {
+      // Most tables carry one or two jobs; grow geometrically up to one slab.
+      const grown = new Uint8Array(Math.min(TABLE_BYTES, bucket.bytes.byteLength * 2));
+      grown.set(bucket.bytes);
+      bucket.bytes = grown;
+      bucket.words = new Uint32Array(grown.buffer);
+    }
+    const runtime = input.runtime;
     bucket.bytes.set(
-      new Uint8Array(input.runtime.buffer, input.runtime.byteOffset, input.runtime.byteLength),
+      runtime instanceof Uint8Array
+        ? runtime
+        : new Uint8Array(runtime.buffer, runtime.byteOffset, runtime.byteLength),
       at,
     );
-    const r = input.ranges,
-      strides = [112, 4, 24, 20, 4, 4, input.customStride];
-    if (r.length !== strides.length) throw new RangeError('Unaligned direct VFX range');
-    const offsets = new Uint32Array(bucket.bytes.buffer, at + 304, 8);
-    for (let i = 0; i < strides.length; i++) {
+    const r = input.ranges;
+    if (r.length !== JOB_STRIDES_PREFIX.length + 1)
+      throw new RangeError('Unaligned direct VFX range');
+    const words = bucket.words,
+      offsets = (at + 304) >> 2;
+    for (let i = 0; i < r.length; i++) {
       const range = r[i],
-        stride = strides[i];
+        stride = i < JOB_STRIDES_PREFIX.length ? JOB_STRIDES_PREFIX[i] : input.customStride;
       if (
         range === undefined ||
         stride === undefined ||
         !Number.isSafeInteger(range.offset / stride)
       )
         throw new RangeError('Unaligned direct VFX range');
-      offsets[i] = range.offset / stride;
+      words[offsets + i] = range.offset / stride;
     }
-    offsets[7] = 1;
+    words[offsets + 7] = 1;
   };
   const control = 'vfx.batch-job-control';
   const emit = (
@@ -88,9 +125,9 @@ export function createVfxDirectComputeFrame() {
         {
           kind: 'buffer',
           name: table,
-          size: bucket.bytes.byteLength,
+          size: TABLE_BYTES,
           usage: ['storage'],
-          data: bucket.bytes.subarray(0, bucket.count * 336),
+          data: bucket.bytes.subarray(0, bucket.count * JOB_BYTES),
         },
         {
           kind: 'compute-bindings',

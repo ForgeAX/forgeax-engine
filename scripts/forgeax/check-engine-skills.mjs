@@ -7,6 +7,7 @@ import {
   publicEngineFacadeSubpaths,
   publicEngineMembers,
 } from '../../packages/engine/scripts/public-facades.mjs';
+import { checkApiIndex } from './sdk-api-index.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const skillsRoot = resolve(root, 'skills');
@@ -121,6 +122,17 @@ function checkPublicFacadeImports(file, source) {
   }
 }
 
+function checkGameExamples(file, source) {
+  // Games declare only @forgeax/engine; eval resolves facade subpaths, not focused packages.
+  for (const match of source.matchAll(/\b_import\(\s*['"](@forgeax\/engine-[^'"]+)['"]/g)) {
+    fail(file, `eval _import must use the @forgeax/engine/<dir> facade: ${match[1]}`);
+  }
+  // moveAndSlide takes a branded Vec3/Vec2 (Float32Array); array literals do not typecheck.
+  for (const match of source.matchAll(/\bmoveAndSlide\(\s*[^,()]+,\s*\[/g)) {
+    fail(file, `moveAndSlide delta must be a Vec3/Vec2, not an array literal: ${match[0]}`);
+  }
+}
+
 function checkDocumentationImports(file, source) {
   for (const match of source.matchAll(
     /\b(?:from|import)\s*(?:type\s*)?(?:\(\s*)?['"](@forgeax\/engine-[^'"]+)['"]/g,
@@ -179,6 +191,7 @@ for (const file of await markdownFiles(skillsRoot)) {
   const source = await readFile(file, 'utf8');
   await checkLinks(file, source);
   checkPublicFacadeImports(file, source);
+  checkGameExamples(file, source);
   if (file === resolve(skillsRoot, 'forgeax-engine-sdk/references/feature-catalog.md')) {
     const baseline = source.match(/Generation baseline commit:\s*`([0-9a-f]{40})`/u)?.[1];
     if (baseline === undefined) {
@@ -216,8 +229,12 @@ for (const file of [
   resolve(skillsRoot, 'forgeax-engine-sdk/SDK-AGENTS.md'),
   resolve(skillsRoot, 'forgeax-engine-sdk/SDK-README.md'),
 ]) {
-  checkPublicFacadeImports(file, await readFile(file, 'utf8'));
+  const source = await readFile(file, 'utf8');
+  checkPublicFacadeImports(file, source);
+  checkGameExamples(file, source);
 }
+
+failures.push(...checkApiIndex());
 
 if (failures.length > 0) {
   console.error(failures.join('\n'));

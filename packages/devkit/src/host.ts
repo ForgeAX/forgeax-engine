@@ -32,7 +32,10 @@ import {
   scanInventory,
 } from '@forgeax/engine-pack/scanner';
 import { projectScriptablePackSceneComponents } from '@forgeax/engine-pack/source';
-import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import {
+  createScriptablePackSourceSnapshot,
+  type ScriptablePackMetadataCache,
+} from '@forgeax/engine-pack/source-node';
 import { validateCanonicalKitReceipt } from '@forgeax/engine-preview';
 import type { SsrAdmissionIdentity } from '@forgeax/engine-render';
 import { createMaterialPackCooker, listMaterialSourcePaths } from '@forgeax/engine-shader-compiler';
@@ -119,6 +122,7 @@ import type {
   BootstrapRoot,
   BuildOptions,
   CommandResult,
+  PreviewOptions,
   ProjectCommandOptions,
   ProjectFacts,
   ProjectPortOptions,
@@ -2172,7 +2176,7 @@ export async function startDevProjectWithHost(
 
 /** Start static dist preview under one DevKit plugin and verify its manifest first. */
 export async function startPreviewProjectWithHost(
-  options: ProjectCommandOptions = {},
+  options: PreviewOptions = {},
 ): Promise<CommandResult<unknown>> {
   let result: CommandResult<unknown> | undefined;
   let started = false;
@@ -2188,7 +2192,8 @@ export async function startPreviewProjectWithHost(
           name: 'forgeax:devkit-preview-server',
           async apply(ctx) {
             const root = resolve(options.root ?? process.cwd());
-            const verified = await verifyDist(resolve(root, 'dist'));
+            const distRoot = resolve(root, options.dist ?? 'dist');
+            const verified = await verifyDist(distRoot);
             if (!verified.ok) {
               result = verified;
               return;
@@ -2214,7 +2219,7 @@ export async function startPreviewProjectWithHost(
                 root,
                 configFile: false,
                 base: verified.value.base,
-                plugins: [await preparePreviewHttpArtifacts(resolve(root, 'dist'), verified.value)],
+                plugins: [await preparePreviewHttpArtifacts(distRoot, verified.value)],
                 preview: {
                   open: false,
                   ...port,
@@ -2224,7 +2229,7 @@ export async function startPreviewProjectWithHost(
                     'Cross-Origin-Resource-Policy': 'cross-origin',
                   },
                 },
-                build: { outDir: resolve(root, 'dist') },
+                build: { outDir: distRoot },
               });
               ctx.effect(() => () => server.close(), 'devkit/preview-server');
               if (options.json !== true) server.printUrls();
@@ -2234,7 +2239,7 @@ export async function startPreviewProjectWithHost(
                   root,
                   urls: server.resolvedUrls,
                   mode: 'preview',
-                  serves: 'dist',
+                  serves: distRoot,
                   capabilities: {
                     'rhi.capture': {
                       available: false,
@@ -2420,8 +2425,9 @@ async function assertHostBindingAdmission(
 async function admitInitialSourceSnapshot(
   facts: ProjectFacts,
   initialSources: PluginSourceInventory | undefined,
+  metadataCache?: ScriptablePackMetadataCache,
 ): Promise<PluginSourceInventory['sourceSnapshot']> {
-  if (initialSources === undefined) return createScriptablePackSourceSnapshot();
+  if (initialSources === undefined) return createScriptablePackSourceSnapshot({ metadataCache });
   await assertPluginSourceInputs(initialSources, facts.root);
   return initialSources.sourceSnapshot;
 }
@@ -2736,6 +2742,8 @@ export async function createViteConfig(
     readonly sessionGeneration?: number;
     readonly animation?: AnimationPlaybackOptions;
     readonly target?: BuildOptions['target'];
+    /** Owner-lifetime reuse keyed by each new snapshot's freshly digested closure. */
+    readonly scriptablePackMetadata?: ScriptablePackMetadataCache;
   } = {},
 ): Promise<InlineConfig> {
   assertMaterialProfileTarget(options.materialProfile, options.target);
@@ -2764,10 +2772,15 @@ export async function createViteConfig(
     const workspacePreview = isWorkspacePreview(options.host);
     const failedSources = new Set<string>();
     const ignorePath = projectSourceIgnorePath(bootstrapRoot, failedSources);
-    const sourceSnapshot = await admitInitialSourceSnapshot(facts, options.initialSources);
+    const sourceSnapshot = await admitInitialSourceSnapshot(
+      facts,
+      options.initialSources,
+      options.scriptablePackMetadata,
+    );
     // Both operations read current disk state and own no shared mutable
     // preparation. Keep their lifetime within this invocation: a later Play
     // must discover fresh project and Engine sources even without a watcher.
+    // Only metadata of a byte-identical source closure crosses invocations.
     timing('project-inventory-start');
     const [scanned, engineWorkspaceResolver] = await Promise.all([
       scanInventory(sourceRoots, {

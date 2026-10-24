@@ -149,6 +149,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
       isolateViewGraph: true,
     });
     const samples: number[] = [];
+    const frameSamples: number[] = [];
     const feature = {
       ...raw,
       plan(source: Parameters<typeof raw.plan>[0], input: Parameters<typeof raw.plan>[1]) {
@@ -164,18 +165,34 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     const profile = process.env.VFX_PLAN_BENCH_PROFILE;
-    const session = profile === undefined ? undefined : new Session();
+    // VFX_PLAN_BENCH_HEAP=1 samples allocations (including collected objects)
+    // over the same measured window and prints bytes per Renderer frame.
+    const heap = process.env.VFX_PLAN_BENCH_HEAP === '1';
+    const session = profile === undefined && !heap ? undefined : new Session();
+    let heapFrames = 0;
     try {
       for (let frameNumber = 1; frameNumber <= frames; frameNumber++) {
         if (session !== undefined && frameNumber === Math.floor(frames / 3)) {
           session.connect();
-          await session.post('Profiler.enable');
-          await session.post('Profiler.setSamplingInterval', { interval: 100 });
-          await session.post('Profiler.start');
+          if (profile !== undefined) {
+            await session.post('Profiler.enable');
+            await session.post('Profiler.setSamplingInterval', { interval: 100 });
+            await session.post('Profiler.start');
+          }
+          if (heap) {
+            await session.post('HeapProfiler.enable');
+            await session.post('HeapProfiler.startSampling', {
+              samplingInterval: 1024,
+              includeObjectsCollectedByMajorGC: true,
+              includeObjectsCollectedByMinorGC: true,
+            });
+          }
         }
+        if (session !== undefined && frameNumber >= Math.floor(frames / 3)) heapFrames += 2;
         world.update(1 / 60).unwrap();
         // Render cadence above the fixed tick keeps a mix of queued and retained frames.
         for (const _repeat of [0, 1]) {
+          const frameStart = performance.now();
           const batch = runRenderFeatureFrame(host, [
             {
               identity: 'main',
@@ -189,6 +206,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
               selectedView: camera,
             },
           ]);
+          frameSamples.push(performance.now() - frameStart);
           expect(batch.frame.errors).toEqual([]);
           batch.frame.onSubmitted();
           for (const view of batch.views.values()) view.onSubmitted();
@@ -199,12 +217,45 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
       if (session !== undefined && profile !== undefined) {
         const { profile: data } = await session.post('Profiler.stop');
         writeFileSync(profile, JSON.stringify(data));
-        session.disconnect();
       }
+      if (session !== undefined && heap) {
+        const { profile: data } = await session.post('HeapProfiler.stopSampling');
+        const self = new Map<string, number>();
+        let total = 0;
+        const walk = (node: typeof data.head, parent: string) => {
+          const frame = node.callFrame;
+          const own = frame.url
+            ? `${frame.url.replace(/^.*packages\//, '')}:${frame.lineNumber + 1} ${frame.functionName}`
+            : `${parent} <${frame.functionName || '(native)'}>`;
+          total += node.selfSize;
+          if (node.selfSize > 0) self.set(own, (self.get(own) ?? 0) + node.selfSize);
+          for (const child of node.children) walk(child, frame.url ? own : parent);
+        };
+        walk(data.head, '');
+        const rows = [...self]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, Number(process.env.VFX_PLAN_BENCH_HEAP_TOP ?? 30));
+        process.stdout.write(
+          `[vfx-plan-bench] heap ${(total / heapFrames / 1024).toFixed(1)} KB/frame over ${heapFrames} frames\n${rows
+            .map(
+              ([key, bytes]) =>
+                `  ${(bytes / heapFrames / 1024).toFixed(2).padStart(8)} KB  ${key}`,
+            )
+            .join('\n')}\n`,
+        );
+      }
+      session?.disconnect();
       const measured = samples.slice(Math.floor(samples.length / 3)).sort((a, b) => a - b);
       const mean = measured.reduce((sum, value) => sum + value, 0) / measured.length;
       const at = (q: number) =>
         measured[Math.min(measured.length - 1, Math.floor(measured.length * q))];
+      const frameMeasured = frameSamples
+        .slice(Math.floor(frameSamples.length / 3))
+        .sort((a, b) => a - b);
+      const frameMean = frameMeasured.reduce((sum, value) => sum + value, 0) / frameMeasured.length;
+      process.stdout.write(
+        `[vfx-plan-bench] frame mean=${frameMean.toFixed(3)}ms p50=${frameMeasured[Math.floor(frameMeasured.length / 2)]?.toFixed(3)}ms\n`,
+      );
       process.stdout.write(
         `[vfx-plan-bench] players=${players} plans=${measured.length} mean=${mean.toFixed(3)}ms p50=${at(0.5)?.toFixed(3)}ms p95=${at(0.95)?.toFixed(3)}ms
 `,

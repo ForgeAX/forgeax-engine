@@ -47,6 +47,10 @@ function makeRegistry(
             }
           : { ok: false as const, error: new Error('not found') };
       },
+      materialArtifact(id: string) {
+        const lookup = this.findMaterialArtifact(id);
+        return lookup.ok ? lookup.value : undefined;
+      },
     },
     metrics: opts.metrics ?? null,
     assetCatalog: opts.catalog ?? new Map(),

@@ -59,6 +59,31 @@ export function registerComponentDefinition(
 }
 
 /** Read the definition-time schema/policy projection for a component token. */
+const declaredFieldAnswers = new WeakMap<object, WeakMap<object, boolean>>();
+
+/**
+ * Whether the component declares any field passing `test`. Write-path
+ * validators skip their payload walk for components without such a field.
+ * The answer is derived once per definition for each module-level test.
+ */
+export function componentDeclaresField(
+  component: Component,
+  test: (field: FieldReflection) => boolean,
+): boolean {
+  const fields = componentDefinition(component).fields;
+  let answers = declaredFieldAnswers.get(test);
+  if (answers === undefined) {
+    answers = new WeakMap();
+    declaredFieldAnswers.set(test, answers);
+  }
+  let declared = answers.get(fields);
+  if (declared === undefined) {
+    declared = Object.values(fields).some(test);
+    answers.set(fields, declared);
+  }
+  return declared;
+}
+
 export function componentDefinition(component: Component): ComponentDefinition {
   const definition = definitions.definitions.get(component);
   if (definition === undefined) {

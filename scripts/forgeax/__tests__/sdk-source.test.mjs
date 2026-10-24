@@ -5,11 +5,76 @@ import { tmpdir } from 'node:os';
 import { relative, resolve } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { filesUnder } from '../sdk-lib.mjs';
-import { archiveEngineSource, assertSourceDependencyInventory } from '../sdk-source.mjs';
+import { artifact, filesUnder, SDK_SOURCE_WASM } from '../sdk-lib.mjs';
+import {
+  archiveEngineSource,
+  assertSourceDependencyInventory,
+  seedSourcePackageBuilds,
+  verifySdkSource,
+} from '../sdk-source.mjs';
 
 const execFileAsync = promisify(execFile);
 const dependency = 'third_party/wgpu';
+
+test('editable source reuses normalized public builds and excludes native addons and caches', async (t) => {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-source-builds-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repositoryRoot = resolve(root, 'repository');
+  const sdkRoot = resolve(root, 'sdk');
+  const sourceRoot = resolve(sdkRoot, 'source/engine');
+  for (const [directory, privatePackage] of [
+    ['math', false],
+    ['rhi-wgpu-native', true],
+  ]) {
+    const source = resolve(sourceRoot, 'packages', directory);
+    await mkdir(resolve(source, 'src'), { recursive: true });
+    await writeFile(
+      resolve(source, 'package.json'),
+      JSON.stringify({
+        name: `@forgeax/engine-${directory}`,
+        private: privatePackage,
+      }),
+    );
+    await writeFile(resolve(source, 'src/index.ts'), 'export const editable = true;\n');
+    for (const [owner, marker] of [
+      [repositoryRoot, 'producer'],
+      [sdkRoot, 'normalized'],
+    ]) {
+      const dist = resolve(owner, 'packages', directory, 'dist');
+      await mkdir(resolve(dist, 'native'), { recursive: true });
+      await writeFile(resolve(dist, 'index.mjs'), `export const origin = '${marker}';\n`);
+      await writeFile(resolve(dist, 'index.d.ts'), 'export declare const origin: string;\n');
+      await writeFile(resolve(dist, '.tsbuildinfo'), 'producer cache');
+      await writeFile(resolve(dist, 'native/addon.node'), 'native binary');
+      await writeFile(resolve(dist, 'addon.node'), 'native binary');
+    }
+  }
+  await seedSourcePackageBuilds({ repositoryRoot, sdkRoot, sourceRoot });
+  assert.equal(
+    await readFile(resolve(sourceRoot, 'packages/math/dist/index.mjs'), 'utf8'),
+    "export const origin = 'normalized';\n",
+  );
+  assert.equal(
+    await readFile(resolve(sourceRoot, 'packages/rhi-wgpu-native/dist/index.mjs'), 'utf8'),
+    "export const origin = 'producer';\n",
+  );
+  for (const directory of ['math', 'rhi-wgpu-native']) {
+    assert.equal(
+      await readFile(resolve(sourceRoot, 'packages', directory, 'src/index.ts'), 'utf8'),
+      'export const editable = true;\n',
+    );
+    await readFile(resolve(sourceRoot, 'packages', directory, 'dist/index.d.ts'));
+    for (const path of ['dist/.tsbuildinfo', 'dist/native/addon.node', 'dist/addon.node']) {
+      await assert.rejects(readFile(resolve(sourceRoot, 'packages', directory, path)), {
+        code: 'ENOENT',
+      });
+    }
+  }
+  await rm(resolve(sdkRoot, 'packages/math/dist'), { recursive: true });
+  await assert.rejects(seedSourcePackageBuilds({ repositoryRoot, sdkRoot, sourceRoot }), {
+    code: 'ENOENT',
+  });
+});
 
 async function git(cwd, ...args) {
   const result = await execFileAsync('git', args, {
@@ -124,6 +189,54 @@ test('SDK export fails when the pinned dependency has not been initialized', asy
     archiveEngineSource({ root, destination, commit: engineCommit }),
     /sdk-source-git-dependency/,
   );
+});
+
+test('installed source verification rejects missing inventories and tampered checked WASM', async (t) => {
+  const { root, destination, engineCommit } = await fixture(t);
+  const gitDependencies = await archiveEngineSource({ root, destination, commit: engineCommit });
+  const sdkRoot = resolve(destination, '../..');
+  for (const path of [
+    '.forgeax-public-distribution',
+    'package.json',
+    'pnpm-lock.yaml',
+    'pnpm-workspace.yaml',
+    'scripts/build.mjs',
+    'packages/math/package.json',
+    ...SDK_SOURCE_WASM.flatMap((entry) => entry.files.map((file) => `${entry.root}/${file}`)),
+  ]) {
+    await mkdir(resolve(destination, path, '..'), { recursive: true });
+    await writeFile(resolve(destination, path), 'verified source payload\n');
+  }
+  const artifacts = await Promise.all(
+    (await filesUnder(destination)).map((path) => artifact(sdkRoot, path)),
+  );
+  const manifest = {
+    source: {
+      root: 'source/engine',
+      gitDependencies,
+      fileCount: artifacts.length,
+      byteCount: artifacts.reduce((sum, entry) => sum + entry.bytes, 0),
+    },
+    packages: [{ role: 'runtime', root: 'packages/math' }],
+    artifacts,
+  };
+  assert.deepEqual(await verifySdkSource(sdkRoot, manifest), {
+    root: manifest.source.root,
+    fileCount: artifacts.length,
+    byteCount: manifest.source.byteCount,
+  });
+  await assert.rejects(
+    verifySdkSource(sdkRoot, { ...manifest, artifacts: [] }),
+    /sdk-source-file-count/,
+  );
+  const wasm = 'packages/wgpu-wasm/pkg/wgpu_wasm_bg.wasm';
+  await writeFile(resolve(destination, wasm), 'corrupt');
+  await assert.rejects(
+    verifySdkSource(sdkRoot, manifest),
+    /sdk-artifact-mismatch:.*wgpu_wasm_bg.wasm/,
+  );
+  await rm(resolve(destination, wasm));
+  await assert.rejects(verifySdkSource(sdkRoot, manifest), { code: 'ENOENT' });
 });
 
 test('public View source has a JS/license closure while wgpu retains its Rust closure', async (t) => {

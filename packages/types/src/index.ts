@@ -15,6 +15,7 @@ export { encodeBase64 } from './base64.js';
 export { canonicalJson } from './canonical-json.js';
 export * from './core-contracts.js';
 export { fnv1a32, fnv1aUtf16 } from './fnv1a.js';
+export { isDeepFrozenJson } from './frozen-json.js';
 export * from './material-program-abi.js';
 export { createMeshMaterialSlotTable, type MeshMaterialSlotSource } from './mesh-material-slots.js';
 export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.js';

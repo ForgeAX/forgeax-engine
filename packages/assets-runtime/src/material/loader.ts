@@ -5,7 +5,7 @@ import {
   materialLayerPlanIdentity,
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
-import type { MaterialProgramAddress } from '@forgeax/engine-types';
+import { isDeepFrozenJson, type MaterialProgramAddress } from '@forgeax/engine-types';
 import { isRetainedMaterialAbi } from '../internal/retained-material-facts.js';
 import { findVerifiedArtifactBytes } from '../internal/shared-immutable.js';
 
@@ -219,34 +219,29 @@ function snapshotMaterialRecord(record: CookedMaterialRecord): CookedMaterialRec
       return accepted;
     };
     if (!dataOnly(record)) return undefined;
-    // Retained ABIs are deep-frozen shared facts restored below; never clone them.
-    const metadata = structuredClone({
-      ...record,
-      programs: record.programs.map((program) => ({
-        ...program,
-        selections: program.selections.map((selection) => {
-          if (!isRetainedMaterialAbi(selection.abi)) return selection;
-          const { abi: _retained, ...rest } = selection;
-          return rest;
-        }),
-        artifact: { ...program.artifact, bytes: undefined },
-      })),
-    });
-    return {
-      ...metadata,
-      programs: metadata.programs.map((program, index) => ({
-        ...program,
-        selections: program.selections.map((selection, selectionIndex) => {
-          const abi = record.programs[index]?.selections[selectionIndex]?.abi;
-          return isRetainedMaterialAbi(abi) ? { ...selection, abi } : selection;
-        }),
-        artifact: {
-          ...program.artifact,
-          bytes: (record.programs[index] as CookedMaterialRecord['programs'][number]).artifact
-            .bytes,
-        },
-      })),
+    // Detach mutable adapter data. Retained ABIs, validator-owned program bytes
+    // and deep-frozen package facts cannot change, so they are shared rather
+    // than cloned once per loaded material.
+    const detach = (value: unknown): unknown => {
+      if (value === null || typeof value !== 'object') return value;
+      if (programBytes.has(value as Uint8Array) || isRetainedMaterialAbi(value)) return value;
+      if (isDeepFrozenJson(value)) return value;
+      if (Array.isArray(value)) return value.map(detach);
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value)) {
+        const child = detach((value as Record<string, unknown>)[key]);
+        if (key === '__proto__')
+          Object.defineProperty(out, key, {
+            value: child,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        else out[key] = child;
+      }
+      return out;
     };
+    return detach(record) as CookedMaterialRecord;
   } catch {
     return undefined;
   }
@@ -484,13 +479,15 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
       } catch {
         artifacts = undefined;
       }
-      const snapshot = artifacts === undefined ? undefined : snapshotMaterialRecord(record);
-      const capturedArtifacts =
-        snapshot === undefined || artifacts === undefined
-          ? undefined
-          : copyMaterialArtifacts(artifacts, record);
-      if (snapshot === undefined || capturedArtifacts === undefined) digest = undefined;
-      else record = snapshot;
+      let capturedArtifacts: ReturnType<typeof copyMaterialArtifacts>;
+      if (artifacts !== undefined) {
+        const snapshot = snapshotMaterialRecord(record);
+        if (snapshot !== undefined) {
+          capturedArtifacts = copyMaterialArtifacts(artifacts, record);
+          if (capturedArtifacts !== undefined) record = snapshot;
+        }
+      }
+      if (capturedArtifacts === undefined) digest = undefined;
       const readySourceClosure =
         digest === undefined
           ? sourceClosure

@@ -109,6 +109,7 @@ export class FilteredPlanContributionOwner {
       const batches: PreparedBatch[] = [];
       const topology: GpuDrivenBatch[] = [];
       let fixedCandidates = true;
+      let seenRows = 0;
       for (const row of prepared.batchRows) {
         const source = row.source;
         const retainedRow = this.rows.get(source.batchId);
@@ -119,6 +120,7 @@ export class FilteredPlanContributionOwner {
           retainedRow.seen !== pass
         ) {
           retainedRow.seen = pass;
+          seenRows++;
           for (const batch of retainedRow.topology) {
             topology.push(batch);
             fixedCandidates &&= MemberCandidates.is(batch.candidates);
@@ -227,6 +229,7 @@ export class FilteredPlanContributionOwner {
           for (const key of retainedRow.windowKeys)
             if (!rowWindowKeys.includes(key)) releasedWindows.push(key);
         } else if (retainedRow !== undefined) scanWindows = true;
+        if (retainedRow?.seen !== pass) seenRows++;
         this.rows.set(source.batchId, {
           row,
           bindings: objectBindings,
@@ -237,12 +240,14 @@ export class FilteredPlanContributionOwner {
         });
       }
       // Retired rows release their geometry, windows and assembled batches.
-      for (const [id, retained] of this.rows) {
-        if (retained.seen === pass) continue;
-        this.rows.delete(id);
-        this.geometry.delete(id);
-        for (const key of retained.windowKeys) releasedWindows.push(key);
-      }
+      // Every retained row was seen when the counts agree.
+      if (this.rows.size !== seenRows)
+        for (const [id, retained] of this.rows) {
+          if (retained.seen === pass) continue;
+          this.rows.delete(id);
+          this.geometry.delete(id);
+          for (const key of retained.windowKeys) releasedWindows.push(key);
+        }
       const releaseWindow = (key: string) => {
         const window = this.windows.get(key);
         if (window === undefined) return;

@@ -82,6 +82,12 @@ Each `capture(name)` waits for a newly submitted Engine frame and the exact game
 
 ## Local Engine binding
 
+Both SDK transports supply `source/engine/` with editable source and the release's
+prebuilt package outputs. Install source dependencies and rebuild the changed
+owner; other owners retain their delivered builds. The SDK README's
+[source iteration commands](../SDK-README.md#bind-local-engine-source) cover
+focused builds and declaration regeneration.
+
 A game normally resolves the exact published `@forgeax/engine` version. Source iteration stores one development-only override in `.forgeax/engine-binding.json` without rewriting the project manifest:
 
 ```bash

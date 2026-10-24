@@ -1,5 +1,5 @@
 import type { Component, ComponentSchema, FieldReflection } from '../component';
-import { componentDefinition } from '../component-schema';
+import { componentDeclaresField, componentDefinition } from '../component-schema';
 
 export class TimeDeltaInvalidError extends Error {
   override readonly name = 'TimeDeltaInvalidError';
@@ -267,6 +267,9 @@ export class ArrayRangeOutOfBoundsError extends RangeError {
   }
 }
 
+const isLabeledEnumField = (field: FieldReflection): boolean =>
+  field.type === 'enum' && field.labels !== undefined;
+
 /**
  * Validate the closed enum fields present in a write payload. Enums without
  * labels remain open numeric fields for compatibility with existing schemas.
@@ -276,7 +279,7 @@ export function validateEnumFieldValues<S extends ComponentSchema>(
   raw: Partial<Record<string, unknown>> | undefined,
   entity?: number,
 ): ComponentFieldInvalidValueError | null {
-  if (raw === undefined) return null;
+  if (raw === undefined || !componentDeclaresField(component, isLabeledEnumField)) return null;
   const fields = componentDefinition(component).fields as Readonly<Record<string, FieldReflection>>;
   const rawValues = raw as Record<string, unknown>;
   for (const fieldName of Object.keys(rawValues)) {

@@ -7164,6 +7164,9 @@ columns: return those through `recycle()` after the receiver's FrameReceipt
 completes. The latter owns independent mesh copies, including aliased attribute
 buffers; these stay with receiver asset residency and never return with frame
 storage. ECS and original asset storage remain owned by the source.
+`renderPublicationBytes(packet)` reports `{ columns, assets }`: the frame columns'
+logical bytes and the transferred asset buffers. The Render Worker attaches it to
+every `frame-submitted` as `publicationBytes`.
 
 Programs are published once per accepted source key. On receipt, unknown programs
 undergo full validation once; the consuming ShaderRegistry adopts those validated

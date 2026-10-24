@@ -147,6 +147,8 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
     kind: 'draw',
     frameId: revision,
     sourceFixedStep: revision + 10,
+    engineUpdateMs: 1.5,
+    engineCreditWaitMs: 0,
     worldIdentity: 'test-world',
     width: 32,
     height: 32,
@@ -170,6 +172,8 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
       transformEntities: new Uint32Array(0),
       transforms: new Float32Array(0),
       retiredJoints: new Uint32Array(0),
+      assets: [],
+      assetPatches: [],
     },
   };
 }
@@ -735,6 +739,28 @@ it('forwards the pending cause captured on the completed receipt, without inspec
     const submitted = post.mock.calls.filter(([m]) => m.kind === 'submitted');
     expect(submitted[0]?.[0].frame).not.toHaveProperty('renderDrawIntervalMs');
     expect(submitted[1]?.[0].frame.renderDrawIntervalMs).toBeGreaterThanOrEqual(0);
+    // Always-on stall accounting on every submitted frame; a reason from the second on.
+    for (const [message] of submitted) {
+      for (const field of [
+        'renderDrawCpuMs',
+        'renderAwaitMs',
+        'renderQueuedMs',
+        'renderGraphCompiles',
+        'renderPipelineCreations',
+      ] as const)
+        expect(message.frame[field]).toBeGreaterThanOrEqual(0);
+    }
+    expect(submitted[0]?.[0].frame).not.toHaveProperty('renderStallReason');
+    expect(submitted[0]?.[0].frame).toMatchObject({ engineUpdateMs: 1.5, engineCreditWaitMs: 0 });
+    expect(['render-cpu', 'credit', 'simulation', 'publication', 'queue']).toContain(
+      submitted[1]?.[0].frame.renderStallReason,
+    );
+    // Always-on per-frame work counts: RHI commands since the previous submitted
+    // frame (from the second draw on) and the drawn publication's bytes.
+    expect(submitted[0]?.[0].frame).not.toHaveProperty('rhiCommands');
+    expect(submitted[1]?.[0].frame.rhiCommands).toMatchObject({ submits: 0, draws: 0 });
+    for (const [message] of submitted)
+      expect(message.frame.publicationBytes).toEqual({ columns: 0, assets: 0 });
     for (const [message] of completed)
       expect(message.frame.renderSubmitToCompleteMs).toBeGreaterThanOrEqual(0);
   } finally {
@@ -1316,6 +1342,8 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
         transformEntities: new Uint32Array(0),
         transforms: new Float32Array(0),
         retiredJoints: new Uint32Array(0),
+        assets: [],
+        assetPatches: [],
       },
     },
   });
@@ -1359,6 +1387,8 @@ it('reports publication overflow as deterministic protocol failure and drains ow
       transformEntities: new Uint32Array(0),
       transforms: new Float32Array(0),
       retiredJoints: new Uint32Array(0),
+      assets: [],
+      assetPatches: [],
     },
   });
   try {
@@ -1443,6 +1473,13 @@ it.each([
         templates: [],
         materials: [],
         videoFrames: [],
+        upserts: new Uint32Array(0),
+        removed: new Uint32Array(0),
+        transformEntities: new Uint32Array(0),
+        transforms: new Float32Array(0),
+        retiredJoints: new Uint32Array(0),
+        assets: [],
+        assetPatches: [],
       },
     },
   });

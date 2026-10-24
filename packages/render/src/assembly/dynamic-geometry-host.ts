@@ -2076,6 +2076,18 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
   };
   return {
     host,
+    /** A live candidate of this World still uploads this mesh handle to Render. */
+    pendingMeshPreparation(world: World, meshHandle: number): boolean {
+      for (const record of hostCandidates.values())
+        if (
+          record.world === world &&
+          (record.meshHandle as number) === meshHandle &&
+          record.residency === undefined &&
+          record.candidate.state === 'prepared'
+        )
+          return true;
+      return false;
+    },
     async preparePipelines(
       candidates: readonly DynamicGeometryCandidate[],
       getGpuStore: () => GpuResidencyCache,
@@ -2379,7 +2391,10 @@ export function createDynamicGeometrySourceHost(
   Pick<
     DynamicGeometryAdmissionHost,
     'publishDynamicGeometry' | 'invalidateDynamicGeometryWorld' | 'dynamicGeometryFault'
-  > {
+  > & {
+    /** Whether a prepared, not yet resident candidate of this World uploads this mesh handle. */
+    readonly pendingMeshPreparation: (world: World, meshHandle: number) => boolean;
+  } {
   if (
     !Number.isSafeInteger(options.residency.maxConcurrentPreparations) ||
     options.residency.maxConcurrentPreparations < 1
@@ -2402,6 +2417,7 @@ export function createDynamicGeometrySourceHost(
   >();
   return {
     ...owner.host,
+    pendingMeshPreparation: owner.pendingMeshPreparation,
     currentGeneration: options.currentGeneration,
     dynamicGeometryCurrentness(world) {
       const generation = options.currentGeneration();

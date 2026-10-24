@@ -74,6 +74,12 @@ async function fixture() {
   const resources = available.scene.captureResources().unwrap();
   vi.spyOn(resources, 'logicalForResource').mockImplementation(() => materialAddress);
   vi.spyOn(resources, 'logicalForGeometry').mockImplementation(() => geometryAddress);
+  // A resource frame resolves stable addresses; a changed address is a later
+  // frame whose recorded versions cannot be re-pinned.
+  let frame = resources;
+  const nextFrame = () => {
+    frame = Object.create(resources, { adoptPins: { value: () => false } });
+  };
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const owner = production as unknown as Assembly;
   const assemble = (sourceBatch = batch) => {
@@ -81,12 +87,15 @@ async function fixture() {
     const executions = new Map(input.batchExecutions);
     executions.set(binding, { forward: execution, shadow: { route: 'none' } });
     return owner
-      .assemblePrepared(scene, resources, 'forward', executions, input.meshByBinding)
+      .assemblePrepared(scene, frame, 'forward', executions, input.meshByBinding)
       .unwrap();
   };
   return {
     batch,
     assemble,
+    get frame() {
+      return frame;
+    },
     get execution() {
       return execution;
     },
@@ -95,9 +104,11 @@ async function fixture() {
     },
     set materialAddress(value: number) {
       materialAddress = value;
+      nextFrame();
     },
     set geometryAddress(value: number | undefined) {
       geometryAddress = value;
+      nextFrame();
     },
     dispose() {
       resources.release();
@@ -261,6 +272,23 @@ it('keeps borrowed source keys on live observation and handles a later captured 
     const adopted = f.assemble(captured).batchRows[0];
     expect(adopted).not.toBe(changed);
     expect(f.assemble(captured).batchRows[0]).toBe(adopted);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('retains rows of an edited plan under the same resource frame without resolving addresses', async () => {
+  const f = await fixture();
+  try {
+    const first = f.assemble().batchRows[0];
+    const material = vi.mocked(f.frame.logicalForResource);
+    const geometry = vi.mocked(f.frame.logicalForGeometry);
+    material.mockClear();
+    geometry.mockClear();
+    // Each assembly publishes a new plan object around the same batch.
+    expect(f.assemble().batchRows[0]).toBe(first);
+    expect(material).not.toHaveBeenCalled();
+    expect(geometry).not.toHaveBeenCalled();
   } finally {
     f.dispose();
   }

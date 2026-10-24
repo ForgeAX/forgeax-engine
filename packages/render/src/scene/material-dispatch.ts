@@ -334,7 +334,7 @@ function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<Bi
     for (const member of range(work.groups.value, start, end)) yield member.value;
     return;
   }
-  type Cursor = { binding: Binding; iterator: Generator<Node<Binding>>; key: number };
+  type Cursor = { binding: Binding; iterator: IterableIterator<Node<Binding>>; key: number };
   const heap: Cursor[] = [];
   const push = (cursor: Cursor) => {
     let index = heap.length;

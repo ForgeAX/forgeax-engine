@@ -39,7 +39,7 @@ test('SDK template discovery fails closed on orphan and invalid descriptors', as
 });
 
 test('SDK source contract keeps the source root and prebuilt WASM closure explicit', () => {
-  assert.equal(SDK_MANIFEST_VERSION, '1.9.0');
+  assert.equal(SDK_MANIFEST_VERSION, '1.10.0');
   assert.equal(SDK_SOURCE_FORMAT, 'git-archive-public-snapshot');
   assert.deepEqual(SDK_SOURCE_EXCLUDED_PATHS, ['.gitmodules', 'forgeax-engine-assets']);
   assert.equal(SDK_SOURCE_ROOT, 'source/engine');
@@ -108,6 +108,23 @@ test('SDK resource closure is an explicit public allowlist', () => {
       true,
     );
   }
+});
+
+test('SDK artifact schema admits exact Engine reuse references', async () => {
+  const schema = JSON.parse(
+    await readFile(new URL('../../schemas/sdk-manifest.schema.json', import.meta.url), 'utf8'),
+  );
+  const validate = new Ajv2020().compile(schema.$defs.artifact);
+  const artifact = {
+    path: 'source/engine/packages/math/dist/index.mjs',
+    bytes: 42,
+    sha256: 'a'.repeat(64),
+  };
+  assert.equal(
+    validate({ ...artifact, enginePath: 'node_modules/@forgeax/engine-math/dist/index.mjs' }),
+    true,
+  );
+  assert.equal(validate({ ...artifact, enginePath: '' }), false);
 });
 
 test('SDK source schema admits every expanded maintained dependency', async () => {

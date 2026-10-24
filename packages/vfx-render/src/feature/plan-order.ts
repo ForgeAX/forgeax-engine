@@ -29,7 +29,8 @@ export function restoreGroupDeclarationOrder<T>(
   groups: readonly { readonly key: string }[],
 ): Map<number, number> {
   const frameIndices = new Map<number, number>();
-  for (const [index, array] of arrays.entries()) {
+  for (let index = 0; index < arrays.length; index++) {
+    const array = arrays[index] as (typeof arrays)[number];
     const current = [...array];
     let destination = 0;
     for (const group of groups) {
@@ -74,7 +75,8 @@ export function reorderStreamTickBlocks<T>(
     if (stream.ranges === undefined) continue;
     const ordered = [...stream.ranges].sort((left, right) => left.sequence - right.sequence);
     if (ordered.every((range, index) => range === stream.ranges?.[index])) continue;
-    for (const [index, range] of stream.ranges.entries()) {
+    for (let index = 0; index < stream.ranges.length; index++) {
+      const range = stream.ranges[index] as (typeof stream.ranges)[number];
       const replacement = ordered[index];
       if (replacement === undefined) continue;
       replacements ??= new Map();
@@ -109,7 +111,8 @@ export function sortGroupDeclarations<T>(
 ): void {
   const orderedRanges = [...ranges].sort(compareKeys);
   if (orderedRanges.every((range, index) => range === ranges[index])) return;
-  for (const [arrayIndex, array] of arrays.entries()) {
+  for (let arrayIndex = 0; arrayIndex < arrays.length; arrayIndex++) {
+    const array = arrays[arrayIndex] as (typeof arrays)[number];
     const original = [...array];
     let destination = 0;
     for (const range of orderedRanges)

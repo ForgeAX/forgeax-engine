@@ -414,7 +414,7 @@ function buildTargetMap(world: World, player: EntityHandle): TargetMap {
     else
       bindings.set(targetId, {
         entity: target,
-        transform: world.get(target, Transform).ok,
+        transform: world.hasComponent(target, Transform),
         index: bindings.size,
       });
   }
@@ -690,7 +690,8 @@ function resolveChannelTarget(
     }
     return binding;
   }
-  if (!world.get(target, Transform).ok) {
+  // Presence only; a full component read would materialize its array views.
+  if (!world.hasComponent(target, Transform)) {
     emitTargetDiagnostic(
       world,
       player,

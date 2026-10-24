@@ -5,6 +5,35 @@ description: ForgeaX render pipelines, post-processing, and typed RenderGraph ow
 
 # forgeax-engine-render-pipeline
 
+## Quick contract
+
+Covers making a game scene visible; stop here unless a task needs a section below.
+Import components from `@forgeax/engine/render` and `Transform` from
+`@forgeax/engine/scene`. One world unit is one metre; colors are linear RGB.
+
+| Entity | Components and defaults | Limits |
+|:--|:--|:--|
+| Camera | `Transform` + `Camera { fov }` (vertical radians; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
+| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | At most one: the first is used and others are dropped with a `render-system-multi-light` warning; no `Transform` needed. `Atmosphere` needs exactly one |
+| Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
+| Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL) | With no light and no Skylight, Standard surfaces render black |
+| Mesh | `Transform` + `MeshFilter { assetHandle }` + `MeshRenderer { materials: [handle] }` | Handles come from `assets.load(guid, 'mesh' \| 'material')` |
+
+- Materials: build in a Pack with `Materials.standard({ baseColor, roughness, metallic,
+  emissive, emissiveIntensity })` or `Materials.unlit(...)`; CSS/hex strings are sRGB,
+  numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
+- Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC`,
+  `TONEMAP_AGX` or another constant with `exposure` (1). `antialias`
+  (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
+  are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
+- Shadows: set `castShadow: true` on the light, then choose
+  `shadowFilter: DirectionalShadowFilterValue.<label>`; opt entities out with
+  `ShadowParticipation`. See [Directional shadow entry](#directional-shadow-entry).
+- The Standard profile's `renderPath` defaults to `'forward'`; contact shadows,
+  `CapsuleShadow` and diffuse GI need `'deferred'`.
+- Fog, atmosphere, volumetrics and custom passes are optional sections below. A black or
+  wrong frame you cannot explain goes to `forgeax-engine-rhi-debug` first.
+
 > [!IMPORTANT]
 > RenderPipeline.build declares typed graph topology only. Renderer exclusively owns compile, last-known-good replacement, execution, retirement, finish(), and one queue.submit() per frame.
 

@@ -291,15 +291,65 @@ function normalizeDescriptor(
 function isNativeDataRecord(value: object): boolean {
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
-  return Reflect.ownKeys(value).every(
-    (key) => 'value' in (Object.getOwnPropertyDescriptor(value, key) ?? {}),
-  );
+  if (frozenNativeData.has(value)) return true;
+  const keys = Reflect.ownKeys(value);
+  for (let index = 0; index < keys.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, keys[index] as PropertyKey);
+    if (descriptor === undefined || !('value' in descriptor)) return false;
+  }
+  return true;
 }
+
+/**
+ * Deeply frozen plain data: a frozen ordinary object or array whose own
+ * properties are all data properties holding primitives or verified nodes.
+ * Such a node can never change, so verification happens once per node.
+ */
+const frozenNativeData = new WeakSet<object>();
+function isFrozenNativeData(value: object): boolean {
+  if (frozenNativeData.has(value)) return true;
+  if (!Object.isFrozen(value) || ArrayBuffer.isView(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    prototype !== (Array.isArray(value) ? Array.prototype : Object.prototype) &&
+    !(prototype === null && !Array.isArray(value))
+  )
+    return false;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return false;
+    const entry: unknown = descriptor.value;
+    if (typeof entry === 'function' || typeof entry === 'symbol') return false;
+    if (entry !== null && typeof entry === 'object' && !isFrozenNativeData(entry)) return false;
+  }
+  frozenNativeData.add(value);
+  return true;
+}
+
+/**
+ * The last immutable request node proven equal to a store-owned normalized node.
+ * Both sides are deeply frozen, so the proof holds until either is replaced;
+ * keys are store-owned nodes, so a retired item releases its entry.
+ */
+const provenNativeValues = new WeakMap<object, object>();
 
 function sameNativeValue(previous: unknown, value: unknown): boolean {
   // Functions/toJSON and other non-JSON leaves keep their normalization path.
   if (value === null || typeof value !== 'object')
     return typeof value !== 'function' && typeof value !== 'symbol' && previous === value;
+  if (
+    previous !== null &&
+    typeof previous === 'object' &&
+    provenNativeValues.get(previous) === value
+  )
+    return true;
+  if (!sameNativeNode(previous, value)) return false;
+  if (previous !== null && typeof previous === 'object' && isFrozenNativeData(value))
+    provenNativeValues.set(previous, value);
+  return true;
+}
+
+function sameNativeNode(previous: unknown, value: object): boolean {
   // Typed views keep their original byte/iterator conversion and live reads.
   if (ArrayBuffer.isView(value)) return false;
   if (
@@ -346,7 +396,21 @@ function sameNativeValue(previous: unknown, value: unknown): boolean {
   return true;
 }
 
+/** The last deeply frozen request proven to match one store item. */
+const provenNativeRequests = new WeakMap<PreparedGraphicsItem, object>();
+
 function matchesNativeRequest(
+  item: PreparedGraphicsItem,
+  kind: PreparedGraphicsKind,
+  request: PreparedGraphicsRequestByKind[PreparedGraphicsKind] | PreparedGraphicsSignature,
+): boolean {
+  if (provenNativeRequests.get(item) === request) return true;
+  if (!matchesNativeRequestContent(item, kind, request)) return false;
+  if (isFrozenNativeData(request)) provenNativeRequests.set(item, request);
+  return true;
+}
+
+function matchesNativeRequestContent(
   item: PreparedGraphicsItem,
   kind: PreparedGraphicsKind,
   request: PreparedGraphicsRequestByKind[PreparedGraphicsKind] | PreparedGraphicsSignature,

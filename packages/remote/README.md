@@ -74,7 +74,7 @@ resolution and runtime identities. It is forwarded to the existing execution
 seam; Remote imports no domain packages. Optional `simulation` is the Host's
 live operations projection, including its native `pluginContext` when supplied.
 
-The `_import(specifier)` injection enables dynamic ESM imports inside eval scope. **Plain `import` keyword is NOT available**; scripts use `await _import('@forgeax/engine-ecs')` to pull in engine packages.
+The `_import(specifier)` injection enables dynamic ESM imports inside eval scope. **Plain `import` keyword is NOT available**; scripts use `await _import('@forgeax/engine-ecs')` to pull in engine packages. The host resolves the specifier from the app's dev server: a game declares only `@forgeax/engine`, so game scripts import through its facade subpaths (`_import('@forgeax/engine/scene')`); focused names such as `@forgeax/engine-scene` resolve only when that package is hoisted or a direct dependency.
 
 The App host's ECS import resolver is explicit: when the host exposes
 `@forgeax/engine-ecs`, it projects only `World`, `Entity`, `Update`,
@@ -96,8 +96,8 @@ const handlesQuery = world.query({});
 if (!handlesQuery.ok) throw handlesQuery.error;
 const handles = Array.from(handlesQuery.value, (row) => row.entity);
 
-const { MeshRenderer } = await _import('@forgeax/engine-render');
-const { Transform } = await _import('@forgeax/engine-scene');
+const { MeshRenderer } = await _import('@forgeax/engine/render');
+const { Transform } = await _import('@forgeax/engine/scene');
 const visibleQuery = world.query({ read: [Transform], with: [MeshRenderer] });
 if (!visibleQuery.ok) throw visibleQuery.error;
 const results = Array.from(visibleQuery.value, (row) => ({
@@ -114,7 +114,7 @@ fixed-array fields.
 
 ```js
 // Spawn with components
-const scene = await _import('@forgeax/engine-scene');
+const scene = await _import('@forgeax/engine/scene');
 const h = world.spawn({
   component: scene.Transform,
   data: { pos: [0, 5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
@@ -256,7 +256,7 @@ The engine bundle is physically isolated from the remote package — `@forgeax/e
 
 Quick start: call the existing `introspect` method, find
 `components.schemas.Visibility`, then use the existing `eval` method with
-`_import('@forgeax/engine-render')` and `_import('@forgeax/engine-ecs')` to
+`_import('@forgeax/engine/render')` and `_import('@forgeax/engine-ecs')` to
 inspect a live entity.
 
 The schema is host data projected from the app's registered ECS components. The

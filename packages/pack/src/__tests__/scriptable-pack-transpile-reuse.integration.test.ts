@@ -25,8 +25,7 @@ import {
   loadScriptablePack,
 } from '../scriptable-pack-node.js';
 
-// Deliberately no import of the new helper: original owner must execute successfully
-// through metadata, POD and cleanup before RED on the real absent derived-text wire.
+// Exercise the production Worker transport through metadata, build, POD and cleanup.
 interface TextRecord {
   key: string;
   filename: string;
@@ -233,6 +232,21 @@ function expectPod(value: unknown, expected = [1, 3, 3, 4]) {
   });
 }
 
+const sortedTranspiles = (entries: readonly TextRecord[] | undefined) =>
+  entries?.slice().sort((a, b) => a.filename.localeCompare(b.filename));
+
+function expectTranspilePhases(f: Parameters<Parameters<typeof withFixture>[0]>[0]) {
+  const metadata = f.loaded[0]?.transpiles;
+  const built = f.loaded[1]?.transpiles;
+  const dynamic = join(f.root, 'dynamic.ts');
+  const statics = [f.source, f.dependency, join(f.root, 'cycle.ts'), join(f.root, 'reexport.ts')];
+  expect(metadata?.map((entry) => entry.filename).sort()).toEqual([...statics].sort());
+  expect(built?.map((entry) => entry.filename).sort()).toEqual([...statics, dynamic].sort());
+  expect(sortedTranspiles(built?.filter((entry) => entry.filename !== dynamic))).toEqual(
+    sortedTranspiles(metadata),
+  );
+}
+
 it('evaluates metadata once per source snapshot and rejects a silent edit before publication', async () => {
   await withFixture(async (f) => {
     const snapshot = createScriptablePackSourceSnapshot();
@@ -294,11 +308,12 @@ it('actual metadata to lazy fresh realm preserves POD/import identity and transp
     await retired(f);
     expect(f.loaded).toHaveLength(2);
     expect(f.workers.size).toBe(2);
-    // Baseline meaningful RED occurs here, after successful actual metadata/body/cleanup.
+    // Metadata transports its static closure; building adds the on-demand module.
     const first = f.loaded[0];
     if (first === undefined) throw new Error('missing native cold metadata message');
     expect(Array.isArray(first.transpiles)).toBe(true);
-    const entries = first.transpiles;
+    expectTranspilePhases(f);
+    const entries = f.loaded[1]?.transpiles;
     if (entries === undefined) throw new Error('missing derived-text wire');
     expect(entries.map((entry) => entry.filename)).not.toContain(join(f.root, 'type-only.ts'));
     expect(entries.some((entry) => entry.filename === f.source)).toBe(true);
@@ -326,8 +341,7 @@ it('actual metadata to lazy fresh realm preserves POD/import identity and transp
     }
     expect(f.posted).toHaveLength(2);
     expect(f.posted[0]?.transpiles).toEqual([]);
-    expect(f.posted[1]?.transpiles).toEqual(entries);
-    expect(f.loaded[1]?.transpiles).toEqual(entries);
+    expect(f.posted[1]?.transpiles).toEqual(first.transpiles);
   });
 });
 
@@ -382,7 +396,11 @@ it('reuses derived text without reusing module instances across later loadId on 
       expect(f.workers.size).toBe(2); // one retired metadata realm, one two-task realm
       expect(f.posted).toHaveLength(3);
       expect(f.posted[0]?.transpiles).toEqual([]);
-      expect(f.posted[1]?.transpiles).toEqual(f.posted[2]?.transpiles);
+      expectTranspilePhases(f);
+      expect(f.posted[1]?.transpiles).toEqual(f.loaded[0]?.transpiles);
+      expect(sortedTranspiles(f.posted[2]?.transpiles)).toEqual(
+        sortedTranspiles(f.loaded[1]?.transpiles),
+      );
       expect(f.loaded[1]?.transpiles).toEqual(f.loaded[2]?.transpiles);
       await retired(sameWorkerFixture);
     } finally {
@@ -462,7 +480,7 @@ for (const field of [
         })),
       );
       expectPod(await build(f, snapshot, definition));
-      expect(f.loaded[1]?.transpiles).toEqual(f.loaded[0]?.transpiles);
+      expectTranspilePhases(f);
       await retired(f);
     });
   });

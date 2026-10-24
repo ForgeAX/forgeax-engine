@@ -63,6 +63,22 @@ it('loads independent Bundle entries through the production source and captures 
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('bundle.bin'))).toHaveLength(
       1,
     );
+    const diagnostic = defined(assets.inspectSource());
+    expect(diagnostic).toMatchObject({
+      scopeId: 'asset-runtime',
+      generation: expect.any(Number),
+      realm: expect.any(String),
+    });
+    expect(diagnostic.bundleTransfers.totals).toMatchObject({
+      fullReads: 1,
+      rangeReads: 0,
+      responseEntityBytes: stored.byteLength,
+      decodedEntryBytes: 5,
+    });
+    expect(diagnostic.bundleTransfers.bundles[0]).toMatchObject({
+      url: 'https://source.invalid/bundle.bin',
+      digest: hash(stored),
+    });
     assets.read(defined(handles[0])).unwrap()[0] = 77;
     const captured = (
       await captureAssetPublication(defined(rows[0]), rows, source, fetcher, { registry: assets })

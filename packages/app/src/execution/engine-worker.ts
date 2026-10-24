@@ -5,6 +5,7 @@ import { forwardGpuStub } from './gpu-stub';
 import type {
   EngineToHostMessage,
   ExecutionFaultMessage,
+  ExecutionHostControlMessage,
   ExecutionInitMessage,
   ExecutionReadyMessage,
   ExecutionRenderErrorMessage,
@@ -99,18 +100,22 @@ export async function startEngineWorker(
     worker.terminate();
   };
   const listeners = new Set<(message: EngineToHostMessage) => void>();
-  type PendingRenderNotice = {
+  type PendingNotice = {
     readonly sequence: number;
     readonly message:
       | Extract<EngineToHostMessage, { readonly kind: 'render-ready' }>
-      | ExecutionRenderErrorMessage;
+      | ExecutionRenderErrorMessage
+      | ExecutionHostControlMessage;
   };
-  let pendingRenderReady: PendingRenderNotice | undefined;
+  let pendingRenderReady: PendingNotice | undefined;
   let settled = false;
   let firstListenerInstalled = false;
-  let pendingRenderError: PendingRenderNotice | undefined;
+  let pendingRenderError: PendingNotice | undefined;
+  // Realm plugins may command pointer lock before the ready ACK. Retain the latest
+  // command until the first Host listener owns delivery.
+  let pendingHostControl: PendingNotice | undefined;
   let omittedRenderErrors = 0;
-  let nextRenderNoticeSequence = 0;
+  let nextNoticeSequence = 0;
   let resolveReady: (result: Result<ExecutionReadyMessage, AppErrorType>) => void = () => {};
   const readyPromise = new Promise<Result<ExecutionReadyMessage, AppErrorType>>((resolve) => {
     resolveReady = resolve;
@@ -185,6 +190,12 @@ export async function startEngineWorker(
     else if (message.kind === 'fault')
       settleStartup(err(startupFault(message, options.bootstrapUrl)));
   };
+  const retainEarlyNotice = (message: EngineToHostMessage): void => {
+    if (listeners.size === 0 && message.kind === 'render-ready')
+      pendingRenderReady = { sequence: nextNoticeSequence++, message };
+    if (!firstListenerInstalled && message.kind === 'host-control')
+      pendingHostControl = { sequence: nextNoticeSequence++, message };
+  };
   worker.onmessage = (event: MessageEvent<EngineToHostMessage>) => {
     const message = event.data;
     if (message.kind === 'kernel-worker') {
@@ -199,12 +210,11 @@ export async function startEngineWorker(
       adoptRenderHostPort(message);
       return;
     }
-    if (listeners.size === 0 && message.kind === 'render-ready')
-      pendingRenderReady = { sequence: nextRenderNoticeSequence++, message };
+    retainEarlyNotice(message);
     if (!settled) observeStartup(message);
     if (message.kind === 'render-error' && !firstListenerInstalled) {
       if (pendingRenderError === undefined)
-        pendingRenderError = { sequence: nextRenderNoticeSequence++, message };
+        pendingRenderError = { sequence: nextNoticeSequence++, message };
       else omittedRenderErrors++;
     }
     for (const listener of listeners) listener(message);
@@ -295,11 +305,12 @@ export async function startEngineWorker(
       if (disposal === undefined) {
         listeners.add(listener);
         if (!firstListenerInstalled) firstListenerInstalled = true;
-        const retained = [pendingRenderReady, pendingRenderError]
-          .filter((notice): notice is PendingRenderNotice => notice !== undefined)
+        const retained = [pendingRenderReady, pendingRenderError, pendingHostControl]
+          .filter((notice): notice is PendingNotice => notice !== undefined)
           .sort((left, right) => left.sequence - right.sequence);
         pendingRenderReady = undefined;
         pendingRenderError = undefined;
+        pendingHostControl = undefined;
         const omitted = omittedRenderErrors;
         omittedRenderErrors = 0;
         for (const notice of retained) {
@@ -316,6 +327,7 @@ export async function startEngineWorker(
       pendingRenderReady = undefined;
       firstListenerInstalled = true;
       pendingRenderError = undefined;
+      pendingHostControl = undefined;
       omittedRenderErrors = 0;
       disposal ??= shutdownWorker(worker, 10_000).finally(retireKernels);
       return disposal;

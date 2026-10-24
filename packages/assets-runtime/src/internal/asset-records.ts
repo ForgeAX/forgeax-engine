@@ -1175,7 +1175,10 @@ export class AssetRecords implements AssetReferenceOwner {
       },
       matchesCurrent: (preserveChangeEvidence = false) => {
         if (!active || this.closed || this.preparingAdoption || cursor.index < 0) return false;
-        for (const [reference, retained] of versions) {
+        // Key iteration: this runs per guarded consumer every frame, and an
+        // entries() walk would allocate one [key, value] pair per reference.
+        for (const reference of versions.keys()) {
+          const retained = versions.get(reference) as { readonly revision: number };
           if (this.records.get(reference)?.revision !== retained.revision) {
             if (!preserveChangeEvidence) this.closeCursor(cursor);
             return false;

@@ -48,6 +48,7 @@ import { type PreparedRenderPublication, RenderPublicationReceiver } from '../pu
 import { encodeFrameObservationCapture } from '../record/observation-capture';
 import {
   configureSurface,
+  type MaterialShaderPipelineEntry,
   type RenderSystemInternals,
   selectSwapChainFormat,
 } from '../record/render-context';
@@ -63,6 +64,7 @@ import {
   type FrameRecording,
   prepareFrameSubmission,
 } from './frame-recording';
+import type { MaterialShaderArtifactRequest } from './material/assembly';
 import { createMaterialLayoutCache } from './material/layout-cache';
 import {
   MaterialPipelineRequestCache,
@@ -1710,6 +1712,7 @@ async function makeWebGPURenderer(
     RendererPipelineCacheState,
     MaterialPipelineRequestCache<RenderPipeline>
   >();
+  const pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1] = [];
   const getMaterialShaderPipeline = (
     ...args: Parameters<typeof buildMaterialShaderPipeline>
   ): RenderPipeline | null => {
@@ -1730,7 +1733,9 @@ async function makeWebGPURenderer(
       requests = new MaterialPipelineRequestCache(512, 6);
       pipelineRequests.set(owner, requests);
     }
-    const facts = materialPipelineRequestFacts(args);
+    // Lookups reuse one scratch fact list; a miss stores its own copy before
+    // building, since a build may request another pipeline.
+    const facts = materialPipelineRequestFacts(args, pipelineRequestScratch);
     facts.push(args[22] === true);
     facts.push(
       currentMaterialShaderUvSetCounts().get(artifactId),
@@ -1743,8 +1748,9 @@ async function makeWebGPURenderer(
     );
     const cached = requests.get(facts);
     if (cached !== undefined) return cached;
+    const stored = facts.slice();
     const pipeline = buildMaterialShaderPipeline(...args);
-    if (pipeline !== null) requests.set(facts, pipeline);
+    if (pipeline !== null) requests.set(stored, pipeline);
     return pipeline;
   };
   let activeProfile = freezeRenderProfile(
@@ -1762,6 +1768,7 @@ async function makeWebGPURenderer(
         ? options
         : { ...options, visibleSurface: options.pass !== 'shadow' && options.pass !== 'depth' },
     );
+  const pipelineEntries = new WeakMap<object, MaterialShaderPipelineEntry[]>();
   const getMaterialShaderPipelineEntry = (
     ...args: Parameters<typeof getMaterialShaderPipeline>
   ) => {
@@ -1777,36 +1784,48 @@ async function makeWebGPURenderer(
       layoutKind === 'gpu-driven-skin' ||
       layoutKind === 'gpu-driven-cluster-pbr' ||
       layoutKind === 'gpu-driven-cluster-skin';
-    const artifact = getMaterialShaderArtifact(materialShaderId, {
-      ...(vertexLayoutProjection === undefined
-        ? {}
-        : {
-            vertexColorAvailable: vertexLayoutProjection.attributes.some(
-              (attribute) => attribute.key === 'color',
-            ),
-          }),
-      ...(layoutKind === 'pbr-skin' ||
-      layoutKind === 'gpu-driven-skin' ||
-      layoutKind === 'gpu-driven-cluster-skin'
-        ? { deformation: 'skin' as const }
-        : {}),
-      ...(variantSet === undefined ? {} : { variantSet }),
+    const options: {
+      -readonly [K in keyof MaterialShaderArtifactRequest]: MaterialShaderArtifactRequest[K];
+    } = {
       address: sceneIndexAddress ? 'scene-index' : 'direct',
       pass: passKind === 'shadow-caster' ? 'shadow' : 'forward',
-    });
-    return {
-      pipeline,
-      group2Contract:
-        materialShaderPipelineGroup2Contracts.get(pipeline as object) ?? ('mesh' as const),
-      ...(artifact?.receipt === undefined
-        ? {}
-        : {
-            receipt: {
-              identity: artifact.receipt.receiptIdentity,
-              generation: artifact.receipt.generation,
-            },
-          }),
     };
+    if (vertexLayoutProjection !== undefined)
+      options.vertexColorAvailable = hasColorAttribute(vertexLayoutProjection);
+    if (
+      layoutKind === 'pbr-skin' ||
+      layoutKind === 'gpu-driven-skin' ||
+      layoutKind === 'gpu-driven-cluster-skin'
+    )
+      options.deformation = 'skin';
+    if (variantSet !== undefined) options.variantSet = variantSet;
+    const artifact = getMaterialShaderArtifact(materialShaderId, options);
+    const group2Contract =
+      materialShaderPipelineGroup2Contracts.get(pipeline as object) ?? ('mesh' as const);
+    // One entry per pipeline, contract and receipt version; draws re-read it.
+    const receipt = artifact?.receipt;
+    let entries = pipelineEntries.get(pipeline as object);
+    for (const cached of entries ?? [])
+      if (
+        cached.group2Contract === group2Contract &&
+        cached.receipt?.identity === receipt?.receiptIdentity &&
+        cached.receipt?.generation === receipt?.generation
+      )
+        return cached;
+    const entry: MaterialShaderPipelineEntry = {
+      pipeline,
+      group2Contract,
+      ...(receipt === undefined
+        ? {}
+        : { receipt: { identity: receipt.receiptIdentity, generation: receipt.generation } }),
+    };
+    if (entries === undefined) {
+      entries = [];
+      pipelineEntries.set(pipeline as object, entries);
+    }
+    if (entries.length >= 8) entries.shift();
+    entries.push(entry);
+    return entry;
   };
   const prepareMaterialShaderPipeline = (
     ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>
@@ -3928,4 +3947,18 @@ async function makeWebGPURenderer(
     publishAndRetireRendererGeneration,
   });
   return renderer;
+}
+
+const colorAttributes = new WeakMap<object, boolean>();
+
+/** Vertex layout projections are immutable; answer each one's color input once. */
+function hasColorAttribute(projection: {
+  readonly attributes: readonly { readonly key: string }[];
+}): boolean {
+  let color = colorAttributes.get(projection);
+  if (color === undefined) {
+    color = projection.attributes.some((attribute) => attribute.key === 'color');
+    colorAttributes.set(projection, color);
+  }
+  return color;
 }

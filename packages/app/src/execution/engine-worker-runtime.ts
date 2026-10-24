@@ -1149,8 +1149,9 @@ function publishSourceFrame(
   message: ExecutionFrameMessage,
   sampleTimeSeconds: number,
   simulation: FrameSimulationTiming,
+  creditWaitMs: number,
 ): void {
-  renderWorker.publish(message, sampleTimeSeconds);
+  renderWorker.publish(message, sampleTimeSeconds, simulation.engineUpdateMs, creditWaitMs);
   renderSampleTimeSeconds = sampleTimeSeconds;
   lastFrameId = message.frameId;
   postSimulationComplete(activeRealm, message.frameId, simulation);
@@ -1308,19 +1309,25 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
     !(await waitUntilRendererAlive(activeRenderer))
   )
     return;
-  if (activeRealm.renderWorker !== undefined && !(await activeRealm.renderWorker.waitUntilReady()))
-    return;
-  if (realm !== activeRealm) return;
   // Host credit returns from the Render Worker directly; its completion may still be
-  // queued here. Wait for that completion instead of rejecting a correctly paced frame.
-  if (activeRealm.renderWorker?.hasPublicationCapacity === false) {
-    await activeRealm.renderWorker.waitForPublicationCapacity();
-    if (realm !== activeRealm || message.frameId <= lastFrameId) return;
+  // queued here. Recheck current readiness and capacity together after every await:
+  // loss can release an old queue while its replacement is not ready yet.
+  // The time spent here is this frame's publication-credit wait (engineCreditWaitMs).
+  let creditWaitMs = 0;
+  const renderWorker = activeRealm.renderWorker;
+  if (renderWorker !== undefined) {
+    const waitStarted = performance.now();
+    do {
+      if (!(await renderWorker.waitForPublicationCapacity())) return;
+      if (realm !== activeRealm || message.frameId <= lastFrameId) return;
+    } while (!renderWorker.hasPublicationCapacity);
+    creditWaitMs = performance.now() - waitStarted;
   }
+  if (realm !== activeRealm) return;
   if (!admitSourcePublication(activeRealm, message)) return;
   // Advance synchronously from admission: no tick may separate the stale-frame check above
   // from the World update that claims this frame.
-  await advanceFrame(activeRealm, activeRenderer, message);
+  await advanceFrame(activeRealm, activeRenderer, message, creditWaitMs);
 }
 
 /** Updates the admitted frame's World, then publishes or renders it. */
@@ -1328,6 +1335,7 @@ async function advanceFrame(
   activeRealm: WorkerRealm,
   activeRenderer: Renderer | undefined,
   message: ExecutionFrameMessage,
+  creditWaitMs = 0,
 ): Promise<void> {
   const { world } = activeRealm;
   applyHostFrameState(activeRealm, message);
@@ -1356,6 +1364,7 @@ async function advanceFrame(
         message,
         sampleTimeSeconds,
         simulation,
+        creditWaitMs,
       );
       return;
     }

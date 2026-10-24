@@ -87,6 +87,21 @@ recovery when possible; a missing original receipt stays unknown.
 The [restored-scene collection case](cases/restored-scene-attribution-20261017.md#separate-allocation-population-from-a-cold-stall)
 records an actual oversized trace, bounded recovery and matched-BUY heap start.
 
+## Measure the retained floor separately
+
+A heap that climbs between major collections and returns to the same value
+after one is churn, not a leak. Record a per-Worker `Runtime.getHeapUsage`
+series through loading and play, then `HeapProfiler.collectGarbage` once at the
+end: the after-GC value is the floor that low-memory devices must hold.
+
+To attribute that floor, start a surviving-object sampling profile (no collected
+object flags) before loading, force collection at the end and only then stop
+sampling. The profile then lists live objects by allocation site and its total
+approximates the after-GC heap. Profile churn in a separate run from loaded BUY.
+Forced collection perturbs timing; never place it inside a measured CPU window.
+The [heap floor case](cases/worker-heap-floor-20261023.md) shows both populations
+for one scene and why halving churn left the floor almost unchanged.
+
 ## Authenticate source locations and count once
 
 1. Save `Debugger.getScriptSource` SHA256 for each loaded script URL. Preserve

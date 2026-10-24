@@ -14,6 +14,42 @@ export type ScriptablePackImportResolver = (
 
 type MetadataResult = Result<Readonly<AnyScriptablePackDefinition>, PackAuthoringError>;
 
+/**
+ * Completed metadata shared across snapshots by one long-lived owner, such as a
+ * resident DevKit backend. Keys are exact canonical source closures, so each
+ * snapshot still reads and digests current bytes before any reuse.
+ */
+export interface ScriptablePackMetadataCache {
+  get(closureKey: string): Readonly<AnyScriptablePackDefinition> | undefined;
+  set(closureKey: string, definition: Readonly<AnyScriptablePackDefinition>): void;
+  clear(): void;
+}
+
+/** Least-recently-used entries leave first; the owner clears the rest on disposal. */
+export function createScriptablePackMetadataCache(maxEntries = 256): ScriptablePackMetadataCache {
+  const entries = new Map<string, Readonly<AnyScriptablePackDefinition>>();
+  return {
+    get(closureKey) {
+      const definition = entries.get(closureKey);
+      if (definition === undefined) return undefined;
+      entries.delete(closureKey);
+      entries.set(closureKey, definition);
+      return definition;
+    },
+    set(closureKey, definition) {
+      entries.delete(closureKey);
+      entries.set(closureKey, definition);
+      for (const oldest of entries.keys()) {
+        if (entries.size <= maxEntries) break;
+        entries.delete(oldest);
+      }
+    },
+    clear() {
+      entries.clear();
+    },
+  };
+}
+
 export interface ScriptablePackSourceSnapshot {
   readonly inputs: ReadonlyMap<string, string>;
   readonly paths: readonly string[];
@@ -72,7 +108,9 @@ async function isFile(path: string): Promise<boolean> {
 }
 
 /** The build owner retains one snapshot; a later build always starts a new one. */
-export function createScriptablePackSourceSnapshot(): ScriptablePackSourceSnapshot {
+export function createScriptablePackSourceSnapshot(
+  options: { readonly metadataCache?: ScriptablePackMetadataCache | undefined } = {},
+): ScriptablePackSourceSnapshot {
   const aliases = new Map<string, Promise<string>>();
   const files = new Map<string, Promise<SourceFile>>();
   const inputs = new Map<string, string>();
@@ -158,6 +196,15 @@ export function createScriptablePackSourceSnapshot(): ScriptablePackSourceSnapsh
     }
     return observation.result;
   };
+  // This generation's captured closure, never an older observation, selects reuse.
+  const sharedMetadataKey = async (sourcePath: string): Promise<string | undefined> => {
+    if (options.metadataCache === undefined) return undefined;
+    try {
+      return JSON.stringify([sourcePath, await snapshot.inventory(sourcePath)]);
+    } catch {
+      return undefined;
+    }
+  };
   const snapshot: ScriptablePackSourceSnapshot = {
     inputs,
     get paths() {
@@ -221,10 +268,14 @@ export function createScriptablePackSourceSnapshot(): ScriptablePackSourceSnapsh
       const key = resolve(sourcePath);
       const cached = metadata.get(key);
       if (cached !== undefined) return cached;
-      const result = await evaluate();
+      const closureKey = await sharedMetadataKey(key);
+      const shared = closureKey === undefined ? undefined : options.metadataCache?.get(closureKey);
+      const result = shared === undefined ? await evaluate() : ok(shared);
       // A longer caller timeout must still get its own attempt after an earlier
       // failure; only a completed success is independent of timeout policy.
-      if (result.ok) metadata.set(key, result);
+      if (!result.ok) return result;
+      metadata.set(key, result);
+      if (closureKey !== undefined) options.metadataCache?.set(closureKey, result.value);
       return result;
     },
     releaseResolvers() {

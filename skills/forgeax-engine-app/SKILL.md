@@ -22,7 +22,9 @@ App only admits a frame when the renderer is `alive`. `device-lost` and
 `recovering` keep the Host/rAF heartbeat but freeze World update and submit
 when logic and rendering are co-located. With a Render Worker, inspect `report.render`: App replaces
 the GPU owner with a fresh epoch/baseline while retaining the source World identity.
-World updates wait until the replacement is ready.
+World updates wait until the replacement is ready and has publication capacity.
+Recheck both together after asynchronous waits: loss clears the old queue before
+the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
 `recover()` is single-flight, so concurrent calls share one Promise. A
 `faulted` renderer must be disposed and recreated; `disposed` is terminal.
@@ -372,6 +374,10 @@ Pointer-lock FPS / mouse look (reference: `templates/game-3d/assets/camera/camer
 - Gate from the Engine realm with `gameHost.setPointerLockAllowed(allowed)` (send it on
   change, e.g. `allowed = phase === 'playing'`). The Host requests the lock on the next
   trusted canvas click; gameplay never calls `requestPointerLock` or listens for DOM events.
+- The gate defaults to allowed. A cursor game (top-down, RTS, tower defense, UI-driven)
+  closes it once with `gameHost.setPointerLockAllowed(false)` in its plugin `apply`; the
+  latest command is the effective state whenever the browser input backend is created,
+  including during Worker startup and after canvas replacement.
 - Consume `input.mouse.movementDelta` and fire buttons only while
   `input.mouse.pointerLocked`; the click that acquires the lock is not a shot. Clicks while
   locked keep the lock, so left-button fire is safe.

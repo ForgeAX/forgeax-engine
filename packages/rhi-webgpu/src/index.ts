@@ -564,6 +564,13 @@ export type {
 // top-level surface stays single-import for both type-only and runtime
 // consumption).
 export { err, ok, RhiError as RhiErrorClass } from '@forgeax/engine-rhi';
+export {
+  RHI_COMMAND_COUNT_KEYS,
+  type RhiCommandCountKey,
+  type RhiCommandCounts,
+  readRhiCommandCounts,
+  subtractRhiCommandCounts,
+} from './command-counts';
 // feat-20260511-rhi-spec-realign-aggressive D-VD2 (Round 2) — re-export the
 // `_internal_getRawDevice` reverse lookup. Re-introduces the M4-removed escape
 // hatch for the sole engine consumer that needs to register the spec
@@ -593,6 +600,8 @@ export { _internal_getRawDevice, disposeDevice } from './device';
 // explicit failure + proposition 5 consistent abstraction across both
 // browser-direct and rhi-wgpu wasm dual paths).
 export { translateErrorEventToRhiError } from './internal/error-translation';
+// Engine-owned per-frame diagnostics only; not a stable public API.
+export { webGpuPipelineCreationCount } from './pipeline-library';
 export {
   captureWebGpuStubProfile,
   DEFAULT_WEBGPU_STUB_PROFILE,

@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { heapNodes, selectedHeap } from './heap_profile.mjs';
+import { heapNodes, loadHeapSymbols, selectedHeap } from './heap_profile.mjs';
 import { canonical, emitJson, loadJson, pointer, requireFact, runCli } from './lib.mjs';
 
-export function analyzeHeapProfile(profile, symbols = new Map(), top = 30) {
-  requireFact(Number.isSafeInteger(top) && top > 0 && top <= 1000, 'top must be 1..1000');
+/**
+ * Complete, untruncated byte partitions of one heap profile. `analyzeHeapProfile` ranks and
+ * truncates these; `compare_heap_profiles.mjs` diffs two of them.
+ */
+export function attributeHeapProfile(profile, symbols = new Map()) {
   const nodes = heapNodes(profile),
     byId = new Map(nodes.map((n) => [n.id, n])),
     parents = new Map();
@@ -73,10 +76,32 @@ export function analyzeHeapProfile(profile, symbols = new Map(), top = 30) {
     'Allocation conservation failed',
   );
   const sorted = (map) => [...map.values()].sort((a, b) => b.bytes - a.bytes);
-  const allCallers = sorted(callers).map((row) => ({
-    ...row,
-    descendants: sorted(row.descendants),
-  }));
+  return {
+    nodes,
+    totalBytes,
+    directBytes,
+    ancestorBytes,
+    unresolvedBytes,
+    directFiles: sorted(directFiles),
+    nearestOwnerFiles: sorted(ownerFiles),
+    callers: sorted(callers).map((row) => ({ ...row, descendants: sorted(row.descendants) })),
+    unresolved: sorted(unresolved),
+  };
+}
+
+export function analyzeHeapProfile(profile, symbols = new Map(), top = 30) {
+  requireFact(Number.isSafeInteger(top) && top > 0 && top <= 1000, 'top must be 1..1000');
+  const {
+    nodes,
+    totalBytes,
+    directBytes,
+    ancestorBytes,
+    unresolvedBytes,
+    directFiles,
+    nearestOwnerFiles,
+    callers: allCallers,
+    unresolved,
+  } = attributeHeapProfile(profile, symbols);
   return {
     kind: 'heap-allocation-attribution',
     byteUnit: 'bytes',
@@ -91,12 +116,12 @@ export function analyzeHeapProfile(profile, symbols = new Map(), top = 30) {
       directFraction: totalBytes ? directBytes / totalBytes : null,
       locatedAncestorFraction: totalBytes ? (directBytes + ancestorBytes) / totalBytes : null,
     },
-    directFiles: sorted(directFiles),
-    nearestOwnerFiles: sorted(ownerFiles),
+    directFiles,
+    nearestOwnerFiles,
     callerGroupCount: allCallers.length,
     topNearestCallers: allCallers.slice(0, top),
-    unresolvedGroupCount: unresolved.size,
-    topUnresolved: sorted(unresolved).slice(0, top),
+    unresolvedGroupCount: unresolved.length,
+    topUnresolved: unresolved.slice(0, top),
     interpretation:
       'Each node selfSize is counted once per partition. Direct files and nearest-owner files are alternative views, not additive. Ancestor attribution includes unmapped script and no-URL descendants, not exact allocation expressions. V8 node selfSize and sample size totals can differ and are reported separately. Sampling coverage and collected-object flags do not establish live heap size, exact freed bytes, per-function GC pause or workload acceptance.',
   };
@@ -122,22 +147,11 @@ runCli(import.meta.url, async () => {
   requireFact(positionals.length === 1, 'Require one heap JSON input');
   const input = await loadJson(positionals[0]),
     selected = selectedHeap(pointer(input.value, values['profile-pointer']));
-  let symbols = new Map(),
-    symbolInput;
-  if (values.symbols) {
-    symbolInput = await loadJson(values.symbols);
-    requireFact(
-      symbolInput.value.kind === 'heap-source-symbols' &&
-        symbolInput.value.inputSha256 === input.sha256 &&
-        symbolInput.value.profilePointer === values['profile-pointer'] &&
-        Array.isArray(symbolInput.value.symbols),
-      'Symbols belong to another input/profile',
-    );
-    for (const row of symbolInput.value.symbols) {
-      requireFact(!symbols.has(row.nodeId), 'Duplicate source symbol');
-      symbols.set(row.nodeId, row.source);
-    }
-  }
+  const { symbols, symbolInput } = await loadHeapSymbols(
+    input,
+    values.symbols,
+    values['profile-pointer'],
+  );
   await emitJson(
     {
       inputSha256: input.sha256,

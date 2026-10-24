@@ -351,3 +351,36 @@ export async function readLiveProjectInputs(
   }
   return hash.digest('hex');
 }
+
+const LOGGED_INPUT_CHANGES = 16;
+
+function loggedPaths(root: string, paths: readonly string[]): readonly string[] {
+  return paths.slice(0, LOGGED_INPUT_CHANGES).map((path) => relative(root, path) || '.');
+}
+
+/**
+ * dev.log form of a project ready line. The full input list stays in the
+ * daemon; the log keeps its size and the paths changed since the previous
+ * generation.
+ */
+export function liveProjectReadyLogLine(
+  root: string,
+  ready: { readonly inputPaths?: readonly string[] } & Record<string, unknown>,
+  previous: readonly string[] | undefined,
+): string {
+  const { inputPaths, ...line } = ready;
+  if (inputPaths === undefined) return JSON.stringify(ready);
+  const before = new Set(previous ?? []);
+  const after = new Set(inputPaths);
+  const added = previous === undefined ? [] : inputPaths.filter((path) => !before.has(path));
+  const removed = (previous ?? []).filter((path) => !after.has(path));
+  return JSON.stringify({
+    ...line,
+    inputPathCount: inputPaths.length,
+    ...(added.length === 0 ? {} : { addedInputPaths: loggedPaths(root, added) }),
+    ...(removed.length === 0 ? {} : { removedInputPaths: loggedPaths(root, removed) }),
+    ...(Math.max(added.length, removed.length) > LOGGED_INPUT_CHANGES
+      ? { inputChangeCount: added.length + removed.length }
+      : {}),
+  });
+}

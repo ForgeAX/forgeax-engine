@@ -210,9 +210,29 @@ presentation clients decide how query results affect their selection.
 The catalog requires a normalized command path and keeps schemas as serialized
 strings; descriptor parser objects remain with the runtime contribution.
 
-`project check --json` includes `value.uiAuthoringProfile`, the current HTML/CSS
-support table used by UI validation. Read `css.nativeProperties` before authoring
-portable styles; browser-only UI can declare its existing `browserExtensions`.
+`project check --detail --json` includes `value.uiAuthoringProfile`, the current
+HTML/CSS support table used by UI validation. Read `css.nativeProperties` before
+authoring portable styles; browser-only UI can declare its existing `browserExtensions`.
+
+The `forgeax` process prints a compact presentation by default, because agents
+re-read every result on later turns. Envelope fields (`ok`, `command`, `value`,
+`artifacts`, `error`) are unchanged and failures are never compacted. A compacted
+success adds `omitted: { fields, flag: "--detail" }`; repeat the call with
+`--detail` for the owner's full value. `runUnifiedCli(argv)` returns full values;
+`{ presentation: 'compact' }` selects the process form.
+
+| Command | Compact `value` | `--detail` adds |
+|:--|:--|:--|
+| `project build` | Manifest identity, `manifestPath` (`<outDir>/forgeax-dist.json`), `entry`, `artifactCount`, `artifactBytes`, three `largestArtifacts` | `artifacts` (also in `manifestPath`) |
+| `dev start/status/reload/stop` | Status plus `execution` health, world identity, render state, frames and p95 frame times; enabled Workers as `true` | `execution` report, Worker selections |
+| `project check` | Toolchain facts and `uiAuthoringProfileVersion` | `uiAuthoringProfile` |
+| `asset verify` | `summary`, scope counts, `attention` (assets not produced and available, such as `unproduced` before a build; at most 20, then `omittedAttentionCount`) | `assets`, `scope.sourcePaths`, `scope.scriptablePackSources` |
+| `help --tree` | Group names and leaf `summary` | Node `path`, group summaries |
+
+Text mode (no `--json`) prints the compact value and one stderr line naming the
+summarized fields and `--detail`. `dev.log` records each project ready line as
+`inputPathCount` plus the input paths added or removed since the previous
+generation (a fixed-input snapshot run logs the count only).
 
 The normal project commands remain available through the `forgeax` CLI:
 
@@ -226,7 +246,7 @@ forgeax project test
 forgeax dev start
 forgeax project build
 forgeax project capture --backend auto --require-ui --output artifacts/capture/game-ui.png --json
-forgeax project preview
+forgeax project preview [--dist directory]
 forgeax project package [--format web-zip|single-html] [--output release/game-web.zip] [--compress=false]
 forgeax help --tree --json
 forgeax rhi summary --artifact .forgeax-debug/{runId}/frame.rhitape --json
@@ -241,7 +261,7 @@ forgeax asset resolve {assetGuid} --require ready --json
 
 > [!IMPORTANT]
 > `forgeax dev start` is a source-development server and `forgeax project preview` is a
-> verified static `dist/` server. Their `--json` startup envelopes expose
+> verified static server (`dist/` by default, or the explicit `--dist` directory). Their `--json` startup envelopes expose
 > `mode`, `serves`, and the current `rhi.capture` capability. Neither command
 > silently invents a live capture attachment.
 
@@ -252,6 +272,26 @@ artifact owner as dev. Vite retains its static HEAD, Range, and conditional-requ
 handling and its existing text compression. The server owns these prepared
 representations until close; an external HTTPS deployment controls its own HTTP
 compression policy.
+
+Web packaging retains the verified player directory under
+`.forgeax/player/{manifest-sha256}/`. The ZIP's declared runtime artifacts and
+that directory contain identical bytes; diagnostic `dist/` keeps its own role.
+The receipt's `run.local` command previews the retained player directory, and
+`run.localArgv` carries the same invocation without shell quoting. Removing
+`.forgeax/player/` discards these derived local previews; it does not remove the ZIP.
+
+| Receipt field | Identity |
+|:--|:--|
+| `delivery` | Player type, actual served directory and diagnostic directory |
+| `source` | Git commit/tree, dirty flag and working-byte fingerprint; explicitly unversioned outside Git |
+| `engine` | Exact resolved version and local runtime digest when available |
+| `distManifestSha256`, `files`, `bundles` | Player closure and Bundle statistics |
+| `run.local`, `run.localArgv` | Invocation of that same player directory |
+
+Packaging rejects a source tree that changes during the build. Git fingerprints
+exclude derived `.forgeax/` and `dist/` state and include untracked source bytes;
+they do not describe the dirty tree as the clean commit. An existing retained
+player directory is reverified before reuse, including all artifact hashes.
 
 `project build` is a one-shot command: it awaits Vite, the isolated build-root
 producers and the complete dist manifest before returning. Cooking is not a
@@ -271,7 +311,14 @@ The detached owner keeps its control endpoint in `.forgeax/dev-session.json`;
 its project Vite child uses an OS-assigned loopback port rather than the
 default strict `5173`. The ready result and `dev status` expose the actual
 project URL, so another process may already own `5173` without changing the
-owner PID, control endpoint, or revision contract.
+owner PID, control endpoint, or revision contract. A source replacement starts
+a new project child, which rebinds the previous generation's port so open tabs
+and scripts keep the same URL for the life of the owner. Only when another
+listener holds that port, either before the replacement starts or before its
+Vite server binds (an address-in-use failure), does the child fall back once to
+a fresh OS-assigned port instead of failing the generation; any other startup
+failure is reported unchanged without a second start. Read the URL again from
+the ready result or `dev status` after a fallback.
 
 When the App bridge is connected, `dev status.execution` forwards its last sampled
 Host-owned `ExecutionReport`, including Engine health, frame credits and Render
@@ -295,6 +342,25 @@ runtime on the next command. Reload or World replacement invalidates old
 revisions and entity refs. `find` returns refs usable with `focus --ref` when
 names are ambiguous. `focus --name` uses an exact name and never chooses the
 first duplicate. `find --limit` defaults to 20 (maximum 100).
+
+Live commands absorb self-resolving readiness states instead of failing:
+a runtime being replaced after an edit or reload, a startup generation
+superseded by a save during its compilation, a replaced World, or another
+eval or capture still running. `--ready-timeout-ms` bounds the wait (default
+120000; `0` returns the original error immediately). A result after waiting
+carries `waitedMs` beside the `revision` it ran against; a failure after
+waiting adds `detail.waitedMs`. A failed runtime whose inputs did not change
+or cannot be read, an evaluation past its caller wait (`live-eval-continuing`),
+and invalid arguments fail without waiting; a stopped owner returns
+`live-not-running`. A startup superseded by newer inputs reports
+`live-startup-superseded: <cause>` in status `error` until its replacement is
+ready. A caller that disconnects is never admitted later. Waiting never
+re-targets a pinned identity: when the runtime of a `--revision` or `--ref`
+is replaced, the command returns `live-revision-stale` with the current
+revision. `eval`, `camera set`, `camera release` and `focus` are retried only
+when rejected before execution; observations without a pinned revision re-run
+against the replacement runtime. `dev start` against an owner that is still
+starting, waiting or reloading waits within the project startup budget.
 
 `dev eval --revision <revision> --code 'return simulation.execution.report()'`
 requires a revision because arbitrary code can contain old entity handles.
@@ -416,8 +482,8 @@ this choice; changing it requires a new runtime, preserving the old run.
 
 `dev reload` rereads project inputs;
 Live checks author file metadata in the background and before/after operations
-and reloads; it does not depend on filesystem event delivery. Changes reject
-observations until the new runtime is ready. Unreadable inputs report failure
+and reloads; it does not depend on filesystem event delivery. Commands issued
+during a change wait for the new runtime, as described above. Unreadable inputs report failure
 and are retried; edits during reload trigger another reload. `revision` identifies
 a runtime, not an atomic disk snapshot or content digest. The scan reads author
 source bodies only to discover literal documentation dependencies; unrelated
@@ -553,6 +619,11 @@ a candidate session before replacing the server and reloading the page. Failed
 candidates leave the running session intact; old lazy module requests refuse
 changed source bytes. `runtimeBinding` identifies the asset scope, while plugin
 `sessionGeneration` identifies the whole executable session.
+
+Each workspace preview or Play session builds a fresh source snapshot, rereading
+and digesting every Pack closure. The workspace provider owns one bounded
+Scriptable Pack metadata cache for its lifetime, so an unchanged closure skips
+its metadata Worker in the next session; the provider clears it on disposal.
 
 Bootstrap scans retain metadata and captured source bytes; a bounded pool
 acquires each source or instance only while it builds its plugin definitions.
@@ -1155,8 +1226,11 @@ The Engine App frame signal and the game checkpoint are separate composable auth
 `document.documentElement.dataset.forgeaxCaptureReady` value and non-flat pixels. Playwright remains
 the input/assertion owner through the unwrapped `session.page`.
 DevKit owns Xvfb/Chrome/Vite lifecycle, compositor stabilization, PNG validation, numbering, digests,
-and one `run.json`. A live `Page` or session belongs to the ordinary Node or Bun module that created
-it; the unified CLI does not provide a script execution command.
+and one `run.json` (schema `3.0.0`). Its `requests` block counts every request (`total`,
+`documents`, `http`, `https`, `failed`, `resourceMisses`, `pending`) and lists `notable`
+requests: failed, missing, HTTP 4xx/5xx, still pending, and every http(s) request of a
+single-HTML target. While the run is not ok, `entries` also lists every request. A live `Page` or session belongs to the ordinary Node or Bun
+module that created it; the unified CLI does not provide a script execution command.
 
 | Browser backend | Owner | What it proves |
 |:--|:--|:--|
@@ -1169,6 +1243,14 @@ it; the unified CLI does not provide a script execution command.
 > behavior, HDR-display output, or release visual acceptance.
 
 ## Engine source binding
+
+Both SDK transports include `source/engine/` with editable source and the release's
+prebuilt module outputs. After installing source dependencies, rebuild only the
+changed package and bind the game to that workspace; unchanged packages reuse
+their delivered builds. The SDK source-edit gate exercises this through public
+facades in Node, browser and Worker execution and verifies unchanged package bytes.
+SDK installation restores npm-renamed `.gitignore` files only when they match the
+manifest's exact byte count and SHA-256, preserving source and template Git rules.
 
 Built-package games normally resolve @forgeax/engine from the registry. A source-development game
 can bind the same dependency name to a checked-out Engine workspace without editing its manifest:
@@ -1369,12 +1451,12 @@ game merely to remove an uncaught exception.
 |:--|:--|:--|
 | HTML → module | Static title, status, CSS spinner, and `noscript` text are present before the entry module is imported. | No App, GPU, WASM, or asset request is required to paint the first loading surface. |
 | Prepare | `prepare()` runs before `app.start()` and changes the status to `Preparing scene…`. Input is sampled through a closed gate and cleared. | Foreground-only slow-load accounting may show a wait/reload hint after 15 seconds; it never fails the game. |
-| Enter candidate | A matching submitted/completed frame identity, current canvas owner, World/session identity, device generation, `presentation: 'ready'`, and successful receipt `Result` are required. A submit or ACK alone is insufficient. | A 150 ms fade keeps hit-testing over the canvas; reduced motion removes the transition. |
-| Entered | The fade completes before gameplay input and pointer-lock policy reopen. | Startup frame, visibility, input-capture, and timer listeners are removed. |
+| Enter candidate | A matching submitted/completed frame identity, current canvas owner, World/session identity, device generation, `presentation: 'ready'`, and successful receipt `Result` are required. A submit or ACK alone is insufficient. | Gameplay input, `#game-ui` and the author pointer-lock policy reopen with this frame, and `<html data-forgeax-input>` changes from `closed` to `open`. The 150 ms fade is presentation only: the fading overlay is `inert`, passes hits to the canvas, gives up focus and detaches its Reload activation; reduced motion removes the transition. |
+| Entered | The fade completes and the overlay leaves layout. | Startup frame, visibility, input-capture, and timer listeners are removed. |
 | Failed | Entry errors, `app.onError`, resource errors, and rejected receipts render structured fatal diagnostics with `Reload`; arbitrary nested detail remains inspectable. | Loading/fade work and gameplay input are cleared; the fatal Reload listener is retained for the terminal page. |
 | Hidden/destroyed | Background tabs do not spend the slow-load budget or invent a completed frame. | `pagehide`, entered, and failed paths cancel pending timers and startup listeners. |
 
-Startup observes nonbubbling App receipts through the stable page capture path. Render Worker recovery can replace the transferred canvas; receipts from a retired or unrelated canvas cannot enter the game or reuse an old submission. Replacement during the fade restores preparation and waits for the new canvas before enabling input.
+Startup observes nonbubbling App receipts through the stable page capture path. Render Worker recovery can replace the transferred canvas; receipts from a retired or unrelated canvas cannot enter the game or reuse an old submission. Replacing the presenting canvas element during the fade (observed on its parent) restores preparation and closes input at once, which also releases any pointer lock; a new device generation or session does the same. Input reopens with the replacement's first ready frame. The App Host carries the closed input gate and the author pointer-lock policy onto the replacement canvas's input backend. `data-forgeax-input="open"` is the readiness signal for scripted real input: it is set only while startup admits gameplay input and is `closed` on loading, preparation, fatal and destroyed pages; waiting for the fade to finish is not required.
 
 The same startup input state projects `#game-ui.inert` in browser and native
 documents. Background guide controls stay outside focus and input navigation
@@ -1659,10 +1741,21 @@ SDK-backed `project new` and `project init` persist the selected offline store
 as `storeDir` in the project's `pnpm-workspace.yaml`. Ordinary later pnpm
 commands use that same store. Select a custom npm identity with
 `project new --package-name @studio/my-game` before the SDK installs the project.
-Editing `package.json` after installation changes pnpm's workspace state even
-when dependency versions are unchanged; reconcile it with
-`pnpm install --frozen-lockfile` before expecting warning-free commands. The SDK
-keeps `verifyDepsBeforeRun: warn` so genuine dependency drift remains visible.
+Editing `package.json` after installation (for example renaming the game)
+changes pnpm's recorded workspace state even when dependency versions are
+unchanged. The project keeps `verifyDepsBeforeRun: install` with
+`frozenLockfile: true`: the next pnpm command reconciles that state once with a
+frozen install that fetches nothing and leaves the lockfile unchanged, instead of
+printing an out-of-sync warning on every command. A hand-edited dependency, in CI
+or locally, makes that install fail with pnpm's lockfile-mismatch error; the
+command still runs, nothing is installed and the lockfile is not rewritten. Add
+dependencies with `pnpm add <name>`, which updates the lockfile explicitly; a
+plain `pnpm install` after a hand edit needs `--no-frozen-lockfile`. Changing
+`packageManager` (by hand or with `corepack use`) makes every pnpm command fail
+with `ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE` until that same
+`pnpm install --no-frozen-lockfile` runs.
+`scripts/forgeax/sdk-project-identity.mjs <game>` checks both cases and runs in the
+SDK verifier.
 Project creation installs with `--ignore-scripts` and can consume the bundled
 side-effects cache. Archive acceptance checks that package payloads in the offline
 store remain unchanged; pnpm's SQLite runtime index is the sole digest exception.
@@ -2174,7 +2267,7 @@ select that graph across all physical Engine packages. An explicitly bound game 
 must resolve to the same package roots or equal runtime bytes; equal version labels alone
 do not admit conflicting code. The failure is `host-assembly-invalid` before target boot.
 
-SDK manifest 1.9.0 distinguishes runtime/tool packages and records `viewCommit`. The existing
+SDK manifest 1.10.0 distinguishes runtime/tool packages and records `viewCommit`. The existing
 launcher and `project init` use `.forgeax/cli-runtime`, with dedicated `toolchain/cli-runtime`
 inputs. Readiness requires matching input bytes plus the Engine CLI and exported View Host
 Pack. Game template manifests do not install View. SDK init receipt 2.0.0 includes the
@@ -2187,8 +2280,11 @@ evidence helper; npm-pack tests load those helpers after removing the source
 fixture, so a checkout cannot hide a missing published file.
 
 `sdk install` downloads the exact npm carrier into a private sibling of its
-target, checks the carrier version, then moves its extracted entries through
-private staging. This avoids a second complete SDK copy and preserves hard
+target together with its exact-version Engine dependency. The carrier omits
+Engine-owned bytes and records their relative `enginePath` in the existing artifact
+inventory. Installation verifies the Engine version, materializes these files as
+independent writable outputs and checks every reused file's byte count and SHA-256
+before moving entries through private staging. This avoids a second complete SDK copy and preserves hard
 links and relative symbolic links. The target must be absent or empty; temporary
 download and staging directories are removed after success or failure.
 

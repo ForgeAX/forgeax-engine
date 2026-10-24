@@ -19,11 +19,56 @@ import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { sdkGpuStage } from './sdk-stage.mjs';
 
-export const SDK_MANIFEST_VERSION = '1.9.0';
+export const SDK_MANIFEST_VERSION = '1.10.0';
 export const SDK_SOURCE_ROOT = 'source/engine';
 export const SDK_SOURCE_FORMAT = 'git-archive-public-snapshot';
 /** Full-ZIP surfaces the npm carrier omits; games install the same Engine bytes from npm. */
-export const SDK_ZIP_ONLY_PATHS = Object.freeze(['store', 'packages', 'source', 'toolchain/wasm']);
+export const SDK_ZIP_ONLY_PATHS = Object.freeze(['store', 'packages', 'toolchain/wasm']);
+
+/** Stage the online SDK from the same immutable inventory as the offline ZIP. */
+export async function stageSdkCarrier(sdkRoot, destination, engineArchive) {
+  const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-engine-reuse-'));
+  try {
+    await promisify(execFile)('tar', ['-xzf', engineArchive, '-C', temporary]);
+    const engineRoot = resolve(temporary, 'package');
+    const manifest = JSON.parse(await readFile(resolve(sdkRoot, 'sdk-manifest.json'), 'utf8'));
+    const engine = JSON.parse(await readFile(resolve(engineRoot, 'package.json'), 'utf8'));
+    if (engine.name !== '@forgeax/engine' || engine.version !== manifest.sdkVersion)
+      throw new Error('sdk-carrier-engine-version-mismatch');
+    const key = ({ bytes, sha256 }) => `${bytes}:${sha256}`;
+    const files = (await filesUnder(engineRoot)).filter(
+      // npm may rewrite package metadata and ignore-file names during extraction.
+      (path) => !['package.json', '.gitignore', '.npmignore'].includes(path.split(sep).at(-1)),
+    );
+    const index = new Map();
+    for (const entry of await mapConcurrent(files, (path) => artifact(engineRoot, path))) {
+      if (!index.has(key(entry))) index.set(key(entry), entry.path);
+    }
+    manifest.artifacts = manifest.artifacts
+      .filter(({ path }) => !SDK_ZIP_ONLY_PATHS.some((prefix) => path.startsWith(`${prefix}/`)))
+      .map((entry) => {
+        const enginePath = index.get(key(entry));
+        return enginePath === undefined ? entry : { ...entry, enginePath };
+      });
+    const reused = new Set(
+      manifest.artifacts
+        .filter((entry) => entry.enginePath !== undefined)
+        .map(({ path }) => resolve(sdkRoot, path)),
+    );
+    await cp(sdkRoot, destination, {
+      recursive: true,
+      filter: (source) =>
+        !reused.has(source) &&
+        !SDK_ZIP_ONLY_PATHS.some((path) => source === resolve(sdkRoot, path)),
+    });
+    await writeFile(
+      resolve(destination, 'sdk-manifest.json'),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
 
 const SDK_REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -436,7 +481,14 @@ async function probeNpmPublication(item, tag, fetchImpl) {
     if (typeof metadata.dist.tarball !== 'string') {
       return { ready: false, reason: 'tarball-url-missing' };
     }
-    const [tagsResponse, tarballResponse] = await Promise.all([
+    // Installers resolve versions from the package's install metadata, which the
+    // registry can serve after the exact version document; a fresh install in
+    // between fails with ERR_PNPM_NO_MATCHING_VERSION.
+    const [installResponse, tagsResponse, tarballResponse] = await Promise.all([
+      fetchImpl(`https://registry.npmjs.org/${encodedName}`, {
+        headers: { ...headers, accept: 'application/vnd.npm.install-v1+json' },
+        signal: AbortSignal.timeout(30_000),
+      }),
       tag === undefined
         ? undefined
         : fetchImpl(`https://registry.npmjs.org/-/package/${encodedName}/dist-tags`, {
@@ -449,6 +501,15 @@ async function probeNpmPublication(item, tag, fetchImpl) {
         headers: { 'cache-control': 'no-cache' },
       }),
     ]);
+    if (!installResponse.ok) {
+      return { ready: false, reason: `install-metadata-http-${installResponse.status}` };
+    }
+    const installed = (await installResponse.json()).versions?.[item.version];
+    if (installed === undefined)
+      return { ready: false, reason: 'install-metadata-version-missing' };
+    if (installed.dist?.integrity !== item.integrity) {
+      throw new Error(`npm-published-integrity-mismatch: ${item.name}`);
+    }
     if (tagsResponse !== undefined && !tagsResponse.ok) {
       return { ready: false, reason: `dist-tags-http-${tagsResponse.status}` };
     }

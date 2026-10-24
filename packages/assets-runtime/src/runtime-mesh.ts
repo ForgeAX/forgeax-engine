@@ -96,8 +96,11 @@ export function prepareRuntimeMeshRange(
       input.first + indices.length > mesh.indices.length
     )
       return invalid('an in-bounds index range matching the existing index storage');
-    for (const index of indices)
-      if (index >= vertexCount) return invalid('indices within the mesh vertex count');
+    // Indexed scans: ranges are written per frame and for-of over a typed
+    // array allocates an iterator result per element when not optimized.
+    for (let i = 0; i < indices.length; i++)
+      if ((indices[i] as number) >= vertexCount)
+        return invalid('indices within the mesh vertex count');
     if (indices.length === 0) return ok({ writes: [] });
     return ok({
       writes: [
@@ -129,8 +132,8 @@ export function prepareRuntimeMeshRange(
     input.first + count > vertexCount
   )
     return invalid('a whole-vertex range within the existing mesh');
-  for (const value of values)
-    if (!Number.isFinite(value)) return invalid('finite mesh attribute values');
+  for (let i = 0; i < values.length; i++)
+    if (!Number.isFinite(values[i])) return invalid('finite mesh attribute values');
   if (count === 0) return ok({ writes: [] });
   const fields: Record<string, unknown> = {};
   if (input.attribute === 'position') {

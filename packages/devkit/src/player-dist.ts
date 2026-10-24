@@ -1,12 +1,52 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { compressZstd } from '@forgeax/engine-codec/encode';
-import type { DistArtifact, DistManifest } from './dist.js';
+import { type DistArtifact, type DistManifest, verifyDist } from './dist.js';
 import { catalogRows, type PlayerBundleResult, planPlayerBundles } from './player-bundles.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
+import type { CommandResult } from './types.js';
+
+/** Publish the prepared player atomically; an existing identity must still verify. */
+export async function retainPlayerDist(
+  root: string,
+  projectRoot: string,
+): Promise<
+  CommandResult<{
+    readonly root: string;
+    readonly manifestSha256: string;
+  }>
+> {
+  const manifest = await readFile(resolve(root, 'forgeax-dist.json'));
+  const manifestSha256 = createHash('sha256').update(manifest).digest('hex');
+  const destination = resolve(projectRoot, '.forgeax/player', manifestSha256);
+  await mkdir(dirname(destination), { recursive: true });
+  try {
+    await rename(root, destination);
+  } catch (cause) {
+    const exists = await access(destination).then(
+      () => true,
+      () => false,
+    );
+    if (!exists) throw cause;
+    const verified = await verifyDist(destination);
+    if (!verified.ok) return verified;
+    const existing = await readFile(resolve(destination, 'forgeax-dist.json'));
+    if (!manifest.equals(existing)) throw new Error('player directory identity mismatch');
+  }
+  return { ok: true, value: { root: destination, manifestSha256 } };
+}
 
 /** Build-root delivery declaration, consumed by player packaging and never shipped. */
 export const PLAYER_DELIVERY_FILE = 'forgeax-delivery.json';
@@ -31,6 +71,8 @@ const AUTHORING_ROW_FIELDS = [
 const PIPELINE_LIBRARY = /(^|\/)pipeline-library[^/]*\.json$/;
 
 export interface PlayerDistOptions {
+  /** Keep preparation on the final player's filesystem for an atomic rename. */
+  readonly outputParent?: string;
   /**
    * Store the catalog, shader manifest, pipeline library and Pack documents as
    * zstd frames that the runtime decodes itself, so any static host serves them
@@ -94,7 +136,9 @@ export async function preparePlayerDist(
           : artifact,
       ]),
   );
-  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-player-dist-'));
+  const outputParent = options.outputParent ?? tmpdir();
+  await mkdir(outputParent, { recursive: true });
+  const root = await mkdtemp(resolve(outputParent, 'forgeax-player-dist-'));
   try {
     const bundled = await planPlayerBundles({
       sourceRoot,

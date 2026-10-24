@@ -309,7 +309,13 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
           )
           .unwrap(),
       );
-      expect(changedProgram._recordingTopologySignature).not.toBe(recordingSignature);
+      // A program change is a new stock class: the compiled graph projects it
+      // from the live frame instead of recompiling.
+      expect(changedProgram._recordingTopologySignature).toBe(recordingSignature);
+      const late = f.production.lateRasterClasses.projected;
+      current = changedProgram;
+      encode();
+      expect(f.production.lateRasterClasses.projected).toBe(late + 1);
       changedProgram._commitResourceReplacement();
     } finally {
       completeOld();

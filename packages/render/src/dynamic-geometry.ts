@@ -536,20 +536,26 @@ export function createDynamicGeometryLifecycle(
       0,
     );
 
-  /** A complete declared preparation batch may exceed the per-call candidate budget. */
+  /**
+   * Complete declared preparation batches may exceed the per-call candidate
+   * budget. One admission may name several of them, so a producer can prepare
+   * one transaction in bounded slices; every member of each named batch must
+   * be present, the union stays within one declared roster bound, and the
+   * whole union is still accepted or refused together.
+   */
   const isCompleteDeclaredBatch = (candidates: readonly DynamicGeometryCandidate[]): boolean => {
-    const first = candidates[0];
-    const declared =
-      first?.candidateId === undefined ? undefined : records.get(first.candidateId)?.batch;
-    return (
-      declared !== undefined &&
-      declared.length === candidates.length &&
-      candidates.every(
-        (candidate) =>
-          candidate?.candidateId !== undefined &&
-          records.get(candidate.candidateId)?.batch === declared,
-      )
-    );
+    if (candidates.length === 0 || candidates.length > maxCandidateLimit) return false;
+    const members = new Map<readonly string[], number>();
+    for (const candidate of candidates) {
+      const declared =
+        candidate?.candidateId === undefined
+          ? undefined
+          : records.get(candidate.candidateId)?.batch;
+      if (declared === undefined) return false;
+      members.set(declared, (members.get(declared) ?? 0) + 1);
+    }
+    for (const [declared, count] of members) if (declared.length !== count) return false;
+    return true;
   };
   const batchCountFailure = (candidateCount: number): Result<never, DynamicGeometryError> =>
     failure(

@@ -729,13 +729,15 @@ class ExecutableQuery<
     }
   }
 
+  // Indexed loops: these run per candidate row on change-filtered iteration,
+  // where for-of would allocate an array iterator per call when not inlined.
   private archetypeMatches(archetype: Archetype): boolean {
-    for (const requiredId of this.compiled.requiredIds) {
-      if (!archetypeHasComponent(archetype, requiredId)) return false;
-    }
-    for (const excludedId of this.compiled.withoutIds) {
-      if (archetypeHasComponent(archetype, excludedId)) return false;
-    }
+    const requiredIds = this.compiled.requiredIds;
+    for (let index = 0; index < requiredIds.length; index++)
+      if (!archetypeHasComponent(archetype, requiredIds[index] as ComponentId)) return false;
+    const withoutIds = this.compiled.withoutIds;
+    for (let index = 0; index < withoutIds.length; index++)
+      if (archetypeHasComponent(archetype, withoutIds[index] as ComponentId)) return false;
     return true;
   }
 
@@ -756,13 +758,17 @@ class ExecutableQuery<
     upperBound: number,
   ): boolean {
     const graph = this.world[worldInternal].getGraph();
-    for (const componentId of this.compiled.changedIds) {
+    const changedIds = this.compiled.changedIds;
+    for (let index = 0; index < changedIds.length; index++) {
+      const componentId = changedIds[index] as ComponentId;
       const epoch =
         this.world[worldInternal].getComponentChangeIndex(componentId)?.get(entityIndex(entity)) ??
         0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
-    for (const componentId of this.compiled.addedIds) {
+    const addedIds = this.compiled.addedIds;
+    for (let index = 0; index < addedIds.length; index++) {
+      const componentId = addedIds[index] as ComponentId;
       const sparseSet = graph.sparseTags.get(componentId);
       const denseIndex = sparseSet === undefined ? -1 : sparseTagIndex(sparseSet, entity);
       const epoch =

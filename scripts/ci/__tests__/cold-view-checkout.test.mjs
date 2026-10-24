@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { gitHttpEnvironment } from '../../lib/git-http-environment.mjs';
 import { submoduleGitEnvironment } from '../submodule-git-environment.mjs';
 
 const entry = fileURLToPath(new URL('../prepare-view-checkout.mjs', import.meta.url));
@@ -124,6 +125,26 @@ test('cold private View fetch receives existing parent authorization and preserv
     assert.ok(unauthorized > 0);
     assert.equal(authorized, 0);
     const envBefore = { ...process.env };
+    // Rapier/Parry use ordinary temporary repositories rather than submodules.
+    const native = join(engine, '.wasm-build', 'rapier');
+    mkdirSync(native, { recursive: true });
+    git(native, 'init', '-q');
+    const nativeRed = await execute('git', ['fetch', '--depth=1', url, pin], native);
+    assert.notEqual(nativeRed.status, 0, 'a child repository cannot see parent-local auth');
+    const nativeGreen = await execute(
+      'git',
+      ['fetch', '--depth=1', url, pin],
+      native,
+      gitHttpEnvironment(engine, url),
+    );
+    assert.equal(nativeGreen.status, 0, nativeGreen.output);
+    assert.equal(git(native, 'rev-parse', 'FETCH_HEAD'), pin);
+    assert.equal(
+      spawnSync('git', ['-C', native, 'config', '--local', '--get-regexp', '^http\\.']).status,
+      1,
+    );
+    assert.ok(!nativeGreen.output.includes(dummy));
+
     const green = await execute(process.execPath, [entry], engine);
     assert.equal(green.status, 0, green.output);
     assert.ok(authorized > 0);

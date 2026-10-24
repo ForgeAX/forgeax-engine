@@ -52,19 +52,20 @@ export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }
     }, { testId: previewPanelTestId(asset.kind), targetId: args.targetId });
     const dimensions = await extent.jsonValue();
     await extent.dispose();
-    if (asset.kind === 'mesh') {
-      // Hosting/resizing the canvas precedes the panel's initial orbit-pivot
-      // transaction. The existing Reset View control becomes available only
-      // after that initialization ends; capture must not race its draft.
-      await page.waitForFunction(() => {
-        const panel = document.querySelector('[data-testid="panel-mesh-preview"]');
+    {
+      // Both panels seed their orbit pivot after hosting/resizing the canvas.
+      // Their existing reset controls become available after that transaction;
+      // a visible canvas alone does not establish a committed camera.
+      const resetId = asset.kind === 'mesh' ? 'mesh-reset-view' : 'material-restore-view';
+      await page.waitForFunction(({ panelId, resetId }) => {
+        const panel = document.querySelector(`[data-testid="${panelId}"]`);
         const failure = panel?.querySelector('[role="alert"]')?.textContent;
         if (failure) throw new Error(failure);
-        const reset = panel?.querySelector('[data-testid="mesh-reset-view"]');
+        const reset = panel?.querySelector(`[data-testid="${resetId}"]`);
         return reset instanceof HTMLButtonElement && !reset.disabled;
-      });
+      }, { panelId: previewPanelTestId(asset.kind), resetId });
       const camera = await workspace.getCamera(args);
-      assert.equal(camera.committed, true, 'mesh preview initialization must commit before capture');
+      assert.equal(camera.committed, true, `${asset.kind} preview initialization must commit before capture`);
       assert.equal(camera.interaction, null);
     }
     const capture = await capturePreview(args, tree.worldId);

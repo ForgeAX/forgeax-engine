@@ -406,6 +406,12 @@ completed World update and retries only the draw at the same sample time. Only
 the new generation's completed receipt releases presentation credit. A `faulted`
 Renderer must be disposed and recreated, and `disposed` is terminal.
 
+Split rendering admits a source frame only when the current Render Worker is
+ready and has publication capacity. Recheck both after every asynchronous wait,
+before any World update: clearing a lost session's queue does not make the
+replacement ready. The same pending Host frame resumes after replacement without
+advancing its World twice.
+
 A submitted queue completion rejection faults its Renderer generation and fails
 the sibling receipts with the first cause. App observes the existing Renderer
 state, stops World updates and submissions, and keeps its timing baseline fresh;
@@ -851,6 +857,9 @@ transferred. `bootstrapPort` is the realm side of a host-created
 session closes it on final disposal, so World rebuild preserves the channel. Keep DOM UI on the Host side of that typed channel.
 `ExecutionBootstrapHost.setPointerLockAllowed` is the one built-in
 realm-to-Host control because browser input ownership remains on the Host.
+It is a latest-wins state: a command sent while Engine-realm plugins apply,
+before the Host has attached its browser input backend, is retained through the
+ready handoff and applied to that backend; replacement canvases inherit it.
 
 > [!IMPORTANT]
 > Runtime asset delivery in an execution realm uses `execution.assetCatalog`,
@@ -1276,7 +1285,7 @@ remote `introspect` response; app does not define, validate, or own a component.
 |:--|:--|:--|
 | App -> remote | `startServer({ introspection })` carries data only | If remote is absent, verify dev mode or the explicit headless env flag |
 | Remote -> consumer | Existing `eval` and `introspect` methods remain the full surface | Use the returned `RemoteError` fields, never message parsing |
-| ECS/render | Registry and `Visibility` remain package-owned | Use `_import('@forgeax/engine-render')` in eval, not app-local labels |
+| ECS/render | Registry and `Visibility` remain package-owned | Use `_import('@forgeax/engine/render')` in eval, not app-local labels |
 
 The descriptor is a transport projection, not a live token: it contains schema,
 field reflection, labels, and JSON-safe metadata, but no methods or validator

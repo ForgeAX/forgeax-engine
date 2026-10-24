@@ -316,7 +316,7 @@ For component schema, storage, relationship, reflection, and errors, read `packa
 ## Visibility inspection quick start
 
 ```ts
-const render = await _import('@forgeax/engine-render');
+const render = await _import('@forgeax/engine/render');
 const query = world.query({ read: [render.Visibility] }).unwrap();
 for (const row of query) console.log(row.get(render.Visibility).state);
 const effective = render.resolveVisibility(world).effective(entity);

@@ -1695,10 +1695,9 @@ export class World {
     component: Component,
     fieldName: string,
   ): FieldView | undefined {
-    const record = this.lookupAlive(entity, 'getArrayView', component.name);
-    if (!record.ok) return undefined;
-
-    const rec = record.value;
+    // A dead handle only answers undefined here; skip the stale-entity Result.
+    const rec = this.liveEntityRecord(entity);
+    if (rec === undefined) return undefined;
     const arch = this.graph.archetypes[rec.archetypeId];
     if (!arch) return undefined;
     return this.readArrayView(arch, component, this.tableRow(rec), fieldName);
@@ -1840,10 +1839,10 @@ export class World {
     const poisoned = worldPoisonedError(this.executionState);
     if (poisoned !== undefined) return err(poisoned);
     if (isRelationshipTarget(component)) return this.relationshipTargetWriteError(component, 'set');
-    const record = this.lookupAlive(entity, 'set', component.name);
-    if (!record.ok) return record;
+    // Per-frame writes: resolve the live record without an intermediate Result.
+    const rec = this.liveEntityRecord(entity);
+    if (rec === undefined) return this.staleEntityFailure(entity, 'set', component.name);
 
-    const rec = record.value;
     const arch = this.graph.archetypes[rec.archetypeId];
     /* istanbul ignore next -- defensive: alive record always has valid archetypeId */
     if (!arch) {

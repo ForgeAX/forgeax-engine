@@ -354,6 +354,7 @@ export class SourceRenderWorker {
             message.limits,
             this.publicationCapacity,
             (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
+            (handle) => this.dynamicGeometry.pendingMeshPreparation(this.world, handle),
           );
           ready = true;
           this.inspectionReady = true;
@@ -516,21 +517,25 @@ export class SourceRenderWorker {
     });
   }
   private armFrameDeadline: () => void = () => {};
-  async waitUntilReady(): Promise<boolean> {
-    await this.readyWait;
-    return !this.disposed;
-  }
   get hasPublicationCapacity(): boolean {
-    return this.publishedFrames.size < this.publicationCapacity;
+    return this.inspectionReady && this.publishedFrames.size < this.publicationCapacity;
   }
   /**
    * Host credit returns directly from the Render Worker, so a Host frame can
    * arrive before this Engine has processed the matching completion. Resolve
-   * once a completion (or session end) frees a publication slot.
+   * only when the current session is ready and has a publication slot. Loss
+   * clears the old queue; that is not capacity in the replacement session.
    */
-  waitForPublicationCapacity(): Promise<void> {
-    if (this.hasPublicationCapacity || this.disposed) return Promise.resolve();
-    return new Promise((resolve) => this.capacityWaiters.push(resolve));
+  async waitForPublicationCapacity(): Promise<boolean> {
+    while (!this.disposed) {
+      const ready = this.readyWait;
+      await ready;
+      if (ready !== this.readyWait) continue;
+      if (!this.inspectionReady) return false;
+      if (this.hasPublicationCapacity) return true;
+      await new Promise<void>((resolve) => this.capacityWaiters.push(resolve));
+    }
+    return false;
   }
   private releaseCapacityWaiters(): void {
     if (this.capacityWaiters.length === 0) return;
@@ -538,7 +543,16 @@ export class SourceRenderWorker {
     this.capacityWaiters = [];
     for (const resolve of waiters) resolve();
   }
-  publish(frame: ExecutionFrameMessage, sampleTimeSeconds: number): void {
+  /**
+   * `engineUpdateMs` / `engineCreditWaitMs` ride on the draw message for the
+   * Render Worker's always-on stall accounting; they do not affect drawing.
+   */
+  publish(
+    frame: ExecutionFrameMessage,
+    sampleTimeSeconds: number,
+    engineUpdateMs = 0,
+    engineCreditWaitMs = 0,
+  ): void {
     const publisher = this.publisher,
       worker = this.worker;
     if (publisher === undefined || worker === undefined)
@@ -565,6 +579,8 @@ export class SourceRenderWorker {
             height: frame.canvasHeight,
             publication: candidate.packet,
             sourceFixedStep,
+            engineUpdateMs,
+            engineCreditWaitMs,
           } satisfies RenderWorkerInput,
           [
             ...renderPublicationTransfers(candidate.packet),
@@ -582,6 +598,8 @@ export class SourceRenderWorker {
           height: frame.canvasHeight,
           publication: candidate.packet,
           sourceFixedStep,
+          engineUpdateMs,
+          engineCreditWaitMs,
         } satisfies RenderWorkerInput;
         candidate.observation.phase('transfer-list');
         const transfers = [

@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gitHttpEnvironment } from '../lib/git-http-environment.mjs';
 import { hasExpandedSource } from '../lib/source-repository.mjs';
 
 export function prepareSourceCheckout(root = process.cwd(), path = 'third_party/wgpu') {
@@ -9,7 +10,7 @@ export function prepareSourceCheckout(root = process.cwd(), path = 'third_party/
     throw new Error(`[source-checkout] unknown source owner: ${path}`);
   }
   if (hasExpandedSource(root, path, 'Cargo.toml')) return { path, status: 'expanded' };
-  const env = { ...process.env };
+  const env = gitHttpEnvironment(root, 'https://github.com');
   const run = (args) => spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
   const checked = (args) => {
     const result = run(args);
@@ -21,13 +22,6 @@ export function prepareSourceCheckout(root = process.cwd(), path = 'third_party/
   };
   const pin = checked(['ls-tree', 'HEAD', '--', path]).match(/^160000 commit ([a-f0-9]{40})\t/);
   if (!pin) throw new Error(`[source-checkout] missing gitlink: ${path}`);
-  const authorization = run(['config', '--get-urlmatch', 'http.extraheader', 'https://github.com']);
-  if (authorization.status === 0 && authorization.stdout.trim()) {
-    const index = Number(env.GIT_CONFIG_COUNT ?? 0);
-    env.GIT_CONFIG_COUNT = String(index + 1);
-    env[`GIT_CONFIG_KEY_${index}`] = 'http.https://github.com/.extraheader';
-    env[`GIT_CONFIG_VALUE_${index}`] = authorization.stdout.trim();
-  }
   checked(['submodule', 'sync', '--', path]);
   checked(['submodule', 'update', '--init', '--depth=1', '--', path]);
   const actual = checked(['-C', path, 'rev-parse', 'HEAD']);

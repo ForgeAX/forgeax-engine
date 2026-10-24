@@ -39,7 +39,9 @@ const snapshotTranspiles = new WeakMap<
 type ScriptablePackLoadResult = Result<Readonly<AnyScriptablePackDefinition>, PackAuthoringError>;
 
 export {
+  createScriptablePackMetadataCache,
   createScriptablePackSourceSnapshot,
+  type ScriptablePackMetadataCache,
   type ScriptablePackSourceSnapshot,
 } from './scriptable-pack-source-snapshot.js';
 
@@ -96,6 +98,24 @@ function serializeFailure(value: unknown): StructuredFailure {
     : { message: String(value) };
 }
 
+function hydrateThrownFailure(failure: StructuredFailure, message: string): Error {
+  const error = new Error(message);
+  if (typeof failure.name === 'string') error.name = failure.name;
+  // Other structured throws (AssetGuid.derive's TypeError) keep their fields.
+  if (
+    typeof failure.code === 'string' &&
+    typeof failure.expected === 'string' &&
+    typeof failure.hint === 'string'
+  )
+    Object.assign(error, {
+      code: failure.code,
+      expected: failure.expected,
+      hint: failure.hint,
+      ...(failure.detail === undefined ? {} : { detail: failure.detail }),
+    });
+  return error;
+}
+
 function hydrateFailure(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
   const failure = value as StructuredFailure;
@@ -136,9 +156,7 @@ function hydrateFailure(value: unknown): unknown {
     });
   }
   if (typeof failure.message === 'string') {
-    const error = new Error(failure.message);
-    if (typeof failure.name === 'string') error.name = failure.name;
-    return error;
+    return hydrateThrownFailure(failure, failure.message);
   }
   return value;
 }
@@ -216,6 +234,7 @@ class WorkerScriptablePackExecutor
     sourcePath: string,
     sources?: Readonly<Record<string, string>>,
     transpiles?: readonly SnapshotTranspileText[],
+    options: { readonly staticOnly?: boolean } = {},
   ): Promise<unknown> {
     const activeDisposal = this.disposal;
     if (activeDisposal !== undefined) {
@@ -262,6 +281,7 @@ class WorkerScriptablePackExecutor
           compileRoot,
           sources,
           transpiles,
+          ...(options.staticOnly === true ? { staticOnly: true } : {}),
         });
       } catch (error) {
         this.pendingLoad = undefined;
@@ -688,7 +708,11 @@ async function loadScriptablePackFresh(
         const entries = [
           ...(snapshotTranspiles.get(options.sourceSnapshot)?.values() ?? []),
         ].filter((entry) => Object.hasOwn(sources, entry.filename));
-        return executor.load(captured.entry, sources, entries);
+        // A metadata-only load with its own executor never runs build(), so
+        // modules imported only on demand stay uncompiled.
+        return executor.load(captured.entry, sources, entries, {
+          staticOnly: options.metadataOnly === true && options.executor === undefined,
+        });
       })(),
       new Promise<typeof timeoutSignal>((resolve) => {
         timeout = setTimeout(() => resolve(timeoutSignal), timeoutMs);

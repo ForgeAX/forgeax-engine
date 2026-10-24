@@ -273,32 +273,40 @@ test('public source preparation completes before consumers start and is absent f
     source.indexOf('const initializedSdk'),
   );
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
-    'selected',
-    'sdkStage',
-    'sourceBuildPnpm',
-    'consumerReady',
-    `${body}\nconsumerReady();`,
+    'context',
+    `const { selected, sdkStage, sourceBuildPnpm, consumerReady, verifySdkSourceEdit,
+      sdkRoot, sourceRoot, unpackRoot, sourceEnv, resolve, execFileAsync, process } = context;
+      ${body}\nconsumerReady();`,
   );
   for (const group of ['source', 'project']) {
     const commands = [];
     const stages = [];
     let ready = false;
     let release;
-    const running = execute(
-      (candidate) => candidate === group,
-      (label, work) => {
+    const running = execute({
+      selected: (candidate) => candidate === group,
+      sdkStage: (label, work) => {
         stages.push(label);
+        if (stages.length > 1) return work();
         return new Promise((resolveStage) => {
           release = () => resolveStage(work());
         });
       },
-      async (args) => {
+      sourceBuildPnpm: async (args) => {
         commands.push(args);
       },
-      () => {
+      consumerReady: () => {
         ready = true;
       },
-    );
+      verifySdkSourceEdit: async () => commands.push(['source-edit']),
+      execFileAsync: async (_file, args) => commands.push(args),
+      sdkRoot: '/sdk',
+      sourceRoot: '/source',
+      unpackRoot: '/unpack',
+      sourceEnv: {},
+      resolve,
+      process,
+    });
     if (group === 'source') {
       assert.equal(ready, false, 'a consumer cannot retire input while source preparation is live');
       assert.deepEqual(stages, ['buildSourceSnapshot']);
@@ -311,13 +319,18 @@ test('public source preparation completes before consumers start and is absent f
       group === 'source'
         ? [
             ['install', '--frozen-lockfile', '--ignore-scripts'],
+            ['source-edit'],
+            ['scripts/clean-build-outputs.mjs'],
             ['build:engine'],
             ['build:tools'],
             ['build:app', 'preview'],
           ]
         : [],
     );
-    assert.deepEqual(stages, group === 'source' ? ['buildSourceSnapshot'] : []);
+    assert.deepEqual(
+      stages,
+      group === 'source' ? ['buildSourceSnapshot', 'verify single-module source editing'] : [],
+    );
   }
 });
 

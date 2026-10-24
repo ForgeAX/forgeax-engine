@@ -584,6 +584,7 @@ export interface GpuDrivenProductionInspection {
   readonly visibleWindowCreates?: number;
   readonly visibleWindowHits?: number;
   readonly visibleWindowResets?: number;
+  /** Prepared raster bundles replayed from retained runs or batch caches. */
   readonly preparedBundleHits?: number;
   readonly preparedBundleBuilds?: number;
   readonly preparedBundleCommands?: number;

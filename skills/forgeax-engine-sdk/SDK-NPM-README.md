@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > This package is the npm carrier for the ForgeaX Engine SDK. It contains the
-> portable SDK payload under `sdk/`; it is not a game project and it does not
+> SDK source payload and Engine byte references under `sdk/`; it is not a game project and it does not
 > install dependencies into the current directory by itself.
 
 ## Quick start
@@ -20,11 +20,13 @@ pnpm exec forgeax project check --json && pnpm test && pnpm exec tsc --noEmit &&
 pnpm exec forgeax project preview --json
 ```
 
-The carrier uses the exact SDK lockfile and installs the Engine packages from
-the npm registry. It omits the full ZIP's offline pnpm store, bare package
-directories and Engine source snapshot: games install the same Engine bytes from
-npm. For a network-free handoff or Engine source work, download the matching SDK
-ZIP, or use the public Engine source mirror for stable and development versions.
+The carrier depends on the exact same-version `@forgeax/engine`. Engine-owned
+bytes are downloaded once through that dependency; the carrier ships source and
+SDK additions plus integrity-checked references for shared files. `sdk install`
+materializes the complete source workspace, including prebuilt module outputs and
+WASM, before returning. Rebuild changed owners and reuse the other owners' builds.
+The full ZIP additionally supplies the offline pnpm store and bare package
+inventory for a network-free game handoff.
 
 ## What is included
 
@@ -33,6 +35,7 @@ ZIP, or use the public Engine source mirror for stable and development versions.
 | `sdk/bin/` | Standalone `forgeax` CLI used to initialise the SDK and create games |
 | `sdk/templates/` | Explicitly selected `empty` and source-complete `game-3d` starter projects; the latter keeps procedural packs and a readable imported UI pair |
 | `sdk/skills/` | Engine authoring and debugging skills copied into each game |
+| `sdk/source/engine/` | Editable source; shared WASM and prebuilt modules are materialized from Engine during `sdk install` |
 | `sdk/AGENTS.md` | AI-first workflow, capability map, asset and verification guidance |
 
 The package root README is intentionally short; after installation, read
@@ -62,12 +65,13 @@ For browser-compositor screenshots, use `forgeax project capture --backend auto`
 sidecar separately proves a non-flat Canvas frame and the Engine
 `frame-submitted` signal.
 
-Source iteration can bind a game to a local Engine checkout without changing its
-manifest:
+Install dependencies in `source/engine/` once, rebuild the changed package and
+bind the game to that workspace without changing its manifest. See
+[`sdk/README.md`](sdk/README.md#bind-local-engine-source) for the build commands:
 
 ```bash
 forgeax project engine status --json
-forgeax project engine use-local ../forgeax-engine --json
+forgeax project engine use-local /path/to/sdk/source/engine --json
 forgeax project engine check --json
 forgeax project engine unlink --json
 ```

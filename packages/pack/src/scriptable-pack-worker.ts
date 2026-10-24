@@ -148,15 +148,52 @@ function resolveBareImport(importer: string, specifier: string): string | undefi
   return undefined;
 }
 
+/** A metadata load leaves dynamic imports of local modules uncompiled. */
+const DEFERRED_IMPORT_PREFIX = '\0forgeax-deferred-import:';
+const DEFERRED_IMPORT_MODULE = 'deferred-import.mjs';
+const DEFERRED_IMPORT_FLAG = Symbol.for('forgeax.scriptablePack.deferredImport');
+
 function resolvedModuleSpecifier(
   target: string,
   sources: ReadonlyMap<string, string>,
-  loadId?: number,
+  loadId?: number | string,
 ): string {
+  if (target.startsWith(DEFERRED_IMPORT_PREFIX)) {
+    const id = createHash('sha256').update(target).digest('hex').slice(0, 20);
+    return `./${DEFERRED_IMPORT_MODULE}?import=${id}${loadId === undefined ? '' : `&load=${loadId}`}`;
+  }
   if (sources.has(target)) {
     return `./${outputName(target)}${loadId === undefined ? '' : `?load=${loadId}`}`;
   }
   return pathToFileURL(target).href;
+}
+
+function literalImportSpecifier(node: ts.Node): string | undefined {
+  if (
+    (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+    node.moduleSpecifier !== undefined &&
+    ts.isStringLiteral(node.moduleSpecifier)
+  )
+    return node.moduleSpecifier.text;
+  if (
+    ts.isCallExpression(node) &&
+    node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    node.arguments.length === 1 &&
+    node.arguments[0] !== undefined &&
+    ts.isStringLiteral(node.arguments[0])
+  )
+    return node.arguments[0].text;
+  return undefined;
+}
+
+/** Admit serialized transpile entries before the compiler looks up derived text. */
+function capturedTranspileCache(): ReadonlyMap<string, unknown> {
+  const cache = new Map<string, unknown>();
+  if (Array.isArray(capturedTranspiles))
+    for (const entry of capturedTranspiles)
+      if (entry !== null && typeof entry === 'object' && typeof entry.key === 'string')
+        cache.set(entry.key, entry);
+  return cache;
 }
 
 /**
@@ -167,16 +204,17 @@ function resolvedModuleSpecifier(
  * closure by identity. This keeps unrelated nested node_modules directories
  * (for example Vite's cache) from changing package resolution.
  */
-function compileModuleClosure(entryPath: string, outputRoot: string, loadId?: number): string {
+function compileModuleClosure(
+  entryPath: string,
+  outputRoot: string,
+  loadId?: number | string,
+  staticOnly = false,
+): string {
   const pending = [resolve(entryPath)];
   const sources = new Map<string, string>();
   const imports = new Map<string, ReadonlyMap<string, string>>();
   const transpileRecipeDigest = capturedTranspiles === undefined ? undefined : tryTranspileRecipe();
-  const cache = new Map<string, unknown>();
-  if (Array.isArray(capturedTranspiles))
-    for (const entry of capturedTranspiles)
-      if (entry !== null && typeof entry === 'object' && typeof entry.key === 'string')
-        cache.set(entry.key, entry);
+  const cache = capturedTranspileCache();
   while (pending.length > 0) {
     const path = pending.pop();
     if (path === undefined || sources.has(path)) continue;
@@ -203,18 +241,9 @@ function compileModuleClosure(entryPath: string, outputRoot: string, loadId?: nu
     const resolvedImports = new Map<string, string>();
     const collectRuntimeImports = (sourceFile: ts.SourceFile): ts.SourceFile => {
       const visit = (node: ts.Node): void => {
-        const specifier =
-          (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-          node.moduleSpecifier !== undefined &&
-          ts.isStringLiteral(node.moduleSpecifier)
-            ? node.moduleSpecifier.text
-            : ts.isCallExpression(node) &&
-                node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-                node.arguments.length === 1 &&
-                node.arguments[0] !== undefined &&
-                ts.isStringLiteral(node.arguments[0])
-              ? node.arguments[0].text
-              : undefined;
+        const dynamic =
+          ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword;
+        const specifier = literalImportSpecifier(node);
         if (specifier !== undefined) {
           const resolved = specifier.startsWith('.')
             ? resolveRelativeImport(path, specifier)
@@ -235,11 +264,18 @@ function compileModuleClosure(entryPath: string, outputRoot: string, loadId?: nu
               : specifier.endsWith('?raw')
                 ? `${resolved}?raw`
                 : resolved;
-          if (target !== undefined) {
+          const local =
+            target !== undefined &&
+            (specifier.startsWith('.') || /\.(?:ts|tsx|mts|cts)$/.test(target));
+          if (target !== undefined && staticOnly && dynamic && local) {
+            // Definition metadata cannot depend on a module that is only
+            // imported on demand; its stub reports any attempt to use it. A
+            // static import of the same specifier keeps the compiled module.
+            if (!resolvedImports.has(specifier))
+              resolvedImports.set(specifier, DEFERRED_IMPORT_PREFIX + target);
+          } else if (target !== undefined) {
             resolvedImports.set(specifier, target);
-            if (specifier.startsWith('.') || /\.(?:ts|tsx|mts|cts)$/.test(target)) {
-              pending.push(target);
-            }
+            if (local) pending.push(target);
           }
         }
         ts.forEachChild(node, visit);
@@ -312,6 +348,11 @@ function compileModuleClosure(entryPath: string, outputRoot: string, loadId?: nu
     imports.set(path, resolvedImports);
   }
 
+  if (staticOnly)
+    writeFileSync(
+      join(outputRoot, DEFERRED_IMPORT_MODULE),
+      `globalThis[Symbol.for('forgeax.scriptablePack.deferredImport')] = true;\nthrow new Error('ScriptablePack metadata load deferred this dynamic import');\n`,
+    );
   // Final membership keeps bare and relative aliases of one compiled file on
   // the same module instance. Reparse emitted JS without another transpile.
   const printer = ts.createPrinter();
@@ -410,6 +451,8 @@ async function loadDefinition(task: {
   readonly loadId: number;
   readonly sources?: Readonly<Record<string, string>>;
   readonly transpiles?: readonly SnapshotTranspileText[];
+  /** Metadata loads compile only the statically imported closure. */
+  readonly staticOnly: boolean;
 }): Promise<void> {
   capturedSources = task.sources;
   capturedTranspiles = task.transpiles;
@@ -417,14 +460,35 @@ async function loadDefinition(task: {
   definition = undefined;
   reads.clear();
   try {
-    const executablePath = SCRIPTABLE_SOURCE_EXTENSIONS.includes(
+    const compiled = SCRIPTABLE_SOURCE_EXTENSIONS.includes(
       extname(task.sourcePath) as (typeof SCRIPTABLE_SOURCE_EXTENSIONS)[number],
-    )
-      ? compileModuleClosure(task.sourcePath, task.compileRoot, task.loadId)
-      : task.sourcePath;
-    const loaded = (await import(`${pathToFileURL(executablePath).href}?load=${task.loadId}`)) as {
-      readonly default?: unknown;
+    );
+    const importClosure = async (loadKey: number | string, staticOnly: boolean) => {
+      const executablePath = compiled
+        ? compileModuleClosure(task.sourcePath, task.compileRoot, loadKey, staticOnly)
+        : task.sourcePath;
+      return (await import(`${pathToFileURL(executablePath).href}?load=${loadKey}`)) as {
+        readonly default?: unknown;
+      };
     };
+    let loaded: { readonly default?: unknown } | undefined;
+    if (compiled && task.staticOnly === true) {
+      const flags = globalThis as unknown as Record<symbol, unknown>;
+      delete flags[DEFERRED_IMPORT_FLAG];
+      try {
+        loaded = await importClosure(task.loadId, true);
+      } catch {
+        loaded = undefined;
+      }
+      // Evaluation that touched an on-demand module (even if it caught the
+      // failure) or failed for any reason gets the complete closure instead.
+      if (flags[DEFERRED_IMPORT_FLAG] === true) loaded = undefined;
+      delete flags[DEFERRED_IMPORT_FLAG];
+    }
+    loaded ??= await importClosure(
+      compiled && task.staticOnly === true ? `${task.loadId}-full` : task.loadId,
+      false,
+    );
     definition = loaded.default as LoadedDefinition | undefined;
     // Preserve only Node's validated bytecode for the next fresh Worker. The
     // module graph and its retained values still die at the existing task fence.
@@ -488,6 +552,7 @@ async function handleMessage(message: unknown): Promise<void> {
         ...(value.transpiles === undefined
           ? {}
           : { transpiles: value.transpiles as readonly SnapshotTranspileText[] }),
+        staticOnly: value.staticOnly === true,
       });
     } catch (error) {
       port.postMessage({ kind: 'load-threw', loadId: value.loadId, error: failure(error) });

@@ -43,7 +43,8 @@ const MASK_DRAWS_ALL = 0x7fffffff;
 
 /** Shared execution membership, queried by the draw that is about to consume it. */
 export class GpuDrawSelection {
-  private readonly materials = new Map<MaterialResource, Worlds>();
+  /** Source-addressed index, built on the first source query only. */
+  #materials: Map<MaterialResource, Worlds> | undefined;
   /** Owned executions per shared binding; selections diff these to retain derived answers. */
   readonly #byBinding = new Map<GpuDrivenBatchBinding, GpuDrivenBatch[]>();
   /** Weakly keyed: a selection never keeps an earlier selection (or its plan) reachable. */
@@ -58,23 +59,6 @@ export class GpuDrawSelection {
       const owned = this.#byBinding.get(binding);
       if (owned === undefined) this.#byBinding.set(binding, [batch]);
       else owned.push(batch);
-      let worlds = this.materials.get(binding.material);
-      if (worlds === undefined) {
-        worlds = new Map();
-        this.materials.set(binding.material, worlds);
-      }
-      let meshes = worlds.get(binding.worldId);
-      if (meshes === undefined) {
-        meshes = new Map();
-        worlds.set(binding.worldId, meshes);
-      }
-      let draws = meshes.get(binding.assetHandle);
-      if (draws === undefined) {
-        draws = new Map();
-        meshes.set(binding.assetHandle, draws);
-      }
-      const selected = draws.get(binding.drawItemIndex) ?? [];
-      draws.set(binding.drawItemIndex, [...selected, batch]);
     }
   }
 
@@ -102,6 +86,36 @@ export class GpuDrawSelection {
     return changed;
   }
 
+  private get materials(): Map<MaterialResource, Worlds> {
+    if (this.#materials !== undefined) return this.#materials;
+    const materials = new Map<MaterialResource, Worlds>();
+    for (const owned of this.#byBinding.values())
+      for (const batch of owned) {
+        const binding = batch.binding as GpuDrivenBatchBinding;
+        let worlds = materials.get(binding.material);
+        if (worlds === undefined) {
+          worlds = new Map();
+          materials.set(binding.material, worlds);
+        }
+        let meshes = worlds.get(binding.worldId);
+        if (meshes === undefined) {
+          meshes = new Map();
+          worlds.set(binding.worldId, meshes);
+        }
+        let draws = meshes.get(binding.assetHandle);
+        if (draws === undefined) {
+          draws = new Map();
+          meshes.set(binding.assetHandle, draws);
+        }
+        // Arrays are private to this selection and complete before any query.
+        const selected = draws.get(binding.drawItemIndex) as GpuDrivenBatch[] | undefined;
+        if (selected === undefined) draws.set(binding.drawItemIndex, [batch]);
+        else selected.push(batch);
+      }
+    this.#materials = materials;
+    return materials;
+  }
+
   private batches(source: RenderableSnapshot, draw: GpuDrivenDrawSnapshot, compactIndex: number) {
     if (source.assetHandle === undefined) return undefined;
     return this.materials
@@ -118,13 +132,7 @@ export class GpuDrawSelection {
     filter: RenderPipelineGpuDrivenFilter | undefined,
     medium: boolean,
   ): boolean {
-    const batches = this.materials
-      .get(binding.material)
-      ?.get(binding.worldId)
-      ?.get(binding.assetHandle)
-      ?.get(binding.drawItemIndex);
-    for (const batch of batches ?? []) {
-      if (batch.binding !== binding) continue;
+    for (const batch of this.#byBinding.get(binding) ?? []) {
       if (!gpuRasterFilterMatches(filter, batch.key.materialPass, medium)) continue;
       if (
         passKind === 'temporal' &&

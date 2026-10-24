@@ -37,3 +37,33 @@ it('resolves shared mesh bindings without inspecting scene members', () => {
   expect(result.get(other)).toBe(meshes[1]);
   expect(ensureResident).not.toHaveBeenCalled();
 });
+
+it('keeps one table for a fixed plan and never keeps an earlier plan reachable', async () => {
+  const { setFlagsFromString } = await import('node:v8');
+  const { runInNewContext } = await import('node:vm');
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const scopes = [worldRenderResources(new World())];
+  let mesh = { contentEpoch: 1 } as MeshGpuHandles;
+  const internals = {
+    gpuStore: { getMeshGpuHandles: () => mesh, ensureResident: () => ok(mesh) },
+  } as unknown as RenderSystemInternals;
+  const binding = { worldId: 0, assetHandle: 7 } as GpuDrivenBatchBinding;
+  const state = (batches: readonly GpuDrivenBatch[]) =>
+    ({ plan: { batches } }) as unknown as PersistentGpuDrivenState;
+  const fixed = [{ binding } as GpuDrivenBatch];
+  const first = gpuDrivenMeshesForFrame(internals, scopes, state(fixed));
+  expect(gpuDrivenMeshesForFrame(internals, scopes, state(fixed))).toBe(first);
+  mesh = { contentEpoch: 2 } as MeshGpuHandles;
+  const replaced = gpuDrivenMeshesForFrame(internals, scopes, state(fixed));
+  expect(replaced).not.toBe(first);
+  expect(replaced.get(binding)).toBe(mesh);
+  const released = (() => {
+    const earlier = [{ binding } as GpuDrivenBatch];
+    expect(gpuDrivenMeshesForFrame(internals, scopes, state(earlier))).toBe(replaced);
+    return new WeakRef(earlier);
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  gc();
+  expect(released.deref()).toBeUndefined();
+});

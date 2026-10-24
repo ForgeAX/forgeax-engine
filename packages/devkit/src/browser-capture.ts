@@ -79,12 +79,21 @@ export interface BrowserCaptureRequestWitness {
 }
 
 export interface BrowserCaptureRequestReport {
+  readonly total: number;
   readonly documents: number;
   readonly http: number;
   readonly https: number;
   readonly failed: number;
   readonly resourceMisses: number;
-  readonly entries: readonly BrowserCaptureRequestWitness[];
+  /** Requests still without a response or failure when the report was written. */
+  readonly pending: number;
+  /**
+   * Failed, missing, HTTP 4xx/5xx and pending requests, plus every http(s)
+   * request of a single-HTML target. An ok run counts the remaining requests only.
+   */
+  readonly notable: readonly BrowserCaptureRequestWitness[];
+  /** Every request, kept whenever the run is not ok. */
+  readonly entries?: readonly BrowserCaptureRequestWitness[];
 }
 
 export interface BrowserCaptureRecord {
@@ -98,7 +107,7 @@ export interface BrowserCaptureRecord {
 }
 
 export interface BrowserCaptureRunReport {
-  readonly schemaVersion: '2.0.0';
+  readonly schemaVersion: '3.0.0';
   readonly runId: string;
   readonly ok: boolean;
   readonly mode: 'browser-compositor' | 'advanced-cpu-only-development';
@@ -774,15 +783,49 @@ function requestRecord(
   };
 }
 
-function summarizeRequests(records: readonly MutableRequestWitness[]): BrowserCaptureRequestReport {
+function pendingRequest(record: BrowserCaptureRequestWitness): boolean {
+  return record.status === null && !record.failed;
+}
+
+function notableRequest(
+  record: BrowserCaptureRequestWitness,
+  target: BrowserCaptureTarget,
+): boolean {
+  const protocol = requestProtocol(record.url);
+  return (
+    record.failed ||
+    record.resourceMiss ||
+    pendingRequest(record) ||
+    (record.status !== null && record.status >= 400) ||
+    (target.kind === 'single-html' && (protocol === 'http:' || protocol === 'https:'))
+  );
+}
+
+function summarizeRequests(
+  records: readonly MutableRequestWitness[],
+  target: BrowserCaptureTarget,
+): BrowserCaptureRequestReport {
   return {
+    total: records.length,
     documents: records.filter((record) => record.resourceType === 'document').length,
     http: records.filter((record) => requestProtocol(record.url) === 'http:').length,
     https: records.filter((record) => requestProtocol(record.url) === 'https:').length,
     failed: records.filter((record) => record.failed).length,
     resourceMisses: records.filter((record) => record.resourceMiss).length,
-    entries: records.map((record) => ({ ...record })),
+    pending: records.filter(pendingRequest).length,
+    notable: records
+      .filter((record) => notableRequest(record, target))
+      .map((record) => ({ ...record })),
   };
+}
+
+/** A failed run keeps its complete request evidence. */
+function reportedRequests(
+  records: readonly MutableRequestWitness[],
+  summary: BrowserCaptureRequestReport,
+  ok: boolean,
+): BrowserCaptureRequestReport {
+  return ok ? summary : { ...summary, entries: records.map((record) => ({ ...record })) };
 }
 
 function singleHtmlRuntimeClean(
@@ -1341,7 +1384,7 @@ async function openBrowserCaptureSession(
     let latestRuntime: BrowserCaptureRuntimeWitness | null = runtime;
     let closed = false;
     const report: BrowserCaptureRunReport = {
-      schemaVersion: '2.0.0',
+      schemaVersion: '3.0.0',
       runId: id,
       ok: false,
       mode: 'browser-compositor',
@@ -1358,7 +1401,7 @@ async function openBrowserCaptureSession(
       display: display.value ?? null,
       lavapipeIcd: icd ?? null,
       captures,
-      requests: summarizeRequests(requestRecords),
+      requests: reportedRequests(requestRecords, summarizeRequests(requestRecords, target), false),
       singleHtml: runtime.singleHtml,
       consoleErrors,
       pageErrors,
@@ -1369,17 +1412,18 @@ async function openBrowserCaptureSession(
     await writeRunReport(report);
 
     const updateReport = async (): Promise<void> => {
-      const requests = summarizeRequests(requestRecords);
+      const requests = summarizeRequests(requestRecords, target);
+      const ok =
+        captures.length > 0 &&
+        captures.every((capture) => capture.ok) &&
+        consoleErrors.length === 0 &&
+        pageErrors.length === 0 &&
+        latestRuntime?.fatalError == null &&
+        singleHtmlRuntimeClean(target, latestRuntime, requests);
       Object.assign(report, {
-        requests,
+        requests: reportedRequests(requestRecords, requests, ok),
         singleHtml: latestRuntime?.singleHtml ?? null,
-        ok:
-          captures.length > 0 &&
-          captures.every((capture) => capture.ok) &&
-          consoleErrors.length === 0 &&
-          pageErrors.length === 0 &&
-          latestRuntime?.fatalError == null &&
-          singleHtmlRuntimeClean(target, latestRuntime, requests),
+        ok,
       });
       await writeRunReport(report);
     };
@@ -1565,7 +1609,7 @@ async function openBrowserCaptureSession(
           runtime = await withinBudget('runtime diagnostics', () => runtimeWitness(activeRealm));
         }
         latestRuntime = runtime;
-        const requestSummary = summarizeRequests(requestRecords);
+        const requestSummary = summarizeRequests(requestRecords, target);
         const uiPresent = runtime.domUi.rootChildren > 0;
         const requireUi = captureOptions.requireUi ?? options.requireUi ?? false;
         const captureBackend = classifyCaptureAdapter(runtime.adapter);

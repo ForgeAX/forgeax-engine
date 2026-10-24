@@ -1,6 +1,7 @@
 import {
   findUndeclaredSampledTextures,
   fnv1aUtf16,
+  isDeepFrozenJson,
   type ParamSchemaEntry,
   type ShaderEntryPointReads,
   stripWgslComments,
@@ -150,19 +151,24 @@ export function withMaterialShaderEntryPoints(
       );
     return program;
   }
-  const reads = entryPoints.map((entry) =>
-    Object.freeze({
-      ...entry,
-      bindings: Object.freeze(
-        entry.bindings.map((binding) =>
-          Object.freeze({
-            ...binding,
-            ...(binding.fields === undefined ? {} : { fields: Object.freeze([...binding.fields]) }),
-          }),
-        ),
-      ),
-    }),
-  );
+  // Reads published inside a retained ABI receipt are already deep-frozen JSON.
+  const reads = isDeepFrozenJson(entryPoints)
+    ? entryPoints
+    : entryPoints.map((entry) =>
+        Object.freeze({
+          ...entry,
+          bindings: Object.freeze(
+            entry.bindings.map((binding) =>
+              Object.freeze({
+                ...binding,
+                ...(binding.fields === undefined
+                  ? {}
+                  : { fields: Object.freeze([...binding.fields]) }),
+              }),
+            ),
+          ),
+        }),
+      );
   return Object.freeze({ ...program, entryPoints: Object.freeze(reads) });
 }
 

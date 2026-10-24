@@ -731,6 +731,10 @@ export class GpuDrivenProduction {
   private view: GpuDrivenView | undefined;
   private materialRaster: MaterialAbiRasterAdapter | undefined;
   private skinRaster: MaterialAbiRasterAdapter | undefined;
+  /** The frame whose live batches are current; stock graphs project new classes from it. */
+  private currentRasterFrame: PreparedRasterFrame | undefined;
+  /** Stock raster classes projected after their graph compiled. */
+  readonly lateRasterClasses = { projected: 0, failed: 0 };
   private readonly sceneIdentities = new WeakMap<object, number>();
   private nextSceneIdentity = 1;
   private readonly preparations = {
@@ -1080,6 +1084,7 @@ export class GpuDrivenProduction {
     this.shadowSource = undefined;
     this.shadowScene = undefined;
     this.liveRasterBatches = [];
+    this.currentRasterFrame = undefined;
     this.disableShadowViews();
     const view = this.view;
     const shadowViews = this.shadowViews;
@@ -1622,16 +1627,17 @@ export class GpuDrivenProduction {
    * projection exists.
    */
   private publishGpuFrame(frame: PreparedRasterFrame): PreparedGpuDrivenFrame {
+    this.currentRasterFrame = frame;
     const { input, scene, materials, filtered, view, shadowViewPool, materialRaster, skinRaster } =
       frame;
     const viewInspection = view.inspect();
-    // The graph imports the scene material table live, so a replaced
-    // material table is not a graph dependency: key the raster graph on the
-    // view's compute generation (its own buffer rebuilds) only.
+    // The graph imports scene and view buffers live, so neither a replaced
+    // material table nor grown view storage is a graph dependency: key the
+    // raster graph on the view's pass-list generation only.
     const graphIdentity = this.rasterGraphIdentity.update(
       filtered,
       this.sceneIdentity(scene.scene),
-      { ...viewInspection, resourceGeneration: view.computeResourceGeneration },
+      { ...viewInspection, resourceGeneration: view.graphResourceGeneration },
       frame.liveRasterBatches,
       materialRaster.visibleBindingIdentity,
       skinRaster?.visibleBindingIdentity,
@@ -1742,7 +1748,7 @@ export class GpuDrivenProduction {
     return (
       this.shadowViews
         ?.inspect()
-        .map((entry) => `${shadowViewIdentityKey(entry.identity)}:${entry.resourceGeneration}`)
+        .map((entry) => `${shadowViewIdentityKey(entry.identity)}:${entry.graphGeneration}`)
         .join('|') ?? ''
     );
   }
@@ -1902,9 +1908,63 @@ export class GpuDrivenProduction {
     return ok(undefined);
   }
 
+  /**
+   * The class a live batch draws with in this pass. A stock-recording graph
+   * binds residency-owned mesh buffers outside the graph, so a class first
+   * seen after compilation is projected from the current frame instead of
+   * recompiling the graph. Raw graphs import mesh buffers and keep their
+   * compiled class set.
+   */
+  private classFor(
+    projected: ProjectedRasterGraph,
+    live: LiveRasterBatch,
+    filter?: RenderPipelineGpuDrivenFilter,
+    fragmentEntryPoint?: string,
+  ): ProjectedRasterClass | undefined {
+    if (
+      projected.target.rendererRecording &&
+      live.batch.visibleCapacity !== 0 &&
+      !projected.rasterClasses.has(live.recordingClassKey) &&
+      !this.projectLateRasterClass(projected, live)
+    )
+      return undefined;
+    return rasterClassFor(
+      projected.rasterClasses,
+      projected.target.rendererRecording,
+      live,
+      filter,
+      fragmentEntryPoint,
+    );
+  }
+
+  private projectLateRasterClass(projected: ProjectedRasterGraph, live: LiveRasterBatch): boolean {
+    const frame = this.currentRasterFrame;
+    const index = frame?.liveRasterBatches.indexOf(live) ?? -1;
+    const prepared = index < 0 ? undefined : frame?.filtered.batches[index];
+    if (frame === undefined || prepared === undefined) {
+      this.lateRasterClasses.failed += 1;
+      return false;
+    }
+    const made = this.projectRasterClass(
+      { ...projected, frame },
+      undefined,
+      [],
+      undefined,
+      new Map(),
+      prepared,
+    );
+    if (!made.ok) {
+      this.lateRasterClasses.failed += 1;
+      return false;
+    }
+    projected.rasterClasses.set(live.recordingClassKey, made.value);
+    this.lateRasterClasses.projected += 1;
+    return true;
+  }
+
   private projectRasterClass(
     projected: ProjectedRasterGraph,
-    graph: RenderGraphBuilder<RenderPipelineFrame>,
+    graph: RenderGraphBuilder<RenderPipelineFrame> | undefined,
     accesses: GraphAccess[],
     meshBuffers: Map<MeshGpuHandles, ImportedMeshBuffers> | undefined,
     pipelineShapes: Map<string, ProjectedRasterPipelines>,
@@ -1932,7 +1992,7 @@ export class GpuDrivenProduction {
     );
     if (!meshBindGroup.ok) return meshBindGroup;
     let buffers = meshBuffers?.get(prepared.mesh);
-    if (meshBuffers !== undefined && buffers === undefined) {
+    if (meshBuffers !== undefined && buffers === undefined && graph !== undefined) {
       const imported = importMeshBuffers(graph, prepared, accesses);
       if (!imported.ok) return imported;
       buffers = imported.value;
@@ -2041,14 +2101,7 @@ export class GpuDrivenProduction {
         : {}),
       hasWork: (filter, fragmentEntryPoint) =>
         this.liveRasterBatches.some(
-          (live) =>
-            rasterClassFor(
-              projected.rasterClasses,
-              projected.target.rendererRecording,
-              live,
-              filter,
-              fragmentEntryPoint,
-            ) !== undefined,
+          (live) => this.classFor(projected, live, filter, fragmentEntryPoint) !== undefined,
         ),
       ...(outputs.addLateOcclusion === undefined
         ? {}
@@ -2056,9 +2109,14 @@ export class GpuDrivenProduction {
             addLateOcclusion: (pyramid: GraphTextureView) => {
               const late = outputs.addLateOcclusion?.(pyramid);
               if (late === undefined || !late.ok) return late ?? ok([]);
+              const region = late.value;
               projected.lateRegion = {
-                indirectByteOffset: late.value.lateIndirectByteOffset,
-                visibleBase: late.value.lateVisibleBase,
+                get indirectByteOffset() {
+                  return region.lateIndirectByteOffset;
+                },
+                get visibleBase() {
+                  return region.lateVisibleBase;
+                },
               };
               return ok(late.value.passNames);
             },
@@ -2099,25 +2157,29 @@ export class GpuDrivenProduction {
   ): void {
     const key = JSON.stringify([formats, filter, fragmentEntryPoint, coverageOnly]);
     if (jobs.has(key)) return;
+    // Classes may join a compiled stock graph; select pipelines from the
+    // current live batches whenever that set is replaced.
+    let selectedFor: readonly LiveRasterBatch[] | undefined;
     const selected = new Map<RasterPipelineFor, string>();
-    for (const live of this.liveRasterBatches) {
-      const batch = rasterClassFor(
-        projected.rasterClasses,
-        projected.target.rendererRecording,
-        live,
-        filter,
-        fragmentEntryPoint,
-      );
-      if (batch !== undefined)
-        selected.set(
-          selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly),
-          batch.artifact.material,
-        );
-    }
+    const select = () => {
+      if (selectedFor === this.liveRasterBatches) return;
+      selectedFor = this.liveRasterBatches;
+      selected.clear();
+      for (const live of this.liveRasterBatches) {
+        const batch = this.classFor(projected, live, filter, fragmentEntryPoint);
+        if (batch !== undefined)
+          selected.set(
+            selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly),
+            batch.artifact.material,
+          );
+      }
+    };
+    select();
     const { frame, target } = projected;
     const ownedFormats = [...formats];
     const formatKey = ownedFormats.join(',');
     jobs.set(key, (entries, artifacts, onPending, materials) => {
+      select();
       let ready = true;
       for (const pipelineFor of selected.keys())
         if (!pipelineFor(ownedFormats, formatKey, true).ok) {
@@ -2268,13 +2330,8 @@ export class GpuDrivenProduction {
     );
     const facts = runFacts(
       (live) =>
-        rasterClassFor(
-          projected.rasterClasses,
-          projected.target.rendererRecording,
-          live as LiveRasterBatch,
-          call.filter,
-          fragmentEntryPoint,
-        ) !== undefined,
+        this.classFor(projected, live as LiveRasterBatch, call.filter, fragmentEntryPoint) !==
+        undefined,
       slotsByBinding,
       frameResources.selectedMaterialSlots,
     );
@@ -2356,7 +2413,7 @@ export class GpuDrivenProduction {
         mode,
         sources,
         live,
-        rasterClassFor(rasterClasses, rendererRecording, live, filter, fragmentEntryPoint),
+        this.classFor(projected, live, filter, fragmentEntryPoint),
         rasterClasses.get(rendererRecording ? live.recordingClassKey : live.classKey),
       ),
     );
@@ -2387,13 +2444,7 @@ export class GpuDrivenProduction {
     const { frame, target } = projected;
     const { frameResources } = call;
     if (cameraClassified && cameraRejectsSingleton(live, frameResources, frame.scene)) return;
-    const batch = rasterClassFor(
-      projected.rasterClasses,
-      target.rendererRecording,
-      live,
-      call.filter,
-      call.fragmentEntryPoint,
-    );
+    const batch = this.classFor(projected, live, call.filter, call.fragmentEntryPoint);
     if (batch === undefined) return;
     const globalMaterialSlot = selectedMaterialSlot(live, frameResources);
     if (globalMaterialSlot === undefined) return;
@@ -2466,10 +2517,22 @@ export class GpuDrivenProduction {
       );
       return bindings.rigidClusterGroup;
     }
+    // The compiled class keeps its first mesh group; the Skin task buffers it
+    // binds belong to the view and may have grown since, so resolve the
+    // current group (cached per physical buffer set) for every encode.
+    const raster =
+      batch.deformation === 'skin' ? projected.frame.skinRaster : projected.frame.materialRaster;
+    const current = batch.clustered
+      ? undefined
+      : raster?.sceneMeshBindGroup(
+          scene.scene.transformBuffer,
+          transformBytes,
+          view.skinTaskBinding(),
+        );
     return resolveGpuDrivenMeshGroup({
       clustered: batch.clustered,
       deformation: batch.deformation,
-      meshBindGroup: batch.meshBindGroup,
+      meshBindGroup: current?.ok === true ? current.value : batch.meshBindGroup,
       sceneTransformBuffer: scene.scene.transformBuffer,
       sceneTransformBytes: transformBytes,
       frameResources: call.frameResources,
@@ -3206,6 +3269,7 @@ export class GpuDrivenProduction {
     this.filteredCache = undefined;
     this.liveRasterCache = undefined;
     this.liveRasterBatches = [];
+    this.currentRasterFrame = undefined;
     this.shadowFilteredCache = undefined;
     this.mainFilterContributions.clear();
     this.shadowFilterContributions.clear();

@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "1.9.0"
+      "const": "1.10.0"
     },
     "sdkVersion": {
       "type": "string",
@@ -209,6 +209,11 @@
         "sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        },
+        "enginePath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "npm carrier: omit these bytes and materialize this relative path from the exact-version Engine dependency, verifying bytes and sha256."
         }
       }
     },

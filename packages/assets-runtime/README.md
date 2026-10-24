@@ -416,6 +416,31 @@ not Renderer field placement, streaming, GPU lifetime management or GI acceptanc
 
 ## Native package transport
 
+`AssetRegistry.inspectSource()` includes `scopeId`, `generation`, the current
+realm tag, and `bundleTransfers`. Take two snapshots and subtract their monotonic
+counters to select one loading window in that source/realm. This is a low-frequency
+inspection surface; no per-frame export or logging is installed.
+
+| Counter | Meaning |
+|:--|:--|
+| `fullReads`, `rangeReads` | Completed Bundle response bodies for full or range requests |
+| `requestedRangeBytes` | Sum of requested entry lengths for those range reads |
+| `wholeBundleFallbacks` | A range request received HTTP 200 with more bytes than its entry |
+| `responseEntityBytes` | Bytes exposed by `arrayBuffer()`, after HTTP content decoding |
+| `decodedEntryBytes` | Verified entry bytes after outer artifact decoding |
+| `declaredContentLengthBytes`, `declaredLengthResponses` | Sum and count of valid response `Content-Length` values |
+| `verifiedReuse`, `coalescedReads`, `residentHits` | Verified extracted reuse, joined entry/Bundle reads and resident entry reads |
+| `evictions`, `rereads` | Resident Bundle release by trim/budget and a released entry read after an earlier full fetch |
+
+The snapshot keeps at most 128 per-Bundle URL/digest rows; aggregate totals
+remain exact and `omittedDetailUpdates` reports missing detail. The snapshot
+copies counters and never retains response bodies or decoded assets. Its
+`httpCache: 'not-observable'` is deliberate: native/fetch response contracts do
+not prove browser cache hits, wire transfer sizes or HTTP header overhead. Use
+browser Resource Timing/HAR alongside these counters for those questions.
+Range-ignoring hosts keep their existing verified full-Bundle fallback;
+diagnostics do not change cache budgets, cancellation, isolation or integrity.
+
 `PackageFetcher` and `PackageResponse` in `@forgeax/engine/types` describe the
 read operations actually consumed by Catalog, Pack, and binary artifact loaders.
 Browser `fetch` satisfies the same contract. Native readers return package responses;

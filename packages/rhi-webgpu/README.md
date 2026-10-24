@@ -168,6 +168,29 @@ exists to keep the real browser WebGPU path while removing GPU work.
 - **Escape hatch tear-down**: `getRawDevice` (no prefix) removed in `feat-20260508-rhi-surface-completion` M4 (AC-RSC-05); the single sanctioned hatch is `_internal_getRawDevice` confined to the AC-08 (h) allow-list.
 - **destroyBuffer / destroyTexture (feat-20260612)**: per-handle destroyed-state bookkeeping in shim layer (`WeakMap<Handle, { destroyed: boolean }>`) on top of the spec's idempotent-void `GPUBuffer.destroy()` / `GPUTexture.destroy()`. Dual-backend behavior is symmetric: both shims track destroyed boolean per handle, fail-fast on second destroy with `'destroy-after-destroy'` error code, and never depend on wasm panic interception (plan-strategy D-6). Implementation at `packages/rhi-webgpu/src/device.ts`.
 
+## Command counts
+
+Every realm keeps cumulative counts of the commands it encodes through this
+package. Each wrapper adds an integer on its existing path, so the counts are
+always on and identical with the stub and a real GPU. They are CPU-side call
+counts, not GPU cost.
+
+| Export | Contract |
+|:--|:--|
+| `readRhiCommandCounts()` | Snapshot (`RhiCommandCounts`) since the realm loaded the package. |
+| `subtractRhiCommandCounts(after, before)` | Counts encoded between two snapshots. |
+| `RHI_COMMAND_COUNT_KEYS` | Field list, in report order. |
+
+Pass fields (`draws`, `pipelineSets`, `bindGroupSets`, `vertexBufferSets`,
+`dispatches`) count commands encoded into render and compute passes. `bundle*`
+fields count commands recorded into render bundles; replays count only as
+`bundlesExecuted`. `bufferWrites`/`bufferWriteBytes` and
+`textureWrites`/`textureWriteBytes` count queue writes and their copied source
+bytes; `bindGroupCreates`, `bufferCreates`, `textureCreates` count creation. The
+App Render Worker attaches the difference since its previous submitted frame to
+each `frame-submitted` as `rhiCommands`. The wasm `rhi-wgpu` backend does not
+count.
+
 ## FAQ
 
 **Q: Why not directly `implements GPUDevice` for the full interface?**

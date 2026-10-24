@@ -92,6 +92,10 @@ reflog before pruning; preserve unrelated repositories and changed commits.
 For a Dawn overall job cancellation with passing groups, compare complete group
 costs, ordinary-file backfill and lane headroom in `dawn-gate-roster.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
 while preserving the full roster, native process isolation and existing deadlines.
+Check newly discovered files against the same cost table: its largest-file
+fallback can reserve minutes for a short new test. Admit costs only from complete
+successful children, retain process overhead and larger inherited forecasts, and
+exclude interrupted owner tails before running the final full matrix.
 
 For Linux software validation, use `pnpm ci:graphics setup` and the
 [isolated graphics contract](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
@@ -230,8 +234,11 @@ and the external-texture file. Refresh their existing Browser cost-table entries
 from complete successful children, including startup/cleanup, so normal grouping
 does not recreate the timeout. Label local timing separately from CI receipts;
 retain the 120-second case and 300-second process deadlines.
-For a Dawn lane canceled at the job deadline, inspect complete process receipts
-and exact file rosters before refreshing `dawn-file-seconds.json`. An interrupted
+For a Dawn lane canceled at the job deadline, inspect complete process receipts,
+exact file rosters and the GitHub job annotation: even a native `PASS` can exceed the job budget
+during cleanup. Preserve the failed gate and use completed children only for cost
+observations; final-head CI must still pass after a placement refresh.
+Refresh only `dawn-file-seconds.json` placement forecasts. An interrupted
 owner contributes no completion sample. Keep the four-lane sequencer and original
 native deadlines; a cost refresh alone is not proof of a faster complete gate.
 For a cold Preview capture interrupted by Vite `full-reload`, inspect optimizer
@@ -499,6 +506,14 @@ Native payloads must pass their source/recipe and byte checks. CI Focus prepares
 Engine build even for browser selectors. Chromium always runs sandboxed. Use
 the local GPU lease and existing process cleanup rather than adding retries,
 longer deadlines or per-test scheduler exceptions.
+For Rapier cache misses, compare `build-rapier-native.mjs <2d|3d> --key` with
+the cache entry and `--verify`; the producer content key owns the input closure.
+For a Rapier post-step upload stall after successful verification, inspect the
+verified payload cache and follow [Build inputs](../../scripts/ci/README.md#build-inputs).
+Rapier reuses that payload across runs; it does not upload a second Cargo target archive.
+For fetch 401/exit 128, inspect URL-matched checkout HTTP configuration: temporary
+Git repositories receive it through `git-http-environment.mjs` and the existing
+bounded fetch. Never print or persist the authorization header.
 For simultaneous input-preparation failures, inspect the core producer first.
 Its upload must succeed before fanout. The shared `prepare-ci-inputs` Action
 verifies restored bytes before provisioning wgpu/Rapier for a genuine source miss.

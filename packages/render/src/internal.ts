@@ -1,5 +1,7 @@
 // Non-stable implementation seam for engine-owned consumers and tests.
 
+export { renderGraphCompileCount } from '@forgeax/engine-render-graph';
+
 export {
   createDynamicGeometrySourceHost,
   type DynamicGeometryResidencyPort,

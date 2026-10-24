@@ -190,7 +190,7 @@ export function parseCssAuthoring(
         fontFace
           ? 'a supported @font-face descriptor'
           : 'a portable CSS property in UI_AUTHORING_PROFILE',
-        'Run forgeax project check --json and read value.uiAuthoringProfile.css.nativeProperties. For browser-only UI, declare browserExtensions: ["css"] on the UiAsset; otherwise use a supported portable property.',
+        'Run forgeax project check --detail --json and read value.uiAuthoringProfile.css.nativeProperties. For browser-only UI, declare browserExtensions: ["css"] on the UiAsset; otherwise use a supported portable property.',
       );
     } else if (!custom) {
       checkDeclarationValue(property, value, fontFace, vendor);

@@ -86,6 +86,7 @@ import {
   validateRayQueryBufferUsage,
 } from '@forgeax/engine-rhi';
 
+import { COMMAND_COUNTS } from './command-counts';
 import { probeR32FloatCapability } from './internal/r32float-capability';
 import {
   hasExternalTextureCapability,
@@ -468,12 +469,34 @@ function deriveCaps(
   };
 }
 
+/** Command-count fields of one recording lane (see ./command-counts). */
+interface RenderCommandLane {
+  readonly draws: 'draws' | 'bundleDraws';
+  readonly pipelineSets: 'pipelineSets' | 'bundlePipelineSets';
+  readonly bindGroupSets: 'bindGroupSets' | 'bundleBindGroupSets';
+  readonly vertexBufferSets: 'vertexBufferSets' | 'bundleVertexBufferSets';
+}
+const PASS_LANE: RenderCommandLane = {
+  draws: 'draws',
+  pipelineSets: 'pipelineSets',
+  bindGroupSets: 'bindGroupSets',
+  vertexBufferSets: 'vertexBufferSets',
+};
+const BUNDLE_LANE: RenderCommandLane = {
+  draws: 'bundleDraws',
+  pipelineSets: 'bundlePipelineSets',
+  bindGroupSets: 'bundleBindGroupSets',
+  vertexBufferSets: 'bundleVertexBufferSets',
+};
+
 /** Shared native draw, binding and debug commands for passes and bundles. */
 function makeRenderCommands(
   rawPass: GPURenderPassEncoder | GPURenderBundleEncoder,
+  lane: RenderCommandLane,
 ): RhiRenderCommands {
   return {
     setPipeline(pipeline: RenderPipeline): void {
+      COMMAND_COUNTS[lane.pipelineSets]++;
       rawPass.setPipeline(pipeline as unknown as GPURenderPipeline);
     },
     setVertexBuffer(
@@ -483,6 +506,7 @@ function makeRenderCommands(
       size?: number | undefined,
     ): void {
       // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
+      COMMAND_COUNTS[lane.vertexBufferSets]++;
       const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
       rawPass.setVertexBuffer(slot, rawBuf, offset, size);
     },
@@ -507,6 +531,7 @@ function makeRenderCommands(
       //   (a) (index, bindGroup, dynamicOffsets?: readonly number[])
       //   (b) (index, bindGroup, dynamicOffsetsData: Uint32Array,
       //        dynamicOffsetsDataStart, dynamicOffsetsDataLength)
+      COMMAND_COUNTS[lane.bindGroupSets]++;
       if (arg3 instanceof Uint32Array) {
         rawPass.setBindGroup(
           index,
@@ -527,6 +552,7 @@ function makeRenderCommands(
       firstVertex?: number | undefined,
       firstInstance?: number | undefined,
     ): void {
+      COMMAND_COUNTS[lane.draws]++;
       rawPass.draw(vertexCount, instanceCount, firstVertex, firstInstance);
     },
     drawIndexed(
@@ -536,14 +562,17 @@ function makeRenderCommands(
       baseVertex?: number | undefined,
       firstInstance?: number | undefined,
     ): void {
+      COMMAND_COUNTS[lane.draws]++;
       rawPass.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     },
     drawIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
       const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+      COMMAND_COUNTS[lane.draws]++;
       rawPass.drawIndirect(rawBuf, indirectOffset);
     },
     drawIndexedIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
       const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+      COMMAND_COUNTS[lane.draws]++;
       rawPass.drawIndexedIndirect(rawBuf, indirectOffset);
     },
     pushDebugGroup(groupLabel: string): void {
@@ -564,7 +593,7 @@ function makeRenderPassEncoder(
   occlusionQuerySet: QuerySet | null,
 ): RhiRenderPassEncoder {
   const pass: RhiRenderPassEncoder = {
-    ...makeRenderCommands(rawPass),
+    ...makeRenderCommands(rawPass, PASS_LANE),
     setViewport(
       x: number,
       y: number,
@@ -586,9 +615,9 @@ function makeRenderPassEncoder(
     },
     executeBundles(bundles: Iterable<RenderBundle>): Result<void, RhiError> {
       try {
-        rawPass.executeBundles(
-          Array.from(bundles, (bundle) => bundle as unknown as GPURenderBundle),
-        );
+        const rawBundles = Array.from(bundles, (bundle) => bundle as unknown as GPURenderBundle);
+        rawPass.executeBundles(rawBundles);
+        COMMAND_COUNTS.bundlesExecuted += rawBundles.length;
         return ok(undefined);
       } catch (cause) {
         return err(
@@ -905,6 +934,7 @@ function makeCommandEncoder(
       const state = ENCODER_STATE.get(enc);
       throwIfFinished(state);
       const rawPass = rawEncoder.beginRenderPass(mirrorRenderPassDescriptor(desc));
+      COMMAND_COUNTS.renderPasses++;
       // Extract occlusionQuerySet from the descriptor (research §2.2:
       // RPDesc.occlusionQuerySet is the injection point; the render pass
       // PassState.[[occlusion_query_set]] mirrors it). The forgeax
@@ -923,11 +953,14 @@ function makeCommandEncoder(
         rawDescriptor === undefined
           ? rawEncoder.beginComputePass()
           : rawEncoder.beginComputePass(rawDescriptor);
+      COMMAND_COUNTS.computePasses++;
       const pass: RhiComputePassEncoder = {
         setPipeline(pipeline) {
+          COMMAND_COUNTS.pipelineSets++;
           rawPass.setPipeline(pipeline as unknown as GPUComputePipeline);
         },
         setBindGroup(index, bindGroup, dynamicOffsets) {
+          COMMAND_COUNTS.bindGroupSets++;
           if (dynamicOffsets === undefined) {
             rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup);
           } else {
@@ -935,9 +968,11 @@ function makeCommandEncoder(
           }
         },
         dispatchWorkgroups(x, y, z) {
+          COMMAND_COUNTS.dispatches++;
           rawPass.dispatchWorkgroups(x, y, z);
         },
         dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
+          COMMAND_COUNTS.dispatches++;
           const rawBuffer =
             BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
           rawPass.dispatchWorkgroupsIndirect(rawBuffer, indirectOffset);
@@ -1390,6 +1425,8 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
         } else {
           rawQueue.writeBuffer(rawBuffer, bufferOffset, data as GPUAllowSharedBufferSource);
         }
+        COMMAND_COUNTS.bufferWrites++;
+        COMMAND_COUNTS.bufferWriteBytes += writeSize;
         return ok(undefined);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -1419,6 +1456,7 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
       }
       try {
         rawQueue.submit(rawList);
+        COMMAND_COUNTS.submits++;
         return ok(undefined);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -1452,6 +1490,8 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
           dataLayout,
           size as unknown as GPUExtent3D,
         );
+        COMMAND_COUNTS.textureWrites++;
+        COMMAND_COUNTS.textureWriteBytes += data.byteLength - (dataLayout.offset ?? 0);
         return ok(undefined);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -1616,6 +1656,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
       // GPUBuffer; failures ride 'webgpu-runtime-error' with structured
       // .expected / .hint (K-2 + research §4.2 / F-8 three rows).
       const handle = makeBufferWrapper(out, sizeField, usageField);
+      COMMAND_COUNTS.bufferCreates++;
       BUFFER_RAW_MAP.set(handle, out);
       BUFFER_META_MAP.set(handle, {
         size: sizeField,
@@ -1629,6 +1670,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
         mirror(desc, TEXTURE_KEYS) as unknown as GPUTextureDescriptor,
       );
       const handle = out as unknown as Texture;
+      COMMAND_COUNTS.textureCreates++;
       // Record metadata for createTextureView cross-resource validation.
       const viewFormats =
         desc.viewFormats === undefined
@@ -1864,6 +1906,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
         }
       }
       const out = rawDevice.createBindGroup(mirrored as unknown as GPUBindGroupDescriptor);
+      COMMAND_COUNTS.bindGroupCreates++;
       return ok(out as unknown as BindGroup);
     },
     createPipelineLayout(desc: PipelineLayoutDescriptor): Result<PipelineLayout, RhiError> {
@@ -2091,7 +2134,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
         const raw = rawDevice.createRenderBundleEncoder(desc as GPURenderBundleEncoderDescriptor);
         let finished = false;
         return ok({
-          ...makeRenderCommands(raw),
+          ...makeRenderCommands(raw, BUNDLE_LANE),
           finish(descriptor) {
             if (finished) return err(commandEncoderFinished('render bundle'));
             finished = true;

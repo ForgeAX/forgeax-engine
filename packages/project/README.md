@@ -47,6 +47,9 @@ else console.error(result.error.code, result.error.hint);
 
 `loadGameProjectSync` accepts the equivalent synchronous reader. `GameProjectSchema` and its inferred `GameProject` type are the field authority. Unknown fields and malformed GUIDs fail before any plugin is installed. Closed errors and their narrowed detail are defined in [errors.ts](src/errors.ts).
 
+Validation issues use Zod 4's issue vocabulary. Branch on the Engine error code
+before reading `zodErrors` or another narrowed error detail.
+
 ## Migration
 
 Legacy project installation trees and implicit default scenes are rejected. DevKit's `project migrate` creates a separately validated candidate project from a schema 2.0 manifest and statically convertible composition. Dynamic configuration, children or update hooks report the owning source location for an explicit rewrite. See [DevKit](../devkit/README.md).

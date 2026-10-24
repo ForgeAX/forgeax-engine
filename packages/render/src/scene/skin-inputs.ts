@@ -1178,6 +1178,8 @@ export class SkinInputFrame {
     previousOut: Float32Array,
     matrix: Mat4,
     inverse: Mat4,
+    /** The previous frame's palette for this slot, already composed from its exact inputs. */
+    previousPalette?: Float32Array,
   ): 0 | 1 | 3 {
     const count = this.jointCount(slot);
     if (count === undefined || !this.available(slot)) return 0;
@@ -1200,6 +1202,14 @@ export class SkinInputFrame {
       if (!composedOverflow(cause)) throw cause;
       return 0;
     }
+    if (compatible && previousPalette !== undefined && previousPalette.length >= count * 16) {
+      previousOut.set(
+        previousPalette.length === count * 16
+          ? previousPalette
+          : previousPalette.subarray(0, count * 16),
+      );
+      return 3;
+    }
     if (compatible) {
       try {
         if (previous.palette(slot, previousOut, matrix, inverse)) return 3;
@@ -1209,6 +1219,14 @@ export class SkinInputFrame {
     }
     for (let lane = 0; lane < count * 16; lane++) previousOut[lane] = currentOut[lane] as number;
     return 1;
+  }
+
+  /**
+   * The captured root this live frame reads. A held root is immutable, so two
+   * frames with the same live root compose equal palettes.
+   */
+  inputRoot(): object | undefined {
+    return this.#state === undefined ? undefined : this.#page;
   }
 
   historyCompatible(previous: SkinInputFrame, slot: number): boolean {

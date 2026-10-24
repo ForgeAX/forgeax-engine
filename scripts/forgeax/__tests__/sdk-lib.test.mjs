@@ -548,9 +548,15 @@ describe('waitForNpmPublications', () => {
         });
       }
       if (url.endsWith('/dist-tags')) return Response.json({ latest: item.version });
+      if (url.endsWith('/%40forgeax%2Fengine-sdk')) {
+        expect(init.headers?.accept).toBe('application/vnd.npm.install-v1+json');
+        return Response.json({
+          versions: round === 1 ? {} : { [item.version]: { dist: { integrity: item.integrity } } },
+        });
+      }
       if (init.method === 'GET') {
-        return new Response(round === 1 ? null : 'sealed-bytes', {
-          status: round === 1 ? 404 : 200,
+        return new Response(round === 2 ? null : 'sealed-bytes', {
+          status: round === 2 ? 404 : 200,
         });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -570,7 +576,7 @@ describe('waitForNpmPublications', () => {
         },
       }),
     ).resolves.toEqual({ verified: 1, tag: 'latest' });
-    expect(round).toBe(2);
+    expect(round).toBe(3);
     expect(progress).toEqual([
       {
         elapsedMs: 0,
@@ -582,9 +588,15 @@ describe('waitForNpmPublications', () => {
         elapsedMs: 10,
         tag: 'latest',
         verified: 0,
+        pending: [{ name: item.name, reason: 'install-metadata-version-missing' }],
+      },
+      {
+        elapsedMs: 20,
+        tag: 'latest',
+        verified: 0,
         pending: [{ name: item.name, reason: 'tarball-http-404' }],
       },
-      { elapsedMs: 20, tag: 'latest', verified: 1, pending: [] },
+      { elapsedMs: 30, tag: 'latest', verified: 1, pending: [] },
     ]);
   });
 
@@ -598,6 +610,8 @@ describe('waitForNpmPublications', () => {
     const fetchImpl = async (input) => {
       if (String(input).endsWith('/dist-tags'))
         throw new Error('tag query before immutable visibility');
+      if (String(input).endsWith('/%40forgeax%2Fengine'))
+        return Response.json({ versions: { '1.2.3': { dist: { integrity: item.integrity } } } });
       return String(input).endsWith('/archive.tgz')
         ? new Response(corrupt ? 'corrupt' : 'sealed')
         : Response.json({

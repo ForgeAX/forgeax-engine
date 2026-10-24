@@ -33,6 +33,51 @@ export function isValidPackSourceKey(value: unknown): value is string {
   return typeof value === 'string' && PACK_SOURCE_KEY_RE.test(value);
 }
 
+/** Nearest valid key for a rejected one: camelCase and spaces become kebab-case. */
+export function suggestPackSourceKey(value: string): string | undefined {
+  const suggestion = value
+    .split('/')
+    .map((segment) =>
+      segment
+        .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^[._-]+|[._-]+$/g, ''),
+    )
+    .filter((segment) => segment.length > 0)
+    .join('/');
+  return isValidPackSourceKey(suggestion) ? suggestion : undefined;
+}
+
+/** The one `pack-source-key-invalid` report; callers add where the key came from. */
+export function packSourceKeyFailure(
+  sourceKey: unknown,
+  where: Readonly<Record<string, unknown>> = {},
+): {
+  readonly code: 'pack-source-key-invalid';
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail: Readonly<Record<string, unknown>>;
+} {
+  const suggestedSourceKey =
+    typeof sourceKey === 'string' ? suggestPackSourceKey(sourceKey) : undefined;
+  return {
+    code: 'pack-source-key-invalid',
+    expected: `a sourceKey of "/"-separated lower-case segments, each starting with a-z or 0-9 and containing only a-z, 0-9, ".", "_" or "-" (${PACK_SOURCE_KEY_RE.source.replaceAll('\\/', '/')})`,
+    hint: `${
+      suggestedSourceKey === undefined
+        ? 'use a lower-case kebab-case key such as "material/rock-light"'
+        : `use kebab-case: ${JSON.stringify(suggestedSourceKey)}`
+    }; keys built from camelCase names need the same conversion wherever the output is produced and derived`,
+    detail: {
+      ...where,
+      sourceKey,
+      ...(suggestedSourceKey === undefined ? {} : { suggestedSourceKey }),
+    },
+  };
+}
+
 function dashFormToBytes(dashForm: string): Uint8Array {
   const hex = dashForm.replace(/-/g, '');
   const bytes = new Uint8Array(16);
@@ -72,11 +117,15 @@ function derivedGuid(namespace: PackageId, sourceKey: string): AssetGuid {
     throw new TypeError('AssetGuid.derive requires a 16-byte PackageId');
   }
   if (!isValidPackSourceKey(sourceKey)) {
-    const error = new TypeError(
-      `AssetGuid.derive received invalid sourceKey ${JSON.stringify(sourceKey)}`,
-    ) as TypeError & { readonly code?: string };
-    Object.defineProperty(error, 'code', { value: 'pack-source-key-invalid' });
-    throw error;
+    // A thrown programmer error still carries the structured fields, so Pack
+    // build and CLI boundaries forward it instead of reducing it to a message.
+    const failure = packSourceKeyFailure(sourceKey, { operation: 'AssetGuid.derive' });
+    throw Object.assign(
+      new TypeError(
+        `AssetGuid.derive received invalid sourceKey ${JSON.stringify(sourceKey)}; ${failure.hint}`,
+      ),
+      failure,
+    );
   }
   return brand(uuidV5(namespace, sourceKey));
 }

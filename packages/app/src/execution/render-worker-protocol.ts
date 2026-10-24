@@ -112,6 +112,10 @@ export type RenderWorkerInput =
       readonly height: number;
       readonly publication: RenderPublication;
       readonly sourceFixedStep: number;
+      /** Engine Worker World update milliseconds for this published frame. */
+      readonly engineUpdateMs?: number;
+      /** Engine Worker milliseconds waiting for publication credit before this frame (0 = none). */
+      readonly engineCreditWaitMs?: number;
     }
   | {
       readonly kind: 'capture';

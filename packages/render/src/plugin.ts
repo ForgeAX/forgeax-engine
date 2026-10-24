@@ -42,6 +42,7 @@ import { StereoCamera } from './components/stereo-camera';
 import { Tilemap } from './components/tilemap';
 import { Visibility } from './components/visibility';
 import { ProjectedDecal } from './decals/component';
+import { VolumetricFog } from './volume/component';
 
 const RENDER_COMPONENTS: readonly Component[] = [
   AmbientOcclusion,
@@ -86,6 +87,7 @@ const RENDER_COMPONENTS: readonly Component[] = [
   StereoCamera,
   Tilemap,
   Visibility,
+  VolumetricFog,
 ];
 
 function registerRenderComponents(world: World): () => void {

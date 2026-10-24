@@ -474,7 +474,14 @@ need their normal Registry loader/decoder. No cooker enters the player.
 
 `forgeax asset inspect --subject <source.pack.ts> --root <project> --json` executes module initialization, validates the default export, and projects canonical Meta without calling `build`. `@forgeax/engine-pack/source-node` accepts a host executor with `load` and optional `dispose`; `timeoutMs` bounds module initialization and `buildTimeoutMs` bounds one `build(context)` call. A build timeout returns one structured `pack-source-load-failed` Result with `detail.phase: 'build'`, the configured `timeoutMs`, and deterministic cleanup of the isolated worker and compile root.
 
-The default worker executes the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
+Build workers execute the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
+
+Disposable metadata workers compile the static import closure. If module
+initialization touches a deferred dynamic import, they load the complete closure.
+Builds compile the full captured closure and can add derived-text cache entries
+while retaining the exact earlier entries. Source inventory still captures literal
+dynamic dependencies; cache identity follows filenames and digests, independently
+of transport ordering. Module instances remain local to each execution realm.
 
 Captured JSON is canonicalized into data files in that same disposable directory.
 Small ESM wrappers parse those captured files, so bulk payloads do not remain in
@@ -555,7 +562,13 @@ while retaining captured bytes, aliases and negative candidates for later public
 checks; a closed compiler is never queried as current resolution evidence.
 The build owner must verify again immediately before publication and discard a
 stale candidate. A fresh build creates a fresh snapshot; only content-keyed
-syntax parsing survives across generations. No caller maintains an invalidation list.
+syntax parsing and, when the owner passes one, a `createScriptablePackMetadataCache()`
+survive across generations. That owner-lifetime cache keys successful metadata by
+source path plus the new snapshot's freshly read and digested relative closure, so
+an edited entry or transitive import re-executes only its Pack; bare package
+imports remain the host's pinned context. It evicts least-recently-used closures
+beyond its bound and the owner clears it on disposal. No caller maintains an
+invalidation list.
 The syntax cache bounds retained digest/import text, array slots and entry count,
 not source body size, so large data modules reuse their parsed imports without
 retaining a second copy of their bytes. Source digests and publication verification
@@ -765,7 +778,7 @@ this package does not publish an independent executable.
 |:--|:--|:--|
 | `forgeax asset list --root <project> --json` | Print a bounded page (default `limit=100`, maximum 256); add `--type` and `--cursor` to continue | 0 on valid roots |
 | `forgeax asset inspect --subject <guid> --root <project> --json` | Print matching asset evidence | 0 found / 1 not found |
-| `forgeax asset verify --root <project> --json` | Run the fail-fast scanner and return a bounded `asset-verification-v1` source/output report | 0 clean / 1 error |
+| `forgeax asset verify --root <project> --json` | Run the fail-fast scanner; the CLI prints the report's `summary`, scope counts and `attention` (assets not yet produced and available, at most 20). `--detail` prints the full bounded `asset-verification-v1` source/output report | 0 clean / 1 error |
 
 ```bash
 # Direct invocation (after pnpm -F @forgeax/engine-pack build)

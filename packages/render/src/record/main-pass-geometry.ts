@@ -3,7 +3,7 @@ import {
   standardTransmissionAdmission,
 } from '../assembly/device-feature-admission';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
-import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import { meshSsboBufferBinding, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { markPipelinePreparationPending } from '../render-system-presentation';
 import { FirstEntryMap } from './first-entry-map';
@@ -55,7 +55,11 @@ import {
   instancePreviousPairing,
   planInstanceUpload,
 } from '../instances';
-import { transformRenderState } from '../material-render-state';
+import {
+  derivedRenderState,
+  isReflectedTransform,
+  transformRenderState,
+} from '../material-render-state';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 import {
   classifyOitDraw,
@@ -405,6 +409,14 @@ export function geometryRenderStateForPass(
   coverageOnly = false,
 ): GeometryRenderState {
   if (passKind !== 'temporal') return base;
+  return derivedRenderState(
+    base,
+    coverageOnly ? 'temporal-coverage' : 'temporal',
+    coverageOnly ? temporalCoverageState : temporalState,
+  );
+}
+
+function temporalPassState(base: GeometryRenderState, coverageOnly: boolean): GeometryRenderState {
   const state = { ...base };
   delete state.outputs;
   return {
@@ -414,6 +426,22 @@ export function geometryRenderStateForPass(
     depthCompare: 'less-equal' as const,
   };
 }
+const temporalState = (base: GeometryRenderState) => temporalPassState(base, false);
+const temporalCoverageState = (base: GeometryRenderState) => temporalPassState(base, true);
+const spriteState = (state: GeometryRenderState): GeometryRenderState => ({
+  ...state,
+  depthWriteEnabled: false,
+  depthCompare: 'less-equal' as const,
+  cullMode: 'none' as const,
+  blend: state?.blend ?? SPRITE_PREMULTIPLIED_ALPHA_BLEND,
+});
+const transparentDepthState = (depthWriteEnabled: boolean) => (state: GeometryRenderState) => ({
+  ...state,
+  depthWriteEnabled,
+  depthCompare: 'less-equal' as const,
+});
+const transparentDepthWriteState = transparentDepthState(true);
+const transparentDepthReadState = transparentDepthState(false);
 
 /**
  * Transparent depth is an authored medium policy. A transparent pass with no
@@ -437,6 +465,25 @@ function geometryRecordPhase(
 ): RenderRecordPhase {
   const pass = passKind === 'deferred' ? 'g-buffer' : 'forward';
   return `record/graph-execute/${pass}/${segment}` as RenderRecordPhase;
+}
+
+const NO_SELECTED_PASS = {};
+
+interface DrawPipelineSelection {
+  readonly flags: number;
+  readonly layout: object;
+  readonly indexFormat: string;
+  readonly topology: PrimitiveTopology;
+  readonly shaderId: string | undefined;
+  readonly renderState: MaterialSnapshot['renderState'];
+  readonly vertexEntry: string | undefined;
+  readonly fragmentEntry: string | undefined;
+  readonly variantSet: string | undefined;
+  readonly pipeline: RenderPipeline | null;
+  readonly material: MaterialShaderPipelineEntry | null;
+  readonly probeBlend: boolean;
+  readonly viewOffset: number;
+  readonly shader: string | undefined;
 }
 
 function profileGeometrySegment<T>(
@@ -663,7 +710,7 @@ export function recordGeometryDraws(
     viewBindGroup,
     viewBindGroupDynamicOffset = 0,
   } = c;
-  const materialPasses = groupSelectedMaterialPasses(selectedDispatch, passKind);
+  const materialPasses = selectedMaterialPasses(selectedDispatch, passKind === 'temporal');
   const diagnosticsEnabled = materialDiagnosticsEnabled();
   const colorFormatOverride = c.transparentColorFormat as GPUTextureFormat | undefined;
   // The prepared Standard topology is the frame authority. A bind-group
@@ -828,6 +875,7 @@ export function recordGeometryDraws(
       runtime.getMaterialArtifact?.(materialShaderId) !== undefined && layoutKind === undefined,
     );
     if (!resolvedVariantSetResult.ok) {
+      drawPipelineReported = true;
       runtime.errorRegistry.fire(resolvedVariantSetResult.error);
       return null;
     }
@@ -906,6 +954,9 @@ export function recordGeometryDraws(
     return handle;
   };
 
+  // True when the current resolution reported or observed per-draw facts; such
+  // a selection is resolved again for each draw instead of being reused.
+  let drawPipelineReported = false;
   const pipelineSelection: {
     pipeline: RenderPipeline | null;
     material: MaterialShaderPipelineEntry | null;
@@ -959,6 +1010,8 @@ export function recordGeometryDraws(
     const isSpriteShader =
       smMaterialShaderId === 'forgeax::sprite' || smMaterialShaderId === 'forgeax::sprite-lit';
     const slices = submeshMaterial.paramSnapshot?.slicesAndMode as readonly number[] | undefined;
+    // Sprite draws observe their per-entity nine-slice scale on every draw.
+    if (isSpriteShader) drawPipelineReported = true;
     if (isSpriteShader && slices !== undefined)
       detectNineSliceScaleTooSmall(
         entry.source.transform.world,
@@ -971,13 +1024,7 @@ export function recordGeometryDraws(
     // routes a sprite through this generic geometry path. Negative scale
     // flips winding, so back-face culling would erase the quad.
     const basePipelineRenderState = isSpriteShader
-      ? {
-          ...selectedRenderState,
-          depthWriteEnabled: false,
-          depthCompare: 'less-equal' as const,
-          cullMode: 'none' as const,
-          blend: selectedRenderState?.blend ?? SPRITE_PREMULTIPLIED_ALPHA_BLEND,
-        }
+      ? derivedRenderState(selectedRenderState, 'sprite', spriteState)
       : geometryRenderStateForTopology(smTopology, selectedRenderState);
     let pipelineRenderState = geometryRenderStateForPass(
       transformRenderState(basePipelineRenderState, entry.source.transform.world),
@@ -989,14 +1036,20 @@ export function recordGeometryDraws(
       passKind === 'forward' &&
       (submeshMaterial.transparent === true || selectedRenderState?.blend !== undefined)
     ) {
-      pipelineRenderState = {
-        ...pipelineRenderState,
-        depthWriteEnabled: authoredTransparentDepthWrite(
-          submeshMaterial.transparent,
-          selectedRenderState,
-        ),
-        depthCompare: 'less-equal',
-      };
+      pipelineRenderState = authoredTransparentDepthWrite(
+        submeshMaterial.transparent,
+        selectedRenderState,
+      )
+        ? derivedRenderState(
+            pipelineRenderState,
+            'transparent-depth-write',
+            transparentDepthWriteState,
+          )
+        : derivedRenderState(
+            pipelineRenderState,
+            'transparent-depth-read',
+            transparentDepthReadState,
+          );
     }
     // Fog composition follows the authored blend, before OIT replaces it.
     const viewOffset = viewOffsetForBlend(pipelineRenderState?.blend);
@@ -1010,6 +1063,7 @@ export function recordGeometryDraws(
         undefined,
       );
       if (!unlitProjectionVariantResult.ok) {
+        drawPipelineReported = true;
         runtime.errorRegistry.fire(unlitProjectionVariantResult.error);
         return false;
       }
@@ -1071,6 +1125,7 @@ export function recordGeometryDraws(
         submeshMaterial,
         runtime.device.limits.maxSampledTexturesPerShaderStage,
       );
+      if (transmissionAdmission?.kind === 'exceeded') drawPipelineReported = true;
       if (transmissionAdmission?.kind === 'exceeded')
         reportSampledTextureBudgetExceeded(
           runtime,
@@ -1150,6 +1205,98 @@ export function recordGeometryDraws(
   };
 
   // Explicit preparation shares the exact draw resolver for one prepared pass.
+  // Draws of one invocation that share every pipeline input share one
+  // selection. Only a resolved pipeline without per-draw reports is reused, so
+  // a pending build still retries on the next draw.
+  const drawPipelines = new Map<MaterialSnapshot, Map<object, DrawPipelineSelection[]>>();
+  const resolveSharedDrawPipeline = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    smTopology: PrimitiveTopology,
+    submeshMaterial: MaterialSnapshot,
+    selectedPass: Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'> | undefined,
+    selectedShaderId: string | undefined,
+    selectedRenderState: MaterialSnapshot['renderState'],
+    vertexEntry: string | undefined,
+    fragmentEntry: string | undefined,
+    oitAccumulateDraw: boolean,
+    authoredVariantSet: string | undefined,
+  ): boolean => {
+    const source = entry.source;
+    const flags =
+      (source.skinBinding !== undefined ? 1 : 0) |
+      (source.probeBlendRecord !== undefined ? 2 : 0) |
+      (isReflectedTransform(source.transform.world) ? 4 : 0) |
+      (source.spriteInstances !== undefined ? 8 : 0) |
+      (oitAccumulateDraw ? 16 : 0);
+    const passKey = selectedPass ?? NO_SELECTED_PASS;
+    let byPass = drawPipelines.get(submeshMaterial);
+    const candidates = byPass?.get(passKey);
+    if (candidates !== undefined)
+      for (const cached of candidates)
+        if (
+          cached.flags === flags &&
+          cached.layout === entry.mesh.layoutProjection &&
+          cached.indexFormat === entry.mesh.indexFormat &&
+          cached.topology === smTopology &&
+          cached.shaderId === selectedShaderId &&
+          cached.renderState === selectedRenderState &&
+          cached.vertexEntry === vertexEntry &&
+          cached.fragmentEntry === fragmentEntry &&
+          cached.variantSet === authoredVariantSet
+        ) {
+          pipelineSelection.pipeline = cached.pipeline;
+          pipelineSelection.material = cached.material;
+          pipelineSelection.probeBlend = cached.probeBlend;
+          pipelineSelection.viewOffset = cached.viewOffset;
+          pipelineSelection.shader = cached.shader;
+          return true;
+        }
+    drawPipelineReported = false;
+    const resolved = resolveDrawPipeline(
+      entry,
+      smTopology,
+      submeshMaterial,
+      selectedPass,
+      selectedShaderId,
+      selectedRenderState,
+      vertexEntry,
+      fragmentEntry,
+      oitAccumulateDraw,
+      authoredVariantSet,
+    );
+    // A fallback without a material pipeline entry may still be pending.
+    if (
+      !resolved ||
+      drawPipelineReported ||
+      pipelineSelection.pipeline === null ||
+      pipelineSelection.material === null
+    )
+      return resolved;
+    const selection: DrawPipelineSelection = {
+      flags,
+      layout: entry.mesh.layoutProjection,
+      indexFormat: entry.mesh.indexFormat,
+      topology: smTopology,
+      shaderId: selectedShaderId,
+      renderState: selectedRenderState,
+      vertexEntry,
+      fragmentEntry,
+      variantSet: authoredVariantSet,
+      pipeline: pipelineSelection.pipeline,
+      material: pipelineSelection.material,
+      probeBlend: pipelineSelection.probeBlend,
+      viewOffset: pipelineSelection.viewOffset,
+      shader: pipelineSelection.shader,
+    };
+    if (byPass === undefined) {
+      byPass = new Map();
+      drawPipelines.set(submeshMaterial, byPass);
+    }
+    if (candidates === undefined) byPass.set(passKey, [selection]);
+    else candidates.push(selection);
+    return true;
+  };
+
   const preparePass = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     topology: PrimitiveTopology,
@@ -1421,19 +1568,28 @@ export function recordGeometryDraws(
   ): BindGroup => {
     const materialSlot = materialSlotIndices[i]?.[sourceSlot] ?? materialSlotIndices[i]?.[0] ?? 0;
     logMaterialPipelineDrawReceipt(entry, materialSlot, submeshMaterial);
-    const perSubmeshBg = profileGeometrySegment(c, passKind, 'material-bind-groups', () =>
-      resolveMaterialBindGroup(
-        materialSlot,
-        submeshMaterial,
-        entry.source.entityKey,
-        entry.world ?? c.world,
-        selectedShaderId,
-      ),
-    );
-    materialGroup1DynamicOffsets[0] = meshSsboBufferBinding(
+    const perSubmeshBg =
+      c.profilePhase === undefined
+        ? resolveMaterialBindGroup(
+            materialSlot,
+            submeshMaterial,
+            entry.source.entityKey,
+            entry.world ?? c.world,
+            selectedShaderId,
+          )
+        : profileGeometrySegment(c, passKind, 'material-bind-groups', () =>
+            resolveMaterialBindGroup(
+              materialSlot,
+              submeshMaterial,
+              entry.source.entityKey,
+              entry.world ?? c.world,
+              selectedShaderId,
+            ),
+          );
+    materialGroup1DynamicOffsets[0] = meshSsboByteOffset(
       pipelineState.materialUniformBuffer,
       materialUniformSlot(c.runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
-    ).byteOffset;
+    );
     pass.setBindGroup(1, perSubmeshBg, materialGroup1DynamicOffsets, 0, 1);
     return perSubmeshBg;
   };
@@ -1705,7 +1861,7 @@ export function recordGeometryDraws(
       submeshMaterial,
       selectedShaderId,
     );
-    const resolvedPipeline = resolveDrawPipeline(
+    const resolvedPipeline = resolveSharedDrawPipeline(
       entry,
       sm.topology,
       submeshMaterial,
@@ -1808,6 +1964,36 @@ export function recordGeometryDraws(
  * A material usually selects one pass. Keep that dispatch directly and
  * allocate a pass list only when another distinct draw actually exists.
  */
+type MaterialPasses = Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>;
+const EMPTY_MATERIAL_PASSES: MaterialPasses = new Map();
+/** A fixed dispatch list selects fixed passes; graph nodes re-read it every frame. */
+const materialPassesByDispatch = new WeakMap<
+  object,
+  { readonly length: number; readonly passes: [MaterialPasses?, MaterialPasses?] }
+>();
+
+export function selectedMaterialPasses(
+  selectedDispatch: DispatchList | undefined,
+  temporal: boolean,
+): ReadonlyMap<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>> {
+  if (selectedDispatch === undefined || selectedDispatch.length === 0) return EMPTY_MATERIAL_PASSES;
+  let cached = materialPassesByDispatch.get(selectedDispatch);
+  if (cached !== undefined && cached.length !== selectedDispatch.length) cached = undefined;
+  const slot = temporal ? 1 : 0;
+  const hit = cached?.passes[slot];
+  if (hit !== undefined) return hit;
+  const materialPasses = groupSelectedMaterialPasses(
+    selectedDispatch,
+    temporal ? 'temporal' : 'forward',
+  );
+  if (cached === undefined) {
+    cached = { length: selectedDispatch.length, passes: [] };
+    materialPassesByDispatch.set(selectedDispatch, cached);
+  }
+  cached.passes[slot] = materialPasses;
+  return materialPasses;
+}
+
 function groupSelectedMaterialPasses(
   selectedDispatch: DispatchList | undefined,
   passKind: PassKind,
@@ -1846,7 +2032,9 @@ function dispatchDrawOrder(
   validatedOrdered: readonly ValidatedRenderable[],
   materialPasses: ReadonlyMap<number, unknown>,
 ): number[] {
-  const remaining = new Map(validatedOrdered.map((entry, index) => [entry.renderableIndex, index]));
+  const remaining = new Map<number, number>();
+  for (let index = 0; index < validatedOrdered.length; index++)
+    remaining.set((validatedOrdered[index] as ValidatedRenderable).renderableIndex, index);
   const drawOrder: number[] = [];
   for (const renderableIndex of materialPasses.keys()) {
     const index = remaining.get(renderableIndex);

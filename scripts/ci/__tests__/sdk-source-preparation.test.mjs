@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 
 // Execute the verifier's actual preparation phase with process-owned source
@@ -12,12 +13,7 @@ const end = verifier.indexOf('const initializedSdk =', start);
 assert.ok(start >= 0 && end > start);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const prepare = new AsyncFunction(
-  'selected',
-  'sdkStage',
-  'sourceRoot',
-  'sourceEnv',
-  'sourcePnpm',
-  'consume',
+  '{ selected, sdkStage, sourceRoot, sourceEnv, sourcePnpm, consume, verifySdkSourceEdit, sdkRoot, resolve, unpackRoot, execFileAsync }',
   `${verifier.slice(start, end)}\nreturn consume();`,
 );
 
@@ -42,17 +38,35 @@ async function journey(includeSource) {
   const failure = new Error('consumer failure');
   try {
     await assert.rejects(
-      prepare(
-        () => includeSource,
-        (_label, operation) => operation(),
-        '/source',
-        {},
-        run,
-        () => {
+      prepare({
+        selected: () => includeSource,
+        sdkStage: (_label, operation) => operation(),
+        sourceRoot: '/source',
+        sourceEnv: {},
+        sourcePnpm: run,
+        sdkRoot: '/sdk',
+        unpackRoot: '/unpack',
+        resolve,
+        verifySdkSourceEdit: (options) => {
+          assert.deepEqual(options, {
+            sdkRoot: '/sdk',
+            output: resolve('/unpack', 'source-edit'),
+            env: {},
+          });
+          return run(['source-edit']);
+        },
+        execFileAsync: (file, args, options) => {
+          assert.equal(file, process.execPath);
+          assert.deepEqual(args, ['scripts/clean-build-outputs.mjs']);
+          assert.equal(options.cwd, '/source');
+          assert.ok(children.every((child) => child.exitCode === 0));
+          return run(['clean-build-outputs']);
+        },
+        consume: () => {
           snapshot = children.map((child) => child.exitCode);
           throw failure;
         },
-      ),
+      }),
       (error) => error === failure,
     );
   } finally {
@@ -66,9 +80,11 @@ async function journey(includeSource) {
 
 test('a consumer failure cannot remove a source root beneath an active source command', async () => {
   const { snapshot, commands } = await journey(true);
-  assert.deepEqual(snapshot, [0, 0, 0, 0]);
+  assert.deepEqual(snapshot, [0, 0, 0, 0, 0, 0]);
   assert.deepEqual(commands, [
     ['install', '--frozen-lockfile', '--ignore-scripts'],
+    ['source-edit'],
+    ['clean-build-outputs'],
     ['build:engine'],
     ['build:tools'],
     ['build:app', 'preview'],

@@ -140,7 +140,7 @@ import { createBoxGeometry, createSphereGeometry } from '@forgeax/engine-geometr
 // 1. Build a unit box (6 faces, 1 segment per edge)
 const box = createBoxGeometry(1, 1, 1);
 if (!box.ok) return; // box.error.code === 'asset-parse-failed'
-console.log(box.value.vertexCount); // 24 (4 vertices * 6 faces)
+console.log(box.value.submeshes[0]?.vertexCount); // 24 (4 vertices * 6 faces); MeshAsset has no top-level vertexCount
 
 // 2. Build a UV sphere and hand the MeshAsset to the AssetRegistry for a handle
 const sphere = createSphereGeometry(1, 32, 24);

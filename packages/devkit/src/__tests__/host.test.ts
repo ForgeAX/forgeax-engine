@@ -1480,13 +1480,14 @@ describe('standalone host', () => {
     });
     expect(page.loading.attributes.get('aria-hidden')).toBe('true');
     expect(page.loading.attributes.get('data-fading')).toBe('true');
-    expect(inputStates.at(-1)).toBe(false);
+    expect(inputStates.at(-1)).toBe(true);
     const staleFade = page.history.find((entry) => entry.delay === 150)?.callback;
     expect(staleFade).toBeDefined();
 
     page.startup.bindSession('session-b');
     expect(page.loading.style.display).toBe('grid');
     expect(page.loading.attributes.get('aria-hidden')).toBe('false');
+    expect(inputStates.at(-1)).toBe(false);
     staleFade?.();
     expect(page.loading.style.display).toBe('grid');
     page.startup.prepare();

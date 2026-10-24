@@ -1964,7 +1964,7 @@ it.each([
     f.world.update(1 / 60).unwrap();
     const retained = f.publish(true);
     expect(retained.data.worlds[0]?.intents).toEqual([]);
-    expect(retained.data.worlds[0]?.retained[0]?.intent.emitter.id).toBe('emitter');
+    expect(retained.data.worlds[0]?.retained[0]?.emitter.id).toBe('emitter');
     expect(planPasses(retained.planned).some((pass) => pass.kind === 'raster')).toBe(
       state === 'paused',
     );

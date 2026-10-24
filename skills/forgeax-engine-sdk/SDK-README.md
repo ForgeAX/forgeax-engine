@@ -1,7 +1,7 @@
 # ForgeaX Engine SDK
 
 > [!IMPORTANT]
-> The archive contains an immediately usable built SDK and editable Engine source snapshot. sdk-manifest.json owns per-file integrity.
+> Installed npm and ZIP SDKs extend the built Engine with editable source and the same release's prebuilt module outputs. The npm carrier omits bytes already supplied by its exact-version Engine dependency; `sdk install` materializes and verifies them. sdk-manifest.json owns per-file integrity.
 
 Online users can install the publishable SDK carrier through npm without private GitHub Release access:
 
@@ -132,17 +132,34 @@ rejects flat output, and appends to the same schema-v2 run.json. Programs cannot
 
 ## Bind local Engine source
 
-Generated games normally resolve published @forgeax/engine. To modify Engine source, bind a local checkout
-without rewriting project package.json:
+Generated games normally resolve published @forgeax/engine. The SDK source workspace
+already contains that release's module builds. Install source dependencies once,
+edit a package and rebuild only that owner; the other modules keep their prebuilt outputs:
+
+Read `source/engine/AGENTS.md` before changing Engine code; its package contracts
+and skills resolve within that source workspace.
+
+```bash
+cd /path/to/sdk/source/engine
+pnpm install --frozen-lockfile --ignore-scripts
+# Edit packages/math/src/; rebuild only Math.
+pnpm --filter @forgeax/engine-math build
+# If public types changed, also regenerate this package's declarations.
+pnpm exec tsc -p packages/math
+```
+
+From the game directory, select this workspace without rewriting project package.json:
 
 ```bash
 forgeax project engine status --json
-forgeax project engine use-local ../forgeax-engine --json
+forgeax project engine use-local /path/to/sdk/source/engine --json
 forgeax project engine check --json
 forgeax project engine unlink --json
 ```
 
 Only a local override creates .forgeax/engine-binding.json; absence is the sole default registry/SDK state.
+The same binding supplies main-thread and Worker imports. Rebuild dependent owners
+when changing an API they consume. `pnpm build:engine` remains the full-rebuild route.
 The project manifest remains dependency authority. doctor checks workspace builds,
 SDK packages, and invalid workspace:* consumer dependencies. status derives its digest
 from real built bytes and reports build time. unlink restores default resolution.
@@ -152,8 +169,8 @@ from real built bytes and reports build time. unlink restores default resolution
 | Surface | Paths | Build Engine first? | Use |
 |:--|:--|:--:|:--|
 | Full ZIP built SDK | bin, packages, templates, skills, store/pnpm | No | Offline game creation, testing, execution, builds, delivery. |
-| npm carrier built SDK | bin, templates, skills | No | Small online bootstrap; locked game dependencies, including Engine, install from npm. |
-| Engine source | source/engine (full ZIP only) | After source edits | Inspect/extend packages, CLI, rules, and skills. |
+| npm SDK | bin, templates, skills, source/engine | No | Built Engine installs online; editable source and prebuilt module outputs support focused changes. |
+| Engine source (both transports) | source/engine | Changed packages only | Modify selected modules while reusing other modules' delivered builds; full rebuild remains available. |
 
 packages/name is a bare built npm package with manifest, README, dist, and resources at its root, without tarballs or a nested package directory.
 
@@ -165,7 +182,7 @@ forgeax-sdk/
 ├── templates/game-3d/
 ├── store/pnpm/                 # Full ZIP only.
 ├── skills/<forgeax-engine-skill>/
-├── source/engine/              # Full ZIP only.
+├── source/engine/              # Both transports; includes prebuilt packages/*/dist.
 ├── schemas/
 ├── toolchain/wasm/             # Full ZIP only.
 ├── sdk-manifest.json

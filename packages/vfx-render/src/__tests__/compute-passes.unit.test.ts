@@ -252,3 +252,23 @@ it('retains duplicate-resource and getter observations through flush and reacqui
   expect(execute(optimized)).toEqual(execute(original));
   expect(optimized).toHaveLength(4);
 });
+it('keeps no earlier passes in its persistent coalescing tables', async () => {
+  const { setFlagsFromString } = await import('node:v8');
+  const { runInNewContext } = await import('node:vm');
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const released = (() => {
+    const first = compute('first', 'a');
+    const passes = [first, compute('second', 'a', 2), copy('a', 'zero'), copy('b', 'zero')];
+    expect(execute(batch(passes))).toEqual(execute(passes));
+    expect(execute(coalesceVfxCopyPasses(passes))).toEqual(execute(passes));
+    return new WeakRef(first);
+  })();
+  // Later frames overwrite unrelated names only; the first frame stays released.
+  batch([compute('third', 'b'), compute('fourth', 'b')]);
+  for (let attempt = 0; attempt < 10 && released.deref() !== undefined; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+  }
+  expect(released.deref()).toBeUndefined();
+});

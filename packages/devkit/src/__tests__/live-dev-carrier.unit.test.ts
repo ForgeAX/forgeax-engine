@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -112,12 +112,13 @@ const fixtures = vi.hoisted(() => {
     child.emit('close', 0, null);
     return true;
   });
+  const project = { url: 'http://127.0.0.1:43124/' };
   const spawn = vi.fn((_command: string, args: readonly string[]) => {
     const generation = Number(args[3]);
     queueMicrotask(() => {
       child.stdout.emit(
         'data',
-        `${JSON.stringify({ ready: true, generation, url: 'http://127.0.0.1:43124/' })}\n`,
+        `${JSON.stringify({ ready: true, generation, url: project.url })}\n`,
       );
     });
     return child;
@@ -131,6 +132,7 @@ const fixtures = vi.hoisted(() => {
     session,
     browser,
     child,
+    project,
     spawn,
     createBrowserCapture,
     readLiveProjectInputs,
@@ -180,6 +182,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fixtures.project.url = 'http://127.0.0.1:43124/';
   fixtures.browser.open.mockImplementation(async () => fixtures.session);
   fixtures.session.report.mockImplementation(() => ({
     backend: 'hardware' as const,
@@ -494,6 +497,11 @@ describe('live DevKit borrowed carrier boundary', () => {
 
   it('composes the existing live owner in process and waits for host cancellation cleanup', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-in-process-'));
+    // A second start waits for an existing `waiting` owner within this budget.
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'in-process', type: 'module', forgeax: { startupTimeoutMs: 300 } }),
+    );
     const lifetime = new AbortController();
     let closed: Promise<void> | undefined;
     const carrier = {} as BrowserCarrierAdapter;
@@ -517,9 +525,14 @@ describe('live DevKit borrowed carrier boundary', () => {
       });
       expect(fixtures.browser.open.mock.calls[0]?.[0]).toMatchObject({ carrier, headless: false });
       const ownerStarted = vi.fn();
-      await startLiveDev(root, {
-        headless: false,
-        inProcess: { signal: lifetime.signal, onStart: ownerStarted },
+      expect(
+        await startLiveDev(root, {
+          headless: false,
+          inProcess: { signal: lifetime.signal, onStart: ownerStarted },
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: 'live-not-ready', detail: { status: { phase: 'waiting' } } },
       });
       expect(ownerStarted).not.toHaveBeenCalled();
       expect(fixtures.browser.open).toHaveBeenCalledOnce();
@@ -564,6 +577,43 @@ describe('live DevKit borrowed carrier boundary', () => {
       expect(exit).not.toHaveBeenCalled();
     } finally {
       finishOpen();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the project URL port across source replacement while it is free', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-port-'));
+    const port = await freePort();
+    const projectPort = await freePort();
+    fixtures.project.url = `http://127.0.0.1:${projectPort}/`;
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    const blocker = createTcpServer();
+    const lastProjectPort = () => fixtures.spawn.mock.calls.at(-1)?.[1].at(-1);
+    try {
+      await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledTimes(1), {
+        timeout: 5_000,
+      });
+      expect(lastProjectPort()).toBe('0');
+      // A replacement generation binds the URL that tabs and scripts already hold.
+      await request(port, '/reload', 'POST');
+      expect(fixtures.spawn.mock.calls.length).toBeGreaterThan(1);
+      expect(lastProjectPort()).toBe(String(projectPort));
+      // An unrelated listener on that port must not fail the generation.
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(projectPort, '127.0.0.1', () => resolve());
+      });
+      await request(port, '/reload', 'POST');
+      expect(lastProjectPort()).toBe('0');
+      await request(port, '/stop', 'POST');
+      await daemon;
+      expect(exit).not.toHaveBeenCalled();
+    } finally {
+      if (blocker.listening) await new Promise<void>((resolve) => blocker.close(() => resolve()));
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -681,6 +731,437 @@ describe('live DevKit borrowed carrier boundary', () => {
       fixtures.session.execution = undefined;
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+/** An App bridge that reconnects like a reloaded page does. */
+function reconnectingBridge(
+  port: number,
+  answer: (message: { type: string; code?: string }) => unknown,
+): { close(): void } {
+  const sockets: WebSocket[] = [];
+  let closed = false;
+  const connect = () => {
+    if (closed) return;
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    sockets.push(socket);
+    socket.on('message', async (raw) => {
+      const message = JSON.parse(String(raw));
+      if (message.type !== 'status' && message.type !== 'eval') return;
+      const value = await answer(message);
+      if (socket.readyState === WebSocket.OPEN)
+        socket.send(
+          JSON.stringify({ type: 'result', id: message.id, payload: { ok: true, value } }),
+        );
+    });
+    socket.on('error', () => {});
+    socket.on('close', () => setTimeout(connect, 20));
+  };
+  connect();
+  return {
+    close() {
+      closed = true;
+      for (const socket of sockets) socket.terminate();
+    },
+  };
+}
+
+describe('live readiness waiting', () => {
+  it('runs commands against the rebuilt runtime instead of rejecting transient states', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-ready-wait-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    const evaluated: string[] = [];
+    let releaseHeld: (() => void) | undefined;
+    fixtures.page.evaluate.mockResolvedValue('2');
+    fixtures.session.capture.mockResolvedValue({
+      ok: true,
+      output: join(root, 'wait.png'),
+      digest: 'sha256:fixture',
+      runtime: { engineFrameId: 3 },
+      pixels: { width: 2, height: 2, rendered: true },
+    });
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    const bridge = reconnectingBridge(port, (message) => {
+      if (message.type === 'status') return { worldIdentity: 'wait-world' };
+      evaluated.push(message.code ?? '');
+      if (message.code === 'hold')
+        return new Promise((resolve) => {
+          releaseHeld = () => resolve('held');
+        });
+      return {};
+    });
+    const ready = async () => {
+      let revision = '';
+      await vi.waitFor(async () => {
+        const status = (await request(port, '/status', 'GET')) as {
+          value: { phase: string; revision: string };
+        };
+        expect(status.value.phase).toBe('ready');
+        revision = status.value.revision;
+      });
+      return revision;
+    };
+    try {
+      const first = await ready();
+      // An edit makes the current runtime stale; an unpinned observation runs on its replacement.
+      fixtures.readLiveProjectInputs.mockResolvedValue('edited-inputs-1');
+      const captured = (await request(port, '/capture', 'POST', {})) as {
+        ok: boolean;
+        value: { revision: string; waitedMs: number };
+      };
+      expect(captured).toMatchObject({ ok: true, value: { waitedMs: expect.any(Number) } });
+      expect(captured.value.revision).not.toBe(first);
+      expect(fixtures.spawn).toHaveBeenCalledTimes(2);
+      const second = await ready();
+      expect(second).toBe(captured.value.revision);
+
+      // Another eval in flight: a read waits for it on the same runtime.
+      const held = request(port, '/eval', 'POST', { revision: second, code: 'hold' });
+      await vi.waitFor(() => expect(releaseHeld).toBeDefined());
+      expect(
+        await request(port, '/find', 'POST', { name: 'Player', readyTimeoutMs: 0 }),
+      ).toMatchObject({ ok: false, error: { code: 'live-eval-running' } });
+      const found = request(port, '/find', 'POST', { name: 'Player' });
+      setTimeout(() => releaseHeld?.(), 200);
+      expect(await found).toMatchObject({
+        ok: true,
+        value: { revision: second, waitedMs: expect.any(Number) },
+      });
+      expect(await held).toMatchObject({ ok: true, value: { revision: second, result: 'held' } });
+
+      // A pinned eval is never re-targeted: the replaced revision ends the wait as stale.
+      fixtures.readLiveProjectInputs.mockResolvedValue('edited-inputs-2');
+      const pinned = (await request(port, '/eval', 'POST', {
+        revision: second,
+        code: 'pinned',
+      })) as { error: { detail: { revision: string } } };
+      expect(pinned).toMatchObject({
+        ok: false,
+        error: { code: 'live-revision-stale', detail: { waitedMs: expect.any(Number) } },
+      });
+      expect(pinned.error.detail.revision).not.toBe(second);
+      expect(evaluated).not.toContain('pinned');
+      await ready();
+
+      // A replacement that fails with unchanged inputs is terminal: no wait to the deadline.
+      fixtures.browser.open.mockRejectedValueOnce(new Error('fixture startup failed'));
+      fixtures.readLiveProjectInputs.mockResolvedValue('edited-inputs-3');
+      const startedAt = Date.now();
+      expect(await request(port, '/capture', 'POST', { readyTimeoutMs: 60_000 })).toMatchObject({
+        ok: false,
+        error: { code: 'live-not-ready', hint: 'fixture startup failed' },
+      });
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
+    } finally {
+      fixtures.readLiveProjectInputs.mockResolvedValue('fixture-inputs');
+      fixtures.page.evaluate.mockResolvedValue(undefined);
+      releaseHeld?.();
+      bridge.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('replaces a startup generation superseded by an edit instead of publishing failed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-superseded-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.page.evaluate.mockResolvedValue('2');
+    let edited = false;
+    fixtures.readLiveProjectInputs.mockImplementation(async () => {
+      if (!edited) return 'fixture-inputs';
+      // Keep the post-failure input scan observable to status polling.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return 'saved-during-compile';
+    });
+    fixtures.spawn.mockImplementationOnce((_command: string, args: readonly string[]) => {
+      const generation = Number(args[3]);
+      queueMicrotask(() => {
+        edited = true;
+        fixtures.child.stdout.emit(
+          'data',
+          `${JSON.stringify({
+            error:
+              'plugin-bootstrap-failed: source changed during plugin compilation; inspect .forgeax/dev.log',
+            generation,
+          })}\n`,
+        );
+      });
+      return fixtures.child;
+    });
+    const phases = new Set<string>();
+    const errors = new Set<string>();
+    let polling = true;
+    let readyStatus: { phase: string } | undefined;
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+      onReady: (status) => {
+        readyStatus = status;
+      },
+    });
+    const bridge = reconnectingBridge(port, (message) =>
+      message.type === 'status' ? { worldIdentity: 'superseded-world' } : {},
+    );
+    const poll = (async () => {
+      while (polling) {
+        try {
+          const status = (await request(port, '/status', 'GET')) as {
+            value: { phase: string; error?: string };
+          };
+          phases.add(status.value.phase);
+          if (status.value.error !== undefined) errors.add(status.value.error);
+        } catch {
+          // The control server may not be listening yet.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    })();
+    try {
+      await vi.waitFor(() => expect(readyStatus).toBeDefined(), { timeout: 10_000 });
+      expect(readyStatus?.phase).toBe('ready');
+      expect(fixtures.spawn).toHaveBeenCalledTimes(2);
+      expect(phases.has('failed')).toBe(false);
+      // The superseded cause stays observable while its replacement starts.
+      expect([...errors]).toContainEqual(
+        expect.stringMatching(/^live-startup-superseded: plugin-bootstrap-failed/),
+      );
+    } finally {
+      polling = false;
+      await poll;
+      fixtures.readLiveProjectInputs.mockImplementation(async () => 'fixture-inputs');
+      fixtures.page.evaluate.mockResolvedValue(undefined);
+      bridge.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe('live readiness waiting guards', () => {
+  interface Fixture {
+    readonly root: string;
+    readonly port: number;
+    readonly evaluated: string[];
+    world: string;
+    statusDelayMs: number;
+    answer: ((code: string) => unknown) | undefined;
+    hold(): Promise<void>;
+    release(): void;
+    ready(): Promise<string>;
+  }
+
+  async function withLiveOwner(body: (fixture: Fixture) => Promise<void>): Promise<void> {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-guard-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.page.evaluate.mockResolvedValue('2');
+    let releaseHeld: (() => void) | undefined;
+    const fixture: Fixture = {
+      root,
+      port,
+      evaluated: [],
+      world: 'guard-world',
+      statusDelayMs: 0,
+      answer: undefined,
+      async hold() {
+        void request(port, '/eval', 'POST', { revision: await fixture.ready(), code: 'hold' });
+        await vi.waitFor(() => expect(releaseHeld).toBeDefined());
+      },
+      release() {
+        releaseHeld?.();
+        releaseHeld = undefined;
+      },
+      async ready() {
+        let revision = '';
+        await vi.waitFor(async () => {
+          const status = (await request(port, '/status', 'GET')) as {
+            value: { phase: string; revision: string };
+          };
+          expect(status.value.phase).toBe('ready');
+          revision = status.value.revision;
+        });
+        return revision;
+      },
+    };
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    const bridge = reconnectingBridge(port, async (message) => {
+      if (message.type === 'status') {
+        if (fixture.statusDelayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, fixture.statusDelayMs));
+        return { worldIdentity: fixture.world };
+      }
+      const code = message.code ?? '';
+      fixture.evaluated.push(code);
+      if (code === 'hold')
+        return new Promise((resolve) => {
+          releaseHeld = () => resolve('held');
+        });
+      return fixture.answer?.(code) ?? {};
+    });
+    try {
+      await fixture.ready();
+      await body(fixture);
+    } finally {
+      fixture.release();
+      fixtures.readLiveProjectInputs.mockImplementation(async () => 'fixture-inputs');
+      fixtures.page.evaluate.mockResolvedValue(undefined);
+      bridge.close();
+      await request(port, '/stop', 'POST').catch(() => undefined);
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it('never re-runs an admitted mutation after its instance changed', async () => {
+    await withLiveOwner(async (fixture) => {
+      fixture.answer = (code) => {
+        if (code.includes('camera.set')) fixture.world = 'replacement-world';
+        return {};
+      };
+      expect(
+        await request(fixture.port, '/camera/set', 'POST', { position: [1, 2, 3] }),
+      ).toMatchObject({ ok: false, error: { code: 'live-instance-changed' } });
+      expect(fixture.evaluated.filter((code) => code.includes('camera.set'))).toHaveLength(1);
+    });
+  });
+
+  it('never admits a request whose caller disconnected during a retry', async () => {
+    await withLiveOwner(async (fixture) => {
+      await fixture.hold();
+      const caller = new AbortController();
+      const abandoned = fetch(`http://127.0.0.1:${fixture.port}/camera/set`, {
+        method: 'POST',
+        headers: { connection: 'close' },
+        body: JSON.stringify({ position: [4, 5, 6] }),
+        signal: caller.signal,
+      }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // The retry's admission check awaits this slow bridge status round-trip.
+      fixture.statusDelayMs = 600;
+      fixture.release();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      caller.abort();
+      await abandoned;
+      fixture.statusDelayMs = 0;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(fixture.evaluated.some((code) => code.includes('camera.set'))).toBe(false);
+    });
+  });
+
+  it('fails promptly with live-not-running when the owner stops during a wait', async () => {
+    await withLiveOwner(async (fixture) => {
+      await fixture.hold();
+      const waiting = request(fixture.port, '/find', 'POST', { name: 'Player' });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const startedAt = Date.now();
+      await request(fixture.port, '/stop', 'POST');
+      expect(await waiting).toMatchObject({
+        ok: false,
+        error: { code: 'live-not-running', detail: { waitedMs: expect.any(Number) } },
+      });
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    });
+  });
+
+  it('reports the bounded deadline of a small readyTimeoutMs', async () => {
+    await withLiveOwner(async (fixture) => {
+      await fixture.hold();
+      const startedAt = Date.now();
+      const result = (await request(fixture.port, '/find', 'POST', {
+        name: 'Player',
+        readyTimeoutMs: 300,
+      })) as { error: { detail: { waitedMs: number } } };
+      expect(result).toMatchObject({ ok: false, error: { code: 'live-eval-running' } });
+      expect(result.error.detail.waitedMs).toBeGreaterThanOrEqual(300);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    });
+  });
+
+  it('ends a wait pinned by --ref as live-revision-stale', async () => {
+    await withLiveOwner(async (fixture) => {
+      const revision = await fixture.ready();
+      fixtures.readLiveProjectInputs.mockImplementation(async () => 'edited-for-ref');
+      expect(await request(fixture.port, '/focus', 'POST', { ref: `${revision}/1` })).toMatchObject(
+        { ok: false, error: { code: 'live-revision-stale' } },
+      );
+      expect(fixture.evaluated.some((code) => code.includes('focus'))).toBe(false);
+    });
+  });
+
+  it('fails fast behind an evaluation that outlived its caller wait', async () => {
+    await withLiveOwner(async (fixture) => {
+      expect(
+        await request(fixture.port, '/eval', 'POST', {
+          revision: await fixture.ready(),
+          code: 'hold',
+          timeoutMs: 50,
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'live-eval-continuing' } });
+      const startedAt = Date.now();
+      expect(await request(fixture.port, '/find', 'POST', { name: 'Player' })).toMatchObject({
+        ok: false,
+        error: { code: 'live-eval-running' },
+      });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      fixture.release();
+      await vi.waitFor(async () =>
+        expect(await request(fixture.port, '/find', 'POST', { name: 'Player' })).toMatchObject({
+          ok: true,
+        }),
+      );
+    });
+  }, 15_000);
+
+  it('re-runs an unpinned RHI capture after its World was replaced, releasing its own hold', async () => {
+    await withLiveOwner(async (fixture) => {
+      const first = await fixture.ready();
+      let captures = 0;
+      fixture.answer = (code) => {
+        if (!code.includes('rhiCapture.captureFrame')) return {};
+        captures += 1;
+        if (captures === 1) fixture.world = 'replacement-world';
+        return { ok: true, value: { kind: 'rhi-tape', digest: `sha256:${captures}` } };
+      };
+      const result = (await request(fixture.port, '/rhi/capture', 'POST', {
+        readyTimeoutMs: 3_000,
+      })) as { value: { revision: string } };
+      expect(result).toMatchObject({
+        ok: true,
+        value: { digest: 'sha256:2', waitedMs: expect.any(Number) },
+      });
+      expect(result.value.revision).not.toBe(first);
+      expect(await request(fixture.port, '/status', 'GET')).toMatchObject({
+        value: { unfinishedEval: false },
+      });
+    });
+  });
+
+  it('rejects a non-object request body without stopping the owner', async () => {
+    await withLiveOwner(async (fixture) => {
+      expect(await request(fixture.port, '/find', 'POST', null)).toMatchObject({
+        ok: false,
+        error: { code: 'tool-invalid-args' },
+      });
+      await fixture.ready();
+    });
+  });
+
+  it('fails fast while project inputs are unreadable', async () => {
+    await withLiveOwner(async (fixture) => {
+      fixtures.readLiveProjectInputs.mockRejectedValue(new Error('fixture unreadable'));
+      const startedAt = Date.now();
+      expect(
+        await request(fixture.port, '/capture', 'POST', { readyTimeoutMs: 5_000 }),
+      ).toMatchObject({ ok: false, error: { code: 'live-not-ready' } });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    });
   });
 });
 

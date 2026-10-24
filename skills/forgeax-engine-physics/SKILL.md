@@ -42,6 +42,7 @@ Character movement is explicitly driven once per fixed tick with `PhysicsWorld.m
 
 ```ts
 import { FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { vec3 } from '@forgeax/engine-math';
 import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, type PhysicsWorld } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 
@@ -53,6 +54,7 @@ const char = world.spawn(
 ).unwrap();
 
 let verticalVelocity = 0;
+const desiredDelta = vec3.create(); // Vec3 is a branded Float32Array; array literals do not typecheck.
 world.addSystem(FixedUpdate, {
   name: 'move-character',
   after: ['physicsSyncBackend'],
@@ -65,7 +67,8 @@ world.addSystem(FixedUpdate, {
     const dt = world.getResource(FixedTime).delta;
     if (world.get(char, CharacterController).unwrap().grounded) verticalVelocity = 0;
     verticalVelocity -= 9.81 * dt;
-    pw.moveAndSlide(char, [0, verticalVelocity * dt, 0]); // Add input displacement once.
+    vec3.set(desiredDelta, 0, verticalVelocity * dt, 0); // Add input displacement once.
+    pw.moveAndSlide(char, desiredDelta); // Returns the applied Vec3 displacement.
   },
 }).unwrap();
 ```

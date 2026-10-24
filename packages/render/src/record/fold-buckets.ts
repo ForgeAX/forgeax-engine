@@ -391,6 +391,8 @@ export function buildDispatchPlan(
   shadowGeometryGpuOwned = false,
   sharedMaterials?: SharedMaterialFrame,
   meshDraws?: MeshDrawRoster,
+  /** The primary rows are this submission's fresh projections; address them in place. */
+  ownedRows = false,
 ): {
   validatedOrdered: readonly ValidatedRenderable[];
   shadowValidatedOrdered: readonly ValidatedRenderable[];
@@ -463,6 +465,7 @@ export function buildDispatchPlan(
     shadowValidatedOrdered,
     foldDispatchPlan,
     meshDraws,
+    ownedRows,
   );
   validatedOrdered = addressed.validatedOrdered;
   shadowValidatedOrdered = addressed.shadowValidatedOrdered;
@@ -852,6 +855,7 @@ function addressPhysicalRows(
   shadowValidatedOrdered: readonly ValidatedRenderable[],
   foldDispatchPlan: FoldDispatchPlan | null,
   meshDraws: MeshDrawRoster | undefined,
+  ownedRows: boolean,
 ): {
   readonly validatedOrdered: readonly ValidatedRenderable[];
   readonly shadowValidatedOrdered: readonly ValidatedRenderable[];
@@ -868,7 +872,14 @@ function addressPhysicalRows(
     const { foldedMeshSlot: _previousFold, ...source } = entry;
     return { ...source, meshSlot };
   };
-  const ordinaryOrdered = validatedOrdered.map(sourceAddress);
+  const ownedAddress = (entry: ValidatedRenderable): ValidatedRenderable => {
+    if (entry.foldedMeshSlot !== undefined) return sourceAddress(entry);
+    const meshSlot = meshDraws?.meshDrawSlot(entry.source) ?? transientSlot++;
+    sourceCapacity = Math.max(sourceCapacity, meshSlot + 1);
+    (entry as { meshSlot: number }).meshSlot = meshSlot;
+    return entry;
+  };
+  const ordinaryOrdered = validatedOrdered.map(ownedRows ? ownedAddress : sourceAddress);
   const shadowOrdered = shadowValidatedOrdered.map(sourceAddress);
   let physicalDemand = sourceCapacity;
   let foldedOrdered = ordinaryOrdered;
@@ -1010,7 +1021,9 @@ export function computeFoldBuckets(
   world: RenderResourceScope,
   frameState: RenderFrameState,
   transparentDispatch: DispatchList,
-  renderables: readonly import('./mesh-ssbo').FoldRenderableLike[],
+  rows:
+    | readonly import('./mesh-ssbo').FoldRenderableLike[]
+    | (() => readonly import('./mesh-ssbo').FoldRenderableLike[]),
 ): readonly FoldBucket[] {
   if (transparentDispatch.length === 0) {
     frameState.lastFoldBucketCount = 0;
@@ -1037,6 +1050,8 @@ export function computeFoldBuckets(
   // for each one. Filter only at this private production call site so the fold
   // helper keeps its testable semantics while record avoids work whose result
   // is provably discarded.
+  // Fold rows are materialized only for a layer mode that can fold.
+  const renderables = typeof rows === 'function' ? rows() : rows;
   let transparentCount = 0;
   const drawn = new Set<number>();
   for (const entry of transparentDispatch) {

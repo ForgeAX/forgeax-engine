@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { readLiveProjectInputs } from '../live-project-inputs.js';
+import { liveProjectReadyLogLine, readLiveProjectInputs } from '../live-project-inputs.js';
 
 const roots: string[] = [];
 async function fixture() {
@@ -324,4 +324,24 @@ it('rejects unreadable asset members after accepting the compiler scope', async 
   await expect(readLiveProjectInputs(root, [])).rejects.toMatchObject({ code: 'ENOENT' });
   await rm(broken);
   expect(await readLiveProjectInputs(root, [])).toBe(before);
+});
+
+it('logs a ready line as an input count plus the paths changed since the last generation', () => {
+  const root = '/game';
+  const paths = Array.from({ length: 40 }, (_, index) => `${root}/assets/${index}.pack.ts`);
+  const ready = { ready: true, generation: 2, url: 'http://127.0.0.1:1/', inputVersion: 'v2' };
+  expect(
+    JSON.parse(liveProjectReadyLogLine(root, { ...ready, inputPaths: paths }, undefined)),
+  ).toEqual({ ...ready, inputPathCount: 40 });
+  const next = [...paths.slice(1), `${root}/assets/new.pack.ts`];
+  expect(JSON.parse(liveProjectReadyLogLine(root, { ...ready, inputPaths: next }, paths))).toEqual({
+    ...ready,
+    inputPathCount: 40,
+    addedInputPaths: ['assets/new.pack.ts'],
+    removedInputPaths: ['assets/0.pack.ts'],
+  });
+  const replaced = paths.map((path) => path.replace('.pack.ts', '.pack.json'));
+  const bulk = JSON.parse(liveProjectReadyLogLine(root, { ...ready, inputPaths: replaced }, paths));
+  expect(bulk.addedInputPaths).toHaveLength(16);
+  expect(bulk.inputChangeCount).toBe(80);
 });

@@ -77,6 +77,18 @@ import {
   type VfxArenaInstance,
   type VfxArenaRange,
 } from './instance-arena.js';
+import {
+  adoptSubmittedRetained,
+  createQueuedIntentResolution,
+  createRecentQueuedIntents,
+  createVfxIntentPayloads,
+  createVfxIntentPublication,
+  isVfxIntentReference,
+  publishQueuedIntents,
+  resolveRetainedIntent,
+  retainedStreamKey,
+  type VfxIntentReference,
+} from './intent-publication.js';
 import { type ParticleMaterialSource, projectParticleMaterial } from './material-source.js';
 import {
   createTopologyResourcePlan,
@@ -91,6 +103,20 @@ import {
   particleRendererRenderState,
   prepareParticleMaterialInputs,
 } from './particle-resources.js';
+import {
+  type BindingValues,
+  directProjectionRows,
+  directSimulationRanges,
+  type GraphicsProgramDescriptor,
+  graphicsProgramDescriptor,
+  materialBindingValues,
+  NO_COPIES,
+  particleBindingValues,
+  planObservation,
+  STORAGE_USAGE,
+  sameEntries,
+  simulationEntries,
+} from './plan-memos.js';
 import {
   compareKeys,
   type GroupDeclarationRanges,
@@ -114,7 +140,7 @@ import {
   rendererSortingMode,
   runtimeData,
 } from './runtime-uniform.js';
-import { ownVfxGraphicsProgram, shareVfxGraphicsPrograms } from './shared-graphics-programs.js';
+import { shareVfxGraphicsPrograms } from './shared-graphics-programs.js';
 import type { VfxStagePlanObservation, VfxValidatedStagePlan } from './stage-plan.js';
 import { validatedStagePlan } from './stage-plan.js';
 
@@ -333,7 +359,7 @@ type PublishedEmitterState = Omit<ExtractedEmitterState, 'emitter' | 'forceField
 type PublishedWorld = Omit<ExtractedWorld, 'emitterState' | 'intents' | 'retained' | 'meshes'> & {
   readonly meshes: ReadonlyMap<string | number, MeshAsset | number>;
   readonly emitterState: ReadonlyMap<string, PublishedEmitterState>;
-  readonly intents: readonly PublishedIntent[];
+  readonly intents: readonly (PublishedIntent | VfxIntentReference<PublishedIntent>)[];
   /**
    * A retained row carries its intent only until a submitted frame proved the
    * receiver adopted that sequence; afterwards it names the sequence and the
@@ -345,13 +371,6 @@ type PublishedWorld = Omit<ExtractedWorld, 'emitterState' | 'intents' | 'retaine
     readonly intent?: PublishedIntent;
   })[];
 };
-/** Stream identity shared by the source adoption ledger and the receiver cache. */
-const retainedStreamKey = (
-  runtime: number,
-  generation: number,
-  player: EntityHandle,
-  emitter: string,
-): string => `${runtime}:${generation}:${Number(player)}:${emitter}`;
 interface PublishedFrame {
   readonly worlds: readonly PublishedWorld[];
   readonly frameNumber: number;
@@ -578,7 +597,8 @@ function rendererIndirectWords(
   meshes: readonly (MeshAsset | undefined)[],
 ): Uint32Array | undefined {
   const indirectWords = new Uint32Array(Math.max(1, renderers.length) * 5);
-  for (const [rendererIndex, renderer] of renderers.entries()) {
+  for (let rendererIndex = 0; rendererIndex < renderers.length; rendererIndex++) {
+    const renderer = renderers[rendererIndex] as (typeof renderers)[number];
     const mesh = meshes[rendererIndex];
     const submesh = renderer.kind === 'mesh' ? mesh?.submeshes[renderer.submesh ?? 0] : undefined;
     if (renderer.kind === 'mesh' && submesh === undefined) return undefined;
@@ -765,79 +785,7 @@ function meshDrawRange(
   };
 }
 
-/** Enabled dispatches, indirect draws and drawn subjects of one plan. */
-function planObservation(
-  frameNumber: number,
-  allPasses: readonly PlanPass[],
-): VfxRenderObservation {
-  return Object.freeze({
-    frameNumber,
-    dispatches: allPasses.reduce(
-      (count, pass) =>
-        count +
-        (pass.kind === 'compute' && pass.enabled !== false
-          ? pass.dispatches.reduce(
-              (total, dispatch) =>
-                total + Number(dispatch.kind === 'indirect' || !dispatch.workgroups.includes(0)),
-              0,
-            )
-          : 0),
-      0,
-    ),
-    indirectDraws: allPasses.reduce(
-      (count, pass) =>
-        count +
-        (pass.kind === 'raster' && pass.enabled !== false
-          ? pass.draws.filter(
-              (draw) =>
-                draw.enabled !== false &&
-                (draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect'),
-            ).length
-          : 0),
-      0,
-    ),
-    subjectOutputs: allPasses.reduce(
-      (count, pass) =>
-        pass.kind === 'raster' && pass.enabled !== false
-          ? count + pass.draws.filter((draw) => draw.enabled !== false).length
-          : count,
-      0,
-    ),
-  });
-}
-
 type PlanResource = RenderFeatureWorkPlan['resources'][number];
-type GraphicsProgramDescriptor = Extract<
-  PlanResource,
-  { readonly kind: 'graphics-program' }
->['program'];
-
-/**
- * Reuse the previous immutable descriptor while every input is identical.
- * Render states are compared by identity: stock defaults are shared frozen
- * values, and any other state object yields a new descriptor when replaced.
- */
-function graphicsProgramDescriptor(
-  previous: GraphicsProgramDescriptor | undefined,
-  next: GraphicsProgramDescriptor,
-): GraphicsProgramDescriptor {
-  if (
-    previous !== undefined &&
-    previous.shader === next.shader &&
-    previous.preparePipelines === next.preparePipelines &&
-    previous.vertexLayout === next.vertexLayout &&
-    previous.particleInputLanes === next.particleInputLanes &&
-    previous.colorFormats.length === next.colorFormats.length &&
-    previous.colorFormats.every((format, index) => format === next.colorFormats[index]) &&
-    previous.depthFormat === next.depthFormat &&
-    previous.sampleCount === next.sampleCount &&
-    previous.topology === next.topology &&
-    previous.indexFormat === next.indexFormat &&
-    previous.renderState === next.renderState
-  )
-    return previous;
-  return ownVfxGraphicsProgram(next);
-}
 type PlanPass = RenderFeatureWorkPlan['passes'][number];
 type RasterPass = Extract<PlanPass, { kind: 'raster' }>;
 type RasterDraw = RasterPass['draws'][number];
@@ -850,7 +798,9 @@ function coalesceComputeWork(
 ): void {
   const computes = coalesceVfxComputePasses(work, privatePrograms, bindings);
   const batched = coalesceVfxCopyPasses(computes);
-  if (batched !== work) work.splice(0, work.length, ...batched);
+  if (batched === work) return;
+  work.length = 0;
+  for (const pass of batched) work.push(pass);
 }
 
 function planName(value: string, maxLength = 24): string {
@@ -1023,6 +973,8 @@ export function gpuParticleRenderFeature(
       readonly materialBindings: Map<number, string>;
       /** Last graphics program descriptor per view; reused while its inputs match. */
       readonly graphics: Map<string, GraphicsProgramDescriptor>;
+      /** Last frozen binding values per view and role; reused while they match. */
+      readonly bindingValues: Map<string, BindingValues>;
     };
   }
   /** One player/emitter program group: its plan key and persistent storage owner. */
@@ -1128,13 +1080,15 @@ export function gpuParticleRenderFeature(
       }
       return emitter;
     };
-    const intent = (published: PublishedIntent): VfxGpuTickIntent => {
+    const intent = (
+      published: PublishedIntent | VfxIntentReference<PublishedIntent>,
+    ): VfxGpuTickIntent | undefined => {
       const resolved = effectFor(published.emitter);
       const definition = { effect: resolved.effect, emitter: emitter(published.emitter) };
       if (definition.effect.program.fingerprint !== published.programFingerprint)
         throw new Error('VFX intent and exact effect fingerprint differ');
       // Field inputs carry per-tick texture versions; they keep exact resolution.
-      if (definition.emitter.forceFields !== undefined)
+      if (definition.emitter.forceFields !== undefined && !isVfxIntentReference(published))
         return resolveIntent(published, sourceWorldIndex, context, prepareFields);
       const prior = intents.get(published.sequence);
       if (
@@ -1147,6 +1101,8 @@ export function gpuParticleRenderFeature(
         prior.seen = serial;
         return prior.intent;
       }
+      // A payload-free reference needs this receiver's cached copy of its sequence.
+      if (isVfxIntentReference(published)) return undefined;
       const { forceFields: _input, ...tick } = published;
       const resolvedIntent: VfxGpuTickIntent = { ...tick, ...definition };
       intents.set(published.sequence, {
@@ -1184,6 +1140,14 @@ export function gpuParticleRenderFeature(
   >();
   type StaticBuffer = Extract<PlanResource, { readonly kind: 'buffer' }>;
   let bufferLayouts = new Map<string, StaticBuffer>();
+  // Two tables per kind alternate: the previous plan's table stays readable
+  // while the other is cleared and refilled, so steady plans grow no tables.
+  let spareBindingLayouts: typeof bindingLayouts = new Map();
+  let spareBufferLayouts: typeof bufferLayouts = new Map();
+  const freshBindingLayouts = (): typeof bindingLayouts => {
+    spareBindingLayouts.clear();
+    return spareBindingLayouts;
+  };
   const runtimeState = (identity: number): RuntimeState => {
     let state = runtimeStates.get(identity);
     if (state === undefined) {
@@ -1201,6 +1165,11 @@ export function gpuParticleRenderFeature(
   const sourceRuntimes = new Map<number, VfxGpuRuntime>();
   /** Source ledger: retained intent sequence the receiver adopted, per stream. */
   const adoptedRetained = new Map<string, number>();
+  /** Source ledger: queued intent payloads already published, per runtime render session. */
+  const intentPublication = createVfxIntentPublication();
+  const intentPayloads = createVfxIntentPayloads();
+  let receiverSession: string | undefined;
+  const recentQueued = createRecentQueuedIntents<PublishedIntent>();
   /** Receiver cache: last published retained intent, per stream. */
   const receivedRetained = new Map<
     string,
@@ -1417,6 +1386,7 @@ export function gpuParticleRenderFeature(
           raster: `${prefix}.raster`,
           materialBindings: new Map(),
           graphics: new Map(),
+          bindingValues: new Map(),
         },
       };
       names.renderers[renderer] = row;
@@ -1464,6 +1434,8 @@ export function gpuParticleRenderFeature(
     readonly liveRetained: Set<string>;
     /** Per runtime, retained streams with neither a published nor a cached intent. */
     readonly missingRetained: Map<number, string[]>;
+    /** Per runtime, queued intent references without a cached payload. */
+    readonly missingIntents: Map<number, number[]>;
     readonly keys: Map<ExtractedWorld, StreamKeys>;
   }
   interface ViewWork {
@@ -1660,38 +1632,6 @@ export function gpuParticleRenderFeature(
     }
     return emitterState;
   };
-  /** The intent behind one retained row: its new copy, or the receiver's cached copy of that sequence. */
-  const retainedIntent = (
-    resolution: FrameResolution,
-    entry: PublishedWorld,
-    row: PublishedWorld['retained'][number],
-  ): PublishedIntent | undefined => {
-    const streamKey = retainedStreamKey(
-      entry.runtimeId,
-      entry.renderGeneration,
-      row.player,
-      row.emitter.id,
-    );
-    resolution.liveRetained.add(streamKey);
-    const published = row.intent;
-    if (published !== undefined) {
-      receivedRetained.set(streamKey, {
-        sequence: row.intentSequence ?? published.sequence,
-        intent: published,
-      });
-      return published;
-    }
-    const cached = receivedRetained.get(streamKey);
-    if (cached !== undefined && cached.sequence === row.intentSequence) return cached.intent;
-    // Not drawable this frame; the source resends it next frame.
-    let missing = resolution.missingRetained.get(entry.runtimeId);
-    if (missing === undefined) {
-      missing = [];
-      resolution.missingRetained.set(entry.runtimeId, missing);
-    }
-    missing.push(streamKey);
-    return undefined;
-  };
   /** Resolve one published world against the receiver's effect, stream and retained caches. */
   const resolveWorld = (resolution: FrameResolution, entry: PublishedWorld): ExtractedWorld => {
     const { context, emitterVisible } = resolution;
@@ -1706,6 +1646,7 @@ export function gpuParticleRenderFeature(
     }));
     const state = runtimeState(entry.runtimeId);
     const submitted = submittedLedger(state, entry, context.generation);
+    intentPayloads.begin(entry.runtimeId, entry.renderGeneration, entry.intents);
     const resolver = planResolver(state, entry.renderGeneration, entry.sourceWorldIndex, context);
     const keys = streamKeys(state, entry.worldId, entry.renderGeneration, entry.runtimeId);
     const emitterState = resolveEmitterStates(entry, resolver, keys, context);
@@ -1713,9 +1654,16 @@ export function gpuParticleRenderFeature(
     const retained = new Map<string, RetainedEmitter>();
     for (const row of entry.retained) {
       if (preparationPlayers.has(row.player)) continue;
-      const published = retainedIntent(resolution, entry, row);
+      const published = resolveRetainedIntent(
+        receivedRetained,
+        resolution,
+        entry,
+        row,
+        recentQueued,
+      );
       if (published === undefined) continue;
       const intent = resolver.intent(published);
+      if (intent === undefined) continue;
       retained.set(keys.stream(row.player, intent.emitter.id).stateKey, {
         player: row.player,
         localToWorld: row.localToWorld,
@@ -1727,10 +1675,16 @@ export function gpuParticleRenderFeature(
       });
     }
     const intents: VfxGpuTickIntent[] = [];
+    const queued = createQueuedIntentResolution(resolution.missingIntents, entry.runtimeId, (p) => {
+      const full = intentPayloads.resolve(entry.runtimeId, p as (typeof entry.intents)[number]);
+      if (full !== undefined) recentQueued.remember(entry, full);
+      return full === undefined ? undefined : resolver.intent(full);
+    });
     for (const published of entry.intents) {
       const terminal = submitted.terminal.get(published.sequence);
       if (terminal === 'skipped' || terminal === 'deferred') continue;
-      const intent = resolver.intent(published);
+      const intent = queued(published);
+      if (intent === undefined) continue;
       if (terminal === undefined) {
         intents.push(intent);
       } else if (terminal === 'dispatched' && !preparationPlayers.has(intent.player)) {
@@ -1767,6 +1721,7 @@ export function gpuParticleRenderFeature(
     const liveRuntimes = new Set(frame.worlds.map((entry) => entry.runtimeId));
     for (const identity of runtimeStates.keys())
       if (!liveRuntimes.has(identity)) runtimeStates.delete(identity);
+    intentPayloads.retire(liveRuntimes);
     for (const frameNumber of pendingFrames.keys())
       if (frameNumber + 4 < frame.frameNumber) pendingFrames.delete(frameNumber);
   };
@@ -1823,7 +1778,7 @@ export function gpuParticleRenderFeature(
       sharedComputePrograms: new Map(),
       privateComputePrograms: new Set(),
       fieldNames: new Set(),
-      nextBindingLayouts: new Map(),
+      nextBindingLayouts: freshBindingLayouts(),
       groups: new Map(),
       streams: new Map(),
       outcomesByEntry: new Map(),
@@ -1931,10 +1886,14 @@ export function gpuParticleRenderFeature(
     const entryPoints =
       emitterPrograms(intent.emitter)?.entryPoints ??
       new Set(intent.emitter.reflection.entryPoints);
-    const dispatches = simulationDispatches(intent, stagePlan.value).filter((dispatch) =>
-      entryPoints.has(dispatch.entryPoint),
-    );
-    if (dispatches.length === 0 && intent.emitter.renderers.length === 0) return 'skipped';
+    const dispatchCount = simulationEntries(
+      intent.emitter,
+      immutableEmitters.has(intent.emitter),
+      stagePlan.value,
+      entryPoints,
+      () => simulationDispatches(intent, stagePlan.value),
+    ).length;
+    if (dispatchCount === 0 && intent.emitter.renderers.length === 0) return 'skipped';
     const failure = admitIntent(plan, entry, record, {
       intent,
       localToWorld,
@@ -1943,7 +1902,7 @@ export function gpuParticleRenderFeature(
       retained: false,
     });
     if (failure !== undefined) return failure;
-    return dispatches.length > 0 ? 'dispatched' : 'skipped';
+    return dispatchCount > 0 ? 'dispatched' : 'skipped';
   };
   /** Join an admitted intent to its stream's program group; a group never mixes worlds or programs. */
   const admitIntent = (
@@ -2155,7 +2114,7 @@ export function gpuParticleRenderFeature(
     if (bindingLimit < 16 * 336) return undefined;
     if (!group.intents.every((row) => row.intent.emitter === emitter)) return undefined;
     return batchStorageSizes(emitter, candidate.customStride, inputBytes).every(([size, stride]) =>
-      arena.supports(size, ['storage'], stride),
+      arena.supports(size, STORAGE_USAGE, stride),
     )
       ? candidate
       : undefined;
@@ -2294,7 +2253,8 @@ export function gpuParticleRenderFeature(
       copies.push({ source: predecessor, destination: name, size: prepared.byteLength });
     }
     const uploads = incremental ? (prepared.delta?.uploads ?? []) : prepared.uploads;
-    for (const [index, upload] of uploads.entries()) {
+    for (let index = 0; index < uploads.length; index++) {
+      const upload = uploads[index] as (typeof uploads)[number];
       if (upload.data.byteLength === 0) continue;
       const staging = `${name}.upload.${index}`;
       resources.push({
@@ -2445,7 +2405,7 @@ export function gpuParticleRenderFeature(
     );
     const retained = retainEmitterResources({
       previous: emitter.resources,
-      ...(facts.batchProgram === undefined ? {} : { batch: facts.batchProgram }),
+      batch: facts.batchProgram,
       emitter: facts.firstIntent.emitter,
       instance: facts.arenaInstance,
       program: facts.computeProgramName,
@@ -2464,11 +2424,15 @@ export function gpuParticleRenderFeature(
     const views = plan.resolution.context.views;
     for (const view of retained.views.keys())
       if (!views.some((row) => row.identity === view)) retained.views.delete(view);
-    for (const binding of retained.bindings)
-      plan.nextBindingLayouts.set(binding.name, {
-        emitter: facts.firstIntent.emitter,
-        resource: binding,
-      });
+    for (const binding of retained.bindings) {
+      const prior = bindingLayouts.get(binding.name);
+      plan.nextBindingLayouts.set(
+        binding.name,
+        prior?.emitter === facts.firstIntent.emitter && prior.resource === binding
+          ? prior
+          : { emitter: facts.firstIntent.emitter, resource: binding },
+      );
+    }
     if (resetsThisFrame(facts.group))
       uploadEmitterResource(
         resourceAdmission,
@@ -2563,7 +2527,8 @@ export function gpuParticleRenderFeature(
   };
   /** Trail history is simulation state: reset with the group and declared unless retained. */
   const declareTrailHistory = (plan: FramePlan, gp: GroupPlan): void => {
-    for (const [rendererIndex, renderer] of gp.renderers.entries()) {
+    for (let rendererIndex = 0; rendererIndex < gp.renderers.length; rendererIndex++) {
+      const renderer = gp.renderers[rendererIndex] as (typeof gp.renderers)[number];
       if (renderer.enabled === false || renderer.kind !== 'trail') continue;
       const historyBytes = gp.capacity * (Math.max(2, renderer.historyLength) + 1) * 16;
       const history = rendererNames(gp.group.program, rendererIndex).history;
@@ -2584,15 +2549,22 @@ export function gpuParticleRenderFeature(
     retained: RetainedEmitterResources,
   ): RenderFeatureStageFailedError | undefined => {
     const { names, group } = gp;
-    const ranges = [
-      names.particles,
-      names.aliveIndices,
-      names.counters,
-      names.indirect,
-      names.scratch,
-      names.sharedInstances,
-      names.custom,
-    ].map((name) => requiredRange(retained.byName, name, 'simulation'));
+    // One retained owner keeps one frozen range list for its lifetime.
+    let ranges = directSimulationRanges.get(retained);
+    if (ranges === undefined) {
+      ranges = Object.freeze(
+        [
+          names.particles,
+          names.aliveIndices,
+          names.counters,
+          names.indirect,
+          names.scratch,
+          names.sharedInstances,
+          names.custom,
+        ].map((name) => requiredRange(retained.byName, name, 'simulation')),
+      );
+      directSimulationRanges.set(retained, ranges);
+    }
     for (let tickIndex = 0; tickIndex < group.intents.length; tickIndex++) {
       const planned = group.intents[tickIndex];
       if (planned === undefined) return planFailure();
@@ -2604,13 +2576,17 @@ export function gpuParticleRenderFeature(
         undefined,
         planned.localToWorld,
       );
-      const entries = simulationDispatches(planned.intent, planned.stagePlan)
-        .filter((dispatch) => gp.entryPoints.has(dispatch.entryPoint))
-        .map((dispatch) => dispatch.entryPoint);
+      const entries = simulationEntries(
+        planned.intent.emitter,
+        immutableEmitters.has(planned.intent.emitter),
+        planned.stagePlan,
+        gp.entryPoints,
+        () => simulationDispatches(planned.intent, planned.stagePlan),
+      );
       plan.directCompute.simulation({
         program: gp.computeProgramName,
         tick: tickIndex,
-        reset: planned.intent.reset ? gp.resetCopies : [],
+        reset: planned.intent.reset ? gp.resetCopies : NO_COPIES,
         ranges,
         customStride: gp.customStride,
         entries,
@@ -2711,7 +2687,8 @@ export function gpuParticleRenderFeature(
     const { names, hasEvents, parameterBytes, customStride } = gp;
     const admission = plan.resourceAdmission;
     const retained = gp.retained;
-    for (const [rendererIndex, renderer] of gp.renderers.entries()) {
+    for (let rendererIndex = 0; rendererIndex < gp.renderers.length; rendererIndex++) {
+      const renderer = gp.renderers[rendererIndex] as (typeof gp.renderers)[number];
       if (renderer.enabled === false) continue;
       if (renderer.kind !== 'trail') continue;
       if (!gp.entryPoints.has('forgeax_vfx_trail_history_main')) continue;
@@ -2841,11 +2818,11 @@ export function gpuParticleRenderFeature(
   ): VfxComputeBatchProgram | undefined => {
     const batch = gp.retained?.batch;
     const arena = plan.retainedArena;
-    if (batch === undefined || arena?.supports(instanceBytes, ['storage']) !== true)
+    if (batch === undefined || arena?.supports(instanceBytes, STORAGE_USAGE) !== true)
       return undefined;
-    return arena.supports(historyBytes, ['storage']) &&
-      arena.supports(gp.indirectWords.byteLength, ['storage'], 20) &&
-      arena.supports(COUNTERS_BYTES, ['storage'], 24)
+    return arena.supports(historyBytes, STORAGE_USAGE) &&
+      arena.supports(gp.indirectWords.byteLength, STORAGE_USAGE, 20) &&
+      arena.supports(COUNTERS_BYTES, STORAGE_USAGE, 24)
       ? batch
       : undefined;
   };
@@ -2933,7 +2910,7 @@ export function gpuParticleRenderFeature(
       return undefined;
     const retained = retainProjectionResources({
       frame: gp.retained,
-      ...(rv.projectionBatch === undefined ? {} : { batch: rv.projectionBatch }),
+      batch: rv.projectionBatch,
       instance: gp.arenaInstance,
       program: rv.projectionProgram,
       view: rv.view.work.view.identity,
@@ -2944,11 +2921,15 @@ export function gpuParticleRenderFeature(
       arena: retainedArena,
       admission: resourceAdmission,
     });
-    if (retained?.binding !== undefined)
-      plan.nextBindingLayouts.set(rv.names.computeBindings, {
-        emitter: gp.firstIntent.emitter,
-        resource: retained.binding,
-      });
+    if (retained?.binding !== undefined) {
+      const prior = bindingLayouts.get(rv.names.computeBindings);
+      plan.nextBindingLayouts.set(
+        rv.names.computeBindings,
+        prior?.emitter === gp.firstIntent.emitter && prior.resource === retained.binding
+          ? prior
+          : { emitter: gp.firstIntent.emitter, resource: retained.binding },
+      );
+    }
     return retained;
   };
   /** Per-view copies of the simulated state the projection consumes. */
@@ -3007,7 +2988,7 @@ export function gpuParticleRenderFeature(
         ? undefined
         : runtimeData(
             retained !== undefined && admission !== undefined ? plan.runtimeScratch : undefined,
-            { ...latest.intent, fixedDelta: 0, spawnCount: 0 },
+            latest.intent,
             view.camera,
             rv.material,
             gp.latestTransform,
@@ -3015,6 +2996,7 @@ export function gpuParticleRenderFeature(
             rv.index,
             rv.inputLanes,
             meshDrawRange(renderer, rv.mesh, rv.submesh),
+            true,
           );
     if (retained !== undefined && admission !== undefined) {
       if (projectionData !== undefined && retained.runtime !== undefined)
@@ -3080,22 +3062,34 @@ export function gpuParticleRenderFeature(
     const { names, view } = rv;
     const enabled = gp.renderEnabled && (view.visible || rv.castsShadow);
     if (retained?.batch !== undefined && gp.retained !== undefined) {
-      if (enabled && runtime !== undefined)
+      if (enabled && runtime !== undefined) {
+        const frame = gp.retained;
+        const entries = dispatches.map((dispatch) => dispatch.entryPoint);
+        let row = directProjectionRows.get(retained);
+        if (row?.frame !== frame || !sameEntries(row.entries, entries)) {
+          row = {
+            frame,
+            ranges: Object.freeze([
+              requiredRange(frame.byName, gp.names.particles, 'frame'),
+              requiredRange(retained.byName, names.aliveIndices, 'view'),
+              requiredRange(retained.byName, names.counters, 'view'),
+              requiredRange(retained.byName, names.indirect, 'view'),
+              requiredRange(retained.byName, names.history, 'view'),
+              requiredRange(retained.byName, names.instances, 'view'),
+              requiredRange(frame.byName, gp.names.custom, 'frame'),
+            ]),
+            entries: Object.freeze(entries),
+          };
+          directProjectionRows.set(retained, row);
+        }
         plan.directCompute.projection(view.work.view.identity, {
           program: gp.computeProgramName,
           customStride: gp.customStride,
-          ranges: [
-            requiredRange(gp.retained.byName, gp.names.particles, 'frame'),
-            requiredRange(retained.byName, names.aliveIndices, 'view'),
-            requiredRange(retained.byName, names.counters, 'view'),
-            requiredRange(retained.byName, names.indirect, 'view'),
-            requiredRange(retained.byName, names.history, 'view'),
-            requiredRange(retained.byName, names.instances, 'view'),
-            requiredRange(gp.retained.byName, gp.names.custom, 'frame'),
-          ],
-          entries: dispatches.map((dispatch) => dispatch.entryPoint),
+          ranges: row.ranges,
+          entries: row.entries,
           runtime,
         });
+      }
     } else if (dispatches.length > 0) {
       view.work.passes.push({
         kind: 'compute',
@@ -3118,15 +3112,15 @@ export function gpuParticleRenderFeature(
     const identity = view.work.view.identity;
     const descriptor = graphicsProgramDescriptor(names.graphics.get(identity), {
       shader: rv.materialPass.shader,
-      ...(gp.source?.preparePipelines ? { preparePipelines: true } : {}),
+      preparePipelines: gp.source?.preparePipelines ? true : undefined,
       vertexLayout: rv.vertexLayout,
-      ...(rv.hasParticleInputs ? { particleInputLanes: rv.inputLanes } : {}),
-      colorFormats: [view.colorTarget?.format ?? 'rgba8unorm-srgb'],
-      ...(view.depthTarget === undefined ? {} : { depthFormat: view.depthTarget.format }),
+      particleInputLanes: rv.hasParticleInputs ? rv.inputLanes : undefined,
+      colorFormat: view.colorTarget?.format ?? 'rgba8unorm-srgb',
+      depthFormat: view.depthTarget?.format,
       sampleCount: view.colorTarget?.sampleCount ?? 1,
       topology: rv.submesh?.topology ?? 'triangle-list',
-      ...(mesh?.indices === undefined ? {} : { indexFormat: rv.indexFormat }),
-      ...(rv.renderState === undefined ? {} : { renderState: rv.renderState }),
+      indexFormat: mesh?.indices === undefined ? undefined : rv.indexFormat,
+      renderState: rv.renderState,
     });
     names.graphics.set(identity, descriptor);
     const sceneDepthBinding = rv.sceneDepthBinding;
@@ -3136,12 +3130,13 @@ export function gpuParticleRenderFeature(
         kind: 'graphics-bindings',
         name: names.graphicsBindings,
         program: names.graphicsProgram,
-        values: {
-          group: 0,
-          ...(projectionRuntime === undefined ? {} : { runtime: projectionRuntime }),
-          instances: names.instances,
-          ...(sceneDepthBinding === undefined ? {} : { sceneDepthBinding }),
-        },
+        values: particleBindingValues(
+          names.bindingValues,
+          identity,
+          projectionRuntime,
+          names.instances,
+          sceneDepthBinding,
+        ),
         ...(sceneDepthBinding !== undefined && view.depthTarget !== undefined
           ? { logicalTargets: { sceneDepth: view.depthTarget.name } }
           : {}),
@@ -3170,7 +3165,7 @@ export function gpuParticleRenderFeature(
       kind: 'graphics-bindings',
       name: materialBindings,
       program: names.graphicsProgram,
-      values: { group: 1, material: { world, handle: rv.renderer.material } },
+      values: materialBindingValues(names.bindingValues, world, rv.renderer.material),
     });
     return materialBindings;
   };
@@ -3253,11 +3248,13 @@ export function gpuParticleRenderFeature(
         kind: 'graphics-bindings',
         name: names.shadowBindings,
         program: names.shadowProgram,
-        values: {
-          group: 0,
-          ...(projectionRuntime === undefined ? {} : { runtime: projectionRuntime }),
-          instances: names.instances,
-        },
+        values: particleBindingValues(
+          names.bindingValues,
+          `shadow:${rv.view.work.view.identity}`,
+          projectionRuntime,
+          names.instances,
+          undefined,
+        ),
       },
     );
     view.work.passes.push({
@@ -3351,7 +3348,8 @@ export function gpuParticleRenderFeature(
         plan.resolution.emitterVisible(latest.intent.emitter, camera, gp.latestTransform) &&
         latest.visible,
     };
-    for (const [rendererIndex, renderer] of gp.renderers.entries()) {
+    for (let rendererIndex = 0; rendererIndex < gp.renderers.length; rendererIndex++) {
+      const renderer = gp.renderers[rendererIndex] as (typeof gp.renderers)[number];
       // Disabled entries remain in the cooked renderer index space but do
       // not acquire projection, graphics, or shadow resources.
       if (renderer.enabled === false) continue;
@@ -3487,6 +3485,7 @@ export function gpuParticleRenderFeature(
     plan: FramePlan,
     entry: ExtractedWorld,
     observation: VfxRenderObservation,
+    requiredPasses: readonly string[],
   ): PendingEntry => ({
     source: entry,
     generation: plan.resolution.context.generation,
@@ -3494,7 +3493,7 @@ export function gpuParticleRenderFeature(
       plan.outcomesByEntry.get(entry) ??
       entry.intents.map((intent) => ({ intent, state: 'deferred' as const })),
     observation,
-    requiredPasses: plan.passes.filter((pass) => pass.enabled !== false).map((pass) => pass.name),
+    requiredPasses,
     // Device state is rebuilt only when this plan saw the full retained roster.
     rebuilt: !plan.resolution.missingRetained.has(entry.runtimeId),
   });
@@ -3517,6 +3516,7 @@ export function gpuParticleRenderFeature(
         .filter((row) => row.state === 'dispatched')
         .map((row) => row.intent.sequence),
       missingRetained: plan.resolution.missingRetained.get(entry.runtimeId) ?? [],
+      missingIntents: plan.resolution.missingIntents.get(entry.runtimeId) ?? [],
     };
   };
   /** Only our generated metadata is retained, after every source read. */
@@ -3549,20 +3549,28 @@ export function gpuParticleRenderFeature(
   const publishPlan = (plan: FramePlan): RenderFeaturePlan => {
     const { frame, nativePlan } = plan;
     const { context } = plan.resolution;
-    const allPasses = [...plan.passes, ...plan.viewWork.flatMap((work) => work.passes)];
-    const observation = planObservation(frame.frameNumber, allPasses);
+    const observation = planObservation(frame.frameNumber, [
+      plan.passes,
+      ...plan.viewWork.map((work) => work.passes),
+    ]);
+    // Every entry of one frame requires the same enabled frame passes.
+    const requiredPasses: string[] = [];
+    for (const pass of plan.passes) if (pass.enabled !== false) requiredPasses.push(pass.name);
     pendingFrames.set(frame.frameNumber, {
-      entries: frame.worlds.map((entry) => pendingEntry(plan, entry, observation)),
+      entries: frame.worlds.map((entry) => pendingEntry(plan, entry, observation, requiredPasses)),
       fields: [...plan.fieldNames],
       generation: context.generation,
     });
     const feedback = frame.worlds.map((entry) => sourceFeedback(plan, entry));
     for (const key of receivedRetained.keys())
       if (!plan.resolution.liveRetained.has(key)) receivedRetained.delete(key);
+    recentQueued.endFrame();
     // Bound templates to the current successful producer roster. A removed
     // player or replaced program cannot keep its layouts alive indefinitely.
+    spareBindingLayouts = bindingLayouts;
     bindingLayouts = plan.nextBindingLayouts;
-    const nextBufferLayouts = new Map<string, StaticBuffer>();
+    const nextBufferLayouts = spareBufferLayouts;
+    nextBufferLayouts.clear();
     const work: import('@forgeax/engine-render').RenderFeatureWork[] = [
       {
         scope: 'frame',
@@ -3593,6 +3601,7 @@ export function gpuParticleRenderFeature(
       }) ?? work;
     for (const row of packed)
       retainBufferLayouts(nextBufferLayouts, row.resources as PlanResource[]);
+    spareBufferLayouts = bufferLayouts;
     bufferLayouts = nextBufferLayouts;
     return nativePlan === undefined
       ? { work: packed, sourceFeedback: feedback }
@@ -3621,7 +3630,14 @@ export function gpuParticleRenderFeature(
         if (frameNumber + 4 < context.frameNumber) pendingFrames.delete(frameNumber);
       }
       sourceRuntimes.clear();
+      // A new receiver session starts with empty caches: adopt and send everything again.
+      if (context.receiverSession !== receiverSession) {
+        receiverSession = context.receiverSession;
+        adoptedRetained.clear();
+        intentPublication.reset();
+      }
       const extracted: PublishedWorld[] = [];
+      const queuedSessions = new Map<string, Set<string>>();
       for (const world of context.worlds) {
         if (!world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)) continue;
         const camera = options.camera.read(world, context.views);
@@ -3848,7 +3864,16 @@ export function gpuParticleRenderFeature(
           renderGeneration: runtime.renderGeneration ?? 0,
           camera,
           views,
-          intents: intents.map(publishIntent),
+          // Field intents carry exact per-tick texture versions and are always published.
+          intents: publishQueuedIntents(
+            intentPublication,
+            queuedSessions,
+            `${runtimeId(runtime)}:${runtime.renderGeneration ?? 0}`,
+            intents,
+            publishIntent,
+            (intent) => !intent.forceFields,
+            context.frameNumber,
+          ),
           preparationPlayers: [...preparationPlayers],
           retained,
           emitterState,
@@ -3856,6 +3881,7 @@ export function gpuParticleRenderFeature(
           meshes,
         });
       }
+      intentPublication.retain(queuedSessions);
       return ok({ worlds: extracted, frameNumber: context.frameNumber });
     },
     assetDependencies: (frame) => [
@@ -3883,6 +3909,7 @@ export function gpuParticleRenderFeature(
         emitterVisible,
         liveRetained: new Set(),
         missingRetained: new Map(),
+        missingIntents: new Map(),
         keys: new Map(),
       };
       let frame: ExtractedFrame;
@@ -4018,37 +4045,15 @@ export function gpuParticleRenderFeature(
         published: number[];
         visibility: { player: EntityHandle; emitter: string; visible: boolean }[];
         missingRetained?: string[];
+        missingIntents?: number[];
       }[]) {
         const source = frame.worlds.find((entry) => entry.runtimeId === row.runtimeId);
+        intentPublication.forget(
+          `${row.runtimeId}:${row.renderGeneration}`,
+          row.missingIntents ?? [],
+        );
         if (source !== undefined) {
-          // This submitted frame was planned by the receiver: every intent it
-          // carried is now cached there, and only reported misses are not.
-          for (const retained of source.retained)
-            if (retained.intent !== undefined)
-              adoptedRetained.set(
-                retainedStreamKey(
-                  source.runtimeId,
-                  source.renderGeneration,
-                  retained.player,
-                  retained.emitter.id,
-                ),
-                retained.intentSequence,
-              );
-          for (const key of row.missingRetained ?? []) adoptedRetained.delete(key);
-          // Bound the ledger to streams this runtime still retains.
-          const live = new Set(
-            source.retained.map((retained) =>
-              retainedStreamKey(
-                source.runtimeId,
-                source.renderGeneration,
-                retained.player,
-                retained.emitter.id,
-              ),
-            ),
-          );
-          const prefix = `${source.runtimeId}:`;
-          for (const key of adoptedRetained.keys())
-            if (key.startsWith(prefix) && !live.has(key)) adoptedRetained.delete(key);
+          adoptSubmittedRetained(adoptedRetained, source, row.published, row.missingRetained ?? []);
         }
         const runtime = sourceRuntimes.get(row.runtimeId);
         if (
@@ -4070,6 +4075,7 @@ export function gpuParticleRenderFeature(
         if (row.acknowledged.length > 0) runtime.commit(row.acknowledged, row.published);
       }
     },
+    onSourceFrameDiscarded: (frame) => intentPublication.discard(frame.frameNumber),
     onFrameAborted: (frame) => {
       pendingFrames.delete(frame.frameNumber);
     },

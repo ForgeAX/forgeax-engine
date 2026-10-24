@@ -10,7 +10,7 @@ beforeAll(async () => {
 describe('volumetric fog Dawn fixture source contract', () => {
   it('keeps one Renderer, World, attachment, two owners, and a live density rebind', () => {
     expect(smokeSource.match(/await constructRuntimeRendererHost\(/gu)).toHaveLength(1);
-    expect(smokeSource.match(/const world = new World\(\)/gu)).toHaveLength(1);
+    expect(smokeSource.match(/const world = new World\(\{ assets \}\)/gu)).toHaveLength(1);
     expect(smokeSource.match(/renderer\.attach\(world\)/gu)).toHaveLength(1);
     expect(smokeSource).toContain('volumeOwnerCount !== 2');
     expect(smokeSource).toContain('tonemap: TONEMAP_NEUTRAL');
@@ -34,10 +34,19 @@ describe('volumetric fog Dawn fixture source contract', () => {
     expect(smokeSource).toContain('baselineTransparency.sortedDrawCount');
   });
 
+  it('checks volumetric pass labels from the exact submitted RHI frame', () => {
+    expect(smokeSource).toContain('rhiRecorder.captureFrame()');
+    expect(smokeSource).toContain('baselineTape.tape.events');
+    expect(smokeSource).toContain("event.kind === 'beginComputePass'");
+    expect(smokeSource).toContain("event.kind === 'beginRenderPass'");
+    expect(smokeSource).not.toContain('graphObservation.passNames');
+  });
+
   it('loads the public Fox asset through the existing glTF and Skin path in that fixture', () => {
     expect(smokeSource).toContain("'@forgeax/engine-gltf'");
     expect(smokeSource).toContain("'@forgeax/engine-skinning'");
-    expect(smokeSource).toContain('gltfDocToSceneAsset(foxDoc');
+    expect(smokeSource).toContain('useBuiltAssetSource(assets');
+    expect(smokeSource).toContain("assets.load(foxSceneGuid.guid, 'scene')");
     expect(smokeSource).toContain('assets.instantiate(foxSceneHandle, world)');
     expect(smokeSource).toContain('world.addComponent(foxInstance.value');
     expect(smokeSource).toContain('sameWorld: true');

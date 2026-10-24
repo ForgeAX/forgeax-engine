@@ -38,7 +38,7 @@ import type {
   ParamSchemaEntry,
   ParamSchemaProjectionOwnerStats,
 } from '@forgeax/engine-types';
-import { ParamSchemaProjectionOwner } from '@forgeax/engine-types';
+import { isDeepFrozenJson, ParamSchemaProjectionOwner } from '@forgeax/engine-types';
 import {
   err,
   manifestMalformed,
@@ -74,6 +74,9 @@ async function manifestTextDigest(text: string): Promise<string> {
 }
 
 function ownMaterialReceipt(receipt: MaterialProgramAbi): MaterialProgramAbi {
+  // Package-retained ABIs are already deep-frozen and shared by every program
+  // key that references them; a private clone per key would only duplicate them.
+  if (receipt !== null && typeof receipt === 'object' && isDeepFrozenJson(receipt)) return receipt;
   const owned = structuredClone(receipt);
   const freeze = (value: unknown): void => {
     if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;

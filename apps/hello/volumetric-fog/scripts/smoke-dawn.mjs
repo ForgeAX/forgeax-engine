@@ -5,12 +5,14 @@ import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.
 // the VolumetricFog component; no parallel raw compute path is used.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { combineSmokeErrors, createSmokeCleanup } from './smoke-resource-cleanup.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { attachRecorder } from '@forgeax/engine-rhi-debug';
+import * as webgpu from '@forgeax/engine-rhi-webgpu';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
@@ -110,6 +112,9 @@ try {
   const originalGetPreferredCanvasFormat = gpu.getPreferredCanvasFormat;
   gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
+  const rhiRecorder = attachRecorder(webgpu).unwrap();
+  smokeCleanup.own(async () => (await rhiRecorder.dispose()).unwrap());
+
   // Keep final destroy responsibility for the exact device intercepted below.
   let sharedDevice;
   const originalGpuRequestAdapter = gpu.requestAdapter;
@@ -199,7 +204,7 @@ try {
 
   const constructed = await constructRuntimeRendererHost(
     mockCanvas,
-    {},
+    { rhi: rhiRecorder.backend.rhi },
     { shaderManifestUrl: manifestUrl },
   );
   if (!constructed.ok)
@@ -411,6 +416,58 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
     return receipt;
   }
 
+  async function captureMissingPassEvidence(
+    missingPasses,
+    baselineReceipt,
+    graphObservation,
+    baselinePassNames,
+    baselineTape,
+  ) {
+    const artifactRelativeDirectory = 'artifacts/renderer-device-loss/smoke-roster';
+    const artifactDirectory = resolve(repoRoot, artifactRelativeDirectory);
+    const runId = process.env.GITHUB_RUN_ID ?? 'local';
+    const attempt = process.env.GITHUB_RUN_ATTEMPT ?? '0';
+    const artifactName = `volumetric-fog-run-${runId}-attempt-${attempt}`;
+    const artifactBase = resolve(artifactDirectory, artifactName);
+    const inspection = renderer.inspect();
+    const evidence = {
+      head: artifact.head,
+      missingPasses,
+      baselineReceipt: {
+        frameId: baselineReceipt.frameId,
+        presentation: baselineReceipt.presentation,
+      },
+      renderer: {
+        capabilities: inspection.capabilities,
+        profile: inspection.profile,
+        transparency: inspection.transparency,
+        volumetricFog: inspection.volumetricFog,
+        featureDiagnostics: inspection.featureDiagnostics,
+        perFramePassNames: inspection.perFramePassNames,
+        recordedPassNames: baselinePassNames,
+        outputGraphPassNames: inspection.output.graphPassNames,
+        observation: graphObservation,
+      },
+      volumeOwnerCount,
+      volumeEntities: volumeEntities.map(Number),
+      errors,
+      tape: 'not-captured',
+    };
+    mkdirSync(artifactDirectory, { recursive: true });
+    try {
+      writeFileSync(`${artifactBase}.rhitape`, baselineTape.bytes);
+      evidence.tape = `${artifactRelativeDirectory}/${artifactName}.rhitape`;
+      evidence.tapeDigest = baselineTape.digest;
+    } catch (error) {
+      evidence.captureError = error instanceof Error ? error.message : String(error);
+    }
+    writeFileSync(
+      `${artifactBase}.json`,
+      `${JSON.stringify({ ...evidence, diagnostics: `${artifactRelativeDirectory}/${artifactName}.json` }, null, 2)}\n`,
+    );
+    log(`[hello-volumetric-fog] missing-pass evidence ${JSON.stringify(evidence)}`);
+  }
+
   async function readCompletedCanvasPixels(receipt) {
     if (!completedFrameIds.has(receipt.frameId) || receipt.presentation !== 'ready') {
       throw new Error(
@@ -473,20 +530,41 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
   }
   if (latestReceipt === undefined)
     throw new Error('volumetric-fog has no completed warmup receipt');
-  const baselineReceipt = latestReceipt;
+  const baselineCaptureRequest = rhiRecorder.captureFrame();
+  (await rhiRecorder.frameBoundary()).unwrap();
+  const baselineReceipt = await drawCompletedFrame('fog pass baseline');
+  (await rhiRecorder.frameBoundary()).unwrap();
+  const baselineTape = (await baselineCaptureRequest).unwrap();
   const baselineInspection = await renderer.observe(baselineReceipt, {
     include: ['draws', 'bindings'],
   });
   if (!baselineInspection.ok) {
     throw new Error(`volumetric-fog baseline inspection failed: ${baselineInspection.error.code}`);
   }
-  const { transparency: baselineTransparency, observation: graphObservation } = renderer.inspect();
+  const rendererInspection = renderer.inspect();
+  const { transparency: baselineTransparency, observation: graphObservation } = rendererInspection;
   if (graphObservation.frameId !== baselineReceipt.frameId)
     throw new Error('volumetric-fog graph inspection does not belong to the completed baseline');
-  const baselinePassNames = graphObservation.passNames;
-  for (const pass of ['volume-inject', 'volume-integrate', 'volume-temporal', 'volume-composite'])
-    if (!baselinePassNames.includes(pass))
-      throw new Error(`volumetric-fog committed graph omitted ${pass}`);
+  const baselinePassNames = baselineTape.tape.events
+    .filter((event) => event.kind === 'beginComputePass' || event.kind === 'beginRenderPass')
+    .map((event) => event.desc?.label)
+    .filter((name) => typeof name === 'string');
+  const missingVolumePasses = [
+    'volume-inject',
+    'volume-integrate',
+    'volume-temporal',
+    'volume-composite',
+  ].filter((pass) => !baselinePassNames.includes(pass));
+  if (missingVolumePasses.length > 0) {
+    await captureMissingPassEvidence(
+      missingVolumePasses,
+      baselineReceipt,
+      graphObservation,
+      baselinePassNames,
+      baselineTape,
+    );
+    throw new Error(`volumetric-fog committed graph omitted ${missingVolumePasses.join(', ')}`);
+  }
   if ((baselineTransparency?.sortedDrawCount ?? 0) < 1) {
     throw new Error(
       'volumetric-fog transparent subject did not enter the sorted transparent draw lane',

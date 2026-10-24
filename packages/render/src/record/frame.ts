@@ -3062,6 +3062,8 @@ export function* prepareFrameRecording(
         gpuOwnsShadowGeometry,
         { bindings: rasterGpuDriven?.materialBindings ?? [], worlds, frame: fixedMaterials },
         shadowCasterProjection?.meshDraws,
+        // Scene-pass rows are this frame's fresh projections.
+        sceneWork !== undefined,
       ),
     );
     const validatedOrdered = dispatchPlan.validatedOrdered;

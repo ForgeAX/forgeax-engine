@@ -216,12 +216,15 @@ export async function createWorkerExecutionApp(
             ),
         })
       : undefined;
-  // The game commands this gate once; a replacement canvas gets a fresh
-  // backend whose gate defaults to allowed, so the command must survive it.
+  // The game commands the pointer-lock gate once and the startup owner the
+  // input gate; a replacement canvas gets a fresh backend whose gates default
+  // to open, so both commands must survive it.
   let pointerLockAllowed = true;
+  let inputAllowed = true;
   const attachGatedInput = () => {
     const handle = attachInput();
     if (!pointerLockAllowed) handle?.backend.setPointerLockAllowed?.(false);
+    if (!inputAllowed) handle?.backend.setInputAllowed?.(false);
     return handle;
   };
   let inputHandle = attachGatedInput();
@@ -235,7 +238,10 @@ export async function createWorkerExecutionApp(
       pointerLockAllowed = allowed;
       inputHandle?.backend.setPointerLockAllowed?.(allowed);
     },
-    setInputAllowed: (allowed) => inputHandle?.backend.setInputAllowed?.(allowed),
+    setInputAllowed: (allowed) => {
+      inputAllowed = allowed;
+      inputHandle?.backend.setInputAllowed?.(allowed);
+    },
     detach: () => inputHandle?.backend.detach(),
   };
   // Resolve the decorator lazily so lightweight test hosts that provide only

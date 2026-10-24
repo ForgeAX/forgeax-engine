@@ -500,6 +500,88 @@ it.each([
 it.each([
   false,
   true,
+])('keeps publication admission pending across render loss (full: %s)', async (full) => {
+  vi.stubGlobal('Worker', CreditWorker);
+  const world = new World();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const canvas = {} as OffscreenCanvas;
+  const messages: EngineToHostMessage[] = [];
+  const source = new SourceRenderWorker(
+    world,
+    assets,
+    {
+      kind: 'init',
+      canvas,
+      startupTimeoutMs: 90_000,
+      bootstrapUrl: '',
+      workers: workerSelection({ engine: true, render: true, kernels: false }),
+    },
+    (message) => messages.push(message),
+  );
+  const frame: ExecutionFrameMessage = {
+    kind: 'frame',
+    worldIdentity: world.identity,
+    frameId: 1,
+    deltaSeconds: 1 / 60,
+    canvasWidth: 32,
+    canvasHeight: 32,
+    inputSample: {
+      downKeys: new Set(),
+      upKeys: new Set(),
+      buttons: [false, false, false],
+      movementX: 0,
+      movementY: 0,
+      wheelDelta: 0,
+      focused: true,
+      pointerLocked: false,
+    },
+  };
+  try {
+    await source.start(canvas);
+    const previous = CreditWorker.current;
+    if (full) {
+      source.publish(frame, 0);
+      source.publish({ ...frame, frameId: 2 }, 1 / 60);
+    }
+    let admitted = false;
+    const admission = source.waitForPublicationCapacity().then(() => {
+      admitted = true;
+    });
+    // Loss either invalidates a resolved readiness wait or releases a full queue.
+    previous.emit({
+      kind: 'failed',
+      recoverable: true,
+      stage: 'draw',
+      error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+    expect(source.hasPublicationCapacity).toBe(false);
+    expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 }));
+    await source.replace(2, canvas);
+    await admission;
+    expect(admitted).toBe(true);
+    world.update(1 / 60).unwrap();
+    source.publish({ ...frame, frameId: 3 }, 2 / 60);
+    expect(CreditWorker.current).not.toBe(previous);
+    expect(CreditWorker.current.packets).toHaveLength(1);
+    expect(CreditWorker.current.packets[0]?.publication.epoch).toBe(2);
+    expect(world.identity).toBe(frame.worldIdentity);
+    source.publish({ ...frame, frameId: 4 }, 3 / 60);
+    const pending = source.waitForPublicationCapacity();
+    await source.dispose();
+    expect(await pending).toBe(false);
+  } finally {
+    await source.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
 ])('forwards timing and depth experiment %s to the child and retains the latest completed observation', async (featureReadOnlyDepthBatchDiagnostic) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();

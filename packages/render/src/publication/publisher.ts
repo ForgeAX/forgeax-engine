@@ -8,7 +8,9 @@ import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { Children, GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
+import { MeshFilter } from '../components/mesh-filter';
 import { stereoEyeCameras } from '../components/stereo-camera';
+import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { renderMaterialContext } from '../extract/material-context';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import {
@@ -128,6 +130,12 @@ export function createRenderPublisher(
    * residency preparation that stays until this publication is adopted.
    */
   preparedMesh?: (handle: number, revision: number) => boolean,
+  /**
+   * True while a dynamic geometry preparation still uploads this mesh handle.
+   * A new, self-hidden renderable that draws such a mesh waits for it, so its
+   * payload crosses once through the preparation instead of a second clone.
+   */
+  preparingMesh?: (handle: number) => boolean,
 ) {
   world.bindAssets(assets).unwrap();
   const assetObserver = assets.observe().unwrap();
@@ -443,6 +451,35 @@ export function createRenderPublisher(
       });
     }
 
+    /**
+     * Changed entities minus new, self-hidden renderables whose mesh is still
+     * being prepared. Those stay pending and publish once the receiver holds the
+     * prepared payload (or the preparation ends), never as a hidden clone first.
+     */
+    private withoutPreparingRenderables(): Set<number> {
+      if (preparingMesh === undefined || this.changed.size === 0) return this.changed;
+      let kept: Set<number> | undefined;
+      for (const entity of this.changed) {
+        if (!this.waitsForPreparation(entity)) continue;
+        kept ??= new Set(this.changed);
+        kept.delete(entity);
+      }
+      if (kept !== undefined)
+        this.observation?.fact('preparingRenderables', this.changed.size - kept.size);
+      return kept ?? this.changed;
+    }
+
+    private waitsForPreparation(entity: number): boolean {
+      if (members.has(entity) || preparingMesh === undefined) return false;
+      const handle = entity as EntityHandle;
+      if (!world.hasComponent(handle, MeshFilter) || !world.hasComponent(handle, Visibility))
+        return false;
+      if (world.get(handle, Visibility).unwrap().state !== VisibilityStateValue.hidden)
+        return false;
+      const mesh = world.get(handle, MeshFilter).unwrap().assetHandle as number | undefined;
+      return mesh !== undefined && preparingMesh(mesh);
+    }
+
     private publishPrograms(materials: readonly MaterialSnapshot[]): void {
       for (const material of materials) {
         if (this.programMaterials.has(material)) continue;
@@ -457,13 +494,12 @@ export function createRenderPublisher(
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       const observation = this.observation;
       observation?.phase('extract');
+      const extracted = this.withoutPreparingRenderables();
       const frame = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets, caches, {
         ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
         cull: 'none',
         retainHidden: true,
-        renderables: this.changed.size
-          ? { kind: 'partial', entitiesByWorld: [this.changed] }
-          : 'none',
+        renderables: extracted.size ? { kind: 'partial', entitiesByWorld: [extracted] } : 'none',
       });
       observation?.phase('templates');
       observation?.fact('renderables', frame.renderables.length);
@@ -611,6 +647,10 @@ export function createRenderPublisher(
           if (closed) return;
           closed = true;
           active = false;
+          for (const row of featureRows)
+            this.featureSources
+              .find((feature) => feature.identity === row.identity)
+              ?.onSourceFrameDiscarded?.(row.data);
           closeFrames(this.videoFrames, this.canvasFrames);
           observation?.finish('discarded');
           activeObservation = undefined;
@@ -772,6 +812,7 @@ export function createRenderPublisher(
         worlds: [world],
         owner: 0,
         frameNumber: revision + 1,
+        receiverSession: `${identity.source}:${identity.epoch}`,
         ...(capabilities === undefined
           ? {}
           : {

@@ -22,13 +22,6 @@ interface Publication {
   builtRecording: ReadonlySet<string>;
 }
 
-/**
- * A stock-recorder graph keeps the projected classes it was built with; a
- * class whose last batch disappears needs no recompile while the graph still
- * holds it. Bound the absent classes a graph may retain.
- */
-const MAX_ABSENT_RECORDING_CLASSES = 32;
-
 /** One raster publication, with the original and stock-recorder dependency projections. */
 export class RasterGraphIdentity {
   private current: Publication | undefined;
@@ -47,26 +40,21 @@ export class RasterGraphIdentity {
     skinBindings: object | undefined,
   ): Pick<Publication, 'raw' | 'recording'> {
     const old = this.current;
+    // Capacities and visible-window bindings are resolved when the graph
+    // executes; only the view's pass-list generation shapes the graph.
     const sameResources =
       old !== undefined &&
       old.sceneIdentity === sceneIdentity &&
-      old.resources.resourceGeneration === resources.resourceGeneration &&
-      old.resources.candidateCapacity === resources.candidateCapacity &&
-      old.resources.batchCapacity === resources.batchCapacity &&
-      old.resources.indirectCapacity === resources.indirectCapacity;
-    const sameBindings = old?.rigidBindings === rigidBindings && old.skinBindings === skinBindings;
-    if (sameResources && sameBindings && old.source === source) return old;
+      old.resources.resourceGeneration === resources.resourceGeneration;
+    if (sameResources && old.source === source) {
+      old.rigidBindings = rigidBindings;
+      old.skinBindings = skinBindings;
+      return old;
+    }
     if (old !== undefined) {
       if (old.sceneIdentity !== sceneIdentity) this.count('sceneIdentity');
-      for (const field of [
-        'resourceGeneration',
-        'candidateCapacity',
-        'batchCapacity',
-        'indirectCapacity',
-      ] as const)
-        if (old.resources[field] !== resources[field]) this.count(field);
-      if (old.rigidBindings !== rigidBindings) this.count('rigidBindings');
-      if (old.skinBindings !== skinBindings) this.count('skinBindings');
+      if (old.resources.resourceGeneration !== resources.resourceGeneration)
+        this.count('resourceGeneration');
     }
     const raw = new Set<string>(),
       recording = new Set<string>();
@@ -76,16 +64,17 @@ export class RasterGraphIdentity {
     }
     const rawClasses = [...raw].sort(),
       recordingClasses = [...recording].sort();
+    // A stock-recorder graph projects classes first seen after compilation
+    // from the live frame (residency-owned meshes are bound outside the
+    // graph), so its identity no longer depends on the class set. Count the
+    // classes it had to admit late for diagnostics only.
     const covered =
-      old !== undefined &&
-      recordingClasses.every((key) => old.builtRecording.has(key)) &&
-      old.builtRecording.size - recordingClasses.length <= MAX_ABSENT_RECORDING_CLASSES;
-    const recordingIdentity = sameResources && sameBindings && covered ? old.recording : {};
-    if (old !== undefined && recordingIdentity !== old.recording && !covered)
-      this.count('recordingClasses');
+      old !== undefined && recordingClasses.every((key) => old.builtRecording.has(key));
+    const recordingIdentity = sameResources ? old.recording : {};
+    if (old !== undefined && !covered) this.count('lateRecordingClasses');
     const builtRecording =
       old !== undefined && recordingIdentity === old.recording
-        ? old.builtRecording
+        ? new Set([...old.builtRecording, ...recordingClasses])
         : new Set(recordingClasses);
     if (old !== undefined && !same(old.rawClasses, rawClasses)) this.count('rawClasses');
     if (sameResources && same(old.rawClasses, rawClasses)) {

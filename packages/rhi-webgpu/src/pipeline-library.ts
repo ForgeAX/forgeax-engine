@@ -78,6 +78,18 @@ function failure(cause: unknown): RhiError {
       });
 }
 
+let realmPipelineCreations = 0;
+
+/**
+ * Realm-lifetime count of native pipelines created (synchronous plus
+ * asynchronous) across every WebGPU pipeline library. Engine-owned frame
+ * diagnostics read it before and after a draw; it is not a stable public API.
+ * @internal
+ */
+export function webGpuPipelineCreationCount(): number {
+  return realmPipelineCreations;
+}
+
 /** All ordinary WebGPU RHI factories use this one physical-device owner. */
 export class WebGpuPipelineLibrary implements PipelineLibrary {
   private closed = false;
@@ -274,6 +286,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     }
     try {
       this.counts.synchronousCreations++;
+      realmPipelineCreations++;
       const handle =
         kind === 'render'
           ? this.device.createRenderPipeline(descriptor as GPURenderPipelineDescriptor)
@@ -317,6 +330,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const create = async () => {
       this.active();
       this.counts.asynchronousCreations++;
+      realmPipelineCreations++;
       this.counts.compilationPending++;
       try {
         const handle =

@@ -1,6 +1,8 @@
 # ForgeaX SDK: AI entry
 
-Read this first. The directory provides an immediately usable browser-game SDK and public Engine source snapshot; build Engine only when modifying it.
+Read this first. Both SDK transports extend the built Engine with editable source
+and that release's prebuilt module outputs. Rebuild only changed owners and bind
+the game to `source/engine/`; see [source iteration](README.md#bind-local-engine-source).
 
 Install through pnpm dlx @forgeax/engine sdk install <dir> from public npm.
 Private GitHub Releases are internal archives; consumers need no GitHub
@@ -102,11 +104,11 @@ to recover.
 | templates/game-3d | Feature-owned behavior Packs plus procedural atmosphere, PBR, meshes, and lighting. |
 | store/pnpm | Full-ZIP offline closure shared by both templates; omitted by npm carrier. |
 | skills | Engine task guides; SDK tour and audited feature catalog. sdk-manifest.json records file/byte closure. |
-| source/engine | Public source/contracts/rules/skills and prebuilt WASM; full ZIP only. |
+| source/engine | Both transports: editable source, checked WASM and the release's prebuilt module outputs. |
 
 ## Project, assets, and tools
 
-Generated AGENTS owns project layout, source/Pack/Meta responsibilities, GUID loading, asset types, realms, testing, builds, delivery, and debugging. skills contains ordinary files; .agents/.claude/.cursor/.codebuddy/.workbuddy/.forgeax skill mounts are rebuildable discovery links:
+Generated AGENTS holds the hard rules, default commands and task routing; its routed game project guide and game delivery guide under skills/forgeax-engine-sdk/references own project layout, source/Pack/Meta responsibilities, GUID loading, asset types, realms, testing, builds, delivery, and debugging. skills contains ordinary files; .agents/.claude/.cursor/.codebuddy/.workbuddy/.forgeax skill mounts are rebuildable discovery links:
 
 ```bash
 pnpm exec forgeax project skill verify --json

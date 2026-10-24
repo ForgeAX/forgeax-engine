@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { fetchWithRetry, streamFile, verifySdkViewRuntime } from './sdk-lib.mjs';
 import { SDK_NPM_PARTITIONS } from './sdk-pr-preflight.mjs';
+import { verifySdkSource } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
+import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
 /*
  * Cheap release preflight: install the freshly-built user-facing Engine
@@ -397,6 +399,28 @@ try {
   if (installedSdkManifest.sdkVersion !== version) {
     throw new Error('npm-installed-sdk-version-mismatch');
   }
+  const sourceSnapshot = await sdkStage('verify installed editable Engine source', () =>
+    verifySdkSource(installedSdk, installedSdkManifest),
+  );
+  let sourceEdit;
+  if (partition !== 'diagnostics') {
+    const sourceRoot = resolve(installedSdk, installedSdkManifest.source.root);
+    const { packageManager } = JSON.parse(
+      await readFile(resolve(sourceRoot, 'package.json'), 'utf8'),
+    );
+    await execFileAsync(
+      'corepack',
+      [packageManager, 'install', '--frozen-lockfile', '--ignore-scripts'],
+      { cwd: sourceRoot, env: consumerEnv, maxBuffer: 64 * 1024 * 1024 },
+    );
+    sourceEdit = await sdkStage('verify npm source iteration', () =>
+      verifySdkSourceEdit({
+        sdkRoot: installedSdk,
+        output: resolve(output, 'npm-source-edit'),
+        env: consumerEnv,
+      }),
+    );
+  }
   await readFile(resolve(installedSdk, 'bin', 'forgeax.mjs'), 'utf8');
   await execFileAsync(
     process.execPath,
@@ -420,6 +444,8 @@ try {
     packageCount: packageArchives.length,
     carrier: carrier.manifest.name,
     sdkInstall: { version: installedSdkManifest.sdkVersion, source: carrier.manifest.name },
+    sourceSnapshot,
+    ...(sourceEdit === undefined ? {} : { sourceEdit }),
     installed: { '@forgeax/engine': engineManifest.version },
     contentAssets,
     toolchain: { node: process.version, npm: npmVersion },

@@ -31,7 +31,7 @@ flowchart LR
 | Offline store integrity | full ZIP `sdk-manifest.json#artifacts`; consumer installs disable side-effects caching and may not write back into the SDK. The npm carrier has no store and is verified by the carrier surface gate |
 | Engine skill source | SDK and game root `skills/`; `sdk-manifest.json#skills` binds the distributed closure |
 | Agent skill discovery | Disposable links from each supported discovery root to the game root `skills/`, verified by `.forgeax/skill-install-manifest.json` |
-| Engine source project | full ZIP `source/engine/` materialized from `git archive HEAD` then sanitized into the public source profile; the npm carrier omits it |
+| Engine source project | Both installed SDKs provide `source/engine/`: same-commit public source plus the release's prebuilt module outputs. The npm carrier reuses matching Engine bytes through artifact `enginePath` references and materializes them during installation. Focused edits rebuild changed owners and retain the remaining builds through the existing local binding. |
 | Private repository boundary | `.gitmodules` and `forgeax-engine-assets` are excluded; `.forgeax-public-distribution` selects the safe build path |
 | Public resource closure | `SDK_RESOURCE_ALLOWLIST` is the only source-resource input; the verifier requires exact equality in the source snapshot and bare built package directory |
 | Template runtime closure | Every direct `templates/<id>/template.json` descriptor is validated and becomes the one SDK template collection; the current descriptors are `empty` and `game-3d`. `game-3d` derives all assets from `assets/**/*.pack.ts` and `assets/physics.pack.json`, so `SDK_TEMPLATE_RESOURCE_ALLOWLIST` stays empty |

@@ -19,9 +19,9 @@
 // concretion — the GUID domain stays sealed in assets-runtime; ecs only sees a
 // numeric handle vs a non-handle.
 
-import type { Component, ComponentSchema } from './component';
+import type { Component, ComponentSchema, FieldReflection } from './component';
 import { componentSchema } from './component';
-import { componentDefinition } from './component-schema';
+import { componentDeclaresField, componentDefinition } from './component-schema';
 import { ManagedArrayInvalidValueError, SharedFieldInvalidValueError } from './errors';
 
 /** A resolved shared handle is a plain number (the branded Handle bit pattern). */
@@ -48,6 +48,10 @@ function isSharedArrayType(fieldType: string): boolean {
   return head.startsWith('shared<') && head.endsWith('>');
 }
 
+const isManagedArrayField = (field: FieldReflection): boolean => field.arrayMeta !== undefined;
+const isSharedField = (field: FieldReflection): boolean =>
+  isSharedScalarType(field.type) || isSharedArrayType(field.type);
+
 function isArrayPayload(value: unknown): boolean {
   if (Array.isArray(value)) return true;
   // DataView and ArrayBuffer are views/buffers without an element `length`;
@@ -65,7 +69,7 @@ export function validateManagedArrayValues<S extends ComponentSchema>(
   token: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
 ): ManagedArrayInvalidValueError | null {
-  if (raw === undefined) return null;
+  if (raw === undefined || !componentDeclaresField(token, isManagedArrayField)) return null;
   const fields = componentDefinition(token).fields as Readonly<
     Record<string, { readonly type: string; readonly arrayMeta?: unknown }>
   >;
@@ -108,7 +112,7 @@ export function validateSharedFieldValues<S extends ComponentSchema>(
   token: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
 ): SharedFieldInvalidValueError | null {
-  if (raw === undefined) return null;
+  if (raw === undefined || !componentDeclaresField(token, isSharedField)) return null;
   const schema = componentSchema(token) as Record<string, string>;
   const rawObj = raw as Record<string, unknown>;
   for (const fieldName of Object.keys(rawObj)) {

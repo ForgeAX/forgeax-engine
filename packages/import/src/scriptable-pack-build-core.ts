@@ -16,6 +16,7 @@ import {
   type PackParameterValue,
   type ParticleEffectAssetSource,
   type PluginAssetSource,
+  packSourceKeyFailure,
   resolvePackParameterValues,
 } from '@forgeax/engine-pack/source';
 import type {
@@ -163,12 +164,7 @@ function buildContext(
 }
 
 function sourceKeyFailure(sourcePath: string, sourceKey: unknown): PackAuthoringError {
-  return {
-    code: 'pack-source-key-invalid',
-    expected: 'a sourceKey matching the Pack source-key grammar',
-    hint: 'return stable lower-case semantic keys instead of paths or output indexes',
-    detail: { sourcePath, sourceKey },
-  };
+  return packSourceKeyFailure(sourceKey, { sourcePath });
 }
 
 function outputValueError(
@@ -334,23 +330,29 @@ function effectiveParameterValues(
 }
 
 /** Whether an author throw already carries the structured error fields as own data properties. */
-function structuredThrow(cause: Record<string, unknown>): boolean {
+function structuredThrow(cause: Record<string, unknown>): PropertyDescriptorMap | undefined {
   let fields: PropertyDescriptorMap | undefined;
   try {
     fields = Object.getOwnPropertyDescriptors(cause);
   } catch {
     // Opaque author objects retain the ordinary unknown-throw fallback.
   }
-  return (
-    typeof fields?.code?.value === 'string' &&
+  return typeof fields?.code?.value === 'string' &&
     typeof fields?.expected?.value === 'string' &&
     typeof fields?.hint?.value === 'string' &&
     (fields?.detail === undefined || 'value' in fields.detail)
-  );
+    ? fields
+    : undefined;
 }
 
 function thrownBuildFailure(cause: unknown, sourcePath: string): ScriptablePackBuildFailure {
-  if (record(cause) && structuredThrow(cause)) {
+  const fields = record(cause) ? structuredThrow(cause) : undefined;
+  if (fields !== undefined) {
+    if (fields.code?.value === 'pack-source-key-invalid') {
+      const value: unknown = fields.detail?.value;
+      const detail = record(value) ? value : {};
+      return packSourceKeyFailure(detail.sourceKey, { ...detail, sourcePath });
+    }
     return cause as unknown as ScriptablePackDomainError;
   }
   return new ImportError({

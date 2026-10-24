@@ -1,6 +1,11 @@
 import type { Asset, AssetGuid, Result } from '@forgeax/engine-types';
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
-import { AssetGuid as AssetGuidCodec, isValidPackSourceKey, PackageId } from './guid.js';
+import {
+  AssetGuid as AssetGuidCodec,
+  isValidPackSourceKey,
+  PackageId,
+  packSourceKeyFailure,
+} from './guid.js';
 import type {
   PackDraftRequest,
   PackDraftSnapshot,
@@ -214,13 +219,10 @@ function cloneValue<T>(value: T): T {
 }
 
 function sourceKeyFailure(sourceKey: unknown, propertyPath = '$.sourceKey'): PackAuthoringError {
-  return authoringError(
-    'pack-source-key-invalid',
-    'a sourceKey matching ^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$',
-    'use a stable lower-case semantic key; do not derive it from file paths or output order',
-    { propertyPath, sourceKey },
-    typeof sourceKey === 'string' ? sourceKey : undefined,
-  );
+  return {
+    ...packSourceKeyFailure(sourceKey, { propertyPath }),
+    ...(typeof sourceKey === 'string' ? { actual: sourceKey } : {}),
+  };
 }
 
 function parameterFailure(

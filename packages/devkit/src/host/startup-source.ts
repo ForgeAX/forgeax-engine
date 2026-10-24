@@ -26,8 +26,7 @@ export function hostStartupDocument(title: string): string {
       #forgeax-fps { display: none; position: absolute; top: 12px; left: 50%; margin-left: -46px; width: 92px; box-sizing: border-box; padding: 5px 8px; z-index: 2147483645; border: 1px solid rgb(230 235 245 / 30%); border-radius: 6px; background: rgb(5 12 22 / 88%); color: #ffe17b; font: 600 13px/18px system-ui, sans-serif; text-align: center; pointer-events: none; }
       @media (max-width: 600px) { #forgeax-fps { top: auto; bottom: 12px; } }
       #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #05070b; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
-      #forgeax-loading[aria-hidden="true"] { opacity: 0; }
-      #forgeax-loading[aria-hidden="true"]:not([data-fading="true"]) { pointer-events: none; }
+      #forgeax-loading[aria-hidden="true"] { opacity: 0; pointer-events: none; }
       #forgeax-loading-content { display: grid; justify-items: center; gap: 12px; max-width: min(480px, 100%); }
       #forgeax-loading-title { margin: 0; color: #f5f7fa; font-size: clamp(20px, 4vw, 30px); font-weight: 500; letter-spacing: 0.02em; }
       #forgeax-loading-spinner { width: 22px; height: 22px; border: 2px solid rgb(230 235 245 / 20%); border-top-color: rgb(230 235 245 / 78%); border-radius: 50%; animation: forgeax-loading-spin 900ms linear infinite; }
@@ -165,7 +164,7 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
         const onStartupInputCapture = (event) => {
           if (inputEnabled || isStartupControlTarget(event?.target)) return;
           // Preserve native Tab navigation into startup controls. The game UI
-          // is inert while this owner blocks gameplay, including during fade.
+          // is inert while this owner blocks gameplay, until the first ready frame.
           if (event?.key !== 'Tab') event?.preventDefault?.();
           event?.stopImmediatePropagation?.();
           event?.stopPropagation?.();
@@ -204,6 +203,12 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
         const setInputEnabled = (enabled) => {
           inputEnabled = enabled;
           if (gamePage && isElement(gameUi)) gameUi.inert = !enabled;
+          // The one readiness signal for scripted real input: it is open only
+          // while this owner admits gameplay input, never on the fatal path.
+          const documentRoot = document.documentElement;
+          if (gamePage && typeof documentRoot?.setAttribute === 'function') {
+            documentRoot.setAttribute('data-forgeax-input', enabled ? 'open' : 'closed');
+          }
           try {
             inputBinding?.(enabled);
           } catch {
@@ -229,7 +234,25 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
             inputBinding = undefined;
           };
         };
+        let fadeCanvasWatch;
+        const stopFadeCanvasWatch = () => {
+          fadeCanvasWatch?.disconnect();
+          fadeCanvasWatch = undefined;
+        };
+        // While the overlay fades, the presenting canvas already receives
+        // input. A Render Worker recovery that replaces it must close input at
+        // once, before the replacement can take a click or a pointer lock.
+        const watchFadeCanvas = (fadeCanvas) => {
+          const parent = fadeCanvas?.parentNode;
+          const Observer = document.defaultView?.MutationObserver;
+          if (typeof Observer !== 'function' || parent === null || parent === undefined) return;
+          fadeCanvasWatch = new Observer(() => {
+            if (phase === 'fading' && currentCanvas() !== fadeCanvas) prepare();
+          });
+          fadeCanvasWatch.observe(parent, { childList: true });
+        };
         const clearStartupWork = () => {
+          stopFadeCanvasWatch();
           clearStartupTimeout(slowTimer);
           clearStartupTimeout(fadeTimer);
           slowTimer = undefined;
@@ -473,8 +496,11 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
         const prepare = () => {
           if (!gamePage || (phase !== 'loading' && phase !== 'fading')) return;
           if (phase === 'fading') {
+            stopFadeCanvasWatch();
             clearStartupTimeout(fadeTimer);
             fadeTimer = undefined;
+            setInputEnabled(false);
+            setLoadingControls(true);
             setAttribute(loading, 'aria-hidden', 'false');
             setAttribute(loading, 'data-fading', 'false');
           }
@@ -516,19 +542,25 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           phase = 'fading';
           frameRate.completed(event);
           clearStartupWork();
-          setInputEnabled(false);
+          // The game is presentable now; the fade is cosmetic and must not
+          // swallow the first player or scripted input.
+          setInputEnabled(true);
           const fadeGeneration = sessionGeneration;
           const fadeCanvas = latestSubmitted.canvas;
+          // The hidden overlay keeps neither focus nor its Reload activation:
+          // Enter/Space during the fade belong to the game alone.
+          setLoadingControls(false);
           setAttribute(loading, 'data-fading', 'true');
           setAttribute(loading, 'aria-hidden', 'true');
+          watchFadeCanvas(fadeCanvas);
           fadeTimer = setStartupTimeout(() => {
             if (phase !== 'fading' || fadeGeneration !== sessionGeneration) return;
             if (fadeCanvas !== currentCanvas()) {
               prepare();
               return;
             }
+            stopFadeCanvasWatch();
             phase = 'entered';
-            setInputEnabled(true);
             setDisplay(loading, 'none');
             setAttribute(loading, 'data-fading', 'false');
             cleanupStartupListeners();
@@ -613,6 +645,24 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           show(event);
         };
         const onUnhandledRejection = (event) => show(event?.reason ?? event);
+        const setLoadingControls = (active) => {
+          if (loading !== null && isElement(loading)) {
+            loading.inert = !active;
+            const focused = document.activeElement;
+            if (!active && focused !== null && focused !== undefined && typeof loading.contains === 'function' && loading.contains(focused)) {
+              focused.blur?.();
+            }
+          }
+          if (
+            loadingReload === null ||
+            !isElement(loadingReload) ||
+            typeof loadingReload.addEventListener !== 'function'
+          ) return;
+          const listen = active ? 'addEventListener' : 'removeEventListener';
+          loadingReload[listen]('click', reload);
+          loadingReload[listen]('keydown', onStartupControlKey);
+          loadingReload[listen]('keyup', onStartupControlKey);
+        };
         const cleanupStartupListeners = () => {
           if (typeof window.removeEventListener === 'function') {
             window.removeEventListener('forgeax:frame-submitted', onSubmitted, { capture: true });
@@ -637,19 +687,7 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
             fatalReload.removeEventListener('keyup', onStartupControlKey);
           }
         };
-        if (
-          loadingReload !== null &&
-          isElement(loadingReload) &&
-          typeof loadingReload.addEventListener === 'function'
-        ) loadingReload.addEventListener('click', reload);
-        if (
-          loadingReload !== null &&
-          isElement(loadingReload) &&
-          typeof loadingReload.addEventListener === 'function'
-        ) {
-          loadingReload.addEventListener('keydown', onStartupControlKey);
-          loadingReload.addEventListener('keyup', onStartupControlKey);
-        }
+        setLoadingControls(true);
         const bindFatalReload = () => {
           if (
             fatalReload === null ||
@@ -694,6 +732,7 @@ export function hostStartupScript(startupScreen = true, hostExpression = 'undefi
           if (phase === 'loading' || phase === 'preparing' || phase === 'fading') {
             accountForegroundTime();
             clearStartupWork();
+            if (phase === 'fading') setLoadingControls(true);
             phase = 'loading';
             setInputEnabled(false);
             setDisplay(loading, 'grid');

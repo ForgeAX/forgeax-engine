@@ -1550,6 +1550,14 @@ export class GpuDrivenView {
   private bindGroupCreates = 0;
   private bufferRebuilds = 0;
   private resourceGeneration = 0;
+  /**
+   * Generation of the pass list this view adds to a graph. View and scene
+   * buffers are resolved live when the graph executes, so buffer growth
+   * advances only `resourceGeneration`; this changes only when imports or
+   * passes are added or removed (first binding, Skin tasks, surface rows).
+   */
+  private graphGeneration = 0;
+  private graphShape: string | undefined;
   private materialResourceGeneration = 0;
   private readonly allocationLedger = new GpuResourceAllocationLedger();
   private readonly allocationTokens = new WeakMap<Buffer, GpuResourceAllocationToken>();
@@ -2229,6 +2237,11 @@ export class GpuDrivenView {
     }
     this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 2;
     if (graphShapeChanged) this.resourceGeneration += 1;
+    const shape = `${this.skinLayout !== undefined}|${buffers.visibleSurfaceRows !== undefined}`;
+    if (shape !== this.graphShape) {
+      this.graphShape = shape;
+      this.graphGeneration += 1;
+    }
     return ok(undefined);
   }
 
@@ -2246,6 +2259,11 @@ export class GpuDrivenView {
 
   get computeResourceGeneration(): number {
     return this.resourceGeneration;
+  }
+
+  /** Graph-shape generation: advances only when this view's passes or imports change. */
+  get graphResourceGeneration(): number {
+    return this.graphGeneration;
   }
 
   get currentResourceGeneration(): number {
@@ -2756,6 +2774,9 @@ export class GpuDrivenView {
     const live = (current: () => Buffer | undefined, fallback: Buffer) => () =>
       current() ?? fallback;
     const liveBindGroup = () => this.bindGroup ?? bindGroup;
+    // View buffers grow without a new graph as well: every import, dispatch
+    // and readback resolves the current generation when the graph executes.
+    const currentBuffers = () => this.buffers ?? buffers;
     const scenePrefix = labelPrefix === 'gpu-driven' ? 'gpu-scene' : `${labelPrefix}.scene`;
     const primitive = importBuffer(
       `${scenePrefix}.primitive`,
@@ -2797,7 +2818,7 @@ export class GpuDrivenView {
     if (buffers.visibleSurfaceRows !== undefined) {
       const imported = importBuffer(
         `${labelPrefix}.visible-surface-rows`,
-        buffers.visibleSurfaceRows,
+        live(() => this.buffers?.visibleSurfaceRows, buffers.visibleSurfaceRows),
         this.visibleBufferCapacity * 4,
         GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
       );
@@ -2806,28 +2827,28 @@ export class GpuDrivenView {
     }
     const batches = importBuffer(
       `${labelPrefix}.batches`,
-      buffers.batches,
+      () => currentBuffers().batches,
       this.suppressionBase() + this.suppressionWordCapacity * 4,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     );
     if (!batches.ok) return batches;
     const view = importBuffer(
       `${labelPrefix}.view`,
-      buffers.view,
+      () => currentBuffers().view,
       VIEW_BYTES,
       GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     );
     if (!view.ok) return view;
     const counters = importBuffer(
       `${labelPrefix}.counters`,
-      buffers.counters,
+      () => currentBuffers().counters,
       this.countersBytes(),
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!counters.ok) return counters;
     const lodReadback = importBuffer(
       `${labelPrefix}.lod-selection-readback`,
-      buffers.lodReadback,
+      () => currentBuffers().lodReadback,
       this.batchCapacity * COUNTER_STRIDE +
         this.visibleBufferCapacity * 16 +
         this.indirectCapacity * INDIRECT_COMMAND_BYTES,
@@ -2836,14 +2857,14 @@ export class GpuDrivenView {
     if (!lodReadback.ok) return lodReadback;
     const visible = importBuffer(
       `${labelPrefix}.visible`,
-      buffers.visible,
+      () => currentBuffers().visible,
       this.visibleBytes(),
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!visible.ok) return visible;
     const indirect = importBuffer(
       `${labelPrefix}.indirect`,
-      buffers.indirect,
+      () => currentBuffers().indirect,
       this.indirectBytes(),
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_INDIRECT | GPU_BUFFER_USAGE_COPY_SRC,
     );
@@ -2903,7 +2924,10 @@ export class GpuDrivenView {
               stage === 3 ? liveBindGroup() : (this.skinBindGroup ?? taskBinding),
             );
             if (stage === 4) {
-              pass.dispatchWorkgroupsIndirect(buffers.indirect, this.skinDispatchBase() * 4);
+              pass.dispatchWorkgroupsIndirect(
+                currentBuffers().indirect,
+                this.skinDispatchBase() * 4,
+              );
             } else if (stage === 1 || stage === 3) {
               pass.dispatchWorkgroups(1);
             } else {
@@ -2990,10 +3014,6 @@ export class GpuDrivenView {
       },
     });
     if (!finalize.ok) return finalize;
-    const graphResourceGeneration = this.resourceGeneration;
-    const indirectReadbackOffset =
-      this.batchCapacity * COUNTER_STRIDE + this.visibleBufferCapacity * 16;
-    const indirectBufferIdentity = getOpaqueResourceIdentity(buffers.indirect as object);
     const addReadback = (occlusion: boolean) =>
       builder.addCopyPass(`${labelPrefix}.lod-selection-readback`, {
         accesses: [
@@ -3009,8 +3029,11 @@ export class GpuDrivenView {
           // pending/mapped buffer; skip only this telemetry copy and keep the
           // raster/indirect work intact. RhiNull has no runtime mapState, so its
           // undefined value remains structurally executable.
-          const mapState = buffers.lodReadback.mapState;
+          const current = currentBuffers();
+          const mapState = current.lodReadback.mapState;
           if (mapState !== undefined && mapState !== 'unmapped') return;
+          const indirectReadbackOffset =
+            this.batchCapacity * COUNTER_STRIDE + this.visibleBufferCapacity * 16;
           encoder.copyBufferToBuffer(
             resources.buffer(counters.value).unwrap(),
             resources.buffer(lodReadback.value).unwrap(),
@@ -3037,17 +3060,13 @@ export class GpuDrivenView {
           // retaining the stale closure plan would make every observation fail
           // the identity fence and silently leave the CPU level-0 placeholder.
           const submittedPlan = this.plan;
-          if (
-            this.buffers === buffers &&
-            submittedPlan !== undefined &&
-            this.resourceGeneration === graphResourceGeneration
-          ) {
+          if (this.buffers === current && submittedPlan !== undefined) {
             const submittedObservation = surfaceSubmissionObservation?.();
             this.telemetryPending = {
-              buffers,
+              buffers: current,
               plan: submittedPlan,
-              resourceGeneration: graphResourceGeneration,
-              indirectBufferIdentity,
+              resourceGeneration: this.resourceGeneration,
+              indirectBufferIdentity: getOpaqueResourceIdentity(current.indirect as object),
               indirectReadbackOffset,
               ...(submittedObservation === undefined
                 ? {}
@@ -3075,7 +3094,7 @@ export class GpuDrivenView {
       if (!readback.ok) return readback;
       return ok(resources);
     }
-    const lateIndirectByteOffset = this.indirectCapacity * INDIRECT_COMMAND_BYTES;
+    const owner = this;
     const addLateOcclusion = (
       pyramid: GraphTextureView,
     ): Result<GpuDrivenLateOcclusionGraph, RenderGraphError> => {
@@ -3131,8 +3150,13 @@ export class GpuDrivenView {
           `${labelPrefix}.occlusion-cull`,
           `${labelPrefix}.occlusion-finalize-indirect`,
         ]),
-        lateIndirectByteOffset,
-        lateVisibleBase: this.visibleBufferCapacity,
+        // Late regions start after the current early capacities.
+        get lateIndirectByteOffset() {
+          return owner.indirectCapacity * INDIRECT_COMMAND_BYTES;
+        },
+        get lateVisibleBase() {
+          return owner.visibleBufferCapacity;
+        },
       });
     };
     return ok({ ...resources, addLateOcclusion });

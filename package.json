@@ -9,6 +9,11 @@
     "node": ">=22.13.0"
   },
   "packageManager": "pnpm@12.10.1",
+  "overrides": {
+    "body-parser": "^2.4.0",
+    "fast-uri": "^3.1.9",
+    "zod": "^4.6.7"
+  },
   "patchedDependencies": {
     "@deepseek-ai/cordis@4.0.4": "patches/@deepseek-ai__cordis@4.0.4.patch"
   },
@@ -40,7 +45,8 @@
     "build:shared": "node scripts/build-shared-inputs.mjs",
     "stage:desktop-runtime": "node scripts/stage-desktop-runtime.mjs",
     "skills:check": "node scripts/forgeax/check-engine-skills.mjs",
-    "test:sdk:contracts": "node --test scripts/__tests__/sdk-source-contract.test.mjs scripts/forgeax/__tests__/engine-bundle.test.mjs scripts/forgeax/__tests__/release-policy.test.mjs scripts/forgeax/__tests__/release-promotion.test.mjs scripts/forgeax/__tests__/sdk-view.test.mjs scripts/forgeax/__tests__/pnpm-version.test.mjs scripts/forgeax/__tests__/verify-sdk-process.test.mjs scripts/forgeax/__tests__/sdk-gpu-admission.test.mjs scripts/forgeax/__tests__/sdk-live-progress.test.mjs && vitest run --config scripts/forgeax/vitest.config.mjs",
+    "skills:api-index": "node scripts/forgeax/sdk-api-index.mjs",
+    "test:sdk:contracts": "node --test scripts/__tests__/sdk-source-contract.test.mjs scripts/forgeax/__tests__/sdk-carrier.test.mjs scripts/forgeax/__tests__/sdk-source.test.mjs scripts/forgeax/__tests__/engine-bundle.test.mjs scripts/forgeax/__tests__/release-policy.test.mjs scripts/forgeax/__tests__/release-promotion.test.mjs scripts/forgeax/__tests__/sdk-view.test.mjs scripts/forgeax/__tests__/pnpm-version.test.mjs scripts/forgeax/__tests__/verify-sdk-process.test.mjs scripts/forgeax/__tests__/sdk-gpu-admission.test.mjs scripts/forgeax/__tests__/sdk-live-progress.test.mjs scripts/forgeax/__tests__/sdk-api-index.test.mjs scripts/forgeax/__tests__/sdk-project-identity.test.mjs && vitest run --config scripts/forgeax/vitest.config.mjs",
     "sdk:build": "node scripts/forgeax/build-sdk.mjs",
     "sdk:check:npm": "node scripts/forgeax/check-sdk-npm-consumer.mjs",
     "sdk:verify": "corepack pnpm exec node scripts/forgeax/verify-sdk.mjs",

@@ -58,7 +58,7 @@ interface SdkSource {
 
 export interface SdkManifest {
   readonly viewCommit: string;
-  readonly schemaVersion: '1.9.0';
+  readonly schemaVersion: '1.10.0';
   readonly sdkVersion: string;
   readonly engineCommit: string;
   readonly requirements: {
@@ -73,6 +73,12 @@ export interface SdkManifest {
   readonly resources: readonly SdkResource[];
   readonly templateResources: readonly SdkTemplateResource[];
   readonly source: SdkSource;
+  readonly artifacts: readonly {
+    readonly path: string;
+    readonly bytes: number;
+    readonly sha256: string;
+    readonly enginePath?: string;
+  }[];
 }
 
 export interface SdkContext {

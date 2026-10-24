@@ -163,6 +163,7 @@ export type {
   PluginCreateOptions,
   PluginInspectOptions,
   PluginRootOptions,
+  PreviewOptions,
   ProjectCommandOptions,
   ProjectFacts,
   ShaderCheckOptions,

@@ -204,6 +204,15 @@ invalidation of an existing entry.
 | Resource residency | Mesh/texture/sampler ensure decisions, cold/upgrade attempts and receiver allocations | Validation-cache misses or mesh-prepare messages equal physical GPU residency misses |
 | Publication templates | Eligible hits/misses, entity-owned bypasses, all upserts and emitted templates | Frame-local template interning is a cross-frame cache; overall deduplication equals lookup hit rate |
 
+Every Worker-mode `frame-submitted` carries two always-on per-frame
+observations: `rhiCommands` (Render Worker RHI commands since the previous
+submitted frame: draws, pipeline/bind group/vertex buffer sets, bundle replays and
+recordings, queue writes and bytes, resource creation; see
+[`rhi-webgpu` command counts](../../../packages/rhi-webgpu/README.md#command-counts))
+and `publicationBytes` (`{ columns, assets }` of the drawn publication). They are
+CPU-side counts, identical with the WebGPU stub and a real GPU, so a stub A/B can
+show which work population changed alongside sampled CPU time.
+
 For template interning, report both eligible $H/(H+M)$ and total reduction
 $1-\mathrm{templates}/\mathrm{upserts}$ with their own populations. Record active
 typed-view bytes, backing capacity, actual transfer-list bytes/objects and mesh

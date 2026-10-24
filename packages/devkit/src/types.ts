@@ -45,6 +45,11 @@ export interface ProjectCommandOptions {
   readonly port?: number;
 }
 
+export interface PreviewOptions extends ProjectCommandOptions {
+  /** Verify and serve this exact distribution instead of the diagnostic dist. */
+  readonly dist?: string;
+}
+
 export interface ProjectPortOptions {
   readonly port: number;
   readonly strictPort: boolean;

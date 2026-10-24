@@ -51,7 +51,12 @@ export interface AssetLoadOptions {
   readonly signal?: AbortSignal;
 }
 
-type AssetSourceSnapshot = AssetGraphSnapshot;
+type AssetSourceSnapshot = AssetGraphSnapshot & {
+  readonly scopeId: string;
+  readonly realm: string;
+  readonly generation: number;
+  readonly bundleTransfers: ReturnType<BundleStore<AssetLoadError>['transfers']['snapshot']>;
+};
 
 interface SourceEntry {
   readonly value: unknown;
@@ -110,7 +115,7 @@ export interface AssetSource {
   entry(guid: string): SourceEntry | undefined;
   checkCurrent(guid: string): Result<void, AssetLoadError>;
   snapshot(): AssetSourceSnapshot;
-  subscribe(listener: (snapshot: AssetSourceSnapshot) => void): () => void;
+  subscribe(listener: (snapshot: AssetGraphSnapshot) => void): () => void;
   dispose(): void;
 }
 
@@ -219,6 +224,12 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
             range,
             { signal: lifetime.signal },
             entry,
+            (response) =>
+              bundles.transfers.observe(
+                `${url}\0${range.bundleDigest}`,
+                entry ? range.length : undefined,
+                response,
+              ),
           );
           if (read.ok) return read;
           const error = artifactError(request.guid, descriptor.path);
@@ -474,7 +485,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       const entry = graph.entry(guid);
       return entry === undefined ? err(missing(guid)) : checkCurrent(guid, entry.publication);
     },
-    snapshot: () => graph.snapshot(),
+    snapshot: () => snapshot(),
     subscribe: (listener) => graph.subscribe(listener),
     dispose: () => {
       lifetime.abort();
@@ -486,6 +497,15 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       session.dispose();
     },
   };
+  function snapshot(): AssetSourceSnapshot {
+    return {
+      ...graph.snapshot(),
+      scopeId: session.scopeId,
+      generation: session.generation,
+      realm: Object.prototype.toString.call(globalThis),
+      bundleTransfers: bundles.transfers.snapshot(),
+    };
+  }
   function checkCurrent(
     guid: string,
     expected: AssetPublicationTuple,

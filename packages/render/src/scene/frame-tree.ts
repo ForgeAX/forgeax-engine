@@ -53,14 +53,18 @@ export function put<T>(
 ): Node<T> {
   if (root === undefined) return node(value, queue, key, weight);
   if (queue === root.queue && key === root.key)
-    return node(value, queue, key, weight, root.left, root.right);
+    return root.value === value && root.weight === weight
+      ? root
+      : node(value, queue, key, weight, root.left, root.right);
   if (before(queue, key, root)) {
     const left = put(root.left, value, queue, key, weight);
+    if (left === root.left) return root;
     return left.priority < root.priority
       ? rebuild(left, left.left, rebuild(root, left.right, root.right))
       : rebuild(root, left, root.right);
   }
   const right = put(root.right, value, queue, key, weight);
+  if (right === root.right) return root;
   return right.priority < root.priority
     ? rebuild(right, rebuild(root, root.left, right.left), right.right)
     : rebuild(root, root.left, right);
@@ -81,23 +85,54 @@ export function remove<T>(
 ): Node<T> | undefined {
   if (root === undefined) return undefined;
   if (queue === root.queue && key === root.key) return merge(root.left, root.right);
-  return before(queue, key, root)
-    ? rebuild(root, remove(root.left, queue, key), root.right)
-    : rebuild(root, root.left, remove(root.right, queue, key));
+  if (before(queue, key, root)) {
+    const left = remove(root.left, queue, key);
+    return left === root.left ? root : rebuild(root, left, root.right);
+  }
+  const right = remove(root.right, queue, key);
+  return right === root.right ? root : rebuild(root, root.left, right);
 }
 
-export function* nodes<T>(root: Node<T> | undefined): Generator<Node<T>> {
-  const pending: Node<T>[] = [];
-  while (root !== undefined || pending.length > 0) {
+/**
+ * In-order traversal. Each step reuses one result object (consumers read the
+ * value before the next step), so walking a root allocates per walk, not per node.
+ */
+class NodeIterator<T> implements IterableIterator<Node<T>> {
+  readonly #pending: Node<T>[] = [];
+  #root: Node<T> | undefined;
+  readonly #result: { value: Node<T> | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(root: Node<T> | undefined) {
+    this.#root = root;
+  }
+  next(): IteratorResult<Node<T>> {
+    let root = this.#root;
+    const pending = this.#pending;
     while (root !== undefined) {
       pending.push(root);
       root = root.left;
     }
     const current = pending.pop();
-    if (current === undefined) return;
-    yield current;
-    root = current.right;
+    const result = this.#result;
+    if (current === undefined) {
+      this.#root = undefined;
+      result.value = undefined;
+      result.done = true;
+    } else {
+      this.#root = current.right;
+      result.value = current;
+    }
+    return result as IteratorResult<Node<T>>;
   }
+  [Symbol.iterator](): IterableIterator<Node<T>> {
+    return this;
+  }
+}
+
+export function nodes<T>(root: Node<T> | undefined): IterableIterator<Node<T>> {
+  return new NodeIterator(root);
 }
 export function prefix<T>(
   root: Node<T> | undefined,

@@ -13,7 +13,7 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, FrameProjection } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { matchPass } from '../systems/pass-selector';
@@ -23,6 +23,7 @@ import { directDrawRows } from './direct-draws';
 import { captureDispatchOverlays } from './dispatch-overlays';
 import type { buildDispatchPlan } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
+import { variantSetFromDefines } from './helpers';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
 import {
   isMediumMaterial,
@@ -203,6 +204,81 @@ function selectDirectPassMaterial(
   };
 }
 
+/** A retained projection keeps its selected entries, so later stages see a fixed list. */
+const selectedByRequest = new WeakMap<
+  ScenePassRequest,
+  { readonly projected: DispatchList; readonly selected: DispatchList }
+>();
+
+export function selectRequestDispatch(
+  request: ScenePassRequest,
+  projected: DispatchList,
+): DispatchList {
+  const selector = request.selector;
+  if (selector === undefined) return projected;
+  const previous = selectedByRequest.get(request);
+  if (previous?.projected === projected) return previous.selected;
+  const selected = projected.filter((entry) => matchPass(entry.tags, selector));
+  selectedByRequest.set(request, { projected, selected });
+  return selected;
+}
+
+interface TransparentSortSource {
+  readonly transform: RenderableSnapshot['transform'];
+  readonly material: MaterialSnapshot;
+  readonly spriteRegion: RenderableSnapshot['spriteRegion'];
+}
+
+function sortSource(row: ValidatedRenderable, materials: MaterialFrame): TransparentSortSource {
+  const accepted = materials.get(row.source.material);
+  if (accepted === undefined) throw new Error('Draw sorting requires its accepted material');
+  return {
+    transform: row.source.transform,
+    material: accepted.snapshot,
+    spriteRegion: row.source.spriteRegion,
+  };
+}
+
+type MutableRow = { -readonly [K in keyof ValidatedRenderable]: ValidatedRenderable[K] };
+
+/**
+ * Append one pass's rows under the combined index space. The last dispatch
+ * entry of a row owns its overlay (render state, stencil, variant). Rows are
+ * this frame's fresh projections owned by this pass, so their addresses and
+ * overlays are written in place instead of copying every row again.
+ */
+function appendPassRows(
+  rows: ValidatedRenderable[],
+  localRows: readonly ValidatedRenderable[],
+  localDispatch: DispatchList,
+  offset: number,
+  indices: Set<number>,
+): void {
+  const positional = localRows.every((row, index) => row.renderableIndex === index);
+  if (!positional) {
+    const overlays = captureDispatchOverlays(localDispatch).values;
+    for (const row of localRows) {
+      const index = offset + row.renderableIndex;
+      indices.add(index);
+      rows.push({ ...row, ...overlays.get(row.renderableIndex), renderableIndex: index });
+    }
+    return;
+  }
+  for (const entry of localDispatch) {
+    const row = localRows[entry.renderableIndex] as MutableRow | undefined;
+    if (row === undefined) continue;
+    row.renderState = entry.renderState;
+    row.stencilReference = entry.stencilReference;
+    row.variantSet = variantSetFromDefines(entry.defines);
+  }
+  for (const row of localRows) {
+    const index = offset + row.renderableIndex;
+    (row as MutableRow).renderableIndex = index;
+    indices.add(index);
+    rows.push(row);
+  }
+}
+
 export interface ScenePassDraws {
   readonly validatedOrdered: readonly ValidatedRenderable[];
   readonly dispatch: DispatchList;
@@ -223,7 +299,10 @@ export function prepareScenePasses(
   viewDraws: FrameList<RenderableSnapshot>,
   prepareGeometry: (mesh: MeshGpuHandles, material: MaterialSnapshot) => MeshGpuHandles,
   projectDispatch: (rows: readonly ValidatedRenderable[]) => DispatchList,
-  fold: (dispatch: DispatchList, rows: readonly FoldRenderableLike[]) => readonly FoldBucket[],
+  fold: (
+    dispatch: DispatchList,
+    rows: () => readonly FoldRenderableLike[],
+  ) => readonly FoldBucket[],
   lod: (
     rows: readonly ValidatedRenderable[],
     request: ScenePassRequest,
@@ -286,15 +365,9 @@ export function prepareScenePasses(
           ),
           request,
         );
-    const sortSources = localRows.map((row) => {
-      const accepted = materials.get(row.source.material);
-      if (accepted === undefined) throw new Error('Draw sorting requires its accepted material');
-      return {
-        transform: row.source.transform,
-        material: accepted.snapshot,
-        spriteRegion: row.source.spriteRegion,
-      };
-    });
+    // Sort and fold read these per row only when they actually order or fold.
+    let sortSources: readonly TransparentSortSource[] | undefined;
+    const sortRows = () => (sortSources ??= localRows.map((row) => sortSource(row, materials)));
     let sort = sortByRequest.get(request);
     if (sort === undefined) {
       sort = new TransparentSortCache();
@@ -304,12 +377,10 @@ export function prepareScenePasses(
       request.recordMode === 'translucent' ||
       request.recordMode === 'translucent-before-transmission';
     let localDispatch = sort.sort(
-      projectDispatch(localRows).filter(
-        (entry) => request.selector === undefined || matchPass(entry.tags, request.selector),
-      ),
+      selectRequestDispatch(request, projectDispatch(localRows)),
       world,
       eye === undefined ? [] : [eye],
-      sortSources,
+      new FrameProjection(localRows, (row: ValidatedRenderable) => sortSource(row, materials)),
       combinedTranslucency ||
         request.recordMode === 'transparent' ||
         request.recordMode === 'oit-residual',
@@ -342,33 +413,36 @@ export function prepareScenePasses(
         continue;
       }
     }
-    const overlays = captureDispatchOverlays(localDispatch).values;
     const offset = rows.length;
     const indices = new Set<number>();
-    for (const row of localRows) {
-      const index = offset + row.renderableIndex;
-      indices.add(index);
-      rows.push({ ...row, ...overlays.get(row.renderableIndex), renderableIndex: index });
-    }
-    const mappedDispatch = localDispatch.map((entry) => ({
-      ...entry,
-      renderableIndex: offset + entry.renderableIndex,
-    }));
-    dispatch.push(...mappedDispatch);
+    appendPassRows(rows, localRows, localDispatch, offset, indices);
+    // The first pass keeps its own indices; its dispatch needs no remapped copy.
+    const mappedDispatch: DispatchList =
+      offset === 0
+        ? localDispatch
+        : localDispatch.map((entry) => ({
+            ...entry,
+            renderableIndex: offset + entry.renderableIndex,
+          }));
+    for (const entry of mappedDispatch) dispatch.push(entry);
     if (
       !combinedTranslucency &&
       !request.capture &&
       request.passKind === 'forward' &&
       localRows.length > 0
     ) {
-      for (const bucket of fold(localDispatch, sortSources)) {
-        buckets.push({
-          ...bucket,
-          entries: bucket.entries.map((entry) => ({
-            ...entry,
-            renderableIndex: offset + entry.renderableIndex,
-          })),
-        });
+      for (const bucket of fold(localDispatch, sortRows)) {
+        buckets.push(
+          offset === 0
+            ? bucket
+            : {
+                ...bucket,
+                entries: bucket.entries.map((entry) => ({
+                  ...entry,
+                  renderableIndex: offset + entry.renderableIndex,
+                })),
+              },
+        );
       }
     }
     prepared.set(request, { indices, dispatch: mappedDispatch });
@@ -381,26 +455,43 @@ export function prepareScenePasses(
       plan: ReturnType<typeof buildDispatchPlan>,
     ): ReadonlyMap<ScenePassRequest, ScenePassDraws> {
       const work = new Map<ScenePassRequest, ScenePassDraws>();
-      const rowsByIndex = new Map<number, number>();
-      for (const [index, row] of plan.validatedOrdered.entries())
-        rowsByIndex.set(row.renderableIndex, index);
+      // Each combined row index belongs to at most one request; one ordered
+      // walk of the submitted plan yields every request's ascending positions.
+      const owners: (number[] | undefined)[] = new Array(rows.length);
+      const positionsByRequest = new Map<ScenePassRequest, number[]>();
       for (const [request, candidate] of prepared) {
-        const indices = [...candidate.indices]
-          .map((index) => rowsByIndex.get(index))
-          .filter((index): index is number => index !== undefined)
-          .sort((a, b) => a - b);
+        const positions: number[] = [];
+        positionsByRequest.set(request, positions);
+        for (const index of candidate.indices) owners[index] = positions;
+      }
+      const submitted = plan.validatedOrdered;
+      for (let position = 0; position < submitted.length; position++) {
+        const index = (submitted[position] as ValidatedRenderable).renderableIndex;
+        if (index >= 0 && index < owners.length) owners[index]?.push(position);
+      }
+      const fold = plan.foldDispatchPlan;
+      for (const [request, candidate] of prepared) {
+        const indices = positionsByRequest.get(request) as number[];
         const validatedOrdered = indices.map((index) => {
-          const row = plan.validatedOrdered[index];
+          const row = submitted[index];
           if (row === undefined) throw new Error('Missing submitted direct row');
           return row;
         });
-        const headBuckets = new Map<number, FoldBucket>();
-        const skipIndices = new Set<number>();
-        for (const [local, global] of indices.entries()) {
-          const head = plan.foldDispatchPlan?.headBuckets.get(global);
-          if (head !== undefined) headBuckets.set(local, head);
-          if (plan.foldDispatchPlan?.skipIndices.has(global)) skipIndices.add(local);
-        }
+        let headBuckets: Map<number, FoldBucket> | undefined;
+        let skipIndices: Set<number> | undefined;
+        if (fold != null)
+          for (let local = 0; local < indices.length; local++) {
+            const global = indices[local] as number;
+            const head = fold.headBuckets.get(global);
+            if (head !== undefined) {
+              headBuckets ??= new Map();
+              headBuckets.set(local, head);
+            }
+            if (fold.skipIndices.has(global)) {
+              skipIndices ??= new Set();
+              skipIndices.add(local);
+            }
+          }
         const roster = {
           validatedOrdered,
           dispatch: candidate.dispatch,
@@ -410,9 +501,13 @@ export function prepareScenePasses(
         work.set(request, {
           ...roster,
           foldDispatchPlan:
-            headBuckets.size === 0
+            headBuckets === undefined
               ? null
-              : { headBuckets, skipIndices, foldedBucketCount: headBuckets.size },
+              : {
+                  headBuckets,
+                  skipIndices: skipIndices ?? new Set(),
+                  foldedBucketCount: headBuckets.size,
+                },
           mainPassMaterialSelection: createMainPassMaterialSelectionOwner(roster),
         });
       }

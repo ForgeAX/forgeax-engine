@@ -9,11 +9,21 @@ import {
   type RenderFeature,
   type RenderPublication,
   type RenderPublicationIdentity,
+  renderPublicationBytes,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
 import { createFullscreenRenderFeature } from '@forgeax/engine-render/authoring';
-import { fullscreenRenderFeatureDeclaration } from '@forgeax/engine-render/internal';
+import {
+  fullscreenRenderFeatureDeclaration,
+  renderGraphCompileCount,
+} from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
+import {
+  type RhiCommandCounts,
+  readRhiCommandCounts,
+  subtractRhiCommandCounts,
+  webGpuPipelineCreationCount,
+} from '@forgeax/engine-rhi-webgpu';
 import {
   type BundlerOptions,
   constructRuntimeRendererHost,
@@ -31,6 +41,7 @@ import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-e
 import { installCarriedGpuStub } from './gpu-stub';
 import type { SerializedRenderError } from './protocol';
 import { ownReceivedPublicationMaterials } from './received-publication-materials';
+import { RenderDrawTiming } from './render-draw-timing';
 import { RenderMeshResidency } from './render-mesh-residency';
 import type {
   CompletedMeshConsumption,
@@ -53,8 +64,14 @@ let meshResidency: RenderMeshResidency | undefined;
 let publicationIdentity: RenderPublicationIdentity | undefined;
 /** Host port for render-submitted / render-complete; Host credit bypasses the Engine tick. */
 let hostPort: MessagePort | undefined;
-/** Start of the previous draw (Render Worker clock); always-on cadence counter. */
-let previousDrawStartedAt: number | undefined;
+/** Always-on draw cadence and stall accounting (Render Worker clock). */
+const drawTiming = new RenderDrawTiming({
+  now: () => performance.now(),
+  graphCompiles: renderGraphCompileCount,
+  pipelineCreations: webGpuPipelineCreationCount,
+});
+/** RHI command counts at the previous submitted frame; per-frame counts are the difference. */
+let previousCommandCounts: RhiCommandCounts | undefined;
 let inspectionWorldIdentity: string | undefined;
 let unsubscribeRenderer: (() => void) | undefined;
 let readyAnnounced = false;
@@ -1001,14 +1018,33 @@ function postSubmitted(
   message: DrawMessage,
   receipt: FrameReceipt,
   features: { identity: string; feedback: unknown }[],
-  drawIntervalMs: number | undefined,
 ): void {
+  drawTiming.submit();
+  const drawIntervalMs = drawTiming.intervalMs;
+  const commandCounts = readRhiCommandCounts();
+  const rhiCommands =
+    previousCommandCounts === undefined
+      ? undefined
+      : subtractRhiCommandCounts(commandCounts, previousCommandCounts);
+  previousCommandCounts = commandCounts;
   const submittedFrame = {
     kind: 'frame-submitted',
     worldIdentity: message.worldIdentity,
     frameId: message.frameId,
     deviceGeneration: receipt.deviceGeneration,
     ...(drawIntervalMs === undefined ? {} : { renderDrawIntervalMs: drawIntervalMs }),
+    renderDrawCpuMs: drawTiming.cpuMs,
+    renderAwaitMs: drawTiming.awaitMs,
+    renderQueuedMs: drawTiming.queuedMs,
+    renderGraphCompiles: drawTiming.graphCompiles,
+    renderPipelineCreations: drawTiming.pipelineCreations,
+    ...(message.engineUpdateMs === undefined ? {} : { engineUpdateMs: message.engineUpdateMs }),
+    ...(message.engineCreditWaitMs === undefined
+      ? {}
+      : { engineCreditWaitMs: message.engineCreditWaitMs }),
+    ...(drawTiming.stallReason === undefined ? {} : { renderStallReason: drawTiming.stallReason }),
+    ...(rhiCommands === undefined ? {} : { rhiCommands }),
+    publicationBytes: renderPublicationBytes(message.publication),
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
@@ -1061,10 +1097,7 @@ async function deliverGeometryObservation(
 
 async function receiveDraw(message: DrawMessage): Promise<void> {
   let completionOwnsFrame = false;
-  const drawStartedAt = performance.now();
-  const drawIntervalMs =
-    previousDrawStartedAt === undefined ? undefined : drawStartedAt - previousDrawStartedAt;
-  previousDrawStartedAt = drawStartedAt;
+  drawTiming.begin(message);
   try {
     if (renderer === undefined || canvas === undefined || busy)
       throw new Error('Render Worker has no publication credit');
@@ -1114,7 +1147,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       captureDraw,
     );
     if (failed) return;
-    postSubmitted(message, receipt, features, drawIntervalMs);
+    postSubmitted(message, receipt, features);
     // Keep the source's submitted-before-completed order and existing credits,
     // while freezing GPU resources until the frame-header snapshot is complete.
     if (snapshotBoundary !== undefined) await snapshotBoundary;
@@ -1123,6 +1156,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
   } catch (cause) {
     fail(message, cause);
   } finally {
+    drawTiming.end();
     busy = false;
     if (!completionOwnsFrame) {
       closeVideoFrames(message);
@@ -1158,6 +1192,7 @@ scope.onmessage = (event) => {
     return;
   }
   framesInFlight++;
+  drawTiming.arrive(message);
   if (drawing !== undefined) {
     queued.push(message);
     return;

@@ -154,6 +154,37 @@ describe('incremental shadow layer projection', () => {
     expect(selectedSlots(patched, 6)).toEqual([6]);
   });
 
+  it('answers drawn slots like the batch scan before and after it indexes them', () => {
+    let seed = 0x2f6b;
+    const next = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return seed / 2 ** 32;
+    };
+    const size = 600;
+    const batches = Array.from({ length: 12 }, (_, batchId) => {
+      let members = new MemberCandidates();
+      for (let slot = 0; slot < size; slot++)
+        if (next() < 0.08)
+          members = members.with({ ...member(slot), instanceCount: Math.floor(next() * 3) });
+      return batch(batchId, members);
+    });
+    let selection = new FrameSet();
+    for (let slot = 0; slot < size; slot++) if (next() < 0.7) selection = selection.with(slot);
+    const projection = projectShadowLayer(undefined, plan(batches), selection, work());
+    const scanned = (slot: number) =>
+      projection.batches.some(
+        (row) => ((row.candidates as MemberCandidates).get(slot)?.instanceCount ?? 0) > 0,
+      );
+    let drawn = 0;
+    // Enough lookups to exhaust the scan budget, so both answer paths run.
+    for (let round = 0; round < 3; round++)
+      for (let slot = -2; slot < size + 2; slot++) {
+        expect(projection.drawn.has(slot)).toBe(scanned(slot));
+        if (round === 0 && scanned(slot)) drawn++;
+      }
+    expect(drawn).toBeGreaterThan(0);
+  });
+
   it('keeps an absent batch dormant and restores it without walking its members', () => {
     const { batches, source, selection } = scene(4_096);
     const initial = projectShadowLayer(undefined, source, selection, work());

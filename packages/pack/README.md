@@ -483,6 +483,8 @@ need their normal Registry loader/decoder. No cooker enters the player.
 
 `forgeax asset inspect --subject <source.pack.ts> --root <project> --json` executes module initialization, validates the default export, and projects canonical Meta without calling `build`. `@forgeax/engine-pack/source-node` accepts a host executor with `load` and optional `dispose`; `timeoutMs` bounds module initialization and `buildTimeoutMs` bounds one `build(context)` call. A build timeout returns one structured `pack-source-load-failed` Result with `detail.phase: 'build'`, the configured `timeoutMs`, and deterministic cleanup of the isolated worker and compile root.
 
+Trusted production and Workspace authoring share the finite 120-second build bound (`SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`), so a complete geometry recipe does not inherit the low-level loader's 15-second default. Both module initialization and build expiration still retire their isolated execution lease; runtime loading fences are independent of these offline limits.
+
 Build workers execute the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
 
 Disposable metadata workers compile the static import closure. If module

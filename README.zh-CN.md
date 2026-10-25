@@ -46,7 +46,7 @@ ForgeaX 是以 **AI agent 为第一用户**的 TypeScript 游戏引擎。数据�
 | **显式状态与失败** | 闭合 union、结构化错误、明确的能力缺失与 fallback 报告，减少隐藏分支 |
 | **构建期准备，运行时消费** | 导入、WGSL 组合与反射、VFX 编译在构建期完成；运行时加载已发布内容 |
 
-完整约束见 [AI-first 设计公理](AGENTS.md#design-axiom--compression--intelligence) 与 [模块职责地图](AGENTS.md#module-design-map--cognitive-injection)。
+完整约束见 [AI-first 设计公理](packages/engine/AGENT-REFERENCE.md#design-axiom--compression--intelligence) 与 [模块职责地图](packages/engine/AGENT-REFERENCE.md#module-design-map--cognitive-injection)。
 
 <a id="architecture"></a>
 ## 架构
@@ -217,7 +217,7 @@ pnpm test
 | 获取 SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
 | SDK 的 `source/engine/` | 独立公开源码面，带 `.forgeax-public-distribution` 标记与预构建 WASM；运行上述 install / build，无需私有子模块 |
 | 完整贡献者 checkout | 首次 clone 使用 `--recurse-submodules` 获取有权限访问的私有资产；完整应用构建运行 `pnpm build` |
-| 单个示例迭代 | `pnpm build:app hello/triangle`；更大范围验收遵循 [Smoke gate](AGENTS.md#smoke-gate) |
+| 单个示例迭代 | `pnpm build:app hello/triangle`；更大范围验收遵循 [Smoke gate](packages/engine/AGENT-REFERENCE.md#smoke-gate) |
 
 SDK 包含构建产物、模板、技能与 Engine 源码。详见 [SDK 指南](skills/forgeax-engine-sdk/SKILL.md)。
 

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,13 @@ afterEach(async () => {
 async function project(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-cli-presentation-'));
   roots.push(root);
-  await writeFile(join(root, 'package.json'), '{"name":"cli-presentation","type":"module"}\n');
+  const { packageManager } = JSON.parse(
+    await readFile(new URL('../../../../package.json', import.meta.url), 'utf8'),
+  ) as { packageManager: string };
+  await writeFile(
+    join(root, 'package.json'),
+    `${JSON.stringify({ name: 'cli-presentation', type: 'module', packageManager })}\n`,
+  );
   await writeFile(
     join(root, 'forge.json'),
     JSON.stringify({

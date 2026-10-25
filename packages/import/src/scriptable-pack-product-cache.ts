@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { deserialize, serialize } from 'node:v8';
+import { deserialize, Serializer } from 'node:v8';
 import { brotliCompress, brotliDecompress, constants } from 'node:zlib';
 import { DdcEntryStore, ddcOutputDigest, semanticDdcKey } from '@forgeax/engine-ddc';
 import {
@@ -19,10 +19,10 @@ import type {
   ScriptablePackBuildWorkItem,
 } from './scriptable-pack-build-core.js';
 
-// Format 8 stores project-root paths as tokens and pairs with the Pack-relative
-// input fingerprint. Earlier formats hold checkout-bound fingerprints that the
-// current producer no longer emits, so they are cold misses, not migrations.
-const CACHE_SCHEMA = 'scriptable-pack-product/8';
+// Format 9 keeps typed-array backing buffers independent of the serialized Pack.
+// DefaultSerializer restores small views into the whole Pack buffer; per-output
+// structuredClone then copies that entire buffer at every content-read boundary.
+const CACHE_SCHEMA = 'scriptable-pack-product/9';
 const PRODUCT_ARTIFACT = 'product.v8.br';
 const LEGACY_CACHE_SCHEMAS = [] as const;
 const KINDS_SCHEMA = 'scriptable-pack-product-kinds/1';
@@ -485,7 +485,10 @@ export async function createScriptablePackProductCache(options: {
     try {
       const immutable = bindGeneration(product, 1);
       if (immutable === undefined) return;
-      const bytes = serialize(shareImmutableProductData(immutable, relocation?.store));
+      const serializer = new Serializer();
+      serializer.writeHeader();
+      serializer.writeValue(shareImmutableProductData(immutable, relocation?.store));
+      const bytes = serializer.releaseBuffer();
       if (relocation?.locationBound(bytes)) {
         timing('skip', subject.sourcePath, startedAt, { reason: 'location-bound' });
         return;

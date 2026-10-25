@@ -537,6 +537,22 @@ export class GpuScene {
     );
   }
 
+  /** Whether every box changed after `revision` misses; see {@link GpuSceneChangeLog.changedBoundsMiss}. */
+  changedBoundsMiss(
+    revision: number,
+    misses: (boxes: Float32Array, offset: number) => boolean,
+    ignoredSlots?: ReadonlySet<number>,
+    observedSlots?: { has(slot: number): boolean },
+  ): boolean {
+    return this.changeLog.changedBoundsMiss(
+      revision,
+      this.sceneContentRevision,
+      misses,
+      ignoredSlots,
+      observedSlots,
+    );
+  }
+
   /** Slots created, changed or removed after `revision`; `undefined` when unproven. */
   changedSlotsSince(revision: number): readonly number[] | undefined {
     return this.changeLog.changedSlotsSince(revision, this.sceneContentRevision);

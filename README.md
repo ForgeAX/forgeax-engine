@@ -46,7 +46,7 @@ Efficiency means **verified useful work**, accounting for diagnosis and rework, 
 | **Explicit states and failures** | Closed unions, structured errors, and reported capability absence and fallback reduce hidden branches |
 | **Prepare at build time, consume at runtime** | Import, WGSL composition and reflection, and VFX compilation produce published content for runtime loading |
 
-See the [AI-first design axiom](AGENTS.md#design-axiom--compression--intelligence) and [module ownership map](AGENTS.md#module-design-map--cognitive-injection) for the full constraints.
+See the [AI-first design axiom](packages/engine/AGENT-REFERENCE.md#design-axiom--compression--intelligence) and [module ownership map](packages/engine/AGENT-REFERENCE.md#module-design-map--cognitive-injection) for the full constraints.
 
 <a id="architecture"></a>
 ## Architecture
@@ -217,7 +217,7 @@ pnpm test
 | Install the SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
 | SDK `source/engine/` | Independent public source with `.forgeax-public-distribution` and prebuilt WASM; run the install/build commands above without private submodules |
 | Full contributor checkout | Clone with `--recurse-submodules` for authorized private asset access; run `pnpm build` for the complete application fleet |
-| Single demo iteration | `pnpm build:app hello/triangle`; broader acceptance follows the [Smoke gate](AGENTS.md#smoke-gate) |
+| Single demo iteration | `pnpm build:app hello/triangle`; broader acceptance follows the [Smoke gate](packages/engine/AGENT-REFERENCE.md#smoke-gate) |
 
 The SDK includes built packages, templates, skills, and Engine source. See the [SDK guide](skills/forgeax-engine-sdk/SKILL.md) for release and acceptance contracts.
 

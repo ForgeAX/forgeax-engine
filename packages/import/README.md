@@ -104,6 +104,12 @@ identity. The result is a dynamic `sourceKey -> Asset` map; the bridge derives
 assets through the same registered output producers and Pack v2 finalizer used
 by ordinary imports.
 
+The optional ScriptablePack product DDC preserves typed-array backing buffers
+and shared-view offsets using V8's native ArrayBuffer encoding. Cached geometry
+reads and Worker messages copy the asset's own buffers rather than the complete
+serialized Pack. Earlier cache formats are cold misses; source generation,
+content digests and publication validation remain authoritative.
+
 Authored material outputs with passes use the registered `material` NativeCooker,
 including Engine Standard roots. A shipped template is source ownership, not a
 published per-material program: the producer must retain its admitted ray-hit and

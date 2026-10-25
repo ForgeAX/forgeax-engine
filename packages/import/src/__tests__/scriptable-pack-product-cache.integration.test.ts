@@ -15,6 +15,101 @@ import { createScriptablePackProductCache } from '../scriptable-pack-product-cac
 
 const revision = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
 
+it('keeps cached geometry buffers bounded when individual outputs cross a Worker boundary', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-geometry-buffers-'));
+  const sourcePath = join(root, 'geometry.pack.ts');
+  try {
+    await writeFile(sourcePath, 'source');
+    const subject = {
+      sourcePath,
+      sourceClosure: [{ path: sourcePath, digest: revision('source') }],
+      definition: definePack({
+        schemaVersion: '2.0.0',
+        packageId: definePackageId('01900000-0000-7000-8000-0000000000e5'),
+        build: () => ok({}),
+      }),
+    };
+    const payloads = Array.from({ length: 64 }, (_, index) => ({
+      vertices: new Float32Array(1024).fill(index),
+      indices: new Uint32Array([0, 1, 2]),
+    }));
+    const product = {
+      product: { assets: payloads.map((payload) => ({ kind: 'mesh', payload })) },
+      stagedOutputs: [],
+      externalEvidence: [],
+      inputFingerprint: 'sha256:source',
+    } as unknown as ScriptablePackBuildProduct;
+    const cache = await createScriptablePackProductCache({ root, outputVersions: {}, cookers: [] });
+    await cache.write(subject, product);
+    const restored = await cache.read(subject);
+    if (restored === undefined) throw new Error('Geometry product was not restored');
+    deepStrictEqual(restored, product);
+    for (const output of restored.product.assets) {
+      const geometry = structuredClone(output.payload) as (typeof payloads)[number];
+      expect(geometry.vertices.buffer.byteLength).toBe(geometry.vertices.byteLength);
+      expect(geometry.indices.buffer.byteLength).toBe(geometry.indices.byteLength);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('preserves shared geometry views and their offsets in the cached product', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-shared-geometry-'));
+  const sourcePath = join(root, 'geometry.pack.ts');
+  try {
+    await writeFile(sourcePath, 'source');
+    const subject = {
+      sourcePath,
+      sourceClosure: [{ path: sourcePath, digest: revision('source') }],
+      definition: definePack({
+        schemaVersion: '2.0.0',
+        packageId: definePackageId('01900000-0000-7000-8000-0000000000e6'),
+        build: () => ok({}),
+      }),
+    };
+    const buffer = new ArrayBuffer(64);
+    const vertices = new Float32Array(buffer, 16, 4);
+    vertices.set([1, 2, 3, 4]);
+    const payload = {
+      vertices,
+      indices: new Uint32Array(buffer, 32, 3),
+      view: new DataView(buffer),
+    };
+    const product = {
+      product: {
+        assets: [
+          { kind: 'mesh', payload },
+          { kind: 'mesh', payload },
+        ],
+      },
+      stagedOutputs: [],
+      externalEvidence: [],
+      inputFingerprint: 'sha256:source',
+    } as unknown as ScriptablePackBuildProduct;
+    const cache = await createScriptablePackProductCache({ root, outputVersions: {}, cookers: [] });
+    await cache.write(subject, product);
+    const restored = await cache.read(subject);
+    if (restored === undefined) throw new Error('Shared geometry product was not restored');
+    deepStrictEqual(restored, product);
+    const first = restored.product.assets[0]?.payload as typeof payload;
+    const second = restored.product.assets[1]?.payload as typeof payload;
+    expect(first).toBe(second);
+    expect(first.vertices.buffer).toBe(first.indices.buffer);
+    expect(first.vertices.buffer).toBe(first.view.buffer);
+    expect(first.vertices.byteOffset).toBe(16);
+    expect(first.indices.byteOffset).toBe(32);
+    expect(first.vertices.buffer).not.toBe(buffer);
+    vertices[0] = 9;
+    expect(first.vertices[0]).toBe(1);
+    const copied = structuredClone(first);
+    expect(copied.vertices.buffer).toBe(copied.indices.buffer);
+    expect(copied.vertices.buffer.byteLength).toBe(64);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it('encodes equal immutable program metadata once without mutating the publication', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-shared-program-'));
   const sourcePath = join(root, 'scene.pack.ts');

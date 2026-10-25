@@ -5,7 +5,12 @@ import { expect, test, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
-import { FrameProjection } from '../scene/frame-list';
+import {
+  FrameProjection,
+  lodCandidateCountOf,
+  RetainedFrameProjection,
+  sparseRowsOf,
+} from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
@@ -319,4 +324,41 @@ test('lazy projection preserves exact Array.at boundaries without accidental dou
   );
   expect(undefinedValue.slice()).toEqual([undefined, 4]);
   expect([...undefinedValue]).toEqual([undefined, 4]);
+});
+
+test('temporal rows carry the Scene-maintained LOD count and sparse rows equal to walking them', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const materials = new MaterialFrame(undefined).with(material);
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  const rows: RenderableSnapshot[] = [];
+  for (let key = 1; key <= 12; key++) {
+    const row: RenderableSnapshot = {
+      ...source(key, key, material),
+      ...(key % 3 === 0 ? { lods: [{} as never] } : {}),
+      ...(key % 4 === 0 ? { capsuleShadowRequested: true } : {}),
+    } as RenderableSnapshot;
+    rows.push(row);
+    update(scene, row);
+  }
+  scene.commitSubmission(scene.captureSubmission(scene.materialize()));
+  update(scene, { ...(rows[2] as RenderableSnapshot), transform: rows[5]?.transform } as never);
+  const temporal = scene.materializeTemporal({ hits: 0, misses: 0 }, materials);
+  const walked = [...temporal];
+  // The count is read from the facts, not by walking the rows.
+  expect(temporal instanceof RetainedFrameProjection && temporal.facts !== undefined).toBe(true);
+  expect(lodCandidateCountOf(temporal)).toBe(
+    walked.filter((row) => (row.lods?.length ?? 0) > 0).length,
+  );
+  expect(lodCandidateCountOf(temporal)).toBe(4);
+  expect([...sparseRowsOf(temporal, 'capsule')]).toEqual(
+    walked.filter((row) => row.capsuleShadowRequested === true),
+  );
+  for (const row of sparseRowsOf(temporal, 'capsule')) expect(row.temporal).toBeDefined();
+  // Rows pending acceptance keep the walked count.
+  const unavailable = FrameSet.from([required(scene.slot(0, 3)).slot]);
+  const pending = scene.materializeTemporal({ hits: 0, misses: 0 }, materials, unavailable);
+  expect(lodCandidateCountOf(pending)).toBe(
+    [...pending].filter((row) => (row.lods?.length ?? 0) > 0).length,
+  );
 });

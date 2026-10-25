@@ -157,14 +157,43 @@ function sameExecutionRow(retained: GpuDrivenBatch, current: GpuDrivenBatch): bo
   );
 }
 
-/** A member row draws a slot when it holds a weighted entry for it. */
+/**
+ * A member row draws a slot when it holds a weighted entry for it. Lookups
+ * scan the rows until their accumulated row visits reach the member count;
+ * then the drawn slots are indexed once, so a projection's lookups cost at
+ * most about twice the cheaper of scanning and indexing.
+ */
+class MemberDrawn implements ShadowDrawnSlots {
+  readonly #batches: readonly GpuDrivenBatch[];
+  #budget = -1;
+  #index: Set<number> | undefined;
+  constructor(batches: readonly GpuDrivenBatch[]) {
+    this.#batches = batches;
+  }
+  has(slot: number): boolean {
+    const index = this.#index;
+    if (index !== undefined) return index.has(slot);
+    const batches = this.#batches;
+    if (this.#budget < 0) {
+      let members = 0;
+      for (const batch of batches) members += (batch.candidates as MemberCandidates).memberCount;
+      this.#budget = members;
+    }
+    if (this.#budget < batches.length) {
+      const built = new Set<number>();
+      for (const batch of batches) (batch.candidates as MemberCandidates).addDrawnSlots(built);
+      this.#index = built;
+      return built.has(slot);
+    }
+    this.#budget -= batches.length;
+    for (const batch of batches)
+      if ((batch.candidates as MemberCandidates).drawsSlot(slot)) return true;
+    return false;
+  }
+}
+
 function memberDrawn(batches: readonly GpuDrivenBatch[]): ShadowDrawnSlots {
-  return {
-    has: (slot) =>
-      batches.some(
-        (batch) => ((batch.candidates as MemberCandidates).get(slot)?.instanceCount ?? 0) > 0,
-      ),
-  };
+  return new MemberDrawn(batches);
 }
 
 export interface ShadowLayerWork {

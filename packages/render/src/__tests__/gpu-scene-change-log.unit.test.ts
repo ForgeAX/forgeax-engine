@@ -136,3 +136,72 @@ describe('GpuSceneChangeLog rebuild seeding', () => {
     expect(log.changedSince(2, 3)).toEqual(new Float32Array([0, 0.2, 0, 1, 1.2, 1]));
   });
 });
+
+describe('GpuSceneChangeLog changedBoundsMiss', () => {
+  it('answers exactly what testing the merged changedSince boxes answers', () => {
+    let seed = 0x9e3779b9;
+    const random = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 2 ** 32;
+    };
+    const boxOf = (): RenderSceneBounds => {
+      const x = random() * 100;
+      const z = random() * 100;
+      const size = 1 + random() * 8;
+      return { min: [x, 0, z], max: [x + size, 2, z + size] };
+    };
+    const rowOf = (index: number): RenderSceneSlot =>
+      ({
+        worldId: 0,
+        entityKey: index + 1,
+        slot: index,
+        generation: 1,
+        snapshot: { instances: { instanceCount: 1 } },
+      }) as unknown as RenderSceneSlot;
+    const rows = Array.from({ length: 40 }, (_, index) => rowOf(index));
+    const log = new GpuSceneChangeLog();
+    let revision = 0;
+    for (let step = 0; step < 24; step += 1) {
+      revision += 1;
+      const pick = rows.filter(() => random() < 0.2);
+      if (step % 7 === 6) log.recordContent(revision, new Set(pick.map((row) => row.slot)));
+      else
+        log.record(revision, delta({ updatedSlots: pick }), () =>
+          random() < 0.1 ? undefined : boxOf(),
+        );
+    }
+    const viewBoxes = Array.from({ length: 6 }, boxOf).map((view) => ({
+      min: [view.min[0] - 10, -1, view.min[2] - 10],
+      max: [view.max[0] + 10, 3, view.max[2] + 10],
+    }));
+    let cases = 0;
+    const outcomes = new Set<boolean>();
+    for (const view of viewBoxes) {
+      const missesAt = (boxes: Float32Array, offset: number): boolean =>
+        (boxes[offset + 3] as number) < (view.min[0] as number) ||
+        (boxes[offset] as number) > (view.max[0] as number) ||
+        (boxes[offset + 5] as number) < (view.min[2] as number) ||
+        (boxes[offset + 2] as number) > (view.max[2] as number);
+      for (let since = revision - 18; since <= revision; since += 1) {
+        for (let variant = 0; variant < 4; variant += 1) {
+          const ignored =
+            variant & 1 ? new Set(rows.filter(() => random() < 0.5).map((r) => r.slot)) : undefined;
+          const observedSet =
+            variant & 2 ? new Set(rows.filter(() => random() < 0.5).map((r) => r.slot)) : undefined;
+          const merged = log.changedSince(since, revision, ignored, observedSet);
+          let expected = merged !== 'unbounded';
+          if (merged !== 'unbounded')
+            for (let offset = 0; offset < merged.length; offset += 6)
+              if (!missesAt(merged, offset)) expected = false;
+          expect(log.changedBoundsMiss(since, revision, missesAt, ignored, observedSet)).toBe(
+            expected,
+          );
+          outcomes.add(expected);
+          cases += 1;
+        }
+      }
+    }
+    expect(cases).toBe(6 * 19 * 4);
+    expect([...outcomes].sort()).toEqual([false, true]);
+  });
+});
